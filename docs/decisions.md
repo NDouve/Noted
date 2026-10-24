@@ -144,7 +144,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0016 — Ink anywhere on the page
 - **Date:** 2026-10-24
-- **Status:** Active
+- **Status:** Active; input rules superseded by 0033; drawing is delivered as a box module (0034)
 - **Decision:** Drawing is possible anywhere on a page. A stroke creates a drawing box, or extends an existing one, and the box grows with the stroke. Drawing boxes can overlap other boxes.
 - **Requirement:** no skipped or broken strokes, including fast, long strokes and strokes that cause a box to grow.
 - **Implementation rules:**
@@ -318,6 +318,54 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Decision:** The macOS reference test device is a Mac Pro (Late 2013): Intel Xeon, AMD FirePro graphics, running macOS 12 Monterey, the last officially supported release for that model. macOS testing on this device takes place after the initial prototypes, which run on Windows, iPadOS and Android.
 - **Rationale:** It confirms the app installs and runs on older Intel hardware at Flutter's current minimum macOS version (12.0).
 
+## 0033 — Tool-based input rules
+- **Date:** 2026-10-24
+- **Status:** Active (supersedes the input rules in 0016)
+- **Decision:** The action an input performs depends on the selected tool, not on the device, following OneNote's Draw model.
+  - **Draw tool:** mouse, trackpad, finger and stylus all draw.
+  - **Select or type tool:** mouse, trackpad and finger select or type.
+  - A stylus may default to ink in any mode.
+- **Rationale:** Drawing with a mouse is a standard workflow. A rule based on device type would block it.
+
+## 0034 — Boxes as modules (two stages)
+- **Date:** 2026-10-24
+- **Status:** Active
+- **Decision:** Base Noted consists of the canvas, the page tree, binders, plain note boxes, storage and sync. Every other box type is a module that can be switched on or off, and all of them implement a single versioned Box API. The API defines:
+  - type ID and data fields
+  - rendering and editing
+  - conflict merge
+  - AI exposure
+  - required permissions
+  - settings
+  - snapshot (0035)
+
+  Delivery is in two stages:
+  - **Stage 1, compiled modules:** first-party boxes (AI, encrypted, link, meeting, drawing, reMarkable) are compiled modules. New box types are added in source, by contribution or fork, using a published template and guide. Box contributions require security review, because compiled modules run with full app privileges.
+  - **Stage 2, downloadable boxes:** a sandboxed plugin host, itself delivered as one more box type, loads box modules at runtime. The planned sandbox is WebAssembly. Each downloadable box declares the permissions it needs, and the user approves them at install. A downloadable box can access only its own data, never encryption keys, encrypted boxes or other boxes, and is subject to the same AI exposure rules as any other box. Installation is from a file or URL initially.
+- **Rationale:** Supports both contribution in source and runtime extension. The plain note box is the first module built on the Box API, so the API is proven before external authors rely on it.
+- **Constraints:** App Store guideline 2.5.2 restricts downloading code that adds features, so iOS builds may ship without the stage-2 host or with a restricted one. Google Play policy on downloaded executable code may also apply. Whether either covers sandboxed WebAssembly is unverified. Desktop platforms have no store restriction.
+
+## 0035 — Box snapshots and untouched pass-through
+- **Date:** 2026-10-24
+- **Status:** Active
+- **Decision:**
+  - Each box stores a read-only snapshot (text, an image, or both) alongside its data. The snapshot is updated whenever the box is edited on a device that supports it.
+  - A device that cannot run a box type shows the snapshot read-only, marked as editable on other devices. This applies to a module that is switched off, a platform without the plugin host, or a box type that isn't installed or comes from a newer app version.
+  - The core never parses, rewrites or removes data from box types it doesn't support. That data passes through sync, decryption and re-encryption byte-for-byte.
+  - Snapshots follow the encryption of their box and binder, and are never stored in plaintext.
+  - A conflict on a box the device can't run keeps both versions until a supporting device resolves it.
+- **Rationale:** Content stays visible and is never lost on devices that can't run a given box type.
+
+## 0036 — Prototype sequence and development setup
+- **Date:** 2026-10-24
+- **Status:** Active
+- **Decision:**
+  - The primary development and test machine is a Windows laptop without pen input. Development uses Claude Code with the local Flutter toolchain.
+  - Prototype 1 covers the canvas, the page tree, the Box API, plain note boxes and editor boxes, validated on that machine.
+  - Drawing is then added as a box module. Pen and touch validation on a Windows pen tablet, an iPad and an Android phone comes after that.
+  - Prototype 1 is built by a single agent. Later phases, whose modules can be built in parallel, use a coordinating agent with separate writer and reviewer agents. Security-critical modules (encryption, the MCP boundary, clipboard handling) are written and reviewed by the most capable model.
+- **Rationale:** The core canvas is tightly coupled and most of it can be evaluated without pen hardware. Parallel agents pay off once modules have clear boundaries.
+
 ---
 
 ## Open items
@@ -343,7 +391,9 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - Background sync limits on mobile.
 
 ## First prototypes, in order
-1. A canvas with several draggable, resizable editor boxes plus ink anywhere, tested on a Windows pen tablet, an iPad and an Android phone. Pass condition: zero skipped or broken strokes on fast, long lines, including while a drawing box grows.
-2. Microsoft sign-in on Windows (system browser + PKCE).
-3. One AI box through a local MCP server, tested under each page AI setting, with an encrypted box on the same page that appears only as a placeholder.
-4. reMarkable (later phase).
+1. Canvas, page tree, Box API, and plain note and editor boxes, on the Windows development machine. Covers typing on a crowded page, editing while zoomed, and box drag and resize.
+2. Drawing box module with the tool-based input rules (0033), on the development machine using a mouse.
+3. Pen and touch ink on a Windows pen tablet, an iPad and an Android phone. Pass condition: zero skipped or broken strokes on fast, long lines, including while a drawing box grows.
+4. Microsoft sign-in on Windows (system browser + PKCE).
+5. One AI box through a local MCP server, tested under each page AI setting, with an encrypted box on the same page that appears only as a placeholder.
+6. reMarkable (later phase).
