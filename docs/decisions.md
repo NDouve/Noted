@@ -164,7 +164,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0018 — Platforms and reference test devices
 - **Date:** 2026-10-24
-- **Status:** Active
+- **Status:** Active, extended by 0032
 - **Decision:**
   - Targets: Windows, macOS, Linux, iOS/iPadOS and Android.
   - Freeform drawing must be validated on a Windows pen tablet, an iPad with stylus, and an Android phone without an active stylus.
@@ -311,6 +311,12 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Decision:**
   - The application and repository are named **Noted**. The Apple App Store listing will use a variant of the name, because "Noted" is already in use there.
   - Description: "Noted is an open-source, OneNote-style notebook for Windows, macOS, Linux, iOS and Android. Pages are freeform canvases: type or draw anywhere, nest subpages under any page, and add special boxes for meetings, linked tasks, any AI, or encrypted text AI can't read. Notes stay as plain files wherever you store them."
+
+## 0032 — macOS reference device
+- **Date:** 2026-10-24
+- **Status:** Active
+- **Decision:** The macOS reference test device is a Mac Pro (Late 2013): Intel Xeon, AMD FirePro graphics, running macOS 12 Monterey, the last officially supported release for that model. macOS testing on this device takes place after the initial prototypes, which run on Windows, iPadOS and Android.
+- **Rationale:** It confirms the app installs and runs on older Intel hardware at Flutter's current minimum macOS version (12.0).
 
 ---
 
