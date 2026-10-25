@@ -6,6 +6,7 @@
 /// side of the Box API. Pure Dart; nothing in this library imports Flutter.
 library;
 
+export 'src/binder/binder.dart';
 export 'src/box_api/box_codec.dart';
 export 'src/box_api/codec_registry.dart';
 export 'src/edit/page_history.dart';

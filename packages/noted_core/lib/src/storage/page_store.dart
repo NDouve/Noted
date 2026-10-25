@@ -30,7 +30,7 @@ final class UnreadablePage extends PageEntry {
 /// Page files in one local folder, one `<pageId>.canvas` file per page.
 ///
 /// Prototype 1 has a single local location; sync drivers come later (0007).
-final class PageStore {
+class PageStore {
   PageStore(this.directory);
 
   static const String extension = '.canvas';
@@ -64,6 +64,9 @@ final class PageStore {
 
   Future<NotedPage> load(String pageId) async =>
       readPage(await File(_pathFor(pageId)).readAsString());
+
+  /// The text of the page's file, as stored.
+  Future<String> readText(String pageId) => File(_pathFor(pageId)).readAsString();
 
   /// Writes [page] atomically: to a temporary file first, then renamed over
   /// the old file, so a crash mid-write never leaves a half-written page.
