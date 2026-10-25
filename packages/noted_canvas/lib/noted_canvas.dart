@@ -6,10 +6,12 @@
 /// Box API.
 library;
 
-export 'src/box_host.dart' show BoxHost, UnsupportedBoxView, boxGripHeight, boxHandleSize;
+export 'src/box_host.dart'
+    show BoxHost, UnsupportedBoxView, boxGripHeight, boxHandleSize;
 export 'src/box_module.dart';
 export 'src/box_scroll.dart';
 export 'src/canvas_controller.dart';
+export 'src/canvas_tool.dart';
 export 'src/canvas_view.dart';
 export 'src/geometry.dart';
 export 'src/module_registry.dart';

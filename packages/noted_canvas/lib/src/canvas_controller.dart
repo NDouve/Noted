@@ -22,7 +22,8 @@ const double minBoxHeight = 24;
 /// commits don't notify, because the box that made the edit already shows
 /// it; they only call [onChanged] so the page can be saved.
 class CanvasController extends ChangeNotifier {
-  CanvasController(NotedPage page, this.modules, {this.onChanged}) : _page = page;
+  CanvasController(NotedPage page, this.modules, {this.onChanged})
+    : _page = page;
 
   final ModuleRegistry modules;
 
@@ -38,6 +39,7 @@ class CanvasController extends ChangeNotifier {
   Bounds? _gestureStart;
   bool _gestureStartFixed = false;
   bool _gestureFixesHeight = false;
+  int _toolSessions = 0;
   bool _disposed = false;
 
   NotedPage get page => _page;
@@ -50,7 +52,7 @@ class CanvasController extends ChangeNotifier {
 
   /// A box being dragged or resized. Page bounds don't change until the
   /// gesture ends (0016).
-  bool get isInteracting => _gestureId != null;
+  bool get isInteracting => _gestureId != null || _toolSessions > 0;
 
   bool get canUndo => _history.canUndo;
   bool get canRedo => _history.canRedo;
@@ -66,10 +68,7 @@ class CanvasController extends ChangeNotifier {
   /// Creates a box of the default type with its top-left corner at [at].
   BoxRecord createBoxAt(Bounds at) {
     final codec = modules.defaultModule.codec;
-    final box = createBox(
-      codec,
-      Bounds(at.x, at.y, newBoxWidth, newBoxHeight),
-    );
+    final box = createBox(codec, Bounds(at.x, at.y, newBoxWidth, newBoxHeight));
     _history.record(PageChange.added(box.id));
     _selectedId = box.id;
     _autofocusId = box.id;
@@ -132,7 +131,8 @@ class CanvasController extends ChangeNotifier {
   /// Whether [box] sizes itself to its content: its type grows with content
   /// and the user hasn't set its height.
   bool isAutoHeight(BoxRecord box) =>
-      modules.codecs.codecFor(box.typeId)?.sizing == BoxSizing.growsWithContent &&
+      modules.codecs.codecFor(box.typeId)?.sizing ==
+          BoxSizing.growsWithContent &&
       !box.fixedHeight;
 
   void beginGesture(String id) {
@@ -172,10 +172,14 @@ class CanvasController extends ChangeNotifier {
       _notify();
       return;
     }
-    final grows = modules.codecs.codecFor(box.typeId)?.sizing == BoxSizing.growsWithContent;
+    final grows =
+        modules.codecs.codecFor(box.typeId)?.sizing ==
+        BoxSizing.growsWithContent;
     final next = fixes && grows ? box.withFixedHeight(true) : box;
     if (next.bounds != start || next.fixedHeight != startFixed) {
-      _history.record(PageChange.bounds(id, start, fixedHeightBefore: startFixed));
+      _history.record(
+        PageChange.bounds(id, start, fixedHeightBefore: startFixed),
+      );
       _set(_page.replaceNode(next));
     } else {
       _notify();
@@ -188,6 +192,49 @@ class CanvasController extends ChangeNotifier {
     if (box is! BoxRecord || !box.fixedHeight) return;
     _history.record(PageChange.bounds(id, box.bounds, fixedHeightBefore: true));
     _set(_page.replaceNode(box.withFixedHeight(false)));
+  }
+
+  /// Adds a box a tool built, with its content, on top. Recorded for undo.
+  void insertBox(BoxRecord box) {
+    _history.record(PageChange.added(box.id));
+    _set(_page.insertNode(box));
+  }
+
+  /// Replaces box [id]'s data through its codec, optionally with new
+  /// [bounds], and redraws. When [undo] is given, page undo replays it as a
+  /// diff (and restores the old bounds) instead of keeping a copy of the
+  /// content. Returns the updated record, or null if the box is gone.
+  BoxRecord? editBox(String id, Object? data, {Bounds? bounds, BoxEdit? undo}) {
+    final box = _page.node(id);
+    if (box is! BoxRecord) return null;
+    final codec = modules.codecs.codecFor(box.typeId);
+    if (codec == null) return null;
+    var next = commitBox(box, codec, data);
+    if (bounds != null) next = next.withBounds(bounds);
+    if (undo != null) {
+      _history.record(
+        PageChange.content(
+          id,
+          undo,
+          boundsBefore: bounds == null ? null : box.bounds,
+        ),
+      );
+    }
+    _set(_page.replaceNode(next));
+    return next;
+  }
+
+  /// Records a change that has already been applied, for example several
+  /// erasures made during one eraser drag, kept as one undo step.
+  void recordChange(PageChange change) => _history.record(change);
+
+  /// A tool session started or ended. While one is running, page bounds
+  /// stay fixed (0016).
+  void beginToolSession() => _toolSessions++;
+
+  void endToolSession() {
+    if (_toolSessions > 0) _toolSessions--;
+    _notify();
   }
 
   /// Deletes box [id]. Only boxes this device can run can be deleted;
@@ -204,12 +251,12 @@ class CanvasController extends ChangeNotifier {
   }
 
   void undo() {
-    final next = _history.undo(_page);
+    final next = _history.undo(_page, modules.codecs);
     if (next != null) _set(next);
   }
 
   void redo() {
-    final next = _history.redo(_page);
+    final next = _history.redo(_page, modules.codecs);
     if (next != null) _set(next);
   }
 

@@ -7,6 +7,8 @@ import 'dart:typed_data';
 import 'package:flutter/widgets.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'canvas_tool.dart';
+
 /// What a box module sees of its box while it is on screen.
 ///
 /// The module keeps its live editing state (cursor, selection, the editor's
@@ -61,6 +63,9 @@ abstract class BoxModule<D> {
   /// The box's settings panel, if it has settings.
   Widget? buildSettings(BuildContext context, BoxContext<D> box) => null;
 
+  /// Canvas tools this module adds, for example a pen (Box API 0.2).
+  List<CanvasTool> get tools => const [];
+
   /// Renders an image snapshot (0035) as PNG bytes, or returns null for a
   /// text-only snapshot. Not stored yet: Prototype 1 boxes are text only.
   Future<Uint8List?> snapshotImage(D data, Size size) async => null;
@@ -68,7 +73,9 @@ abstract class BoxModule<D> {
   /// Called by the box host. Keeps [D] typed across the untyped host.
   Widget hostBuild(BuildContext context, BoxBinding binding) {
     final box = _TypedBoxContext<D>(binding);
-    return binding.readOnly ? buildView(context, box) : buildEditor(context, box);
+    return binding.readOnly
+        ? buildView(context, box)
+        : buildEditor(context, box);
   }
 }
 

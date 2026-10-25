@@ -81,7 +81,9 @@ class _BoxHostState extends State<BoxHost> {
   Widget build(BuildContext context) {
     final node = widget.node;
     final b = node.bounds;
-    if (b == null) return const Positioned(left: 0, top: 0, child: SizedBox.shrink());
+    if (b == null) {
+      return const Positioned(left: 0, top: 0, child: SizedBox.shrink());
+    }
 
     final c = widget.controller;
     BoxModule<Object?>? module;
@@ -195,10 +197,11 @@ class _BoxHostState extends State<BoxHost> {
                     child: showChrome
                         ? DecoratedBox(
                             decoration: BoxDecoration(
-                              color: (selected || editing
-                                      ? scheme.primary
-                                      : scheme.outlineVariant)
-                                  .withValues(alpha: 0.35),
+                              color:
+                                  (selected || editing
+                                          ? scheme.primary
+                                          : scheme.outlineVariant)
+                                      .withValues(alpha: 0.35),
                               borderRadius: const BorderRadius.vertical(
                                 top: Radius.circular(3),
                               ),
@@ -226,11 +229,26 @@ class _BoxHostState extends State<BoxHost> {
     final h = b.height + s / 2;
     final top = boxGripHeight;
     final (Rect r, MouseCursor cursor) = switch (edge) {
-      _Edge.left => (Rect.fromLTWH(0, top, s, b.height), SystemMouseCursors.resizeLeftRight),
-      _Edge.right => (Rect.fromLTWH(w - s, top, s, b.height), SystemMouseCursors.resizeLeftRight),
-      _Edge.bottom => (Rect.fromLTWH(s, top + h - s, w - 2 * s, s), SystemMouseCursors.resizeUpDown),
-      _Edge.bottomLeft => (Rect.fromLTWH(0, top + h - s, s, s), SystemMouseCursors.resizeDownLeft),
-      _Edge.bottomRight => (Rect.fromLTWH(w - s, top + h - s, s, s), SystemMouseCursors.resizeDownRight),
+      _Edge.left => (
+        Rect.fromLTWH(0, top, s, b.height),
+        SystemMouseCursors.resizeLeftRight,
+      ),
+      _Edge.right => (
+        Rect.fromLTWH(w - s, top, s, b.height),
+        SystemMouseCursors.resizeLeftRight,
+      ),
+      _Edge.bottom => (
+        Rect.fromLTWH(s, top + h - s, w - 2 * s, s),
+        SystemMouseCursors.resizeUpDown,
+      ),
+      _Edge.bottomLeft => (
+        Rect.fromLTWH(0, top + h - s, s, s),
+        SystemMouseCursors.resizeDownLeft,
+      ),
+      _Edge.bottomRight => (
+        Rect.fromLTWH(w - s, top + h - s, s, s),
+        SystemMouseCursors.resizeDownRight,
+      ),
     };
     return Positioned.fromRect(
       rect: r,
@@ -290,7 +308,11 @@ class _BoxHostState extends State<BoxHost> {
       }
       next = Bounds(x, sb.y, w, h);
     }
-    widget.controller.updateGesture(widget.node.id, next, setsHeight: setsHeight);
+    widget.controller.updateGesture(
+      widget.node.id,
+      next,
+      setsHeight: setsHeight,
+    );
   }
 
   void _end() {
@@ -313,7 +335,8 @@ class _BoxHostState extends State<BoxHost> {
     }
 
     // Never change the model in the middle of build, layout or paint.
-    if (SchedulerBinding.instance.schedulerPhase == SchedulerPhase.persistentCallbacks) {
+    if (SchedulerBinding.instance.schedulerPhase ==
+        SchedulerPhase.persistentCallbacks) {
       SchedulerBinding.instance.addPostFrameCallback((_) => apply());
     } else {
       apply();
@@ -323,7 +346,11 @@ class _BoxHostState extends State<BoxHost> {
 
 /// A box shown from its saved snapshot because this device can't run it.
 class UnsupportedBoxView extends StatelessWidget {
-  const UnsupportedBoxView({super.key, required this.text, required this.label});
+  const UnsupportedBoxView({
+    super.key,
+    required this.text,
+    required this.label,
+  });
 
   final String text;
   final String label;
@@ -350,7 +377,11 @@ class UnsupportedBoxView extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Expanded(
-              child: Text(text, overflow: TextOverflow.fade, style: theme.textTheme.bodyMedium),
+              child: Text(
+                text,
+                overflow: TextOverflow.fade,
+                style: theme.textTheme.bodyMedium,
+              ),
             ),
           ],
         ),

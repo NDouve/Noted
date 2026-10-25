@@ -54,7 +54,12 @@ void main() {
     final empty = CanvasGeometry.compute(content: null, viewport: viewport);
     final v = empty.initial(null);
     // A box in the bottom-right corner of the visible area.
-    final box = Rect.fromLTWH(viewport.width - 50, viewport.height - 30, 360, 40);
+    final box = Rect.fromLTWH(
+      viewport.width - 50,
+      viewport.height - 30,
+      360,
+      40,
+    );
     final g = CanvasGeometry.compute(content: box, viewport: viewport);
     expect(g.clamp(v), v);
   });

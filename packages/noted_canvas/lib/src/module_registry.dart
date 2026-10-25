@@ -5,6 +5,7 @@
 import 'package:noted_core/noted_core.dart';
 
 import 'box_module.dart';
+import 'canvas_tool.dart';
 
 /// The box modules compiled into this build (stage 1 of 0034).
 final class ModuleRegistry {
@@ -38,6 +39,12 @@ final class ModuleRegistry {
   /// The module for [typeId] if it is registered and switched on.
   BoxModule<Object?>? moduleFor(String typeId) =>
       codecs.isEnabled(typeId) ? _modules[typeId] : null;
+
+  /// Canvas tools of the modules that are switched on, in registration order.
+  List<CanvasTool> get tools => [
+    for (final m in _modules.values)
+      if (codecs.isEnabled(m.codec.typeId)) ...m.tools,
+  ];
 
   /// The module new boxes are created with.
   BoxModule<Object?> get defaultModule {

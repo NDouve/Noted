@@ -20,8 +20,10 @@ final class CanvasView {
   Offset toWorld(Offset screen) => (screen - offset) / scale;
 
   /// The world rectangle visible in a viewport of [size].
-  Rect visible(Size size) =>
-      Rect.fromPoints(toWorld(Offset.zero), toWorld(size.bottomRight(Offset.zero)));
+  Rect visible(Size size) => Rect.fromPoints(
+    toWorld(Offset.zero),
+    toWorld(size.bottomRight(Offset.zero)),
+  );
 
   @override
   bool operator ==(Object other) =>
@@ -52,7 +54,10 @@ final class CanvasGeometry {
   const CanvasGeometry._(this.viewport, this.child, this.boundaryMargin);
 
   /// [content] is the union of all box bounds, or null for an empty page.
-  factory CanvasGeometry.compute({required Rect? content, required Size viewport}) {
+  factory CanvasGeometry.compute({
+    required Rect? content,
+    required Size viewport,
+  }) {
     final child = content == null
         ? const Rect.fromLTWH(0, 0, 1, 1)
         : content.inflate(canvasChromePadding);
@@ -106,7 +111,10 @@ final class CanvasGeometry {
   /// The smallest scale at which [boundary] still fills the viewport.
   double get minScale => math.max(
     canvasMinScale,
-    math.max(viewport.width / boundary.width, viewport.height / boundary.height),
+    math.max(
+      viewport.width / boundary.width,
+      viewport.height / boundary.height,
+    ),
   );
 
   double get maxScale => canvasMaxScale;
@@ -117,8 +125,16 @@ final class CanvasGeometry {
     final s = view.scale.clamp(minScale, maxScale).toDouble();
     final b = boundary;
     // Keep the visible world rect inside the boundary on each axis.
-    final dx = _clampAxis(view.offset.dx, viewport.width - s * b.right, -s * b.left);
-    final dy = _clampAxis(view.offset.dy, viewport.height - s * b.bottom, -s * b.top);
+    final dx = _clampAxis(
+      view.offset.dx,
+      viewport.width - s * b.right,
+      -s * b.left,
+    );
+    final dy = _clampAxis(
+      view.offset.dy,
+      viewport.height - s * b.bottom,
+      -s * b.top,
+    );
     return CanvasView(s, Offset(dx, dy));
   }
 
@@ -148,7 +164,9 @@ final class CanvasGeometry {
   /// The view a page opens with: 100%, content's top-left near the corner.
   CanvasView initial(Rect? content) {
     if (content == null) return clamp(CanvasView.identity);
-    final topLeft = content.topLeft - const Offset(canvasChromePadding * 2, canvasChromePadding * 2);
+    final topLeft =
+        content.topLeft -
+        const Offset(canvasChromePadding * 2, canvasChromePadding * 2);
     return clamp(CanvasView(1, -topLeft));
   }
 
