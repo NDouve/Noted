@@ -158,7 +158,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0017 — Tables and equations
 - **Date:** 2026-10-24
-- **Status:** Active
+- **Status:** Active; implemented by 0047, 0048 and 0055
 - **Decision:** Text boxes support tables, plus inline and block LaTeX equations.
 - **Notes:** Tables come from appflowy_editor's table block. Where the equation block's code will come from is open; see 0022.
 
@@ -179,7 +179,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0020 — Sync conflict handling, per box
 - **Date:** 2026-10-24
-- **Status:** Active
+- **Status:** Active; implemented by 0051–0053
 - **Decision:**
   - Each box records its revision and the revision it was edited from. When two devices edit the same box from the same revision, the box is marked conflicted.
   - A conflicted box is highlighted, and so is its page tab. Opening it shows both versions side by side, labeled with device and time.
@@ -209,7 +209,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0022 — Equation block sourcing
 - **Date:** 2026-10-24
-- **Status:** Open
+- **Status:** Superseded by 0048 (verified: the pinned `appflowy_editor` ships no math block; the block is built in-house on `flutter_math_fork`, Apache-2.0)
 - **Note:** The AppFlowy application has a math block, but whether it ships in the `appflowy_editor` package is unverified. If it isn't in the package, the block will be built in-house on a permissively licensed renderer, following 0021.
 
 ## 0023 — Meeting box
@@ -246,7 +246,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0026 — Optional binders
 - **Date:** 2026-10-24
-- **Status:** Active (supersedes an earlier same-day version that required a binder at the top level)
+- **Status:** Active (supersedes an earlier same-day version that required a binder at the top level); implemented without passwords, locking or encryption by 0049
 - **Decision:** Binders are optional. Standalone pages use app-wide defaults and are stored locally unless configured otherwise. A binder is an environment that holds a page tree:
   - New pages inside a binder take the binder's defaults.
   - A cover page, visible while locked, shows title, description and owner (all editable) and the last-edited date (automatic).
@@ -262,7 +262,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0027 — Configuration inheritance and exemptions
 - **Date:** 2026-10-24
-- **Status:** Active
+- **Status:** Active; storage prompt implemented by 0056
 - **Decision:**
   - Every page has a configuration: storage location, AI setting, and other settings.
   - A page inherits its parent's configuration (a page, a binder, or the app defaults). An exemption overrides it for that page and everything below, until a lower page has its own exemption.
@@ -493,14 +493,195 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Rationale:** A touchpad scroll arrives as pan/zoom gesture events rather than wheel events. Flutter doesn't decide between nested widgets for those, so the canvas panned while a note scrolled. A claim gives the touchpad the same behavior as the wheel.
 - **Alternatives considered:** letting the canvas always pan (the box and canvas move together); letting a box take the pinch too (pinch-to-zoom would stop working over boxes).
 
+## 0046 — Page tree management in the sidebar
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:**
+  - The sidebar supports creating pages and subpages, renaming, deleting, moving up and down, indenting (under the sibling above) and outdenting (after the parent).
+  - Every action is in a page's right-click menu and its "⋯" menu. Items that don't apply are disabled.
+  - **Drag-and-drop** onto a row:
+    - the top quarter places the page before that row
+    - the middle half places it inside, as the row's last subpage, which makes that row a divider (0025)
+    - the bottom quarter places it after.
+  - Dropping on the empty area below the list moves the page to the end of its location's top level. A drop indicator shows the result.
+  - A page can't be moved under itself or one of its own descendants. Subpages move with their page.
+  - Moving within a location changes only the page's `parentId` and `order` header values. Siblings are renumbered, and only pages whose parent or order changed are written. The open page changes through its canvas controller.
+  - **Delete** asks for confirmation, then shows an Undo snackbar for 10 seconds. Undo writes the deleted page and its subpages back exactly and reopens the page that was open. Only the most recent delete can be undone.
+  - Dividers collapse and expand; the state lasts for the session.
+- **Rationale:** Structure is added and changed where it is shown, and a mistaken delete can be reversed.
+- **Alternatives considered:** a multi-level delete undo history; press-and-hold before a drag starts (it slows down mouse use).
+
+## 0047 — Tables in note boxes
+- **Date:** 2026-10-25
+- **Status:** Active (implements the table part of 0017)
+- **Decision:**
+  - Note boxes use `appflowy_editor`'s own table block, inserted with the `/` menu's "Table" item. The box grows to fit the table.
+  - In the text snapshot (0035), a table gives one line per row, with cells joined by ` | `.
+- **Rationale:** The table block ships with the editor already in use (0004).
+
+## 0048 — Equations in note boxes
+- **Date:** 2026-10-25
+- **Status:** Active (implements the equation part of 0017; supersedes 0022)
+- **Decision:**
+  - The pinned `appflowy_editor` has no math block, so the equation components are built in-house against its public block API. No AppFlowy application code is used.
+  - Rendering uses `flutter_math_fork` (Apache-2.0; its bundled KaTeX fonts are MIT).
+  - **Block equation:**
+    - Stored as `{"type":"math_equation","data":{"formula":"<LaTeX>"}}`.
+    - Inserted with the `/` menu's "Equation" item, or by typing `$$` and a space.
+  - **Inline equation:**
+    - Stored as a one-character U+FFFC text run with the attribute `"formula":"<LaTeX>"`.
+    - Inserted by typing `$<LaTeX>$`. A formula that is empty, or starts or ends with a space, isn't converted, so amounts like "$5 and $10" stay as text.
+  - Clicking an equation opens a dialog with a live preview. Invalid LaTeX shows an error placeholder.
+  - In the text snapshot, block equations appear as `$$<LaTeX>$$` and inline ones as `$<LaTeX>$`.
+  - Equations also work inside table cells (0055).
+  - The note data version stays 1.
+- **Rationale:** The editor package has no math block, and `flutter_math_fork` is a maintained renderer under a permitted license (0021).
+- **Alternatives considered:** the AppFlowy application's math block (AGPL, not permitted).
+
+## 0049 — Optional binders, without passwords
+- **Date:** 2026-10-25
+- **Status:** Active (implements 0026 except passwords, locking and encryption)
+- **Decision:**
+  - **Creating a binder:** "New binder" asks for a folder. A folder that already has a binder file is opened, never overwritten. Otherwise a binder file is created, and any page files already in the folder become its pages.
+  - **Cover page:** title, description and owner are editable. It also shows last edited (the latest change to the binder's files), the storage folder, and a color chosen from an 8-color palette. The color is applied to the binder's sidebar entries.
+  - **Sidebar:** standalone pages first, then one collapsible section per binder. Every page operation (0046) works inside a section.
+  - New pages in a binder are saved in its folder. Subpages are saved in their parent's folder (0027).
+  - **Moving into or out of a binder:** dragging a page onto a binder header or into another location moves its file and its subpages' files:
+    1. Each file is written to the target folder, read back and compared byte for byte.
+    2. Only when every file checks out are the source files deleted.
+    3. On any failure, the copies are removed and the sources stay.
+  - A listed binder folder that is missing, or has no binder file, is shown greyed as unavailable and is never recreated. "Remove from sidebar" never deletes files.
+- **Rationale:** Binders are optional (0026). Verifying every copy before deleting anything means a move can't lose or split a page tree.
+- **Alternatives considered:** deleting each source right after its own copy is verified (a failure partway would leave a tree split across two folders).
+
+## 0050 — Binder file and binders.json
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:**
+  - **The binder file:** `noted-binder.json` in the binder folder: `{"format":1,"binderId":"<16 hex>","title":"…","description":"…","owner":"…","color":"#AARRGGBB","created":<ms since the epoch>}`.
+    - It is read and written so unknown fields round-trip byte for byte.
+    - A file with a newer format, a missing `binderId` or invalid JSON is shown as "Can't open" and never written.
+  - **The binder list:** the binder folders the app knows are listed in `binders.json` in the app settings folder (`%APPDATA%\Noted\binders.json` on Windows, `~/.noted/binders.json` elsewhere), next to the default pages folder: `{"format":1,"binders":["<absolute folder path>", …]}`.
+    - Unknown fields are kept.
+    - A corrupt list is renamed to `binders.json.bad` before it is replaced.
+  - **Watching:** `noted-binder.json` is watched like page files (0051). Cover edits made on another machine reload the sidebar and the open cover; a field with unsaved typing keeps the typing.
+    - A damaged or newer file makes the binder "Can't open" without rewriting it.
+    - A deleted file makes the binder unavailable, and a readable file brings it back.
+- **Rationale:** A binder carries its own description in its folder, so it travels with the folder to other machines and storage locations.
+- **Alternatives considered:** keeping binder settings only in the app's settings (they would not travel with the folder).
+
+## 0051 — External file changes and per-box merging
+- **Date:** 2026-10-25
+- **Status:** Active (implements 0020)
+- **Decision:**
+  - **Watching:** every storage folder is watched. A changed page file is checked after 300 ms.
+    - The app recognises its own writes by their exact text and ignores them.
+    - A page that isn't open is re-read into the tree: new, changed, deleted or unreadable files.
+    - Before each save of the open page, an unseen change on disk is merged rather than overwritten.
+    - A deleted file keeps the open page, which the next save writes again.
+  - **Three-way merge** (the open page): base is the page as last read or written by this app, mine is the page in memory, theirs is the file on disk.
+    - **Content**, by `rev`: if only one side changed, that side wins. If both changed, the box type's merge is used (drawings merge as a union, 0041). Otherwise the box is conflicted: this device's version is kept and the other is recorded.
+    - **Position, size and `fixedHeight`:** last write wins. When both sides changed them, this device's values are kept, because its next save is the later write.
+    - **Additions** are kept.
+    - **A delete on one side against an edit on the other** keeps the edit and flags it.
+    - **Page header fields** are merged field by field.
+    - Untouched nodes are written back verbatim.
+  - **Conflict record:** a conflicted box records the other version in its `noted` header, as `"conflicts":[{"node":<the other version's whole node, verbatim>,"at":<ms>,"device":"<computer name>"}]`, or `{"deleted":true,"at":<ms>}` when the other side deleted the box. A device that can't run the box carries the field through unchanged.
+  - **Conflict view:** a conflicted box has an amber frame and a "Conflict" badge, and its page has an amber dot in the sidebar. The badge opens both versions side by side, labelled with device name and time.
+  - **Resolutions:** keep mine, keep the other version, keep both (the other version becomes a new box beside it), or edit manually. Edit manually shows both versions side by side in the box module's own editor; "Use this version" saves that pane as the resolution. Delete conflicts offer keep box or delete box. Each resolution is one undo step.
+- **Rationale:** Pages can live in synced folders (0007) without whole-page conflict copies or silent data loss (0020).
+- **Alternatives considered:** reloading the file over local edits; making every change made on both sides a conflict, including position (0020 rules last write wins for moves and resizes).
+
+## 0052 — Device and time stamps on box content
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:**
+  - Each write of a box's content records `"device":"<computer name>"` and `"at":<ms since the epoch>` in the box's `noted` header. On Windows, the computer name comes from `Platform.localHostname`, falling back to `COMPUTERNAME`.
+  - A write without a known device removes both fields, so the header never describes older content.
+- **Rationale:** The conflict view labels each version with its device and time (0020, 0051).
+
+## 0053 — Cloud conflict-copy files (OneDrive)
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:**
+  - **Detection:** a file `<stem>-<suffix>.canvas` is a conflict copy when `<stem>.canvas` exists in the same folder and both have the same page id. OneDrive appends `-<COMPUTERNAME>`, then `-<COMPUTERNAME>-<n>`. This naming is *unverified*, so a broader suffix pattern is accepted.
+  - **Merge**, box by box into the original. There is no common base, so revisions decide:
+    - same `rev`: the same version
+    - the copy's `baseRev` is the original's `rev`: take the copy
+    - the reverse: keep the original
+    - otherwise: keep the original and record the copy in `conflicts` (0051).
+  - Boxes on only one side are kept, and the page header is the original's.
+  - **Removing the copy:** the merged original is written, read back and verified. Only then is the copy deleted, including when the merge recorded conflicts, because those keep the copy's versions. A failed merge keeps the copy, lists it under "Can't open", and is retried on its next change.
+  - Copies found at startup, when a binder opens, or by the watcher all go through the same path. Other providers' naming is not handled yet.
+- **Rationale:** OneDrive keeps both versions of a file edited on two machines before syncing. Merging per box keeps both without leaving a duplicate page.
+- **Alternatives considered:** showing the copy as a separate page (duplicate page ids); deleting the copy only when the merge has no conflicts (the copy would be merged again on every scan).
+
+## 0054 — Desktop and Start menu shortcuts
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:** On the development machine, shortcuts named "Noted" on the Desktop and in the Start menu point to the release build, `app\build\windows\x64\runner\Release\noted.exe`, and use its icon. The release exe is rebuilt after each change to the app, so the shortcuts always launch the current build.
+- **Rationale:** Hands-on testing of the current build without a terminal.
+
+## 0055 — Formulas and equations in table cells
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:**
+  - **Equations:** block and inline equations work inside table cells, with the same dialog and rendering as in notes (0048). A block equation replaces the cell's paragraph; emptying or cancelling it reverts the cell to text.
+  - **Formulas:** a cell whose text starts with `=` is a formula. It shows its result while the caret is elsewhere and its formula while the caret is in it. Errors show in red.
+  - **Evaluator:** in-house, in pure Dart, in the note module.
+    - References: `A1` (with optional `$` markers) and `A1:B3` ranges, within the same table.
+    - Operators: `+ - * /` and `^` (left-associative; unary minus binds tighter, so `-2^2` is 4, as in Excel), `&`, `%`, comparisons and parentheses.
+    - Functions: SUM, AVERAGE, MIN, MAX, COUNT, ROUND, ABS and IF (only the chosen branch is evaluated).
+  - **Errors:** `#REF!`, `#DIV/0!`, `#VALUE!`, `#NAME?`, `#NUM!` and `#CYCLE!`, plus `#ERROR!` for a formula that can't be parsed. The evaluator never throws.
+  - **Recalculation:** every change to a table recomputes its formulas, in dependency order.
+  - **Inserted and deleted rows and columns:** detected by comparing the table's layout before and after the change. References shift, references to a deleted row or column become `#REF!`, and the rewrite is part of the same undo step.
+  - **Storage:** the formula stays in the cell's text, and the last computed value is stored with it as `"formulaValue":"<text>"` in the cell paragraph's data, without adding undo steps. The text snapshot shows values, so other JSON Canvas readers and AI see results.
+  - While the caret is in a table, column letters and row numbers show around it. They are not part of the document.
+  - **Out of scope:** references to other tables or pages, number formatting, sorting, charts, and import or export.
+- **Rationale:** Simple calculations inside notes, with results readable outside the app.
+- **Alternatives considered:** a third-party formula library (an in-house evaluator keeps the behavior and error values under control); storing only formulas (readers without the app would see no results).
+
+## 0056 — Storage choice for standalone pages
+- **Date:** 2026-10-25
+- **Status:** Active (implements the storage prompt of 0027)
+- **Decision:**
+  - Creating a top-level standalone page asks where to store it. The options are:
+    - the default folder (preselected, so Enter accepts it)
+    - every other standalone folder already in use
+    - "Choose another folder…".
+  - Subpages and pages in binders inherit their location without asking.
+  - Extra standalone folders are remembered as `"standaloneFolders":[…]` in `binders.json` (0050).
+    - Their pages join the one "Pages" tree, are watched (0051), and support every page operation.
+    - A missing folder stays listed as unavailable.
+  - A binder folder can't be chosen. Nesting a page under a page in another standalone folder is refused; pages move between folders only into or out of binders (0049).
+- **Rationale:** A standalone page can be stored where the user wants it (0027), without a choice for every subpage.
+- **Alternatives considered:** asking for every new page; moving files between standalone folders when nesting (more file moves for a rare case).
+
+## 0057 — Templates, first level
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:**
+  - **File:** one JSON file per template, `<templateId>.notedtemplate`: `{"format":1,"templateId":"<16 hex>","kind":"page"|"binder","name":"…","created":<ms>,"extensions":{},…}`.
+    - A page template adds `"page":<a complete page file object>`.
+    - A binder template adds `"binder":{"title","description","owner","color"}` and `"pages":[<page file objects>]`, linked by `parentId`.
+  - `extensions` is reserved for later content such as AI rules and skills. It and any unknown fields are kept verbatim. A newer format or unreadable file is listed and never overwritten.
+  - **Storage:** app-wide templates live in `templates/` next to `binders.json`. Each binder's page templates live in `<binder folder>/templates/`. Binder templates are stored app-wide, because they describe a new binder.
+  - **Saving:**
+    - "Save as template" on a page saves its boxes and their contents, without subpages, to the binder or app-wide.
+    - "Save binder as template" saves the binder's settings, color and page tree.
+  - **Using:** "New page from template", "New subpage from template" and "New binder from template" create new page, box and binder ids, remap parent links, and drop conflict records. Templates can be deleted from the picker.
+  - The format is described in the doc comment of `packages/noted_core/lib/src/template/template.dart`.
+- **Rationale:** Repeated page layouts and binder structures can be reused. A plain, documented format leaves room for templates to carry AI rules and skills later.
+- **Alternatives considered:** templates as ordinary pages in a special folder (no place for template metadata or extensions).
+
 ---
 
 ## Open items
 - **Apple build path:** iOS/iPadOS and macOS releases have to be compiled with current Xcode on Apple-silicon-era macOS. The planned approach is cloud macOS build runners.
-- **Equation block sourcing:** see 0022.
+- **Equation block sourcing:** resolved (0048).
 - **File format:** whether JSON Canvas extra fields are sufficient, and how faithfully appflowy_editor round-trips Markdown.
 - **MCP:** the full tool and resource list, and the user experience for linking an AI to a box.
-- **Cloud conflict copies:** each provider names its conflict-copy files differently.
+- **Cloud conflict copies:** OneDrive copies are merged (0053); other providers name their conflict-copy files differently and are not handled yet.
 - **Per-AI overrides:** different rules for different AIs on the same page (deferred).
 - **Drawing box image snapshots:** where a drawing box's image snapshot (0035) is stored in the page format (0041).
 
