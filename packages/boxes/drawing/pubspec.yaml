@@ -1,0 +1,25 @@
+name: noted_box_drawing
+description: "The drawing box module for Noted: ink anywhere on a page (0016)."
+publish_to: none
+version: 0.1.0
+resolution: workspace
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  perfect_freehand: ^2.5.2
+  noted_core:
+    path: ../../noted_core
+  noted_canvas:
+    path: ../../noted_canvas
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
