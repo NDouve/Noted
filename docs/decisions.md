@@ -53,7 +53,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0005 — Special boxes
 - **Date:** 2026-10-24
-- **Status:** Active
+- **Status:** Active; sizing rule superseded by 0039
 - **Decision:**
   - Special boxes have a fixed size and scroll internally; resizing a box reveals more of its content.
   - A box's type is permanent once it's created.
@@ -139,7 +139,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0015 — Plain note boxes grow with content
 - **Date:** 2026-10-24
-- **Status:** Active
+- **Status:** Active; sizing superseded by 0039
 - **Decision:** Clicking anywhere on a page creates a plain note box, which grows as content is added.
 
 ## 0016 — Ink anywhere on the page
@@ -365,6 +365,47 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - Drawing is then added as a box module. Pen and touch validation on a Windows pen tablet, an iPad and an Android phone comes after that.
   - Prototype 1 is built by a single agent. Later phases, whose modules can be built in parallel, use a coordinating agent with separate writer and reviewer agents. Security-critical modules (encryption, the MCP boundary, clipboard handling) are written and reviewed by the most capable model.
 - **Rationale:** The core canvas is tightly coupled and most of it can be evaluated without pen hardware. Parallel agents pay off once modules have clear boundaries.
+
+## 0037 — appflowy_editor pinned to an upstream commit
+- **Date:** 2026-10-24
+- **Status:** Active
+- **Decision:**
+  - `appflowy_editor` comes from the upstream Git repository (AppFlowy-IO/appflowy-editor) at commit `01eccc6ee36bd07698bd80915289fe7070478cd2`, not from pub.dev.
+  - Only the plain note box module depends on it directly; the app gets the editor's localization delegates through that module.
+  - Noted returns to a pub.dev release once one includes the fix, and the dependency license audit is re-run then.
+- **Rationale:**
+  - The latest pub.dev release, 6.2.0, doesn't compile with Flutter 3.47. Flutter added `TextInputClient.onFocusReceived`, and the editor's `DeltaTextInputClient` mixin implements that interface without the new method.
+  - The upstream main branch includes the fix. It is versioned 6.1.0 and has diverged from the 6.2.0 release.
+  - The license is unchanged: the MPL-2.0 option of the dual license (0004, 0021).
+- **Alternatives considered:**
+
+| Option | Reason not chosen |
+|---|---|
+| Vendor 6.2.0 with a one-line patch | Carries a vendored copy in a new top-level directory until upstream releases. |
+| Pin an older Flutter SDK | Changes the development setup and holds Flutter back. |
+
+## 0038 — Page storage location for Prototype 1
+- **Date:** 2026-10-24
+- **Status:** Active
+- **Decision:**
+  - Prototype 1 stores pages as `<pageId>.canvas` files in one local folder: `%APPDATA%\Noted\pages` on Windows, `~/.noted/pages` on other platforms.
+  - `--dart-define=NOTED_PAGES_DIR=<path>` overrides the folder.
+  - The storage locations of 0007 and the storage prompt of 0027 come in later phases.
+- **Rationale:** The Documents folder is often redirected into a cloud-synced folder, and sync is out of scope for Prototype 1.
+- **Alternatives considered:** the Documents folder.
+
+## 0039 — Box resizing and auto height
+- **Date:** 2026-10-24
+- **Status:** Active (supersedes the sizing rules in 0005 and 0015)
+- **Decision:**
+  - Every box, including the plain note box, resizes horizontally and vertically with the same handles: left, right and bottom edges, and bottom corners.
+  - A box whose type grows with its content (the plain note box) grows until the user resizes its height. From then on it keeps the set height and scrolls internally when its content overflows.
+  - Double-clicking the bottom edge returns the box to growing with its content.
+  - Changing only the width keeps a growing box growing.
+  - The setting is stored per box as `"fixedHeight": true` in the box's `noted` header; absent means false. Page-level undo restores it together with the box's bounds.
+  - Ctrl+wheel over a box that scrolls internally zooms the canvas; the wheel alone scrolls the box.
+- **Rationale:** One resize behavior for every box, while a new note still sizes itself to what is typed.
+- **Alternatives considered:** plain note boxes that only grow (0015); fixed size and internal scrolling for special boxes only (0005).
 
 ---
 
