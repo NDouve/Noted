@@ -481,6 +481,18 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Alternatives considered:** keeping appflowy's auto-scroll with a smaller square (it still aims at the wrong place when zoomed); no internal scrolling in notes.
 - **Notes:** The zoom problems are to be reported upstream to appflowy-editor.
 
+## 0045 — Two-finger touchpad scrolling over boxes
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:**
+  - A box that can scroll its content claims a two-finger touchpad gesture when the gesture starts over it. The box scrolls, and the canvas doesn't pan for that gesture.
+  - For a claimed gesture, the canvas only zooms on a pinch.
+  - A box that has nothing to scroll doesn't claim the gesture, so the canvas pans as usual.
+  - It applies to fixed-height note boxes with overflowing text, and to cropped drawing boxes with hidden ink.
+  - It doesn't apply while a canvas tool is active, because boxes then receive no pointer input (0040).
+- **Rationale:** A touchpad scroll arrives as pan/zoom gesture events rather than wheel events. Flutter doesn't decide between nested widgets for those, so the canvas panned while a note scrolled. A claim gives the touchpad the same behavior as the wheel.
+- **Alternatives considered:** letting the canvas always pan (the box and canvas move together); letting a box take the pinch too (pinch-to-zoom would stop working over boxes).
+
 ---
 
 ## Open items
