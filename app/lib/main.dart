@@ -28,6 +28,7 @@ Future<void> main() async {
     buildModules(),
     bindersFile: defaultBindersFile(),
     pickFolder: () => getDirectoryPath(confirmButtonText: 'Use as binder'),
+    watchFiles: true,
   );
   runApp(NotedApp(notebook: notebook));
   await notebook.load();

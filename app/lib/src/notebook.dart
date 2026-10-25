@@ -131,7 +131,16 @@ class Notebook extends ChangeNotifier {
     this.bindersFile,
     this.pickFolder,
     this.storeFactory = PageStore.new,
+    this.watchFiles = false,
+    this.watchDebounce = const Duration(milliseconds: 300),
   });
+
+  /// Watch the storage folders for page files changed by someone else, for
+  /// example a sync client (0020). Off by default; the app turns it on.
+  final bool watchFiles;
+
+  /// How long a file must stay quiet before a change to it is looked at.
+  final Duration watchDebounce;
 
   /// The store of standalone pages.
   final PageStore store;
@@ -158,6 +167,19 @@ class Notebook extends ChangeNotifier {
   List<UnreadablePage> _unreadable = const [];
   PageTree _tree = PageTree.build(const []);
   CanvasController? _current;
+  // The open page as last read from or written to disk: the base of the
+  // three-way merge when its file changes (0020).
+  NotedPage? _base;
+  // The exact text last written or read for each page file (by path key), so
+  // the app's own writes aren't taken for outside changes.
+  final Map<String, String> _known = {};
+  // Page id of each page file (by path key).
+  final Map<String, String> _pathId = {};
+  // Pages with a conflicted box (0020).
+  final Set<String> _conflicts = {};
+  final Map<String, StreamSubscription<FileSystemEvent>> _watchers = {};
+  final Map<String, Timer> _debounce = {};
+  Future<void> _checking = Future.value();
   NotedPage? _pendingSave;
   Timer? _saveTimer;
   Future<void> _saving = Future.value();
@@ -215,12 +237,15 @@ class Notebook extends ChangeNotifier {
     for (final e in entries.whereType<ReadablePage>()) {
       _metas[e.meta.id] = e.meta;
       _loc[e.meta.id] = _standalone;
+      _pathId[_key(e.path)] = e.meta.id;
+      if (e.conflicted) _conflicts.add(e.meta.id);
     }
     _unreadable = entries.whereType<UnreadablePage>().toList();
     for (final path in await _readBinderPaths()) {
       _binders[path] = await _openBinder(path);
     }
     _rebuildTree();
+    _syncWatchers();
     if (_tree.roots.isEmpty) {
       await createPage();
     } else {
@@ -235,8 +260,13 @@ class Notebook extends ChangeNotifier {
     }
     if (id == currentId) return;
     await _closeCurrent();
-    final page = await _storeOf(_loc[id] ?? _standalone).load(id);
+    final st = _storeOf(_loc[id] ?? _standalone);
+    final text = await st.readText(id);
+    final page = readPage(text);
+    _known[_key(st.pathFor(id))] = text;
+    _base = page;
     _metas[id] = page.meta;
+    _setConflict(id, hasConflicts(page));
     _current = CanvasController(page, modules, onChanged: _pageChanged);
     _rebuildTree();
   }
@@ -247,7 +277,7 @@ class Notebook extends ChangeNotifier {
   /// (0025).
   Future<String> createPage({String? parentId, String? binderPath}) async {
     final loc = parentId != null ? (_loc[parentId] ?? _standalone) : (binderPath ?? _standalone);
-    final st = _storeOf(loc);
+    _storeOf(loc); // throws if the binder is unavailable
     final meta = PageMeta.create(
       id: newId(),
       parentId: parentId,
@@ -255,7 +285,7 @@ class Notebook extends ChangeNotifier {
       order: _treeOf(loc).nextOrder(parentId),
     );
     final page = NotedPage.create(meta);
-    await st.save(page);
+    await _write(loc, page);
     _touch(loc);
     _metas[meta.id] = meta;
     _loc[meta.id] = loc;
@@ -271,7 +301,7 @@ class Notebook extends ChangeNotifier {
       final loc = _loc[id] ?? _standalone;
       final page = await _storeOf(loc).load(id);
       final next = page.withMeta(page.meta.withTitle(title));
-      await _storeOf(loc).save(next);
+      await _write(loc, next);
       _touch(loc);
       _metas[id] = next.meta;
     }
@@ -292,7 +322,7 @@ class Notebook extends ChangeNotifier {
     final deleted = DeletedPages._(pages, openId, loc);
     _lastDeleted = deleted;
     for (final p in ids) {
-      await st.delete(p);
+      await _delete(loc, p);
       _metas.remove(p);
       _loc.remove(p);
     }
@@ -319,14 +349,13 @@ class Notebook extends ChangeNotifier {
   Future<void> undoDelete(DeletedPages deleted) async {
     if (!identical(_lastDeleted, deleted)) return;
     _lastDeleted = null;
-    final PageStore st;
     try {
-      st = _storeOf(deleted._location);
+      _storeOf(deleted._location);
     } on NotebookException {
       return;
     }
     for (final page in deleted.pages) {
-      await st.save(page);
+      await _write(deleted._location, page);
       _metas[page.id] = page.meta;
       _loc[page.id] = deleted._location;
     }
@@ -450,7 +479,7 @@ class Notebook extends ChangeNotifier {
       final st = _storeOf(loc);
       final page = await st.load(id);
       final next = page.withMeta(page.meta.withPlacement(parentId: parentId, order: order));
-      await st.save(next);
+      await _write(loc, next);
       _touch(loc);
       _metas[id] = next.meta;
     }
@@ -493,7 +522,7 @@ class Notebook extends ChangeNotifier {
       Future<void> removeCopies() async {
         for (final w in written) {
           try {
-            await toStore.delete(w);
+            await _delete(toLoc, w);
           } on Object catch (e) {
             debugPrint('Removing copy of page $w failed: $e');
           }
@@ -503,7 +532,7 @@ class Notebook extends ChangeNotifier {
       try {
         for (final p in moved) {
           written.add(p.id);
-          await toStore.save(p);
+          await _write(toLoc, p);
           if (await toStore.readText(p.id) != writePage(p)) {
             throw const NotebookException(
               'A page was not copied correctly, so nothing was moved.',
@@ -519,14 +548,14 @@ class Notebook extends ChangeNotifier {
       final removed = <int>[];
       try {
         for (var i = 0; i < ids.length; i++) {
-          await fromStore.delete(ids[i]);
+          await _delete(fromLoc, ids[i]);
           removed.add(i);
         }
       } on Object catch (e) {
         // Put back what was already deleted, so no page is left twice.
         for (final i in removed) {
           try {
-            await fromStore.save(originals[i]);
+            await _write(fromLoc, originals[i]);
           } on Object catch (e2) {
             debugPrint('Restoring page ${ids[i]} failed: $e2');
           }
@@ -578,6 +607,7 @@ class Notebook extends ChangeNotifier {
     final section = await _openBinder(path, create: true);
     _binders[path] = section;
     _rebuildTree();
+    _syncWatchers();
     await _saveBinderPaths();
     return section;
   }
@@ -592,12 +622,14 @@ class Notebook extends ChangeNotifier {
     for (final id in ids) {
       _metas.remove(id);
       _loc.remove(id);
+      _conflicts.remove(id);
     }
     _binders.remove(path);
     if (_coverPath == path) _coverPath = null;
     final last = _lastDeleted;
     if (last != null && last._location == path) _lastDeleted = null;
     _rebuildTree();
+    _syncWatchers();
     await _saveBinderPaths();
     if (openHere) await _openFallback(_standalone);
   }
@@ -681,6 +713,8 @@ class Notebook extends ChangeNotifier {
         }
         _metas[e.meta.id] = e.meta;
         _loc[e.meta.id] = path;
+        _pathId[_key(e.path)] = e.meta.id;
+        if (e.conflicted) _conflicts.add(e.meta.id);
         final m = await File(e.path).lastModified();
         if (m.isAfter(latest)) latest = m;
       }
@@ -766,6 +800,7 @@ class Notebook extends ChangeNotifier {
       _metas[page.id] = page.meta;
       _rebuildTree();
     }
+    _setConflict(page.id, hasConflicts(page));
     _saveTimer?.cancel();
     _saveTimer = Timer(saveDelay, () => unawaited(flush()));
   }
@@ -775,11 +810,273 @@ class Notebook extends ChangeNotifier {
     _saving = _saving.then((_) async {
       final loc = _loc[page.id];
       if (loc == null) return;
-      await _storeOf(loc).save(page);
+      final st = _storeOf(loc);
+      var toSave = page;
+      final path = st.pathFor(page.id);
+      if (_current?.page.id == page.id && _known.containsKey(_key(path))) {
+        // Merge what someone else wrote since the last look first, so this
+        // save doesn't overwrite it.
+        await _checkFile(path);
+        final c = _current;
+        if (c != null && c.page.id == page.id) toSave = c.page;
+      }
+      await _write(loc, toSave);
+      if (_current?.page.id == toSave.id) _base = toSave;
       _touch(loc);
     }).catchError((Object e) {
       debugPrint('Saving page ${page.id} failed: $e');
     });
+  }
+
+  Future<void> _write(String loc, NotedPage page) async {
+    final st = _storeOf(loc);
+    await st.save(page);
+    final key = _key(st.pathFor(page.id));
+    _known[key] = writePage(page);
+    _pathId[key] = page.id;
+    if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
+  }
+
+  Future<void> _delete(String loc, String id) async {
+    final st = _storeOf(loc);
+    final key = _key(st.pathFor(id));
+    await st.delete(id);
+    _known.remove(key);
+    _pathId.remove(key);
+    _conflicts.remove(id);
+  }
+
+  // External changes (0020) ---------------------------------------------------
+
+  /// Whether the page [id] has a conflicted box, on screen or in its file.
+  bool hasConflict(String id) => _conflicts.contains(id);
+
+  /// Records whether page [id] has a conflicted box. Tells the listeners if
+  /// that changed.
+  void _setConflict(String id, bool value) {
+    final changed = value ? _conflicts.add(id) : _conflicts.remove(id);
+    if (changed && !_disposed) notifyListeners();
+  }
+
+  /// A comparable form of a file path: absolute, with forward slashes and,
+  /// on Windows, lower case.
+  static String _key(String path) {
+    final p = File(path).absolute.path.replaceAll(r'\', '/');
+    return Platform.isWindows ? p.toLowerCase() : p;
+  }
+
+  String? _locationOf(String path) {
+    final dir = _key(File(path).parent.path);
+    if (dir == _key(store.directory.path)) return _standalone;
+    for (final b in _binders.values) {
+      if (b.available && _key(b.path) == dir) return b.path;
+    }
+    return null;
+  }
+
+  /// Starts and stops the folder watchers to match the available folders.
+  void _syncWatchers() {
+    if (!watchFiles || _disposed) return;
+    final wanted = <String, String>{
+      _standalone: store.directory.path,
+      for (final b in _binders.values)
+        if (b.available) b.path: b.path,
+    };
+    for (final loc in _watchers.keys.toList()) {
+      if (!wanted.containsKey(loc)) unawaited(_watchers.remove(loc)!.cancel());
+    }
+    wanted.forEach((loc, dir) {
+      if (_watchers.containsKey(loc)) return;
+      try {
+        _watchers[loc] = Directory(dir).watch().listen(
+          _onFileEvent,
+          onError: (Object e) => debugPrint('Watching $dir failed: $e'),
+        );
+      } on FileSystemException catch (e) {
+        debugPrint('Watching $dir failed: $e');
+      }
+    });
+  }
+
+  void _onFileEvent(FileSystemEvent e) {
+    _schedule(e.path);
+    if (e is FileSystemMoveEvent && e.destination != null) _schedule(e.destination!);
+  }
+
+  // Only `.canvas` files matter; the temporary files of our own atomic writes
+  // end in `.tmp` and are ignored here.
+  void _schedule(String path) {
+    if (!path.endsWith(PageStore.extension)) return;
+    final key = _key(path);
+    _debounce[key]?.cancel();
+    _debounce[key] = Timer(watchDebounce, () {
+      _debounce.remove(key);
+      unawaited(checkFile(path));
+    });
+  }
+
+  /// Looks at the page file [path] after it may have been changed by someone
+  /// else, and brings the tree and the open page up to date (0020).
+  ///
+  /// Does nothing if the file still holds exactly what this app last wrote or
+  /// read. A page that isn't open has its header re-read (a new file adds a
+  /// page, a deleted one removes it, an unreadable one is listed). The open
+  /// page is merged per box with the file, keeping unsaved local edits; if its
+  /// file was deleted the page stays as it is and the next save writes it
+  /// again.
+  Future<void> checkFile(String path) {
+    final job = _checking.then((_) async {
+      await _saving; // let writes in flight land first
+      if (!_disposed) await _checkFile(path);
+    }).catchError((Object e) {
+      debugPrint('Checking $path failed: $e');
+    });
+    _checking = job;
+    return job;
+  }
+
+  Future<void> _checkFile(String path) async {
+    if (!path.endsWith(PageStore.extension)) return;
+    final loc = _locationOf(path);
+    if (loc == null) return;
+    final key = _key(path);
+    final file = File(path);
+    String? text;
+    var time = DateTime.now().millisecondsSinceEpoch;
+    try {
+      text = await file.readAsString();
+      time = (await file.lastModified()).millisecondsSinceEpoch;
+    } on FileSystemException {
+      text = null;
+    } on FormatException {
+      if (_disposed) return;
+      _knownUnreadable(loc, key, path, 'not valid UTF-8 text');
+      return;
+    }
+    if (_disposed) return;
+    if (text == null) {
+      _fileGone(loc, key, path);
+      return;
+    }
+    if (_known[key] == text) return;
+    _known[key] = text;
+    final NotedPage page;
+    try {
+      page = readPage(text);
+    } on PageFormatException catch (e) {
+      _knownUnreadable(loc, key, path, e.message);
+      return;
+    }
+    if (_current?.page.id == page.id && _loc[page.id] == loc) {
+      _mergeOpen(page, text, time);
+    } else {
+      await _applyClosed(page, loc, key, path);
+    }
+  }
+
+  /// The file is gone.
+  void _fileGone(String loc, String key, String path) {
+    _known.remove(key);
+    final id = _pathId.remove(key);
+    if (id == null) {
+      _dropUnreadable(loc, path);
+      return;
+    }
+    if (_loc[id] != loc || id == currentId) return; // moved, or open: keep it
+    _metas.remove(id);
+    _loc.remove(id);
+    _conflicts.remove(id);
+    _touch(loc);
+    _rebuildTree();
+  }
+
+  /// The file can't be read as a page. An open page stays as it is; any
+  /// other page is taken out of the tree and listed as one that can't be
+  /// opened.
+  void _knownUnreadable(String loc, String key, String path, String reason) {
+    final id = _pathId[key];
+    if (id != null && id == currentId) return;
+    if (id != null && _loc[id] == loc) {
+      _metas.remove(id);
+      _loc.remove(id);
+      _conflicts.remove(id);
+    }
+    _pathId.remove(key);
+    _dropUnreadable(loc, path, rebuild: false);
+    final entry = UnreadablePage(path, reason);
+    if (loc == _standalone) {
+      _unreadable = [..._unreadable, entry];
+    } else {
+      final s = _binders[loc];
+      if (s != null) s.unreadable = [...s.unreadable, entry];
+    }
+    _touch(loc);
+    _rebuildTree();
+  }
+
+  void _dropUnreadable(String loc, String path, {bool rebuild = true}) {
+    final key = _key(path);
+    bool other(UnreadablePage u) => _key(u.path) != key;
+    var removed = false;
+    if (loc == _standalone) {
+      final next = _unreadable.where(other).toList();
+      removed = next.length != _unreadable.length;
+      _unreadable = next;
+    } else {
+      final s = _binders[loc];
+      if (s != null) {
+        final next = s.unreadable.where(other).toList();
+        removed = next.length != s.unreadable.length;
+        s.unreadable = next;
+      }
+    }
+    if (removed && rebuild) _rebuildTree();
+  }
+
+  /// A page that isn't open: take its header (and conflict state) from the
+  /// file.
+  Future<void> _applyClosed(NotedPage page, String loc, String key, String path) async {
+    final id = page.id;
+    final elsewhere = _pathId.entries.where((e) => e.value == id && e.key != key);
+    if (elsewhere.isNotEmpty) {
+      // Two files claim the page id; keep the first and list this one.
+      _known.remove(key);
+      _knownUnreadable(loc, key, path, 'duplicate page id $id');
+      return;
+    }
+    final previous = _pathId[key];
+    if (previous != null && previous != id && _loc[previous] == loc) {
+      _metas.remove(previous);
+      _loc.remove(previous);
+      _conflicts.remove(previous);
+    }
+    _dropUnreadable(loc, path, rebuild: false);
+    _pathId[key] = id;
+    _metas[id] = page.meta;
+    _loc[id] = loc;
+    if (loc == _standalone || _binders[loc]?.store != null) {
+      final st = _storeOf(loc);
+      // Make the store find files whose names aren't the page id.
+      if (_key(st.pathFor(id)) != key) await st.scan();
+    }
+    _setConflict(id, hasConflicts(page));
+    _touch(loc);
+    _rebuildTree();
+  }
+
+  /// The open page's file changed: merge it into the page on screen.
+  void _mergeOpen(NotedPage theirs, String text, int time) {
+    final c = _current!;
+    final base = _base;
+    _base = theirs;
+    if (base == null) return;
+    final result = mergePage(base, c.page, theirs, modules.codecs, theirsTime: time);
+    final merged = result.page;
+    final save = writePage(merged) != text || _pendingSave?.id == merged.id;
+    _metas[merged.id] = merged.meta;
+    c.applyExternal(merged, save: save);
+    _setConflict(merged.id, hasConflicts(merged));
+    _rebuildTree();
   }
 
   Future<void> _closeCurrent() async {
@@ -790,6 +1087,7 @@ class Notebook extends ChangeNotifier {
     await flush();
     _current?.dispose();
     _current = null;
+    _base = null;
   }
 
   void _rebuildTree() {
@@ -808,6 +1106,14 @@ class Notebook extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _saveTimer?.cancel();
+    for (final t in _debounce.values) {
+      t.cancel();
+    }
+    _debounce.clear();
+    for (final w in _watchers.values) {
+      unawaited(w.cancel());
+    }
+    _watchers.clear();
     _current?.dispose();
     tools.dispose();
     super.dispose();

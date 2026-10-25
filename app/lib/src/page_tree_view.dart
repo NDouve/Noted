@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
+import 'package:noted_canvas/noted_canvas.dart' show conflictColor;
 import 'package:noted_core/noted_core.dart';
 
 import 'binder_cover.dart';
@@ -429,6 +430,16 @@ class _PageTreeViewState extends State<PageTreeView> {
                     style: divider ? const TextStyle(fontWeight: FontWeight.w600) : null,
                   ),
                 ),
+                if (_nb.hasConflict(p.id))
+                  Tooltip(
+                    message: 'Has conflicting changes',
+                    child: Icon(
+                      Icons.circle,
+                      key: ValueKey('page-conflict-${p.id}'),
+                      size: 10,
+                      color: conflictColor,
+                    ),
+                  ),
                 PopupMenuButton<String>(
                   tooltip: 'Page options',
                   iconSize: 18,
