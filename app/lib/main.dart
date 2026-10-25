@@ -42,6 +42,9 @@ class _NotedAppState extends State<NotedApp> {
     _lifecycle = AppLifecycleListener(
       // Write unsaved edits before the window closes.
       onExitRequested: () async {
+        // Logged so a normal close (Alt+F4, the close button) can be told
+        // apart from a crash in the `flutter run` console.
+        debugPrint('Noted: window close requested; saving before exit.');
         await widget.notebook.flush();
         return AppExitResponse.exit;
       },
