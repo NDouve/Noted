@@ -22,10 +22,26 @@ const double minBoxHeight = 24;
 /// commits don't notify, because the box that made the edit already shows
 /// it; they only call [onChanged] so the page can be saved.
 class CanvasController extends ChangeNotifier {
-  CanvasController(NotedPage page, this.modules, {this.onChanged})
-    : _page = page;
+  CanvasController(
+    NotedPage page,
+    this.modules, {
+    this.onChanged,
+    this.deviceName,
+    int Function()? clock,
+  }) : _page = page,
+       _clock = clock ?? _systemClock;
+
+  static int _systemClock() => DateTime.now().millisecondsSinceEpoch;
 
   final ModuleRegistry modules;
+
+  /// This computer's name. Content written here is stamped with it and the
+  /// time (`noted.device`, `noted.at`); null means don't stamp.
+  final String? deviceName;
+
+  final int Function() _clock;
+
+  int? get _stampTime => deviceName == null ? null : _clock();
 
   /// Called after every change to the page model, for autosave.
   final void Function(NotedPage page)? onChanged;
@@ -68,7 +84,12 @@ class CanvasController extends ChangeNotifier {
   /// Creates a box of the default type with its top-left corner at [at].
   BoxRecord createBoxAt(Bounds at) {
     final codec = modules.defaultModule.codec;
-    final box = createBox(codec, Bounds(at.x, at.y, newBoxWidth, newBoxHeight));
+    final box = createBox(
+      codec,
+      Bounds(at.x, at.y, newBoxWidth, newBoxHeight),
+      device: deviceName,
+      at: _stampTime,
+    );
     _history.record(PageChange.added(box.id));
     _selectedId = box.id;
     _autofocusId = box.id;
@@ -111,7 +132,7 @@ class CanvasController extends ChangeNotifier {
     if (box is! BoxRecord) return null;
     final codec = modules.codecs.codecFor(box.typeId);
     if (codec == null) return null;
-    final next = commitBox(box, codec, data);
+    final next = commitBox(box, codec, data, device: deviceName, at: _stampTime);
     _page = _page.replaceNode(next);
     onChanged?.call(_page);
     return next;
@@ -209,7 +230,7 @@ class CanvasController extends ChangeNotifier {
     if (box is! BoxRecord) return null;
     final codec = modules.codecs.codecFor(box.typeId);
     if (codec == null) return null;
-    var next = commitBox(box, codec, data);
+    var next = commitBox(box, codec, data, device: deviceName, at: _stampTime);
     if (bounds != null) next = next.withBounds(bounds);
     if (undo != null) {
       _history.record(
@@ -315,6 +336,27 @@ class CanvasController extends ChangeNotifier {
     };
     _history.record(PageChange.replaced(box));
     _set(_page.replaceNode(next));
+  }
+
+  /// Resolves the conflicted box [id] by saving [data] (one of the versions,
+  /// possibly edited by hand) as its content through its codec, and drops the
+  /// recorded versions. One undo step. Returns false if the box is gone, isn't
+  /// conflicted or this device can't run it.
+  bool resolveWithData(String id, Object? data) {
+    final box = _page.node(id);
+    if (box is! BoxRecord || !box.isConflicted) return false;
+    final codec = modules.codecs.codecFor(box.typeId);
+    if (codec == null) return false;
+    final next = commitBox(
+      box,
+      codec,
+      data,
+      device: deviceName,
+      at: _stampTime,
+    ).withoutConflicts();
+    _history.record(PageChange.replaced(box));
+    _set(_page.replaceNode(next));
+    return true;
   }
 
   /// Keeps this device's version and adds each other version as a new box

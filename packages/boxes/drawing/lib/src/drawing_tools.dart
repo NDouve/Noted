@@ -205,10 +205,14 @@ class _PenSession extends ToolSession {
     const codec = DrawingCodec();
     if (into == null) {
       final stroke = strokeIn((p) => p - ink.topLeft);
+      // Stamped with the device and time like any other content write.
+      final at = c.deviceName == null ? null : DateTime.now().millisecondsSinceEpoch;
       final box = commitBox(
         createBox(codec, ink.bounds),
         codec,
         DrawingData(strokes: [stroke]),
+        device: c.deviceName,
+        at: at,
       );
       c.insertBox(box);
       return;

@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:io' show Platform;
 import 'dart:ui';
 
 import 'package:file_selector/file_selector.dart';
@@ -21,6 +22,18 @@ ModuleRegistry buildModules() =>
       ..register(const NoteModule(), alwaysOn: true, isDefault: true)
       ..register(DrawingModule());
 
+/// This computer's name, or null if it can't be found.
+String? computerName() {
+  String? name;
+  try {
+    name = Platform.localHostname;
+  } on Object {
+    name = null;
+  }
+  if (name == null || name.isEmpty) name = Platform.environment['COMPUTERNAME'];
+  return name == null || name.isEmpty ? null : name;
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final notebook = Notebook(
@@ -29,6 +42,7 @@ Future<void> main() async {
     bindersFile: defaultBindersFile(),
     pickFolder: () => getDirectoryPath(confirmButtonText: 'Use as binder'),
     watchFiles: true,
+    deviceName: computerName(),
   );
   runApp(NotedApp(notebook: notebook));
   await notebook.load();

@@ -133,7 +133,11 @@ class Notebook extends ChangeNotifier {
     this.storeFactory = PageStore.new,
     this.watchFiles = false,
     this.watchDebounce = const Duration(milliseconds: 300),
+    this.deviceName,
   });
+
+  /// This computer's name, stamped on box content written here (0020).
+  final String? deviceName;
 
   /// Watch the storage folders for page files changed by someone else, for
   /// example a sync client (0020). Off by default; the app turns it on.
@@ -267,7 +271,12 @@ class Notebook extends ChangeNotifier {
     _base = page;
     _metas[id] = page.meta;
     _setConflict(id, hasConflicts(page));
-    _current = CanvasController(page, modules, onChanged: _pageChanged);
+    _current = CanvasController(
+      page,
+      modules,
+      onChanged: _pageChanged,
+      deviceName: deviceName,
+    );
     _rebuildTree();
   }
 

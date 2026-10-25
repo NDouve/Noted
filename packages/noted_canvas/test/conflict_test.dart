@@ -97,7 +97,7 @@ void main() {
     await t.tap(find.byKey(const ValueKey('conflict-badge-a')));
     await t.pumpAndSettle();
     expect(find.text('This device'), findsOneWidget);
-    expect(find.textContaining('Other version, saved 2026-10-25 09:05'), findsOneWidget);
+    expect(find.text('Other device · saved 2026-10-25 09:05'), findsOneWidget);
     expect(
       find.descendant(of: find.byKey(const ValueKey('conflict-mine')), matching: find.text('mine')),
       findsOneWidget,

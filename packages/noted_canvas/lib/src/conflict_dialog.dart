@@ -5,10 +5,14 @@
 import 'package:flutter/material.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'box_module.dart';
 import 'canvas_controller.dart';
 
 /// The colour of a conflicted box's frame and badge.
 const Color conflictColor = Color(0xFFF59E0B);
+
+/// Height of one editable pane in the manual merge view.
+const double _paneHeight = 320;
 
 /// Formats [ms] (since the epoch) as local `YYYY-MM-DD HH:MM`.
 String formatConflictTime(int ms) {
@@ -17,8 +21,8 @@ String formatConflictTime(int ms) {
   return '${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
 }
 
-/// Shows both versions of the conflicted box [boxId] side by side, read-only,
-/// with the ways to resolve it (0020).
+/// Shows both versions of the conflicted box [boxId] side by side, with the
+/// ways to resolve it (0020).
 Future<void> showConflictDialog(
   BuildContext context,
   CanvasController controller,
@@ -30,11 +34,46 @@ Future<void> showConflictDialog(
   );
 }
 
-class _ConflictDialog extends StatelessWidget {
+/// The data of one version in the manual merge view. The module's editor
+/// commits into it; nothing reaches the page until a version is chosen.
+class _Held {
+  _Held(this.module, this.data);
+
+  final BoxModule<Object?> module;
+  Object? data;
+}
+
+class _ConflictDialog extends StatefulWidget {
   const _ConflictDialog({required this.controller, required this.boxId});
 
   final CanvasController controller;
   final String boxId;
+
+  @override
+  State<_ConflictDialog> createState() => _ConflictDialogState();
+}
+
+class _ConflictDialogState extends State<_ConflictDialog> {
+  _Held? _mine;
+  _Held? _theirs;
+
+  CanvasController get controller => widget.controller;
+  String get boxId => widget.boxId;
+
+  /// The two versions of [box] decoded for the module's editor, or null if
+  /// this device can't run both (or the conflict is a deletion).
+  (_Held, _Held)? _versions(BoxRecord box, BoxConflict other) {
+    if (other.deleted || other.node == null) return null;
+    final otherNode = readNode(other.node!, fallbackId: boxId);
+    if (otherNode is! BoxRecord || otherNode.typeId != box.typeId) return null;
+    final module = controller.modules.moduleFor(box.typeId);
+    if (module == null) return null;
+    final codecs = controller.modules.codecs;
+    final a = codecs.resolve(box);
+    final b = codecs.resolve(otherNode);
+    if (a is! LiveBox || b is! LiveBox) return null;
+    return (_Held(module, a.data), _Held(module, b.data));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -52,6 +91,15 @@ class _ConflictDialog extends StatelessWidget {
       null => '',
     };
     final extra = conflicts.length - 1;
+
+    final mineLabel = _mineLabel(box);
+    final theirsLabel = _theirsLabel(other, otherNode, deleted);
+
+    if (_mine != null && _theirs != null) {
+      return _editDialog(mineLabel, theirsLabel);
+    }
+
+    final canEdit = !deleted && _versions(box, other) != null;
 
     void run(void Function(String) action) {
       action(boxId);
@@ -82,7 +130,7 @@ class _ConflictDialog extends StatelessWidget {
                   Expanded(
                     child: _Side(
                       key: const ValueKey('conflict-mine'),
-                      label: 'This device',
+                      label: mineLabel,
                       text: box.snapshotText,
                     ),
                   ),
@@ -90,9 +138,7 @@ class _ConflictDialog extends StatelessWidget {
                   Expanded(
                     child: _Side(
                       key: const ValueKey('conflict-theirs'),
-                      label: deleted
-                          ? 'Other version, deleted ${formatConflictTime(other.at)}'
-                          : 'Other version, saved ${formatConflictTime(other.at)}',
+                      label: theirsLabel,
                       text: deleted ? '(deleted)' : otherText,
                     ),
                   ),
@@ -124,6 +170,19 @@ class _ConflictDialog extends StatelessWidget {
             child: const Text('Keep box'),
           ),
         ] else ...[
+          if (canEdit)
+            TextButton(
+              key: const ValueKey('conflict-edit'),
+              onPressed: () {
+                final v = _versions(box, other);
+                if (v == null) return;
+                setState(() {
+                  _mine = v.$1;
+                  _theirs = v.$2;
+                });
+              },
+              child: const Text('Edit manually'),
+            ),
           TextButton(
             key: const ValueKey('conflict-keep-theirs'),
             onPressed: () => run(controller.resolveKeepTheirs),
@@ -140,6 +199,135 @@ class _ConflictDialog extends StatelessWidget {
             child: const Text('Keep mine'),
           ),
         ],
+      ],
+    );
+  }
+
+  String _mineLabel(BoxRecord box) {
+    final name = controller.deviceName;
+    final at = box.editedAt;
+    return 'This device${name == null ? '' : ' ($name)'}'
+        '${at == null ? '' : ' · edited ${formatConflictTime(at)}'}';
+  }
+
+  String _theirsLabel(BoxConflict other, CanvasNode? node, bool deleted) {
+    final at = other.at > 0
+        ? other.at
+        : (node is BoxRecord ? node.editedAt : null);
+    final name = other.device ?? (node is BoxRecord ? node.device : null) ?? 'Other device';
+    final verb = deleted ? 'deleted' : 'saved';
+    return '$name${at == null ? '' : ' · $verb ${formatConflictTime(at)}'}';
+  }
+
+  Widget _editDialog(String mineLabel, String theirsLabel) {
+    final mine = _mine!;
+    final theirs = _theirs!;
+
+    void use(_Held held) {
+      if (controller.resolveWithData(boxId, held.data)) {
+        Navigator.of(context).pop();
+      }
+    }
+
+    return AlertDialog(
+      key: const ValueKey('conflict-edit-dialog'),
+      title: const Text('Edit manually'),
+      content: SizedBox(
+        width: 900,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: _EditPane(
+                key: const ValueKey('conflict-edit-mine'),
+                boxId: boxId,
+                label: mineLabel,
+                held: mine,
+                useKey: const ValueKey('conflict-use-mine'),
+                onUse: () => use(mine),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _EditPane(
+                key: const ValueKey('conflict-edit-theirs'),
+                boxId: boxId,
+                label: theirsLabel,
+                held: theirs,
+                useKey: const ValueKey('conflict-use-theirs'),
+                onUse: () => use(theirs),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          key: const ValueKey('conflict-edit-cancel'),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+      ],
+    );
+  }
+}
+
+/// One version in the manual merge view: the module's own editor on
+/// in-memory data, and the button that makes it the box's content.
+class _EditPane extends StatelessWidget {
+  const _EditPane({
+    super.key,
+    required this.boxId,
+    required this.label,
+    required this.held,
+    required this.useKey,
+    required this.onUse,
+  });
+
+  final String boxId;
+  final String label;
+  final _Held held;
+  final Key useKey;
+  final VoidCallback onUse;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: theme.textTheme.labelLarge),
+        const SizedBox(height: 6),
+        Container(
+          height: _paneHeight,
+          width: double.infinity,
+          clipBehavior: Clip.hardEdge,
+          decoration: BoxDecoration(
+            border: Border.all(color: theme.colorScheme.outlineVariant),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: LayoutBuilder(
+            builder: (context, c) => held.module.hostBuild(
+              context,
+              BoxBinding(
+                boxId: boxId,
+                data: held.data,
+                bounds: Rect.fromLTWH(0, 0, c.maxWidth, c.maxHeight),
+                readOnly: false,
+                autoHeight: false,
+                autofocus: false,
+                commit: (d) => held.data = d,
+                requestBounds: (_) {},
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        FilledButton(
+          key: useKey,
+          onPressed: onUse,
+          child: const Text('Use this version'),
+        ),
       ],
     );
   }
