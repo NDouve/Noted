@@ -10,6 +10,8 @@ import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'watchdog.dart';
+
 BoxRecord noteBox(String id, List<String> lines, {double x = 100}) {
   const codec = NoteCodec();
   final data = NoteData({
@@ -71,12 +73,22 @@ void main() {
   }
 
   testWidgets('renders its text and grows to fit it', (t) async {
-    final c = await pump(t, page([noteBox('n', ['first', 'second', 'third', 'fourth'])]));
+    final c = await pump(
+      t,
+      page([
+        noteBox('n', ['first', 'second', 'third', 'fourth']),
+      ]),
+    );
     expect(find.textContaining('third', findRichText: true), findsOneWidget);
     final h = c.page.node('n')!.bounds!.height;
     expect(h, greaterThan(80));
     // A one-line note is shorter.
-    final c2 = await pump(t, page([noteBox('m', ['only'])]));
+    final c2 = await pump(
+      t,
+      page([
+        noteBox('m', ['only']),
+      ]),
+    );
     expect(c2.page.node('m')!.bounds!.height, lessThan(h));
   });
 
@@ -90,96 +102,131 @@ void main() {
     expect(t.takeException(), isNull);
   });
 
-  testWidgets('a click creates a note that takes focus and commits through the codec', (t) async {
-    final c = await pump(t, page([]));
-    await t.tapAt(const Offset(400, 300));
-    // A focused editor blinks its cursor forever, so pumpAndSettle would
-    // never return; pump a few frames instead.
-    for (var i = 0; i < 5; i++) {
-      await t.pump(const Duration(milliseconds: 50));
-    }
-    expect(c.page.nodes, hasLength(1));
-    expect(c.editingId, c.page.nodes.single.id);
+  testWidgets(
+    'a click creates a note that takes focus and commits through the codec',
+    (t) async {
+      final c = await pump(t, page([]));
+      await t.tapAt(const Offset(400, 300));
+      // A focused editor blinks its cursor forever, so pumpAndSettle would
+      // never return; pump a few frames instead.
+      for (var i = 0; i < 5; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+      }
+      expect(c.page.nodes, hasLength(1));
+      expect(c.editingId, c.page.nodes.single.id);
 
-    // Edits go through the codec into the page model.
-    final box = c.page.nodes.single as BoxRecord;
-    final next = c.commit(box.id, const NoteCodec().decode(
-      {
-        'document': {
-          'type': 'page',
-          'children': [
-            {
-              'type': 'paragraph',
-              'data': {
-                'delta': [
-                  {'insert': 'typed'},
-                ],
+      // Edits go through the codec into the page model.
+      final box = c.page.nodes.single as BoxRecord;
+      final next = c.commit(
+        box.id,
+        const NoteCodec().decode({
+          'document': {
+            'type': 'page',
+            'children': [
+              {
+                'type': 'paragraph',
+                'data': {
+                  'delta': [
+                    {'insert': 'typed'},
+                  ],
+                },
               },
-            },
-          ],
-        },
-      },
-      1,
-    ))!;
-    expect(next.snapshotText, 'typed');
-    expect(next.baseRev, box.rev);
-  });
+            ],
+          },
+        }, 1),
+      )!;
+      expect(next.snapshotText, 'typed');
+      expect(next.baseRev, box.rev);
+    },
+  );
 
   // Regression: appflowy's auto-scroll target (220 px by default) is larger
   // than a small box's viewport, and the scroller bounced up and down
   // forever, freezing the app. A fixed-height note with overflowing content
   // must stay responsive with the caret moving through it, at any zoom,
-  // and auto-scroll must still follow the caret.
+  // and auto-scroll must still follow the caret. The freeze is a
+  // synchronous loop, so a watchdog isolate fails the run if it comes back.
+  //
+  // Also covers arrow up/down while zoomed: appflowy's own commands bounced
+  // the caret between two lines when zoomed out.
   for (final zoom in [1.0, 0.3, 3.0]) {
-    testWidgets('a fixed-height note scrolls to the caret without freezing at ${zoom}x', (t) async {
-      final box = noteBox('n', [for (var i = 0; i < 20; i++) 'line $i'])
-          .withBounds(const Bounds(100, 100, 300, 60))
-          .withFixedHeight(true);
-      final c = await pump(t, page([box]));
-      final canvas = t.state<PageCanvasState>(find.byType(PageCanvas));
-      // Centre the box, then zoom around the centre so it stays in view.
-      final centre = canvas.view!.toWorld(const Offset(600, 400));
-      c.requestBounds('n', Bounds(centre.dx - 150, centre.dy - 30, 300, 60));
-      await t.pump();
-      canvas.zoomTo(zoom);
-      await t.pump();
-      final b = c.page.node('n')!.bounds!;
-      expect(b.height, 60, reason: 'fixed height must not grow');
+    final name =
+        'a fixed-height note scrolls to the caret without freezing at ${zoom}x';
+    testWidgets(
+      name,
+      (t) => withWatchdog(t, name, const Duration(seconds: 60), () async {
+        final box = noteBox('n', [
+          for (var i = 0; i < 20; i++) 'line $i',
+        ]).withBounds(const Bounds(100, 100, 300, 60)).withFixedHeight(true);
+        final c = await pump(t, page([box]));
+        final canvas = t.state<PageCanvasState>(find.byType(PageCanvas));
+        // Centre the box, then zoom around the centre so it stays in view.
+        final centre = canvas.view!.toWorld(const Offset(600, 400));
+        c.requestBounds('n', Bounds(centre.dx - 150, centre.dy - 30, 300, 60));
+        await t.pump();
+        canvas.zoomTo(zoom);
+        await t.pump();
+        final b = c.page.node('n')!.bounds!;
+        expect(b.height, 60, reason: 'fixed height must not grow');
 
-      // Click the first line to put the caret there.
-      final view = canvas.view!;
-      await t.tapAt(view.toScreen(Offset(b.x + 40, b.y + 12)));
-      for (var i = 0; i < 4; i++) {
-        await t.pump(const Duration(milliseconds: 50));
-      }
-      expect(c.editingId, 'n');
-
-      final scroller = t.state<ScrollableState>(
-        find.descendant(of: find.byType(BoxHost), matching: find.byType(Scrollable)).first,
-      );
-      expect(scroller.position.pixels, 0);
-      final editor = t.widget<AppFlowyEditor>(find.byType(AppFlowyEditor)).editorState;
-      for (var i = 1; i < 20; i++) {
-        if (zoom >= 1) {
-          await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-        } else {
-          // Zoomed out, appflowy's arrow-down misplaces the caret (its caret
-          // rect keeps unscaled height), so move it the way a keypress does.
-          editor.updateSelectionWithReason(
-            Selection.collapsed(Position(path: [i], offset: 2)),
-            reason: SelectionUpdateReason.uiEvent,
-          );
+        // Click the first line to put the caret there.
+        final view = canvas.view!;
+        await t.tapAt(view.toScreen(Offset(b.x + 40, b.y + 12)));
+        for (var i = 0; i < 4; i++) {
+          await t.pump(const Duration(milliseconds: 50));
         }
-        await t.pump(const Duration(milliseconds: 50));
-      }
-      expect(editor.selection?.end.path, [19]);
-      // Let any auto-scroll animation finish.
-      for (var i = 0; i < 40; i++) {
-        await t.pump(const Duration(milliseconds: 250));
-      }
-      expect(scroller.position.pixels, greaterThan(0), reason: 'auto-scroll should follow the caret');
-      expect(c.page.node('n')!.bounds!.height, 60);
-      expect(t.takeException(), isNull);
-    });
+        expect(c.editingId, 'n');
+
+        final scroller = t.state<ScrollableState>(
+          find
+              .descendant(
+                of: find.byType(BoxHost),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        expect(scroller.position.pixels, 0);
+        final editor = t
+            .widget<AppFlowyEditor>(find.byType(AppFlowyEditor))
+            .editorState;
+        Future<void> settle() async {
+          for (var i = 0; i < 40; i++) {
+            await t.pump(const Duration(milliseconds: 250));
+          }
+        }
+
+        for (var i = 1; i < 20; i++) {
+          await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+          await t.pump(const Duration(milliseconds: 50));
+          expect(editor.selection?.end.path, [
+            i,
+          ], reason: 'arrow down from line ${i - 1}');
+        }
+        await settle();
+        expect(
+          scroller.position.pixels,
+          greaterThan(0),
+          reason: 'auto-scroll should follow the caret',
+        );
+
+        for (var i = 18; i >= 0; i--) {
+          await t.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+          await t.pump(const Duration(milliseconds: 50));
+          expect(editor.selection?.end.path, [
+            i,
+          ], reason: 'arrow up from line ${i + 1}');
+        }
+        await settle();
+        // Line 0's caret starts about 10 px down (6 px padding plus line
+        // spacing); scrolled less than that, the caret is in view.
+        expect(
+          scroller.position.pixels,
+          lessThan(10),
+          reason: 'auto-scroll should follow the caret back up',
+        );
+        expect(c.page.node('n')!.bounds!.height, 60);
+        expect(t.takeException(), isNull);
+      }),
+    );
   }
 }

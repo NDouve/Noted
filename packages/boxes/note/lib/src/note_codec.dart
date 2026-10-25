@@ -48,7 +48,8 @@ final class NoteCodec extends BoxCodec<NoteData> {
 
   @override
   NoteData decode(Object? json, int storedVersion) {
-    if (json is! Map<String, Object?> || json['document'] is! Map<String, Object?>) {
+    if (json is! Map<String, Object?> ||
+        json['document'] is! Map<String, Object?>) {
       throw const FormatException('not a note document');
     }
     return NoteData(json);

@@ -13,6 +13,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'note_codec.dart';
+import 'vertical_caret.dart';
 
 /// The plain note box module: an appflowy_editor document that grows with
 /// its content (0004, 0015). Always on; it is the box a click creates.
@@ -50,10 +51,7 @@ class _NoteEditorState extends State<_NoteEditor> {
   final GlobalKey _headerKey = GlobalKey();
   final GlobalKey _footerKey = GlobalKey();
   bool _measureScheduled = false;
-
-  /// Starts tiny and is raised once the box has been measured; see
-  /// [_updateEdgeOffset].
-  double _edgeOffset = 1;
+  bool _revealScheduled = false;
 
   /// The data the editor currently shows: either what it was loaded from or
   /// what it last committed.
@@ -72,9 +70,11 @@ class _NoteEditorState extends State<_NoteEditor> {
     _editor = EditorState(document: Document.fromJson(json));
     _scroll = EditorScrollController(editorState: _editor, shrinkWrap: true);
     _sub = _editor.transactionStream.listen(_onTransaction);
+    _editor.selectionNotifier.addListener(_scheduleReveal);
   }
 
   void _unload() {
+    _editor.selectionNotifier.removeListener(_scheduleReveal);
     _sub.cancel();
     _scroll.dispose();
     _editor.dispose();
@@ -107,44 +107,69 @@ class _NoteEditorState extends State<_NoteEditor> {
     super.dispose();
   }
 
-  /// After the next frame: updates the auto-scroll edge offset and, while the
-  /// box has auto height, asks the host to resize it to fit the document.
+  /// While the box has auto height: after the next frame, asks the host to
+  /// resize the box to fit the document.
   void _scheduleMeasure() {
     if (_measureScheduled) return;
     _measureScheduled = true;
     SchedulerBinding.instance.addPostFrameCallback((_) {
       _measureScheduled = false;
-      if (!mounted) return;
+      if (!mounted || !widget.box.autoHeight) return;
       final root = _rootKey.currentContext?.findRenderObject();
-      if (root is! RenderBox || !root.hasSize) return;
-      _updateEdgeOffset(root);
-      if (widget.box.autoHeight) _fitHeight(root);
+      if (root is RenderBox && root.hasSize) _fitHeight(root);
     });
   }
 
-  /// Keeps appflowy's auto-scroll target smaller than the box.
+  /// Keeps the caret in view when the box scrolls (its height is fixed).
   ///
-  /// appflowy keeps a square of `autoScrollEdgeOffset` (220 px by default)
-  /// around the caret in view. In a viewport shorter than that square, the
-  /// square sticks out of both edges at once, so Flutter's
-  /// EdgeDraggingAutoScroller scrolls up, then down, then up again without
-  /// end: the app freezes. Half the viewport's height, measured both on the
-  /// page and on screen (the scroller compares the two at the current zoom),
-  /// can never stick out of both edges.
-  void _updateEdgeOffset(RenderBox root) {
-    final local = root.size.height;
-    final screen = MatrixUtils.transformRect(
-      root.getTransformTo(null),
-      Offset.zero & root.size,
-    ).height;
-    final edge = (math.min(local, screen) / 2)
-        .clamp(1.0, appFlowyEditorAutoScrollEdgeOffset)
-        .toDouble();
-    if ((edge - _edgeOffset).abs() < 0.5) return;
-    // Applied to the editor state at once, so a scroll started in this frame
-    // already uses it; the rebuild keeps the widget's value in step.
-    _editor.autoScrollEdgeOffset = edge;
-    setState(() => _edgeOffset = edge);
+  /// This replaces appflowy's auto-scroll, which is switched off. Its
+  /// scroller keeps a 220 px square around the caret in view; in a viewport
+  /// shorter than that the square sticks out of both edges at once, and
+  /// Flutter's EdgeDraggingAutoScroller scrolls up, down, up... forever: the
+  /// app froze. Its caret rectangle is also wrong on a zoomed canvas, so even
+  /// with a smaller square it stopped short when zoomed out. Here the caret
+  /// is measured correctly at any zoom ([caretOnScreen]) and the editor
+  /// scrolls once, just enough to show it, so nothing can loop.
+  void _scheduleReveal() {
+    if (_revealScheduled) return;
+    _revealScheduled = true;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      _revealScheduled = false;
+      if (mounted) _revealCaret();
+    });
+  }
+
+  void _revealCaret() {
+    final selection = _editor.selection;
+    final header = _headerKey.currentContext;
+    if (selection == null || header == null) return;
+    final scrollable = Scrollable.maybeOf(header);
+    final viewport = scrollable?.context.findRenderObject();
+    if (scrollable == null || viewport is! RenderBox || !viewport.hasSize) {
+      return;
+    }
+    final caret = caretOnScreen(_editor, selection.end);
+    if (caret == null) return;
+    final (rect, scale) = caret;
+    final visible = MatrixUtils.transformRect(
+      viewport.getTransformTo(null),
+      Offset.zero & viewport.size,
+    );
+    final position = scrollable.position;
+    double? target;
+    if (rect.top < visible.top) {
+      target =
+          position.pixels - (visible.top - rect.top) / scale - _revealMargin;
+    } else if (rect.bottom > visible.bottom) {
+      target =
+          position.pixels +
+          (rect.bottom - visible.bottom) / scale +
+          _revealMargin;
+    }
+    if (target == null) return;
+    position.jumpTo(
+      target.clamp(position.minScrollExtent, position.maxScrollExtent),
+    );
   }
 
   /// The editor needs a finite height (it hosts its own Overlay), so it fills
@@ -181,8 +206,10 @@ class _NoteEditorState extends State<_NoteEditor> {
           editorScrollController: _scroll,
           editable: widget.editable,
           shrinkWrap: true,
-          autoScrollEdgeOffset: _edgeOffset,
+          // Caret-follow is done by _revealCaret; see there for why.
+          disableAutoScroll: true,
           blockComponentBuilders: _blockBuilders,
+          commandShortcutEvents: noteCommandShortcuts,
           focusNode: _focus,
           autoFocus: widget.editable && widget.box.autofocus,
           header: SizedBox(key: _headerKey, height: _verticalPadding),
@@ -204,6 +231,9 @@ class _NoteEditorState extends State<_NoteEditor> {
 }
 
 const double _verticalPadding = 6;
+
+/// Page pixels kept between the caret and the edge when scrolling to it.
+const double _revealMargin = 4;
 
 /// Localization delegates the note editor needs. Add these to the app's
 /// `localizationsDelegates`.
