@@ -98,7 +98,8 @@ void main() {
   late CanvasController c;
   late CanvasToolSelection selection;
 
-  Future<void> pump(WidgetTester t) async {
+  /// [sidebar] puts that much other UI to the canvas's left, as in the app.
+  Future<void> pump(WidgetTester t, {double sidebar = 0}) async {
     t.view.physicalSize = const Size(1200, 800);
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
@@ -124,7 +125,15 @@ void main() {
     await t.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: PageCanvas(controller: c, tools: selection),
+          body: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(width: sidebar),
+              Expanded(
+                child: PageCanvas(controller: c, tools: selection),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -239,6 +248,120 @@ void main() {
     ctl.redo();
     expect((ctl.page.node('b')! as BoxRecord).snapshotText, 'ab');
   });
+
+  testWidgets(
+    'holding the pointer near an edge pans into new space and keeps every sample',
+    (t) async {
+      await pump(t);
+      selection.select(tool);
+      await t.pump();
+      final v0 = canvas(t).view!;
+      final rightBefore = CanvasGeometry.compute(
+        content: c.page.contentBounds!.rect,
+        viewport: const Size(1200, 800),
+      ).boundary.right;
+
+      // Real input, with the page position each sample must be recorded at.
+      final expected = <Offset>[];
+      final g = await t.startGesture(
+        const Offset(600, 400),
+        kind: PointerDeviceKind.mouse,
+      );
+      expected.add(canvas(t).view!.toWorld(const Offset(600, 400)));
+      for (final x in [800.0, 1000.0, 1185.0]) {
+        await g.moveTo(Offset(x, 400));
+        expected.add(canvas(t).view!.toWorld(Offset(x, 400)));
+      }
+      // Hold 15 px from the right edge for three seconds.
+      for (var i = 0; i < 60; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+      }
+      final panned = canvas(t).view!;
+      expect(
+        panned.offset.dx,
+        lessThan(v0.offset.dx - 500),
+        reason: 'the canvas auto-panned',
+      );
+      expect(
+        panned.visible(const Size(1200, 800)).right,
+        greaterThan(rightBefore),
+        reason: 'pan bounds grew during the stroke',
+      );
+      // Past the edge: faster.
+      await g.moveTo(const Offset(1260, 400));
+      expected.add(canvas(t).view!.toWorld(const Offset(1260, 400)));
+      final before = canvas(t).view!.offset.dx;
+      await t.pump(const Duration(milliseconds: 50));
+      await t.pump(const Duration(milliseconds: 50));
+      final fastStep = before - canvas(t).view!.offset.dx;
+      // Back inside: the panning stops.
+      await g.moveTo(const Offset(700, 400));
+      expected.add(canvas(t).view!.toWorld(const Offset(700, 400)));
+      final stopped = canvas(t).view!.offset;
+      await t.pump(const Duration(milliseconds: 200));
+      expect(canvas(t).view!.offset, stopped);
+      await g.up();
+      await t.pump();
+
+      // Every real sample is there, in order, at the right page position.
+      var at = 0;
+      for (final want in expected) {
+        while (at < tool.samples.length &&
+            (tool.samples[at].position - want).distance > 1e-6) {
+          at++;
+        }
+        expect(
+          at,
+          lessThan(tool.samples.length),
+          reason: 'sample at $want missing',
+        );
+      }
+      // Auto-pan samples follow the pointer into the new space, steadily.
+      final xs = [for (final s in tool.samples) s.position.dx];
+      final holdStart = xs.indexOf(expected[3].dx);
+      for (
+        var i = holdStart + 1;
+        i < xs.length && xs[i] > xs[i - 1] - 1e-6;
+        i++
+      ) {
+        expect(xs[i], greaterThanOrEqualTo(xs[i - 1]));
+      }
+      expect(tool.samples.length, greaterThan(expected.length + 50));
+      // Further past the edge pans faster than near it (450 px/s at 15 px in).
+      expect(fastStep, greaterThan(450 * 0.1 * 1.5));
+      expect(tool.ended, 1);
+    },
+  );
+
+  testWidgets(
+    'a stroke over the sidebar pans left; its ink is clipped to the canvas',
+    (t) async {
+      await pump(t, sidebar: 260);
+      selection.select(tool);
+      await t.pump();
+      // The overlay covers the canvas only, not the sidebar.
+      final overlay = t.getRect(find.byKey(PageCanvas.overlayKey));
+      expect(overlay.left, 260);
+      expect(t.widget(find.byKey(PageCanvas.overlayKey)), isA<ClipRect>());
+
+      final v0 = canvas(t).view!;
+      final g = await t.startGesture(
+        const Offset(600, 400),
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveTo(const Offset(100, 400)); // over the sidebar
+      for (var i = 0; i < 10; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+      }
+      expect(
+        canvas(t).view!.offset.dx,
+        greaterThan(v0.offset.dx),
+        reason: 'panned left',
+      );
+      await g.up();
+      expect(tool.ended, 1);
+    },
+  );
 }
 
 /// Undo of appending [suffix]; its inverse appends it again.

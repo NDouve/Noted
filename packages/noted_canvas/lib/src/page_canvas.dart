@@ -7,14 +7,24 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'box_host.dart';
+import 'box_scroll.dart';
 import 'canvas_controller.dart';
 import 'canvas_tool.dart';
 import 'canvas_view.dart';
 import 'geometry.dart';
+
+/// Auto-pan during a tool session: the edge zone, in screen pixels.
+const double autoPanEdge = 40;
+
+/// Auto-pan speed (screen pixels per second) at the very edge, and the cap
+/// once the pointer is far past it.
+const double autoPanSpeedAtEdge = 600;
+const double autoPanMaxSpeed = 3000;
 
 /// A page's freeform canvas (0002, 0003).
 ///
@@ -36,6 +46,9 @@ class PageCanvas extends StatefulWidget {
 
   final CanvasController controller;
 
+  /// The clipped overlay that shows a tool session's live feedback.
+  static const Key overlayKey = ValueKey('PageCanvas.toolOverlay');
+
   /// The active tool, shared across pages. If null the canvas keeps its own.
   final CanvasToolSelection? tools;
 
@@ -43,7 +56,9 @@ class PageCanvas extends StatefulWidget {
   State<PageCanvas> createState() => PageCanvasState();
 }
 
-class PageCanvasState extends State<PageCanvas> implements ToolContext {
+class PageCanvasState extends State<PageCanvas>
+    with SingleTickerProviderStateMixin
+    implements ToolContext {
   final TransformationController _transform = TransformationController();
   final FocusNode _focus = FocusNode(debugLabel: 'PageCanvas');
   final CanvasToolSelection _ownTools = CanvasToolSelection();
@@ -59,6 +74,14 @@ class PageCanvasState extends State<PageCanvas> implements ToolContext {
   double _panZoomScale = 1;
   ToolSession? _session;
   int? _sessionPointer;
+  PointerEvent? _lastToolEvent;
+  Duration _sampleTime = Duration.zero;
+
+  /// Everything the view has shown during the current tool session; pan
+  /// bounds include it, so auto-pan can reach new space.
+  Rect? _sessionArea;
+  Ticker? _autoPan;
+  Duration _lastTick = Duration.zero;
 
   CanvasController get _c => widget.controller;
   CanvasToolSelection get _tools => widget.tools ?? _ownTools;
@@ -103,6 +126,7 @@ class PageCanvasState extends State<PageCanvas> implements ToolContext {
   @override
   void dispose() {
     _cancelSession();
+    _autoPan?.dispose();
     _c.removeListener(_changed);
     _tools.removeListener(_toolChanged);
     _transform.dispose();
@@ -143,21 +167,27 @@ class PageCanvasState extends State<PageCanvas> implements ToolContext {
     _c.beginToolSession();
     _session = session;
     _sessionPointer = e.pointer;
+    _lastToolEvent = e;
+    _sampleTime = e.timeStamp;
+    _sessionArea = _view!.visible(_geometry!.viewport);
     _stats.value = _InputStats.start(e.timeStamp);
+    _updateAutoPan();
     _overlay.repaint();
   }
 
   void _toolMove(PointerMoveEvent e) {
     if (e.pointer != _sessionPointer) return;
+    _lastToolEvent = e;
+    if (e.timeStamp > _sampleTime) _sampleTime = e.timeStamp;
     _session!.update(_toolPointer(e));
     _stats.value = _stats.value?.add(e.timeStamp);
+    _updateAutoPan();
   }
 
   void _toolUp(PointerUpEvent e) {
     if (e.pointer != _sessionPointer) return;
     final session = _session!;
-    _session = null;
-    _sessionPointer = null;
+    _endSession();
     // The session commits and the overlay clears in the same frame, so the
     // finished stroke never disappears for a frame.
     session.end();
@@ -168,10 +198,97 @@ class PageCanvasState extends State<PageCanvas> implements ToolContext {
   void _cancelSession() {
     final session = _session;
     if (session == null) return;
-    _session = null;
-    _sessionPointer = null;
+    _endSession();
     session.cancel();
     _c.endToolSession();
+    _overlay.repaint();
+  }
+
+  void _endSession() {
+    _session = null;
+    _sessionPointer = null;
+    _lastToolEvent = null;
+    _sessionArea = null;
+    _autoPan?.stop();
+  }
+
+  /// Auto-scroll while a tool is in use, like a text selection in a document:
+  /// with the pointer within [autoPanEdge] of the canvas edge, or past it,
+  /// the canvas pans toward that edge, faster the further out the pointer
+  /// is. Each tick also gives the session a sample at the pointer's screen
+  /// position, so a stroke keeps following the pointer while it scrolls.
+  void _updateAutoPan() {
+    final e = _lastToolEvent;
+    final g = _geometry;
+    final moving =
+        e != null &&
+        g != null &&
+        _autoPanVelocity(e.localPosition, g.viewport) != Offset.zero;
+    final ticker = _autoPan ??= createTicker(_autoPanTick);
+    if (moving && !ticker.isActive) {
+      _lastTick = Duration.zero;
+      ticker.start();
+    } else if (!moving && ticker.isActive) {
+      ticker.stop();
+    }
+  }
+
+  /// Screen pixels per second to pan, per axis, toward the edges [local]
+  /// is near or past.
+  static Offset _autoPanVelocity(Offset local, Size viewport) {
+    double axis(double p, double extent) {
+      if (p < autoPanEdge) return -_autoPanSpeed(autoPanEdge - p);
+      if (p > extent - autoPanEdge) {
+        return _autoPanSpeed(p - (extent - autoPanEdge));
+      }
+      return 0;
+    }
+
+    return Offset(
+      axis(local.dx, viewport.width),
+      axis(local.dy, viewport.height),
+    );
+  }
+
+  /// Speed for a pointer [depth] pixels into the edge zone (more than
+  /// [autoPanEdge] once it is past the edge).
+  static double _autoPanSpeed(double depth) =>
+      (depth / autoPanEdge * autoPanSpeedAtEdge)
+          .clamp(0, autoPanMaxSpeed)
+          .toDouble();
+
+  void _autoPanTick(Duration elapsed) {
+    final e = _lastToolEvent;
+    final session = _session;
+    final view = _view;
+    final g = _geometry;
+    if (e == null || session == null || view == null || g == null) {
+      _autoPan?.stop();
+      return;
+    }
+    final dt = elapsed - _lastTick;
+    _lastTick = elapsed;
+    final v = _autoPanVelocity(e.localPosition, g.viewport);
+    if (v == Offset.zero) {
+      _autoPan?.stop();
+      return;
+    }
+    final seconds = dt.inMicroseconds / 1e6;
+    // Moving the view toward an edge shows what lies beyond it. Pan bounds
+    // grow with everything shown during the session, so the stroke can go
+    // into new space; the build won't clamp the view back.
+    final next = CanvasView(view.scale, view.offset - v * seconds);
+    _sessionArea = _sessionArea!.expandToInclude(next.visible(g.viewport));
+    _sampleTime += dt;
+    setState(() => _view = next);
+    session.update(
+      ToolPointer(
+        position: next.toWorld(e.localPosition),
+        kind: e.kind,
+        time: _sampleTime,
+        pressure: _toolPointer(e).pressure,
+      ),
+    );
     _overlay.repaint();
   }
 
@@ -318,7 +435,13 @@ class PageCanvasState extends State<PageCanvas> implements ToolContext {
         builder: (context, constraints) {
           final size = constraints.biggest;
           final content = _contentRect();
-          final g = CanvasGeometry.compute(content: content, viewport: size);
+          final area = _sessionArea;
+          final g = CanvasGeometry.compute(
+            content: area == null
+                ? content
+                : (content?.expandToInclude(area) ?? area),
+            viewport: size,
+          );
           _geometry = g;
           final view = g.clamp(_view ?? g.initial(content));
           _view = view;
@@ -357,13 +480,17 @@ class PageCanvasState extends State<PageCanvas> implements ToolContext {
                   onPointerPanZoomUpdate: (e) {
                     final factor = e.scale / _panZoomScale;
                     _panZoomScale = e.scale;
+                    // A box that scrolls has claimed this gesture's panning
+                    // (BoxScrollScope); a pinch still zooms the canvas.
+                    final pans = !TrackpadClaims.isClaimed(e.pointer);
                     _setView((g, v) {
-                      final panned = g.pan(v, e.panDelta);
+                      final panned = pans ? g.pan(v, e.panDelta) : v;
                       return factor == 1
                           ? panned
                           : g.zoomAt(panned, e.localPosition, factor);
                     });
                   },
+                  onPointerPanZoomEnd: (e) => TrackpadClaims.release(e.pointer),
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onTapUp: _onBackgroundTap,
@@ -411,8 +538,13 @@ class PageCanvasState extends State<PageCanvas> implements ToolContext {
               // every box (0016: the stroke in progress is on a top overlay).
               Positioned.fill(
                 child: IgnorePointer(
-                  child: CustomPaint(
-                    painter: _ToolOverlayPainter(this, _overlay),
+                  // Clipped to the canvas: ink in progress never paints
+                  // over the sidebar or other UI.
+                  child: ClipRect(
+                    key: PageCanvas.overlayKey,
+                    child: CustomPaint(
+                      painter: _ToolOverlayPainter(this, _overlay),
+                    ),
                   ),
                 ),
               ),
