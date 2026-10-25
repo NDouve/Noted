@@ -12,7 +12,6 @@ dependencies:
     sdk: flutter
   flutter_localizations:
     sdk: flutter
-  appflowy_editor: ^6.2.0
   noted_core:
     path: ../packages/noted_core
   noted_canvas:

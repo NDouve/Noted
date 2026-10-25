@@ -10,7 +10,13 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  appflowy_editor: ^6.2.0
+  # Pinned to an upstream commit: the 6.2.0 release does not compile with
+  # Flutter 3.47 (missing TextInputClient.onFocusReceived). Move back to a
+  # pub.dev release once one includes the fix.
+  appflowy_editor:
+    git:
+      url: https://github.com/AppFlowy-IO/appflowy-editor.git
+      ref: 01eccc6ee36bd07698bd80915289fe7070478cd2
   noted_core:
     path: ../../noted_core
   noted_canvas:
