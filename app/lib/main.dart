@@ -40,7 +40,7 @@ Future<void> main() async {
     PageStore(defaultPagesDirectory()),
     buildModules(),
     bindersFile: defaultBindersFile(),
-    pickFolder: () => getDirectoryPath(confirmButtonText: 'Use as binder'),
+    pickFolder: () => getDirectoryPath(confirmButtonText: 'Use this folder'),
     watchFiles: true,
     deviceName: computerName(),
   );

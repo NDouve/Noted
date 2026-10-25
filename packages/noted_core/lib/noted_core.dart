@@ -18,4 +18,5 @@ export 'src/model/bounds.dart';
 export 'src/model/ids.dart';
 export 'src/model/page.dart';
 export 'src/storage/page_store.dart';
+export 'src/template/template.dart';
 export 'src/tree/page_tree.dart';

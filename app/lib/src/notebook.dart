@@ -105,6 +105,65 @@ class BinderSection {
   String get color => binder?.color ?? binderPalette.first;
 }
 
+/// An extra folder of standalone pages besides the default one (0027). Its
+/// pages appear in the "Pages" section.
+class StandaloneFolder {
+  StandaloneFolder._(
+    this.path, {
+    required this.available,
+    this.store,
+    this.reason,
+    this.unreadable = const [],
+  });
+
+  /// The folder.
+  final String path;
+
+  /// False if the folder is gone or can't be used, e.g. on another device.
+  bool available;
+  PageStore? store;
+
+  /// Why the folder is unavailable.
+  String? reason;
+
+  /// Page files in the folder that couldn't be read.
+  List<UnreadablePage> unreadable;
+
+  String get name => _folderName(path);
+}
+
+/// A template found in a templates folder.
+class TemplateItem {
+  const TemplateItem(this.template, this.path, this.binderPath);
+
+  final NotedTemplate template;
+
+  /// The template file.
+  final String path;
+
+  /// The binder the template belongs to; null for an app-wide template.
+  final String? binderPath;
+}
+
+/// A template file that can't be read. It is listed and never touched.
+class UnreadableTemplateItem {
+  const UnreadableTemplateItem(this.path, this.reason, this.binderPath);
+
+  final String path;
+  final String reason;
+  final String? binderPath;
+}
+
+/// The templates available for one use.
+class TemplateListing {
+  const TemplateListing(this.items, this.unreadable);
+
+  final List<TemplateItem> items;
+  final List<UnreadableTemplateItem> unreadable;
+
+  bool get isEmpty => items.isEmpty && unreadable.isEmpty;
+}
+
 String _folderName(String path) {
   final parts = path.split(RegExp(r'[\\/]')).where((p) => p.isNotEmpty);
   return parts.isEmpty ? path : parts.last;
@@ -134,7 +193,12 @@ class Notebook extends ChangeNotifier {
     this.watchFiles = false,
     this.watchDebounce = const Duration(milliseconds: 300),
     this.deviceName,
+    this.templatesDirectory,
   });
+
+  /// The folder of app-wide templates. Null: `templates` next to
+  /// [bindersFile]; with neither, templates can't be saved.
+  final Directory? templatesDirectory;
 
   /// This computer's name, stamped on box content written here (0020).
   final String? deviceName;
@@ -168,6 +232,8 @@ class Notebook extends ChangeNotifier {
   // Where each page's file lives: _standalone or a binder's path.
   final Map<String, String> _loc = {};
   final Map<String, BinderSection> _binders = {};
+  // Extra standalone folders by path; their pages' location is that path.
+  final Map<String, StandaloneFolder> _folders = {};
   List<UnreadablePage> _unreadable = const [];
   PageTree _tree = PageTree.build(const []);
   CanvasController? _current;
@@ -203,10 +269,19 @@ class Notebook extends ChangeNotifier {
 
   /// Standalone page files that couldn't be read. They are listed, never
   /// overwritten.
-  List<UnreadablePage> get unreadable => _unreadable;
+  List<UnreadablePage> get unreadable => [
+    ..._unreadable,
+    for (final f in _folders.values) ...f.unreadable,
+  ];
 
   /// The binders, in the order of the list.
   List<BinderSection> get binders => List.unmodifiable(_binders.values);
+
+  /// The extra standalone folders, in the order of the list.
+  List<StandaloneFolder> get standaloneFolders => List.unmodifiable(_folders.values);
+
+  /// The default folder of standalone pages.
+  String get defaultFolderPath => _normalizePath(store.directory.path);
 
   CanvasController? get current => _current;
   String? get currentId => _current?.page.id;
@@ -221,13 +296,25 @@ class Notebook extends ChangeNotifier {
   /// The folder of the binder holding [id]; null for a standalone page.
   String? binderOfPage(String id) {
     final l = _loc[id];
-    return l == null || l == _standalone ? null : l;
+    return l == null || _isStandaloneLoc(l) ? null : l;
   }
 
-  PageTree _treeOf(String loc) => loc == _standalone ? _tree : (_binders[loc]?.tree ?? _tree);
+  // Standalone pages from every standalone folder share one tree.
+  bool _isStandaloneLoc(String loc) => loc == _standalone || _folders.containsKey(loc);
+
+  PageTree _treeOf(String loc) =>
+      _isStandaloneLoc(loc) ? _tree : (_binders[loc]?.tree ?? _tree);
 
   PageStore _storeOf(String loc) {
     if (loc == _standalone) return store;
+    final f = _folders[loc];
+    if (f != null) {
+      final st = f.store;
+      if (!f.available || st == null) {
+        throw const NotebookException('That folder is not available.');
+      }
+      return st;
+    }
     final s = _binders[loc];
     final st = s?.store;
     if (s == null || !s.available || st == null) {
@@ -243,6 +330,7 @@ class Notebook extends ChangeNotifier {
     _metas.clear();
     _loc.clear();
     _binders.clear();
+    _folders.clear();
     for (final e in entries.whereType<ReadablePage>()) {
       _metas[e.meta.id] = e.meta;
       _loc[e.meta.id] = _standalone;
@@ -253,6 +341,12 @@ class Notebook extends ChangeNotifier {
     _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
     for (final path in await _readBinderPaths()) {
       _binders[path] = await _openBinder(path);
+    }
+    for (final raw in _readFolderPaths()) {
+      final path = _normalizePath(raw);
+      if (path == defaultFolderPath || _folders.containsKey(path)) continue;
+      if (_binders.keys.any((b) => _key(b) == _key(path))) continue;
+      _folders[path] = await _openFolder(path);
     }
     _rebuildTree();
     _syncWatchers();
@@ -291,9 +385,12 @@ class Notebook extends ChangeNotifier {
   /// parent's location; otherwise a top-level page in the binder [binderPath]
   /// (null: standalone). Giving a page its first subpage makes it a divider
   /// (0025).
-  Future<String> createPage({String? parentId, String? binderPath}) async {
-    final loc = parentId != null ? (_loc[parentId] ?? _standalone) : (binderPath ?? _standalone);
-    _storeOf(loc); // throws if the binder is unavailable
+  ///
+  /// A top-level standalone page goes to the default folder, or to
+  /// [folderPath] (remembered as a standalone folder, see
+  /// [addStandaloneFolder]).
+  Future<String> createPage({String? parentId, String? binderPath, String? folderPath}) async {
+    final loc = await _placeFor(parentId, binderPath, folderPath);
     final meta = PageMeta.create(
       id: newId(),
       parentId: parentId,
@@ -307,6 +404,22 @@ class Notebook extends ChangeNotifier {
     _loc[meta.id] = loc;
     await open(meta.id);
     return meta.id;
+  }
+
+  // The location a new page goes to; throws if it is not available.
+  Future<String> _placeFor(String? parentId, String? binderPath, String? folderPath) async {
+    final String loc;
+    if (parentId != null) {
+      loc = _loc[parentId] ?? _standalone;
+    } else if (binderPath != null) {
+      loc = binderPath;
+    } else if (folderPath != null) {
+      loc = await addStandaloneFolder(folderPath);
+    } else {
+      loc = _standalone;
+    }
+    _storeOf(loc); // throws if the binder or folder is unavailable
+    return loc;
   }
 
   Future<void> rename(String id, String title) async {
@@ -402,6 +515,12 @@ class Notebook extends ChangeNotifier {
       final to = _loc[parentId];
       if (to == null) return false;
       if (to != from) {
+        if (_isStandaloneLoc(from) && _isStandaloneLoc(to)) {
+          // Standalone folders are not merged by nesting pages across them.
+          throw const NotebookException(
+            "A page can't be placed under a page that is stored in another folder.",
+          );
+        }
         await _moveAcross(id, to, parentId: parentId, index: index);
         return true;
       }
@@ -433,7 +552,11 @@ class Notebook extends ChangeNotifier {
     final to = binderPath ?? _standalone;
     if (from == null) return false;
     if (to != _standalone && _binders[to] == null) return false;
-    if (from == to) return move(id, parentId: null, index: index);
+    // "Pages" is one section: dropping a page from another standalone folder
+    // there only makes it a top-level page of its own folder.
+    if (from == to || (to == _standalone && _isStandaloneLoc(from))) {
+      return move(id, parentId: null, index: index);
+    }
     await _moveAcross(id, to, parentId: null, index: index);
     return true;
   }
@@ -616,7 +739,7 @@ class Notebook extends ChangeNotifier {
     path = _normalizePath(path);
     final known = _binders[path];
     if (known != null) return known;
-    if (path == _normalizePath(store.directory.path)) {
+    if (path == defaultFolderPath || _folders.containsKey(path)) {
       throw const NotebookException('That folder holds the standalone pages.');
     }
     await flush();
@@ -624,10 +747,303 @@ class Notebook extends ChangeNotifier {
     _binders[path] = section;
     _rebuildTree();
     _syncWatchers();
-    await _saveBinderPaths();
+    await _saveSettings();
     await _mergePendingCopies();
     return section;
   }
+
+  // Standalone folders ---------------------------------------------------------
+
+  /// Checks that [path] can hold standalone pages and returns it in its
+  /// normal form. Throws [NotebookException] for a folder that is a binder
+  /// (listed, or with a binder file).
+  Future<String> checkStandaloneFolder(String path) async {
+    path = _normalizePath(path);
+    final isBinder =
+        _binders.keys.any((b) => _key(b) == _key(path)) ||
+        await BinderStore(Directory(path)).file.exists();
+    if (isBinder) {
+      throw const NotebookException(
+        'That folder holds a binder. Choose another folder for standalone pages.',
+      );
+    }
+    if (!await Directory(path).exists()) {
+      throw const NotebookException('That folder was not found.');
+    }
+    return path;
+  }
+
+  /// Makes [path] a folder of standalone pages and remembers it. Returns the
+  /// location key: '' for the default folder. Does nothing if the folder is
+  /// known already. Throws [NotebookException] if the folder can't be used
+  /// (see [checkStandaloneFolder]).
+  Future<String> addStandaloneFolder(String path) async {
+    path = _normalizePath(path);
+    if (_key(path) == _key(defaultFolderPath)) return _standalone;
+    final known = _folders.keys.where((f) => _key(f) == _key(path)).firstOrNull;
+    if (known != null) {
+      if (_folders[known]!.available) return known;
+      throw const NotebookException('That folder is not available.');
+    }
+    await checkStandaloneFolder(path);
+    await flush();
+    final folder = await _openFolder(path);
+    if (!folder.available) throw NotebookException(folder.reason ?? 'That folder is not available.');
+    _folders[path] = folder;
+    _rebuildTree();
+    _syncWatchers();
+    await _saveSettings();
+    await _mergePendingCopies();
+    return path;
+  }
+
+  /// Takes the folder out of the list. Its files stay where they are.
+  Future<void> removeStandaloneFolder(String path) async {
+    final folder = _folders[path];
+    if (folder == null) return;
+    final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
+    final openHere = ids.contains(currentId);
+    if (openHere) await _closeCurrent();
+    for (final id in ids) {
+      _metas.remove(id);
+      _loc.remove(id);
+      _conflicts.remove(id);
+    }
+    for (final e in _pathId.entries.toList()) {
+      if (ids.contains(e.value)) {
+        _pathId.remove(e.key);
+        _known.remove(e.key);
+      }
+    }
+    _folders.remove(path);
+    final last = _lastDeleted;
+    if (last != null && last._location == path) _lastDeleted = null;
+    _rebuildTree();
+    _syncWatchers();
+    await _saveSettings();
+    if (openHere) await _openFallback(_standalone);
+  }
+
+  Future<StandaloneFolder> _openFolder(String path) async {
+    StandaloneFolder unavailable(String why) =>
+        StandaloneFolder._(path, available: false, reason: why);
+    final dir = Directory(path);
+    try {
+      if (!await dir.exists()) return unavailable('Folder not found. It may be on another device.');
+      if (await BinderStore(dir).file.exists()) return unavailable('This folder holds a binder.');
+      final pages = storeFactory(dir);
+      final entries = await pages.scan();
+      _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
+      final bad = <UnreadablePage>[...entries.whereType<UnreadablePage>()];
+      for (final e in entries.whereType<ReadablePage>()) {
+        if (_metas.containsKey(e.meta.id)) {
+          bad.add(UnreadablePage(e.path, 'duplicate page id ${e.meta.id}'));
+          continue;
+        }
+        _metas[e.meta.id] = e.meta;
+        _loc[e.meta.id] = path;
+        _pathId[_key(e.path)] = e.meta.id;
+        if (e.conflicted) _conflicts.add(e.meta.id);
+      }
+      return StandaloneFolder._(path, available: true, store: pages, unreadable: bad);
+    } on FileSystemException catch (e) {
+      return unavailable('${e.message}${e.path == null ? '' : ': ${e.path}'}');
+    }
+  }
+
+  // Templates ------------------------------------------------------------------
+
+  /// The folder of app-wide templates, or null if there is no place for it.
+  Directory? get appTemplatesDirectory {
+    final d = templatesDirectory;
+    if (d != null) return d;
+    final f = bindersFile;
+    return f == null ? null : Directory('${f.parent.path}${Platform.pathSeparator}templates');
+  }
+
+  Directory _templatesDirFor(String? binderPath) {
+    if (binderPath != null) {
+      return Directory('$binderPath${Platform.pathSeparator}templates');
+    }
+    final d = appTemplatesDirectory;
+    if (d == null) throw const NotebookException('There is no folder for app-wide templates.');
+    return d;
+  }
+
+  /// The templates of [kind] that can be used in the binder [binderPath]
+  /// (null: not in a binder): the binder's own and the app-wide ones. Files
+  /// that can't be read are listed apart and never touched.
+  Future<TemplateListing> listTemplates(TemplateKind kind, {String? binderPath}) async {
+    final items = <TemplateItem>[];
+    final bad = <UnreadableTemplateItem>[];
+    final scopes = <String?>[
+      if (binderPath != null && kind == TemplateKind.page) binderPath,
+      if (appTemplatesDirectory != null) null,
+    ];
+    for (final scope in scopes) {
+      final entries = await TemplateStore(_templatesDirFor(scope)).scan();
+      for (final e in entries) {
+        switch (e) {
+          case ReadableTemplate():
+            if (e.template.kind == kind) items.add(TemplateItem(e.template, e.path, scope));
+          case UnreadableTemplate():
+            bad.add(UnreadableTemplateItem(e.path, e.reason, scope));
+        }
+      }
+    }
+    return TemplateListing(items, bad);
+  }
+
+  /// Saves the page [pageId], as it is now, as a template named [name]:
+  /// in its binder's templates if [inBinder], otherwise app-wide. Subpages
+  /// are not included.
+  Future<NotedTemplate> savePageAsTemplate(
+    String pageId, {
+    required String name,
+    bool inBinder = false,
+  }) async {
+    final loc = _loc[pageId];
+    if (loc == null) throw const NotebookException('That page is not available.');
+    final binder = binderOfPage(pageId);
+    if (inBinder && binder == null) {
+      throw const NotebookException('Only a page in a binder can be saved to the binder.');
+    }
+    final dir = _templatesDirFor(inBinder ? binder : null);
+    await flush();
+    final page = await _storeOf(loc).load(pageId);
+    final title = page.meta.title.trim();
+    final template = NotedTemplate.forPage(
+      name: name.trim().isNotEmpty ? name.trim() : (title.isEmpty ? 'Untitled page' : title),
+      page: page,
+    );
+    await _saveTemplate(dir, template);
+    return template;
+  }
+
+  /// Saves the settings and whole page tree of the binder [path] as an
+  /// app-wide binder template.
+  Future<NotedTemplate> saveBinderAsTemplate(String path, {required String name}) async {
+    final section = _binders[path];
+    final binder = section?.binder;
+    final st = section?.store;
+    if (section == null || !section.available || binder == null || st == null) {
+      throw const NotebookException('That binder is not available.');
+    }
+    final dir = _templatesDirFor(null);
+    await flush();
+    final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
+    // Parents before children, in tree order.
+    final ordered = <String>[];
+    void walk(PageMeta p) {
+      ordered.add(p.id);
+      section.tree.childrenOf(p.id).forEach(walk);
+    }
+
+    section.tree.roots.forEach(walk);
+    for (final id in ids) {
+      if (!ordered.contains(id)) ordered.add(id);
+    }
+    final pages = [for (final id in ordered) await st.load(id)];
+    final template = NotedTemplate.forBinder(
+      name: name.trim().isNotEmpty ? name.trim() : section.title,
+      binder: binder,
+      pages: pages,
+    );
+    await _saveTemplate(dir, template);
+    return template;
+  }
+
+  Future<void> _saveTemplate(Directory dir, NotedTemplate template) async {
+    try {
+      await TemplateStore(dir).save(template);
+    } on FileSystemException catch (e) {
+      throw NotebookException('Could not save the template: ${e.message}');
+    }
+  }
+
+  /// Deletes a template file found by [listTemplates].
+  Future<void> deleteTemplate(TemplateItem item) async {
+    try {
+      await TemplateStore(_templatesDirFor(item.binderPath)).delete(item.path);
+    } on FileSystemException catch (e) {
+      throw NotebookException('Could not delete the template: ${e.message}');
+    }
+  }
+
+  /// Creates a page from the page template [template] and opens it, placed
+  /// as [createPage] would place it.
+  Future<String> createPageFromTemplate(
+    NotedTemplate template, {
+    String? parentId,
+    String? binderPath,
+    String? folderPath,
+  }) async {
+    if (template.kind != TemplateKind.page) {
+      throw const NotebookException('That is not a page template.');
+    }
+    final loc = await _placeFor(parentId, binderPath, folderPath);
+    final page = template.instantiatePage(
+      parentId: parentId,
+      order: _treeOf(loc).nextOrder(parentId),
+    );
+    await _write(loc, page);
+    _touch(loc);
+    _metas[page.id] = page.meta;
+    _loc[page.id] = loc;
+    await open(page.id);
+    return page.id;
+  }
+
+  /// Creates a binder in the folder [path] from the binder template
+  /// [template]: its settings (with a new binder id) and page tree (with new
+  /// ids), then adds it like [addBinder] and shows its cover. A folder that
+  /// has a binder is refused.
+  Future<BinderSection> createBinderFromTemplate(NotedTemplate template, String path) async {
+    if (template.kind != TemplateKind.binder) {
+      throw const NotebookException('That is not a binder template.');
+    }
+    path = _normalizePath(path);
+    if (path == defaultFolderPath || _folders.containsKey(path)) {
+      throw const NotebookException('That folder holds the standalone pages.');
+    }
+    final dir = Directory(path);
+    final binders = BinderStore(dir);
+    if (_binders.containsKey(path) || await binders.file.exists()) {
+      throw const NotebookException(
+        'That folder already has a binder. Choose an empty folder for the new binder.',
+      );
+    }
+    await flush();
+    final made = template.instantiateBinder();
+    final pages = storeFactory(dir);
+    final written = <String>[];
+    try {
+      await binders.create(made.binder);
+      for (final p in made.pages) {
+        await pages.save(p);
+        written.add(p.id);
+      }
+    } on Object catch (e) {
+      for (final id in written) {
+        try {
+          await pages.delete(id);
+        } on Object catch (e2) {
+          debugPrint('Removing page $id failed: $e2');
+        }
+      }
+      try {
+        await binders.file.delete();
+      } on Object catch (e2) {
+        debugPrint('Removing binder file failed: $e2');
+      }
+      throw NotebookException('Could not create the binder: $e');
+    }
+    final section = await addBinder(path);
+    if (section.available) showCover(section.path);
+    return section;
+  }
+
+  // Binders -----------------------------------------------------------------
 
   /// Takes the binder out of the sidebar. Its folder and files stay.
   Future<void> removeBinder(String path) async {
@@ -647,7 +1063,7 @@ class Notebook extends ChangeNotifier {
     if (last != null && last._location == path) _lastDeleted = null;
     _rebuildTree();
     _syncWatchers();
-    await _saveBinderPaths();
+    await _saveSettings();
     if (openHere) await _openFallback(_standalone);
   }
 
@@ -759,7 +1175,18 @@ class Notebook extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  // `binders.json`: {"format":1,"binders":["<folder>", ...]}.
+  // `binders.json`, the app settings file:
+  //   {"format":1,"binders":["<folder>", ...],"standaloneFolders":["<folder>", ...]}
+  // `standaloneFolders` is absent until a second standalone folder is used.
+  // Fields this build doesn't know are kept.
+  List<String> _readFolderPaths() {
+    final list = _settings['standaloneFolders']?.decode();
+    return [
+      for (final p in list is List ? list : const [])
+        if (p is String && p.isNotEmpty) p,
+    ];
+  }
+
   Future<List<String>> _readBinderPaths() async {
     final f = bindersFile;
     if (f == null) return const [];
@@ -780,10 +1207,11 @@ class Notebook extends ChangeNotifier {
     }
   }
 
-  Future<void> _saveBinderPaths() async {
+  Future<void> _saveSettings() async {
     final f = bindersFile;
     if (f == null) return;
     final paths = _binders.keys.toList();
+    final folders = _folders.keys.toList();
     final job = _saving.then((_) async {
       await f.parent.create(recursive: true);
       if (_settingsCorrupt) {
@@ -798,6 +1226,9 @@ class Notebook extends ChangeNotifier {
       _settings = _settings
           .set('format', RawJson.encode(1))
           .set('binders', RawJson.encode(paths));
+      if (folders.isNotEmpty || _settings.containsKey('standaloneFolders')) {
+        _settings = _settings.set('standaloneFolders', RawJson.encode(folders));
+      }
       final tmp = File('${f.path}.tmp');
       await tmp.writeAsString('${_settings.toRaw().text}\n', flush: true);
       await tmp.rename(f.path);
@@ -894,6 +1325,9 @@ class Notebook extends ChangeNotifier {
   String? _locationOf(String path) {
     final dir = _key(File(path).parent.path);
     if (dir == _key(store.directory.path)) return _standalone;
+    for (final f in _folders.values) {
+      if (f.available && _key(f.path) == dir) return f.path;
+    }
     for (final b in _binders.values) {
       if (b.available && _key(b.path) == dir) return b.path;
     }
@@ -905,6 +1339,8 @@ class Notebook extends ChangeNotifier {
     if (!watchFiles || _disposed) return;
     final wanted = <String, String>{
       _standalone: store.directory.path,
+      for (final f in _folders.values)
+        if (f.available) f.path: f.path,
       // A binder that can't be used is watched too, as long as its folder
       // exists, so a repaired or restored binder file brings it back.
       for (final b in _binders.values)
@@ -1239,6 +1675,8 @@ class Notebook extends ChangeNotifier {
     final entry = UnreadablePage(path, reason);
     if (loc == _standalone) {
       _unreadable = [..._unreadable, entry];
+    } else if (_folders[loc] case final f?) {
+      f.unreadable = [...f.unreadable, entry];
     } else {
       final s = _binders[loc];
       if (s != null) s.unreadable = [...s.unreadable, entry];
@@ -1255,6 +1693,10 @@ class Notebook extends ChangeNotifier {
       final next = _unreadable.where(other).toList();
       removed = next.length != _unreadable.length;
       _unreadable = next;
+    } else if (_folders[loc] case final f?) {
+      final next = f.unreadable.where(other).toList();
+      removed = next.length != f.unreadable.length;
+      f.unreadable = next;
     } else {
       final s = _binders[loc];
       if (s != null) {
@@ -1287,7 +1729,7 @@ class Notebook extends ChangeNotifier {
     _pathId[key] = id;
     _metas[id] = page.meta;
     _loc[id] = loc;
-    if (loc == _standalone || _binders[loc]?.store != null) {
+    if (_isStandaloneLoc(loc) || _binders[loc]?.store != null) {
       final st = _storeOf(loc);
       // Make the store find files whose names aren't the page id.
       if (_key(st.pathFor(id)) != key) await st.scan();
@@ -1328,7 +1770,10 @@ class Notebook extends ChangeNotifier {
     for (final e in _metas.entries) {
       (groups[_loc[e.key] ?? _standalone] ??= []).add(e.value);
     }
-    _tree = PageTree.build(groups[_standalone] ?? const []);
+    _tree = PageTree.build([
+      for (final e in groups.entries)
+        if (_isStandaloneLoc(e.key)) ...e.value,
+    ]);
     for (final b in _binders.values) {
       b.tree = PageTree.build(groups[b.path] ?? const []);
     }

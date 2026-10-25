@@ -8,6 +8,8 @@ import 'package:noted_core/noted_core.dart';
 
 import 'binder_cover.dart';
 import 'notebook.dart';
+import 'storage_dialog.dart';
+import 'template_dialogs.dart';
 
 /// Where on a row a dragged page is dropped.
 enum DropZone {
@@ -71,6 +73,9 @@ class _PageTreeViewState extends State<PageTreeView> {
     }
 
     addTree(_nb.tree, null);
+    for (final f in _nb.standaloneFolders) {
+      if (!f.available) rows.add(_folderHeader(context, f));
+    }
     final cantOpen = <UnreadablePage>[..._nb.unreadable];
     for (final b in _nb.binders) {
       rows.add(_binderHeader(context, b));
@@ -113,7 +118,25 @@ class _PageTreeViewState extends State<PageTreeView> {
                 IconButton(
                   tooltip: 'New page',
                   icon: const Icon(Icons.add),
-                  onPressed: () => _nb.createPage(),
+                  onPressed: () => _guard(_newStandalonePage),
+                ),
+                PopupMenuButton<String>(
+                  key: const ValueKey('pages-menu'),
+                  tooltip: 'Pages options',
+                  iconSize: 18,
+                  onSelected: _pagesAction,
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(value: 'new', child: Text('New page')),
+                    const PopupMenuItem(value: 'from-template', child: Text('New page from template…')),
+                    if (_nb.pickFolder != null) ...const [
+                      PopupMenuDivider(),
+                      PopupMenuItem(value: 'binder', child: Text('New binder')),
+                      PopupMenuItem(
+                        value: 'binder-from-template',
+                        child: Text('New binder from template…'),
+                      ),
+                    ],
+                  ],
                 ),
               ],
             ),
@@ -159,7 +182,7 @@ class _PageTreeViewState extends State<PageTreeView> {
   String _binderKey(BinderSection b) => 'binder:${b.path}';
 
   /// Runs [action], showing a [NotebookException] in a SnackBar.
-  Future<void> _guard(Future<Object?> Function() action) async {
+  Future<void> _guard(Future<void> Function() action) async {
     final messenger = ScaffoldMessenger.maybeOf(context);
     try {
       await action();
@@ -167,6 +190,126 @@ class _PageTreeViewState extends State<PageTreeView> {
       messenger?.hideCurrentSnackBar();
       messenger?.showSnackBar(SnackBar(content: Text(e.message)));
     }
+  }
+
+  /// Asks where a new top-level standalone page goes (0027), unless there is
+  /// nothing to choose from, and returns the folder (null: the default one).
+  /// [cancelled] is true if the user cancelled.
+  Future<(String?, bool)> _askFolder() async {
+    if (_nb.pickFolder == null && _nb.standaloneFolders.isEmpty) return (null, false);
+    final folder = await askStorageFolder(context, _nb);
+    return (folder, folder == null);
+  }
+
+  Future<void> _newStandalonePage() async {
+    final (folder, cancelled) = await _askFolder();
+    if (cancelled) return;
+    await _nb.createPage(folderPath: folder);
+  }
+
+  Future<void> _pagesAction(String action) async {
+    switch (action) {
+      case 'new':
+        await _guard(_newStandalonePage);
+      case 'from-template':
+        await _guard(() async {
+          final t = await _pickTemplate(TemplateKind.page, 'New page from template');
+          if (t == null || !mounted) return;
+          final (folder, cancelled) = await _askFolder();
+          if (cancelled) return;
+          await _nb.createPageFromTemplate(t.template, folderPath: folder);
+        });
+      case 'binder':
+        await _guard(_nb.newBinder);
+      case 'binder-from-template':
+        await _guard(_newBinderFromTemplate);
+    }
+  }
+
+  Future<TemplateItem?> _pickTemplate(TemplateKind kind, String title, {String? binderPath}) async {
+    final listing = await _nb.listTemplates(kind, binderPath: binderPath);
+    if (!mounted) return null;
+    return pickTemplate(context, _nb, listing, title: title);
+  }
+
+  Future<void> _newBinderFromTemplate() async {
+    final pick = _nb.pickFolder;
+    if (pick == null) return;
+    final t = await _pickTemplate(TemplateKind.binder, 'New binder from template');
+    if (t == null) return;
+    final path = await pick();
+    if (path == null) return;
+    await _nb.createBinderFromTemplate(t.template, path);
+  }
+
+  Future<void> _saveAsTemplate(PageMeta p) async {
+    final inBinder = _nb.binderOfPage(p.id) != null;
+    final choice = await askSaveTemplate(
+      context,
+      title: 'Save as template',
+      defaultName: p.title,
+      offerBinder: inBinder,
+    );
+    if (choice == null || !mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final t = await _nb.savePageAsTemplate(p.id, name: choice.name, inBinder: choice.inBinder);
+    if (!mounted) return;
+    messenger?.showSnackBar(SnackBar(content: Text('Saved template "${t.name}"')));
+  }
+
+  Future<void> _saveBinderAsTemplate(BinderSection b) async {
+    final choice = await askSaveTemplate(
+      context,
+      title: 'Save binder as template',
+      defaultName: b.title,
+      offerBinder: false,
+    );
+    if (choice == null || !mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final t = await _nb.saveBinderAsTemplate(b.path, name: choice.name);
+    if (!mounted) return;
+    messenger?.showSnackBar(SnackBar(content: Text('Saved template "${t.name}"')));
+  }
+
+  // A remembered standalone folder that can't be used now (0027).
+  Widget _folderHeader(BuildContext context, StandaloneFolder f) {
+    final theme = Theme.of(context);
+    return Tooltip(
+      message: f.reason ?? '',
+      child: Opacity(
+        opacity: 0.6,
+        child: SizedBox(
+          key: ValueKey('folder-header-${f.path}'),
+          height: _rowHeight + 20,
+          child: Row(
+            children: [
+              const SizedBox(width: 12),
+              const Icon(Icons.cloud_off_outlined, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(f.name, overflow: TextOverflow.ellipsis),
+                    Text('On another device', style: theme.textTheme.labelSmall),
+                  ],
+                ),
+              ),
+              PopupMenuButton<String>(
+                key: ValueKey('folder-menu-${f.path}'),
+                tooltip: 'Folder options',
+                iconSize: 18,
+                onSelected: (_) => _guard(() => _nb.removeStandaloneFolder(f.path)),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'remove', child: Text('Remove from list')),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _binderHeader(BuildContext context, BinderSection b) {
@@ -278,7 +421,10 @@ class _PageTreeViewState extends State<PageTreeView> {
                   onSelected: (v) => _binderAction(context, b, v),
                   itemBuilder: (_) => const [
                     PopupMenuItem(value: 'new', child: Text('New page')),
+                    PopupMenuItem(value: 'new-template', child: Text('New page from template…')),
                     PopupMenuItem(value: 'cover', child: Text('Open cover')),
+                    PopupMenuDivider(),
+                    PopupMenuItem(value: 'save-template', child: Text('Save as template…')),
                     PopupMenuDivider(),
                     PopupMenuItem(value: 'remove', child: Text('Remove from sidebar')),
                   ],
@@ -296,6 +442,19 @@ class _PageTreeViewState extends State<PageTreeView> {
       case 'new':
         setState(() => _collapsed.remove(_binderKey(b)));
         await _guard(() => _nb.createPage(binderPath: b.path));
+      case 'new-template':
+        await _guard(() async {
+          final t = await _pickTemplate(
+            TemplateKind.page,
+            'New page from template',
+            binderPath: b.path,
+          );
+          if (t == null) return;
+          setState(() => _collapsed.remove(_binderKey(b)));
+          await _nb.createPageFromTemplate(t.template, binderPath: b.path);
+        });
+      case 'save-template':
+        await _guard(() => _saveBinderAsTemplate(b));
       case 'cover':
         _nb.showCover(b.path);
       case 'remove':
@@ -555,6 +714,8 @@ class _PageTreeViewState extends State<PageTreeView> {
     final i = siblings.indexWhere((s) => s.id == p.id);
     return [
       const PopupMenuItem(value: 'sub', child: Text('New subpage')),
+      const PopupMenuItem(value: 'sub-template', child: Text('New subpage from template…')),
+      const PopupMenuItem(value: 'save-template', child: Text('Save as template…')),
       const PopupMenuItem(value: 'rename', child: Text('Rename')),
       const PopupMenuDivider(),
       PopupMenuItem(value: 'up', enabled: i > 0, child: const Text('Move up')),
@@ -588,7 +749,20 @@ class _PageTreeViewState extends State<PageTreeView> {
     switch (action) {
       case 'sub':
         setState(() => _collapsed.remove(p.id));
-        await _nb.createPage(parentId: p.id);
+        await _guard(() => _nb.createPage(parentId: p.id));
+      case 'sub-template':
+        await _guard(() async {
+          final t = await _pickTemplate(
+            TemplateKind.page,
+            'New subpage from template',
+            binderPath: _nb.binderOfPage(p.id),
+          );
+          if (t == null) return;
+          setState(() => _collapsed.remove(p.id));
+          await _nb.createPageFromTemplate(t.template, parentId: p.id);
+        });
+      case 'save-template':
+        await _guard(() => _saveAsTemplate(p));
       case 'rename':
         await _rename(context, p);
       case 'up':
