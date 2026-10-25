@@ -15,9 +15,12 @@ sealed class PageEntry {
 }
 
 final class ReadablePage extends PageEntry {
-  const ReadablePage(super.path, this.meta);
+  const ReadablePage(super.path, this.meta, {this.conflicted = false});
 
   final PageMeta meta;
+
+  /// Some box on the page has an unresolved conflict (0020).
+  final bool conflicted;
 }
 
 /// A file that couldn't be read. The store never overwrites it.
@@ -52,7 +55,7 @@ class PageStore {
           continue;
         }
         _paths[page.id] = f.path;
-        entries.add(ReadablePage(f.path, page.meta));
+        entries.add(ReadablePage(f.path, page.meta, conflicted: hasConflicts(page)));
       } on PageFormatException catch (e) {
         entries.add(UnreadablePage(f.path, e.message));
       } on FileSystemException catch (e) {
@@ -83,6 +86,9 @@ class PageStore {
     if (await f.exists()) await f.delete();
     _paths.remove(pageId);
   }
+
+  /// The path of the file holding (or that will hold) page [pageId].
+  String pathFor(String pageId) => _pathFor(pageId);
 
   String _pathFor(String pageId) =>
       _paths[pageId] ??

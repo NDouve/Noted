@@ -149,13 +149,55 @@ final class BoxRecord extends CanvasNode {
   /// Returns a copy with [fixedHeight] set to [value].
   BoxRecord withFixedHeight(bool value) {
     if (value == fixedHeight) return this;
-    final n = value
-        ? noted.set('fixedHeight', const RawJson.trusted('true'))
-        : noted.remove('fixedHeight');
+    return _withNoted(
+      value
+          ? noted.set('fixedHeight', const RawJson.trusted('true'))
+          : noted.remove('fixedHeight'),
+    );
+  }
+
+  /// The other versions of this box recorded by merges (0020), in the order
+  /// they were recorded. Empty if the box isn't conflicted.
+  List<BoxConflict> get conflicts {
+    final raw = noted['conflicts'];
+    if (raw == null || !raw.isArray) return const [];
+    try {
+      return [
+        for (final item in JsonSpanReader.readArray(raw.text))
+          ?BoxConflict.tryRead(item),
+      ];
+    } on FormatException {
+      return const [];
+    }
+  }
+
+  /// Whether a merge left another version of this box unresolved.
+  bool get isConflicted => noted.containsKey('conflicts') && conflicts.isNotEmpty;
+
+  /// Returns a copy with [conflict] added to [conflicts]. Every other field
+  /// is kept as written.
+  BoxRecord withConflict(BoxConflict conflict) =>
+      withConflicts([...conflicts, conflict]);
+
+  /// Returns a copy whose [conflicts] are [value]; empty removes the field.
+  BoxRecord withConflicts(List<BoxConflict> value) {
+    if (value.isEmpty) return withoutConflicts();
+    final text = '[${value.map((c) => c.raw.text).join(',')}]';
+    if (noted['conflicts']?.text == text) return this;
+    return _withNoted(noted.set('conflicts', RawJson.trusted(text)));
+  }
+
+  /// Returns a copy without [conflicts].
+  BoxRecord withoutConflicts() =>
+      noted.containsKey('conflicts') ? _withNoted(noted.remove('conflicts')) : this;
+
+  /// Returns a copy with another id; nothing else changes.
+  BoxRecord withId(String value) {
+    if (value == id) return this;
     return BoxRecord._(
-      fields: fields.set('noted', n.toRaw()),
-      noted: n,
-      id: id,
+      fields: fields.set('id', RawJson.encode(value)),
+      noted: noted,
+      id: value,
       bounds: bounds,
       typeId: typeId,
       dataVersion: dataVersion,
@@ -164,6 +206,18 @@ final class BoxRecord extends CanvasNode {
       snapshotText: snapshotText,
     );
   }
+
+  BoxRecord _withNoted(RawObject n) => BoxRecord._(
+    fields: fields.set('noted', n.toRaw()),
+    noted: n,
+    id: id,
+    bounds: bounds,
+    typeId: typeId,
+    dataVersion: dataVersion,
+    rev: rev,
+    baseRev: baseRev,
+    snapshotText: snapshotText,
+  );
 
   /// Returns a copy moved or resized to [next]. Content and revision are
   /// unchanged: geometry is resolved last-write-wins (0020).
@@ -227,6 +281,82 @@ final class BoxRecord extends CanvasNode {
   ];
 }
 
+/// Another version of a box that a merge couldn't combine (0020), recorded in
+/// the box's `noted` header as `"conflicts":[...]`:
+///
+/// - `{"node":<the other version's whole node>,"at":<ms since epoch>}`
+/// - `{"deleted":true,"at":<ms>}` when the other side deleted the box while
+///   this one edited it.
+///
+/// The node is kept as raw text, so a device that can't run the box carries
+/// it through untouched.
+final class BoxConflict {
+  const BoxConflict._(this.raw, this.node, this.deleted, this.at);
+
+  /// The other version of the box, saved at [at] (ms since the epoch).
+  factory BoxConflict.other({required RawJson node, required int at}) =>
+      BoxConflict._(
+        RawJson.trusted('{"node":${node.text},"at":$at}'),
+        node,
+        false,
+        at,
+      );
+
+  /// The other side deleted the box.
+  factory BoxConflict.deleted({required int at}) =>
+      BoxConflict._(RawJson.trusted('{"deleted":true,"at":$at}'), null, true, at);
+
+  /// Reads one entry of a `conflicts` array, or returns null if malformed.
+  static BoxConflict? tryRead(RawJson raw) {
+    if (!raw.isObject) return null;
+    try {
+      final o = RawObject.parse(raw.text);
+      final node = o['node'];
+      final deleted = o['deleted']?.text == 'true';
+      if (node == null && !deleted) return null;
+      return BoxConflict._(raw, node, deleted, o.integer('at') ?? 0);
+    } on FormatException {
+      return null;
+    }
+  }
+
+  /// The entry exactly as stored.
+  final RawJson raw;
+
+  /// The other version's node; null if [deleted].
+  final RawJson? node;
+
+  /// The other side deleted the box.
+  final bool deleted;
+
+  /// When the other version was saved, in ms since the epoch.
+  final int at;
+
+  @override
+  bool operator ==(Object other) => other is BoxConflict && other.raw == raw;
+
+  @override
+  int get hashCode => raw.hashCode;
+}
+
+/// Whether any box on [page] has an unresolved conflict (0020).
+bool hasConflicts(NotedPage page) =>
+    page.nodes.any((n) => n is BoxRecord && n.isConflicted);
+
+/// Reads one node of a page: a [BoxRecord] if it is a well-formed Noted box,
+/// otherwise a [ForeignNode].
+CanvasNode readNode(RawJson raw, {required String fallbackId}) {
+  BoxRecord? box;
+  if (raw.isObject) {
+    try {
+      box = BoxRecord.tryRead(RawObject.parse(raw.text), raw);
+    } on FormatException {
+      box = null;
+    }
+  }
+  return box ?? ForeignNode.read(raw, fallbackId: fallbackId);
+}
+
 /// A node Noted doesn't own (no `noted` field, or a malformed one).
 ///
 /// It is shown read-only and written back exactly as it was read.
@@ -271,6 +401,14 @@ final class ForeignNode extends CanvasNode {
 
   ForeignNode _withId(String newId) =>
       ForeignNode._(raw, newId, bounds, text, nodeType);
+
+  /// Returns a copy with another id, written into the node's `id` field.
+  /// Null if the node isn't a JSON object.
+  ForeignNode? copyWithId(String newId) {
+    if (!raw.isObject) return null;
+    final o = RawObject.parse(raw.text).set('id', RawJson.encode(newId));
+    return ForeignNode.read(o.toRaw(), fallbackId: newId);
+  }
 
   @override
   RawJson toRaw() => raw;

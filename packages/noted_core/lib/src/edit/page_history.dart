@@ -39,9 +39,51 @@ sealed class PageChange {
     Bounds? boundsBefore,
   }) = _ContentChanged;
 
+  /// Records that [before] was replaced, in place, by another version of the
+  /// same node (for example when a conflict is resolved). Reverting puts
+  /// [before] back.
+  const factory PageChange.replaced(CanvasNode before) = _Replaced;
+
+  /// Several changes made together, undone together. [changes] are in the
+  /// order they were made.
+  const factory PageChange.group(List<PageChange> changes) = _Group;
+
   /// Reverts this change on [page]. Returns null if the change no longer
   /// applies, for example because its box is gone.
   (NotedPage, PageChange)? revert(NotedPage page, CodecRegistry codecs);
+}
+
+final class _Replaced extends PageChange {
+  const _Replaced(this.before);
+
+  final CanvasNode before;
+
+  @override
+  (NotedPage, PageChange)? revert(NotedPage page, CodecRegistry codecs) {
+    final current = page.node(before.id);
+    if (current == null) return null;
+    return (page.replaceNode(before), PageChange.replaced(current));
+  }
+}
+
+final class _Group extends PageChange {
+  const _Group(this.changes);
+
+  final List<PageChange> changes;
+
+  @override
+  (NotedPage, PageChange)? revert(NotedPage page, CodecRegistry codecs) {
+    var p = page;
+    final inverses = <PageChange>[];
+    for (final c in changes.reversed) {
+      final r = c.revert(p, codecs);
+      if (r == null) continue;
+      p = r.$1;
+      inverses.add(r.$2);
+    }
+    if (inverses.isEmpty) return null;
+    return (p, PageChange.group(inverses));
+  }
 }
 
 final class _Added extends PageChange {
