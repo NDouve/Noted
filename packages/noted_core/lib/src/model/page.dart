@@ -141,6 +141,30 @@ final class BoxRecord extends CanvasNode {
   /// The module's data, exactly as stored. Null if the field is absent.
   RawJson? get data => noted['data'];
 
+  /// The user set this box's height. A box whose type grows with its content
+  /// stops growing and scrolls internally instead. Stored as
+  /// `"fixedHeight": true` in the `noted` header; absent means false.
+  bool get fixedHeight => noted['fixedHeight']?.text == 'true';
+
+  /// Returns a copy with [fixedHeight] set to [value].
+  BoxRecord withFixedHeight(bool value) {
+    if (value == fixedHeight) return this;
+    final n = value
+        ? noted.set('fixedHeight', const RawJson.trusted('true'))
+        : noted.remove('fixedHeight');
+    return BoxRecord._(
+      fields: fields.set('noted', n.toRaw()),
+      noted: n,
+      id: id,
+      bounds: bounds,
+      typeId: typeId,
+      dataVersion: dataVersion,
+      rev: rev,
+      baseRev: baseRev,
+      snapshotText: snapshotText,
+    );
+  }
+
   /// Returns a copy moved or resized to [next]. Content and revision are
   /// unchanged: geometry is resolved last-write-wins (0020).
   BoxRecord withBounds(Bounds next) {

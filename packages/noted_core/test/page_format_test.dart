@@ -113,4 +113,18 @@ void main() {
   test('accepts a byte order mark', () {
     expect(readPage('${String.fromCharCode(0xFEFF)}$source').id, 'p1');
   });
+
+  test('fixedHeight round-trips and leaves module data verbatim', () {
+    final page = readPage(source);
+    final box = page.nodes.first as BoxRecord;
+    expect(box.fixedHeight, isFalse);
+    final fixed = box.withFixedHeight(true);
+    final out = writePage(page.replaceNode(fixed));
+    expect(out, contains('"fixedHeight":true'));
+    expect(out, contains('"data":$oddData'));
+    final reread = readPage(out).nodes.first as BoxRecord;
+    expect(reread.fixedHeight, isTrue);
+    expect(reread.rev, box.rev);
+    expect(writePage(page.replaceNode(reread.withFixedHeight(false))), isNot(contains('fixedHeight')));
+  });
 }

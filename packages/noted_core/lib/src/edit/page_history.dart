@@ -19,9 +19,14 @@ sealed class PageChange {
   /// Records that [node] was removed from [index]. Reverting puts it back.
   const factory PageChange.removed(CanvasNode node, int index) = _Removed;
 
-  /// Records that a box's bounds changed from [before]. Reverting restores
-  /// [before]; content edits made since are kept.
-  const factory PageChange.bounds(String id, Bounds before) = _BoundsChanged;
+  /// Records that a box's bounds (and whether its height is fixed) changed
+  /// from [before] and [fixedHeightBefore]. Reverting restores both; content
+  /// edits made since are kept.
+  const factory PageChange.bounds(
+    String id,
+    Bounds before, {
+    bool fixedHeightBefore,
+  }) = _BoundsChanged;
 
   /// Reverts this change on [page]. Returns null if the change no longer
   /// applies, for example because its box is gone.
@@ -55,18 +60,19 @@ final class _Removed extends PageChange {
 }
 
 final class _BoundsChanged extends PageChange {
-  const _BoundsChanged(this.id, this.before);
+  const _BoundsChanged(this.id, this.before, {this.fixedHeightBefore = false});
 
   final String id;
   final Bounds before;
+  final bool fixedHeightBefore;
 
   @override
   (NotedPage, PageChange)? revert(NotedPage page) {
     final n = page.node(id);
     if (n is! BoxRecord) return null;
     return (
-      page.replaceNode(n.withBounds(before)),
-      PageChange.bounds(id, n.bounds),
+      page.replaceNode(n.withBounds(before).withFixedHeight(fixedHeightBefore)),
+      PageChange.bounds(id, n.bounds, fixedHeightBefore: n.fixedHeight),
     );
   }
 }

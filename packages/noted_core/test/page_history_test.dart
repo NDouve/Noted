@@ -75,4 +75,17 @@ void main() {
     expect(page.nodes, isEmpty);
     expect(h.canUndo, isFalse);
   });
+
+  test('undoing a height resize restores auto height too', () {
+    final h = PageHistory();
+    final a = box('a');
+    var page = empty.insertNode(a.withBounds(const Bounds(0, 0, 10, 50)).withFixedHeight(true));
+    h.record(PageChange.bounds('a', a.bounds));
+    page = h.undo(page)!;
+    final undone = page.node('a')! as BoxRecord;
+    expect(undone.bounds.height, 10);
+    expect(undone.fixedHeight, isFalse);
+    page = h.redo(page)!;
+    expect((page.node('a')! as BoxRecord).fixedHeight, isTrue);
+  });
 }
