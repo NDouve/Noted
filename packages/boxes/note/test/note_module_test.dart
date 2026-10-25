@@ -2,7 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_canvas/noted_canvas.dart';
@@ -122,4 +124,62 @@ void main() {
     expect(next.snapshotText, 'typed');
     expect(next.baseRev, box.rev);
   });
+
+  // Regression: appflowy's auto-scroll target (220 px by default) is larger
+  // than a small box's viewport, and the scroller bounced up and down
+  // forever, freezing the app. A fixed-height note with overflowing content
+  // must stay responsive with the caret moving through it, at any zoom,
+  // and auto-scroll must still follow the caret.
+  for (final zoom in [1.0, 0.3, 3.0]) {
+    testWidgets('a fixed-height note scrolls to the caret without freezing at ${zoom}x', (t) async {
+      final box = noteBox('n', [for (var i = 0; i < 20; i++) 'line $i'])
+          .withBounds(const Bounds(100, 100, 300, 60))
+          .withFixedHeight(true);
+      final c = await pump(t, page([box]));
+      final canvas = t.state<PageCanvasState>(find.byType(PageCanvas));
+      // Centre the box, then zoom around the centre so it stays in view.
+      final centre = canvas.view!.toWorld(const Offset(600, 400));
+      c.requestBounds('n', Bounds(centre.dx - 150, centre.dy - 30, 300, 60));
+      await t.pump();
+      canvas.zoomTo(zoom);
+      await t.pump();
+      final b = c.page.node('n')!.bounds!;
+      expect(b.height, 60, reason: 'fixed height must not grow');
+
+      // Click the first line to put the caret there.
+      final view = canvas.view!;
+      await t.tapAt(view.toScreen(Offset(b.x + 40, b.y + 12)));
+      for (var i = 0; i < 4; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+      }
+      expect(c.editingId, 'n');
+
+      final scroller = t.state<ScrollableState>(
+        find.descendant(of: find.byType(BoxHost), matching: find.byType(Scrollable)).first,
+      );
+      expect(scroller.position.pixels, 0);
+      final editor = t.widget<AppFlowyEditor>(find.byType(AppFlowyEditor)).editorState;
+      for (var i = 1; i < 20; i++) {
+        if (zoom >= 1) {
+          await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        } else {
+          // Zoomed out, appflowy's arrow-down misplaces the caret (its caret
+          // rect keeps unscaled height), so move it the way a keypress does.
+          editor.updateSelectionWithReason(
+            Selection.collapsed(Position(path: [i], offset: 2)),
+            reason: SelectionUpdateReason.uiEvent,
+          );
+        }
+        await t.pump(const Duration(milliseconds: 50));
+      }
+      expect(editor.selection?.end.path, [19]);
+      // Let any auto-scroll animation finish.
+      for (var i = 0; i < 40; i++) {
+        await t.pump(const Duration(milliseconds: 250));
+      }
+      expect(scroller.position.pixels, greaterThan(0), reason: 'auto-scroll should follow the caret');
+      expect(c.page.node('n')!.bounds!.height, 60);
+      expect(t.takeException(), isNull);
+    });
+  }
 }

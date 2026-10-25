@@ -51,6 +51,10 @@ class _NoteEditorState extends State<_NoteEditor> {
   final GlobalKey _footerKey = GlobalKey();
   bool _measureScheduled = false;
 
+  /// Starts tiny and is raised once the box has been measured; see
+  /// [_updateEdgeOffset].
+  double _edgeOffset = 1;
+
   /// The data the editor currently shows: either what it was loaded from or
   /// what it last committed.
   late NoteData _shown;
@@ -103,13 +107,8 @@ class _NoteEditorState extends State<_NoteEditor> {
     super.dispose();
   }
 
-  /// Measures the document after the next frame and asks the host to resize
-  /// the box to fit it.
-  ///
-  /// The editor needs a finite height (it hosts its own Overlay), so it fills
-  /// the box and the content is measured instead. In shrink-wrap mode
-  /// appflowy lays the document out as a Column of header, blocks, footer:
-  /// the content height is the header's top to the footer's bottom.
+  /// After the next frame: updates the auto-scroll edge offset and, while the
+  /// box has auto height, asks the host to resize it to fit the document.
   void _scheduleMeasure() {
     if (_measureScheduled) return;
     _measureScheduled = true;
@@ -117,46 +116,86 @@ class _NoteEditorState extends State<_NoteEditor> {
       _measureScheduled = false;
       if (!mounted) return;
       final root = _rootKey.currentContext?.findRenderObject();
-      final header = _headerKey.currentContext?.findRenderObject();
-      final footer = _footerKey.currentContext?.findRenderObject();
-      if (root is! RenderBox || header is! RenderBox || footer is! RenderBox) return;
-      if (!header.hasSize || !footer.hasSize) return;
-      final top = header.localToGlobal(Offset.zero, ancestor: root).dy;
-      final bottom = footer.localToGlobal(Offset(0, footer.size.height), ancestor: root).dy;
-      final b = widget.box.bounds;
-      final h = math.max(bottom - top, minBoxHeight);
-      if ((h - b.height).abs() < 0.5) return;
-      widget.box.requestBounds(Rect.fromLTWH(b.left, b.top, b.width, h));
+      if (root is! RenderBox || !root.hasSize) return;
+      _updateEdgeOffset(root);
+      if (widget.box.autoHeight) _fitHeight(root);
     });
+  }
+
+  /// Keeps appflowy's auto-scroll target smaller than the box.
+  ///
+  /// appflowy keeps a square of `autoScrollEdgeOffset` (220 px by default)
+  /// around the caret in view. In a viewport shorter than that square, the
+  /// square sticks out of both edges at once, so Flutter's
+  /// EdgeDraggingAutoScroller scrolls up, then down, then up again without
+  /// end: the app freezes. Half the viewport's height, measured both on the
+  /// page and on screen (the scroller compares the two at the current zoom),
+  /// can never stick out of both edges.
+  void _updateEdgeOffset(RenderBox root) {
+    final local = root.size.height;
+    final screen = MatrixUtils.transformRect(
+      root.getTransformTo(null),
+      Offset.zero & root.size,
+    ).height;
+    final edge = (math.min(local, screen) / 2)
+        .clamp(1.0, appFlowyEditorAutoScrollEdgeOffset)
+        .toDouble();
+    if ((edge - _edgeOffset).abs() < 0.5) return;
+    // Applied to the editor state at once, so a scroll started in this frame
+    // already uses it; the rebuild keeps the widget's value in step.
+    _editor.autoScrollEdgeOffset = edge;
+    setState(() => _edgeOffset = edge);
+  }
+
+  /// The editor needs a finite height (it hosts its own Overlay), so it fills
+  /// the box and the content is measured instead. In shrink-wrap mode
+  /// appflowy lays the document out as a Column of header, blocks, footer:
+  /// the content height is the header's top to the footer's bottom, which
+  /// holds even while the editor is scrolled.
+  void _fitHeight(RenderBox root) {
+    final header = _headerKey.currentContext?.findRenderObject();
+    final footer = _footerKey.currentContext?.findRenderObject();
+    if (header is! RenderBox || footer is! RenderBox) return;
+    if (!header.hasSize || !footer.hasSize) return;
+    final top = header.localToGlobal(Offset.zero, ancestor: root).dy;
+    final bottom = footer
+        .localToGlobal(Offset(0, footer.size.height), ancestor: root)
+        .dy;
+    final b = widget.box.bounds;
+    final h = math.max(bottom - top, minBoxHeight);
+    if ((h - b.height).abs() < 0.5) return;
+    widget.box.requestBounds(Rect.fromLTWH(b.left, b.top, b.width, h));
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     _scheduleMeasure();
-    return KeyedSubtree(
-      key: _rootKey,
-      child: AppFlowyEditor(
-        editorState: _editor,
-        editorScrollController: _scroll,
-        editable: widget.editable,
-        shrinkWrap: true,
-        // The box grows to fit, so there is nothing to scroll to. With auto-
-        // scroll on, a focused shrink-wrapped editor loops forever in layout.
-        disableAutoScroll: true,
-        blockComponentBuilders: _blockBuilders,
-        focusNode: _focus,
-        autoFocus: widget.editable && widget.box.autofocus,
-        header: SizedBox(key: _headerKey, height: _verticalPadding),
-        footer: SizedBox(key: _footerKey, height: _verticalPadding),
-        editorStyle: EditorStyle.desktop(
-          // Applied around every block, so only horizontal; the header and
-          // footer give the vertical padding.
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          cursorColor: scheme.primary,
-          selectionColor: scheme.primary.withValues(alpha: 0.25),
-          textStyleConfiguration: TextStyleConfiguration(
-            text: TextStyle(fontSize: 15, color: scheme.onSurface),
+    // A box with a height the user set scrolls its overflow; BoxScrollScope
+    // keeps Ctrl+wheel zooming the canvas.
+    return BoxScrollScope(
+      child: KeyedSubtree(
+        key: _rootKey,
+        child: AppFlowyEditor(
+          editorState: _editor,
+          editorScrollController: _scroll,
+          editable: widget.editable,
+          shrinkWrap: true,
+          autoScrollEdgeOffset: _edgeOffset,
+          blockComponentBuilders: _blockBuilders,
+          focusNode: _focus,
+          autoFocus: widget.editable && widget.box.autofocus,
+          header: SizedBox(key: _headerKey, height: _verticalPadding),
+          footer: SizedBox(key: _footerKey, height: _verticalPadding),
+          editorStyle: EditorStyle.desktop(
+            // Applied around every block, so only horizontal; the header and
+            // footer give the vertical padding.
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            cursorColor: scheme.primary,
+            selectionColor: scheme.primary.withValues(alpha: 0.25),
+            textStyleConfiguration: TextStyleConfiguration(
+              text: TextStyle(fontSize: 15, color: scheme.onSurface),
+            ),
           ),
         ),
       ),
