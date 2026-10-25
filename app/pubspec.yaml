@@ -16,6 +16,8 @@ dependencies:
     path: ../packages/noted_core
   noted_canvas:
     path: ../packages/noted_canvas
+  noted_box_drawing:
+    path: ../packages/boxes/drawing
   noted_box_note:
     path: ../packages/boxes/note
 

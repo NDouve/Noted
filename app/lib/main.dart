@@ -6,6 +6,7 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:noted_box_drawing/noted_box_drawing.dart';
 import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
@@ -15,7 +16,9 @@ import 'src/notebook.dart';
 
 /// The box modules compiled into this build (0034, stage 1).
 ModuleRegistry buildModules() =>
-    ModuleRegistry()..register(const NoteModule(), alwaysOn: true, isDefault: true);
+    ModuleRegistry()
+      ..register(const NoteModule(), alwaysOn: true, isDefault: true)
+      ..register(DrawingModule());
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

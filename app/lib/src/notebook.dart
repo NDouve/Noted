@@ -32,6 +32,9 @@ class Notebook extends ChangeNotifier {
   final ModuleRegistry modules;
   final Duration saveDelay;
 
+  /// The active canvas tool, kept when switching pages.
+  final CanvasToolSelection tools = CanvasToolSelection();
+
   final Map<String, PageMeta> _metas = {};
   List<UnreadablePage> _unreadable = const [];
   PageTree _tree = PageTree.build(const []);
@@ -165,6 +168,7 @@ class Notebook extends ChangeNotifier {
   void dispose() {
     _saveTimer?.cancel();
     _current?.dispose();
+    tools.dispose();
     super.dispose();
   }
 }

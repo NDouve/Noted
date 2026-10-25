@@ -3,8 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:noted_box_drawing/noted_box_drawing.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
@@ -99,5 +101,29 @@ void main() {
     c.setEditing(box.id, true);
     await nb.createPage();
     expect((await PageStore(dir).load(first)).nodes, isEmpty);
+  });
+
+  test('a drawing is saved and reads back with its strokes and erased ids', () async {
+    await nb.load();
+    final page = nb.currentId!;
+    final c = nb.current!;
+    const codec = DrawingCodec();
+    final data = DrawingData(
+      originX: 4,
+      strokes: [
+        Stroke(id: 's1', points: Float64List.fromList([1, 2, 0.5, 0, 30, 40, 0.5, 16])),
+      ],
+      erased: {'gone'},
+    );
+    c.insertBox(commitBox(createBox(codec, const Bounds(10, 10, 50, 50)), codec, data));
+    await nb.flush();
+
+    final reread = await PageStore(dir).load(page);
+    final box = reread.nodes.single as BoxRecord;
+    expect(box.typeId, DrawingCodec.id);
+    final back = codec.decode(box.data!.decode(), box.dataVersion);
+    expect(back.originX, 4);
+    expect(back.strokes.single.x(1), 30);
+    expect(back.erased, {'gone'});
   });
 }

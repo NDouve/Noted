@@ -52,6 +52,7 @@ class Home extends StatelessWidget {
                             child: PageCanvas(
                               key: ValueKey(current.page.id),
                               controller: current,
+                              tools: notebook.tools,
                             ),
                           ),
                         ],
