@@ -1,0 +1,16 @@
+name: noted_core
+description: "Noted core: page model, page file format, page tree, storage and the data side of the Box API. Pure Dart, no Flutter."
+publish_to: none
+version: 0.1.0
+resolution: workspace
+
+environment:
+  sdk: ^3.13.0
+
+# No runtime dependencies. lib/ must stay free of Flutter imports so a
+# separate pure-Dart executable (the future MCP server) can depend on it.
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
