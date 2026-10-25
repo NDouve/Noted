@@ -239,12 +239,16 @@ class CanvasController extends ChangeNotifier {
 
   /// Deletes box [id]. Only boxes this device can run can be deleted;
   /// unsupported and foreign nodes are left alone (0035).
-  void delete(String id) {
+  ///
+  /// Undo puts the box back as it is now, or as [undoTo] if given: a tool
+  /// that emptied a box before deleting it passes the box as it was before,
+  /// so one undo restores it whole.
+  void delete(String id, {BoxRecord? undoTo}) {
     final box = _page.node(id);
     if (box is! BoxRecord || modules.codecs.codecFor(box.typeId) == null) {
       return;
     }
-    _history.record(PageChange.removed(box, _page.indexOf(id)));
+    _history.record(PageChange.removed(undoTo ?? box, _page.indexOf(id)));
     if (_selectedId == id) _selectedId = null;
     if (_editingId == id) _editingId = null;
     _set(_page.removeNode(id));
