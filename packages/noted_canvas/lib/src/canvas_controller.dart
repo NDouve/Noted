@@ -36,6 +36,8 @@ class CanvasController extends ChangeNotifier {
   String? _autofocusId;
   String? _gestureId;
   Bounds? _gestureStart;
+  bool _gestureStartFixed = false;
+  bool _gestureFixesHeight = false;
   bool _disposed = false;
 
   NotedPage get page => _page;
@@ -127,19 +129,31 @@ class CanvasController extends ChangeNotifier {
     _set(_page.replaceNode(next));
   }
 
+  /// Whether [box] sizes itself to its content: its type grows with content
+  /// and the user hasn't set its height.
+  bool isAutoHeight(BoxRecord box) =>
+      modules.codecs.codecFor(box.typeId)?.sizing == BoxSizing.growsWithContent &&
+      !box.fixedHeight;
+
   void beginGesture(String id) {
     final box = _page.node(id);
     if (box is! BoxRecord) return;
     _gestureId = id;
     _gestureStart = box.bounds;
+    _gestureStartFixed = box.fixedHeight;
+    _gestureFixesHeight = false;
     _selectedId = id;
     _notify();
   }
 
-  void updateGesture(String id, Bounds bounds) {
+  /// Moves or resizes the box under the pointer. [setsHeight] marks a resize
+  /// that changes the height: a box that grows with its content keeps the
+  /// height the user gave it from then on.
+  void updateGesture(String id, Bounds bounds, {bool setsHeight = false}) {
     if (_gestureId != id) return;
     final box = _page.node(id);
     if (box is! BoxRecord) return;
+    _gestureFixesHeight |= setsHeight;
     final next = box.withBounds(bounds);
     if (identical(next, box)) return;
     _page = _page.replaceNode(next);
@@ -149,15 +163,31 @@ class CanvasController extends ChangeNotifier {
   void endGesture(String id) {
     if (_gestureId != id) return;
     final start = _gestureStart!;
+    final startFixed = _gestureStartFixed;
+    final fixes = _gestureFixesHeight;
     _gestureId = null;
     _gestureStart = null;
     final box = _page.node(id);
-    if (box is BoxRecord && box.bounds != start) {
-      _history.record(PageChange.bounds(id, start));
-      _set(_page);
+    if (box is! BoxRecord) {
+      _notify();
+      return;
+    }
+    final grows = modules.codecs.codecFor(box.typeId)?.sizing == BoxSizing.growsWithContent;
+    final next = fixes && grows ? box.withFixedHeight(true) : box;
+    if (next.bounds != start || next.fixedHeight != startFixed) {
+      _history.record(PageChange.bounds(id, start, fixedHeightBefore: startFixed));
+      _set(_page.replaceNode(next));
     } else {
       _notify();
     }
+  }
+
+  /// Returns a box whose height the user set to growing with its content.
+  void setAutoHeight(String id) {
+    final box = _page.node(id);
+    if (box is! BoxRecord || !box.fixedHeight) return;
+    _history.record(PageChange.bounds(id, box.bounds, fixedHeightBefore: true));
+    _set(_page.replaceNode(box.withFixedHeight(false)));
   }
 
   /// Deletes box [id]. Only boxes this device can run can be deleted;

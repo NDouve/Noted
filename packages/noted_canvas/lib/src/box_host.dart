@@ -97,7 +97,6 @@ class _BoxHostState extends State<BoxHost> {
     final liveBox = live;
     final selected = c.selectedId == node.id;
     final editing = c.editingId == node.id;
-    final grows = live?.codec.sizing == BoxSizing.growsWithContent;
     const m = boxHandleSize / 2;
 
     Widget content;
@@ -116,6 +115,7 @@ class _BoxHostState extends State<BoxHost> {
             data: liveBox.data,
             bounds: b.rect,
             readOnly: false,
+            autoHeight: c.isAutoHeight(node as BoxRecord),
             autofocus: _autofocus,
             commit: (data) => _commit(node.id, liveBox.codec, data),
             requestBounds: (r) => _requestBounds(node.id, r),
@@ -210,11 +210,9 @@ class _BoxHostState extends State<BoxHost> {
               ),
               _handle(_Edge.left, b),
               _handle(_Edge.right, b),
-              if (!grows) ...[
-                _handle(_Edge.bottom, b),
-                _handle(_Edge.bottomLeft, b),
-                _handle(_Edge.bottomRight, b),
-              ],
+              _handle(_Edge.bottom, b),
+              _handle(_Edge.bottomLeft, b),
+              _handle(_Edge.bottomRight, b),
             ],
           ],
         ),
@@ -241,6 +239,11 @@ class _BoxHostState extends State<BoxHost> {
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           dragStartBehavior: DragStartBehavior.down,
+          // Double-clicking the bottom edge returns the box to growing with
+          // its content.
+          onDoubleTap: edge == _Edge.left || edge == _Edge.right
+              ? null
+              : () => widget.controller.setAutoHeight(widget.node.id),
           onPanStart: (d) => _begin(d.globalPosition),
           onPanUpdate: (d) => _update(d.globalPosition, edge),
           onPanEnd: (_) => _end(),
@@ -264,6 +267,7 @@ class _BoxHostState extends State<BoxHost> {
     if (start == null || sb == null) return;
     final d = (global - start) / widget.scale;
     final Bounds next;
+    var setsHeight = false;
     if (edge == null) {
       next = Bounds(sb.x + d.dx, sb.y + d.dy, sb.width, sb.height);
     } else {
@@ -282,10 +286,11 @@ class _BoxHostState extends State<BoxHost> {
           edge == _Edge.bottomLeft ||
           edge == _Edge.bottomRight) {
         h = math.max(minBoxHeight, sb.height + d.dy);
+        setsHeight = h != sb.height;
       }
       next = Bounds(x, sb.y, w, h);
     }
-    widget.controller.updateGesture(widget.node.id, next);
+    widget.controller.updateGesture(widget.node.id, next, setsHeight: setsHeight);
   }
 
   void _end() {

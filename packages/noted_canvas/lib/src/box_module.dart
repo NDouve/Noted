@@ -26,6 +26,11 @@ abstract interface class BoxContext<D> {
   /// The box is shown but can't be edited.
   bool get readOnly;
 
+  /// The box sizes itself to its content: its type grows with content and
+  /// the user hasn't set its height. When false the box keeps its height
+  /// and the module scrolls content that overflows (see [BoxScrollScope]).
+  bool get autoHeight;
+
   /// The box was just created by the user and should take keyboard focus.
   bool get autofocus;
 
@@ -74,6 +79,7 @@ final class BoxBinding {
     required this.data,
     required this.bounds,
     required this.readOnly,
+    required this.autoHeight,
     required this.autofocus,
     required this.commit,
     required this.requestBounds,
@@ -83,6 +89,7 @@ final class BoxBinding {
   final Object? data;
   final Rect bounds;
   final bool readOnly;
+  final bool autoHeight;
   final bool autofocus;
   final void Function(Object? data) commit;
   final void Function(Rect bounds) requestBounds;
@@ -101,6 +108,8 @@ final class _TypedBoxContext<D> implements BoxContext<D> {
   Rect get bounds => _b.bounds;
   @override
   bool get readOnly => _b.readOnly;
+  @override
+  bool get autoHeight => _b.autoHeight;
   @override
   bool get autofocus => _b.autofocus;
   @override

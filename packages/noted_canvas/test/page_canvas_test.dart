@@ -78,6 +78,7 @@ class _EditorState extends State<_Editor> {
     maxLines: null,
     onChanged: (s) {
       widget.box.commit(s);
+      if (!widget.box.autoHeight) return;
       final b = widget.box.bounds;
       final lines = '\n'.allMatches(s).length + 1;
       widget.box.requestBounds(Rect.fromLTWH(b.left, b.top, b.width, 20.0 * lines + 20));
@@ -231,5 +232,88 @@ void main() {
 
   test('always-on modules cannot be switched off', () {
     expect(() => modules.setEnabled('test.text', false), throwsStateError);
+  });
+
+  Offset screenOf(WidgetTester t, Offset world) =>
+      t.state<PageCanvasState>(find.byType(PageCanvas)).view!.toScreen(world);
+
+  testWidgets('a height resize fixes the height; double-clicking the bottom edge restores auto height', (t) async {
+    final c = controllerFor(emptyPage());
+    await pump(t, c);
+    await t.tapAt(const Offset(300, 200));
+    await t.pumpAndSettle();
+    await t.enterText(find.byType(TextField), 'a');
+    await t.pumpAndSettle();
+    BoxRecord box() => c.page.nodes.single as BoxRecord;
+    expect(box().bounds.height, 40);
+    expect(c.isAutoHeight(box()), isTrue);
+
+    // Width only: still auto.
+    final b0 = box().bounds;
+    await t.dragFrom(screenOf(t, Offset(b0.right, b0.y + b0.height / 2)), const Offset(60, 0));
+    await t.pumpAndSettle();
+    expect(box().bounds.width, b0.width + 60);
+    expect(box().fixedHeight, isFalse);
+
+    // Height: fixed from now on, and typing no longer grows the box.
+    final b1 = box().bounds;
+    final bottom = screenOf(t, Offset(b1.x + b1.width / 2, b1.bottom));
+    await t.dragFrom(bottom, const Offset(0, 100));
+    await t.pumpAndSettle();
+    expect(box().bounds.height, 140);
+    expect(box().fixedHeight, isTrue);
+    await t.enterText(find.byType(TextField), 'a\nb\nc\nd\ne\nf\ng\nh');
+    await t.pumpAndSettle();
+    expect(box().bounds.height, 140);
+
+    // Double-click the bottom edge: back to growing with content.
+    final b2 = box().bounds;
+    final edge = screenOf(t, Offset(b2.x + b2.width / 2, b2.bottom));
+    await t.tapAt(edge);
+    await t.pump(const Duration(milliseconds: 50));
+    await t.tapAt(edge);
+    await t.pumpAndSettle();
+    expect(box().fixedHeight, isFalse);
+    await t.enterText(find.byType(TextField), 'a\nb\nc');
+    await t.pumpAndSettle();
+    expect(box().bounds.height, 80);
+
+    // Page undo restores the fixed height.
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    c.undo();
+    expect(box().fixedHeight, isTrue);
+  });
+
+  testWidgets('BoxScrollScope scrolls on wheel but lets Ctrl+wheel through', (t) async {
+    final scroll = ScrollController();
+    addTearDown(scroll.dispose);
+    var outer = 0;
+    await t.pumpWidget(
+      MaterialApp(
+        home: Listener(
+          onPointerSignal: (e) =>
+              GestureBinding.instance.pointerSignalResolver.register(e, (_) => outer++),
+          child: BoxScrollScope(
+            child: ListView(
+              controller: scroll,
+              children: [for (var i = 0; i < 50; i++) const SizedBox(height: 50)],
+            ),
+          ),
+        ),
+      ),
+    );
+    final pointer = TestPointer(1, PointerDeviceKind.mouse)..hover(const Offset(100, 100));
+    await t.sendEventToBinding(pointer.scroll(const Offset(0, 60)));
+    await t.pump();
+    expect(scroll.offset, greaterThan(0));
+    expect(outer, 0);
+
+    final before = scroll.offset;
+    await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await t.sendEventToBinding(pointer.scroll(const Offset(0, 60)));
+    await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await t.pump();
+    expect(scroll.offset, before);
+    expect(outer, 1);
   });
 }
