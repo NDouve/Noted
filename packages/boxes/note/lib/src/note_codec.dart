@@ -108,6 +108,16 @@ abstract final class NoteFormat {
   static const String tableCellType = 'table/cell';
   static const String rowPosition = 'rowPosition';
   static const String colPosition = 'colPosition';
+
+  /// Key, in the data of a table cell's paragraph, of the last computed
+  /// value of the cell's formula, as the text the cell shows (`"3"`,
+  /// `"#DIV/0!"`). A cell is a formula when its text starts with `=`; the
+  /// formula itself stays the paragraph's text, so a reader that knows
+  /// nothing of formulas still sees it:
+  /// `{"type": "paragraph", "data": {"delta": [{"insert": "=A1+B1"}],
+  /// "formulaValue": "3"}}`. Absent on cells that are not formulas. The
+  /// snapshot shows this value instead of the formula text.
+  static const String formulaValueKey = 'formulaValue';
 }
 
 /// A block's plain text, or null if it has none. Equations keep their LaTeX
@@ -120,6 +130,7 @@ String? _textOf(Map<String, Object?> node) {
     return formula is String ? '\$\$$formula\$\$' : '\$\$\$\$';
   }
   if (data['delta'] is! List) return null;
+  final value = data[NoteFormat.formulaValueKey];
   final b = StringBuffer();
   for (final op in data['delta']! as List) {
     if (op is! Map || op['insert'] is! String) continue;
@@ -133,7 +144,10 @@ String? _textOf(Map<String, Object?> node) {
       b.write(op['insert']);
     }
   }
-  return b.toString();
+  final text = b.toString();
+  // A formula cell reads as its result, not its formula.
+  if (value is String && text.startsWith('=')) return value;
+  return text;
 }
 
 /// Adds [node]'s lines to [lines], depth-first.

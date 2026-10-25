@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
@@ -54,16 +55,61 @@ final SelectionMenuItem mathMenuItem = SelectionMenuItem(
     final selection = editorState.selection;
     if (selection == null || !selection.isCollapsed) return;
     final node = editorState.getNodeAtPath(selection.end.path);
-    if (node == null || node.delta == null || selection.end.path.length != 1) {
+    final delta = node?.delta;
+    if (node == null || delta == null || !_canHoldMathBlock(node)) return;
+    final dialogContext = Navigator.of(context, rootNavigator: true).context;
+    // A table cell holds one block, so a cell that has text gets an inline
+    // equation at the caret instead.
+    if (_inCell(node) && delta.isNotEmpty) {
+      await _insertMathInline(
+        editorState,
+        node,
+        selection.end.offset,
+        dialogContext,
+      );
       return;
     }
-    await _insertMathBlock(
-      editorState,
-      node,
-      Navigator.of(context, rootNavigator: true).context,
-    );
+    await _insertMathBlock(editorState, node, dialogContext);
   },
 );
+
+bool _inCell(Node node) => node.parent?.type == NoteFormat.tableCellType;
+
+/// A block equation goes in the top-level line it replaces or follows, or
+/// stands in for the text of a table cell.
+bool _canHoldMathBlock(Node node) => node.path.length == 1 || _inCell(node);
+
+/// Asks for a formula, then puts it in [node] at [offset] as an inline
+/// equation.
+Future<void> _insertMathInline(
+  EditorState editor,
+  Node node,
+  int offset,
+  BuildContext dialogContext,
+) async {
+  if (!dialogContext.mounted) return;
+  final formula = await showMathDialog(
+    dialogContext,
+    initial: '',
+    block: false,
+  );
+  final delta = node.delta;
+  if (formula == null || formula.isEmpty || node.parent == null) return;
+  if (delta == null) return;
+  final at = math.min(offset, delta.length);
+  await editor.apply(
+    editor.transaction
+      ..insertText(
+        node,
+        at,
+        NoteFormat.inlineMathChar,
+        attributes: {NoteFormat.formulaKey: formula},
+      )
+      ..afterSelection = Selection.collapsed(
+        Position(path: node.path, offset: at + 1),
+      ),
+  );
+}
 
 /// Replaces [node] (when empty) or follows it with an equation block and a
 /// fresh line, then asks for the formula. [dialogContext] has to outlive
@@ -75,14 +121,21 @@ Future<void> _insertMathBlock(
   bool replaceLine = false,
 }) async {
   final path = node.path;
-  final replace = replaceLine || (node.delta?.isEmpty ?? false);
+  // A table cell has room for one block: the equation replaces its line and
+  // no fresh line follows.
+  final inCell = _inCell(node);
+  final replace = inCell || replaceLine || (node.delta?.isEmpty ?? false);
   final at = replace ? path : path.next;
   final tx = editor.transaction;
   if (replace) tx.deleteNode(node);
-  tx
-    ..insertNode(at, mathBlockNode())
-    ..insertNode(at.next, paragraphNode())
-    ..afterSelection = Selection.collapsed(Position(path: at.next));
+  tx.insertNode(at, mathBlockNode());
+  if (inCell) {
+    tx.afterSelection = Selection.collapsed(Position(path: at));
+  } else {
+    tx
+      ..insertNode(at.next, paragraphNode())
+      ..afterSelection = Selection.collapsed(Position(path: at.next));
+  }
   await editor.apply(tx);
   final inserted = editor.getNodeAtPath(at);
   if (inserted != null && dialogContext.mounted) {
@@ -98,7 +151,7 @@ Future<bool> _openBlockMath(EditorState editor) async {
   if (node == null ||
       delta == null ||
       node.type != ParagraphBlockKeys.type ||
-      selection.end.path.length != 1 ||
+      !_canHoldMathBlock(node) ||
       selection.end.offset != 2 ||
       delta.toPlainText() != r'$$') {
     return false;

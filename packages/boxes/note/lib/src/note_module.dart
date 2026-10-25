@@ -15,6 +15,8 @@ import 'package:noted_core/noted_core.dart';
 import 'math_blocks.dart';
 import 'math_input.dart';
 import 'note_codec.dart';
+import 'table_formulas.dart';
+import 'table_headers.dart';
 import 'vertical_caret.dart';
 
 /// The plain note box module: an appflowy_editor document that grows with
@@ -56,6 +58,9 @@ class _NoteEditorState extends State<_NoteEditor> {
   final GlobalKey _rootKey = GlobalKey();
   final GlobalKey _headerKey = GlobalKey();
   final GlobalKey _footerKey = GlobalKey();
+  final GlobalKey<TableHeadersState> _headersKey = GlobalKey();
+  late TableFormulas _formulas;
+  bool _syncing = false;
   bool _measureScheduled = false;
   bool _revealScheduled = false;
 
@@ -77,6 +82,10 @@ class _NoteEditorState extends State<_NoteEditor> {
     _editor = EditorState(document: Document.fromJson(json));
     _builders = _blockBuilders(_editor);
     _scroll = EditorScrollController(editorState: _editor, shrinkWrap: true);
+    _formulas = TableFormulas(_editor);
+    // Fills in the stored value of formula cells that have none (before the
+    // listener below, so loading never counts as an edit).
+    if (widget.editable) _formulas.initialize();
     _sub = _editor.transactionStream.listen(_onTransaction);
     _editor.selectionNotifier.addListener(_scheduleReveal);
   }
@@ -89,10 +98,18 @@ class _NoteEditorState extends State<_NoteEditor> {
   }
 
   void _onTransaction(EditorTransactionValue value) {
-    final (time, _, _) = value;
+    final (time, _, options) = value;
     if (time != TransactionTime.after) return;
     _scheduleMeasure();
-    if (!widget.editable) return;
+    if (!widget.editable || _syncing) return;
+    // Formula values, and references after rows or columns changed. Its own
+    // transactions come back here and are skipped; this call commits.
+    _syncing = true;
+    try {
+      _formulas.sync(options.resolvedSource);
+    } finally {
+      _syncing = false;
+    }
     final next = NoteData(_editor.document.toJson());
     _shown = next;
     widget.box.commit(next);
@@ -207,33 +224,60 @@ class _NoteEditorState extends State<_NoteEditor> {
     // A box with a height the user set scrolls its overflow; BoxScrollScope
     // keeps Ctrl+wheel zooming the canvas.
     return BoxScrollScope(
-      child: KeyedSubtree(
-        key: _rootKey,
-        child: AppFlowyEditor(
-          editorState: _editor,
-          editorScrollController: _scroll,
-          editable: widget.editable,
-          shrinkWrap: true,
-          // Caret-follow is done by _revealCaret; see there for why.
-          disableAutoScroll: true,
-          blockComponentBuilders: _builders,
-          characterShortcutEvents: _characterShortcuts,
-          commandShortcutEvents: noteCommandShortcuts,
-          focusNode: _focus,
-          autoFocus: widget.editable && widget.box.autofocus,
-          header: SizedBox(key: _headerKey, height: _verticalPadding),
-          footer: SizedBox(key: _footerKey, height: _verticalPadding),
-          editorStyle: EditorStyle.desktop(
-            // Applied around every block, so only horizontal; the header and
-            // footer give the vertical padding.
-            padding: const EdgeInsets.symmetric(horizontal: 10),
-            textSpanDecorator: mathTextSpanDecorator(_editor),
-            cursorColor: scheme.primary,
-            selectionColor: scheme.primary.withValues(alpha: 0.25),
-            textStyleConfiguration: TextStyleConfiguration(
-              text: TextStyle(fontSize: 15, color: scheme.onSurface),
-            ),
+      child: NotificationListener<ScrollNotification>(
+        // A table scrolling sideways moves its column headers.
+        onNotification: (_) {
+          _headersKey.currentState?.refresh();
+          return false;
+        },
+        child: KeyedSubtree(
+          key: _rootKey,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              _editorWidget(scheme),
+              if (widget.editable)
+                Positioned.fill(
+                  child: TableHeaders(
+                    key: _headersKey,
+                    editor: _editor,
+                    rootKey: _rootKey,
+                  ),
+                ),
+            ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _editorWidget(ColorScheme scheme) {
+    return AppFlowyEditor(
+      editorState: _editor,
+      editorScrollController: _scroll,
+      editable: widget.editable,
+      shrinkWrap: true,
+      // Caret-follow is done by _revealCaret; see there for why.
+      disableAutoScroll: true,
+      blockComponentBuilders: _builders,
+      characterShortcutEvents: _characterShortcuts,
+      commandShortcutEvents: noteCommandShortcuts,
+      focusNode: _focus,
+      autoFocus: widget.editable && widget.box.autofocus,
+      header: SizedBox(key: _headerKey, height: _verticalPadding),
+      footer: SizedBox(key: _footerKey, height: _verticalPadding),
+      editorStyle: EditorStyle.desktop(
+        // Applied around every block, so only horizontal; the header and
+        // footer give the vertical padding.
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        textSpanDecorator: formulaSpanDecorator(
+          _editor,
+          mathTextSpanDecorator(_editor),
+        ),
+        cursorColor: scheme.primary,
+        selectionColor: scheme.primary.withValues(alpha: 0.25),
+        textStyleConfiguration: TextStyleConfiguration(
+          text: TextStyle(fontSize: 15, color: scheme.onSurface),
         ),
       ),
     );

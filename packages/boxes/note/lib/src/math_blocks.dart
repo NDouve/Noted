@@ -201,7 +201,22 @@ Future<void> editMathBlock(
     block: true,
   );
   // The block may have been deleted while the dialog was open.
-  if (formula == null || node.parent == null || formula == current) return;
+  if (node.parent == null) return;
+  // A table cell shows only its first block, so an equation there stands in
+  // for the cell's text. Left empty (cancelled when new, or emptied), it
+  // goes back to being a line of text.
+  if (node.parent!.type == NoteFormat.tableCellType &&
+      (formula ?? (current is String ? current : '')).isEmpty) {
+    final path = node.path;
+    await editor.apply(
+      editor.transaction
+        ..deleteNode(node)
+        ..insertNode(path, paragraphNode())
+        ..afterSelection = Selection.collapsed(Position(path: path)),
+    );
+    return;
+  }
+  if (formula == null || formula == current) return;
   await editor.apply(
     editor.transaction..updateNode(node, {NoteFormat.formulaKey: formula}),
   );
