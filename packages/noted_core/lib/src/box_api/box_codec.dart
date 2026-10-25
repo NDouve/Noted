@@ -31,7 +31,9 @@ final class BoxApiVersion {
 }
 
 /// The Box API version this core implements (0034).
-const BoxApiVersion boxApiVersion = BoxApiVersion(0, 1);
+///
+/// 0.2 added canvas tools (on the Flutter side) and [BoxEdit].
+const BoxApiVersion boxApiVersion = BoxApiVersion(0, 2);
 
 /// How a box's size relates to its content.
 enum BoxSizing {
@@ -146,4 +148,13 @@ abstract class BoxCodec<D> {
 
   /// Permissions the box type needs.
   Set<BoxPermission> get permissions => const {};
+}
+
+/// A module's own undoable change to a box's data, kept in page history as a
+/// diff instead of a copy of the box's content (for example: strokes added
+/// or removed). The core never looks inside it; it only replays it.
+abstract interface class BoxEdit {
+  /// Applies this edit to [data], the box's decoded data. Returns the new
+  /// data and the edit that reverses this one.
+  (Object? data, BoxEdit inverse) apply(Object? data);
 }
