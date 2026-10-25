@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:appflowy_editor/appflowy_editor.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -227,6 +228,52 @@ void main() {
         expect(c.page.node('n')!.bounds!.height, 60);
         expect(t.takeException(), isNull);
       }),
+    );
+  }
+
+  // Touchpad two-finger scrolling arrives as pan/zoom events. A note that
+  // scrolls takes the gesture; the canvas must not pan underneath it.
+  for (final fixed in [true, false]) {
+    testWidgets(
+      'two-finger scroll over a ${fixed ? 'scrolling' : 'fitting'} note '
+      '${fixed ? 'scrolls the note only' : 'pans the canvas'}',
+      (t) async {
+        var box = noteBox('n', [for (var i = 0; i < 30; i++) 'line $i']);
+        if (fixed) {
+          box = box
+              .withBounds(const Bounds(100, 100, 300, 80))
+              .withFixedHeight(true);
+        }
+        final c = await pump(t, page([box]));
+        final canvas = t.state<PageCanvasState>(find.byType(PageCanvas));
+        final v0 = canvas.view!;
+        final b = c.page.node('n')!.bounds!;
+        final scroller = t.state<ScrollableState>(
+          find
+              .descendant(
+                of: find.byType(BoxHost),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        final g = await t.startGesture(
+          v0.toScreen(Offset(b.x + 150, b.y + 40)),
+          kind: PointerDeviceKind.trackpad,
+        );
+        for (var i = 0; i < 10; i++) {
+          await g.moveBy(const Offset(0, -10));
+          await t.pump();
+        }
+        await g.up();
+        await t.pumpAndSettle();
+        if (fixed) {
+          expect(scroller.position.pixels, greaterThan(0));
+          expect(canvas.view!.offset, v0.offset);
+        } else {
+          expect(scroller.position.pixels, 0);
+          expect(canvas.view!.offset, isNot(v0.offset));
+        }
+      },
     );
   }
 }

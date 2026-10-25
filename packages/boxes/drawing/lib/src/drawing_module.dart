@@ -125,6 +125,26 @@ class _DrawingViewState extends State<DrawingView> {
     });
   }
 
+  /// A two-finger touchpad scroll (pan/zoom events, not wheel events).
+  /// Claimed only when the drawing has cropped ink to reveal, so otherwise
+  /// the canvas pans; a pinch always zooms the canvas.
+  void _onPanZoomStart(PointerPanZoomStartEvent e) {
+    final (min, max) = scrollRange(widget.box.data, widget.box.bounds.size);
+    if (min != max) TrackpadClaims.claim(e.pointer);
+  }
+
+  void _onPanZoomUpdate(PointerPanZoomUpdateEvent e) {
+    if (!TrackpadClaims.isClaimed(e.pointer)) return;
+    final (min, max) = scrollRange(widget.box.data, widget.box.bounds.size);
+    // The content follows the fingers, as in a note. The local delta is in
+    // page pixels, whatever the canvas zoom.
+    final current = widget.scroll.value;
+    widget.scroll.value = Offset(
+      (current.dx - e.localPanDelta.dx).clamp(min.dx, max.dx),
+      (current.dy - e.localPanDelta.dy).clamp(min.dy, max.dy),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final data = widget.box.data;
@@ -132,6 +152,8 @@ class _DrawingViewState extends State<DrawingView> {
     _outlines.removeWhere((id, _) => !ids.contains(id));
     return Listener(
       onPointerSignal: _onSignal,
+      onPointerPanZoomStart: _onPanZoomStart,
+      onPointerPanZoomUpdate: _onPanZoomUpdate,
       child: ValueListenableBuilder<Offset>(
         valueListenable: widget.scroll,
         builder: (context, scroll, _) {

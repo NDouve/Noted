@@ -379,4 +379,127 @@ void main() {
     await draw(t, zigzag(const Offset(1060, 100), 10, amp: 10));
     expect(boxes(), hasLength(2));
   });
+
+  /// A drawing box whose ink runs well past its right edge (cropped).
+  Future<String> croppedBox(WidgetTester t) async {
+    await draw(t, zigzag(const Offset(100, 200), 70, amp: 80));
+    final id = boxes().single.id;
+    final r = boxes().single.bounds;
+    c.requestBounds(id, Bounds(r.x, r.y, 150, r.height));
+    tools.select(null);
+    await t.pump();
+    return id;
+  }
+
+  testWidgets(
+    'two-finger scroll reveals a cropped drawing; the canvas stays put',
+    (t) async {
+      await pump(t);
+      final id = await croppedBox(t);
+      final v0 = canvas(t).view!;
+      final r = boxes().single.bounds;
+      final g = await t.startGesture(
+        v0.toScreen(Offset(r.x + 75, r.y + r.height / 2)),
+        kind: PointerDeviceKind.trackpad,
+      );
+      for (var i = 0; i < 10; i++) {
+        await g.moveBy(const Offset(-12, 0)); // fingers left: reveal the right
+        await t.pump();
+      }
+      await g.up();
+      await t.pump();
+      expect(module.scrollOf(id).value.dx, closeTo(120, 1e-6));
+      expect(canvas(t).view!.offset, v0.offset);
+    },
+  );
+
+  testWidgets('two-finger scroll over an uncropped drawing pans the canvas', (
+    t,
+  ) async {
+    await pump(t);
+    await draw(t, zigzag(const Offset(100, 200), 30, amp: 80));
+    tools.select(null);
+    await t.pump();
+    final id = boxes().single.id;
+    final v0 = canvas(t).view!;
+    final r = boxes().single.bounds;
+    final g = await t.startGesture(
+      v0.toScreen(r.rect.center),
+      kind: PointerDeviceKind.trackpad,
+    );
+    for (var i = 0; i < 5; i++) {
+      await g.moveBy(const Offset(0, -10));
+      await t.pump();
+    }
+    await g.up();
+    await t.pump();
+    expect(module.scrollOf(id).value, Offset.zero);
+    expect(canvas(t).view!.offset, isNot(v0.offset));
+  });
+
+  testWidgets('a pinch over a cropped drawing still zooms the canvas', (
+    t,
+  ) async {
+    await pump(t);
+    await croppedBox(t);
+    final v0 = canvas(t).view!;
+    final r = boxes().single.bounds;
+    final at = v0.toScreen(Offset(r.x + 75, r.y + r.height / 2));
+    await t.sendEventToBinding(
+      PointerPanZoomStartEvent(pointer: 7, position: at),
+    );
+    await t.sendEventToBinding(
+      PointerPanZoomUpdateEvent(pointer: 7, position: at, scale: 1.5),
+    );
+    await t.sendEventToBinding(
+      PointerPanZoomEndEvent(pointer: 7, position: at),
+    );
+    await t.pump();
+    expect(canvas(t).view!.scale, closeTo(v0.scale * 1.5, 1e-6));
+  });
+
+  testWidgets(
+    'a stroke held at the edge auto-pans, keeps every point and fits its box',
+    (t) async {
+      await pump(t);
+      final g = await t.startGesture(
+        const Offset(600, 300),
+        kind: PointerDeviceKind.mouse,
+      );
+      final screen = [
+        for (var x = 620.0; x <= 1180; x += 20) Offset(x, 300 + (x % 60)),
+      ];
+      for (final p in screen) {
+        await g.moveTo(p);
+      }
+      final v0 = canvas(t).view!;
+      // Hold 20 px from the right edge for two seconds.
+      for (var i = 0; i < 40; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+      }
+      expect(canvas(t).view!.offset.dx, lessThan(v0.offset.dx - 300));
+      await g.up();
+      await t.pump();
+
+      final b = boxes().single;
+      final s = dataOf(b).strokes.single;
+      final points = pagePoints(b, s);
+      // At least one point per input event plus the auto-pan samples.
+      expect(points.length, greaterThan(screen.length + 1 + 30));
+      // The stroke reaches into space that was beyond the original view, and
+      // the box contains all of it.
+      final xs = [for (final p in points) p.dx];
+      expect(
+        xs.reduce(math.max),
+        greaterThan(v0.toWorld(const Offset(1200, 0)).dx + 300),
+      );
+      for (final p in points) {
+        expect(
+          b.bounds.rect.inflate(0.1).contains(p),
+          isTrue,
+          reason: '$p outside ${b.bounds}',
+        );
+      }
+    },
+  );
 }

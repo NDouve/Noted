@@ -49,7 +49,14 @@ void main() {
     expect(codec.isEmpty(codec.create()), isTrue);
     expect(codec.isEmpty(doc([para('  '), para('')])), isTrue);
     expect(codec.isEmpty(doc([para('x')])), isFalse);
-    expect(codec.isEmpty(doc([{'type': 'divider'}])), isFalse);
+    expect(
+      codec.isEmpty(
+        doc([
+          {'type': 'divider'},
+        ]),
+      ),
+      isFalse,
+    );
   });
 
   test('decode accepts its own output and rejects anything else', () {
