@@ -12,6 +12,8 @@ import 'package:flutter/scheduler.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'math_blocks.dart';
+import 'math_input.dart';
 import 'note_codec.dart';
 import 'vertical_caret.dart';
 
@@ -44,6 +46,10 @@ class _NoteEditor extends StatefulWidget {
 
 class _NoteEditorState extends State<_NoteEditor> {
   late EditorState _editor;
+
+  /// Built once per editor state: a new map on every build would make the
+  /// editor rebuild every block.
+  late Map<String, BlockComponentBuilder> _builders;
   late EditorScrollController _scroll;
   late StreamSubscription<EditorTransactionValue> _sub;
   final FocusNode _focus = FocusNode(debugLabel: 'note');
@@ -60,6 +66,7 @@ class _NoteEditorState extends State<_NoteEditor> {
   @override
   void initState() {
     super.initState();
+    installMathSlicing();
     _load(widget.box.data);
   }
 
@@ -68,6 +75,7 @@ class _NoteEditorState extends State<_NoteEditor> {
     // Give the editor its own deep copy: it mutates its document in place.
     final json = jsonDecode(jsonEncode(data.document)) as Map<String, dynamic>;
     _editor = EditorState(document: Document.fromJson(json));
+    _builders = _blockBuilders(_editor);
     _scroll = EditorScrollController(editorState: _editor, shrinkWrap: true);
     _sub = _editor.transactionStream.listen(_onTransaction);
     _editor.selectionNotifier.addListener(_scheduleReveal);
@@ -208,7 +216,8 @@ class _NoteEditorState extends State<_NoteEditor> {
           shrinkWrap: true,
           // Caret-follow is done by _revealCaret; see there for why.
           disableAutoScroll: true,
-          blockComponentBuilders: _blockBuilders,
+          blockComponentBuilders: _builders,
+          characterShortcutEvents: _characterShortcuts,
           commandShortcutEvents: noteCommandShortcuts,
           focusNode: _focus,
           autoFocus: widget.editable && widget.box.autofocus,
@@ -218,6 +227,7 @@ class _NoteEditorState extends State<_NoteEditor> {
             // Applied around every block, so only horizontal; the header and
             // footer give the vertical padding.
             padding: const EdgeInsets.symmetric(horizontal: 10),
+            textSpanDecorator: mathTextSpanDecorator(_editor),
             cursorColor: scheme.primary,
             selectionColor: scheme.primary.withValues(alpha: 0.25),
             textStyleConfiguration: TextStyleConfiguration(
@@ -241,13 +251,24 @@ const List<LocalizationsDelegate<Object>> noteLocalizationsDelegates = [
   AppFlowyEditorLocalizations.delegate,
 ];
 
-/// appflowy's standard blocks, with a placeholder short enough to fit on
-/// one line of a new note.
-final Map<String, BlockComponentBuilder> _blockBuilders = {
+/// appflowy's standard blocks (which include the table), with a placeholder
+/// short enough to fit on one line of a new note, plus the equation block.
+Map<String, BlockComponentBuilder> _blockBuilders(EditorState editor) => {
   ...standardBlockComponentBuilderMap,
   ParagraphBlockKeys.type: ParagraphBlockComponentBuilder(
     configuration: standardBlockComponentConfiguration.copyWith(
       placeholderText: (_) => 'Type here',
     ),
   ),
+  ...mathBlockBuilders(editor),
 };
+
+/// appflowy's typing shortcuts, with the math ones first and the slash menu
+/// extended with the equation item.
+final List<CharacterShortcutEvent> _characterShortcuts = [
+  inlineMathShortcut,
+  blockMathShortcut,
+  for (final e in standardCharacterShortcutEvents)
+    if (e.key != slashCommand.key) e,
+  noteSlashCommand,
+];

@@ -58,14 +58,13 @@ final class NoteCodec extends BoxCodec<NoteData> {
   @override
   Object? encode(NoteData data) => data.document;
 
-  /// One line per block, in document order.
+  /// One line per block, in document order. A table gives one line per row,
+  /// its cells joined by ` | `; a block equation is `$$latex$$` and an inline
+  /// one `$latex$`, so a reader sees the formula source.
   @override
   String snapshotText(NoteData data) {
     final lines = <String>[];
-    _walk(data.document['document'], (node, text) {
-      if (text != null) lines.add(text);
-      return true;
-    });
+    _collectLines(data.document['document'], lines);
     return lines.join('\n');
   }
 
@@ -89,6 +88,96 @@ final class NoteCodec extends BoxCodec<NoteData> {
   AiExposure aiExposure(NoteData data) => AiText(snapshotText(data));
 }
 
+/// Names in the appflowy document JSON that the note module relies on beyond
+/// appflowy's plain text blocks. Kept here so the codec stays free of
+/// Flutter and appflowy imports.
+abstract final class NoteFormat {
+  /// Block equation: `{"type": "math_equation", "data": {"formula": "..."}}`.
+  static const String mathBlockType = 'math_equation';
+
+  /// Attribute (block data and text run) that holds LaTeX source.
+  static const String formulaKey = 'formula';
+
+  /// The one character an inline equation occupies in its text run: U+FFFC
+  /// OBJECT REPLACEMENT CHARACTER, as the inline widget replaces it on
+  /// screen. Its attributes carry the formula: `{"insert": U+FFFC,
+  /// "attributes": {"formula": "x^2"}}`.
+  static final String inlineMathChar = String.fromCharCode(0xFFFC);
+
+  static const String tableType = 'table';
+  static const String tableCellType = 'table/cell';
+  static const String rowPosition = 'rowPosition';
+  static const String colPosition = 'colPosition';
+}
+
+/// A block's plain text, or null if it has none. Equations keep their LaTeX
+/// source between dollar signs.
+String? _textOf(Map<String, Object?> node) {
+  final data = node['data'];
+  if (data is! Map<String, Object?>) return null;
+  if (node['type'] == NoteFormat.mathBlockType) {
+    final formula = data[NoteFormat.formulaKey];
+    return formula is String ? '\$\$$formula\$\$' : '\$\$\$\$';
+  }
+  if (data['delta'] is! List) return null;
+  final b = StringBuffer();
+  for (final op in data['delta']! as List) {
+    if (op is! Map || op['insert'] is! String) continue;
+    final attributes = op['attributes'];
+    final formula = attributes is Map
+        ? attributes[NoteFormat.formulaKey]
+        : null;
+    if (formula is String) {
+      b.write('\$$formula\$');
+    } else {
+      b.write(op['insert']);
+    }
+  }
+  return b.toString();
+}
+
+/// Adds [node]'s lines to [lines], depth-first.
+void _collectLines(Object? node, List<String> lines) {
+  if (node is! Map<String, Object?>) return;
+  if (node['type'] == NoteFormat.tableType) {
+    lines.addAll(_tableRows(node));
+    return;
+  }
+  final text = _textOf(node);
+  if (text != null) lines.add(text);
+  final children = node['children'];
+  if (children is List) {
+    for (final c in children) {
+      _collectLines(c, lines);
+    }
+  }
+}
+
+/// One line per table row. appflowy stores cells column by column, so they
+/// are regrouped by their row and column positions; a cell with several
+/// blocks has them joined by a space.
+List<String> _tableRows(Map<String, Object?> table) {
+  final cells = <(int row, int col, String text)>[];
+  final children = table['children'];
+  if (children is! List) return const [];
+  for (final cell in children) {
+    if (cell is! Map<String, Object?>) continue;
+    final data = cell['data'];
+    final row = data is Map ? data[NoteFormat.rowPosition] : null;
+    final col = data is Map ? data[NoteFormat.colPosition] : null;
+    if (row is! int || col is! int) continue;
+    final parts = <String>[];
+    _collectLines(cell, parts);
+    cells.add((row, col, parts.join(' ')));
+  }
+  cells.sort((a, b) => a.$1 != b.$1 ? a.$1 - b.$1 : a.$2 - b.$2);
+  final rows = <int, List<String>>{};
+  for (final (row, _, text) in cells) {
+    (rows[row] ??= []).add(text);
+  }
+  return [for (final r in rows.values) r.join(' | ')];
+}
+
 /// Visits each block depth-first with its plain text (null if it has no
 /// text). Stops when [visit] returns false.
 bool _walk(
@@ -96,15 +185,7 @@ bool _walk(
   bool Function(Map<String, Object?> node, String? text) visit,
 ) {
   if (node is! Map<String, Object?>) return true;
-  final data = node['data'];
-  String? text;
-  if (data is Map<String, Object?> && data['delta'] is List) {
-    final b = StringBuffer();
-    for (final op in data['delta']! as List) {
-      if (op is Map && op['insert'] is String) b.write(op['insert']);
-    }
-    text = b.toString();
-  }
+  final text = _textOf(node);
   if (!visit(node, text)) return false;
   final children = node['children'];
   if (children is List) {
