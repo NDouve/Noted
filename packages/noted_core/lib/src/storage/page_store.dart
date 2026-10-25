@@ -5,6 +5,7 @@
 import 'dart:io';
 
 import '../format/page_format.dart';
+import '../merge/conflict_copy.dart';
 import '../model/page.dart';
 
 /// The result of scanning one page file.
@@ -21,6 +22,18 @@ final class ReadablePage extends PageEntry {
 
   /// Some box on the page has an unresolved conflict (0020).
   final bool conflicted;
+}
+
+/// A sync client's conflict copy of another page file (same page id, a name
+/// like `<id>-DESKTOP-4QK2N8L.canvas`). It is not a page of its own: the
+/// caller merges it into [originalPath] and then removes it.
+final class ConflictCopyPage extends PageEntry {
+  const ConflictCopyPage(super.path, this.meta, this.originalPath);
+
+  final PageMeta meta;
+
+  /// The page file this one is a copy of.
+  final String originalPath;
 }
 
 /// A file that couldn't be read. The store never overwrites it.
@@ -42,28 +55,84 @@ class PageStore {
   final Map<String, String> _paths = {};
 
   /// Reads every page file in the folder.
+  ///
+  /// A file that is a sync client's conflict copy of another page file in the
+  /// folder (see [conflictCopyOriginalNames]; same page id) is reported as a
+  /// [ConflictCopyPage], not as a duplicate.
   Future<List<PageEntry>> scan() async {
     await directory.create(recursive: true);
     _paths.clear();
     final entries = <PageEntry>[];
+    final read = <String, (String, NotedPage)>{}; // by file name
     await for (final f in directory.list()) {
       if (f is! File || !f.path.endsWith(extension)) continue;
       try {
-        final page = readPage(await f.readAsString());
-        if (_paths.containsKey(page.id)) {
-          entries.add(UnreadablePage(f.path, 'duplicate page id ${page.id}'));
-          continue;
-        }
-        _paths[page.id] = f.path;
-        entries.add(ReadablePage(f.path, page.meta, conflicted: hasConflicts(page)));
+        read[_name(f.path)] = (f.path, readPage(await f.readAsString()));
       } on PageFormatException catch (e) {
         entries.add(UnreadablePage(f.path, e.message));
       } on FileSystemException catch (e) {
         entries.add(UnreadablePage(f.path, e.message));
       }
     }
+    // Names that are conflict copies, with the file each one is a copy of.
+    final copyOf = <String, String>{};
+    for (final e in read.entries) {
+      for (final cand in conflictCopyOriginalNames(e.key, extension: extension)) {
+        if (read[cand]?.$2.id == e.value.$2.id) {
+          copyOf[e.key] = cand;
+          break;
+        }
+      }
+    }
+    // A copy of a copy belongs to the file at the end of the chain.
+    String rootOf(String name) {
+      var n = name;
+      while (copyOf.containsKey(n)) {
+        n = copyOf[n]!;
+      }
+      return n;
+    }
+
+    for (final e in read.entries) {
+      final (path, page) = e.value;
+      if (copyOf.containsKey(e.key)) {
+        entries.add(ConflictCopyPage(path, page.meta, read[rootOf(e.key)]!.$1));
+        continue;
+      }
+      if (_paths.containsKey(page.id)) {
+        entries.add(UnreadablePage(path, 'duplicate page id ${page.id}'));
+        continue;
+      }
+      _paths[page.id] = path;
+      entries.add(ReadablePage(path, page.meta, conflicted: hasConflicts(page)));
+    }
     return entries;
   }
+
+  /// The file that [copyPath] (holding [copy]) is a conflict copy of: a file
+  /// in the same folder whose name [copyPath]'s name extends by a hyphen and
+  /// a suffix, and that holds the same page id. Null if there is none, so the
+  /// file is not a conflict copy.
+  static Future<String?> findConflictOriginal(String copyPath, NotedPage copy) async {
+    final file = File(copyPath);
+    final dir = file.parent.path;
+    for (final cand in conflictCopyOriginalNames(_name(copyPath))) {
+      final other = File('$dir${Platform.pathSeparator}$cand');
+      try {
+        if (!await other.exists()) continue;
+        if (readPage(await other.readAsString()).id != copy.id) continue;
+      } on PageFormatException {
+        continue;
+      } on FileSystemException {
+        continue;
+      }
+      // Prefer the end of a chain of copies.
+      return await findConflictOriginal(other.path, copy) ?? other.path;
+    }
+    return null;
+  }
+
+  static String _name(String path) => path.split(RegExp(r'[\\/]')).last;
 
   Future<NotedPage> load(String pageId) async =>
       readPage(await File(_pathFor(pageId)).readAsString());

@@ -12,6 +12,7 @@ export 'src/box_api/codec_registry.dart';
 export 'src/edit/page_history.dart';
 export 'src/format/page_format.dart';
 export 'src/json/raw_json.dart';
+export 'src/merge/conflict_copy.dart';
 export 'src/merge/page_merge.dart';
 export 'src/model/bounds.dart';
 export 'src/model/ids.dart';

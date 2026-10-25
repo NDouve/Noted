@@ -181,6 +181,11 @@ class Notebook extends ChangeNotifier {
   final Map<String, String> _pathId = {};
   // Pages with a conflicted box (0020).
   final Set<String> _conflicts = {};
+  // The exact text last written or read for each binder file (by the key of
+  // the binder's folder).
+  final Map<String, String> _binderText = {};
+  // Conflict copies found by a scan, to be merged once the folders are set up.
+  final List<String> _pendingCopies = [];
   final Map<String, StreamSubscription<FileSystemEvent>> _watchers = {};
   final Map<String, Timer> _debounce = {};
   Future<void> _checking = Future.value();
@@ -245,11 +250,13 @@ class Notebook extends ChangeNotifier {
       if (e.conflicted) _conflicts.add(e.meta.id);
     }
     _unreadable = entries.whereType<UnreadablePage>().toList();
+    _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
     for (final path in await _readBinderPaths()) {
       _binders[path] = await _openBinder(path);
     }
     _rebuildTree();
     _syncWatchers();
+    await _mergePendingCopies();
     if (_tree.roots.isEmpty) {
       await createPage();
     } else {
@@ -618,6 +625,7 @@ class Notebook extends ChangeNotifier {
     _rebuildTree();
     _syncWatchers();
     await _saveBinderPaths();
+    await _mergePendingCopies();
     return section;
   }
 
@@ -673,7 +681,10 @@ class Notebook extends ChangeNotifier {
     notifyListeners();
     final job = _saving.then((_) async {
       final latest = s.binder;
-      if (latest != null) await BinderStore(Directory(path)).save(latest);
+      if (latest != null) {
+        await BinderStore(Directory(path)).save(latest);
+        _binderText[_key(path)] = latest.write();
+      }
     }).catchError((Object e) {
       debugPrint('Saving binder $path failed: $e');
     });
@@ -704,8 +715,14 @@ class Notebook extends ChangeNotifier {
         return BinderSection._(path, BinderStatus.unreadable, reason: read.reason);
       }
       final binder = (read as BinderFound).binder;
+      try {
+        _binderText[_key(path)] = await binders.file.readAsString();
+      } on Object {
+        _binderText.remove(_key(path));
+      }
       final pages = storeFactory(dir);
       final entries = await pages.scan();
+      _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
       var latest = (await binders.file.lastModified());
       final bad = <UnreadablePage>[...entries.whereType<UnreadablePage>()];
       final section = BinderSection._(
@@ -888,8 +905,10 @@ class Notebook extends ChangeNotifier {
     if (!watchFiles || _disposed) return;
     final wanted = <String, String>{
       _standalone: store.directory.path,
+      // A binder that can't be used is watched too, as long as its folder
+      // exists, so a repaired or restored binder file brings it back.
       for (final b in _binders.values)
-        if (b.available) b.path: b.path,
+        if (b.available || Directory(b.path).existsSync()) b.path: b.path,
     };
     for (final loc in _watchers.keys.toList()) {
       if (!wanted.containsKey(loc)) unawaited(_watchers.remove(loc)!.cancel());
@@ -912,17 +931,21 @@ class Notebook extends ChangeNotifier {
     if (e is FileSystemMoveEvent && e.destination != null) _schedule(e.destination!);
   }
 
-  // Only `.canvas` files matter; the temporary files of our own atomic writes
-  // end in `.tmp` and are ignored here.
+  // Only `.canvas` files and binder files matter; the temporary files of our
+  // own atomic writes end in `.tmp` and are ignored here.
   void _schedule(String path) {
-    if (!path.endsWith(PageStore.extension)) return;
+    final binderFile = _isBinderFile(path);
+    if (!binderFile && !path.endsWith(PageStore.extension)) return;
     final key = _key(path);
     _debounce[key]?.cancel();
     _debounce[key] = Timer(watchDebounce, () {
       _debounce.remove(key);
-      unawaited(checkFile(path));
+      unawaited(binderFile ? checkBinderFile(path) : checkFile(path));
     });
   }
+
+  bool _isBinderFile(String path) =>
+      path.split(RegExp(r'[\\/]')).last == binderFileName;
 
   /// Looks at the page file [path] after it may have been changed by someone
   /// else, and brings the tree and the open page up to date (0020).
@@ -942,6 +965,119 @@ class Notebook extends ChangeNotifier {
     });
     _checking = job;
     return job;
+  }
+
+  /// Looks at a binder's `noted-binder.json` ([path]) after it may have been
+  /// changed by someone else.
+  ///
+  /// Does nothing if the file still holds exactly what this app last wrote or
+  /// read. A changed cover is taken over (the sidebar and the cover update). A
+  /// file that is damaged or from a newer app marks the binder unreadable, and
+  /// a deleted one marks it unavailable, as at startup; the file is never
+  /// written in either case. A binder that was unusable and has a good file
+  /// again is opened afresh.
+  Future<void> checkBinderFile(String path) {
+    final job = _checking.then((_) async {
+      await _saving;
+      if (!_disposed) await _checkBinderFile(path);
+    }).catchError((Object e) {
+      debugPrint('Checking $path failed: $e');
+    });
+    _checking = job;
+    return job;
+  }
+
+  Future<void> _checkBinderFile(String path) async {
+    if (!_isBinderFile(path)) return;
+    final dirKey = _key(File(path).parent.path);
+    final section = _binders.values.where((b) => _key(b.path) == dirKey).firstOrNull;
+    if (section == null) return;
+    String? text;
+    String? unreadable;
+    try {
+      text = await File(path).readAsString();
+    } on FileSystemException {
+      text = null;
+    } on FormatException {
+      unreadable = 'not valid UTF-8 text';
+    }
+    if (_disposed) return;
+    if (text != null && _binderText[dirKey] == text) return;
+    Binder? binder;
+    if (text != null) {
+      _binderText[dirKey] = text;
+      try {
+        binder = Binder.parse(text);
+      } on BinderFormatException catch (e) {
+        unreadable = e.message;
+      }
+    } else {
+      _binderText.remove(dirKey);
+    }
+
+    if (binder != null) {
+      if (section.available) {
+        section.binder = binder;
+        section.lastEdited = DateTime.now();
+        notifyListeners();
+      } else {
+        await _reopenBinder(section.path);
+      }
+      return;
+    }
+    if (text == null && unreadable == null) {
+      if (section.status == BinderStatus.unavailable) return;
+      await _disableBinder(
+        section,
+        BinderStatus.unavailable,
+        'No $binderFileName in this folder.',
+      );
+    } else if (section.status != BinderStatus.unreadable || section.reason != unreadable) {
+      await _disableBinder(section, BinderStatus.unreadable, unreadable ?? 'unreadable');
+    }
+  }
+
+  /// Takes the pages of the binder out of the notebook and marks it unusable.
+  /// Its files, binder file included, are not touched.
+  Future<void> _disableBinder(BinderSection section, BinderStatus status, String reason) async {
+    final path = section.path;
+    final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
+    final openHere = ids.contains(currentId);
+    if (openHere) await _closeCurrent(); // saves while the store still works
+    for (final id in ids) {
+      _metas.remove(id);
+      _loc.remove(id);
+      _conflicts.remove(id);
+    }
+    for (final e in _pathId.entries.toList()) {
+      if (ids.contains(e.value)) {
+        _pathId.remove(e.key);
+        _known.remove(e.key);
+      }
+    }
+    final last = _lastDeleted;
+    if (last != null && last._location == path) _lastDeleted = null;
+    section
+      ..status = status
+      ..reason = reason
+      ..binder = null
+      ..store = null
+      ..unreadable = const []
+      ..tree = PageTree.build(const []);
+    if (_coverPath == path) _coverPath = null;
+    _rebuildTree();
+    _syncWatchers();
+    if (openHere) await _openFallback(_standalone);
+  }
+
+  /// A binder whose file is readable again: reads the folder afresh.
+  Future<void> _reopenBinder(String path) async {
+    final fresh = await _openBinder(path);
+    if (_disposed) return;
+    _binders[path] = fresh;
+    _rebuildTree();
+    _syncWatchers();
+    await _mergePendingCopies(inQueue: true);
   }
 
   Future<void> _checkFile(String path) async {
@@ -967,6 +1103,10 @@ class Notebook extends ChangeNotifier {
       _fileGone(loc, key, path);
       return;
     }
+    if (conflictCopyOriginalNames(path.split(RegExp(r'[\\/]')).last).isNotEmpty &&
+        await _tryConflictCopy(loc, key, path, text, time)) {
+      return;
+    }
     if (_known[key] == text) return;
     _known[key] = text;
     final NotedPage page;
@@ -981,6 +1121,90 @@ class Notebook extends ChangeNotifier {
     } else {
       await _applyClosed(page, loc, key, path);
     }
+  }
+
+  /// Merges the conflict copies a scan found, and forgets them.
+  Future<void> _mergePendingCopies({bool inQueue = false}) async {
+    final paths = List<String>.of(_pendingCopies);
+    _pendingCopies.clear();
+    for (final p in paths) {
+      await (inQueue ? _checkFile(p) : checkFile(p));
+    }
+  }
+
+  /// Handles [path] if it is a sync client's conflict copy of another page
+  /// file (same page id, see [conflictCopyOriginalNames]): merges it into the
+  /// original, checks the saved result and only then deletes the copy. Returns
+  /// false if the file is not a conflict copy. If anything fails the copy is
+  /// left where it is and listed as a file that can't be opened.
+  Future<bool> _tryConflictCopy(
+    String loc,
+    String key,
+    String path,
+    String text,
+    int time,
+  ) async {
+    final NotedPage copy;
+    try {
+      copy = readPage(text);
+    } on PageFormatException {
+      return false;
+    }
+    final originalPath = await PageStore.findConflictOriginal(path, copy);
+    if (originalPath == null) return false;
+    try {
+      await _mergeConflictCopy(loc, path, originalPath, copy, time);
+      _known.remove(key);
+      _dropUnreadable(loc, path);
+    } on Object catch (e) {
+      debugPrint('Merging conflict copy $path failed, keeping it: $e');
+      _known.remove(key);
+      _knownUnreadable(loc, key, path, 'Could not be merged into its page: $e');
+    }
+    return true;
+  }
+
+  Future<void> _mergeConflictCopy(
+    String loc,
+    String copyPath,
+    String originalPath,
+    NotedPage copy,
+    int time,
+  ) async {
+    final id = copy.id;
+    final st = _storeOf(loc);
+    final c = _current;
+    final isOpen = c != null && c.page.id == id && _loc[id] == loc;
+    final NotedPage original;
+    final String? failure;
+    if (isOpen) {
+      // Merge into the page on screen, keeping unsaved edits, and save it.
+      original = c.page;
+      final merged = mergeConflictCopy(original, copy, modules.codecs, copyTime: time).page;
+      if (writePage(merged) != writePage(original)) c.applyExternal(merged);
+      await flush();
+      failure = verifyConflictCopyMerge(readPage(await st.readText(id)), original, copy);
+    } else {
+      final text = await File(originalPath).readAsString();
+      original = readPage(text);
+      final merged = mergeConflictCopy(original, copy, modules.codecs, copyTime: time).page;
+      final out = writePage(merged);
+      if (out != text) {
+        // Make the store write to the file the original was read from.
+        if (_key(st.pathFor(id)) != _key(originalPath)) await st.scan();
+        await _write(loc, merged);
+        final back = await st.readText(id);
+        if (back != out) throw const FormatException('the saved page differs from what was written');
+        failure = verifyConflictCopyMerge(readPage(back), original, copy);
+        if (_loc[id] != loc) {
+          await _applyClosed(merged, loc, _key(originalPath), originalPath);
+        }
+      } else {
+        failure = verifyConflictCopyMerge(readPage(text), original, copy);
+      }
+    }
+    if (failure != null) throw FormatException(failure);
+    await File(copyPath).delete();
   }
 
   /// The file is gone.

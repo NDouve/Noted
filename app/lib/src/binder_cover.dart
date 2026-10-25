@@ -49,10 +49,33 @@ class _BinderCoverState extends State<BinderCover> {
     _title = TextEditingController(text: b?.title ?? '');
     _description = TextEditingController(text: b?.description ?? '');
     _owner = TextEditingController(text: b?.owner ?? '');
+    _applied = (b?.title ?? '', b?.description ?? '', b?.owner ?? '');
+    widget.notebook.addListener(_takeExternalChanges);
+  }
+
+  // The values of the binder the fields were last brought in line with.
+  late (String, String, String) _applied;
+
+  // The binder file changed on another machine: show the new values. A field
+  // whose text the user has changed and not saved yet keeps that text.
+  void _takeExternalChanges() {
+    final b = _section?.binder;
+    if (b == null) return;
+    void take(TextEditingController c, String was, String now) {
+      if (now == was || c.text == now) return;
+      if (c.text != was) return; // being edited
+      c.text = now;
+    }
+
+    take(_title, _applied.$1, b.title);
+    take(_description, _applied.$2, b.description);
+    take(_owner, _applied.$3, b.owner);
+    _applied = (b.title, b.description, b.owner);
   }
 
   @override
   void dispose() {
+    widget.notebook.removeListener(_takeExternalChanges);
     // Leaving the cover keeps what was typed. The notebook is told after the
     // widget tree has finished updating.
     final nb = widget.notebook;
