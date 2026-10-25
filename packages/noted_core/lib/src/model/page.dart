@@ -49,6 +49,8 @@ final class BoxRecord extends CanvasNode {
     required RawJson data,
     required String snapshotText,
     required String rev,
+    String? device,
+    int? at,
   }) {
     final b = bounds.rounded();
     final noted = RawObject([
@@ -56,6 +58,8 @@ final class BoxRecord extends CanvasNode {
       ('v', RawJson.encode(dataVersion)),
       ('rev', RawJson.encode(rev)),
       ('data', data),
+      if (device != null) ('device', RawJson.encode(device)),
+      if (at != null) ('at', RawJson.encode(at)),
     ]);
     final fields = RawObject([
       ('id', RawJson.encode(id)),
@@ -140,6 +144,14 @@ final class BoxRecord extends CanvasNode {
 
   /// The module's data, exactly as stored. Null if the field is absent.
   RawJson? get data => noted['data'];
+
+  /// The computer that last wrote this box's content (`noted.device`), or
+  /// null if unknown.
+  String? get device => noted.string('device');
+
+  /// When this box's content was last written (`noted.at`, ms since the
+  /// epoch), or null if unknown.
+  int? get editedAt => noted.integer('at');
 
   /// The user set this box's height. A box whose type grows with its content
   /// stops growing and scrolls internally instead. Stored as
@@ -243,16 +255,23 @@ final class BoxRecord extends CanvasNode {
 
   /// Returns a copy with new module data and snapshot. The current revision
   /// becomes the base revision and [newRev] the current one.
+  ///
+  /// [device] and [at] stamp who wrote the content and when; a stamp left
+  /// null is removed, so the header never describes older content.
   BoxRecord withContent({
     required RawJson data,
     required int dataVersion,
     required String snapshotText,
     required String newRev,
+    String? device,
+    int? at,
   }) {
     var n = noted
         .set('v', RawJson.encode(dataVersion))
         .set('rev', RawJson.encode(newRev))
         .set('data', data);
+    n = device == null ? n.remove('device') : n.set('device', RawJson.encode(device));
+    n = at == null ? n.remove('at') : n.set('at', RawJson.encode(at));
     n = rev == null ? n.remove('baseRev') : n.set('baseRev', RawJson.encode(rev));
     final f = fields
         .set('text', RawJson.encode(snapshotText))
@@ -284,27 +303,34 @@ final class BoxRecord extends CanvasNode {
 /// Another version of a box that a merge couldn't combine (0020), recorded in
 /// the box's `noted` header as `"conflicts":[...]`:
 ///
-/// - `{"node":<the other version's whole node>,"at":<ms since epoch>}`
+/// - `{"node":<the other version's whole node>,"at":<ms since epoch>}`, plus
+///   `"device":"<computer name>"` when the other version's box says which
+///   computer wrote it
 /// - `{"deleted":true,"at":<ms>}` when the other side deleted the box while
 ///   this one edited it.
 ///
 /// The node is kept as raw text, so a device that can't run the box carries
 /// it through untouched.
 final class BoxConflict {
-  const BoxConflict._(this.raw, this.node, this.deleted, this.at);
+  const BoxConflict._(this.raw, this.node, this.deleted, this.at, this.device);
 
-  /// The other version of the box, saved at [at] (ms since the epoch).
-  factory BoxConflict.other({required RawJson node, required int at}) =>
+  /// The other version of the box, saved at [at] (ms since the epoch) on the
+  /// computer called [device], if known.
+  factory BoxConflict.other({required RawJson node, required int at, String? device}) =>
       BoxConflict._(
-        RawJson.trusted('{"node":${node.text},"at":$at}'),
+        RawJson.trusted(
+          '{"node":${node.text},"at":$at'
+          '${device == null ? '' : ',"device":${RawJson.encode(device).text}'}}',
+        ),
         node,
         false,
         at,
+        device,
       );
 
   /// The other side deleted the box.
   factory BoxConflict.deleted({required int at}) =>
-      BoxConflict._(RawJson.trusted('{"deleted":true,"at":$at}'), null, true, at);
+      BoxConflict._(RawJson.trusted('{"deleted":true,"at":$at}'), null, true, at, null);
 
   /// Reads one entry of a `conflicts` array, or returns null if malformed.
   static BoxConflict? tryRead(RawJson raw) {
@@ -314,7 +340,7 @@ final class BoxConflict {
       final node = o['node'];
       final deleted = o['deleted']?.text == 'true';
       if (node == null && !deleted) return null;
-      return BoxConflict._(raw, node, deleted, o.integer('at') ?? 0);
+      return BoxConflict._(raw, node, deleted, o.integer('at') ?? 0, o.string('device'));
     } on FormatException {
       return null;
     }
@@ -331,6 +357,9 @@ final class BoxConflict {
 
   /// When the other version was saved, in ms since the epoch.
   final int at;
+
+  /// The computer that wrote the other version, if it said so.
+  final String? device;
 
   @override
   bool operator ==(Object other) => other is BoxConflict && other.raw == raw;

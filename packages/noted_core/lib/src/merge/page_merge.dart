@@ -83,7 +83,7 @@ PageMerge mergePage(
     } else if (b != null && _same(b, m)) {
       out.add(t);
     } else if (m is BoxRecord) {
-      out.add(m.withConflict(BoxConflict.other(node: t.toRaw(), at: theirsTime)));
+      out.add(m.withConflict(BoxConflict.other(node: t.toRaw(), at: theirsTime, device: t is BoxRecord ? t.device : null)));
       conflicted.add(m.id);
     } else {
       // Both changed a node Noted doesn't own: keep mine and keep theirs as
@@ -189,7 +189,7 @@ bool _same(CanvasNode a, CanvasNode b) => a.toRaw() == b.toRaw();
   if (!_sameList(want, r.conflicts)) r = r.withConflicts(want);
 
   if (isConflict) {
-    final other = BoxConflict.other(node: t.toRaw(), at: theirsTime);
+    final other = BoxConflict.other(node: t.toRaw(), at: theirsTime, device: t.device);
     if (!r.conflicts.any((c) => c.node == other.node)) r = r.withConflict(other);
   }
   return (r, isConflict);

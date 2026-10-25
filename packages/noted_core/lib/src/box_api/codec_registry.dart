@@ -95,7 +95,14 @@ final class CodecRegistry {
 }
 
 /// Creates a record for a new box of [codec]'s type.
-BoxRecord createBox(BoxCodec<Object?> codec, Bounds bounds) {
+///
+/// [device] and [at] stamp who created it and when (see [BoxRecord.device]).
+BoxRecord createBox(
+  BoxCodec<Object?> codec,
+  Bounds bounds, {
+  String? device,
+  int? at,
+}) {
   final data = codec.create();
   return BoxRecord.create(
     id: newId(),
@@ -105,14 +112,24 @@ BoxRecord createBox(BoxCodec<Object?> codec, Bounds bounds) {
     data: RawJson.encode(codec.encode(data)),
     snapshotText: codec.snapshotText(data),
     rev: newId(),
+    device: device,
+    at: at,
   );
 }
 
 /// Returns [box] with [data] committed through [codec]: encoded, with a fresh
-/// snapshot and a new revision.
-BoxRecord commitBox(BoxRecord box, BoxCodec<Object?> codec, Object? data) {
+/// snapshot and a new revision. [device] and [at] stamp the write.
+BoxRecord commitBox(
+  BoxRecord box,
+  BoxCodec<Object?> codec,
+  Object? data, {
+  String? device,
+  int? at,
+}) {
   assert(box.typeId == codec.typeId);
   return box.withContent(
+    device: device,
+    at: at,
     data: RawJson.encode(codec.encode(data)),
     dataVersion: codec.dataVersion,
     snapshotText: codec.snapshotText(data),
