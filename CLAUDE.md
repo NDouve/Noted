@@ -48,7 +48,7 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 - the canvas (zoom, bounded pan, Fit all)
 - the page tree (pages that become dividers once they have subpages)
 - the Box API
-- plain note boxes and editor boxes, using `appflowy_editor`
+- the plain note box, using `appflowy_editor` (the only box type in Prototype 1)
 
 **Out of scope until the maintainer starts the next phase:**
 - drawing
