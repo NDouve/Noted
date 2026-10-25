@@ -407,6 +407,80 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Rationale:** One resize behavior for every box, while a new note still sizes itself to what is typed.
 - **Alternatives considered:** plain note boxes that only grow (0015); fixed size and internal scrolling for special boxes only (0005).
 
+## 0040 — Box API 0.2: canvas tools and content diffs
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:**
+  - The Box API is at version 0.2. While the major version is 0, a module must target the host's exact version.
+  - **Canvas tools:** a module can add tools to the canvas, each with an id, label, icon, keyboard shortcut, cursor and toolbar options.
+    - While a tool is active, it receives every pointer that goes down on the canvas (any button but the middle one) as a session: start, updates, end or cancel.
+    - The session paints its live feedback on an overlay above every box.
+    - Boxes receive no pointer input while a tool is active. Wheel, Ctrl+wheel, middle-drag and touchpad gestures still pan and zoom the canvas.
+    - Page bounds stay fixed until the session ends (0016).
+    - The select/type tool is built in and selected with V or Escape.
+  - **Content diffs (`BoxEdit`):** a module can record a change to a box's content in page-level undo as a diff it defines. The core replays the diff through the box's codec without inspecting it, and restores the box's bounds if the edit changed them.
+  - **`delete(undoTo:)`:** a tool that empties a box before deleting it passes the box as it was. One undo then restores the box with its content.
+- **Rationale:** Drawing is a module (0034), and ink anywhere (0016) needs input across the whole canvas without the core knowing about strokes. Undo as diffs avoids keeping copies of large box content in memory.
+- **Alternatives considered:** page undo that stores full copies of box content; a separate undo stack inside each module.
+
+## 0041 — Drawing box data format
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:**
+  - Type `noted.drawing`, data version 1. The data has three fields:
+    - `origin`: `[x, y]`.
+    - `strokes`: each stroke has `id`; `tool`; `color` (`#AARRGGBB`); `size` (width in page pixels); `pressure` (whether the device reported pressure); `t0` (start time, milliseconds since the epoch); and `pts`, a flat list of x, y, pressure and time for every point. x and y are content coordinates rounded to 0.1 px, pressure is rounded to 0.01, and time is milliseconds since `t0`.
+    - `erased`: the ids of deleted strokes.
+  - A point is drawn at: the box's top-left corner, plus `origin`, plus the point, minus the box's internal scroll offset. Growing a box to the left or upward changes only `origin`; strokes are never rewritten.
+  - Strokes are kept in order of `t0`, then `id`.
+  - Merge: the union of strokes by id, minus every id either side erased. The local `origin` is kept.
+  - A drawing box has no text snapshot, and an AI sees only a "Drawing" placeholder. Where its image snapshot is stored is not decided yet (see Open items).
+- **Rationale:**
+  - The stroke model is meant to be shared with reMarkable strokes (0030).
+  - Erased ids keep a union merge (0020) from bringing erased strokes back.
+  - Storing strokes relative to an origin keeps growth and box moves from rewriting stroke data.
+- **Alternatives considered:**
+
+| Option | Reason not chosen |
+|---|---|
+| Strokes in page coordinates | Moving a box would rewrite every stroke. |
+| No record of erased strokes | A union merge would bring erased strokes back. |
+
+## 0042 — Adding strokes to drawing boxes
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:**
+  - A stroke that starts inside a drawing box, or within 32 page pixels of one, is added to the topmost such box, which grows to fit it. Any other stroke starts a new drawing box, which may overlap other boxes (0024).
+  - The 32 px join distance is a constant (`joinDistance`), to be tuned through use.
+  - A stroke that runs past the edge of a resized drawing box grows the box. Resizing a drawing box only crops the visible area; the rest scrolls with the wheel or a two-finger touchpad scroll, using the select tool.
+- **Rationale:** Handwriting of nearby words and shapes stays in one box, and a drawing never loses ink to a resize.
+- **Alternatives considered:** a new box for every stroke; adding to a box only when the stroke starts inside it.
+
+## 0043 — Auto-scroll while using a canvas tool
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:**
+  - The live feedback of a tool session, such as the stroke being drawn, is clipped to the canvas. It never paints over the page tree or other UI.
+  - When the pointer is within 40 screen pixels of a canvas edge, or past it, the canvas pans toward that edge. The speed grows with the distance into or past the edge: 600 px/s at the edge, up to 3000 px/s.
+  - While the canvas pans, the session keeps receiving samples at the pointer's position, in page coordinates.
+  - During a session, the pan bounds include everything the view has shown in that session, so a stroke can continue into new space.
+- **Rationale:** A stroke can carry on past the visible area without lifting the pen, as a text selection does in a document.
+- **Alternatives considered:** no auto-scroll, with strokes ending at the canvas edge; auto-scroll at a fixed speed.
+
+## 0044 — Caret handling in the plain note box
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:**
+  - `appflowy_editor`'s auto-scroll is switched off in plain note boxes. The note box keeps the caret visible itself: after each selection change in a fixed-height note, if the caret is outside the visible area, the note scrolls once, just enough to show it, with a 4 px margin.
+  - The caret is measured from its own block, so this works at any canvas zoom.
+  - Arrow up and arrow down, with and without Shift, are replaced with versions that work at any zoom.
+  - Trade-off: dragging a text selection past the edge of a fixed-height note doesn't scroll it. The wheel, touchpad, arrow keys and typing do.
+- **Rationale:**
+  - `appflowy_editor` keeps a 220 px square around the caret in view. In a smaller viewport, its auto-scroller scrolls up and down without end, which froze the app.
+  - Its caret rectangle and its document hit test use unscaled sizes on a zoomed canvas, so its auto-scroll aims at the wrong place and its arrow keys skip or repeat lines when zoomed out.
+- **Alternatives considered:** keeping appflowy's auto-scroll with a smaller square (it still aims at the wrong place when zoomed); no internal scrolling in notes.
+- **Notes:** The zoom problems are to be reported upstream to appflowy-editor.
+
 ---
 
 ## Open items
@@ -416,6 +490,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **MCP:** the full tool and resource list, and the user experience for linking an AI to a box.
 - **Cloud conflict copies:** each provider names its conflict-copy files differently.
 - **Per-AI overrides:** different rules for different AIs on the same page (deferred).
+- **Drawing box image snapshots:** where a drawing box's image snapshot (0035) is stored in the page format (0041).
 
 ## Risks to test early
 - Text editing while the canvas is zoomed (known Flutter selection issues under scale transforms).
