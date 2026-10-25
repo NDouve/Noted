@@ -11,6 +11,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'box_module.dart';
 import 'canvas_controller.dart';
+import 'conflict_dialog.dart';
 import 'geometry.dart';
 
 /// Width of the resize strip on each edge, centred on the edge.
@@ -137,6 +138,7 @@ class _BoxHostState extends State<BoxHost> {
     }
 
     final scheme = Theme.of(context).colorScheme;
+    final conflicted = node is BoxRecord && node.isConflicted;
     final showChrome = editable && (_hover || selected || editing);
 
     return Positioned(
@@ -170,6 +172,23 @@ class _BoxHostState extends State<BoxHost> {
                         color: selected || editing
                             ? scheme.primary
                             : scheme.outlineVariant,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            if (conflicted)
+              Positioned(
+                left: m,
+                top: boxGripHeight,
+                width: b.width,
+                height: b.height,
+                child: const IgnorePointer(
+                  child: DecoratedBox(
+                    key: ValueKey('conflict-frame'),
+                    decoration: BoxDecoration(
+                      border: Border.fromBorderSide(
+                        BorderSide(color: conflictColor, width: 2),
                       ),
                     ),
                   ),
@@ -217,6 +236,37 @@ class _BoxHostState extends State<BoxHost> {
               _handle(_Edge.bottomLeft, b),
               _handle(_Edge.bottomRight, b),
             ],
+            if (conflicted)
+              Positioned(
+                right: m,
+                top: 0,
+                height: boxGripHeight,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    key: ValueKey('conflict-badge-${node.id}'),
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => showConflictDialog(context, c, node.id),
+                    child: Container(
+                      alignment: Alignment.center,
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      decoration: const BoxDecoration(
+                        color: conflictColor,
+                        borderRadius: BorderRadius.vertical(top: Radius.circular(3)),
+                      ),
+                      child: const Text(
+                        'Conflict',
+                        style: TextStyle(
+                          fontSize: 10,
+                          height: 1,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.black,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
       ),

@@ -267,6 +267,99 @@ class CanvasController extends ChangeNotifier {
   /// Replaces the page header, for example after a rename.
   void updateMeta(PageMeta meta) => _set(_page.withMeta(meta));
 
+  /// Replaces the whole page with the result of merging a change made by
+  /// someone else (0020). Not recorded for undo. [save] says whether the
+  /// merged page differs from what is on disk and must be written.
+  void applyExternal(NotedPage page, {bool save = true}) {
+    if (_disposed) return;
+    _page = page;
+    if (_selectedId != null && _page.node(_selectedId!) == null) {
+      _selectedId = null;
+    }
+    if (_editingId != null && _page.node(_editingId!) == null) {
+      _editingId = null;
+    }
+    if (save) onChanged?.call(_page);
+    _notify();
+  }
+
+  /// The boxes that have another version waiting to be resolved (0020).
+  List<BoxRecord> get conflictedBoxes => [
+    for (final n in _page.nodes)
+      if (n is BoxRecord && n.isConflicted) n,
+  ];
+
+  /// Whether any box on the page is conflicted.
+  bool get hasConflicts => _page.nodes.any((n) => n is BoxRecord && n.isConflicted);
+
+  /// Keeps this device's version of the conflicted box [id]; for a box the
+  /// other side deleted, keeps the box. One undo step.
+  void resolveKeepMine(String id) {
+    final box = _page.node(id);
+    if (box is! BoxRecord || !box.isConflicted) return;
+    _history.record(PageChange.replaced(box));
+    _set(_page.replaceNode(box.withoutConflicts()));
+  }
+
+  /// Replaces the conflicted box [id] with the other version (the latest
+  /// recorded). One undo step.
+  void resolveKeepTheirs(String id) {
+    final box = _page.node(id);
+    if (box is! BoxRecord) return;
+    final other = box.conflicts.where((c) => c.node != null).lastOrNull;
+    if (other == null) return;
+    final node = readNode(other.node!, fallbackId: id);
+    final CanvasNode next = switch (node) {
+      BoxRecord() => node.withId(id).withoutConflicts(),
+      ForeignNode() => node.copyWithId(id) ?? node,
+    };
+    _history.record(PageChange.replaced(box));
+    _set(_page.replaceNode(next));
+  }
+
+  /// Keeps this device's version and adds each other version as a new box
+  /// with a new id, just to the right of it. One undo step.
+  void resolveKeepBoth(String id) {
+    final box = _page.node(id);
+    if (box is! BoxRecord) return;
+    final others = [
+      for (final c in box.conflicts)
+        if (c.node != null) c.node!,
+    ];
+    if (others.isEmpty) return;
+    final changes = <PageChange>[PageChange.replaced(box)];
+    var page = _page.replaceNode(box.withoutConflicts());
+    var x = box.bounds.x + box.bounds.width + 24;
+    var at = page.indexOf(id) + 1;
+    for (final raw in others) {
+      final node = readNode(raw, fallbackId: newId());
+      final CanvasNode? copy = switch (node) {
+        BoxRecord() => node.withId(newId()).withoutConflicts().withBounds(
+          Bounds(x, box.bounds.y, node.bounds.width, node.bounds.height),
+        ),
+        ForeignNode() => node.copyWithId(newId()),
+      };
+      if (copy == null) continue;
+      changes.add(PageChange.added(copy.id));
+      page = page.insertNode(copy, at++);
+      x += (copy.bounds?.width ?? box.bounds.width) + 24;
+    }
+    _history.record(PageChange.group(changes));
+    _set(page);
+  }
+
+  /// Deletes the conflicted box [id], including a box the other side deleted
+  /// that this side kept. Also works for boxes this device can't run. One
+  /// undo step.
+  void resolveDelete(String id) {
+    final box = _page.node(id);
+    if (box is! BoxRecord || !box.isConflicted) return;
+    _history.record(PageChange.removed(box, _page.indexOf(id)));
+    if (_selectedId == id) _selectedId = null;
+    if (_editingId == id) _editingId = null;
+    _set(_page.removeNode(id));
+  }
+
   bool _isEmpty(String id) {
     final box = _page.node(id);
     if (box is! BoxRecord) return false;

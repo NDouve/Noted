@@ -13,6 +13,7 @@ export 'src/box_scroll.dart';
 export 'src/canvas_controller.dart';
 export 'src/canvas_tool.dart';
 export 'src/canvas_view.dart';
+export 'src/conflict_dialog.dart';
 export 'src/geometry.dart';
 export 'src/module_registry.dart';
 export 'src/page_canvas.dart';
