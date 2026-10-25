@@ -5,6 +5,7 @@
 import 'package:flutter/material.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'binder_cover.dart';
 import 'notebook.dart';
 
 /// Where on a row a dragged page is dropped.
@@ -45,45 +46,83 @@ class _PageTreeViewState extends State<PageTreeView> {
   DropZone? _hoverZone;
   bool _hoverEnd = false;
 
+  // A header being dropped on: a binder's path, or '' for "Pages".
+  String? _hoverHeader;
+
   Notebook get _nb => widget.notebook;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final rows = <Widget>[];
-    void add(PageMeta p, int depth) {
-      rows.add(_row(context, p, depth));
-      if (_collapsed.contains(p.id)) return;
-      for (final c in _nb.tree.childrenOf(p.id)) {
-        add(c, depth + 1);
+    void addTree(PageTree tree, Color? stripe) {
+      void add(PageMeta p, int depth) {
+        rows.add(_row(context, p, depth, stripe));
+        if (_collapsed.contains(p.id)) return;
+        for (final c in tree.childrenOf(p.id)) {
+          add(c, depth + 1);
+        }
+      }
+
+      for (final r in tree.roots) {
+        add(r, 0);
       }
     }
 
-    for (final r in _nb.tree.roots) {
-      add(r, 0);
+    addTree(_nb.tree, null);
+    final cantOpen = <UnreadablePage>[..._nb.unreadable];
+    for (final b in _nb.binders) {
+      rows.add(_binderHeader(context, b));
+      if (!b.available) continue;
+      cantOpen.addAll(b.unreadable);
+      if (!_collapsed.contains(_binderKey(b))) {
+        addTree(b.tree, parseBinderColor(b.color));
+      }
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
-          child: Row(
-            children: [
-              Expanded(child: Text('Pages', style: theme.textTheme.titleSmall)),
-              IconButton(
-                tooltip: 'New page',
-                icon: const Icon(Icons.add),
-                onPressed: () => _nb.createPage(),
-              ),
-            ],
+        DragTarget<String>(
+          key: const ValueKey('pages-header'),
+          // Dropping a page on the "Pages" header makes it a standalone page.
+          onWillAcceptWithDetails: (d) => _nb.treeOfPage(d.data)[d.data] != null,
+          onMove: (_) {
+            if (_hoverHeader != '') setState(() => _hoverHeader = '');
+          },
+          onLeave: (_) {
+            if (_hoverHeader == '') setState(() => _hoverHeader = null);
+          },
+          onAcceptWithDetails: (d) {
+            setState(() => _hoverHeader = null);
+            _guard(() => _nb.moveToLocation(d.data));
+          },
+          builder: (context, _, _) => Container(
+            color: _hoverHeader == '' ? theme.colorScheme.primary.withValues(alpha: 0.18) : null,
+            padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+            child: Row(
+              children: [
+                Expanded(child: Text('Pages', style: theme.textTheme.titleSmall)),
+                if (_nb.pickFolder != null)
+                  IconButton(
+                    tooltip: 'New binder',
+                    icon: const Icon(Icons.create_new_folder_outlined),
+                    onPressed: () => _guard(_nb.newBinder),
+                  ),
+                IconButton(
+                  tooltip: 'New page',
+                  icon: const Icon(Icons.add),
+                  onPressed: () => _nb.createPage(),
+                ),
+              ],
+            ),
           ),
         ),
         Expanded(
           child: CustomScrollView(
             slivers: [
               SliverList(delegate: SliverChildListDelegate(rows)),
-              if (_nb.unreadable.isNotEmpty)
+              if (cantOpen.isNotEmpty)
                 SliverList(
                   delegate: SliverChildListDelegate([
                     const Divider(),
@@ -91,7 +130,7 @@ class _PageTreeViewState extends State<PageTreeView> {
                       padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
                       child: Text("Can't open", style: theme.textTheme.labelSmall),
                     ),
-                    for (final u in _nb.unreadable)
+                    for (final u in cantOpen)
                       Tooltip(
                         message: u.reason,
                         child: ListTile(
@@ -107,7 +146,7 @@ class _PageTreeViewState extends State<PageTreeView> {
                   ]),
                 ),
               // The empty area below the list: dropping here moves a page to
-              // the end of the top level.
+              // the end of the top level of its own location.
               SliverFillRemaining(hasScrollBody: false, child: _endTarget(theme)),
             ],
           ),
@@ -116,10 +155,176 @@ class _PageTreeViewState extends State<PageTreeView> {
     );
   }
 
+  String _binderKey(BinderSection b) => 'binder:${b.path}';
+
+  /// Runs [action], showing a [NotebookException] in a SnackBar.
+  Future<void> _guard(Future<Object?> Function() action) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      await action();
+    } on NotebookException catch (e) {
+      messenger?.hideCurrentSnackBar();
+      messenger?.showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
+  Widget _binderHeader(BuildContext context, BinderSection b) {
+    final theme = Theme.of(context);
+    final color = parseBinderColor(b.color);
+    if (!b.available) {
+      final unreadable = b.status == BinderStatus.unreadable;
+      return Tooltip(
+        message: b.reason ?? '',
+        child: Opacity(
+          opacity: 0.6,
+          child: SizedBox(
+            key: ValueKey('binder-header-${b.path}'),
+            height: _rowHeight + 20,
+            child: Row(
+              children: [
+                const SizedBox(width: 12),
+                Icon(unreadable ? Icons.block : Icons.cloud_off_outlined, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(b.title, overflow: TextOverflow.ellipsis),
+                      Text(
+                        unreadable ? "Can't open" : 'On another device',
+                        style: theme.textTheme.labelSmall,
+                      ),
+                    ],
+                  ),
+                ),
+                PopupMenuButton<String>(
+                  key: ValueKey('binder-menu-${b.path}'),
+                  tooltip: 'Binder options',
+                  iconSize: 18,
+                  onSelected: (v) => _binderAction(context, b, v),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'remove', child: Text('Remove from sidebar')),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final collapsed = _collapsed.contains(_binderKey(b));
+    final hover = _hoverHeader == b.path;
+    final shown = _nb.coverPath == b.path;
+    return DragTarget<String>(
+      key: ValueKey('binder-header-${b.path}'),
+      // Dropping a page on a binder header moves it (and its subpages) in.
+      onWillAcceptWithDetails: (d) => _nb.treeOfPage(d.data)[d.data] != null,
+      onMove: (_) {
+        if (_hoverHeader != b.path) setState(() => _hoverHeader = b.path);
+      },
+      onLeave: (_) {
+        if (_hoverHeader == b.path) setState(() => _hoverHeader = null);
+      },
+      onAcceptWithDetails: (d) {
+        setState(() {
+          _hoverHeader = null;
+          _collapsed.remove(_binderKey(b));
+        });
+        _guard(() => _nb.moveToLocation(d.data, binderPath: b.path));
+      },
+      builder: (context, _, _) => Material(
+        color: hover
+            ? color.withValues(alpha: 0.25)
+            : shown
+            ? theme.colorScheme.secondaryContainer
+            : color.withValues(alpha: 0.08),
+        child: InkWell(
+          onTap: () => _nb.showCover(b.path),
+          child: SizedBox(
+            height: _rowHeight + 4,
+            child: Row(
+              children: [
+                Container(key: ValueKey('binder-stripe-${b.path}'), width: 5, color: color),
+                SizedBox(
+                  width: 28,
+                  child: IconButton(
+                    padding: EdgeInsets.zero,
+                    iconSize: 18,
+                    tooltip: collapsed ? 'Expand' : 'Collapse',
+                    icon: Icon(collapsed ? Icons.chevron_right : Icons.expand_more),
+                    onPressed: () => setState(
+                      () => collapsed
+                          ? _collapsed.remove(_binderKey(b))
+                          : _collapsed.add(_binderKey(b)),
+                    ),
+                  ),
+                ),
+                Icon(Icons.book_outlined, size: 18, color: color),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    b.title,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+                PopupMenuButton<String>(
+                  key: ValueKey('binder-menu-${b.path}'),
+                  tooltip: 'Binder options',
+                  iconSize: 18,
+                  onSelected: (v) => _binderAction(context, b, v),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'new', child: Text('New page')),
+                    PopupMenuItem(value: 'cover', child: Text('Open cover')),
+                    PopupMenuDivider(),
+                    PopupMenuItem(value: 'remove', child: Text('Remove from sidebar')),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _binderAction(BuildContext context, BinderSection b, String action) async {
+    switch (action) {
+      case 'new':
+        setState(() => _collapsed.remove(_binderKey(b)));
+        await _guard(() => _nb.createPage(binderPath: b.path));
+      case 'cover':
+        _nb.showCover(b.path);
+      case 'remove':
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Remove binder from sidebar?'),
+            content: Text(
+              '"${b.title}" will no longer be listed. Its folder and files are not deleted.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Remove'),
+              ),
+            ],
+          ),
+        );
+        if (ok ?? false) await _nb.removeBinder(b.path);
+    }
+  }
+
   Widget _endTarget(ThemeData theme) {
     return DragTarget<String>(
       key: const ValueKey('page-tree-end'),
-      onWillAcceptWithDetails: (d) => _nb.tree[d.data] != null,
+      onWillAcceptWithDetails: (d) => _nb.treeOfPage(d.data)[d.data] != null,
       onMove: (_) {
         if (!_hoverEnd) {
           setState(() {
@@ -134,7 +339,7 @@ class _PageTreeViewState extends State<PageTreeView> {
       },
       onAcceptWithDetails: (d) {
         setState(() => _hoverEnd = false);
-        _nb.move(d.data, parentId: null);
+        _guard(() => _nb.move(d.data, parentId: null));
       },
       builder: (context, _, _) => Container(
         constraints: const BoxConstraints(minHeight: 48),
@@ -172,11 +377,11 @@ class _PageTreeViewState extends State<PageTreeView> {
     }
   }
 
-  Widget _row(BuildContext context, PageMeta p, int depth) {
+  Widget _row(BuildContext context, PageMeta p, int depth, Color? stripe) {
     final theme = Theme.of(context);
-    final divider = _nb.tree.isDivider(p.id);
+    final divider = _nb.treeOfPage(p.id).isDivider(p.id);
     final collapsed = _collapsed.contains(p.id);
-    final selected = _nb.currentId == p.id;
+    final selected = _nb.currentId == p.id && _nb.coverPath == null;
     final title = p.title.isEmpty ? 'Untitled page' : p.title;
     final key = _rowKeys.putIfAbsent(p.id, () => GlobalKey());
     final hover = _hoverRow == p.id ? _hoverZone : null;
@@ -211,7 +416,11 @@ class _PageTreeViewState extends State<PageTreeView> {
                         )
                       : null,
                 ),
-                Icon(divider ? Icons.topic_outlined : Icons.article_outlined, size: 18),
+                Icon(
+                  divider ? Icons.topic_outlined : Icons.article_outlined,
+                  size: 18,
+                  color: stripe,
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -239,13 +448,29 @@ class _PageTreeViewState extends State<PageTreeView> {
       color: theme.colorScheme.primary,
     );
 
-    final draggable = _draggable(p, title, content);
+    final draggable = _draggable(
+      p,
+      title,
+      stripe == null
+          ? content
+          : DecoratedBox(
+              key: ValueKey('page-stripe-${p.id}'),
+              decoration: BoxDecoration(
+                border: Border(left: BorderSide(color: stripe, width: 3)),
+              ),
+              child: content,
+            ),
+    );
 
     return DragTarget<String>(
       key: ValueKey('page-row-${p.id}'),
       // A page can't go onto itself or into its own subtree.
+      // Pages in other locations are moved across (their subpages with them).
       onWillAcceptWithDetails: (d) =>
-          d.data != p.id && _nb.tree[d.data] != null && !_nb.tree.wouldCycle(d.data, p.id),
+          d.data != p.id &&
+          _nb.treeOfPage(d.data)[d.data] != null &&
+          !(_nb.binderOfPage(d.data) == _nb.binderOfPage(p.id) &&
+              _nb.treeOfPage(p.id).wouldCycle(d.data, p.id)),
       onMove: (d) {
         final zone = _zoneFor(p.id, d.offset);
         if (_hoverRow != p.id || _hoverZone != zone || _hoverEnd) {
@@ -270,7 +495,7 @@ class _PageTreeViewState extends State<PageTreeView> {
           _hoverRow = null;
           _hoverZone = null;
         });
-        _drop(d.data, p, zone);
+        _guard(() => _drop(d.data, p, zone));
       },
       builder: (context, _, _) => GestureDetector(
         behavior: HitTestBehavior.translucent,
@@ -315,7 +540,7 @@ class _PageTreeViewState extends State<PageTreeView> {
   }
 
   List<PopupMenuEntry<String>> _menuItems(PageMeta p) {
-    final siblings = _nb.tree.siblingsOf(p.id);
+    final siblings = _nb.treeOfPage(p.id).siblingsOf(p.id);
     final i = siblings.indexWhere((s) => s.id == p.id);
     return [
       const PopupMenuItem(value: 'sub', child: Text('New subpage')),
@@ -330,7 +555,7 @@ class _PageTreeViewState extends State<PageTreeView> {
       PopupMenuItem(value: 'indent', enabled: i > 0, child: const Text('Indent')),
       PopupMenuItem(
         value: 'outdent',
-        enabled: _nb.tree.parentIdOf(p.id) != null,
+        enabled: _nb.treeOfPage(p.id).parentIdOf(p.id) != null,
         child: const Text('Outdent'),
       ),
       const PopupMenuDivider(),
@@ -372,7 +597,7 @@ class _PageTreeViewState extends State<PageTreeView> {
   }
 
   String? _aboveSibling(String id) {
-    final siblings = _nb.tree.siblingsOf(id);
+    final siblings = _nb.treeOfPage(id).siblingsOf(id);
     final i = siblings.indexWhere((s) => s.id == id);
     return i > 0 ? siblings[i - 1].id : null;
   }
@@ -402,7 +627,7 @@ class _PageTreeViewState extends State<PageTreeView> {
   }
 
   Future<void> _delete(BuildContext context, PageMeta p) async {
-    final subpages = _nb.tree.descendantsOf(p.id).length;
+    final subpages = _nb.treeOfPage(p.id).descendantsOf(p.id).length;
     final messenger = ScaffoldMessenger.maybeOf(context);
     final ok = await showDialog<bool>(
       context: context,

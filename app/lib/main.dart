@@ -4,6 +4,7 @@
 
 import 'dart:ui';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:noted_box_drawing/noted_box_drawing.dart';
@@ -22,7 +23,12 @@ ModuleRegistry buildModules() =>
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final notebook = Notebook(PageStore(defaultPagesDirectory()), buildModules());
+  final notebook = Notebook(
+    PageStore(defaultPagesDirectory()),
+    buildModules(),
+    bindersFile: defaultBindersFile(),
+    pickFolder: () => getDirectoryPath(confirmButtonText: 'Use as binder'),
+  );
   runApp(NotedApp(notebook: notebook));
   await notebook.load();
 }

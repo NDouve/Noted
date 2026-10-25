@@ -1,0 +1,176 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+import 'package:flutter/material.dart';
+import 'package:noted_core/noted_core.dart';
+
+import 'notebook.dart';
+
+/// Reads a binder color (`#AARRGGBB`); falls back to the first palette color.
+Color parseBinderColor(String hex) {
+  final h = hex.startsWith('#') ? hex.substring(1) : hex;
+  final v = h.length == 8 ? int.tryParse(h, radix: 16) : null;
+  return Color(v ?? int.parse(binderPalette.first.substring(1), radix: 16));
+}
+
+String _two(int n) => n.toString().padLeft(2, '0');
+
+String _formatTime(DateTime t) {
+  final l = t.toLocal();
+  return '${l.year}-${_two(l.month)}-${_two(l.day)} ${_two(l.hour)}:${_two(l.minute)}';
+}
+
+/// A binder's cover page (0026), shown in place of a canvas: title,
+/// description and owner can be edited, the last edited time is automatic.
+class BinderCover extends StatefulWidget {
+  const BinderCover({super.key, required this.notebook, required this.path});
+
+  final Notebook notebook;
+  final String path;
+
+  @override
+  State<BinderCover> createState() => _BinderCoverState();
+}
+
+class _BinderCoverState extends State<BinderCover> {
+  late final TextEditingController _title;
+  late final TextEditingController _description;
+  late final TextEditingController _owner;
+
+  BinderSection? get _section => widget.notebook.binders
+      .cast<BinderSection?>()
+      .firstWhere((b) => b!.path == widget.path, orElse: () => null);
+
+  @override
+  void initState() {
+    super.initState();
+    final b = _section?.binder;
+    _title = TextEditingController(text: b?.title ?? '');
+    _description = TextEditingController(text: b?.description ?? '');
+    _owner = TextEditingController(text: b?.owner ?? '');
+  }
+
+  @override
+  void dispose() {
+    // Leaving the cover keeps what was typed. The notebook is told after the
+    // widget tree has finished updating.
+    final nb = widget.notebook;
+    final (path, title, description, owner) = (
+      widget.path,
+      _title.text,
+      _description.text,
+      _owner.text,
+    );
+    Future.microtask(
+      () => nb.updateBinder(path, title: title, description: description, owner: owner),
+    );
+    _title.dispose();
+    _description.dispose();
+    _owner.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    widget.notebook.updateBinder(
+      widget.path,
+      title: _title.text,
+      description: _description.text,
+      owner: _owner.text,
+    );
+  }
+
+  Widget _field(String key, String label, TextEditingController c, {int maxLines = 1}) {
+    return Focus(
+      onFocusChange: (focused) {
+        if (!focused) _save();
+      },
+      child: TextField(
+        key: ValueKey(key),
+        controller: c,
+        maxLines: maxLines,
+        minLines: 1,
+        decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
+        onSubmitted: (_) => _save(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListenableBuilder(
+      listenable: widget.notebook,
+      builder: (context, _) {
+        final section = _section;
+        final binder = section?.binder;
+        if (section == null || binder == null) return const SizedBox();
+        final color = parseBinderColor(binder.color);
+        final last = section.lastEdited;
+        return Align(
+          alignment: Alignment.topLeft,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 560),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Container(height: 6, color: color),
+                  const SizedBox(height: 16),
+                  Text('Binder cover', style: theme.textTheme.labelMedium),
+                  const SizedBox(height: 12),
+                  _field('cover-title', 'Title', _title),
+                  const SizedBox(height: 16),
+                  _field('cover-description', 'Description', _description, maxLines: 5),
+                  const SizedBox(height: 16),
+                  _field('cover-owner', 'Owner', _owner),
+                  const SizedBox(height: 20),
+                  Text('Color', style: theme.textTheme.labelMedium),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final hex in binderPalette)
+                        Tooltip(
+                          message: hex,
+                          child: InkResponse(
+                            key: ValueKey('cover-color-$hex'),
+                            onTap: () => widget.notebook.updateBinder(widget.path, color: hex),
+                            child: Container(
+                              width: 32,
+                              height: 32,
+                              decoration: BoxDecoration(
+                                color: parseBinderColor(hex),
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: hex == binder.color
+                                      ? theme.colorScheme.onSurface
+                                      : Colors.transparent,
+                                  width: 3,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  Text('Last edited', style: theme.textTheme.labelMedium),
+                  Text(
+                    last == null ? 'Unknown' : _formatTime(last),
+                    key: const ValueKey('cover-last-edited'),
+                  ),
+                  const SizedBox(height: 16),
+                  Text('Storage folder', style: theme.textTheme.labelMedium),
+                  SelectableText(section.path, key: const ValueKey('cover-path')),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}

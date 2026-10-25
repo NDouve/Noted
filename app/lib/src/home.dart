@@ -5,6 +5,7 @@
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 
+import 'binder_cover.dart';
 import 'notebook.dart';
 import 'page_tree_view.dart';
 
@@ -34,7 +35,13 @@ class Home extends StatelessWidget {
               ),
               const VerticalDivider(width: 1),
               Expanded(
-                child: current == null
+                child: notebook.cover != null
+                    ? BinderCover(
+                        key: ValueKey('cover-${notebook.coverPath}'),
+                        notebook: notebook,
+                        path: notebook.coverPath!,
+                      )
+                    : current == null
                     ? const Center(child: CircularProgressIndicator())
                     : Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
