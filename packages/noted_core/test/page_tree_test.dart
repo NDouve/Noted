@@ -34,4 +34,47 @@ void main() {
     ]);
     expect(tree.roots.map((p) => p.id).toSet(), {'orphan', 'x', 'y'});
   });
+
+  test('withParent and withPlacement change only their header values', () {
+    final meta = PageMeta.tryRead(
+      RawObject.parse(
+        '{"format":1,"pageId":"p","parentId":null,"title":"T","order":3,'
+        '"extra":1.50,"later":{"a":[1,2]}}',
+      ),
+    )!;
+    final moved = meta.withParent('q');
+    expect(moved.parentId, 'q');
+    expect(
+      moved.fields.toRaw().text,
+      '{"format":1,"pageId":"p","parentId":"q","title":"T","order":3,'
+      '"extra":1.50,"later":{"a":[1,2]}}',
+    );
+    final back = moved.withPlacement(parentId: null, order: 0);
+    expect(back.parentId, isNull);
+    expect(
+      back.fields.toRaw().text,
+      '{"format":1,"pageId":"p","parentId":null,"title":"T","order":0,'
+      '"extra":1.50,"later":{"a":[1,2]}}',
+    );
+  });
+
+  test('parentIdOf, siblingsOf and wouldCycle', () {
+    final tree = PageTree.build([
+      meta('a', order: 0),
+      meta('b', order: 1),
+      meta('a1', parent: 'a'),
+      meta('a1x', parent: 'a1'),
+      meta('lost', parent: 'gone', order: 2),
+    ]);
+    expect(tree.parentIdOf('a'), isNull);
+    expect(tree.parentIdOf('a1x'), 'a1');
+    expect(tree.parentIdOf('lost'), isNull);
+    expect(tree.siblingsOf('b').map((p) => p.id), ['a', 'b', 'lost']);
+    expect(tree.siblingsOf('a1x').map((p) => p.id), ['a1x']);
+    expect(tree.wouldCycle('a', 'a'), isTrue);
+    expect(tree.wouldCycle('a', 'a1x'), isTrue);
+    expect(tree.wouldCycle('a1', 'a'), isFalse);
+    expect(tree.wouldCycle('a', 'b'), isFalse);
+    expect(tree.wouldCycle('a', null), isFalse);
+  });
 }

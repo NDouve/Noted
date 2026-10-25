@@ -339,6 +339,14 @@ final class PageMeta {
   PageMeta withTitle(String value) => _with('title', RawJson.encode(value));
   PageMeta withOrder(int value) => _with('order', RawJson.encode(value));
 
+  /// Returns a copy under [value] (null: top level). Only the `parentId`
+  /// header value changes; every other field is kept as written.
+  PageMeta withParent(String? value) => _with('parentId', RawJson.encode(value));
+
+  /// Returns a copy with a new parent and position among siblings.
+  PageMeta withPlacement({required String? parentId, required int order}) =>
+      withParent(parentId).withOrder(order);
+
   PageMeta _with(String key, RawJson value) => PageMeta.tryRead(fields.set(key, value))!;
 }
 

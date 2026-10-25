@@ -10,7 +10,7 @@ import '../model/page.dart';
 /// (0025). A page whose parent is missing, or whose parent chain loops, is
 /// shown at the top level.
 final class PageTree {
-  PageTree._(this._byId, this._children, this.roots);
+  PageTree._(this._byId, this._children, this.roots, this._parents);
 
   factory PageTree.build(Iterable<PageMeta> pages) {
     final byId = <String, PageMeta>{for (final p in pages) p.id: p};
@@ -28,8 +28,10 @@ final class PageTree {
 
     final children = <String, List<PageMeta>>{};
     final roots = <PageMeta>[];
+    final parents = <String, String?>{};
     for (final p in byId.values) {
       final parent = effectiveParent(p);
+      parents[p.id] = parent;
       if (parent == null) {
         roots.add(p);
       } else {
@@ -49,12 +51,31 @@ final class PageTree {
       byId,
       {for (final e in children.entries) e.key: List.unmodifiable(e.value)},
       List.unmodifiable(roots),
+      parents,
     );
   }
 
   final Map<String, PageMeta> _byId;
   final Map<String, List<PageMeta>> _children;
   final List<PageMeta> roots;
+  final Map<String, String?> _parents;
+
+  /// The page's parent as shown in the tree: null for a top-level page, and
+  /// for one whose recorded parent is missing or loops.
+  String? parentIdOf(String id) => _parents[id];
+
+  /// The pages next to [id] (including it), in order.
+  List<PageMeta> siblingsOf(String id) {
+    final parent = _parents[id];
+    return parent == null ? roots : childrenOf(parent);
+  }
+
+  /// Whether moving [id] under [newParentId] (null: top level) would put a
+  /// page under itself or one of its own descendants.
+  bool wouldCycle(String id, String? newParentId) {
+    if (newParentId == null) return false;
+    return newParentId == id || descendantsOf(id).contains(newParentId);
+  }
 
   PageMeta? operator [](String id) => _byId[id];
 
