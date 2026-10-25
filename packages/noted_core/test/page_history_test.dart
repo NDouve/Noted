@@ -16,7 +16,7 @@ BoxRecord box(String id, {double x = 0}) => BoxRecord.create(
 );
 
 void main() {
-  final empty = Page.create(PageMeta.create(id: 'p', title: '', order: 0));
+  final empty = NotedPage.create(PageMeta.create(id: 'p', title: '', order: 0));
 
   test('undo and redo an add, a move and a remove', () {
     final h = PageHistory();
@@ -61,6 +61,18 @@ void main() {
   test('forgetAdded drops a discarded empty box', () {
     final h = PageHistory()..record(const PageChange.added('a'));
     h.forgetAdded('a');
+    expect(h.canUndo, isFalse);
+  });
+
+  test('forgetAdded works when a later box was added first', () {
+    final h = PageHistory()
+      ..record(const PageChange.added('a'))
+      ..record(const PageChange.bounds('a', Bounds.zero))
+      ..record(const PageChange.added('b'));
+    h.forgetAdded('a');
+    var page = empty.insertNode(box('b'));
+    page = h.undo(page)!;
+    expect(page.nodes, isEmpty);
     expect(h.canUndo, isFalse);
   });
 }

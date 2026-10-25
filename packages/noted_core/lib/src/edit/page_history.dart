@@ -25,7 +25,7 @@ sealed class PageChange {
 
   /// Reverts this change on [page]. Returns null if the change no longer
   /// applies, for example because its box is gone.
-  (Page, PageChange)? revert(Page page);
+  (NotedPage, PageChange)? revert(NotedPage page);
 }
 
 final class _Added extends PageChange {
@@ -34,7 +34,7 @@ final class _Added extends PageChange {
   final String id;
 
   @override
-  (Page, PageChange)? revert(Page page) {
+  (NotedPage, PageChange)? revert(NotedPage page) {
     final i = page.indexOf(id);
     if (i < 0) return null;
     return (page.removeNode(id), PageChange.removed(page.nodes[i], i));
@@ -48,7 +48,7 @@ final class _Removed extends PageChange {
   final int index;
 
   @override
-  (Page, PageChange)? revert(Page page) {
+  (NotedPage, PageChange)? revert(NotedPage page) {
     if (page.indexOf(node.id) >= 0) return null;
     return (page.insertNode(node, index), PageChange.added(node.id));
   }
@@ -61,7 +61,7 @@ final class _BoundsChanged extends PageChange {
   final Bounds before;
 
   @override
-  (Page, PageChange)? revert(Page page) {
+  (NotedPage, PageChange)? revert(NotedPage page) {
     final n = page.node(id);
     if (n is! BoxRecord) return null;
     return (
@@ -92,19 +92,22 @@ final class PageHistory {
     _redo.clear();
   }
 
-  /// Forgets the record of adding [id] if it is the latest change. Used when
-  /// an empty box is discarded, so undo doesn't stop on a no-op.
+  /// Forgets the record of adding [id], and any later changes to it. Used
+  /// when an empty box is discarded, so undo doesn't stop on a no-op. Safe
+  /// because no other change can depend on a box that was never filled.
   void forgetAdded(String id) {
-    final last = _undo.isEmpty ? null : _undo.last;
-    if (last is _Added && last.id == id) _undo.removeLast();
+    final i = _undo.lastIndexWhere((c) => c is _Added && c.id == id);
+    if (i < 0) return;
+    _undo.removeAt(i);
+    _undo.removeWhere((c) => c is _BoundsChanged && c.id == id);
   }
 
   /// Undoes the latest change that still applies. Returns null if none does.
-  Page? undo(Page page) => _step(page, _undo, _redo);
+  NotedPage? undo(NotedPage page) => _step(page, _undo, _redo);
 
-  Page? redo(Page page) => _step(page, _redo, _undo);
+  NotedPage? redo(NotedPage page) => _step(page, _redo, _undo);
 
-  Page? _step(Page page, List<PageChange> from, List<PageChange> to) {
+  NotedPage? _step(NotedPage page, List<PageChange> from, List<PageChange> to) {
     while (from.isNotEmpty) {
       final result = from.removeLast().revert(page);
       if (result == null) continue;

@@ -25,8 +25,11 @@ final class UnsupportedPageFormatException extends PageFormatException {
 }
 
 /// Reads a page file (JSON Canvas 1.0 with Noted extra fields, 0006).
-Page readPage(String source) {
-  if (source.startsWith('﻿')) source = source.substring(1);
+NotedPage readPage(String source) {
+  const bom = 0xFEFF;
+  if (source.isNotEmpty && source.codeUnitAt(0) == bom) {
+    source = source.substring(1);
+  }
   final RawObject top;
   try {
     top = RawObject.parse(source);
@@ -58,13 +61,13 @@ Page readPage(String source) {
     if (raw.isObject) box = BoxRecord.tryRead(RawObject.parse(raw.text), raw);
     nodes.add(box ?? ForeignNode.read(raw, fallbackId: '#node$i'));
   }
-  return Page.fromParts(top, meta, nodes);
+  return NotedPage.fromParts(top, meta, nodes);
 }
 
 /// Writes a page file. Top-level fields keep their order, each node is
 /// written on its own line, and every value the core didn't change is
 /// emitted verbatim.
-String writePage(Page page) {
+String writePage(NotedPage page) {
   final out = <(String, String)>[];
   var wroteNodes = false;
   var wroteMeta = false;
@@ -94,7 +97,7 @@ String writePage(Page page) {
   return b.toString();
 }
 
-String _nodes(Page page) {
+String _nodes(NotedPage page) {
   if (page.nodes.isEmpty) return '[]';
   final b = StringBuffer('[\n');
   for (var i = 0; i < page.nodes.length; i++) {

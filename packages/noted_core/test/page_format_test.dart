@@ -83,7 +83,7 @@ void main() {
   });
 
   test('a new page round-trips', () {
-    final page = Page.create(PageMeta.create(id: 'p2', title: 'New', order: 3));
+    final page = NotedPage.create(PageMeta.create(id: 'p2', title: 'New', order: 3));
     final reread = readPage(writePage(page));
     expect(reread.id, 'p2');
     expect(reread.meta.title, 'New');
@@ -111,6 +111,6 @@ void main() {
   });
 
   test('accepts a byte order mark', () {
-    expect(readPage('﻿$source').id, 'p1');
+    expect(readPage('${String.fromCharCode(0xFEFF)}$source').id, 'p1');
   });
 }

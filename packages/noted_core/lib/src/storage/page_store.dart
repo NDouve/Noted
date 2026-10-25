@@ -62,12 +62,12 @@ final class PageStore {
     return entries;
   }
 
-  Future<Page> load(String pageId) async =>
+  Future<NotedPage> load(String pageId) async =>
       readPage(await File(_pathFor(pageId)).readAsString());
 
   /// Writes [page] atomically: to a temporary file first, then renamed over
   /// the old file, so a crash mid-write never leaves a half-written page.
-  Future<void> save(Page page) async {
+  Future<void> save(NotedPage page) async {
     final path = _pathFor(page.id);
     final tmp = File('$path.tmp');
     await tmp.writeAsString(writePage(page), flush: true);

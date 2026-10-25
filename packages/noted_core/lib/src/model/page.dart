@@ -320,12 +320,12 @@ final class PageMeta {
 
 /// One page: its header, its nodes in z-order (first is bottom-most, as in
 /// JSON Canvas) and any other top-level fields, kept verbatim.
-final class Page {
-  Page._(this.top, this.meta, List<CanvasNode> nodes)
+final class NotedPage {
+  NotedPage._(this.top, this.meta, List<CanvasNode> nodes)
     : nodes = List.unmodifiable(nodes);
 
   /// Creates an empty page.
-  factory Page.create(PageMeta meta) => Page._(
+  factory NotedPage.create(PageMeta meta) => NotedPage._(
     const RawObject([
       ('nodes', RawJson.trusted('[]')),
       ('edges', RawJson.trusted('[]')),
@@ -339,7 +339,7 @@ final class Page {
   ///
   /// Nodes with duplicate ids are kept, but as [ForeignNode]s with synthetic
   /// ids so the canvas never confuses two nodes.
-  factory Page.fromParts(RawObject top, PageMeta meta, List<CanvasNode> nodes) {
+  factory NotedPage.fromParts(RawObject top, PageMeta meta, List<CanvasNode> nodes) {
     final seen = <String>{};
     final unique = <CanvasNode>[];
     for (var i = 0; i < nodes.length; i++) {
@@ -350,7 +350,7 @@ final class Page {
       }
       unique.add(n);
     }
-    return Page._(top, meta, unique);
+    return NotedPage._(top, meta, unique);
   }
 
   /// Top-level fields of the file, in file order. The `nodes` and `noted`
@@ -370,25 +370,25 @@ final class Page {
 
   int indexOf(String id) => nodes.indexWhere((n) => n.id == id);
 
-  Page withMeta(PageMeta value) => Page._(top, value, nodes);
+  NotedPage withMeta(PageMeta value) => NotedPage._(top, value, nodes);
 
-  Page replaceNode(CanvasNode node) {
+  NotedPage replaceNode(CanvasNode node) {
     final i = indexOf(node.id);
     if (i < 0) return this;
     final next = [...nodes];
     next[i] = node;
-    return Page._(top, meta, next);
+    return NotedPage._(top, meta, next);
   }
 
   /// Inserts [node] at [index] (clamped), or on top if [index] is null.
-  Page insertNode(CanvasNode node, [int? index]) {
+  NotedPage insertNode(CanvasNode node, [int? index]) {
     final next = [...nodes];
     next.insert((index ?? next.length).clamp(0, next.length), node);
-    return Page._(top, meta, next);
+    return NotedPage._(top, meta, next);
   }
 
-  Page removeNode(String id) =>
-      Page._(top, meta, nodes.where((n) => n.id != id).toList());
+  NotedPage removeNode(String id) =>
+      NotedPage._(top, meta, nodes.where((n) => n.id != id).toList());
 
   /// The union of all node bounds, or null for an empty page.
   Bounds? get contentBounds {
