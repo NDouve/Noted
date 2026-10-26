@@ -191,6 +191,10 @@ void main() {
   });
 
   testWidgets('delete asks first, then Undo restores the page', (tester) async {
+    // The page menu is taller now; give it room.
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
     await start(tester);
     await rightClick(tester, b);
     await tester.pumpAndSettle();

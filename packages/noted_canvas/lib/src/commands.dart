@@ -45,6 +45,7 @@ class Command extends ChangeNotifier {
     this.showLabel = false,
     this.whileEditing = false,
     this.whileReadOnly = false,
+    this.menu = const [],
   }) : _invoke = invoke,
        _enabled = enabled,
        _checked = checked,
@@ -83,6 +84,11 @@ class Command extends ChangeNotifier {
 
   /// The command also works on a read-only page.
   final bool whileReadOnly;
+
+  /// Ids of the commands this one offers as a menu (a toolbar dropdown). A
+  /// toolbar shows such a command as a button that opens the menu instead of
+  /// invoking it; the listed commands come from the same registry.
+  final List<String> menu;
 
   final CommandAction _invoke;
   final bool Function()? _enabled;

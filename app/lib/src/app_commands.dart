@@ -24,6 +24,9 @@ abstract final class AppCommands {
   static const String outdent = 'app.page.outdent';
   static const String delete = 'app.page.delete';
 
+  /// Chooses a page's background: `app.page.background.dots`.
+  static String backgroundId(PageBackground b) => 'app.page.background.${b.name}';
+
   // Binders (the "Pages" header, and a binder header's menu).
   static const String newBinder = 'app.binder.new';
   static const String newBinderFromTemplate = 'app.binder.newFromTemplate';
@@ -160,6 +163,15 @@ CommandRegistry pageCommands(Notebook nb, PageMeta p, PageTreeActions a) {
       icon: Icons.delete_outline,
       invoke: () => a.delete(p),
     ),
+    for (final b in PageBackground.values)
+      Command(
+        id: AppCommands.backgroundId(b),
+        label: 'Page background: ${pageBackgroundLabel(b)}',
+        icon: pageBackgroundIcon(b),
+        enabled: () => !nb.isReadOnlyPage(p.id),
+        checked: () => p.background == b,
+        invoke: () => nb.setBackground(p.id, b),
+      ),
   ]);
 }
 

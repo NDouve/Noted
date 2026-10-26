@@ -22,7 +22,7 @@ const ToolbarLayout defaultToolbarLayout = [
   ['noted.drawing.width.2', 'noted.drawing.width.4', 'noted.drawing.width.8'],
   ['canvas.undo', 'canvas.redo'],
   ['noted.note.insertTable', 'noted.note.insertEquation'],
-  ['canvas.fitAll', 'canvas.zoomReset'],
+  ['canvas.fitAll', 'canvas.zoomReset', 'canvas.pageBackground'],
 ];
 
 /// Reads a layout from decoded JSON (a list of lists of strings), or returns

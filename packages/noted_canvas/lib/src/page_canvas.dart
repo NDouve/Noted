@@ -22,6 +22,7 @@ import 'commands.dart';
 import 'geometry.dart';
 import 'noted_colors.dart';
 import 'noted_theme.dart';
+import 'page_background.dart';
 import 'toolbar_layout.dart';
 
 /// Auto-pan during a tool session: the edge zone, in screen pixels.
@@ -546,7 +547,17 @@ class PageCanvasState extends State<PageCanvas>
                       cursor: tool?.cursor ?? MouseCursor.defer,
                       child: ColoredBox(
                         color: scheme.surfaceContainerLowest,
-                        child: InteractiveViewer(
+                        child: CustomPaint(
+                          painter: PageBackgroundPainter(
+                            background: _c.page.meta.background,
+                            view: view,
+                            pitch: NotedMetrics.of(context).paperPitch,
+                            lineColor: _colors.paperLine,
+                            dotColor: _colors.paperDot,
+                            marginColor: _colors.paperMargin,
+                            devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+                          ),
+                          child: InteractiveViewer(
                           transformationController: _transform,
                           constrained: false,
                           panEnabled: false,
@@ -577,6 +588,7 @@ class PageCanvasState extends State<PageCanvas>
                               ),
                             ),
                           ),
+                        ),
                         ),
                       ),
                     ),

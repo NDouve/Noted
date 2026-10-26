@@ -80,6 +80,10 @@ void main() {
           ('app.page.indent', 'Indent'),
           ('app.page.outdent', 'Outdent'),
           ('app.page.delete', 'Delete'),
+          ('app.page.background.plain', 'Page background: Plain'),
+          ('app.page.background.dots', 'Page background: Dots'),
+          ('app.page.background.graph', 'Page background: Graph'),
+          ('app.page.background.ruled', 'Page background: Ruled'),
         ],
       );
     });

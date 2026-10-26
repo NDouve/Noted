@@ -572,6 +572,27 @@ class Notebook extends ChangeNotifier {
     _rebuildTree();
   }
 
+  /// Chooses the background of page [id]. The open page changes through its
+  /// controller (one undo step, autosaved); another page is loaded, changed
+  /// in its header only, and saved.
+  Future<void> setBackground(String id, PageBackground background) async {
+    _assertWritable(_loc[id] ?? _standalone);
+    final c = _current;
+    if (c != null && c.page.id == id) {
+      c.setBackground(background);
+      return;
+    }
+    final loc = _loc[id] ?? _standalone;
+    final page = await _storeOf(loc).load(id);
+    final meta = page.meta.withBackground(background);
+    if (identical(meta, page.meta)) return;
+    final next = page.withMeta(meta);
+    await _write(loc, next);
+    _touch(loc);
+    _metas[id] = next.meta;
+    _rebuildTree();
+  }
+
   /// Deletes a page and all its subpages, and keeps their full content in
   /// memory so [undoDelete] can bring them back. Only the latest delete can
   /// be undone: the previous one is dropped.

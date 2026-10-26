@@ -88,7 +88,7 @@ class CommandToolbar extends StatelessWidget {
                             child: VerticalDivider(width: metrics.space4 + 1),
                           ),
                         for (final c in group)
-                          _CommandButton(key: ValueKey(c.id), command: c),
+                          _CommandButton(key: ValueKey(c.id), command: c, registry: registry),
                       ],
                       SizedBox(width: metrics.space2),
                     ],
@@ -103,10 +103,45 @@ class CommandToolbar extends StatelessWidget {
   }
 }
 
+/// The button of a command that offers a menu ([Command.menu]): it shows the
+/// command's icon and opens a menu of the listed commands, the checked one
+/// marked. Commands the registry doesn't have are left out.
+extension on _CommandButton {
+  Widget _menuButton(BuildContext context, Command c) {
+    final items = [
+      for (final id in c.menu)
+        if (registry[id] != null) registry[id]!,
+    ];
+    return PopupMenuButton<String>(
+      tooltip: c.tooltip,
+      enabled: c.enabled,
+      icon: c.iconBuilder?.call(context, false) ?? Icon(c.icon),
+      onSelected: registry.invoke,
+      itemBuilder: (_) => [
+        for (final item in items)
+          PopupMenuItem<String>(
+            value: item.id,
+            enabled: item.enabled,
+            child: Row(
+              children: [
+                SizedBox(
+                  width: DesignMetrics.space6,
+                  child: (item.checked ?? false) ? const Icon(Icons.check, size: DesignMetrics.space4) : null,
+                ),
+                Flexible(child: Text(item.label)),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 class _CommandButton extends StatelessWidget {
-  const _CommandButton({super.key, required this.command});
+  const _CommandButton({super.key, required this.command, required this.registry});
 
   final Command command;
+  final CommandRegistry registry;
 
   @override
   Widget build(BuildContext context) {
@@ -114,6 +149,7 @@ class _CommandButton extends StatelessWidget {
     final c = command;
     final checked = c.checked ?? false;
     final onPressed = c.enabled ? c.run : null;
+    if (c.menu.isNotEmpty) return _menuButton(context, c);
     final text = c.text?.call();
     if (text != null || c.showLabel) {
       final label = Text(text ?? c.label);

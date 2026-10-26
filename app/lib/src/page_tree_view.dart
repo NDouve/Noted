@@ -62,6 +62,26 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
     return PopupMenuItem<String>(value: id, enabled: c.enabled, child: Text(c.label));
   }
 
+  /// Like [_item], with a check mark when the command is checked.
+  PopupMenuItem<String> _checkedItem(CommandRegistry registry, String id) {
+    final c = registry[id]!;
+    return PopupMenuItem<String>(
+      value: id,
+      enabled: c.enabled,
+      child: Row(
+        children: [
+          SizedBox(
+            width: DesignMetrics.space6,
+            child: (c.checked ?? false)
+                ? const Icon(Icons.check, size: DesignMetrics.space4)
+                : null,
+          ),
+          Flexible(child: Text(c.label)),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -765,6 +785,9 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
       _item(r, AppCommands.newSubpageFromTemplate),
       _item(r, AppCommands.saveAsTemplate),
       _item(r, AppCommands.rename),
+      const PopupMenuDivider(),
+      for (final b in PageBackground.values)
+        _checkedItem(r, AppCommands.backgroundId(b)),
       const PopupMenuDivider(),
       _item(r, AppCommands.moveUp),
       _item(r, AppCommands.moveDown),

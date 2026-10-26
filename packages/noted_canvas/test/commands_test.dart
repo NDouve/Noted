@@ -286,7 +286,11 @@ void main() {
         'noted.drawing.pen',
         'noted.drawing.eraser',
       ]);
-      expect(defaultToolbarLayout.last, ['canvas.fitAll', 'canvas.zoomReset']);
+      expect(defaultToolbarLayout.last, [
+        'canvas.fitAll',
+        'canvas.zoomReset',
+        'canvas.pageBackground',
+      ]);
     });
 
     test('reads a layout from JSON, or null for anything else', () {

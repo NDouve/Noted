@@ -4,6 +4,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:noted_core/noted_core.dart';
 
 import 'command_host.dart';
 import 'commands.dart';
@@ -19,6 +20,10 @@ abstract final class CanvasCommands {
   static const String zoomOut = 'canvas.zoomOut';
   static const String zoomReset = 'canvas.zoomReset';
   static const String fitAll = 'canvas.fitAll';
+  static const String pageBackground = 'canvas.pageBackground';
+
+  /// The command that chooses [b]: `canvas.pageBackground.dots`.
+  static String pageBackgroundOf(PageBackground b) => 'canvas.pageBackground.${b.name}';
 }
 
 /// What the canvas's commands act on: the open page canvas.
@@ -169,5 +174,43 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
       whileReadOnly: true,
       invoke: t.fitAll,
     ),
+    Command(
+      id: CanvasCommands.pageBackground,
+      label: 'Page background',
+      icon: pageBackgroundIcon(c.page.meta.background),
+      iconBuilder: (_, _) => Icon(pageBackgroundIcon(c.page.meta.background)),
+      enabled: () => !t.isReadOnly,
+      listenable: c,
+      menu: [
+        for (final b in PageBackground.values) CanvasCommands.pageBackgroundOf(b),
+      ],
+      invoke: () {},
+    ),
+    for (final b in PageBackground.values)
+      Command(
+        id: CanvasCommands.pageBackgroundOf(b),
+        label: 'Page background: ${pageBackgroundLabel(b)}',
+        icon: pageBackgroundIcon(b),
+        enabled: () => !t.isReadOnly,
+        checked: () => c.page.meta.background == b,
+        listenable: c,
+        invoke: () => c.setBackground(b),
+      ),
   ];
 }
+
+/// The user-facing name of [b], as in `Page background: Dots`.
+String pageBackgroundLabel(PageBackground b) => switch (b) {
+  PageBackground.plain => 'Plain',
+  PageBackground.dots => 'Dots',
+  PageBackground.graph => 'Graph',
+  PageBackground.ruled => 'Ruled',
+};
+
+/// The icon for [b], shown on the toolbar's page background button.
+IconData pageBackgroundIcon(PageBackground b) => switch (b) {
+  PageBackground.plain => Icons.crop_square,
+  PageBackground.dots => Icons.blur_on,
+  PageBackground.graph => Icons.grid_on,
+  PageBackground.ruled => Icons.view_headline,
+};

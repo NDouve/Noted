@@ -326,6 +326,16 @@ class CanvasController extends ChangeNotifier {
     if (next != null) _set(next);
   }
 
+  /// Chooses the page background. One undo step; ignored on a read-only
+  /// controller or when the page already stores that choice.
+  void setBackground(PageBackground value) {
+    if (_readOnly) return;
+    final next = _page.meta.withBackground(value);
+    if (identical(next, _page.meta)) return;
+    _history.record(PageChange.background(_page.meta.rawBackground));
+    _set(_page.withMeta(next));
+  }
+
   /// Replaces the page header, for example after a rename.
   void updateMeta(PageMeta meta) {
     if (!_readOnly) _set(_page.withMeta(meta));

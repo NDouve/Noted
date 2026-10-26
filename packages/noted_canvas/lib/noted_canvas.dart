@@ -23,5 +23,6 @@ export 'src/module_registry.dart';
 export 'src/design_tokens.g.dart';
 export 'src/noted_colors.dart';
 export 'src/noted_theme.dart';
+export 'src/page_background.dart';
 export 'src/page_canvas.dart';
 export 'src/toolbar_layout.dart';
