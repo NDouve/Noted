@@ -209,4 +209,49 @@ void main() {
     expect(File('${dir.path}/$b.canvas').existsSync(), isTrue);
     await finish(tester);
   });
+
+  testWidgets('a damaged recovery entry is listed under Can\'t open and kept', (tester) async {
+    late Directory rec;
+    await tester.runAsync(() async {
+      dir = await Directory.systemTemp.createTemp('noted_tree_ui');
+      rec = await Directory('${dir.path}/rec').create();
+      File('${rec.path}/bad-1.json').writeAsStringSync('{ nope');
+      File('${rec.path}/bad-1.canvas').writeAsStringSync('not a page');
+      nb = Notebook(
+        PageStore(await Directory('${dir.path}/pages').create()),
+        buildModules(),
+        saveDelay: Duration.zero,
+        recoveryDirectory: rec,
+      );
+      await nb.load();
+    });
+    expect(nb.recoveryProblems, hasLength(1));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 260,
+            height: 600,
+            child: ListenableBuilder(
+              listenable: nb,
+              builder: (context, _) => PageTreeView(notebook: nb),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.text("Can't open"), findsOneWidget);
+    expect(find.text('bad-1'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (w) => w is Tooltip && (w.message ?? '').startsWith("Recovery entry can't be read"),
+      ),
+      findsOneWidget,
+    );
+    // The app never deletes it.
+    expect(File('${rec.path}/bad-1.json').existsSync(), isTrue);
+    expect(File('${rec.path}/bad-1.canvas').existsSync(), isTrue);
+    await finish(tester);
+  });
 }

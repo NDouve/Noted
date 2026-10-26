@@ -64,9 +64,13 @@ class RecoveryEntry {
 /// What a scan of the recovery folder found: [entries] that can be used and
 /// [problems] (descriptions of files that can't be read; they are kept).
 class RecoveryListing {
-  const RecoveryListing(this.entries, this.problems);
+  const RecoveryListing(this.entries, this.problems, [this.damaged = const []]);
   final List<RecoveryEntry> entries;
   final List<String> problems;
+
+  /// The same damaged entries as [problems], one for each, with the entry's
+  /// path (without extension) and a short reason, for the sidebar.
+  final List<UnreadablePage> damaged;
 }
 
 /// The recovery folder: one entry per page, never deleted except by [delete].
@@ -117,6 +121,7 @@ class RecoveryStore {
   Future<RecoveryListing> list() async {
     final entries = <RecoveryEntry>[];
     final problems = <String>[];
+    final damaged = <UnreadablePage>[];
     if (!await directory.exists()) return const RecoveryListing([], []);
     final names = <String>{};
     await for (final f in directory.list()) {
@@ -149,9 +154,10 @@ class RecoveryStore {
             ? e.message
             : '$e';
         problems.add('$base: $why');
+        damaged.add(UnreadablePage(base, "Recovery entry can't be read: $why"));
       }
     }
-    return RecoveryListing(entries, problems);
+    return RecoveryListing(entries, problems, damaged);
   }
 
   /// Removes [entry]'s files.

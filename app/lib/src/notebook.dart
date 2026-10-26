@@ -234,6 +234,12 @@ class Notebook extends ChangeNotifier {
   /// Recovery files that couldn't be read. They are kept, never deleted.
   List<String> get recoveryProblems => _recoveryProblems;
 
+  List<UnreadablePage> _recoveryDamaged = const [];
+
+  /// [recoveryProblems] as sidebar entries (path and reason). They stay
+  /// until fixed or removed outside the app.
+  List<UnreadablePage> get recoveryDamaged => _recoveryDamaged;
+
   /// The recovery entries and unreadable recovery files waiting now.
   Future<RecoveryListing> pendingRecovery() async =>
       await _recovery?.list() ?? const RecoveryListing([], []);
@@ -1518,6 +1524,7 @@ class Notebook extends ChangeNotifier {
     if (rec == null) return;
     final listing = await rec.list();
     _recoveryProblems = listing.problems;
+    _recoveryDamaged = listing.damaged;
     for (final e in listing.entries) {
       if (_disposed) return;
       final loc = _locOfFolder(e.folder);

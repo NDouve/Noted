@@ -115,10 +115,11 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
       enabled: () => !t.isReadOnly,
       listenable: both,
       invoke: () {
-        // In an editor: back to the canvas. Otherwise the first Escape
+        // In an editor: back to the canvas and the Select tool. Otherwise the first Escape
         // leaves the tool, the next clears the selection.
         if (c.editingId != null) {
           t.focusCanvas();
+          tools.select(null);
         } else if (tools.active != null) {
           tools.select(null);
         } else {

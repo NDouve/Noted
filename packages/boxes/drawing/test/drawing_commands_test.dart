@@ -86,17 +86,38 @@ void main() {
     expect(checked(t, 'Select and type (V)'), isTrue);
   });
 
-  testWidgets('colors and widths are shown always but enabled only with the pen', (t) async {
+  testWidgets('colors and widths are always enabled', (t) async {
     await pump(t);
-    expect(enabled(t, 'Ink color: Blue'), isFalse);
-    expect(enabled(t, 'Pen width 8'), isFalse);
-    await t.tap(find.byTooltip('Pen (P)'));
-    await t.pump();
     expect(enabled(t, 'Ink color: Blue'), isTrue);
     expect(enabled(t, 'Pen width 8'), isTrue);
     await t.tap(find.byTooltip('Eraser (E)'));
     await t.pump();
-    expect(enabled(t, 'Ink color: Blue'), isFalse);
+    expect(enabled(t, 'Ink color: Blue'), isTrue);
+    expect(enabled(t, 'Pen width 8'), isTrue);
+  });
+
+  testWidgets('clicking a color with Select active selects the Pen', (t) async {
+    await pump(t);
+    expect(tools.active, isNull);
+    await t.tap(find.byTooltip('Ink color: Red'));
+    await t.pump();
+    expect(tools.active, module.pen);
+    expect(module.settings.color, PenSettings.colors[2]);
+    expect(checked(t, 'Pen (P)'), isTrue);
+    expect(checked(t, 'Select and type (V)'), isFalse);
+    expect(checked(t, 'Ink color: Red'), isTrue);
+  });
+
+  testWidgets('clicking a width with the Eraser active selects the Pen', (t) async {
+    await pump(t);
+    await t.tap(find.byTooltip('Eraser (E)'));
+    await t.pump();
+    await t.tap(find.byTooltip('Pen width 8'));
+    await t.pump();
+    expect(tools.active, module.pen);
+    expect(module.settings.size, 8);
+    expect(checked(t, 'Pen (P)'), isTrue);
+    expect(checked(t, 'Pen width 8'), isTrue);
   });
 
   testWidgets('clicking a color or a width sets the pen and shows it checked', (t) async {
@@ -131,11 +152,15 @@ void main() {
       expect(r[penWidthCommandId(s)], isNotNull);
     }
     expect(penWidthCommandId(4), 'noted.drawing.width.4');
-    await r.invoke('noted.drawing.color.1'); // pen not active: disabled
-    expect(module.settings.color, PenSettings.colors.first);
-    await r.invoke('noted.drawing.pen');
+    // Invoking a color selects the pen too.
+    expect(tools.active, isNull);
     await r.invoke('noted.drawing.color.1');
     expect(module.settings.color, PenSettings.colors[1]);
+    expect(tools.active, module.pen);
+    await r.invoke('noted.drawing.eraser');
+    await r.invoke(penWidthCommandId(8));
+    expect(module.settings.size, 8);
+    expect(tools.active, module.pen);
   });
 
   testWidgets('the default ink swatch follows the theme', (t) async {

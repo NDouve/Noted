@@ -4,8 +4,10 @@
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_box_note/noted_box_note.dart';
+import 'package:noted_box_note/src/math_input.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -48,7 +50,7 @@ void main() {
     }
   }
 
-  Future<void> pump(WidgetTester t) async {
+  Future<void> pump(WidgetTester t, {CanvasToolSelection? tools}) async {
     t.view.physicalSize = const Size(1200, 800);
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
@@ -63,7 +65,7 @@ void main() {
     await t.pumpWidget(
       MaterialApp(
         localizationsDelegates: noteLocalizationsDelegates,
-        home: Scaffold(body: PageCanvas(controller: c)),
+        home: Scaffold(body: PageCanvas(controller: c, tools: tools)),
       ),
     );
     await t.pumpAndSettle();
@@ -155,5 +157,67 @@ void main() {
     expect(await canvas(t).commands.invoke(NoteCommands.insertTable), isFalse);
     expect(await canvas(t).commands.invoke(NoteCommands.insertEquation), isFalse);
     expect((c.page.node('n')! as BoxRecord).snapshotText, before);
+  });
+
+  testWidgets('Escape in a note with nothing open leaves the editor for Select', (t) async {
+    final selection = CanvasToolSelection();
+    addTearDown(selection.dispose);
+    await pump(t, tools: selection);
+    final editor = await focusNote(t);
+    editor.selection = Selection.collapsed(Position(path: [0], offset: 2));
+    await frames(t);
+    expect(enabled(t, 'Insert table'), isTrue);
+
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await frames(t);
+    expect(c.editingId, isNull);
+    expect(enabled(t, 'Insert table'), isFalse);
+    expect(selection.active, isNull);
+    expect(c.page.node('n'), isNotNull, reason: 'a box with text stays');
+  });
+
+  testWidgets('Escape leaves the editor and an empty new box is discarded', (t) async {
+    await pump(t);
+    c.createBoxAt(const Bounds(500, 300, 0, 0));
+    await frames(t);
+    expect(c.editingId, isNotNull);
+    final id = c.editingId!;
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await frames(t);
+    expect(c.editingId, isNull);
+    expect(c.page.node(id), isNull);
+  });
+
+  testWidgets('Escape with a range selected clears it first; the next one leaves', (t) async {
+    await pump(t);
+    final editor = await focusNote(t);
+    editor.selection = Selection.single(path: [0], startOffset: 0, endOffset: 5);
+    await frames(t);
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await frames(t);
+    expect(editor.selection, isNull);
+    expect(c.editingId, 'n', reason: 'first Escape only closed the selection');
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await frames(t);
+    expect(c.editingId, isNull);
+  });
+
+  testWidgets('Escape with the slash menu open closes it; the next one leaves', (t) async {
+    await pump(t);
+    final editor = await focusNote(t);
+    editor.selection = Selection.collapsed(Position(path: [0], offset: 10));
+    await frames(t);
+    await noteSlashCommand.execute(editor);
+    await frames(t);
+    expect(find.byType(SelectionMenuWidget), findsOneWidget);
+
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await frames(t);
+    expect(find.byType(SelectionMenuWidget), findsNothing);
+    expect(c.editingId, 'n', reason: 'the menu took the first Escape');
+
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await frames(t);
+    expect(c.editingId, isNull);
   });
 }

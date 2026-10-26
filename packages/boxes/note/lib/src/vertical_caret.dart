@@ -20,6 +20,7 @@ import 'package:flutter/material.dart';
 final List<CommandShortcutEvent> noteCommandShortcuts = [
   for (final e in standardCommandShortcutEvents)
     if (!_replaced.contains(e.key)) e,
+  _escape,
   _vertical(moveCursorUpCommand, up: true, extend: false),
   _vertical(moveCursorDownCommand, up: false, extend: false),
   _vertical(moveCursorUpSelectCommand, up: true, extend: true),
@@ -27,6 +28,7 @@ final List<CommandShortcutEvent> noteCommandShortcuts = [
 ];
 
 final Set<String> _replaced = {
+  exitEditingCommand.key,
   moveCursorUpCommand.key,
   moveCursorDownCommand.key,
   moveCursorUpSelectCommand.key,
@@ -141,3 +143,24 @@ Position? _positionAt(List<(Node, Rect)> blocks, Offset point) {
   final rect = Rect.fromPoints(topLeft, bottomRight);
   return (rect, rect.height / local.height);
 }
+
+/// Escape in a note editor.
+///
+/// appflowy's own Escape clears the selection and consumes the key, which
+/// kept focus in the editor. Here the editor answers Escape only when it has
+/// something of its own to close: a range selection, which is what shows its
+/// floating selection toolbar (clearing the selection closes it). Anything
+/// else that can be open (the `/` menu, a table handle menu, a dialog) has
+/// its own focus scope or route and takes the key before it reaches the
+/// editor. With nothing to close the key is ignored, so it bubbles to the
+/// canvas's `canvas.escape`, which leaves the editor.
+final CommandShortcutEvent _escape = exitEditingCommand.copyWith(
+  handler: (editorState) {
+    final selection = editorState.selection;
+    if (selection == null || selection.isCollapsed) {
+      return KeyEventResult.ignored;
+    }
+    editorState.selection = null;
+    return KeyEventResult.handled;
+  },
+);

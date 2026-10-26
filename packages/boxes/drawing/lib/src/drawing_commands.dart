@@ -31,7 +31,6 @@ String penWidthCommandId(double size) =>
 List<Command> drawingCommands(DrawingModule module, CommandHost host) {
   final settings = module.settings;
   final changes = Listenable.merge([settings, host.tools]);
-  bool penActive() => identical(host.tools.active, module.pen);
   return [
     for (final (i, color) in PenSettings.colors.indexed)
       Command(
@@ -39,14 +38,16 @@ List<Command> drawingCommands(DrawingModule module, CommandHost host) {
         label: 'Ink color: ${_colorNames[i]}',
         icon: Icons.circle,
         checked: () => settings.color == color,
-        enabled: penActive,
         listenable: changes,
         iconBuilder: (context, checked) => Icon(
           checked ? Icons.radio_button_checked : Icons.circle,
           color: displayInkColor(color, Theme.of(context).brightness),
           size: 20,
         ),
-        invoke: () => settings.color = color,
+        invoke: () {
+          settings.color = color;
+          host.tools.select(module.pen);
+        },
       ),
     for (final size in PenSettings.sizes)
       Command(
@@ -54,7 +55,6 @@ List<Command> drawingCommands(DrawingModule module, CommandHost host) {
         label: 'Pen width ${size.toInt()}',
         icon: Icons.horizontal_rule,
         checked: () => settings.size == size,
-        enabled: penActive,
         listenable: changes,
         iconBuilder: (context, checked) {
           final scheme = Theme.of(context).colorScheme;
@@ -67,7 +67,10 @@ List<Command> drawingCommands(DrawingModule module, CommandHost host) {
             ),
           );
         },
-        invoke: () => settings.size = size,
+        invoke: () {
+          settings.size = size;
+          host.tools.select(module.pen);
+        },
       ),
   ];
 }
