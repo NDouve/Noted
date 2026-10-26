@@ -6,7 +6,9 @@ import 'dart:io' show Platform;
 import 'dart:ui';
 
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:noted_box_drawing/noted_box_drawing.dart';
 import 'package:noted_box_note/noted_box_note.dart';
@@ -40,6 +42,13 @@ String? computerName() {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // The bundled Inter font is SIL OFL 1.1; its licence ships with it.
+  LicenseRegistry.addLicense(() async* {
+    yield LicenseEntryWithLineBreaks(
+      const ['Inter'],
+      await rootBundle.loadString('assets/fonts/Inter/OFL.txt'),
+    );
+  });
   final notebook = Notebook(
     PageStore(defaultPagesDirectory()),
     buildModules(),

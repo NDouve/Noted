@@ -32,6 +32,7 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 
 - Noted is licensed under MPL-2.0. Put the MPL-2.0 header (Exhibit A) at the top of every new source file.
 - Dependencies must be MIT, BSD, Apache-2.0 or MPL-2.0.
+- Fonts may also be SIL OFL 1.1; ship the font's licence file with it.
 - Never copy GPL or AGPL code, including code from the AppFlowy application. You may read it for reference only.
 
 ## Architecture invariants (never violate)
