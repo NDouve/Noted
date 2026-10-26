@@ -190,7 +190,7 @@ void main() {
     Future<EditorState> edit(WidgetTester t, CanvasController c) async {
       final canvas = t.state<PageCanvasState>(find.byType(PageCanvas));
       final b = c.page.node('n')!.bounds!;
-      await t.tapAt(canvas.view!.toScreen(Offset(b.x + 20, b.y + 10)));
+      await t.tapAt(canvas.view!.toScreen(Offset(b.x + 20, b.y + 10)) + const Offset(0, CommandToolbar.height));
       await frames(t);
       expect(c.editingId, 'n');
       return t.widget<AppFlowyEditor>(find.byType(AppFlowyEditor)).editorState;

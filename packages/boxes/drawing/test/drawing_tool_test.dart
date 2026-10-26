@@ -13,6 +13,12 @@ import 'package:noted_box_drawing/noted_box_drawing.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+/// The toolbar sits above the canvas, so screen y is the canvas's plus its height.
+extension on CanvasView {
+  Offset screen(Offset world) =>
+      toScreen(world) + const Offset(0, CommandToolbar.height);
+}
+
 void main() {
   late DrawingModule module;
   late CanvasController c;
@@ -70,11 +76,11 @@ void main() {
   }) async {
     final view = canvas(t).view!;
     final g = await t.startGesture(
-      view.toScreen(page.first),
+      view.screen(page.first),
       kind: PointerDeviceKind.mouse,
     );
     for (final p in page.skip(1)) {
-      await g.moveTo(view.toScreen(p));
+      await g.moveTo(view.screen(p));
     }
     if (release) await g.up();
     return g;
@@ -289,7 +295,7 @@ void main() {
       await t.pump();
       final view = canvas(t).view!;
       final pointer = TestPointer(9, PointerDeviceKind.mouse)
-        ..hover(view.toScreen(Offset(r.x + 50, r.y + r.height / 2)));
+        ..hover(view.screen(Offset(r.x + 50, r.y + r.height / 2)));
       await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
       await t.sendEventToBinding(pointer.scroll(const Offset(0, 120)));
       await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
@@ -399,7 +405,7 @@ void main() {
       final v0 = canvas(t).view!;
       final r = boxes().single.bounds;
       final g = await t.startGesture(
-        v0.toScreen(Offset(r.x + 75, r.y + r.height / 2)),
+        v0.screen(Offset(r.x + 75, r.y + r.height / 2)),
         kind: PointerDeviceKind.trackpad,
       );
       for (var i = 0; i < 10; i++) {
@@ -424,7 +430,7 @@ void main() {
     final v0 = canvas(t).view!;
     final r = boxes().single.bounds;
     final g = await t.startGesture(
-      v0.toScreen(r.rect.center),
+      v0.screen(r.rect.center),
       kind: PointerDeviceKind.trackpad,
     );
     for (var i = 0; i < 5; i++) {
@@ -444,7 +450,7 @@ void main() {
     await croppedBox(t);
     final v0 = canvas(t).view!;
     final r = boxes().single.bounds;
-    final at = v0.toScreen(Offset(r.x + 75, r.y + r.height / 2));
+    final at = v0.screen(Offset(r.x + 75, r.y + r.height / 2));
     await t.sendEventToBinding(
       PointerPanZoomStartEvent(pointer: 7, position: at),
     );

@@ -6,6 +6,7 @@
 library;
 
 export 'src/drawing_codec.dart';
+export 'src/drawing_commands.dart' show penColorCommandId, penWidthCommandId;
 export 'src/drawing_module.dart';
 export 'src/ink_color.dart';
 export 'src/drawing_tools.dart'

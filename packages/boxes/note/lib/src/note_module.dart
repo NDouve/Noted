@@ -15,6 +15,7 @@ import 'package:noted_core/noted_core.dart';
 import 'math_blocks.dart';
 import 'math_input.dart';
 import 'note_codec.dart';
+import 'note_commands.dart';
 import 'note_editor_state.dart';
 import 'note_theme.dart';
 import 'table_formulas.dart';
@@ -37,6 +38,9 @@ final class NoteModule extends BoxModule<NoteData> {
   @override
   Widget buildView(BuildContext context, BoxContext<NoteData> box) =>
       _NoteEditor(box: box, editable: false);
+
+  @override
+  List<Command> commands(CommandHost host) => noteCommands(host);
 }
 
 class _NoteEditor extends StatefulWidget {
@@ -49,7 +53,8 @@ class _NoteEditor extends StatefulWidget {
   State<_NoteEditor> createState() => _NoteEditorState();
 }
 
-class _NoteEditorState extends State<_NoteEditor> {
+class _NoteEditorState extends State<_NoteEditor>
+    implements NoteCommandTarget {
   late EditorState _editor;
 
   /// Built once per editor state: a new map on every build would make the
@@ -82,7 +87,29 @@ class _NoteEditorState extends State<_NoteEditor> {
   void initState() {
     super.initState();
     installMathSlicing();
+    _focus.addListener(_focusChanged);
     _load(widget.box.data);
+  }
+
+  // The note commands (insert table, insert equation) act on the editor
+  // that has focus.
+  void _focusChanged() => NoteCommandFocus.report(
+    this,
+    focused: widget.editable && _focus.hasFocus,
+  );
+
+  @override
+  bool get canInsert =>
+      mounted && widget.editable && _focus.hasFocus;
+
+  @override
+  Future<void> insertTable() async {
+    if (canInsert) insertTableAtCaret(_editor, context);
+  }
+
+  @override
+  Future<void> insertEquation() async {
+    if (canInsert) insertEquationAtCaret(_editor, context);
   }
 
   void _load(NoteData data) {
@@ -174,6 +201,8 @@ class _NoteEditorState extends State<_NoteEditor> {
 
   @override
   void dispose() {
+    NoteCommandFocus.release(this);
+    _focus.removeListener(_focusChanged);
     _unload();
     _focus.dispose();
     super.dispose();

@@ -172,7 +172,7 @@ void main() {
 
         // Click the first line to put the caret there.
         final view = canvas.view!;
-        await t.tapAt(view.toScreen(Offset(b.x + 40, b.y + 12)));
+        await t.tapAt(view.toScreen(Offset(b.x + 40, b.y + 12)) + const Offset(0, CommandToolbar.height));
         for (var i = 0; i < 4; i++) {
           await t.pump(const Duration(milliseconds: 50));
         }
@@ -257,7 +257,7 @@ void main() {
               .first,
         );
         final g = await t.startGesture(
-          v0.toScreen(Offset(b.x + 150, b.y + 40)),
+          v0.toScreen(Offset(b.x + 150, b.y + 40)) + const Offset(0, CommandToolbar.height),
           kind: PointerDeviceKind.trackpad,
         );
         for (var i = 0; i < 10; i++) {

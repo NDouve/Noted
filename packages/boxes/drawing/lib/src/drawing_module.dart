@@ -11,6 +11,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'drawing_codec.dart';
+import 'drawing_commands.dart';
 import 'drawing_tools.dart';
 import 'ink_color.dart';
 import 'stroke_render.dart';
@@ -42,6 +43,9 @@ final class DrawingModule extends BoxModule<DrawingData> {
 
   @override
   List<CanvasTool> get tools => [pen, eraser];
+
+  @override
+  List<Command> commands(CommandHost host) => drawingCommands(this, host);
 
   @override
   Widget buildEditor(BuildContext context, BoxContext<DrawingData> box) =>

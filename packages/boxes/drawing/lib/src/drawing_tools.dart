@@ -90,9 +90,6 @@ class PenTool extends CanvasTool {
   LogicalKeyboardKey? get shortcut => LogicalKeyboardKey.keyP;
 
   @override
-  Widget? buildOptions(BuildContext context) => _PenOptions(module.settings);
-
-  @override
   ToolSession? start(ToolContext context, ToolPointer pointer) {
     String? target;
     for (final (box, _, _) in _drawings(module, context.controller)) {
@@ -392,47 +389,4 @@ double _segmentSegment(Offset p, Offset q, Offset a, Offset b) {
     _pointSegment(a, p, q),
     _pointSegment(b, p, q),
   ].reduce(math.min);
-}
-
-class _PenOptions extends StatelessWidget {
-  const _PenOptions(this.settings);
-
-  final PenSettings settings;
-
-  @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: settings,
-    builder: (context, _) => Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (final c in PenSettings.colors)
-          IconButton(
-            tooltip: 'Color',
-            isSelected: settings.color == c,
-            onPressed: () => settings.color = c,
-            icon: Icon(
-              settings.color == c ? Icons.radio_button_checked : Icons.circle,
-              color: displayInkColor(c, Theme.of(context).brightness),
-              size: 20,
-            ),
-          ),
-        for (final s in PenSettings.sizes)
-          IconButton(
-            tooltip: 'Width ${s.toInt()}',
-            isSelected: settings.size == s,
-            onPressed: () => settings.size = s,
-            icon: Container(
-              width: 18,
-              height: s + 1,
-              decoration: BoxDecoration(
-                color: settings.size == s
-                    ? Theme.of(context).colorScheme.primary
-                    : Theme.of(context).colorScheme.onSurfaceVariant,
-                borderRadius: BorderRadius.circular(s),
-              ),
-            ),
-          ),
-      ],
-    ),
-  );
 }
