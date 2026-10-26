@@ -35,16 +35,20 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
     this.sidebarWidth = DesignMetrics.sidebarWidth,
     this.shadowSelected = DesignShadows.shadowSelectedLight,
     this.shadowPopover = DesignShadows.shadowPopoverLight,
+    this.touch = false,
   });
 
   /// The metrics for [brightness] (only the shadows differ).
-  factory NotedMetrics.forBrightness(Brightness brightness) =>
-      brightness == Brightness.dark
-      ? const NotedMetrics(
+  factory NotedMetrics.forBrightness(
+    Brightness brightness, {
+    bool touch = false,
+  }) => brightness == Brightness.dark
+      ? NotedMetrics(
           shadowSelected: DesignShadows.shadowSelectedDark,
           shadowPopover: DesignShadows.shadowPopoverDark,
+          touch: touch,
         )
-      : const NotedMetrics();
+      : NotedMetrics(touch: touch);
 
   /// The theme's, or the token set for its brightness.
   static NotedMetrics of(BuildContext context) {
@@ -83,6 +87,21 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
   /// The only drop shadow: menus, dialogs, tooltips.
   final List<BoxShadow> shadowPopover;
 
+  /// The last input was touch: [controlSize] is `touch-target` and
+  /// [rowSize] is 40.
+  final bool touch;
+
+  /// Height of a control (button, toolbar button): `control`, or
+  /// `touch-target` on touch.
+  double get controlSize => touch ? touchTarget : control;
+
+  /// Height of a sidebar row or menu item: `row`, or 40 on touch (the Menu
+  /// and SidebarRow guidelines).
+  double get rowSize => touch ? touchRow : row;
+
+  /// The row height on touch devices (not a token of its own).
+  static const double touchRow = 40;
+
   /// `BorderRadius.circular` of [radiusSm], [radiusMd], [radiusLg], [radiusFull].
   BorderRadius get borderSm => BorderRadius.circular(radiusSm);
   BorderRadius get borderMd => BorderRadius.circular(radiusMd);
@@ -111,7 +130,9 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
     double? sidebarWidth,
     List<BoxShadow>? shadowSelected,
     List<BoxShadow>? shadowPopover,
+    bool? touch,
   }) => NotedMetrics(
+    touch: touch ?? this.touch,
     space1: space1 ?? this.space1,
     space2: space2 ?? this.space2,
     space3: space3 ?? this.space3,
@@ -139,6 +160,7 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
     if (other == null) return this;
     double l(double a, double b) => lerpDouble(a, b, t)!;
     return NotedMetrics(
+      touch: t < 0.5 ? touch : other.touch,
       space1: l(space1, other.space1),
       space2: l(space2, other.space2),
       space3: l(space3, other.space3),
@@ -348,13 +370,72 @@ TextTheme notedTextTheme(Color color) {
 
 /// The app theme in [brightness], built from the design tokens: the
 /// [ColorScheme] of [notedColorScheme], the [TextTheme] of [notedTextTheme]
-/// (Inter, falling back to Segoe UI), and the [NotedColors], [NotedMetrics]
-/// and [NotedTypography] extensions.
-ThemeData notedThemeData(Brightness brightness) {
+/// (Inter, falling back to Segoe UI), the [NotedColors], [NotedMetrics] and
+/// [NotedTypography] extensions, and the component themes: buttons (Button),
+/// popup menus (Menu), dialogs, icon buttons, tooltips and dividers.
+///
+/// With [touch] the controls are `touch-target` high and rows 40px (see
+/// `InputModeNotifier`).
+ThemeData notedThemeData(Brightness brightness, {bool touch = false}) {
   final scheme = notedColorScheme(brightness);
   final colors = NotedColors.forBrightness(brightness);
   final dark = brightness == Brightness.dark;
   final tokens = dark ? DesignColors.dark : DesignColors.light;
+  final metrics = NotedMetrics.forBrightness(brightness, touch: touch);
+  final type = NotedTypography.withColor(tokens.text);
+  ButtonStyle button({
+    required Color foreground,
+    Color? background,
+    Color? border,
+    required Color hover,
+    Color? disabledBackground,
+  }) => ButtonStyle(
+    minimumSize: WidgetStatePropertyAll(Size(0, metrics.controlSize)),
+    maximumSize: const WidgetStatePropertyAll(Size.infinite),
+    // Button padding: 0 × 14 (Button guidelines).
+    padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 14)),
+    shape: WidgetStatePropertyAll(
+      RoundedRectangleBorder(borderRadius: metrics.borderMd),
+    ),
+    textStyle: WidgetStatePropertyAll(type.bodyStrong),
+    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    visualDensity: VisualDensity.standard,
+    elevation: const WidgetStatePropertyAll(0),
+    shadowColor: const WidgetStatePropertyAll(Color(0x00000000)),
+    surfaceTintColor: const WidgetStatePropertyAll(Color(0x00000000)),
+    foregroundColor: WidgetStateProperty.resolveWith(
+      (s) => s.contains(WidgetState.disabled) ? colors.textDisabled : foreground,
+    ),
+    iconColor: WidgetStateProperty.resolveWith(
+      (s) => s.contains(WidgetState.disabled) ? colors.textDisabled : foreground,
+    ),
+    backgroundColor: WidgetStateProperty.resolveWith(
+      (s) => s.contains(WidgetState.disabled) ? disabledBackground : background,
+    ),
+    overlayColor: WidgetStateProperty.resolveWith((s) {
+      if (s.contains(WidgetState.disabled)) return null;
+      if (s.contains(WidgetState.hovered) ||
+          s.contains(WidgetState.focused) ||
+          s.contains(WidgetState.pressed)) {
+        return hover;
+      }
+      return null;
+    }),
+    // Focus: a 2px accent outline (Flutter has no outline offset, so it
+    // replaces the border).
+    side: WidgetStateProperty.resolveWith((s) {
+      if (s.contains(WidgetState.focused)) {
+        return BorderSide(color: tokens.accent, width: 2);
+      }
+      return border == null ? BorderSide.none : BorderSide(color: border);
+    }),
+  );
+
+  final menuShape = RoundedRectangleBorder(
+    borderRadius: metrics.borderLg,
+    side: BorderSide(color: tokens.border),
+  );
+  final popoverShadow = metrics.shadowPopover.first.color;
   return ThemeData(
     useMaterial3: true,
     brightness: brightness,
@@ -367,10 +448,111 @@ ThemeData notedThemeData(Brightness brightness) {
     dividerColor: tokens.border,
     hoverColor: tokens.surfaceHover,
     disabledColor: tokens.textDisabled,
-    extensions: [
-      colors,
-      NotedMetrics.forBrightness(brightness),
-      NotedTypography.withColor(tokens.text),
-    ],
+    dividerTheme: DividerThemeData(color: tokens.border, thickness: 1, space: 1),
+    // Primary: one per dialog.
+    filledButtonTheme: FilledButtonThemeData(
+      style: button(
+        foreground: tokens.onAccent,
+        background: tokens.accent,
+        hover: tokens.onAccent.withValues(alpha: 0.12),
+        disabledBackground: tokens.surfaceHover,
+      ),
+    ),
+    // Secondary.
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: button(
+        foreground: tokens.text,
+        background: tokens.surface,
+        border: tokens.border,
+        hover: tokens.surfaceHover,
+        disabledBackground: tokens.surface,
+      ),
+    ),
+    elevatedButtonTheme: ElevatedButtonThemeData(
+      style: button(
+        foreground: tokens.text,
+        background: tokens.surface,
+        border: tokens.border,
+        hover: tokens.surfaceHover,
+        disabledBackground: tokens.surface,
+      ),
+    ),
+    // Ghost.
+    textButtonTheme: TextButtonThemeData(
+      style: button(foreground: tokens.text, hover: tokens.surfaceHover),
+    ),
+    iconButtonTheme: IconButtonThemeData(
+      style: ButtonStyle(
+        minimumSize: WidgetStatePropertyAll(
+          Size.square(metrics.controlSize),
+        ),
+        maximumSize: WidgetStatePropertyAll(Size.square(metrics.controlSize)),
+        fixedSize: WidgetStatePropertyAll(Size.square(metrics.controlSize)),
+        padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+        iconSize: WidgetStatePropertyAll(metrics.icon),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: metrics.borderMd),
+        ),
+        foregroundColor: WidgetStateProperty.resolveWith(
+          (s) => s.contains(WidgetState.disabled)
+              ? colors.textDisabled
+              : tokens.text,
+        ),
+        overlayColor: WidgetStateProperty.resolveWith(
+          (s) => s.contains(WidgetState.hovered) ||
+                  s.contains(WidgetState.focused) ||
+                  s.contains(WidgetState.pressed)
+              ? tokens.surfaceHover
+              : null,
+        ),
+      ),
+    ),
+    // Menu: `NotedMenuItem` draws the items; this is the container.
+    popupMenuTheme: PopupMenuThemeData(
+      color: tokens.surface,
+      surfaceTintColor: const Color(0x00000000),
+      shadowColor: popoverShadow,
+      elevation: 8,
+      shape: menuShape,
+      menuPadding: EdgeInsets.all(metrics.space1),
+      textStyle: type.body,
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: tokens.surface,
+      surfaceTintColor: const Color(0x00000000),
+      shadowColor: popoverShadow,
+      elevation: 8,
+      shape: menuShape,
+      titleTextStyle: type.boxTitle,
+      contentTextStyle: type.body,
+      actionsPadding: EdgeInsets.fromLTRB(
+        metrics.space6,
+        0,
+        metrics.space6,
+        metrics.space4,
+      ),
+    ),
+    tooltipTheme: TooltipThemeData(
+      decoration: BoxDecoration(
+        color: tokens.text,
+        borderRadius: metrics.borderMd,
+        boxShadow: metrics.shadowPopover,
+      ),
+      textStyle: type.small.copyWith(color: tokens.surface),
+      padding: EdgeInsets.symmetric(
+        horizontal: metrics.space2,
+        vertical: metrics.space1,
+      ),
+      waitDuration: const Duration(milliseconds: 500),
+    ),
+    extensions: [colors, metrics, type],
   );
+}
+
+/// The destructive button style (Button guidelines): `error` text on a
+/// secondary button. Use it on an `OutlinedButton` that confirms a deletion.
+ButtonStyle notedDestructiveButtonStyle(BuildContext context) {
+  final error = Theme.of(context).colorScheme.error;
+  return OutlinedButton.styleFrom(foregroundColor: error, iconColor: error);
 }

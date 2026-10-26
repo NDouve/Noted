@@ -153,56 +153,104 @@ class _BoxHostState extends State<BoxHost> {
     final metrics = NotedMetrics.of(context);
     final type = NotedTypography.of(context);
     final conflicted = node is BoxRecord && node.isConflicted;
-    final showChrome = editable && (_hover || selected || editing);
+    final frameless = module is FramelessBoxModule;
+    final lit = selected || editing;
+    final showGrip = editable && (_hover || lit);
+    final w = b.width;
+    final h = b.height;
 
     return Positioned(
       left: b.x - widget.childOrigin.dx - m,
       top: b.y - widget.childOrigin.dy - boxGripHeight,
-      width: b.width + 2 * m,
-      height: b.height + boxGripHeight + m,
+      width: w + 2 * m,
+      height: h + boxGripHeight + m,
       child: MouseRegion(
         onEnter: (_) => setState(() => _hover = true),
         onExit: (_) => setState(() => _hover = false),
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            Positioned(
-              left: m,
-              top: boxGripHeight,
-              width: b.width,
-              height: b.height,
-              child: ClipRect(child: content),
-            ),
-            if (showChrome)
+            // The frame's fill, and the selection ring (shadow-selected).
+            // A frameless box (drawing) has neither.
+            if (!frameless)
               Positioned(
                 left: m,
                 top: boxGripHeight,
-                width: b.width,
-                height: b.height,
+                width: w,
+                height: h,
                 child: IgnorePointer(
                   child: DecoratedBox(
+                    key: const ValueKey('box-frame-fill'),
                     decoration: BoxDecoration(
-                      border: Border.all(
-                        color: selected || editing
-                            ? scheme.primary
-                            : scheme.outlineVariant,
-                      ),
+                      color: scheme.surface,
+                      borderRadius: metrics.borderLg,
+                      boxShadow: lit ? metrics.shadowSelected : null,
                     ),
                   ),
                 ),
               ),
+            Positioned(
+              left: m,
+              top: boxGripHeight,
+              width: w,
+              height: h,
+              child: ClipRRect(
+                borderRadius: frameless
+                    ? BorderRadius.zero
+                    : BorderRadius.circular(metrics.radiusLg - 1),
+                child: content,
+              ),
+            ),
+            // The border: 1px border-box idle, 1px accent selected, 2px
+            // conflict. A frameless box shows a dashed accent outline only
+            // while selected.
             if (conflicted)
               Positioned(
                 left: m,
                 top: boxGripHeight,
-                width: b.width,
-                height: b.height,
+                width: w,
+                height: h,
                 child: IgnorePointer(
                   child: DecoratedBox(
                     key: const ValueKey('conflict-frame'),
                     decoration: BoxDecoration(
+                      borderRadius: metrics.borderLg,
                       border: Border.fromBorderSide(
                         BorderSide(color: noted.conflict, width: 2),
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            else if (frameless && lit)
+              Positioned(
+                left: m,
+                top: boxGripHeight,
+                width: w,
+                height: h,
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    key: const ValueKey('box-frame-dashed'),
+                    painter: DashedOutlinePainter(
+                      color: scheme.primary,
+                      radius: metrics.radiusLg,
+                    ),
+                  ),
+                ),
+              )
+            else if (!frameless)
+              Positioned(
+                left: m,
+                top: boxGripHeight,
+                width: w,
+                height: h,
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    key: const ValueKey('box-frame-border'),
+                    decoration: BoxDecoration(
+                      borderRadius: metrics.borderLg,
+                      border: Border.all(
+                        color: lit ? scheme.primary : scheme.outlineVariant,
                       ),
                     ),
                   ),
@@ -212,7 +260,7 @@ class _BoxHostState extends State<BoxHost> {
               Positioned(
                 left: m,
                 top: 0,
-                width: b.width,
+                width: w,
                 height: boxGripHeight,
                 child: MouseRegion(
                   cursor: SystemMouseCursors.move,
@@ -227,14 +275,19 @@ class _BoxHostState extends State<BoxHost> {
                     onPanUpdate: (d) => _update(d.globalPosition, null),
                     onPanEnd: (_) => _end(),
                     onPanCancel: _end,
-                    child: showChrome
-                        ? DecoratedBox(
-                            decoration: BoxDecoration(
-                              color: selected || editing
-                                  ? scheme.primary
-                                  : scheme.outline,
-                              borderRadius: BorderRadius.vertical(
-                                top: Radius.circular(metrics.radiusSm),
+                    child: showGrip
+                        ? Center(
+                            child: DecoratedBox(
+                              key: const ValueKey('box-grip'),
+                              decoration: BoxDecoration(
+                                color: lit
+                                    ? scheme.primary
+                                    : scheme.onSurfaceVariant,
+                                borderRadius: metrics.borderFull,
+                              ),
+                              child: SizedBox(
+                                width: metrics.space6,
+                                height: metrics.space1,
                               ),
                             ),
                           )
@@ -247,35 +300,40 @@ class _BoxHostState extends State<BoxHost> {
               _handle(_Edge.bottom, b),
               _handle(_Edge.bottomLeft, b),
               _handle(_Edge.bottomRight, b),
+              if (lit) ..._handleSquares(b, scheme, metrics),
             ],
             if (conflicted && !readOnly)
               Positioned(
-                right: m,
-                top: 0,
-                height: boxGripHeight,
+                right: m + metrics.space2,
+                // Centered on the top edge of the frame.
+                top: boxGripHeight - _badgeHeight / 2,
+                height: _badgeHeight,
                 child: MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: GestureDetector(
                     key: ValueKey('conflict-badge-${node.id}'),
                     behavior: HitTestBehavior.opaque,
                     onTap: () => showConflictDialog(context, c, node.id),
-                    child: Container(
-                      alignment: Alignment.center,
-                      padding: EdgeInsets.symmetric(
-                        horizontal: metrics.space2,
-                      ),
+                    child: DecoratedBox(
+                      key: const ValueKey('conflict-badge'),
                       decoration: BoxDecoration(
                         color: noted.conflict,
-                        borderRadius: BorderRadius.vertical(
-                          top: Radius.circular(metrics.radiusSm),
-                        ),
+                        borderRadius: metrics.borderFull,
                       ),
-                      child: Text(
-                        'Conflict',
-                        style: type.small.copyWith(
-                          height: 1,
-                          fontWeight: FontWeight.w600,
-                          color: noted.onConflict,
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: metrics.space2,
+                        ),
+                        child: Center(
+                          widthFactor: 1,
+                          child: Text(
+                            'Conflict',
+                            style: type.small.copyWith(
+                              height: 1,
+                              fontWeight: FontWeight.w600,
+                              color: noted.onConflict,
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -286,6 +344,43 @@ class _BoxHostState extends State<BoxHost> {
         ),
       ),
     );
+  }
+
+  static const double _badgeHeight = 20;
+
+  /// The visible resize handles: `handle` (8px) squares, `surface` fill and a
+  /// 1px `accent` border, on the left, right and bottom edges and the bottom
+  /// corners. They sit on the frame; the drag areas stay the larger invisible
+  /// ones of [_handle].
+  List<Widget> _handleSquares(Bounds b, ColorScheme scheme, NotedMetrics m) {
+    final s = m.handle;
+    final left = boxHandleSize / 2;
+    final top = boxGripHeight;
+    final spots = <String, Offset>{
+      'left': Offset(left, top + b.height / 2),
+      'right': Offset(left + b.width, top + b.height / 2),
+      'bottom': Offset(left + b.width / 2, top + b.height),
+      'bottomLeft': Offset(left, top + b.height),
+      'bottomRight': Offset(left + b.width, top + b.height),
+    };
+    return [
+      for (final e in spots.entries)
+        Positioned(
+          left: e.value.dx - s / 2,
+          top: e.value.dy - s / 2,
+          width: s,
+          height: s,
+          child: IgnorePointer(
+            child: DecoratedBox(
+              key: ValueKey('box-handle-${e.key}'),
+              decoration: BoxDecoration(
+                color: scheme.surface,
+                border: Border.all(color: scheme.primary),
+              ),
+            ),
+          ),
+        ),
+    ];
   }
 
   Widget _handle(_Edge edge, Bounds b) {
@@ -409,6 +504,51 @@ class _BoxHostState extends State<BoxHost> {
   }
 }
 
+/// Paints a 1px dashed outline with rounded corners around its box: the
+/// selection outline of a frameless (drawing) box.
+class DashedOutlinePainter extends CustomPainter {
+  const DashedOutlinePainter({
+    required this.color,
+    required this.radius,
+    this.dash = 4,
+    this.gap = 3,
+  });
+
+  final Color color;
+  final double radius;
+  final double dash;
+  final double gap;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    final path = Path()
+      ..addRRect(
+        RRect.fromRectAndRadius(
+          Offset.zero & size,
+          Radius.circular(radius),
+        ).deflate(0.5),
+      );
+    for (final metric in path.computeMetrics()) {
+      var d = 0.0;
+      while (d < metric.length) {
+        canvas.drawPath(metric.extractPath(d, d + dash), paint);
+        d += dash + gap;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(DashedOutlinePainter old) =>
+      old.color != color ||
+      old.radius != radius ||
+      old.dash != dash ||
+      old.gap != gap;
+}
+
 /// A box shown from its saved snapshot because this device can't run it.
 class UnsupportedBoxView extends StatelessWidget {
   const UnsupportedBoxView({
@@ -425,9 +565,9 @@ class UnsupportedBoxView extends StatelessWidget {
     final theme = Theme.of(context);
     final metrics = NotedMetrics.of(context);
     return DecoratedBox(
+      // The frame (fill and border) comes from the host.
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-        border: Border.all(color: theme.colorScheme.outlineVariant),
       ),
       child: Padding(
         padding: EdgeInsets.all(metrics.space2),

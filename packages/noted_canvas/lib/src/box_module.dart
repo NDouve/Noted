@@ -87,6 +87,13 @@ abstract class BoxModule<D> {
   }
 }
 
+/// Implemented by a box module whose boxes draw no idle frame (the drawing
+/// box: ink straight on the page). The host then shows no fill and no border
+/// until the box is selected, and draws a dashed `accent` outline instead of
+/// the solid selection border. Not part of the Box API: it is a host-side
+/// check on the module (BoxFrame guidelines).
+abstract interface class FramelessBoxModule {}
+
 /// The host's untyped side of a [BoxContext].
 final class BoxBinding {
   const BoxBinding({

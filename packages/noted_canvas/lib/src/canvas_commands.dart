@@ -63,7 +63,7 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
     Command(
       id: CanvasCommands.select,
       label: 'Select and type',
-      icon: Icons.text_fields,
+      icon: Icons.text_fields_rounded,
       shortcut: _key(LogicalKeyboardKey.keyV),
       checked: () => tools.active == null,
       listenable: tools,
@@ -82,7 +82,7 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
     Command(
       id: CanvasCommands.undo,
       label: 'Undo',
-      icon: Icons.undo,
+      icon: Icons.undo_rounded,
       shortcut: _key(LogicalKeyboardKey.keyZ, ctrl: true),
       enabled: () => !t.isReadOnly && c.canUndo,
       listenable: c,
@@ -91,7 +91,7 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
     Command(
       id: CanvasCommands.redo,
       label: 'Redo',
-      icon: Icons.redo,
+      icon: Icons.redo_rounded,
       shortcut: _key(LogicalKeyboardKey.keyY, ctrl: true),
       alternateShortcuts: [_key(LogicalKeyboardKey.keyZ, ctrl: true, shift: true)],
       enabled: () => !t.isReadOnly && c.canRedo,
@@ -101,7 +101,7 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
     Command(
       id: CanvasCommands.delete,
       label: 'Delete selected box',
-      icon: Icons.delete_outline,
+      icon: Icons.delete_outline_rounded,
       shortcut: _key(LogicalKeyboardKey.delete),
       alternateShortcuts: [_key(LogicalKeyboardKey.backspace)],
       enabled: () => !t.isReadOnly && c.selectedId != null,
@@ -114,7 +114,7 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
     Command(
       id: CanvasCommands.escape,
       label: 'Deselect',
-      icon: Icons.deselect,
+      icon: Icons.deselect_rounded,
       shortcut: _key(LogicalKeyboardKey.escape),
       whileEditing: true,
       enabled: () => !t.isReadOnly,
@@ -135,7 +135,7 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
     Command(
       id: CanvasCommands.zoomIn,
       label: 'Zoom in',
-      icon: Icons.zoom_in,
+      icon: Icons.zoom_in_rounded,
       shortcut: _key(LogicalKeyboardKey.equal, ctrl: true),
       alternateShortcuts: [
         _key(LogicalKeyboardKey.equal, ctrl: true, shift: true),
@@ -148,7 +148,7 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
     Command(
       id: CanvasCommands.zoomOut,
       label: 'Zoom out',
-      icon: Icons.zoom_out,
+      icon: Icons.zoom_out_rounded,
       shortcut: _key(LogicalKeyboardKey.minus, ctrl: true),
       alternateShortcuts: [_key(LogicalKeyboardKey.numpadSubtract, ctrl: true)],
       whileEditing: true,
@@ -158,18 +158,19 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
     Command(
       id: CanvasCommands.zoomReset,
       label: 'Zoom to 100%',
-      icon: Icons.search,
+      icon: Icons.search_rounded,
       shortcut: _key(LogicalKeyboardKey.digit0, ctrl: true),
       alternateShortcuts: [_key(LogicalKeyboardKey.numpad0, ctrl: true)],
       whileEditing: true,
       whileReadOnly: true,
       text: () => '${(t.scale * 100).round()}%',
+      readout: true,
       invoke: () => t.zoomTo(1),
     ),
     Command(
       id: CanvasCommands.fitAll,
       label: 'Fit all',
-      icon: Icons.fit_screen,
+      icon: Icons.fit_screen_rounded,
       showLabel: true,
       whileReadOnly: true,
       invoke: t.fitAll,
@@ -209,8 +210,8 @@ String pageBackgroundLabel(PageBackground b) => switch (b) {
 
 /// The icon for [b], shown on the toolbar's page background button.
 IconData pageBackgroundIcon(PageBackground b) => switch (b) {
-  PageBackground.plain => Icons.crop_square,
-  PageBackground.dots => Icons.blur_on,
-  PageBackground.graph => Icons.grid_on,
-  PageBackground.ruled => Icons.view_headline,
+  PageBackground.plain => Icons.crop_square_rounded,
+  PageBackground.dots => Icons.blur_on_rounded,
+  PageBackground.graph => Icons.grid_on_rounded,
+  PageBackground.ruled => Icons.view_headline_rounded,
 };

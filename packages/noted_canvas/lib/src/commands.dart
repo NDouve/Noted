@@ -43,6 +43,7 @@ class Command extends ChangeNotifier {
     this.iconBuilder,
     this.text,
     this.showLabel = false,
+    this.readout = false,
     this.whileEditing = false,
     this.whileReadOnly = false,
     this.menu = const [],
@@ -70,6 +71,10 @@ class Command extends ChangeNotifier {
 
   /// A toolbar shows the label next to the icon.
   final bool showLabel;
+
+  /// A toolbar shows the command as an outlined readout button (the zoom
+  /// level): its [text] in the numeric style.
+  final bool readout;
 
   /// The key that invokes the command, shown in tooltips.
   final SingleActivator? shortcut;

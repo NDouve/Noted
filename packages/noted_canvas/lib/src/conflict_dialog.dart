@@ -158,8 +158,9 @@ class _ConflictDialogState extends State<_ConflictDialog> {
           child: const Text('Cancel'),
         ),
         if (deleted) ...[
-          TextButton(
+          OutlinedButton(
             key: const ValueKey('conflict-delete'),
+            style: notedDestructiveButtonStyle(context),
             onPressed: () => run(controller.resolveDelete),
             child: const Text('Delete box'),
           ),
@@ -170,7 +171,7 @@ class _ConflictDialogState extends State<_ConflictDialog> {
           ),
         ] else ...[
           if (canEdit)
-            TextButton(
+            OutlinedButton(
               key: const ValueKey('conflict-edit'),
               onPressed: () {
                 final v = _versions(box, other);
@@ -182,12 +183,12 @@ class _ConflictDialogState extends State<_ConflictDialog> {
               },
               child: const Text('Edit manually'),
             ),
-          TextButton(
+          OutlinedButton(
             key: const ValueKey('conflict-keep-theirs'),
             onPressed: () => run(controller.resolveKeepTheirs),
             child: const Text('Keep other version'),
           ),
-          TextButton(
+          OutlinedButton(
             key: const ValueKey('conflict-keep-both'),
             onPressed: () => run(controller.resolveKeepBoth),
             child: const Text('Keep both'),
@@ -244,6 +245,7 @@ class _ConflictDialogState extends State<_ConflictDialog> {
                 label: mineLabel,
                 held: mine,
                 useKey: const ValueKey('conflict-use-mine'),
+                primary: true,
                 onUse: () => use(mine),
               ),
             ),
@@ -282,6 +284,7 @@ class _EditPane extends StatelessWidget {
     required this.held,
     required this.useKey,
     required this.onUse,
+    this.primary = false,
   });
 
   final String boxId;
@@ -289,6 +292,9 @@ class _EditPane extends StatelessWidget {
   final _Held held;
   final Key useKey;
   final VoidCallback onUse;
+
+  /// The dialog's one primary button is the one for this device's version.
+  final bool primary;
 
   @override
   Widget build(BuildContext context) {
@@ -324,11 +330,18 @@ class _EditPane extends StatelessWidget {
           ),
         ),
         SizedBox(height: metrics.space2),
-        FilledButton(
-          key: useKey,
-          onPressed: onUse,
-          child: const Text('Use this version'),
-        ),
+        if (primary)
+          FilledButton(
+            key: useKey,
+            onPressed: onUse,
+            child: const Text('Use this version'),
+          )
+        else
+          OutlinedButton(
+            key: useKey,
+            onPressed: onUse,
+            child: const Text('Use this version'),
+          ),
       ],
     );
   }

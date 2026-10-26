@@ -176,7 +176,7 @@ void main() {
       await t.tap(find.byTooltip('Page background'));
       await t.pumpAndSettle();
       expect(find.text('Page background: Dots'), findsOneWidget);
-      expect(find.byIcon(Icons.check), findsOneWidget);
+      expect(find.byIcon(Icons.check_rounded), findsOneWidget);
       await t.tap(find.text('Page background: Dots'));
       await t.pumpAndSettle();
       expect(c.page.meta.background, PageBackground.dots);
@@ -193,8 +193,8 @@ void main() {
       await t.tap(find.byTooltip('Page background'));
       await t.pumpAndSettle();
       final checked = find.ancestor(
-        of: find.byIcon(Icons.check),
-        matching: find.byType(PopupMenuItem<String>),
+        of: find.byIcon(Icons.check_rounded),
+        matching: find.byType(NotedMenuItem<String>),
       );
       expect(
         find.descendant(of: checked, matching: find.text('Page background: Dots')),

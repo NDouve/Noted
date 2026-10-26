@@ -326,7 +326,8 @@ void main() {
     expect(x[1], lessThan(x[2]));
     expect(find.byTooltip('Pen (P)'), findsNothing);
     expect(find.byTooltip('Redo (Ctrl+Y)'), findsNothing);
-    expect(find.byType(VerticalDivider), findsNWidgets(1), reason: 'two groups');
+    // The last group is the view group at the far right; no rule before it.
+    expect(find.byType(ToolbarSeparator), findsNothing);
     expect(t.takeException(), isNull);
   });
 
@@ -348,12 +349,7 @@ void main() {
 
   for (final brightness in Brightness.values) {
     testWidgets('the toolbar uses the theme colors in ${brightness.name} mode', (t) async {
-      final theme = ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.teal,
-          brightness: brightness,
-        ),
-      );
+      final theme = notedThemeData(brightness);
       await pump(t, theme: theme);
       final scheme = theme.colorScheme;
       final material = t.widget<Material>(
@@ -364,7 +360,7 @@ void main() {
             )
             .first,
       );
-      expect(material.color, scheme.surfaceContainer);
+      expect(material.color, scheme.surface);
       final border = t
           .widget<DecoratedBox>(
             find
@@ -375,17 +371,17 @@ void main() {
                 .first,
           )
           .decoration as BoxDecoration;
-      expect((border.border! as Border).bottom.color, scheme.outlineVariant);
+      expect((border.border! as Border).bottom.color, scheme.outline);
 
       // The checked tool is drawn with the theme's container colors.
       final style = t.widget<IconButton>(button('Select and type (V)')).style!;
       expect(
         style.backgroundColor!.resolve({}),
-        scheme.secondaryContainer,
+        scheme.primaryContainer,
       );
       expect(
         style.foregroundColor!.resolve({}),
-        scheme.onSecondaryContainer,
+        scheme.primary,
       );
     });
   }
