@@ -31,6 +31,8 @@ export 'src/noted_colors.dart';
 export 'src/noted_menu.dart';
 export 'src/noted_theme.dart';
 export 'src/page_background.dart';
+export 'src/find_bar.dart' show FindBar;
 export 'src/page_canvas.dart';
+export 'src/page_find.dart';
 export 'src/read_only_banner.dart';
 export 'src/toolbar_layout.dart';

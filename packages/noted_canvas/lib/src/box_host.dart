@@ -15,6 +15,7 @@ import 'conflict_dialog.dart';
 import 'geometry.dart';
 import 'noted_colors.dart';
 import 'noted_theme.dart';
+import 'page_find.dart';
 
 /// Width of the resize strip on each edge, centred on the edge.
 const double boxHandleSize = 10;
@@ -36,6 +37,7 @@ class BoxHost extends StatefulWidget {
     required this.scale,
     required this.onGripTap,
     this.readOnly = false,
+    this.find,
   });
 
   final CanvasNode node;
@@ -44,6 +46,10 @@ class BoxHost extends StatefulWidget {
   /// Show every box with its module's read-only view and without grip,
   /// handles or conflict badge.
   final bool readOnly;
+
+  /// Find on page: the boxes with a match are framed, and the module is told
+  /// what is being looked for (Box API 0.6).
+  final PageFind? find;
 
   /// World position of the canvas child's top-left corner.
   final Offset childOrigin;
@@ -133,6 +139,7 @@ class _BoxHostState extends State<BoxHost> {
             autofocus: _autofocus,
             commit: (data) => _commit(node.id, liveBox.codec, data),
             requestBounds: (r) => _requestBounds(node.id, r),
+            find: widget.find?.boxFind,
           ),
         ),
       );
@@ -253,6 +260,41 @@ class _BoxHostState extends State<BoxHost> {
                         color: lit ? scheme.primary : scheme.outlineVariant,
                       ),
                     ),
+                  ),
+                ),
+              ),
+            // Find on page: a frame around every box with a match, stronger
+            // on the one that holds the current match.
+            if (widget.find != null)
+              Positioned(
+                left: m,
+                top: boxGripHeight,
+                width: w,
+                height: h,
+                child: IgnorePointer(
+                  child: ListenableBuilder(
+                    listenable: widget.find!,
+                    builder: (context, _) {
+                      final f = widget.find!;
+                      if (!f.isOpen || !f.matchedBoxIds.contains(node.id)) {
+                        return const SizedBox.shrink();
+                      }
+                      final current = f.currentMatch?.boxId == node.id;
+                      return DecoratedBox(
+                        key: ValueKey(
+                          current ? 'find-frame-current' : 'find-frame-match',
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: metrics.borderLg,
+                          border: Border.all(
+                            color: current
+                                ? scheme.tertiary
+                                : scheme.tertiary.withValues(alpha: 0.55),
+                            width: current ? 3 : 1.5,
+                          ),
+                        ),
+                      );
+                    },
                   ),
                 ),
               ),

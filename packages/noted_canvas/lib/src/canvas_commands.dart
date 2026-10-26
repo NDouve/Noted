@@ -21,6 +21,9 @@ abstract final class CanvasCommands {
   static const String zoomReset = 'canvas.zoomReset';
   static const String fitAll = 'canvas.fitAll';
   static const String pageBackground = 'canvas.pageBackground';
+  static const String find = 'canvas.find';
+  static const String findNext = 'canvas.findNext';
+  static const String findPrevious = 'canvas.findPrevious';
 
   /// The command that chooses [b]: `canvas.pageBackground.dots`.
   static String pageBackgroundOf(PageBackground b) => 'canvas.pageBackground.${b.name}';
@@ -37,6 +40,18 @@ abstract interface class CanvasCommandTarget implements CommandHost {
   void zoomBy(double factor);
   void zoomTo(double scale);
   void fitAll();
+
+  /// Find on page: the find bar is showing.
+  bool get isFindOpen;
+
+  /// Opens the find bar (or focuses it if it is open).
+  void openFind();
+
+  /// Closes the find bar and clears the highlights.
+  void closeFind();
+
+  /// Steps to the next (1) or previous (-1) match.
+  void stepFind(int delta);
 
   /// Moves keyboard focus from a box's editor to the canvas.
   void focusCanvas();
@@ -122,7 +137,10 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
       invoke: () {
         // In an editor: back to the canvas and the Select tool. Otherwise the first Escape
         // leaves the tool, the next clears the selection.
-        if (c.editingId != null) {
+        if (t.isFindOpen) {
+          // The find bar closes first, then the highlights are gone.
+          t.closeFind();
+        } else if (c.editingId != null) {
           t.focusCanvas();
           tools.select(null);
         } else if (tools.active != null) {
@@ -174,6 +192,42 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
       showLabel: true,
       whileReadOnly: true,
       invoke: t.fitAll,
+    ),
+    // Find on page. These work in a note editor too (appflowy has no Ctrl+F
+    // of its own in this build), and on a read-only page.
+    Command(
+      id: CanvasCommands.find,
+      label: 'Find on page',
+      icon: Icons.find_in_page_rounded,
+      shortcut: _key(LogicalKeyboardKey.keyF, ctrl: true),
+      alternateShortcuts: [
+        SingleActivator(LogicalKeyboardKey.keyF, meta: true),
+      ],
+      whileEditing: true,
+      whileReadOnly: true,
+      invoke: t.openFind,
+    ),
+    Command(
+      id: CanvasCommands.findNext,
+      label: 'Find next',
+      icon: Icons.keyboard_arrow_down_rounded,
+      shortcut: _key(LogicalKeyboardKey.f3),
+      alternateShortcuts: [_key(LogicalKeyboardKey.keyG, ctrl: true)],
+      whileEditing: true,
+      whileReadOnly: true,
+      invoke: () => t.isFindOpen ? t.stepFind(1) : t.openFind(),
+    ),
+    Command(
+      id: CanvasCommands.findPrevious,
+      label: 'Find previous',
+      icon: Icons.keyboard_arrow_up_rounded,
+      shortcut: _key(LogicalKeyboardKey.f3, shift: true),
+      alternateShortcuts: [
+        _key(LogicalKeyboardKey.keyG, ctrl: true, shift: true),
+      ],
+      whileEditing: true,
+      whileReadOnly: true,
+      invoke: () => t.isFindOpen ? t.stepFind(-1) : t.openFind(),
     ),
     Command(
       id: CanvasCommands.pageBackground,

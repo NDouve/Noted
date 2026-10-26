@@ -4,6 +4,8 @@
 
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show ValueListenable, ValueNotifier;
+
 import 'package:flutter/widgets.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -41,6 +43,11 @@ abstract interface class BoxContext<D> {
   /// Saves new content: encoded by the codec, with a fresh snapshot and a
   /// new revision. Doesn't rebuild the canvas.
   void commit(D data);
+
+  /// Find on page (Box API 0.6): what is being looked for while the find bar
+  /// is open, or null. A module may mark the matches in its own content;
+  /// the canvas frames the matching boxes either way.
+  ValueListenable<BoxFind?> get find;
 
   /// Asks the host to move or resize the box, for example to grow it with
   /// its content. The host applies the request after the current frame and
@@ -101,6 +108,7 @@ final class BoxBinding {
     required this.autofocus,
     required this.commit,
     required this.requestBounds,
+    this.find,
   });
 
   final String boxId;
@@ -111,6 +119,9 @@ final class BoxBinding {
   final bool autofocus;
   final void Function(Object? data) commit;
   final void Function(Rect bounds) requestBounds;
+
+  /// Find on page, or null where there is none (a conflict dialog preview).
+  final ValueListenable<BoxFind?>? find;
 }
 
 final class _TypedBoxContext<D> implements BoxContext<D> {
@@ -134,6 +145,10 @@ final class _TypedBoxContext<D> implements BoxContext<D> {
   void commit(D data) => _b.commit(data);
   @override
   void requestBounds(Rect bounds) => _b.requestBounds(bounds);
+  @override
+  ValueListenable<BoxFind?> get find => _b.find ?? _noFind;
+
+  static final ValueNotifier<BoxFind?> _noFind = ValueNotifier<BoxFind?>(null);
 }
 
 /// How the canvas frames a module's boxes (Box API 0.5, BoxFrame

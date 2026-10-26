@@ -63,9 +63,7 @@ final class NoteCodec extends BoxCodec<NoteData> {
   /// one `$latex$`, so a reader sees the formula source.
   @override
   String snapshotText(NoteData data) {
-    final lines = <String>[];
-    _collectLines(data.document['document'], lines);
-    return lines.join('\n');
+    return snapshotParts(data).map((p) => p.text).join();
   }
 
   /// Empty means only blank paragraphs: any other block (a divider, a
@@ -213,19 +211,54 @@ String? _textOf(Map<String, Object?> node) {
   return text;
 }
 
-/// Adds [node]'s lines to [lines], depth-first.
-void _collectLines(Object? node, List<String> lines) {
+/// A piece of a note's text snapshot and the block it came from. Joining the
+/// texts of [snapshotParts] gives [NoteCodec.snapshotText].
+///
+/// This is how the note module maps a match in the snapshot back to a block
+/// of its own document (Find on page highlights it there); the core never
+/// sees any of this.
+final class SnapshotPart {
+  const SnapshotPart(this.text, [this.path]);
+
+  /// The text this part contributes to the snapshot.
+  final String text;
+
+  /// The block's path in the document (`[2]`, or `[0, 1, 0]` for a block in
+  /// a table cell), or null for a separator (a line break, ` | ` between
+  /// table cells, a space between blocks of one cell).
+  final List<int>? path;
+}
+
+/// The pieces of [data]'s text snapshot, in order, separators included.
+List<SnapshotPart> snapshotParts(NoteData data) {
+  final lines = <List<SnapshotPart>>[];
+  _collectLines(data.document['document'], const [], lines);
+  return [
+    for (final (i, line) in lines.indexed) ...[
+      if (i > 0) const SnapshotPart('\n'),
+      ...line,
+    ],
+  ];
+}
+
+/// Adds [node]'s lines to [lines], depth-first. [path] is the node's path in
+/// the document.
+void _collectLines(
+  Object? node,
+  List<int> path,
+  List<List<SnapshotPart>> lines,
+) {
   if (node is! Map<String, Object?>) return;
   if (node['type'] == NoteFormat.tableType) {
-    lines.addAll(_tableRows(node));
+    lines.addAll(_tableRows(node, path));
     return;
   }
   final text = _textOf(node);
-  if (text != null) lines.add(text);
+  if (text != null) lines.add([SnapshotPart(text, path)]);
   final children = node['children'];
   if (children is List) {
-    for (final c in children) {
-      _collectLines(c, lines);
+    for (var i = 0; i < children.length; i++) {
+      _collectLines(children[i], [...path, i], lines);
     }
   }
 }
@@ -233,26 +266,43 @@ void _collectLines(Object? node, List<String> lines) {
 /// One line per table row. appflowy stores cells column by column, so they
 /// are regrouped by their row and column positions; a cell with several
 /// blocks has them joined by a space.
-List<String> _tableRows(Map<String, Object?> table) {
-  final cells = <(int row, int col, String text)>[];
+List<List<SnapshotPart>> _tableRows(
+  Map<String, Object?> table,
+  List<int> path,
+) {
+  final cells = <(int row, int col, List<SnapshotPart> parts)>[];
   final children = table['children'];
   if (children is! List) return const [];
-  for (final cell in children) {
+  for (var i = 0; i < children.length; i++) {
+    final cell = children[i];
     if (cell is! Map<String, Object?>) continue;
     final data = cell['data'];
     final row = data is Map ? data[NoteFormat.rowPosition] : null;
     final col = data is Map ? data[NoteFormat.colPosition] : null;
     if (row is! int || col is! int) continue;
-    final parts = <String>[];
-    _collectLines(cell, parts);
-    cells.add((row, col, parts.join(' ')));
+    final lines = <List<SnapshotPart>>[];
+    _collectLines(cell, [...path, i], lines);
+    final parts = <SnapshotPart>[];
+    for (final (k, line) in lines.indexed) {
+      if (k > 0) parts.add(const SnapshotPart(' '));
+      parts.addAll(line);
+    }
+    cells.add((row, col, parts));
   }
   cells.sort((a, b) => a.$1 != b.$1 ? a.$1 - b.$1 : a.$2 - b.$2);
-  final rows = <int, List<String>>{};
-  for (final (row, _, text) in cells) {
-    (rows[row] ??= []).add(text);
+  final rows = <int, List<List<SnapshotPart>>>{};
+  for (final (row, _, parts) in cells) {
+    (rows[row] ??= []).add(parts);
   }
-  return [for (final r in rows.values) r.join(' | ')];
+  return [
+    for (final r in rows.values)
+      [
+        for (final (k, cell) in r.indexed) ...[
+          if (k > 0) const SnapshotPart(' | '),
+          ...cell,
+        ],
+      ],
+  ];
 }
 
 /// Visits each block depth-first with its plain text (null if it has no

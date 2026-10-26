@@ -8,6 +8,7 @@ import 'package:noted_canvas/noted_canvas.dart' show DesignType, NotedMetrics;
 import 'package:flutter_math_fork/flutter_math.dart';
 
 import 'note_codec.dart';
+import 'note_find.dart';
 
 /// LaTeX equations in a note, as blocks and inside text.
 ///
@@ -417,6 +418,22 @@ class _MathBlockComponentWidgetState extends State<MathBlockComponentWidget>
         ),
       ),
     );
+    // Find on page: an equation block whose source matches is highlighted
+    // (it shows math, not source, so the block is marked as a whole).
+    final hits = NoteFindScope.of(context)?.hitsFor(node);
+    if (hits != null) {
+      child = DecoratedBox(
+        key: ValueKey(
+          hits.any((h) => h.current) ? 'find-math-current' : 'find-math-match',
+        ),
+        decoration: equationFindDecoration(
+          context,
+          current: hits.any((h) => h.current),
+          radius: 6,
+        ),
+        child: child,
+      );
+    }
     if (editor.editable) {
       child = MouseRegion(
         cursor: SystemMouseCursors.click,

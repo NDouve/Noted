@@ -290,6 +290,7 @@ void main() {
         'canvas.fitAll',
         'canvas.zoomReset',
         'canvas.pageBackground',
+        'app.search',
       ]);
     });
 

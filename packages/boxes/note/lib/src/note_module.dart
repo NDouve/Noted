@@ -17,6 +17,7 @@ import 'math_input.dart';
 import 'note_codec.dart';
 import 'note_commands.dart';
 import 'note_editor_state.dart';
+import 'note_find.dart';
 import 'note_theme.dart';
 import 'table_formulas.dart';
 import 'table_menu.dart';
@@ -88,7 +89,42 @@ class _NoteEditorState extends State<_NoteEditor>
     super.initState();
     installMathSlicing();
     _focus.addListener(_focusChanged);
+    widget.box.find.addListener(_findChanged);
     _load(widget.box.data);
+  }
+
+  // Find on page (Box API 0.6). The matches in this note's blocks, found in
+  // the note's own snapshot; rebuilt when the query, the current match or
+  // the note's content changes.
+  BoxFind? _findFor;
+  NoteData? _findData;
+  NoteFind? _findModel;
+
+  void _findChanged() {
+    if (!mounted) return;
+    final phase = SchedulerBinding.instance.schedulerPhase;
+    if (phase == SchedulerPhase.idle ||
+        phase == SchedulerPhase.postFrameCallbacks) {
+      setState(() {});
+    } else {
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  NoteFind? _currentFind() {
+    final f = widget.box.find.value;
+    if (f == null) {
+      _findFor = null;
+      return _findModel = null;
+    }
+    if (f != _findFor || !identical(_findData, _shown)) {
+      _findFor = f;
+      _findData = _shown;
+      _findModel = NoteFind.build(_shown, f, widget.box.boxId);
+    }
+    return _findModel;
   }
 
   // The note commands (insert table, insert equation) act on the editor
@@ -168,11 +204,17 @@ class _NoteEditorState extends State<_NoteEditor>
     final next = NoteData(_editor.document.toJson());
     _shown = next;
     widget.box.commit(next);
+    // Find on page: the highlights follow what was typed.
+    if (widget.box.find.value != null) _findChanged();
   }
 
   @override
   void didUpdateWidget(_NoteEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.box.find != widget.box.find) {
+      oldWidget.box.find.removeListener(_findChanged);
+      widget.box.find.addListener(_findChanged);
+    }
     // Data changed outside this editor (for example a reload): start over.
     if (!identical(widget.box.data, _shown)) {
       // The host can rebuild with data older than what this editor has
@@ -202,6 +244,7 @@ class _NoteEditorState extends State<_NoteEditor>
   @override
   void dispose() {
     NoteCommandFocus.release(this);
+    widget.box.find.removeListener(_findChanged);
     _focus.removeListener(_focusChanged);
     _unload();
     _focus.dispose();
@@ -308,19 +351,22 @@ class _NoteEditorState extends State<_NoteEditor>
         },
         child: KeyedSubtree(
           key: _rootKey,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              _editorWidget(scheme),
-              if (widget.editable)
-                Positioned.fill(
-                  child: TableHeaders(
-                    key: _headersKey,
-                    editor: _editor,
-                    rootKey: _rootKey,
+          child: NoteFindScope(
+            find: _currentFind(),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                _editorWidget(scheme),
+                if (widget.editable)
+                  Positioned.fill(
+                    child: TableHeaders(
+                      key: _headersKey,
+                      editor: _editor,
+                      rootKey: _rootKey,
+                    ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -346,9 +392,8 @@ class _NoteEditorState extends State<_NoteEditor>
         // Applied around every block, so only horizontal; the header and
         // footer give the vertical padding.
         padding: const EdgeInsets.symmetric(horizontal: DesignMetrics.space2),
-        textSpanDecorator: formulaSpanDecorator(
-          _editor,
-          mathTextSpanDecorator(_editor),
+        textSpanDecorator: findSpanDecorator(
+          formulaSpanDecorator(_editor, mathTextSpanDecorator(_editor)),
         ),
         cursorColor: scheme.primary,
         selectionColor: scheme.primary.withValues(alpha: 0.25),

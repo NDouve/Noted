@@ -18,11 +18,13 @@ import 'canvas_controller.dart';
 import 'canvas_tool.dart';
 import 'canvas_view.dart';
 import 'command_toolbar.dart';
+import 'find_bar.dart';
 import 'commands.dart';
 import 'geometry.dart';
 import 'noted_colors.dart';
 import 'noted_theme.dart';
 import 'page_background.dart';
+import 'page_find.dart';
 import 'toolbar_layout.dart';
 
 /// Auto-pan during a tool session: the edge zone, in screen pixels.
@@ -55,9 +57,21 @@ class PageCanvas extends StatefulWidget {
     this.tools,
     this.readOnly = false,
     this.toolbarLayout = defaultToolbarLayout,
+    this.findRequests,
+    this.extraCommands,
   });
 
   final CanvasController controller;
+
+  /// Asks this canvas to open Find on page (for example from the results of
+  /// a search of all pages). A request for another page is left alone; one
+  /// for this page is taken (the notifier is set back to null).
+  final ValueNotifier<FindRequest?>? findRequests;
+
+  /// Commands the app adds to this canvas's registry, so they have shortcuts
+  /// and can be placed on the toolbar (for example "Search all pages"). Called
+  /// each time the registry is made; the registry owns and disposes them.
+  final List<Command> Function()? extraCommands;
 
   /// Which commands the toolbar along the top shows, and in what order. It
   /// is built only from this canvas's [PageCanvasState.commands].
@@ -130,6 +144,78 @@ class PageCanvasState extends State<PageCanvas>
   @override
   void focusCanvas() => _focus.requestFocus();
 
+  /// Find on page for the open page (the find bar's model), for tests and
+  /// the app shell.
+  PageFind get find => _find;
+
+  late PageFind _find;
+  final FocusNode _findFocus = FocusNode(debugLabel: 'FindBar');
+
+  @override
+  bool get isFindOpen => _find.isOpen;
+
+  @override
+  void openFind() => _find.open();
+
+  @override
+  void closeFind() {
+    final hadFocus = _findFocus.hasFocus;
+    _find.close();
+    if (hadFocus) _focus.requestFocus();
+  }
+
+  @override
+  void stepFind(int delta) => _find.step(delta);
+
+  PageFind _makeFind() =>
+      PageFind(page: () => _c.page, onReveal: _revealBox);
+
+  void _takeFindRequest() {
+    final r = widget.findRequests?.value;
+    if (r == null || r.pageId != _c.page.id) return;
+    widget.findRequests!.value = null;
+    // After the first layout, so the view can be moved.
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _find.open(text: r.text, boxId: r.boxId, occurrence: r.occurrence);
+    });
+    SchedulerBinding.instance.scheduleFrame();
+  }
+
+  /// Brings the box [id] into view: scrolls to it, and zooms out only if it
+  /// doesn't fit at the current zoom (never in, so never past where the
+  /// user already is). Does nothing if it is already fully in view.
+  void _revealBox(String id) {
+    final g = _geometry;
+    final v = _view;
+    final rect = _c.page.node(id)?.bounds?.rect;
+    if (rect == null) return;
+    if (g == null || v == null) {
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _revealBox(id);
+      });
+      return;
+    }
+    final target = rect.inflate(canvasChromePadding);
+    final fit = math.min(
+      g.viewport.width / target.width,
+      g.viewport.height / target.height,
+    );
+    final scale = math.min(v.scale, fit).clamp(g.minScale, g.maxScale).toDouble();
+    if (scale == v.scale && v.visible(g.viewport).contains(target.topLeft) &&
+        v.visible(g.viewport).contains(target.bottomRight)) {
+      return;
+    }
+    final center = g.viewport.center(Offset.zero) - target.center * scale;
+    // A box taller than the view (at the zoom floor) shows its top.
+    final dy = target.height * scale > g.viewport.height
+        ? -target.top * scale
+        : center.dy;
+    final dx = target.width * scale > g.viewport.width
+        ? -target.left * scale
+        : center.dx;
+    setState(() => _view = g.clamp(CanvasView(scale, Offset(dx, dy))));
+  }
+
   /// This canvas's commands: its own, its modules' tools and the modules'
   /// commands (Box API 0.4). Key presses and the toolbar go through it.
   /// Made again when the page or the tool selection changes.
@@ -139,7 +225,8 @@ class PageCanvasState extends State<PageCanvas>
     final old = _commands;
     _commands = CommandRegistry()
       ..registerAll(buildCanvasCommands(this))
-      ..registerAll(_c.modules.commandsFor(this));
+      ..registerAll(_c.modules.commandsFor(this))
+      ..registerAll(widget.extraCommands?.call() ?? const []);
     old.dispose();
   }
 
@@ -173,7 +260,10 @@ class PageCanvasState extends State<PageCanvas>
     super.initState();
     _c.addListener(_changed);
     _tools.addListener(_toolChanged);
+    _find = _makeFind();
     _buildCommands();
+    widget.findRequests?.addListener(_takeFindRequest);
+    _takeFindRequest();
   }
 
   @override
@@ -184,6 +274,13 @@ class PageCanvasState extends State<PageCanvas>
       oldWidget.controller.removeListener(_changed);
       widget.controller.addListener(_changed);
       _view = null;
+      _find.dispose();
+      _find = _makeFind();
+    }
+    if (oldWidget.findRequests != widget.findRequests) {
+      oldWidget.findRequests?.removeListener(_takeFindRequest);
+      widget.findRequests?.addListener(_takeFindRequest);
+      _takeFindRequest();
     }
     if (oldWidget.tools != widget.tools) {
       (oldWidget.tools ?? _ownTools).removeListener(_toolChanged);
@@ -197,6 +294,9 @@ class PageCanvasState extends State<PageCanvas>
 
   @override
   void dispose() {
+    widget.findRequests?.removeListener(_takeFindRequest);
+    _find.dispose();
+    _findFocus.dispose();
     _commands.dispose();
     _cancelSession();
     _autoPan?.dispose();
@@ -368,6 +468,7 @@ class PageCanvasState extends State<PageCanvas>
   void _changed() {
     // The page turned read-only under a running tool: end it.
     if (_readOnly) _cancelSession();
+    _find.refresh();
     setState(() {});
   }
 
@@ -456,7 +557,8 @@ class PageCanvasState extends State<PageCanvas>
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     final command = _commands.resolve(
       event,
-      editing: _c.editingId != null,
+      // The find bar's text field owns the keys like a box's editor does.
+      editing: _c.editingId != null || _findFocus.hasFocus,
       readOnly: _readOnly,
     );
     if (command == null) return KeyEventResult.ignored;
@@ -620,6 +722,7 @@ class PageCanvasState extends State<PageCanvas>
                                       scale: view.scale,
                                       onGripTap: _focus.requestFocus,
                                       readOnly: readOnly,
+                                      find: _find,
                                     ),
                                 ],
                               ),
@@ -644,6 +747,21 @@ class PageCanvasState extends State<PageCanvas>
                       painter: _ToolOverlayPainter(this, _overlay),
                     ),
                   ),
+                ),
+              ),
+              // The find bar, top right under the toolbar.
+              Positioned(
+                top: NotedMetrics.of(context).space2,
+                right: NotedMetrics.of(context).space4,
+                child: ListenableBuilder(
+                  listenable: _find,
+                  builder: (context, _) => _find.isOpen
+                      ? FindBar(
+                          find: _find,
+                          focusNode: _findFocus,
+                          onClose: closeFind,
+                        )
+                      : const SizedBox.shrink(),
                 ),
               ),
               if (kDebugMode)

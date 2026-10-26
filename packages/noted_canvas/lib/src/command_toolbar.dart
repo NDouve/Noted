@@ -33,7 +33,6 @@ List<List<Command>> resolveToolbarLayout(
   return groups;
 }
 
-
 /// The toolbar along the top of a canvas: one button for each command in
 /// [layout], built only from [registry] and drawn to the Toolbar guidelines.
 ///
@@ -93,46 +92,59 @@ class CommandToolbar extends StatelessWidget {
           ],
         ];
 
-        final Widget body = m.touch
-            ? ConstrainedBox(
-                constraints: BoxConstraints(minHeight: m.toolbarHeight),
-                child: Padding(
-                  padding: EdgeInsets.symmetric(
-                    horizontal: m.space4,
-                    vertical: m.space1,
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Expanded(
-                        child: Wrap(
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          runSpacing: m.space1,
-                          children: leadWidgets,
+        // The view group never overflows a narrow toolbar: it shrinks to fit.
+        // It may take at most 40% of the toolbar; the rest is for the tools.
+        Widget buildBody(double toolbarWidth) {
+          Widget fitView(Widget w) => ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: toolbarWidth * 0.4),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerRight,
+              child: w,
+            ),
+          );
+
+          return m.touch
+              ? ConstrainedBox(
+                  constraints: BoxConstraints(minHeight: m.toolbarHeight),
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: m.space4,
+                      vertical: m.space1,
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Expanded(
+                          child: Wrap(
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            runSpacing: m.space1,
+                            children: leadWidgets,
+                          ),
                         ),
-                      ),
-                      row(view),
-                    ],
+                        fitView(row(view)),
+                      ],
+                    ),
                   ),
-                ),
-              )
-            : SizedBox(
-                height: m.toolbarHeight,
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: m.space4),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: Row(children: leadWidgets),
+                )
+              : SizedBox(
+                  height: m.toolbarHeight,
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: m.space4),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(children: leadWidgets),
+                          ),
                         ),
-                      ),
-                      row(view),
-                    ],
+                        fitView(row(view)),
+                      ],
+                    ),
                   ),
-                ),
-              );
+                );
+        }
 
         return Material(
           color: scheme.surface,
@@ -142,7 +154,11 @@ class CommandToolbar extends StatelessWidget {
             ),
             child: SizedBox(
               width: double.infinity,
-              child: ExcludeFocus(child: body),
+              child: ExcludeFocus(
+                child: LayoutBuilder(
+                  builder: (context, c) => buildBody(c.maxWidth),
+                ),
+              ),
             ),
           ),
         );
@@ -236,7 +252,8 @@ class ToolbarEntry extends StatelessWidget {
       icon: c.iconBuilder?.call(context, false) ?? Icon(c.icon),
       onSelected: (id) => r?.invoke(id),
       itemBuilder: (_) => [
-        for (final item in items) NotedMenuItem.forCommand(item, showCheck: true),
+        for (final item in items)
+          NotedMenuItem.forCommand(item, showCheck: true),
       ],
     );
   }
