@@ -148,7 +148,8 @@ void main() {
         final scheme = theme.colorScheme;
         final noted = theme.extension<NotedColors>()!;
 
-        // Drawing: default ink adapts, a chosen color is kept.
+        // Drawing: default ink adapts; a chosen color is kept (lifted on the
+        // dark canvas when it would be too faint).
         final painterFinder = find.byWidgetPredicate(
           (w) => w is CustomPaint && w.painter is StrokesPainter,
         );
@@ -159,8 +160,14 @@ void main() {
           brightness == Brightness.dark
               ? DesignColors.dark.inkDefault
               : DesignColors.light.inkDefault,
-          const Color(0xFF1F5FD6),
+          displayInkColor(0xFF1F5FD6, brightness),
         ]);
+        expect(
+          painter.resolvedColors[1],
+          brightness == Brightness.dark
+              ? isNot(const Color(0xFF1F5FD6))
+              : const Color(0xFF1F5FD6),
+        );
         expect(painter.resolvedColors.first, noted.inkDefault);
 
         // Formula result and equation are drawn.
@@ -245,15 +252,42 @@ void main() {
   });
 
   group('ink', () {
-    test('only the default ink value adapts', () {
+    test('default ink follows the theme; swatch inks show as stored in light', () {
       expect(displayInkColor(defaultInkValue, Brightness.light), DesignColors.light.inkDefault);
       expect(displayInkColor(defaultInkValue, Brightness.dark), DesignColors.dark.inkDefault);
       for (final v in PenSettings.colors.skip(1)) {
         expect(displayInkColor(v, Brightness.light), Color(v));
-        expect(displayInkColor(v, Brightness.dark), Color(v));
       }
       expect(defaultInkValue, PenSettings.colors.first);
       expect(displayInkColor(0xFF202125, Brightness.dark), const Color(0xFF202125));
+    });
+
+    test('every swatch ink is at least 3:1 against bg-canvas in both themes', () {
+      for (final v in PenSettings.colors) {
+        expect(
+          contrastRatio(displayInkColor(v, Brightness.light), DesignColors.light.bgCanvas),
+          greaterThanOrEqualTo(3),
+          reason: 'light ${v.toRadixString(16)}',
+        );
+        expect(
+          contrastRatio(displayInkColor(v, Brightness.dark), DesignColors.dark.bgCanvas),
+          greaterThanOrEqualTo(3),
+          reason: 'dark ${v.toRadixString(16)}',
+        );
+      }
+    });
+
+    test('purple and blue are lifted on the dark canvas only; the others stay', () {
+      final purple = DesignColors.light.inkPurple;
+      final blue = DesignColors.light.inkBlue;
+      final shownPurple = displayInkColor(purple.toARGB32(), Brightness.dark);
+      expect(shownPurple, isNot(purple));
+      expect(HSLColor.fromColor(shownPurple).hue, closeTo(HSLColor.fromColor(purple).hue, 1));
+      expect(HSLColor.fromColor(shownPurple).lightness, greaterThan(HSLColor.fromColor(purple).lightness));
+      expect(displayInkColor(blue.toARGB32(), Brightness.dark), isNot(blue));
+      for (final ink in [DesignColors.light.inkOrange, DesignColors.light.inkGreen]) {
+        expect(displayInkColor(ink.toARGB32(), Brightness.dark), ink);
+      }
     });
   });
 
