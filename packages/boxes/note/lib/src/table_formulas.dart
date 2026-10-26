@@ -21,7 +21,7 @@ import 'note_codec.dart';
 /// when rows or columns are inserted or deleted; [formulaSpanDecorator]
 /// shows the value instead of the text while the caret is elsewhere.
 
-typedef _Pending = (Node, List<TableEdit>, int, int);
+typedef _Pending = (Node, List<TableEdit>);
 
 /// The cell nodes of a table by position, or null while the table is
 /// between two steps of one of appflowy's table actions (they apply several
@@ -116,17 +116,15 @@ final class TableFormulas {
       final edits = _inferEdits(prev, next);
       // A copied cell's position is meaningless once rows or columns moved.
       if (edits.isNotEmpty && _copied?.table == table) _copied = null;
-      if (!rewriting || edits.isEmpty) continue;
+      // A duplicate already rewrote its formulas in its own transaction.
+      if (!rewriting || edits.isEmpty || table == _duplicating) continue;
       for (final cell in prev.positions.keys) {
         if (!next.positions.containsKey(cell)) continue;
         final first = _firstBlock(cell);
         final delta = first?.delta;
         if (first == null || delta == null) continue;
-        if (isFormulaText(delta.toPlainText())) {
-          pending.add((first, edits, 0, 0));
-        }
+        if (isFormulaText(delta.toPlainText())) pending.add((first, edits));
       }
-      _duplicates(prev, next, edits, pending);
     }
     _layouts
       ..clear()
@@ -147,69 +145,128 @@ final class TableFormulas {
     _updateValues(_layouts.values);
   }
 
-  /// A formula paragraph to rewrite: first the edits (insert/delete of rows
-  /// and columns), then a shift by (rows, columns) for a copy.
+  /// A formula paragraph to rewrite for the edits (insert/delete of rows and
+  /// columns) made to its table.
   final List<_Pending> _pending = [];
   bool _scheduled = false;
 
   static Node? _firstBlock(Node cell) =>
       cell.children.isEmpty ? null : cell.children.first;
 
-  /// Duplicated rows and columns.
+  // Duplicate row / column -------------------------------------------
+
+  /// The table whose duplicate [duplicate] is applying right now: its
+  /// references are already rewritten in that same transaction, so [sync]
+  /// must not rewrite them again.
+  Node? _duplicating;
+
+  /// Duplicates row or column [position] of [table] ([dir] says which) as
+  /// one transaction, one undo step.
   ///
-  /// appflowy's "duplicate row/column" inserts new cell nodes that are
-  /// `copyWith` copies of the cells of the row/column before them (the
-  /// whole column in one transaction; a row cell by cell, in several
-  /// transactions, of which only the last one leaves a consistent table).
-  /// A plain "insert row/column" makes empty cells instead. So a new row
-  /// (column) is a duplicate when it is not the first, none of its cells
-  /// existed in [prev] and the text of each equals the text of the cell
-  /// before it, at the moment of insertion, before any rewrite of ours has
-  /// run. Its formulas are then the original's, adjusted for the insertion
-  /// like any other cell, and shifted one row (column) on, the way a copy of
-  /// the original would be.
+  /// The copy goes right after the original, with the same content and
+  /// attributes as appflowy's own duplicate (new nodes, deep copies of the
+  /// cell contents). In the same transaction the formulas are rewritten:
+  /// those already in the table as for an inserted row (column) after
+  /// [position], and those in the copy the same way and then shifted one row
+  /// (column) on, as a copied formula would be (0061). Nothing is guessed
+  /// from the cell text: this is the only way a duplicate is made, since the
+  /// table's own row and column menu is replaced by the note module's
+  /// (`table_menu.dart`), whose "Duplicate" items call this.
   ///
-  /// Not recognised: a duplicate whose cells have no formula (nothing to
-  /// do) and a duplicate made together with other row or column edits in
-  /// one step.
-  void _duplicates(
-    _Layout prev,
-    _Layout next,
-    List<TableEdit> edits,
-    List<_Pending> out,
-  ) {
-    bool isNew(Node c) => !prev.positions.containsKey(c);
-    void take(Node cell, int dr, int dc) {
-      final first = _firstBlock(cell);
-      final delta = first?.delta;
-      if (first == null || delta == null) return;
-      if (isFormulaText(delta.toPlainText())) out.add((first, edits, dr, dc));
+  /// Returns false when nothing was done (unknown or inconsistent table).
+  bool duplicate(Node table, int position, TableDirection dir) {
+    if (editor.isDisposed || !editor.editable || table.parent == null) {
+      return false;
+    }
+    final layout = _Layout.read(table);
+    final isRow = dir == TableDirection.row;
+    if (layout == null || position < 0) return false;
+    if (position >= (isRow ? layout.rows : layout.cols)) return false;
+
+    final edit = isRow ? InsertRow(position + 1) : InsertColumn(position + 1);
+    final tx = editor.transaction;
+    final shiftRows = isRow ? 1 : 0;
+    final shiftCols = isRow ? 0 : 1;
+
+    // The cells that stay: the rows (columns) after the copy move on, and
+    // their formulas follow the insertion.
+    for (var r = 0; r < layout.rows; r++) {
+      for (var c = 0; c < layout.cols; c++) {
+        final cell = layout.cells[r][c];
+        final after = isRow ? r > position : c > position;
+        if (after) {
+          tx.updateNode(cell, {
+            if (isRow) TableCellBlockKeys.rowPosition: r + 1,
+            if (!isRow) TableCellBlockKeys.colPosition: c + 1,
+          });
+        }
+        final first = _firstBlock(cell);
+        final delta = first?.delta;
+        if (first == null || delta == null) continue;
+        final old = delta.toPlainText();
+        if (!isFormulaText(old)) continue;
+        final text = adjustFormula(old, edit);
+        if (text != old) _replaceText(tx, first, old, text);
+      }
     }
 
-    for (var r = 1; r < next.rows; r++) {
-      final row = next.cells[r];
-      if (!row.every(isNew)) continue;
-      var same = true;
-      for (var c = 0; c < next.cols && same; c++) {
-        same = cellText(row[c]) == cellText(next.cells[r - 1][c]);
+    // The copies, with their formulas already in place.
+    Node copyOf(Node cell, int r, int c) {
+      final copy = cell.copyWith(
+        attributes: {
+          ...cell.attributes,
+          TableCellBlockKeys.rowPosition: r + shiftRows,
+          TableCellBlockKeys.colPosition: c + shiftCols,
+        },
+      );
+      final first = _firstBlock(copy);
+      final delta = first?.delta;
+      if (first != null && delta != null) {
+        final old = delta.toPlainText();
+        if (isFormulaText(old)) {
+          final text = shiftFormula(
+            adjustFormula(old, edit),
+            shiftRows,
+            shiftCols,
+          );
+          if (text != old) {
+            final (start, endOld, middle) = _diff(old, text);
+            final change = Delta();
+            if (start > 0) change.retain(start);
+            if (endOld > start) change.delete(endOld - start);
+            if (middle.isNotEmpty) change.insert(middle);
+            first.updateAttributes({'delta': delta.compose(change).toJson()});
+          }
+        }
       }
-      if (!same) continue;
-      for (final cell in row) {
-        take(cell, 1, 0);
-      }
+      return copy;
     }
-    for (var c = 1; c < next.cols; c++) {
-      final col = [for (var r = 0; r < next.rows; r++) next.cells[r][c]];
-      if (!col.every(isNew)) continue;
-      var same = true;
-      for (var r = 0; r < next.rows && same; r++) {
-        same = cellText(col[r]) == cellText(next.cells[r][c - 1]);
+
+    // Inserts last (and from the end), so the paths read above are valid.
+    if (isRow) {
+      for (var c = layout.cols - 1; c >= 0; c--) {
+        final cell = layout.cells[position][c];
+        tx.insertNode(cell.path.next, copyOf(cell, position, c));
       }
-      if (!same) continue;
-      for (final cell in col) {
-        take(cell, 0, 1);
-      }
+    } else {
+      final last = layout.cells[layout.rows - 1][position];
+      tx.insertNodes(last.path.next, [
+        for (var r = 0; r < layout.rows; r++)
+          copyOf(layout.cells[r][position], r, position),
+      ]);
     }
+    tx.updateNode(table, {
+      if (isRow) TableBlockKeys.rowsLen: layout.rows + 1,
+      if (!isRow) TableBlockKeys.colsLen: layout.cols + 1,
+    });
+    tx.afterSelection = editor.selection;
+    _duplicating = table;
+    try {
+      editor.apply(tx, withUpdateSelection: false);
+    } finally {
+      _duplicating = null;
+    }
+    return true;
   }
 
   // Copy and paste of a formula cell ----------------------------------
@@ -362,7 +419,7 @@ final class TableFormulas {
   void _rewrite(List<_Pending> pending) {
     if (editor.isDisposed) return;
     final tx = editor.transaction;
-    for (final (para, edits, dr, dc) in pending) {
+    for (final (para, edits) in pending) {
       final delta = para.delta;
       if (para.parent == null || delta == null) continue;
       final old = delta.toPlainText();
@@ -370,7 +427,6 @@ final class TableFormulas {
       for (final e in edits) {
         text = adjustFormula(text, e);
       }
-      text = shiftFormula(text, dr, dc);
       if (text != old) _replaceText(tx, para, old, text);
     }
     if (tx.operations.isEmpty) return;
@@ -426,6 +482,13 @@ final class TableFormulas {
   /// Replaces only the differing middle of [old], so formatting elsewhere in
   /// the cell stays.
   static void _replaceText(Transaction tx, Node para, String old, String text) {
+    final (start, endOld, middle) = _diff(old, text);
+    tx.replaceText(para, start, endOld - start, middle);
+  }
+
+  /// The differing middle of [old] and [text]: where it starts, where it
+  /// ends in [old], and what replaces it.
+  static (int, int, String) _diff(String old, String text) {
     var start = 0;
     while (start < old.length &&
         start < text.length &&
@@ -440,7 +503,7 @@ final class TableFormulas {
       endOld--;
       endNew--;
     }
-    tx.replaceText(para, start, endOld - start, text.substring(start, endNew));
+    return (start, endOld, text.substring(start, endNew));
   }
 
   /// The row and column edits that turn [prev] into [next], found by which

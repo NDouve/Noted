@@ -17,6 +17,7 @@ import 'math_input.dart';
 import 'note_codec.dart';
 import 'note_theme.dart';
 import 'table_formulas.dart';
+import 'table_menu.dart';
 import 'table_headers.dart';
 import 'vertical_caret.dart';
 
@@ -102,7 +103,7 @@ class _NoteEditorState extends State<_NoteEditor> {
   /// editor's renderer is replaced too.
   void _applyTheme(ColorScheme scheme, {required bool renderer}) {
     _scheme = scheme;
-    _builders = _blockBuilders(_editor, scheme);
+    _builders = _blockBuilders(_editor, scheme, _formulas);
     _shortcuts = _characterShortcuts(scheme);
     if (renderer) {
       _editor.renderer = BlockComponentRenderer(builders: {..._builders});
@@ -325,8 +326,13 @@ const List<LocalizationsDelegate<Object>> noteLocalizationsDelegates = [
 Map<String, BlockComponentBuilder> _blockBuilders(
   EditorState editor,
   ColorScheme scheme,
+  TableFormulas formulas,
 ) => {
-  ...themedStandardBlocks(scheme, paragraphPlaceholder: 'Type here'),
+  ...themedStandardBlocks(
+    scheme,
+    paragraphPlaceholder: 'Type here',
+    tableMenuBuilder: tableMenuBuilder(formulas, scheme),
+  ),
   ...mathBlockBuilders(editor),
 };
 

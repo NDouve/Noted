@@ -52,6 +52,7 @@ SelectionMenuStyle noteSelectionMenuStyle(ColorScheme scheme) =>
 Map<String, BlockComponentBuilder> themedStandardBlocks(
   ColorScheme scheme, {
   required String paragraphPlaceholder,
+  TableBlockComponentMenuBuilder? tableMenuBuilder,
 }) {
   BlockComponentConfiguration config(String Function(Node) placeholder) =>
       standardBlockComponentConfiguration.copyWith(
@@ -126,11 +127,15 @@ Map<String, BlockComponentBuilder> themedStandardBlocks(
       ),
     ),
     TableBlockKeys.type: TableBlockComponentBuilder(
+      menuBuilder: tableMenuBuilder,
       tableStyle: TableStyle(
         borderColor: scheme.outline,
         borderHoverColor: scheme.primary,
       ),
     ),
-    TableCellBlockKeys.type: TableCellBlockComponentBuilder(),
+    // The row handles live in the cells, so they need the menu too.
+    TableCellBlockKeys.type: TableCellBlockComponentBuilder(
+      menuBuilder: tableMenuBuilder,
+    ),
   };
 }

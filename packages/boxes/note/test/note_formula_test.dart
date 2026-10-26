@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
+import 'dart:ui' show PointerDeviceKind;
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
@@ -680,6 +681,37 @@ void main() {
       expect(snapshot(c), r'$$ | $$');
     });
 
+    /// Duplicates row or column [index] the way a user does: hover the
+    /// table, open the handle's menu and pick "Duplicate".
+    Future<void> duplicate(
+      WidgetTester t,
+      EditorState editor,
+      TableDirection dir,
+      int index,
+    ) async {
+      final tableNode = editor.document.root.children.first;
+      final cell = cellAt(
+        editor,
+        dir == TableDirection.row ? index : 0,
+        dir == TableDirection.col ? index : 0,
+      );
+      final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: Offset.zero);
+      addTearDown(mouse.removePointer);
+      await mouse.moveTo(t.getCenter(find.byKey(cell.key)));
+      await frames(t);
+      await t.tap(find.byKey(ValueKey('table-handle-${dir.name}-$index')));
+      await frames(t);
+      final l10n = AppFlowyEditorL10n.current;
+      await t.tap(
+        find.text(
+          dir == TableDirection.row ? l10n.rowDuplicate : l10n.colDuplicate,
+        ),
+      );
+      await frames(t, 20);
+      expect(tableNode.parent, isNotNull);
+    }
+
     testWidgets('duplicating a row shifts its formulas down a row', (t) async {
       final c = await pump(
         t,
@@ -693,8 +725,7 @@ void main() {
       );
       final editor = await edit(t, c);
       final tableNode = editor.document.root.children.first;
-      TableActions.duplicate(tableNode, 1, editor, TableDirection.row);
-      await frames(t, 20);
+      await duplicate(t, editor, TableDirection.row, 1);
       expect(tableNode.attributes['rowsLen'], 4);
       // The original is as before; the copy is shifted by one row.
       expect(textAt(editor, 1, 0), r'=A1+$B$1');
@@ -719,8 +750,7 @@ void main() {
       );
       final editor = await edit(t, c);
       final tableNode = editor.document.root.children.first;
-      TableActions.duplicate(tableNode, 1, editor, TableDirection.col);
-      await frames(t, 20);
+      await duplicate(t, editor, TableDirection.col, 1);
       expect(tableNode.attributes['colsLen'], 3);
       expect(textAt(editor, 0, 1), r'=A1*$A$1');
       expect(textAt(editor, 0, 2), r'=B1*$A$1');
@@ -730,7 +760,113 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('inserting an empty row is not taken for a duplicate', (
+    testWidgets('duplicating a column shifts column parts only', (t) async {
+      final c = await pump(
+        t,
+        doc([
+          table([
+            ['1', r'=A1+B$1', 'x'],
+            ['2', r'=A$1', 'y'],
+          ]),
+        ]),
+      );
+      final editor = await edit(t, c);
+      await duplicate(t, editor, TableDirection.col, 1);
+      expect(textAt(editor, 0, 1), '=A1+B\$1');
+      expect(textAt(editor, 0, 2), '=B1+C\$1');
+      // The column after the copy moved on, its content with it.
+      expect(textAt(editor, 0, 3), 'x');
+      expect(textAt(editor, 1, 2), '=B\$1');
+      expect(textAt(editor, 1, 3), 'y');
+    });
+
+    testWidgets('duplicating a row adjusts references to rows after it', (
+      t,
+    ) async {
+      final c = await pump(
+        t,
+        doc([
+          table([
+            ['1', '=A1'],
+            ['2', '=A2+A3'],
+            ['3', '=SUM(A1:A3)'],
+          ]),
+        ]),
+      );
+      final editor = await edit(t, c);
+      await duplicate(t, editor, TableDirection.row, 0);
+      // Rows: 1, copy of 1, 2, 3. References to rows 2 and 3 follow them.
+      expect(textAt(editor, 0, 1), '=A1');
+      expect(textAt(editor, 1, 1), '=A2');
+      expect(textAt(editor, 2, 1), '=A3+A4');
+      expect(textAt(editor, 3, 1), '=SUM(A1:A4)');
+      expect(textAt(editor, 1, 0), '1');
+      expect(valueAt(editor, 3, 1), '7');
+    });
+
+    testWidgets('undo of a duplicate restores the table in one step', (
+      t,
+    ) async {
+      final c = await pump(
+        t,
+        doc([
+          table([
+            ['1', r'=A1+$A$1'],
+            ['2', '=SUM(A1:A2)'],
+          ]),
+        ]),
+      );
+      final editor = await edit(t, c);
+      final tableNode = editor.document.root.children.first;
+      await duplicate(t, editor, TableDirection.row, 0);
+      expect(tableNode.attributes['rowsLen'], 3);
+      expect(textAt(editor, 1, 1), r'=A2+$A$1');
+      // The copy, the moved rows and every rewritten formula are one undo
+      // step. (appflowy adds steps of its own for the table's measured
+      // size; they touch no cell, and undoing one makes the table measure
+      // itself again, so the step is applied as an undo directly here.)
+      final steps = <dynamic>[];
+      var item = editor.undoManager.undoStack.last as dynamic;
+      while (item != null) {
+        final ops = item.operations as List<Operation>;
+        if (ops.any((o) => o is InsertOperation)) steps.add(item);
+        item = item.previous;
+      }
+      expect(steps, hasLength(1));
+      final ops = steps.single.operations as List<Operation>;
+      // The inserted cells (one per column) and the formula rewrites.
+      expect(ops.whereType<InsertOperation>(), hasLength(2));
+      expect(ops.whereType<UpdateOperation>().length, greaterThan(2));
+      await editor.apply(
+        steps.single.toTransaction(editor) as Transaction,
+        options: const ApplyOptions(source: TransactionSource.undo),
+      );
+      await frames(t, 10);
+      expect(tableNode.attributes['rowsLen'], 2);
+      expect(textAt(editor, 0, 1), r'=A1+$A$1');
+      expect(textAt(editor, 1, 1), '=SUM(A1:A2)');
+      expect(valueAt(editor, 1, 1), '3');
+    });
+
+    testWidgets('a formula typed by hand is not shifted', (t) async {
+      final c = await pump(
+        t,
+        doc([
+          table([
+            ['1', r'=A1+$B$1'],
+            ['2', ''],
+          ]),
+        ]),
+      );
+      final editor = await edit(t, c);
+      final empty = cellAt(editor, 1, 1).children.first;
+      await editor.apply(editor.transaction..insertText(empty, 0, r'=A1+$B$1'));
+      await frames(t, 10);
+      expect(textAt(editor, 1, 1), r'=A1+$B$1');
+      expect(textAt(editor, 0, 1), r'=A1+$B$1');
+    });
+
+    testWidgets('inserting a row or column is not taken for a duplicate', (
       t,
     ) async {
       final c = await pump(
@@ -748,6 +884,25 @@ void main() {
       await frames(t, 10);
       expect(textAt(editor, 1, 1), '');
       expect(textAt(editor, 0, 1), '=A1');
+      TableActions.add(tableNode, 2, editor, TableDirection.col);
+      await frames(t, 10);
+      expect(textAt(editor, 0, 2), '');
+      expect(textAt(editor, 0, 1), '=A1');
+    });
+
+    testWidgets('appflowy duplicate item is gone from the menu', (t) async {
+      final c = await pump(t, sample());
+      final editor = await edit(t, c);
+      final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: Offset.zero);
+      addTearDown(mouse.removePointer);
+      await mouse.moveTo(t.getCenter(find.byKey(cellAt(editor, 0, 0).key)));
+      await frames(t);
+      await t.tap(find.byKey(const ValueKey('table-handle-row-0')));
+      await frames(t);
+      final l10n = AppFlowyEditorL10n.current;
+      expect(find.text(l10n.rowDuplicate), findsOneWidget);
+      expect(find.text(l10n.rowAddBefore), findsOneWidget);
     });
 
     Future<void> chord(WidgetTester t, LogicalKeyboardKey key) async {
