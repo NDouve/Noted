@@ -6,6 +6,7 @@ import 'dart:async';
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_box_note/noted_box_note.dart';
@@ -677,6 +678,128 @@ void main() {
       final editor = await edit(t, c);
       expect(valueAt(editor, 0, 1), r'$$');
       expect(snapshot(c), r'$$ | $$');
+    });
+
+    testWidgets('duplicating a row shifts its formulas down a row', (t) async {
+      final c = await pump(
+        t,
+        doc([
+          table([
+            ['1', '10'],
+            [r'=A1+$B$1', '=B1'],
+            ['x', '=SUM(A1:A2)'],
+          ]),
+        ]),
+      );
+      final editor = await edit(t, c);
+      final tableNode = editor.document.root.children.first;
+      TableActions.duplicate(tableNode, 1, editor, TableDirection.row);
+      await frames(t, 20);
+      expect(tableNode.attributes['rowsLen'], 4);
+      // The original is as before; the copy is shifted by one row.
+      expect(textAt(editor, 1, 0), r'=A1+$B$1');
+      expect(textAt(editor, 2, 0), r'=A2+$B$1');
+      expect(textAt(editor, 2, 1), '=B2');
+      expect(textAt(editor, 3, 1), '=SUM(A1:A2)');
+      expect(valueAt(editor, 1, 0), '11');
+      expect(valueAt(editor, 2, 0), '21');
+      expect(valueAt(editor, 2, 1), '10');
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('duplicating a column shifts its formulas right', (t) async {
+      final c = await pump(
+        t,
+        doc([
+          table([
+            ['2', r'=A1*$A$1'],
+            ['3', r'=A2*A$1'],
+          ]),
+        ]),
+      );
+      final editor = await edit(t, c);
+      final tableNode = editor.document.root.children.first;
+      TableActions.duplicate(tableNode, 1, editor, TableDirection.col);
+      await frames(t, 20);
+      expect(tableNode.attributes['colsLen'], 3);
+      expect(textAt(editor, 0, 1), r'=A1*$A$1');
+      expect(textAt(editor, 0, 2), r'=B1*$A$1');
+      expect(textAt(editor, 1, 2), r'=B2*B$1');
+      expect(valueAt(editor, 0, 2), '8');
+      expect(valueAt(editor, 1, 2), '24');
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('inserting an empty row is not taken for a duplicate', (
+      t,
+    ) async {
+      final c = await pump(
+        t,
+        doc([
+          table([
+            ['1', '=A1'],
+            ['', ''],
+          ]),
+        ]),
+      );
+      final editor = await edit(t, c);
+      final tableNode = editor.document.root.children.first;
+      TableActions.add(tableNode, 1, editor, TableDirection.row);
+      await frames(t, 10);
+      expect(textAt(editor, 1, 1), '');
+      expect(textAt(editor, 0, 1), '=A1');
+    });
+
+    Future<void> chord(WidgetTester t, LogicalKeyboardKey key) async {
+      await t.sendKeyDownEvent(LogicalKeyboardKey.control);
+      await t.sendKeyEvent(key);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.control);
+      await frames(t);
+    }
+
+    testWidgets('copy and paste of a formula cell shifts its references', (
+      t,
+    ) async {
+      final c = await pump(
+        t,
+        doc([
+          table([
+            ['1', r'=A1*2+$A$1'],
+            ['2', ''],
+            ['3', 'plain'],
+          ]),
+        ]),
+      );
+      final editor = await edit(t, c);
+      Node para(int r, int col) => cellAt(editor, r, col).children.first;
+      editor.selection = Selection(
+        start: Position(path: para(0, 1).path),
+        end: Position(path: para(0, 1).path, offset: 10),
+      );
+      await frames(t);
+      await chord(t, LogicalKeyboardKey.keyC);
+      // The platform clipboard channel does not answer inside the test's
+      // fake-async zone: stand in for it.
+      AppFlowyClipboard.mockSetData(
+        const AppFlowyClipboardData(text: r'=A1*2+$A$1'),
+      );
+      addTearDown(() => AppFlowyClipboard.mockSetData(null));
+      editor.selection = Selection.collapsed(Position(path: para(1, 1).path));
+      await frames(t);
+      await chord(t, LogicalKeyboardKey.keyV);
+      expect(textAt(editor, 1, 1), r'=A2*2+$A$1');
+      expect(valueAt(editor, 1, 1), '5');
+      expect(textAt(editor, 0, 1), r'=A1*2+$A$1');
+      // Two rows down, in a cell that had text: replaced when selected.
+      editor.selection = Selection(
+        start: Position(path: para(2, 1).path),
+        end: Position(path: para(2, 1).path, offset: 5),
+      );
+      await frames(t);
+      await chord(t, LogicalKeyboardKey.keyV);
+      expect(textAt(editor, 2, 1), r'=A3*2+$A$1');
+      expect(valueAt(editor, 2, 1), '7');
+      expect(t.takeException(), isNull);
     });
   });
 }

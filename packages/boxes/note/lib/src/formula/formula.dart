@@ -11,4 +11,5 @@ library;
 export 'formula_adjust.dart';
 export 'formula_eval.dart';
 export 'formula_parser.dart';
+export 'formula_shift.dart';
 export 'formula_value.dart';

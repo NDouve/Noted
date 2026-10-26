@@ -288,7 +288,7 @@ class _NoteEditorState extends State<_NoteEditor> {
       disableAutoScroll: true,
       blockComponentBuilders: _builders,
       characterShortcutEvents: _shortcuts,
-      commandShortcutEvents: noteCommandShortcuts,
+      commandShortcutEvents: _formulas.commandShortcuts(noteCommandShortcuts),
       focusNode: _focus,
       autoFocus: widget.editable && widget.box.autofocus,
       header: SizedBox(key: _headerKey, height: _verticalPadding),
