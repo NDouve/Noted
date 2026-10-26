@@ -9,6 +9,8 @@ import 'package:flutter/foundation.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'recovery_store.dart';
+
 /// Where page files live in Prototype 1: one local folder (0007).
 ///
 /// Override with `--dart-define=NOTED_PAGES_DIR=<path>`. The default avoids
@@ -39,6 +41,11 @@ class NotebookException implements Exception {
 
   @override
   String toString() => message;
+}
+
+/// A save failed because the page's folder isn't there.
+class FolderUnavailableException extends NotebookException {
+  const FolderUnavailableException() : super('That folder was not found.');
 }
 
 /// Pages removed by one delete, held in full so the delete can be undone.
@@ -210,7 +217,26 @@ class Notebook extends ChangeNotifier {
     this.deviceName,
     this.templatesDirectory,
     this.folderCheckInterval = const Duration(seconds: 3),
+    this.recoveryDirectory,
   });
+
+  /// Where edits that can't be saved are kept (see [RecoveryStore]). Null:
+  /// `recovery` next to [bindersFile]; with neither, nothing is kept.
+  final Directory? recoveryDirectory;
+
+  RecoveryStore? get _recovery {
+    final d = recoveryDirectory ?? (bindersFile == null ? null : defaultRecoveryDirectory(bindersFile!));
+    return d == null ? null : RecoveryStore(d);
+  }
+
+  List<String> _recoveryProblems = const [];
+
+  /// Recovery files that couldn't be read. They are kept, never deleted.
+  List<String> get recoveryProblems => _recoveryProblems;
+
+  /// The recovery entries and unreadable recovery files waiting now.
+  Future<RecoveryListing> pendingRecovery() async =>
+      await _recovery?.list() ?? const RecoveryListing([], []);
 
   /// How often, with [watchFiles] on, the standalone folders are checked for
   /// having disappeared or come back (a watcher can't watch a folder that
@@ -412,6 +438,7 @@ class Notebook extends ChangeNotifier {
     _syncWatchers();
     _startFolderTimer();
     await _mergePendingCopies();
+    await _recoverPending();
     if (_tree.roots.isEmpty) {
       await createPage();
     } else {
@@ -1417,7 +1444,17 @@ class Notebook extends ChangeNotifier {
         final c = _current;
         if (c != null && c.page.id == page.id) toSave = c.page;
       }
-      await _write(loc, toSave);
+      try {
+        await _write(loc, toSave);
+      } on FolderUnavailableException {
+        await _keepForRecovery(loc, st, toSave);
+        return;
+      } on FileSystemException {
+        // The folder may have vanished during the write.
+        if (await st.directory.exists()) rethrow;
+        await _keepForRecovery(loc, st, toSave);
+        return;
+      }
       if (_current?.page.id == toSave.id) _base = toSave;
       _touch(loc);
     }).catchError((Object e) {
@@ -1431,8 +1468,136 @@ class Notebook extends ChangeNotifier {
     _assertWritable(loc);
     final st = _storeOf(loc);
     if (!await st.directory.exists()) {
-      throw const NotebookException('That folder was not found.');
+      throw const FolderUnavailableException();
     }
+  }
+
+  // Recovery ------------------------------------------------------------------
+
+  // A save couldn't land because the folder is gone: keep exactly what the
+  // save would have written, so the edit survives quitting (0066).
+  Future<void> _keepForRecovery(String loc, PageStore st, NotedPage page) async {
+    final rec = _recovery;
+    if (rec == null) return;
+    var base = _known[_key(st.pathFor(page.id))];
+    final b = _base;
+    if (base == null && b != null && _current?.page.id == page.id) base = writePage(b);
+    try {
+      await rec.write(
+        folder: _normalizePath(st.directory.path),
+        page: page,
+        baseText: base,
+        time: DateTime.now(),
+      );
+    } on Object catch (e) {
+      debugPrint('Keeping page ${page.id} for recovery failed: $e');
+    }
+  }
+
+  String? _locOfFolder(String folder) {
+    final k = _key(folder);
+    if (k == _key(store.directory.path)) return _standalone;
+    for (final f in _folders.values) {
+      if (_key(f.path) == k) return f.path;
+    }
+    for (final b in _binders.values) {
+      if (_key(b.path) == k) return b.path;
+    }
+    return null;
+  }
+
+  // Merges the recovery entries whose folder is available (only those of
+  // [onlyLoc] if given) into the saved pages and deletes each entry once the
+  // result has been read back and checked. An entry that can't be applied
+  // stays.
+  Future<void> _recoverPending({
+    String? onlyLoc,
+    ({bool ran, NotedPage? theirs})? resumed,
+  }) async {
+    final rec = _recovery;
+    if (rec == null) return;
+    final listing = await rec.list();
+    _recoveryProblems = listing.problems;
+    for (final e in listing.entries) {
+      if (_disposed) return;
+      final loc = _locOfFolder(e.folder);
+      if (loc == null || _isLocked(loc) || (onlyLoc != null && loc != onlyLoc)) continue;
+      try {
+        await _recoverEntry(rec, e, loc, resumed);
+      } on Object catch (ex) {
+        debugPrint('Recovering page ${e.pageId} failed: $ex');
+      }
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> _recoverEntry(
+    RecoveryStore rec,
+    RecoveryEntry e,
+    String loc,
+    ({bool ran, NotedPage? theirs})? resumed,
+  ) async {
+    final mine = e.page;
+    final id = mine.id;
+    final st = _storeOf(loc);
+    if (!await st.directory.exists()) return;
+    final base = e.baseText == null ? NotedPage.create(mine.meta) : readPage(e.baseText!);
+    final c = _current;
+    if (c != null && c.page.id == id) {
+      // The page is open: it holds the edit and was merged with its file by
+      // _resumeOpenPage; saving it lands the result.
+      NotedPage? theirs;
+      if (resumed != null && resumed.ran) {
+        theirs = resumed.theirs;
+      } else if (_orphanLoc == loc && _loc[id] == null) {
+        // Its file was deleted while the folder was away: keep the page.
+        _loc[id] = loc;
+        _metas[id] = c.page.meta;
+        _orphanLoc = null;
+        _syncReadOnly();
+        _rebuildTree();
+      } else {
+        return;
+      }
+      if (theirs == null) _enqueueSave(c.page);
+      await flush();
+      final back = readPage(await st.readText(id));
+      final why = verifyRecoveredPage(base: base, mine: mine, theirs: theirs, result: back);
+      if (why != null) {
+        debugPrint('Recovered page $id not accepted: $why');
+        return;
+      }
+      await rec.delete(e);
+      return;
+    }
+    final path = st.pathFor(id);
+    final file = File(path);
+    NotedPage? theirs;
+    String? theirsText;
+    var time = DateTime.now().millisecondsSinceEpoch;
+    if (await file.exists()) {
+      theirsText = await file.readAsString();
+      theirs = readPage(theirsText);
+      time = (await file.lastModified()).millisecondsSinceEpoch;
+      if (theirs.id != id) return;
+    }
+    final merged = theirs == null
+        ? mine
+        : mergePage(base, mine, theirs, modules.codecs, theirsTime: time).page;
+    final out = writePage(merged);
+    if (out != theirsText) await _write(loc, merged);
+    final back = await st.readText(id);
+    if (back != out) {
+      debugPrint('Recovered page $id not accepted: the saved page differs from what was written');
+      return;
+    }
+    final why = verifyRecoveredPage(base: base, mine: mine, theirs: theirs, result: readPage(back));
+    if (why != null) {
+      debugPrint('Recovered page $id not accepted: $why');
+      return;
+    }
+    await _applyClosed(readPage(back), loc, _key(path), path);
+    await rec.delete(e);
   }
 
   Future<void> _write(String loc, NotedPage page) async {
@@ -2107,7 +2272,8 @@ class Notebook extends ChangeNotifier {
     _rebuildTree();
     _syncWatchers();
     await _mergePendingCopies(inQueue: true);
-    await _resumeOpenPage(path, force: true);
+    final resumed = await _resumeOpenPage(path, force: true);
+    await _recoverPending(onlyLoc: path, resumed: resumed);
   }
 
   Future<void> _folderBack(String loc) async {
@@ -2134,28 +2300,39 @@ class Notebook extends ChangeNotifier {
     _rebuildTree();
     _syncWatchers();
     await _mergePendingCopies(inQueue: true);
-    await _resumeOpenPage(loc);
+    final resumed = await _resumeOpenPage(loc);
+    await _recoverPending(onlyLoc: loc, resumed: resumed);
   }
 
   // The open page was kept read-only while its folder was away: it is
   // writable again and merged with whatever its file holds now.
-  Future<void> _resumeOpenPage(String loc, {bool force = false}) async {
+  //
+  // Returns whether it ran, and the page read from the file (null: the file
+  // is gone).
+  Future<({bool ran, NotedPage? theirs})> _resumeOpenPage(String loc, {bool force = false}) async {
     final c = _current;
-    if (c == null || (!force && _orphanLoc != loc)) return;
+    if (c == null || (!force && _orphanLoc != loc)) return (ran: false, theirs: null);
     final id = c.page.id;
-    if (_loc[id] != loc) return; // the page is not in the folder any more
+    if (_loc[id] != loc) return (ran: false, theirs: null); // not in the folder any more
     _orphanLoc = null;
     _syncReadOnly();
     try {
       final path = _storeOf(loc).pathFor(id);
       final file = File(path);
-      final text = await file.readAsString();
+      final String text;
+      try {
+        text = await file.readAsString();
+      } on PathNotFoundException {
+        return (ran: true, theirs: null);
+      }
       final time = (await file.lastModified()).millisecondsSinceEpoch;
       final page = readPage(text);
       _known[_key(path)] = text;
       if (_current == c) _mergeOpen(page, text, time);
+      return (ran: true, theirs: page);
     } on Object catch (e) {
       debugPrint('Reading the open page after its folder came back failed: $e');
+      return (ran: false, theirs: null);
     }
   }
 

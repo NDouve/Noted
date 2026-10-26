@@ -17,6 +17,8 @@ import 'src/app_settings.dart';
 import 'src/app_theme.dart';
 import 'src/home.dart';
 import 'src/notebook.dart';
+import 'src/recovery_notice.dart';
+import 'src/recovery_store.dart';
 
 /// The box modules compiled into this build (0034, stage 1).
 ModuleRegistry buildModules() =>
@@ -42,6 +44,7 @@ Future<void> main() async {
     PageStore(defaultPagesDirectory()),
     buildModules(),
     bindersFile: defaultBindersFile(),
+    recoveryDirectory: defaultRecoveryDirectory(defaultBindersFile()),
     pickFolder: () => getDirectoryPath(confirmButtonText: 'Use this folder'),
     watchFiles: true,
     deviceName: computerName(),
@@ -64,6 +67,7 @@ class NotedApp extends StatefulWidget {
 
 class _NotedAppState extends State<NotedApp> {
   late final AppLifecycleListener _lifecycle;
+  final _navigatorKey = GlobalKey<NavigatorState>();
   late final AppSettings _settings = widget.settings ?? AppSettings(null);
 
   @override
@@ -76,6 +80,7 @@ class _NotedAppState extends State<NotedApp> {
         // apart from a crash in the `flutter run` console.
         debugPrint('Noted: window close requested; saving before exit.');
         await widget.notebook.flush();
+        await showRecoveryNoticeOnExit(widget.notebook, _navigatorKey);
         return AppExitResponse.exit;
       },
       onHide: widget.notebook.flush,
@@ -99,6 +104,7 @@ class _NotedAppState extends State<NotedApp> {
   Widget _app() {
     return MaterialApp(
       title: 'Noted',
+      navigatorKey: _navigatorKey,
       debugShowCheckedModeBanner: false,
       theme: buildNotedTheme(Brightness.light),
       darkTheme: buildNotedTheme(Brightness.dark),
