@@ -51,6 +51,7 @@ void main() {
   test('API versions: 0.x needs an exact match, 1.x a newer host minor', () {
     expect(const BoxApiVersion(0, 1).canHost(const BoxApiVersion(0, 1)), isTrue);
     expect(const BoxApiVersion(0, 2).canHost(const BoxApiVersion(0, 1)), isFalse);
+    expect(boxApiVersion, const BoxApiVersion(0, 3));
     expect(const BoxApiVersion(1, 3).canHost(const BoxApiVersion(1, 1)), isTrue);
     expect(const BoxApiVersion(1, 1).canHost(const BoxApiVersion(1, 3)), isFalse);
     expect(const BoxApiVersion(2, 0).canHost(const BoxApiVersion(1, 0)), isFalse);

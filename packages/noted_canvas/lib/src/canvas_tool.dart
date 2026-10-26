@@ -81,10 +81,10 @@ abstract interface class ToolContext {
   /// The current zoom.
   double get scale;
 
-  /// The theme's brightness, for feedback colored to suit it.
+  /// The theme's brightness, for feedback colored to suit it (Box API 0.3).
   Brightness get brightness;
 
-  /// The theme's app-specific colors.
+  /// The theme's app-specific colors (Box API 0.3).
   NotedColors get colors;
 
   /// Repaints the session's overlay. Call after each update that changes it.
