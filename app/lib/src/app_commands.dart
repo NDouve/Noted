@@ -123,7 +123,6 @@ CommandRegistry pagesHeaderCommands(Notebook nb, PageTreeActions a) {
       id: AppCommands.newBinderFromTemplate,
       label: 'New binder from template…',
       icon: Icons.create_new_folder_rounded,
-      enabled: () => canPickFolder,
       invoke: a.newBinderFromTemplate,
     ),
   ]);

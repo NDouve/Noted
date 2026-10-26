@@ -1001,6 +1001,52 @@ class Notebook extends ChangeNotifier {
   /// folder the user chose is never created: a missing one throws a
   /// [NotebookException].
   Future<BinderSection> createBinder({String name = 'New binder'}) async {
+    final path = await _newBinderFolder(name);
+    try {
+      return _showNewBinder(await addBinder(path));
+    } on FileSystemException catch (e) {
+      throw NotebookException('Could not create the binder: ${e.message}');
+    }
+  }
+
+  /// Creates a binder at once from the binder template [template], like
+  /// [createBinder]: in a new subfolder of the default binder folder named
+  /// after the template (numbered if taken), with no folder picker. Its
+  /// cover opens with the title field focused. If the binder can't be
+  /// written, the new folder is removed again.
+  Future<BinderSection> createBinderFromTemplateInDefault(NotedTemplate template) async {
+    final path = await _newBinderFolder(template.name);
+    try {
+      return _showNewBinder(await createBinderFromTemplate(template, path, openCover: false));
+    } on Object {
+      try {
+        final dir = Directory(path);
+        if (await dir.exists() && await dir.list().isEmpty) await dir.delete();
+      } on FileSystemException catch (e) {
+        debugPrint('Removing the empty binder folder failed: ${e.message}');
+      }
+      rethrow;
+    }
+  }
+
+  /// Shows a binder just created by the user: its cover, with the title field
+  /// asked to take focus.
+  BinderSection _showNewBinder(BinderSection section) {
+    if (section.available) {
+      requestTitleFocus('cover:${section.path}');
+      showCover(section.path);
+    }
+    return section;
+  }
+
+  /// Creates and returns a new, empty subfolder of the default binder folder
+  /// named after [name] (see [binderFolderName]): "Name", or "Name 2",
+  /// "Name 3" … if that is taken by a listed binder or anything on disk.
+  ///
+  /// The built-in default folder is created if it is missing. A default
+  /// folder the user chose is never created: a missing one throws a
+  /// [NotebookException].
+  Future<String> _newBinderFolder(String name) async {
     final root = defaultBinderFolderPath;
     final builtin = settings?.defaultBinderFolder == null || _key(root) == _key(builtinBinderFolderPath);
     try {
@@ -1021,12 +1067,7 @@ class Notebook extends ChangeNotifier {
           continue;
         }
         await Directory(path).create();
-        final section = await addBinder(path);
-        if (section.available) {
-          requestTitleFocus('cover:${section.path}');
-          showCover(section.path);
-        }
-        return section;
+        return path;
       }
     } on FileSystemException catch (e) {
       throw NotebookException('Could not create the binder: ${e.message}');
@@ -1369,9 +1410,13 @@ class Notebook extends ChangeNotifier {
 
   /// Creates a binder in the folder [path] from the binder template
   /// [template]: its settings (with a new binder id) and page tree (with new
-  /// ids), then adds it like [addBinder] and shows its cover. A folder that
-  /// has a binder is refused.
-  Future<BinderSection> createBinderFromTemplate(NotedTemplate template, String path) async {
+  /// ids), then adds it like [addBinder] and shows its cover (unless
+  /// [openCover] is false). A folder that has a binder is refused.
+  Future<BinderSection> createBinderFromTemplate(
+    NotedTemplate template,
+    String path, {
+    bool openCover = true,
+  }) async {
     if (template.kind != TemplateKind.binder) {
       throw const NotebookException('That is not a binder template.');
     }
@@ -1412,7 +1457,7 @@ class Notebook extends ChangeNotifier {
       throw NotebookException('Could not create the binder: $e');
     }
     final section = await addBinder(path);
-    if (section.available) showCover(section.path);
+    if (openCover && section.available) showCover(section.path);
     return section;
   }
 

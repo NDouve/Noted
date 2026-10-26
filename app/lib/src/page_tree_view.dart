@@ -246,13 +246,9 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
   }
 
   Future<void> _newBinderFromTemplate() async {
-    final pick = _nb.pickFolder;
-    if (pick == null) return;
     final t = await _pickTemplate(TemplateKind.binder, 'New binder from template');
     if (t == null) return;
-    final path = await pick();
-    if (path == null) return;
-    await _nb.createBinderFromTemplate(t.template, path);
+    await _nb.createBinderFromTemplateInDefault(t.template);
   }
 
   Future<void> _saveAsTemplate(PageMeta p) async {

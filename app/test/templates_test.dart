@@ -41,6 +41,7 @@ void main() {
   late File settings;
   late List<Notebook> opened;
   String? pickAnswer;
+  var picks = 0;
 
   Future<void> setUpDirs() async {
     root = await Directory.systemTemp.createTemp('noted_templates');
@@ -49,6 +50,7 @@ void main() {
     settings = File('${root.path}/app/binders.json');
     opened = [];
     pickAnswer = null;
+    picks = 0;
   }
 
   Notebook make() {
@@ -57,7 +59,10 @@ void main() {
       buildModules(),
       saveDelay: Duration.zero,
       bindersFile: settings,
-      pickFolder: () async => pickAnswer,
+      pickFolder: () async {
+        picks++;
+        return pickAnswer;
+      },
     );
     opened.add(nb);
     return nb;
@@ -253,12 +258,31 @@ void main() {
       final copy = readPage(File('${fresh.path}/${newKid.id}.canvas').readAsStringSync());
       expectSameContent(copy, await loadPage(nb, kid));
 
+      // From the menu's path: no folder picker, a folder named after the
+      // template in the default binder folder, numbered when taken.
+      final picksBefore = picks;
+      final first = await nb.createBinderFromTemplateInDefault(t);
+      final second = await nb.createBinderFromTemplateInDefault(t);
+      expect(picks, picksBefore);
+      final sep = Platform.pathSeparator;
+      expect(first.path, endsWith('${sep}Project'));
+      expect(second.path, endsWith('${sep}Project 2'));
+      for (final b in [first, second]) {
+        expect(
+          Directory(b.path).parent.absolute.path.toLowerCase(),
+          Directory(nb.defaultBinderFolderPath).absolute.path.toLowerCase(),
+        );
+        expect(File('${b.path}$sep$binderFileName').existsSync(), isTrue);
+        expect(b.tree.roots.single.title, 'Overview');
+      }
+      expect(nb.coverPath, second.path);
+
       // It survives a restart.
       await nb.flush();
       final again = make();
       await again.load();
       expect(again.binders.map((e) => e.title), containsAll(['Project']));
-      expect(again.binders, hasLength(2));
+      expect(again.binders, hasLength(4)); // the original, Copy, Project, Project 2
     });
 
     test('an unreadable template is listed and left alone', () async {
@@ -467,31 +491,41 @@ void main() {
       await settle(tester);
       await untilCount(tester, appTemplates(), 1);
 
-      // New binder from template: into a folder that has a binder is refused.
+      // New binder from template: no folder picker. The binder is created at
+      // once in the default binder folder, in a folder named after the
+      // template, and its cover opens.
       pickAnswer = binderDir.path;
-      await tester.tap(find.byKey(const ValueKey('pages-menu')));
-      await tester.pump(const Duration(milliseconds: 500));
-      await tester.pumpAndSettle();
-      await tapAsync(tester, find.text('New binder from template…'));
-      await tapWhenFound(tester, find.descendant(of: find.byType(AlertDialog), matching: find.text('Work')));
-      await untilFound(tester, find.textContaining('already has a binder'));
-      expect(nb.binders, hasLength(1));
-
-      final fresh = await tester.runAsync(() => Directory('${root.path}/Fresh').create());
-      pickAnswer = fresh!.path;
-      await tester.tap(find.byKey(const ValueKey('pages-menu')));
-      await tester.pump(const Duration(milliseconds: 500));
-      await tester.pumpAndSettle();
-      await tapAsync(tester, find.text('New binder from template…'));
-      await tapWhenFound(tester, find.descendant(of: find.byType(AlertDialog), matching: find.text('Work')));
-      for (var i = 0; i < 60 && nb.binders.length < 2; i++) {
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
-        await tester.pump(const Duration(milliseconds: 50));
+      final picksBefore = picks;
+      Future<void> fromTemplate(int expected) async {
+        await tester.tap(find.byKey(const ValueKey('pages-menu')));
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pumpAndSettle();
+        await tapAsync(tester, find.text('New binder from template…'));
+        await tapWhenFound(tester, find.descendant(of: find.byType(AlertDialog), matching: find.text('Work')));
+        for (var i = 0; i < 60 && nb.binders.length < expected; i++) {
+          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        await settle(tester);
       }
-      await settle(tester);
+
+      await fromTemplate(2);
+      expect(picks, picksBefore);
       expect(nb.binders, hasLength(2));
+      final made = nb.binders.last;
+      expect(made.path, endsWith('${Platform.pathSeparator}Work'));
+      expect(
+        Directory(made.path).parent.absolute.path.toLowerCase(),
+        Directory(nb.defaultBinderFolderPath).absolute.path.toLowerCase(),
+      );
+      expect(nb.cover?.path, made.path);
+      expect(made.tree.roots.single.title, 'Inside');
+
+      // The same template again: the name is taken, so a number is added.
+      await fromTemplate(3);
+      expect(picks, picksBefore);
+      expect(nb.binders.last.path, endsWith('${Platform.pathSeparator}Work 2'));
       expect(nb.cover?.path, nb.binders.last.path);
-      expect(nb.binders.last.tree.roots.single.title, 'Inside');
       await finish(tester);
     });
   });
