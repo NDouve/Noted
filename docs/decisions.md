@@ -676,7 +676,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0058 — Dark mode
 - **Date:** 2026-10-25
-- **Status:** Active
+- **Status:** Active; color roles and the border contrast rule superseded by 0071
 - **Decision:**
   - **Theme setting:** Light, Dark or Follow system, saved per device in `settings.json` in the app settings folder (next to `binders.json`, 0050): `{"format":1,"theme":"system"|"light"|"dark"}`.
     - The default is Follow system, which tracks the OS theme while the app runs.
@@ -816,7 +816,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0068 — Default toolbar
 - **Date:** 2026-10-26
-- **Status:** Active
+- **Status:** Active; extended by 0073 (look and order of the view controls) and 0074 (page background dropdown); pen options enabled only with the pen superseded by 0075
 - **Decision:**
   - One fixed toolbar runs along the top of the canvas, built only from registry commands (0067). It replaces the floating tool bar and the zoom bar.
   - **Order:** Select, Pen, Eraser (the active tool shown as checked), ink color swatches, pen widths, Undo, Redo, Insert table, Insert equation, Fit all, and the zoom level (clicking it resets to 100%).
@@ -841,7 +841,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0070 — Recovery store for edits that can't be saved
 - **Date:** 2026-10-26
-- **Status:** Active
+- **Status:** Active; extended by 0077 (damaged entries in the sidebar)
 - **Decision:**
   - **Writing an entry:** when a save can't land because its folder (standalone or binder) is unavailable (0064), the page is written at once to `%APPDATA%\Noted\recovery` as two files:
     - `<name>.canvas`: exactly the text a normal save would write, so it can never hold anything a page file wouldn't (invariant 3)
@@ -854,6 +854,116 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - Corrupt or unverifiable entries are kept and reported, and never deleted.
 - **Rationale:** An edit made just before a folder disappears is not lost when the app quits before the folder comes back.
 - **Alternatives considered:** keeping such edits only in memory (lost on quit); writing them to another storage folder (could put a page in the wrong place).
+
+## 0071 — Design system and theme from tokens
+- **Date:** 2026-10-26
+- **Status:** Active (supersedes the color roles and the border contrast rule in 0058)
+- **Decision:**
+  - **Source:** the Noted design system in `docs/design/` (direction A, "Quiet Utility") defines the look. `docs/design/tokens.json` is the single source of colors, type, spacing, radii, shadows and sizes. The HTML previews there are visual references, not code.
+  - **Generated code:** `app/scripts/generate_tokens.dart` writes `packages/noted_canvas/lib/src/design_tokens.g.dart` from `tokens.json`. A test fails if the generated file is out of date.
+  - **Theme:** `notedThemeData(brightness)` builds the light and dark `ThemeData` as `docs/design/README.md` ("Mapping to Flutter") lists:
+    - `ColorScheme` slots from the color tokens.
+    - The other colors are in the `NotedColors` extension: the background and hover fills, `text-disabled`, the conflict colors, the ink and binder palettes, the paper colors, the eraser ring and the debug readout.
+    - Spacing, radii, sizes and shadows are in the `NotedMetrics` extension.
+    - Text styles are in the `NotedTypography` extension and the `TextTheme`. They come from the type groups, set in Inter with Segoe UI and the system font as fallbacks.
+  - **No fixed values:** widgets read colors, radii and sizes only from these.
+  - **Ink:** the default ink stays stored as `#FF202124` and is displayed as `ink-default`, which changes with the theme. The pen swatches are the token inks: default, blue, orange, green and purple. Picked ink colors are drawn as stored in both themes.
+  - **Binder colors:** the new-binder palette is the five `binder-*` light values. A stored value equal to one of them is displayed as that token's dark value in dark mode. Any other stored value keeps the lightness adjustment from 0058. Stored values never change.
+  - **Contrast:**
+    - Text pairs meet WCAG AA (4.5:1) in both themes, and tests check the pairs the README lists.
+    - Selection borders, handles and focus rings use `accent` and meet 3:1.
+    - Idle hairlines (`border`, `border-box`) are decorative and quieter by design.
+    - Picked ink colors are exempt, as user content.
+- **Rationale:** One token file keeps the app, the design references and both themes in step. Generating the Dart code avoids copying values by hand.
+- **Alternatives considered:** hand-written theme constants (they drift from the design); 3:1 contrast for every hairline (louder than the design intends).
+
+## 0072 — Bundled Inter font
+- **Date:** 2026-10-26
+- **Status:** Active
+- **Decision:**
+  - **Licensing rule:** fonts may also be under SIL OFL 1.1, alongside the dependency licences already allowed (MIT, BSD, Apache-2.0, MPL-2.0). A font ships with its licence file.
+  - **Inter:** Inter 4.1 is bundled as app assets in `app/assets/fonts/Inter/`, in regular, medium, semibold and bold, with its `OFL.txt`. It is loaded through `pubspec.yaml` fonts, with no font package. Its licence is registered with Flutter's licence registry and is part of the release package.
+- **Rationale:** The design system is set in Inter, and bundling it gives the same type on every platform.
+- **Alternatives considered:** a font package that downloads at run time (needs the network and adds a dependency); system fonts only (they differ by platform).
+
+## 0073 — Components restyled to the design guidelines
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0068)
+- **Decision:** The toolbar, sidebar, boxes, menus and dialog buttons follow the component guidelines in `docs/design/components/`. Icons are Flutter's built-in rounded Material icons (`Icons.*_rounded`), with no icon package.
+  - **Toolbar:** 52px high on `surface` with a bottom hairline. Buttons are 36px with `radius-md`; the active tool has an `accent-soft` fill and an `accent` icon. Groups are separated by 1×24px rules.
+    - The view controls (Fit all, zoom, page background) sit at the far right; the other groups scroll sideways if the window is narrow.
+    - Ink swatches are 28px discs with a 2px `accent` ring when selected. Insert table, Insert equation and Fit all are text buttons.
+    - Zoom is an outlined numeric button that resets to 100%.
+    - Tooltips read "Label (Shortcut)".
+  - **Sidebar:**
+    - **Group headers:** uppercase, with an 8px chip in the binder's color (loose pages: `text-muted`).
+    - **Rows:** 32px, indented 20px per level. Dividers have a chevron.
+    - **Active page:** `accent-soft` fill with semibold `accent` text.
+    - **Conflicts:** an 8px `conflict` dot labelled "Has a conflict".
+    - **Unavailable and damaged binders:** titles in `text-disabled` with a status line ("On another device", "Binder file can't be read").
+  - **Boxes:**
+    - **Idle:** a `surface` fill, a 1px `border-box` hairline and `radius-lg`, with no shadow.
+    - **Selected:** a 1px `accent` border with the `shadow-selected` ring and 8px square handles on the left, right and bottom edges and the bottom corners. The larger invisible drag areas are unchanged.
+    - **Drawing box:** no fill or frame while idle, and a dashed `accent` outline when selected. A module states this by implementing the host-side marker `FramelessBoxModule`. The Box API version is unchanged (0.4).
+    - **Conflict:** a 2px `conflict` border with a "Conflict" badge on the top edge.
+    - **Read-only pages:** a `conflict-soft` banner saying why and that edits are paused.
+  - **Menus:**
+    - **Which menus:** page, binder, Pages header, settings and table handle menus share one menu item style.
+    - **Layout:** a `surface` container with a hairline, `radius-lg` and the popover shadow. Items are 32px, with a right-aligned shortcut column.
+    - **Item states:** destructive items (Delete page, Delete row, Delete column) are in `error`, and disabled items are in `text-disabled`.
+    - **The `/` menu:** it follows the colors only; `appflowy_editor` fixes its sizes.
+  - **Buttons:**
+    - Primary, secondary, ghost and destructive styles come from the theme. A dialog has at most one primary button: the proceeding action.
+    - Delete confirmations use a destructive button instead of a primary one. In the conflict view, "Keep mine" (or "Keep box") is primary.
+  - **Touch:** after a touch input, controls grow to 44px and sidebar rows and menu items to 40px, and the toolbar wraps. A mouse or pen input returns to desktop sizes.
+- **Rationale:** A consistent, quiet interface in both themes, and controls large enough to hit on touch screens.
+- **Alternatives considered:** an icon package (a new dependency); sizing for touch on every platform (wastes space with a mouse).
+
+## 0074 — Page backgrounds
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0068)
+- **Decision:**
+  - **Setting:** each page has a background: Plain (the default), Dots, Graph or Ruled.
+  - **Storage:** it is stored in the page header's `noted` object, for example `"background":"dots"`.
+    - A missing value, a non-string or an unknown name reads as Plain. The stored value is kept byte-for-byte through load, save, rename and move until the user picks a background.
+    - Choosing Plain removes the key, so a plain page's header is the same as before backgrounds existed.
+    - Templates carry the background, because they store the whole page header (0057).
+  - **Drawing:**
+    - It is drawn on `bg-canvas` under the boxes, including on read-only pages.
+    - **Patterns:** Dots are 1.5px `paper-dot` dots. Graph is a 1px `paper-line` square grid. Ruled is 1px `paper-line` horizontal rules with a 1px `paper-margin` line at page x = 64.
+    - **Pitch:** `paper-pitch` (20px at 100% zoom), scaling with zoom. The pattern is anchored to the page origin, so it doesn't move while panning.
+    - Lines snap to device pixels.
+    - **Far zoomed out:** the pattern keeps every second, fourth and so on line or dot until lines are at least 8px apart and dots 12px apart, and never draws more than 20,000 primitives in a frame. The margin line is never thinned.
+  - **Exclusions:** the background is decoration. It is not part of box snapshots, the text snapshot or anything AI-facing.
+  - **Commands:**
+    - "Page background: Plain/Dots/Graph/Ruled" are registry commands, checked when current and disabled on read-only pages.
+    - They appear in the page's right-click menu and in a toolbar dropdown in the view group. The dropdown is a command whose `menu` lists the four commands, and its button shows the current background's icon.
+    - A change to the open page is one undo step (`PageChange.background` restores the exact stored value) and is autosaved. A page that isn't open is loaded, changed in its header only, and saved.
+- **Rationale:** Dot, graph and ruled paper help with handwriting and layout. A header field keeps it per page with no change to boxes.
+- **Alternatives considered:** a background box (it would move, select and appear in snapshots); writing `"plain"` explicitly (it would change every plain page's file).
+
+## 0075 — Choosing an ink selects the pen
+- **Date:** 2026-10-26
+- **Status:** Active (supersedes the pen options being enabled only while the pen is active in 0068)
+- **Decision:** The ink color swatches and pen widths are always enabled. Choosing one sets it and switches to the Pen tool, from any tool.
+- **Rationale:** Picking an ink means the user wants to draw with it, and a disabled swatch gave no hint how to enable it.
+- **Alternatives considered:** keeping the options disabled until the pen is chosen (0068).
+
+## 0076 — Escape leaves a note editor
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0067)
+- **Decision:**
+  - In a note editor, Escape first closes what the editor itself has open; a text range selection is collapsed.
+  - With nothing of its own to close, Escape leaves the editor and the canvas returns to the Select tool.
+- **Rationale:** Escape should always lead back out to the canvas, as it does elsewhere.
+- **Alternatives considered:** `appflowy_editor`'s default (Escape only cleared the selection and kept the editor focused).
+
+## 0077 — Damaged recovery entries in the sidebar
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0070)
+- **Decision:** Recovery entries that are corrupt or can't be verified are also listed in the sidebar under "Can't open", with the reason in the tooltip. They are kept and never deleted, as before.
+- **Rationale:** A pending edit that can't be restored should be visible where other unreadable files are shown.
+- **Alternatives considered:** reporting them only in the log.
 
 ---
 
