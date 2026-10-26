@@ -3,19 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show NotedColors;
+import 'package:noted_canvas/noted_canvas.dart' show notedThemeData;
 
-/// The seed of the color scheme, for both themes.
-const Color notedSeed = Color(0xFF3F51B5);
-
-/// The app's theme in [brightness], with its [NotedColors].
-ThemeData buildNotedTheme(Brightness brightness) {
-  final base = ThemeData(
-    colorSchemeSeed: notedSeed,
-    brightness: brightness,
-    useMaterial3: true,
-  );
-  return base.copyWith(
-    extensions: [NotedColors.fromScheme(base.colorScheme)],
-  );
-}
+/// The app's theme in [brightness], built from the design tokens in
+/// `docs/design/tokens.json` (see `notedThemeData`).
+ThemeData buildNotedTheme(Brightness brightness) => notedThemeData(brightness);

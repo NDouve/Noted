@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
+import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 
 import 'notebook.dart';
 
@@ -35,7 +36,7 @@ Future<void> showRecoveryNoticeOnExit(Notebook notebook, GlobalKey<NavigatorStat
                           'They are kept safely and will be saved automatically when the folder is back.',
               ),
             if (problems.isNotEmpty) ...[
-              if (pages > 0) const SizedBox(height: 12),
+              if (pages > 0) SizedBox(height: NotedMetrics.of(context).space3),
               const Text("Can't open:"),
               for (final p in problems) Text(p, style: Theme.of(context).textTheme.bodySmall),
             ],

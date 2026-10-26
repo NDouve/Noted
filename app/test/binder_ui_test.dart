@@ -141,7 +141,7 @@ void main() {
     await tester.enterText(find.byKey(const ValueKey('cover-description')), 'All my work');
     await tester.tap(find.byKey(const ValueKey('cover-title')));
     await tester.pump();
-    await tester.tap(find.byKey(ValueKey('cover-color-${binderPalette[5]}')));
+    await tester.tap(find.byKey(ValueKey('cover-color-${binderPalette[4]}')));
     await settle(tester);
 
     final saved = await tester.runAsync(() => BinderStore(folder).read());
@@ -150,7 +150,7 @@ void main() {
       'Projects',
       'Sam',
       'All my work',
-      binderPalette[5],
+      binderPalette[4],
     ]);
     expect(find.text('Projects'), findsWidgets);
 

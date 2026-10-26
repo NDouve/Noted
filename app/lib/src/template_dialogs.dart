@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
+import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 
 import 'notebook.dart';
 
@@ -87,13 +88,13 @@ class _SaveTemplateDialogState extends State<_SaveTemplateDialog> {
               decoration: const InputDecoration(labelText: 'Template name'),
               onSubmitted: (_) => _save(),
             ),
-            const SizedBox(height: 8),
+            SizedBox(height: NotedMetrics.of(context).space2),
             if (widget.offerBinder) ...[
               _where('template-where-binder', 'This binder', true),
               _where('template-where-app', 'All binders and pages', false),
             ] else
               Padding(
-                padding: const EdgeInsets.only(top: 4),
+                padding: EdgeInsets.only(top: NotedMetrics.of(context).space1),
                 child: Text(
                   'Saved with the templates for all binders and pages.',
                   style: Theme.of(context).textTheme.bodySmall,
@@ -195,7 +196,7 @@ class _PickTemplateDialogState extends State<_PickTemplateDialog> {
                       trailing: IconButton(
                         key: ValueKey('template-delete-${t.template.id}'),
                         tooltip: 'Delete template',
-                        icon: const Icon(Icons.delete_outline, size: 18),
+                        icon: Icon(Icons.delete_outline, size: NotedMetrics.of(context).icon),
                         onPressed: () => _delete(t),
                       ),
                     ),
@@ -204,13 +205,13 @@ class _PickTemplateDialogState extends State<_PickTemplateDialog> {
                       key: ValueKey('template-unreadable-${u.path}'),
                       dense: true,
                       enabled: false,
-                      leading: const Icon(Icons.block, size: 18),
+                      leading: Icon(Icons.block, size: NotedMetrics.of(context).icon),
                       title: Text(u.path.split(RegExp(r'[\\/]')).last, overflow: TextOverflow.ellipsis),
                       subtitle: Text("Can't open: ${u.reason}"),
                     ),
                   if (_error != null)
                     Padding(
-                      padding: const EdgeInsets.only(top: 8),
+                      padding: EdgeInsets.only(top: NotedMetrics.of(context).space2),
                       child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
                     ),
                 ],

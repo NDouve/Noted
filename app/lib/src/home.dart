@@ -32,7 +32,7 @@ class Home extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SizedBox(
-                width: 260,
+                width: NotedMetrics.of(context).sidebarWidth,
                 child: ColoredBox(
                   color: Theme.of(context).colorScheme.surfaceContainerLow,
                   child: Column(
@@ -58,7 +58,7 @@ class Home extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           Padding(
-                            padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+                            padding: EdgeInsets.fromLTRB(NotedMetrics.of(context).space6, NotedMetrics.of(context).space4, NotedMetrics.of(context).space6, NotedMetrics.of(context).space2),
                             child: Text(
                               title.isEmpty ? 'Untitled page' : title,
                               style: Theme.of(context).textTheme.headlineSmall,
@@ -70,11 +70,11 @@ class Home extends StatelessWidget {
                             Container(
                               key: const ValueKey('read-only-banner'),
                               color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                              padding: EdgeInsets.symmetric(horizontal: NotedMetrics.of(context).space6, vertical: NotedMetrics.of(context).space2),
                               child: Row(
                                 children: [
-                                  const Icon(Icons.lock_outline, size: 16),
-                                  const SizedBox(width: 8),
+                                  Icon(Icons.lock_outline, size: NotedMetrics.of(context).icon),
+                                  SizedBox(width: NotedMetrics.of(context).space2),
                                   Expanded(child: Text(notebook.readOnlyReason!)),
                                 ],
                               ),

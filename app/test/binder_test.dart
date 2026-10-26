@@ -371,11 +371,11 @@ void main() {
     await nb.load();
     final s = await nb.addBinder(folder.path);
     await nb.updateBinder(s.path, title: 'Renamed', description: 'About', owner: 'Me');
-    await nb.updateBinder(s.path, color: binderPalette[5]);
+    await nb.updateBinder(s.path, color: binderPalette[4]);
     final text = File('${folder.path}/$binderFileName').readAsStringSync();
     expect(text, contains('"x-future":{"k": [1,2]}'));
     final b = await binderFile(folder);
-    expect([b.title, b.description, b.owner, b.color], ['Renamed', 'About', 'Me', binderPalette[5]]);
+    expect([b.title, b.description, b.owner, b.color], ['Renamed', 'About', 'Me', binderPalette[4]]);
     expect(b.id, '0123456789abcdef');
     expect(s.title, 'Renamed');
   });

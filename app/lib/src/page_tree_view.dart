@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show CommandRegistry, NotedColors;
+import 'package:noted_canvas/noted_canvas.dart' show CommandRegistry, DesignMetrics, NotedColors, NotedMetrics;
 import 'package:noted_core/noted_core.dart';
 
 import 'app_commands.dart';
@@ -39,7 +39,7 @@ class PageTreeView extends StatefulWidget {
 }
 
 class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
-  static const double _rowHeight = 36;
+  static const double _rowHeight = DesignMetrics.control;
 
   // Collapsed state lasts for the session only.
   final Set<String> _collapsed = {};
@@ -125,8 +125,8 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
             _guard(() => _nb.moveToLocation(d.data));
           },
           builder: (context, _, _) => Container(
-            color: _hoverHeader == '' ? theme.colorScheme.primary.withValues(alpha: 0.18) : null,
-            padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+            color: _hoverHeader == '' ? theme.colorScheme.primaryContainer : null,
+            padding: EdgeInsets.fromLTRB(NotedMetrics.of(context).space4, NotedMetrics.of(context).space3, NotedMetrics.of(context).space2, NotedMetrics.of(context).space1),
             child: Row(
               children: [
                 Expanded(child: Text('Pages', style: theme.textTheme.titleSmall)),
@@ -144,7 +144,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
                 PopupMenuButton<String>(
                   key: const ValueKey('pages-menu'),
                   tooltip: 'Pages options',
-                  iconSize: 18,
+                  iconSize: NotedMetrics.of(context).icon,
                   onSelected: (id) => header.invoke(id),
                   itemBuilder: (_) => [
                     _item(header, AppCommands.newPage),
@@ -169,7 +169,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
                   delegate: SliverChildListDelegate([
                     const Divider(),
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+                      padding: EdgeInsets.fromLTRB(NotedMetrics.of(context).space4, NotedMetrics.of(context).space1, NotedMetrics.of(context).space4, NotedMetrics.of(context).space1),
                       child: Text("Can't open", style: theme.textTheme.labelSmall),
                     ),
                     for (final u in cantOpen)
@@ -178,7 +178,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
                         child: ListTile(
                           dense: true,
                           enabled: false,
-                          leading: const Icon(Icons.block, size: 18),
+                          leading: Icon(Icons.block, size: NotedMetrics.of(context).icon),
                           title: Text(
                             u.path.split(RegExp(r'[\\/]')).last,
                             overflow: TextOverflow.ellipsis,
@@ -320,9 +320,9 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
           height: _rowHeight + 20,
           child: Row(
             children: [
-              const SizedBox(width: 12),
-              const Icon(Icons.cloud_off_outlined, size: 18),
-              const SizedBox(width: 8),
+              SizedBox(width: NotedMetrics.of(context).space3),
+              Icon(Icons.cloud_off_outlined, size: NotedMetrics.of(context).icon),
+              SizedBox(width: NotedMetrics.of(context).space2),
               Expanded(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -337,7 +337,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
                 PopupMenuButton<String>(
                   key: menuKey,
                   tooltip: 'Folder options',
-                  iconSize: 18,
+                  iconSize: NotedMetrics.of(context).icon,
                   onSelected: (_) => remove(),
                   itemBuilder: (_) => const [
                     PopupMenuItem(value: 'remove', child: Text('Remove from list')),
@@ -364,9 +364,9 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
             height: _rowHeight + 20,
             child: Row(
               children: [
-                const SizedBox(width: 12),
-                Icon(unreadable ? Icons.block : Icons.cloud_off_outlined, size: 18),
-                const SizedBox(width: 8),
+                SizedBox(width: NotedMetrics.of(context).space3),
+                Icon(unreadable ? Icons.block : Icons.cloud_off_outlined, size: NotedMetrics.of(context).icon),
+                SizedBox(width: NotedMetrics.of(context).space2),
                 Expanded(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -383,7 +383,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
                 PopupMenuButton<String>(
                   key: ValueKey('binder-menu-${b.path}'),
                   tooltip: 'Binder options',
-                  iconSize: 18,
+                  iconSize: NotedMetrics.of(context).icon,
                   onSelected: (v) => binderCommands(_nb, b, this).invoke(v),
                   itemBuilder: (_) => _binderItems(b),
                 ),
@@ -427,12 +427,12 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
             height: _rowHeight + 4,
             child: Row(
               children: [
-                Container(key: ValueKey('binder-stripe-${b.path}'), width: 5, color: color),
+                Container(key: ValueKey('binder-stripe-${b.path}'), width: NotedMetrics.of(context).space1, color: color),
                 SizedBox(
-                  width: 28,
+                  width: NotedMetrics.of(context).control - NotedMetrics.of(context).space2,
                   child: IconButton(
                     padding: EdgeInsets.zero,
-                    iconSize: 18,
+                    iconSize: NotedMetrics.of(context).icon,
                     tooltip: collapsed ? 'Expand' : 'Collapse',
                     icon: Icon(collapsed ? Icons.chevron_right : Icons.expand_more),
                     onPressed: () => setState(
@@ -442,8 +442,8 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
                     ),
                   ),
                 ),
-                Icon(Icons.book_outlined, size: 18, color: color),
-                const SizedBox(width: 8),
+                Icon(Icons.book_outlined, size: NotedMetrics.of(context).icon, color: color),
+                SizedBox(width: NotedMetrics.of(context).space2),
                 Expanded(
                   child: Text(
                     b.title,
@@ -454,7 +454,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
                 PopupMenuButton<String>(
                   key: ValueKey('binder-menu-${b.path}'),
                   tooltip: 'Binder options',
-                  iconSize: 18,
+                  iconSize: NotedMetrics.of(context).icon,
                   onSelected: (v) => binderCommands(_nb, b, this).invoke(v),
                   itemBuilder: (_) => _binderItems(b),
                 ),
@@ -543,7 +543,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
         child: _hoverEnd
             ? Container(
                 height: 2,
-                margin: const EdgeInsets.symmetric(horizontal: 8),
+                margin: EdgeInsets.symmetric(horizontal: NotedMetrics.of(context).space2),
                 color: theme.colorScheme.primary,
               )
             : null,
@@ -584,11 +584,11 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
     final indent = 8.0 + depth * 16;
     // Pages of a binder whose file can't be read: greyed, to view only.
     final locked = _nb.isReadOnlyPage(p.id);
-    final greyed = theme.colorScheme.onSurface.withValues(alpha: 0.38);
+    final greyed = NotedColors.of(context).textDisabled;
 
     final content = Material(
       color: hover == DropZone.into
-          ? theme.colorScheme.primary.withValues(alpha: 0.18)
+          ? theme.colorScheme.primaryContainer
           : selected
           ? theme.colorScheme.secondaryContainer
           : Colors.transparent,
@@ -596,17 +596,17 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
         onTap: () => _guard(() => _nb.open(p.id)),
         onDoubleTap: locked ? null : () => _rename(context, p),
         child: Padding(
-          padding: EdgeInsets.only(left: indent, right: 4),
+          padding: EdgeInsets.only(left: indent, right: NotedMetrics.of(context).space1),
           child: SizedBox(
             height: _rowHeight,
             child: Row(
               children: [
                 SizedBox(
-                  width: 24,
+                  width: NotedMetrics.of(context).space6,
                   child: divider
                       ? IconButton(
                           padding: EdgeInsets.zero,
-                          iconSize: 18,
+                          iconSize: NotedMetrics.of(context).icon,
                           tooltip: collapsed ? 'Expand' : 'Collapse',
                           icon: Icon(collapsed ? Icons.chevron_right : Icons.expand_more),
                           onPressed: () => setState(
@@ -617,10 +617,10 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
                 ),
                 Icon(
                   divider ? Icons.topic_outlined : Icons.article_outlined,
-                  size: 18,
+                  size: NotedMetrics.of(context).icon,
                   color: locked ? greyed : stripe,
                 ),
-                const SizedBox(width: 8),
+                SizedBox(width: NotedMetrics.of(context).space2),
                 Expanded(
                   child: Text(
                     title,
@@ -637,16 +637,16 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
                     child: Icon(
                       Icons.circle,
                       key: ValueKey('page-conflict-${p.id}'),
-                      size: 10,
+                      size: NotedMetrics.of(context).space2,
                       color: NotedColors.of(context).conflict,
                     ),
                   ),
                 if (locked)
-                  const SizedBox(width: 8)
+                  SizedBox(width: NotedMetrics.of(context).space2)
                 else
                   PopupMenuButton<String>(
                     tooltip: 'Page options',
-                    iconSize: 18,
+                    iconSize: NotedMetrics.of(context).icon,
                     onSelected: (v) => pageCommands(_nb, p, this).invoke(v),
                     itemBuilder: (_) => _menuItems(p),
                   ),
@@ -659,7 +659,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
 
     final line = Container(
       height: 2,
-      margin: EdgeInsets.only(left: indent, right: 4),
+      margin: EdgeInsets.only(left: indent, right: NotedMetrics.of(context).space1),
       color: theme.colorScheme.primary,
     );
 
@@ -736,11 +736,11 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
     if (locked) return child; // read-only pages can't be dragged
     final feedback = Material(
       elevation: 4,
-      borderRadius: BorderRadius.circular(4),
+      borderRadius: NotedMetrics.of(context).borderSm,
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 220),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          padding: EdgeInsets.symmetric(horizontal: NotedMetrics.of(context).space3, vertical: NotedMetrics.of(context).space2),
           child: Text(title, overflow: TextOverflow.ellipsis),
         ),
       ),

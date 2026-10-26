@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
+import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 
 import 'app_commands.dart';
 import 'app_settings.dart';
@@ -24,12 +25,12 @@ class SettingsMenu extends StatelessWidget {
           tooltip: 'Settings',
           icon: const Icon(Icons.settings_outlined),
           onSelected: (id) => themeCommands(settings).invoke(id),
-          itemBuilder: (_) {
+          itemBuilder: (context) {
             final theme = themeCommands(settings);
             return [
-              const PopupMenuItem<String>(
+              PopupMenuItem<String>(
                 enabled: false,
-                height: 32,
+                height: NotedMetrics.of(context).row,
                 child: Text('Theme'),
               ),
               for (final s in ThemeSetting.values)

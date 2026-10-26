@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
+import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 import 'package:noted_core/noted_core.dart';
 
 import 'binder_colors.dart';
@@ -128,33 +129,33 @@ class _BinderCoverState extends State<BinderCover> {
       builder: (context, _) {
         final section = _section;
         final binder = section?.binder;
-        if (section == null || binder == null) return const SizedBox();
+        if (section == null || binder == null) return SizedBox();
         final color = binderPageColor(context, binder.color);
         final last = section.lastEdited;
         return Align(
           alignment: Alignment.topLeft,
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
+            padding: EdgeInsets.all(NotedMetrics.of(context).space6),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 560),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Container(height: 6, color: color),
-                  const SizedBox(height: 16),
+                  Container(height: NotedMetrics.of(context).space1, color: color),
+                  SizedBox(height: NotedMetrics.of(context).space4),
                   Text('Binder cover', style: theme.textTheme.labelMedium),
-                  const SizedBox(height: 12),
+                  SizedBox(height: NotedMetrics.of(context).space3),
                   _field('cover-title', 'Title', _title),
-                  const SizedBox(height: 16),
+                  SizedBox(height: NotedMetrics.of(context).space4),
                   _field('cover-description', 'Description', _description, maxLines: 5),
-                  const SizedBox(height: 16),
+                  SizedBox(height: NotedMetrics.of(context).space4),
                   _field('cover-owner', 'Owner', _owner),
-                  const SizedBox(height: 20),
+                  SizedBox(height: NotedMetrics.of(context).space4),
                   Text('Color', style: theme.textTheme.labelMedium),
-                  const SizedBox(height: 8),
+                  SizedBox(height: NotedMetrics.of(context).space2),
                   Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
+                    spacing: NotedMetrics.of(context).space2,
+                    runSpacing: NotedMetrics.of(context).space2,
                     children: [
                       for (final hex in binderPalette)
                         Tooltip(
@@ -163,30 +164,30 @@ class _BinderCoverState extends State<BinderCover> {
                             key: ValueKey('cover-color-$hex'),
                             onTap: () => widget.notebook.updateBinder(widget.path, color: hex),
                             child: Container(
-                              width: 32,
-                              height: 32,
+                              width: NotedMetrics.of(context).row,
+                              height: NotedMetrics.of(context).row,
                               decoration: BoxDecoration(
                                 color: binderPageColor(context, hex),
                                 shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: hex == binder.color
-                                      ? theme.colorScheme.onSurface
-                                      : Colors.transparent,
-                                  width: 3,
-                                ),
+                                border: hex == binder.color
+                                    ? Border.all(
+                                        color: theme.colorScheme.onSurface,
+                                        width: 3,
+                                      )
+                                    : null,
                               ),
                             ),
                           ),
                         ),
                     ],
                   ),
-                  const SizedBox(height: 24),
+                  SizedBox(height: NotedMetrics.of(context).space6),
                   Text('Last edited', style: theme.textTheme.labelMedium),
                   Text(
                     last == null ? 'Unknown' : _formatTime(last),
                     key: const ValueKey('cover-last-edited'),
                   ),
-                  const SizedBox(height: 16),
+                  SizedBox(height: NotedMetrics.of(context).space4),
                   Text('Storage folder', style: theme.textTheme.labelMedium),
                   SelectableText(section.path, key: const ValueKey('cover-path')),
                 ],

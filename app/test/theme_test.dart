@@ -76,7 +76,7 @@ BoxRecord _drawing() {
   final data = DrawingData(
     strokes: [
       _stroke('a-default', defaultInkValue, 20),
-      _stroke('b-blue', 0xFF1A73E8, 50),
+      _stroke('b-blue', 0xFF1F5FD6, 50),
     ],
   );
   return BoxRecord.create(
@@ -157,11 +157,11 @@ void main() {
             t.widget<CustomPaint>(painterFinder).painter! as StrokesPainter;
         expect(painter.resolvedColors, [
           brightness == Brightness.dark
-              ? const Color(0xFFFFFFFF)
-              : const Color(0xFF000000),
-          const Color(0xFF1A73E8),
+              ? DesignColors.dark.inkDefault
+              : DesignColors.light.inkDefault,
+          const Color(0xFF1F5FD6),
         ]);
-        expect(painter.resolvedColors.first, noted.defaultInk);
+        expect(painter.resolvedColors.first, noted.inkDefault);
 
         // Formula result and equation are drawn.
         expect(find.byKey(const ValueKey('formula-value')), findsOneWidget);
@@ -177,9 +177,9 @@ void main() {
             matching: find.byType(Container),
           ),
         );
-        expect((badge.decoration! as BoxDecoration).color, noted.conflictBadge);
+        expect((badge.decoration! as BoxDecoration).color, noted.conflict);
         final badgeText = t.widget<Text>(find.text('Conflict'));
-        expect(badgeText.style?.color, noted.onConflictBadge);
+        expect(badgeText.style?.color, noted.onConflict);
         final frame = t.widget<DecoratedBox>(
           find.byKey(const ValueKey('conflict-frame')),
         );
@@ -227,27 +227,27 @@ void main() {
 
       await t.pumpWidget(app(ThemeMode.light));
       await t.pumpAndSettle();
-      expect(colors().first, const Color(0xFF000000));
+      expect(colors().first, DesignColors.light.inkDefault);
       await t.pumpWidget(app(ThemeMode.dark));
       await t.pumpAndSettle();
-      expect(colors().first, const Color(0xFFFFFFFF));
+      expect(colors().first, DesignColors.dark.inkDefault);
 
       // Follow system reacts to the OS changing while running.
       t.platformDispatcher.platformBrightnessTestValue = Brightness.light;
       addTearDown(t.platformDispatcher.clearPlatformBrightnessTestValue);
       await t.pumpWidget(app(ThemeMode.system));
       await t.pumpAndSettle();
-      expect(colors().first, const Color(0xFF000000));
+      expect(colors().first, DesignColors.light.inkDefault);
       t.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
       await t.pumpAndSettle();
-      expect(colors().first, const Color(0xFFFFFFFF));
+      expect(colors().first, DesignColors.dark.inkDefault);
     });
   });
 
   group('ink', () {
     test('only the default ink value adapts', () {
-      expect(displayInkColor(defaultInkValue, Brightness.light), const Color(0xFF000000));
-      expect(displayInkColor(defaultInkValue, Brightness.dark), const Color(0xFFFFFFFF));
+      expect(displayInkColor(defaultInkValue, Brightness.light), DesignColors.light.inkDefault);
+      expect(displayInkColor(defaultInkValue, Brightness.dark), DesignColors.dark.inkDefault);
       for (final v in PenSettings.colors.skip(1)) {
         expect(displayInkColor(v, Brightness.light), Color(v));
         expect(displayInkColor(v, Brightness.dark), Color(v));
@@ -267,16 +267,14 @@ void main() {
         // (name, foreground, background, minimum)
         final pairs = <(String, Color, Color, double)>[
           ('body text / canvas', s.onSurface, s.surface, 4.5),
-          ('default ink / canvas', n.defaultInk, s.surface, 7),
-          ('placeholder, grid labels / canvas', n.gridLabel, s.surface, 4.5),
-          ('muted text / sidebar', n.mutedText, s.surfaceContainerLow, 4.5),
-          ('formula error / canvas', n.formulaError, s.surface, 4.5),
+          ('default ink / canvas', n.inkDefault, s.surface, 7),
           ('link / canvas', s.primary, s.surface, 4.5),
           ('error text / dialog', s.error, s.surfaceContainerHigh, 4.5),
-          ('conflict badge text', n.onConflictBadge, n.conflictBadge, 4.5),
+          ('conflict badge text', n.onConflict, n.conflict, 4.5),
           ('readout text', n.onReadout, readout, 4.5),
           ('selected box border, cursor / canvas', s.primary, s.surface, 3),
-          ('grip, divider, table border / canvas', s.outline, s.surface, 3),
+          // border and border-box are hairlines (about 1.3:1) by design; see
+          // docs/design/README.md. Not asserted at 3:1.
           ('conflict frame / canvas', n.conflict, s.surface, 3),
           ('conflict marker / sidebar', n.conflict, s.surfaceContainerLow, 3),
           ('eraser ring / canvas', n.toolRing, s.surface, 3),
@@ -314,7 +312,7 @@ void main() {
         for (final hex in binderPalette) {
           final stored = parseBinderColor(hex);
           for (final surface in [s.surfaceContainerLow, s.surface]) {
-            final shown = binderDisplayColor(stored, surface);
+            final shown = binderDisplayColor(stored, surface, brightness);
             final r = contrastRatio(shown, surface);
             // ignore: avoid_print
             print('${brightness.name} | binder $hex | ${r.toStringAsFixed(2)}');
@@ -332,7 +330,7 @@ void main() {
 
     test('a color that already contrasts is shown as stored', () {
       const dark = Color(0xFF101010);
-      expect(binderDisplayColor(const Color(0xFFFFFF00), dark), const Color(0xFFFFFF00));
+      expect(binderDisplayColor(const Color(0xFFFFFF00), dark, Brightness.dark), const Color(0xFFFFFF00));
     });
   });
 

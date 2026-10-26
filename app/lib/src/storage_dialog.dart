@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
+import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 
 import 'notebook.dart';
 
@@ -113,7 +114,7 @@ class _StorageDialogState extends State<_StorageDialog> {
               ),
             if (_error != null)
               Padding(
-                padding: const EdgeInsets.only(top: 8),
+                padding: EdgeInsets.only(top: NotedMetrics.of(context).space2),
                 child: Text(
                   _error!,
                   key: const ValueKey('storage-error'),
