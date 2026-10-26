@@ -76,6 +76,7 @@ class BinderSection {
     this.store,
     this.reason,
     this.unreadable = const [],
+    this.missing = false,
   }) : tree = PageTree.build(const []);
 
   /// The binder's folder.
@@ -86,6 +87,11 @@ class BinderSection {
 
   /// Why the binder is unavailable or unreadable.
   String? reason;
+
+  /// The binder's folder isn't there (e.g. it is on another device). The app
+  /// looks for it again. While it is away the pages stay listed, read-only,
+  /// and nothing is written to the folder.
+  bool missing;
 
   /// Page files in the folder that couldn't be read.
   List<UnreadablePage> unreadable;
@@ -431,6 +437,10 @@ class Notebook extends ChangeNotifier {
       notifyListeners();
     }
     if (id == currentId) return;
+    // A page of a binder whose folder is away can't be read.
+    if (_binders[_loc[id]]?.missing ?? false) {
+      throw const NotebookException('That binder is not available.');
+    }
     await _closeCurrent();
     final st = _storeOf(_loc[id] ?? _standalone);
     final text = await st.readText(id);
@@ -1233,11 +1243,13 @@ class Notebook extends ChangeNotifier {
   }
 
   Future<BinderSection> _openBinder(String path, {bool create = false}) async {
-    BinderSection unavailable(String why) =>
-        BinderSection._(path, BinderStatus.unavailable, reason: why);
+    BinderSection unavailable(String why, {bool missing = false}) =>
+        BinderSection._(path, BinderStatus.unavailable, reason: why, missing: missing);
     final dir = Directory(path);
     try {
-      if (!await dir.exists()) return unavailable('Folder not found. It may be on another device.');
+      if (!await dir.exists()) {
+        return unavailable('Folder not found. It may be on another device.', missing: true);
+      }
       final binders = BinderStore(dir);
       var read = await binders.read();
       if (read is BinderMissing) {
@@ -1485,7 +1497,7 @@ class Notebook extends ChangeNotifier {
       // A binder that can't be used is watched too, as long as its folder
       // exists, so a repaired or restored binder file brings it back.
       for (final b in _binders.values)
-        if (b.available || Directory(b.path).existsSync()) b.path: b.path,
+        if (!b.missing && (b.available || Directory(b.path).existsSync())) b.path: b.path,
     };
     for (final loc in _watchers.keys.toList()) {
       if (!wanted.containsKey(loc)) unawaited(_watchers.remove(loc)!.cancel());
@@ -1578,6 +1590,7 @@ class Notebook extends ChangeNotifier {
     final dirKey = _key(File(path).parent.path);
     final section = _binders.values.where((b) => _key(b.path) == dirKey).firstOrNull;
     if (section == null) return;
+    if (section.missing) return; // checkFolders brings a returned folder back
     String? text;
     String? unreadable;
     try {
@@ -1588,6 +1601,12 @@ class Notebook extends ChangeNotifier {
       unreadable = 'not valid UTF-8 text';
     }
     if (_disposed) return;
+    if (text == null && unreadable == null && !await Directory(section.path).exists()) {
+      // The folder is gone, not just the file.
+      if (_disposed) return;
+      await _binderGone(section);
+      return;
+    }
     if (text != null && _binderText[dirKey] == text) return;
     Binder? binder;
     if (text != null) {
@@ -1651,6 +1670,7 @@ class Notebook extends ChangeNotifier {
   /// Takes the pages of the binder out of the notebook and marks it unusable.
   /// Its files, binder file included, are not touched.
   Future<void> _disableBinder(BinderSection section, BinderStatus status, String reason) async {
+    section.missing = false;
     final path = section.path;
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
@@ -1730,6 +1750,9 @@ class Notebook extends ChangeNotifier {
     }
     if (_disposed) return;
     if (text == null) {
+      // The whole folder going away is not the page file being deleted:
+      // checkFolders deals with that.
+      if (_binders.containsKey(loc) && !await Directory(File(path).parent.path).exists()) return;
       _fileGone(loc, key, path);
       return;
     }
@@ -1987,6 +2010,17 @@ class Notebook extends ChangeNotifier {
     } else if (_defaultGone && defaultExists) {
       await _folderBack(_standalone);
     }
+    for (final b in _binders.values.toList()) {
+      if (_disposed) return;
+      if (!identical(_binders[b.path], b)) continue;
+      final exists = await Directory(b.path).exists();
+      if (_disposed) return;
+      if (b.missing) {
+        if (exists) await _binderBack(b.path);
+      } else if (!exists) {
+        await _binderGone(b);
+      }
+    }
     for (final f in _folders.values.toList()) {
       if (_disposed) return;
       if (!identical(_folders[f.path], f)) continue;
@@ -2032,6 +2066,50 @@ class Notebook extends ChangeNotifier {
     _syncWatchers();
   }
 
+  /// A binder's folder disappeared. Pending edits are written first if that
+  /// is still possible. The binder stays in the sidebar as "on another
+  /// device" with its pages listed, read-only; an open page stays open. Its
+  /// watcher stops and nothing is written until the folder is back.
+  Future<void> _binderGone(BinderSection section) async {
+    await flush();
+    final path = section.path;
+    if (_disposed || _binders[path] != section || section.missing) return;
+    section
+      ..missing = true
+      ..status = BinderStatus.unavailable
+      ..reason = 'Folder not found. It may be on another device.';
+    if (_coverPath == path) _coverPath = null;
+    final last = _lastDeleted;
+    if (last != null && last._location == path) _lastDeleted = null;
+    _syncReadOnly();
+    _rebuildTree();
+    _syncWatchers();
+  }
+
+  /// A binder's folder is back: reads the binder file and the pages again,
+  /// restarts the watcher, merges conflict copies and merges the open page.
+  Future<void> _binderBack(String path) async {
+    final old = _binders[path];
+    if (old == null) return;
+    for (final e in _loc.entries.where((e) => e.value == path && e.key != currentId).toList()) {
+      _forgetPage(e.key);
+    }
+    final fresh = await _openBinder(path);
+    if (_disposed || !identical(_binders[path], old)) return;
+    if (fresh.missing) return; // gone again
+    if (fresh.status == BinderStatus.unavailable) {
+      // No binder file (or unusable): as at startup.
+      await _disableBinder(old, BinderStatus.unavailable, fresh.reason ?? '');
+      return;
+    }
+    _binders[path] = fresh;
+    _syncReadOnly();
+    _rebuildTree();
+    _syncWatchers();
+    await _mergePendingCopies(inQueue: true);
+    await _resumeOpenPage(path, force: true);
+  }
+
   Future<void> _folderBack(String loc) async {
     if (loc == _standalone) {
       final entries = await store.scan();
@@ -2061,9 +2139,9 @@ class Notebook extends ChangeNotifier {
 
   // The open page was kept read-only while its folder was away: it is
   // writable again and merged with whatever its file holds now.
-  Future<void> _resumeOpenPage(String loc) async {
+  Future<void> _resumeOpenPage(String loc, {bool force = false}) async {
     final c = _current;
-    if (c == null || _orphanLoc != loc) return;
+    if (c == null || (!force && _orphanLoc != loc)) return;
     final id = c.page.id;
     if (_loc[id] != loc) return; // the page is not in the folder any more
     _orphanLoc = null;

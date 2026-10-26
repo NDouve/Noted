@@ -89,10 +89,11 @@ class _PageTreeViewState extends State<PageTreeView> {
     final cantOpen = <UnreadablePage>[..._nb.unreadable];
     for (final b in _nb.binders) {
       rows.add(_binderHeader(context, b));
-      if (!b.available && !b.readOnly) continue;
+      // A binder whose folder is away keeps its pages listed, greyed.
+      if (!b.available && !b.readOnly && !b.missing) continue;
       cantOpen.addAll(b.unreadable);
       if (!_collapsed.contains(_binderKey(b))) {
-        addTree(b.tree, b.readOnly ? null : binderSidebarColor(context, b.color));
+        addTree(b.tree, b.available ? binderSidebarColor(context, b.color) : null);
       }
     }
 
@@ -588,7 +589,7 @@ class _PageTreeViewState extends State<PageTreeView> {
           ? theme.colorScheme.secondaryContainer
           : Colors.transparent,
       child: InkWell(
-        onTap: () => _nb.open(p.id),
+        onTap: () => _guard(() => _nb.open(p.id)),
         onDoubleTap: locked ? null : () => _rename(context, p),
         child: Padding(
           padding: EdgeInsets.only(left: indent, right: 4),
