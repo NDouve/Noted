@@ -43,8 +43,25 @@ class _HomeState extends State<Home> {
   /// Asks the open page's canvas to open Find on page (from a search result).
   final ValueNotifier<FindRequest?> _findRequests = ValueNotifier<FindRequest?>(null);
 
+  /// The matched range of the title to show in the title field (from a
+  /// title result). Only decoration; it never touches the title text.
+  final ValueNotifier<TitleHighlight?> _titleHighlight = ValueNotifier<TitleHighlight?>(null);
+
+  @override
+  void initState() {
+    super.initState();
+    _search.addListener(_searchChanged);
+  }
+
+  // Clearing the search also clears the title highlight it put there.
+  void _searchChanged() {
+    if (!_search.hasQuery) _titleHighlight.value = null;
+  }
+
   @override
   void dispose() {
+    _search.removeListener(_searchChanged);
+    _titleHighlight.dispose();
     _searchCommands.dispose();
     _findRequests.dispose();
     if (widget.search == null) _search.dispose();
@@ -54,7 +71,7 @@ class _HomeState extends State<Home> {
   /// A search result was chosen: opens its page, and the page's canvas brings
   /// the match into view and highlights it, with the search text in its find
   /// bar.
-  Future<void> _openResult(SearchResultPage page, SearchResultBox box) async {
+  Future<void> _openResult(SearchResultPage page, SearchResultBox? box) async {
     try {
       await notebook.open(page.pageId);
     } on NotebookException catch (e) {
@@ -63,6 +80,16 @@ class _HomeState extends State<Home> {
       }
       return;
     }
+    if (box == null) {
+      // A title result: the title shows the match; the find bar stays shut.
+      _titleHighlight.value = TitleHighlight(
+        pageId: page.pageId,
+        title: page.title,
+        ranges: page.titleRanges,
+      );
+      return;
+    }
+    _titleHighlight.value = null;
     _findRequests.value = FindRequest(
       pageId: page.pageId,
       text: _search.text,
@@ -163,6 +190,7 @@ class _HomeState extends State<Home> {
                             key: ValueKey('title-${current.page.id}'),
                             notebook: notebook,
                             pageId: current.page.id,
+                            highlight: _titleHighlight,
                           ),
                         ),
                         const Divider(height: 1),

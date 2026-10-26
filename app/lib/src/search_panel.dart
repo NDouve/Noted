@@ -23,7 +23,7 @@ class SearchField extends StatefulWidget {
   final NotebookSearch search;
 
   /// A result was chosen (Enter in the field opens the first one).
-  final void Function(SearchResultPage page, SearchResultBox box) onOpen;
+  final void Function(SearchResultPage page, SearchResultBox? box) onOpen;
 
   @override
   State<SearchField> createState() => _SearchFieldState();
@@ -85,7 +85,7 @@ class _SearchFieldState extends State<SearchField> {
     if (event.logicalKey == LogicalKeyboardKey.enter ||
         event.logicalKey == LogicalKeyboardKey.numpadEnter) {
       final first = widget.search.results.firstOrNull;
-      if (first != null) widget.onOpen(first, first.boxes.first);
+      if (first != null) widget.onOpen(first, first.titleMatched ? null : first.boxes.first);
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
@@ -140,9 +140,9 @@ class SearchResultsView extends StatelessWidget {
 
   final NotebookSearch search;
 
-  /// A result was clicked. [box] is the box whose snippet was clicked, or
-  /// the page's first matching box when its title was.
-  final void Function(SearchResultPage page, SearchResultBox box) onOpen;
+  /// A result was clicked. [box] is the box whose snippet was clicked, null
+  /// when a title match was (the page opens with its title highlighted).
+  final void Function(SearchResultPage page, SearchResultBox? box) onOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -186,7 +186,7 @@ class _PageResult extends StatelessWidget {
   const _PageResult({required this.page, required this.onOpen});
 
   final SearchResultPage page;
-  final void Function(SearchResultPage page, SearchResultBox box) onOpen;
+  final void Function(SearchResultPage page, SearchResultBox? box) onOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -202,7 +202,7 @@ class _PageResult extends StatelessWidget {
       children: [
         InkWell(
           key: ValueKey('search-page-title-${page.pageId}'),
-          onTap: () => onOpen(page, page.boxes.first),
+          onTap: () => onOpen(page, page.titleMatched ? null : page.boxes.first),
           child: Padding(
             padding: EdgeInsets.fromLTRB(m.space3, m.space3, m.space3, m.space1),
             child: Text.rich(
@@ -213,9 +213,20 @@ class _PageResult extends StatelessWidget {
                       text: '${crumbs.sublist(0, crumbs.length - 1).join(' / ')} / ',
                       style: type.small.copyWith(color: scheme.onSurfaceVariant),
                     ),
-                  TextSpan(text: crumbs.last, style: type.bodyStrong),
+                  if (page.titleMatched)
+                    _highlighted(
+                      page.title,
+                      page.titleRanges,
+                      type.bodyStrong,
+                      scheme,
+                    )
+                  else
+                    TextSpan(text: crumbs.last, style: type.bodyStrong),
                 ],
               ),
+              key: page.titleMatched
+                  ? ValueKey('search-title-hit-${page.pageId}')
+                  : null,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
@@ -242,6 +253,33 @@ class _PageResult extends StatelessWidget {
       ],
     );
   }
+}
+
+/// [text] with [ranges] marked like the matches in a snippet.
+TextSpan _highlighted(
+  String text,
+  List<SearchRange> ranges,
+  TextStyle base,
+  ColorScheme scheme,
+) {
+  final spans = <TextSpan>[];
+  var at = 0;
+  for (final h in ranges) {
+    if (h.start < at || h.end > text.length) continue;
+    if (h.start > at) spans.add(TextSpan(text: text.substring(at, h.start)));
+    spans.add(
+      TextSpan(
+        text: text.substring(h.start, h.end),
+        style: TextStyle(
+          backgroundColor: scheme.tertiaryContainer,
+          color: scheme.onTertiaryContainer,
+        ),
+      ),
+    );
+    at = h.end;
+  }
+  if (at < text.length) spans.add(TextSpan(text: text.substring(at)));
+  return TextSpan(style: base, children: spans);
 }
 
 /// A snippet with its matches marked.

@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -276,6 +277,107 @@ void main() {
       find.descendant(of: listed, matching: find.textContaining('broken', findRichText: true)),
       findsOneWidget,
     );
+    await finish(t);
+  });
+
+  List<String> marked(WidgetTester t, TextSpan span, Color color) {
+    final out = <String>[];
+    span.visitChildren((s) {
+      if (s is TextSpan && s.style?.backgroundColor == color) out.add(s.text!);
+      return true;
+    });
+    return out;
+  }
+
+  List<String> titleMarks(WidgetTester t) {
+    final field = find.byKey(const ValueKey('page-title-field'));
+    final scheme = Theme.of(t.element(find.byType(Scaffold))).colorScheme;
+    final controller = t.widget<TextField>(field).controller!;
+    final span = controller.buildTextSpan(
+      context: t.element(field),
+      withComposing: false,
+    );
+    return marked(t, span, scheme.tertiaryContainer);
+  }
+
+  testWidgets('title matches come first, are highlighted, and open the page with the title marked', (t) async {
+    await start(t);
+    await t.runAsync(() => nb.rename('gamma', 'Budget plan'));
+    await search(t, 'budget');
+    final scheme = Theme.of(t.element(find.byType(Scaffold))).colorScheme;
+
+    // Gamma (title match) is before Alpha (box matches only), though Alpha is
+    // first in the sidebar.
+    final alpha = t.getTopLeft(find.byKey(const ValueKey('search-page-alpha'))).dy;
+    final gamma = t.getTopLeft(find.byKey(const ValueKey('search-page-gamma'))).dy;
+    expect(gamma, lessThan(alpha));
+    expect(find.byKey(const ValueKey('search-title-hit-alpha')), findsNothing);
+    final hit = find.byKey(const ValueKey('search-title-hit-gamma'));
+    expect(hit, findsOneWidget);
+    expect(marked(t, t.widget<Text>(hit).textSpan! as TextSpan, scheme.tertiaryContainer), ['Budget']);
+    // Its box snippet is listed under the title.
+    expect(find.byKey(const ValueKey('search-result-gamma-gamma-b0')), findsOneWidget);
+
+    await t.tap(find.byKey(const ValueKey('search-page-title-gamma')));
+    await until(t, () => nb.currentId == 'gamma');
+    await settle(t);
+    expect(nb.currentId, 'gamma');
+    expect(titleMarks(t), ['Budget']);
+    expect(find.byKey(const ValueKey('find-bar')), findsNothing);
+    // The title was not touched or focused.
+    expect(nb.current!.page.meta.title, 'Budget plan');
+    expect(
+      t.widget<TextField>(find.byKey(const ValueKey('page-title-field'))).focusNode!.hasFocus,
+      isFalse,
+    );
+
+    // Editing the title clears the mark.
+    await t.enterText(find.byKey(const ValueKey('page-title-field')), 'Budget plans');
+    await t.pump();
+    expect(titleMarks(t), isEmpty);
+
+    // Opening another page and coming back does not bring it back.
+    unawaited(nb.open('alpha'));
+    await until(t, () => nb.currentId == 'alpha');
+    await settle(t);
+    unawaited(nb.open('gamma'));
+    await until(t, () => nb.currentId == 'gamma');
+    await settle(t);
+    expect(titleMarks(t), isEmpty);
+    await finish(t);
+  });
+
+  testWidgets('the title mark clears when the search is cleared, and Enter opens a title match', (t) async {
+    await start(t);
+    await search(t, 'beta');
+    await t.tap(find.byKey(const ValueKey('search-field')));
+    await t.sendKeyEvent(LogicalKeyboardKey.enter);
+    await until(t, () => nb.currentId == 'beta');
+    await settle(t);
+    expect(titleMarks(t), ['Beta']);
+    await t.tap(find.byKey(const ValueKey('search-clear')));
+    await settle(t);
+    expect(titleMarks(t), isEmpty);
+    await finish(t);
+  });
+
+  testWidgets('renaming a page updates the results', (t) async {
+    await start(t);
+    await search(t, 'zebra');
+    expect(find.byKey(const ValueKey('search-empty')), findsOneWidget);
+    await t.runAsync(() => nb.rename('beta', 'Zebra notes'));
+    await settle(t);
+    await settle(t);
+    expect(find.byKey(const ValueKey('search-title-hit-beta')), findsOneWidget);
+    // The open page, renamed through its controller.
+    await t.runAsync(() => nb.rename('alpha', 'Zebra alpha'));
+    await settle(t);
+    await settle(t);
+    expect(find.byKey(const ValueKey('search-title-hit-alpha')), findsOneWidget);
+    await t.runAsync(() => nb.rename('beta', 'Lion notes'));
+    await settle(t);
+    await settle(t);
+    expect(find.byKey(const ValueKey('search-title-hit-beta')), findsNothing);
     await finish(t);
   });
 

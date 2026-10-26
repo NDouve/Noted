@@ -26,15 +26,31 @@ class SearchResultBox {
 
 /// The matches on one page.
 class SearchResultPage {
-  const SearchResultPage(this.pageId, this.path, this.boxes);
+  const SearchResultPage(
+    this.pageId,
+    this.path,
+    this.boxes, {
+    this.title = '',
+    this.titleRanges = const [],
+  });
 
   final String pageId;
 
   /// Binder (or `Pages`), parent pages and the page's title.
   final List<String> path;
+
+  /// Empty when only the title matched.
   final List<SearchResultBox> boxes;
 
-  int get matchCount => boxes.fold(0, (n, b) => n + b.matchCount);
+  /// The stored title, and where the query is in it (empty if the title did
+  /// not match).
+  final String title;
+  final List<SearchRange> titleRanges;
+
+  bool get titleMatched => titleRanges.isNotEmpty;
+
+  int get matchCount =>
+      boxes.fold(titleRanges.length, (n, b) => n + b.matchCount);
 }
 
 /// Search over every reachable page (standalone folders and binders).
@@ -255,9 +271,12 @@ class NotebookSearch extends ChangeNotifier {
         SearchResultPage(h.pageId, notebook.pagePath(h.pageId), [
           for (final b in h.boxes)
             SearchResultBox(b.boxId, b.snippet(), b.ranges.length),
-        ]),
+        ], title: h.title, titleRanges: h.titleRanges),
     ];
-    pages.sort((a, b) => (order[a.pageId] ?? 1 << 30) - (order[b.pageId] ?? 1 << 30));
+    // Title matches first, then box-only matches; sidebar order in each.
+    int rank(SearchResultPage p) =>
+        (p.titleMatched ? 0 : 1 << 31) + (order[p.pageId] ?? 1 << 30);
+    pages.sort((a, b) => rank(a) - rank(b));
     _results = pages;
     notifyListeners();
   }
