@@ -88,6 +88,31 @@ void main() {
       );
       final deleted = _box('mine').withConflict(BoxConflict.deleted(at: 5));
 
+      testWidgets('the conflict view has a conflict-soft header band', (t) async {
+        await open(t, conflicted);
+        final band = find.descendant(
+          of: find.byKey(const ValueKey('conflict-dialog')),
+          matching: find.byKey(const ValueKey('conflict-header')),
+        );
+        expect(band, findsOneWidget);
+        expect(
+          t.widget<ColoredBox>(band).color,
+          NotedColors.forBrightness(brightness).conflictSoft,
+        );
+        expect(
+          find.descendant(of: band, matching: find.text('Conflicting changes')),
+          findsOneWidget,
+        );
+        // The band spans the dialog's surface, across its top.
+        final dialog = t.getRect(
+          find.ancestor(of: band, matching: find.byType(Material)).first,
+        );
+        final rect = t.getRect(band);
+        expect(rect.left, dialog.left);
+        expect(rect.right, dialog.right);
+        expect(rect.top, dialog.top);
+      });
+
       testWidgets('the conflict view has one primary: Keep mine', (t) async {
         await open(t, conflicted);
         final dialog = find.byKey(const ValueKey('conflict-dialog'));

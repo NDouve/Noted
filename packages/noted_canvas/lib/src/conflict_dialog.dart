@@ -7,6 +7,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'box_module.dart';
 import 'canvas_controller.dart';
+import 'noted_colors.dart';
 import 'noted_theme.dart';
 
 /// Height of one editable pane in the manual merge view.
@@ -107,7 +108,9 @@ class _ConflictDialogState extends State<_ConflictDialog> {
 
     return AlertDialog(
       key: const ValueKey('conflict-dialog'),
-      title: const Text('Conflicting changes'),
+      clipBehavior: Clip.antiAlias,
+      titlePadding: EdgeInsets.zero,
+      title: ConflictHeader(title: 'Conflicting changes'),
       content: SizedBox(
         width: 640,
         child: Column(
@@ -232,7 +235,9 @@ class _ConflictDialogState extends State<_ConflictDialog> {
 
     return AlertDialog(
       key: const ValueKey('conflict-edit-dialog'),
-      title: const Text('Edit manually'),
+      clipBehavior: Clip.antiAlias,
+      titlePadding: EdgeInsets.zero,
+      title: ConflictHeader(title: 'Edit manually'),
       content: SizedBox(
         width: 900,
         child: Row(
@@ -373,6 +378,27 @@ class _Side extends StatelessWidget {
           child: SingleChildScrollView(child: SelectableText(text)),
         ),
       ],
+    );
+  }
+}
+
+/// The conflict view's header: the title on a `conflict-soft` band across
+/// the top of the dialog.
+class ConflictHeader extends StatelessWidget {
+  const ConflictHeader({super.key, required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    final m = NotedMetrics.of(context);
+    return ColoredBox(
+      key: const ValueKey('conflict-header'),
+      color: NotedColors.of(context).conflictSoft,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(m.space6, m.space4, m.space6, m.space4),
+        child: SizedBox(width: double.infinity, child: Text(title)),
+      ),
     );
   }
 }

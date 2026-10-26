@@ -74,6 +74,15 @@ void main() {
           'document': {
             'type': 'page',
             'children': [
+              {
+                'type': 'heading',
+                'data': {
+                  'level': 1,
+                  'delta': [
+                    {'insert': 'Field notes'},
+                  ],
+                },
+              },
               _para('hello'),
               _table([
                 ['1', '=A1*2', '=1/0'],
@@ -110,6 +119,23 @@ void main() {
         await t.pumpAndSettle();
       }
 
+      testWidgets('Heading 1 uses the box-title style', (t) async {
+        await pump(t);
+        TextSpan? heading;
+        for (final r in t.widgetList<RichText>(find.byType(RichText))) {
+          r.text.visitChildren((s) {
+            if (s is TextSpan && s.text == 'Field notes') heading = s;
+            return heading == null;
+          });
+        }
+        expect(heading, isNotNull);
+        final style = heading!.style!;
+        expect(style.fontSize, DesignType.boxTitle.fontSize);
+        expect(style.fontWeight, DesignType.boxTitle.fontWeight);
+        expect(style.height, DesignType.boxTitle.height);
+        expect(style.color, theme.colorScheme.onSurface);
+      });
+
       testWidgets('text, formulas and equations use the theme', (t) async {
         await pump(t);
         final scheme = theme.colorScheme;
@@ -143,7 +169,7 @@ void main() {
         final editor = t
             .widget<AppFlowyEditor>(find.byType(AppFlowyEditor))
             .editorState;
-        final cell = editor.document.root.children[1].children.firstWhere(
+        final cell = editor.document.root.children[2].children.firstWhere(
           (n) =>
               n.attributes['rowPosition'] == 0 &&
               n.attributes['colPosition'] == 0,

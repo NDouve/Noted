@@ -128,6 +128,7 @@ Map<String, BlockComponentBuilder> themedStandardBlocks(
       configuration: config(
         (node) => 'Heading ${node.attributes[HeadingBlockKeys.level]}',
       ),
+      textStyleBuilder: noteHeadingStyle,
     ),
     ImageBlockKeys.type: ImageBlockComponentBuilder(),
     DividerBlockKeys.type: DividerBlockComponentBuilder(
@@ -179,3 +180,16 @@ TableBlockCellComponentColorBuilder tableCellColors(ColorScheme scheme) =>
       }
       return null;
     };
+
+/// The text style of a heading of [level] inside a box: Heading 1 is
+/// `box-title`, deeper levels `body-strong`, so headings stay above body
+/// text and below the page title (BoxFrame guidelines).
+TextStyle noteHeadingStyle(int level) {
+  final s = level <= 1 ? DesignType.boxTitle : DesignType.bodyStrong;
+  return TextStyle(
+    fontSize: s.fontSize,
+    height: s.height,
+    fontWeight: s.fontWeight,
+    letterSpacing: s.letterSpacing,
+  );
+}
