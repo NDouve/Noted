@@ -14,7 +14,7 @@ Versions are listed newest first.
   - `BoxFrameStyle.framelessUntilSelected`: no fill and no frame until the box is selected, then a dashed accent outline. The drawing module uses it.
 - `Command.menu`: the ids of the commands a command offers as a toolbar dropdown.
 - `Command.readout`: the toolbar shows the command's text as an outlined numeric readout, as it does for the zoom level.
-- All additive. Decisions 0073, 0074 and 0078.
+- All additive. Decisions 0074 and 0079.
 
 ## 0.4 — 2026-10-26
 - Commands: `BoxModule.commands(CommandHost host)` returns the `Command`s a
