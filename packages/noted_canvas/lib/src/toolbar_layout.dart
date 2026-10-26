@@ -18,6 +18,7 @@ const ToolbarLayout defaultToolbarLayout = [
     'noted.drawing.color.1',
     'noted.drawing.color.2',
     'noted.drawing.color.3',
+    'noted.drawing.color.4',
   ],
   ['noted.drawing.width.2', 'noted.drawing.width.4', 'noted.drawing.width.8'],
   ['canvas.undo', 'canvas.redo'],

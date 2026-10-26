@@ -80,6 +80,7 @@ void main() {
       'Ink color: Blue',
       'Ink color: Orange',
       'Ink color: Green',
+      'Ink color: Purple',
       'Pen width 2',
       'Pen width 4',
       'Pen width 8',
