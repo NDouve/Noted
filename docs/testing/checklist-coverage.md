@@ -229,7 +229,7 @@ At the start of every test `Env.assertIsolated` checks that the resolved pages, 
 | 186 | Dark brown band | manual only | | Visual |
 | 187 | Edit manually same band | partly automated | step 058-064, 104-105, 168, 185-187 | Dialog shown; band is visual |
 | 188 | `# ` heading is 16px semibold | manual only | | Visual; `note_theme_test.dart` covers the style |
-| 189 | Purple lighter in dark | partly automated | step 097-098, 189-191 | Lifted color and contrast; toolbar swatch shade equals stroke shade (blue swatch; purple is not on the default toolbar) |
+| 189 | Purple lighter in dark | partly automated | step 097-098, 189-191 | Lifted color and contrast; toolbar swatch shade equals stroke shade on the purple swatch; whether it looks readable is visual |
 | 190 | Original purple in light | automated | step 097-098, 189-191 | |
 | 191 | Blue lighter in dark | automated | step 097-098, 189-191 | |
 | 192 | Icon on Desktop, Start, taskbar, Alt+Tab | manual only | | OS shell |
@@ -255,3 +255,21 @@ At the start of every test `Env.assertIsolated` checks that the resolved pages, 
 | T1 | New binder from template: no picker, named after the template, "Name 2", cover title focused | automated | T1 | New (binder from template, after 0084) |
 
 Counts and results are in the engineer's report; this file lists status only.
+
+## Results (2026-10-26, Windows 11)
+
+The suite has 49 tests covering every automated and partly automated step plus S1 to S5 and T1.
+
+| Run | Code | Result |
+|---|---|---|
+| 1 | before the purple-swatch fix | 49 passed |
+| 2 | final | 49 passed |
+| 3 | final | 48 passed, 1 failed: `step 016-017` with "A SemanticsHandle was active at the end of the test" |
+| 4 | final | 49 passed |
+
+The run 3 failure is environmental. On Windows the engine turns semantics on when an accessibility client (any UI Automation consumer on the desktop) queries the window, and the test framework then reports that handle as outstanding. The test creates no handle itself; it passed three times on its own and in runs 1, 2 and 4.
+
+### Bugs found by the suite
+
+- Step 5: the Rename page dialog disposed its text controller while the dialog was still fading out ("used after being disposed"). The dialog now owns the controller.
+- Step 189: the default toolbar listed four of the five ink colors, so purple had no swatch. It now has all five.

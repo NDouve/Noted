@@ -158,17 +158,20 @@ void canvasSuite() {
           expect(contrastRatio(lifted, canvasDark), greaterThanOrEqualTo(inkMinContrast));
           expect(contrastRatio(displayInkColor(stored, Brightness.light), canvasLight), greaterThanOrEqualTo(3.0));
         }
-        // The toolbar swatch shows the same shade as the stroke (dark).
+        // 189: the purple toolbar swatch shows the same lifted shade as a purple
+        // stroke in dark, and the stored purple in light (190).
         await _setTheme(s, 'dark');
-        final purple = PenSettings.colors[1];
-        final swatch = t.widget<ToolbarEntry>(find.byKey(const ValueKey('noted.drawing.color.1'))).command.iconBuilder!(
-          t.element(find.byKey(const ValueKey('noted.drawing.color.1'))),
+        final purple = PenSettings.colors[4];
+        expect(Color(purple), DesignColors.light.inkPurple);
+        expect(displayInkColor(purple, Brightness.dark), isNot(Color(purple)));
+        final swatch = t.widget<ToolbarEntry>(find.byKey(const ValueKey('noted.drawing.color.4'))).command.iconBuilder!(
+          t.element(find.byKey(const ValueKey('noted.drawing.color.4'))),
           false,
         ) as ToolbarSwatch;
         expect(swatch.color, displayInkColor(purple, Brightness.dark));
         await _setTheme(s, 'light');
-        final swatchL = t.widget<ToolbarEntry>(find.byKey(const ValueKey('noted.drawing.color.1'))).command.iconBuilder!(
-          t.element(find.byKey(const ValueKey('noted.drawing.color.1'))),
+        final swatchL = t.widget<ToolbarEntry>(find.byKey(const ValueKey('noted.drawing.color.4'))).command.iconBuilder!(
+          t.element(find.byKey(const ValueKey('noted.drawing.color.4'))),
           false,
         ) as ToolbarSwatch;
         expect(swatchL.color, Color(purple));
