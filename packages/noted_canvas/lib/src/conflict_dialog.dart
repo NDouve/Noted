@@ -8,9 +8,6 @@ import 'package:noted_core/noted_core.dart';
 import 'box_module.dart';
 import 'canvas_controller.dart';
 
-/// The colour of a conflicted box's frame and badge.
-const Color conflictColor = Color(0xFFF59E0B);
-
 /// Height of one editable pane in the manual merge view.
 const double _paneHeight = 320;
 

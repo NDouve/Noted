@@ -5,6 +5,7 @@
 import 'package:flutter/material.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'binder_colors.dart';
 import 'notebook.dart';
 
 /// Reads a binder color (`#AARRGGBB`); falls back to the first palette color.
@@ -128,7 +129,7 @@ class _BinderCoverState extends State<BinderCover> {
         final section = _section;
         final binder = section?.binder;
         if (section == null || binder == null) return const SizedBox();
-        final color = parseBinderColor(binder.color);
+        final color = binderPageColor(context, binder.color);
         final last = section.lastEdited;
         return Align(
           alignment: Alignment.topLeft,
@@ -165,7 +166,7 @@ class _BinderCoverState extends State<BinderCover> {
                               width: 32,
                               height: 32,
                               decoration: BoxDecoration(
-                                color: parseBinderColor(hex),
+                                color: binderPageColor(context, hex),
                                 shape: BoxShape.circle,
                                 border: Border.all(
                                   color: hex == binder.color

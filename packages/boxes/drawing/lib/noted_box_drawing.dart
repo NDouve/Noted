@@ -7,5 +7,6 @@ library;
 
 export 'src/drawing_codec.dart';
 export 'src/drawing_module.dart';
+export 'src/ink_color.dart';
 export 'src/drawing_tools.dart'
     show EraserTool, PenSettings, PenTool, eraserRadius, joinDistance;

@@ -17,6 +17,7 @@ import 'canvas_controller.dart';
 import 'canvas_tool.dart';
 import 'canvas_view.dart';
 import 'geometry.dart';
+import 'noted_colors.dart';
 
 /// Auto-pan during a tool session: the edge zone, in screen pixels.
 const double autoPanEdge = 40;
@@ -97,6 +98,16 @@ class PageCanvasState extends State<PageCanvas>
 
   @override
   double get scale => _view?.scale ?? 1;
+
+  @override
+  Brightness get brightness => _brightness;
+
+  @override
+  NotedColors get colors => _colors;
+
+  NotedColors _colors = NotedColors.fromScheme(const ColorScheme.light());
+
+  Brightness _brightness = Brightness.light;
 
   @override
   void repaintOverlay() => _overlay.repaint();
@@ -427,6 +438,8 @@ class PageCanvasState extends State<PageCanvas>
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    _brightness = Theme.of(context).brightness;
+    _colors = NotedColors.of(context);
     return Focus(
       focusNode: _focus,
       autofocus: true,
@@ -697,15 +710,15 @@ class _InputReadout extends StatelessWidget {
         ? const SizedBox.shrink()
         : DecoratedBox(
             decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.6),
+              color: NotedColors.of(context).readoutBackground,
               borderRadius: BorderRadius.circular(4),
             ),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               child: Text(
                 s.toString(),
-                style: const TextStyle(
-                  color: Colors.white,
+                style: TextStyle(
+                  color: NotedColors.of(context).onReadout,
                   fontSize: 12,
                   fontFamily: 'monospace',
                 ),

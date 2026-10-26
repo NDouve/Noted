@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'canvas_controller.dart';
+import 'noted_colors.dart';
 
 /// A tool a box module adds to the canvas (Box API 0.2), such as the pen.
 ///
@@ -79,6 +80,12 @@ abstract interface class ToolContext {
 
   /// The current zoom.
   double get scale;
+
+  /// The theme's brightness, for feedback colored to suit it.
+  Brightness get brightness;
+
+  /// The theme's app-specific colors.
+  NotedColors get colors;
 
   /// Repaints the session's overlay. Call after each update that changes it.
   void repaintOverlay();

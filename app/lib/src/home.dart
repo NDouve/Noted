@@ -5,15 +5,20 @@
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 
+import 'app_settings.dart';
 import 'binder_cover.dart';
 import 'notebook.dart';
 import 'page_tree_view.dart';
+import 'settings_menu.dart';
 
 /// Sidebar with the page tree, and the open page's canvas.
 class Home extends StatelessWidget {
-  const Home({super.key, required this.notebook});
+  const Home({super.key, required this.notebook, this.settings});
 
   final Notebook notebook;
+
+  /// This device's settings; the settings menu is shown when given.
+  final AppSettings? settings;
 
   @override
   Widget build(BuildContext context) {
@@ -30,7 +35,13 @@ class Home extends StatelessWidget {
                 width: 260,
                 child: ColoredBox(
                   color: Theme.of(context).colorScheme.surfaceContainerLow,
-                  child: PageTreeView(notebook: notebook),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(child: PageTreeView(notebook: notebook)),
+                      if (settings != null) SettingsMenu(settings: settings!),
+                    ],
+                  ),
                 ),
               ),
               const VerticalDivider(width: 1),

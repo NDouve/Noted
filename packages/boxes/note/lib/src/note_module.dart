@@ -15,6 +15,7 @@ import 'package:noted_core/noted_core.dart';
 import 'math_blocks.dart';
 import 'math_input.dart';
 import 'note_codec.dart';
+import 'note_theme.dart';
 import 'table_formulas.dart';
 import 'table_headers.dart';
 import 'vertical_caret.dart';
@@ -52,6 +53,13 @@ class _NoteEditorState extends State<_NoteEditor> {
   /// Built once per editor state: a new map on every build would make the
   /// editor rebuild every block.
   late Map<String, BlockComponentBuilder> _builders;
+
+  /// The typing shortcuts, with the slash menu in the theme's colors.
+  late List<CharacterShortcutEvent> _shortcuts;
+
+  /// The theme the builders and shortcuts were made for; null until the
+  /// first build.
+  ColorScheme? _scheme;
   late EditorScrollController _scroll;
   late StreamSubscription<EditorTransactionValue> _sub;
   final FocusNode _focus = FocusNode(debugLabel: 'note');
@@ -80,7 +88,6 @@ class _NoteEditorState extends State<_NoteEditor> {
     // Give the editor its own deep copy: it mutates its document in place.
     final json = jsonDecode(jsonEncode(data.document)) as Map<String, dynamic>;
     _editor = EditorState(document: Document.fromJson(json));
-    _builders = _blockBuilders(_editor);
     _scroll = EditorScrollController(editorState: _editor, shrinkWrap: true);
     _formulas = TableFormulas(_editor);
     // Fills in the stored value of formula cells that have none (before the
@@ -88,6 +95,25 @@ class _NoteEditorState extends State<_NoteEditor> {
     if (widget.editable) _formulas.initialize();
     _sub = _editor.transactionStream.listen(_onTransaction);
     _editor.selectionNotifier.addListener(_scheduleReveal);
+  }
+
+  /// Makes the blocks and the slash menu for [scheme]. The editor widget
+  /// only reads the builders when it starts, so on a theme change the
+  /// editor's renderer is replaced too.
+  void _applyTheme(ColorScheme scheme, {required bool renderer}) {
+    _scheme = scheme;
+    _builders = _blockBuilders(_editor, scheme);
+    _shortcuts = _characterShortcuts(scheme);
+    if (renderer) {
+      _editor.renderer = BlockComponentRenderer(builders: {..._builders});
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final scheme = Theme.of(context).colorScheme;
+    if (scheme != _scheme) _applyTheme(scheme, renderer: _scheme != null);
   }
 
   void _unload() {
@@ -122,6 +148,7 @@ class _NoteEditorState extends State<_NoteEditor> {
     if (!identical(widget.box.data, _shown)) {
       _unload();
       _load(widget.box.data);
+      _applyTheme(_scheme!, renderer: false);
     }
   }
 
@@ -260,7 +287,7 @@ class _NoteEditorState extends State<_NoteEditor> {
       // Caret-follow is done by _revealCaret; see there for why.
       disableAutoScroll: true,
       blockComponentBuilders: _builders,
-      characterShortcutEvents: _characterShortcuts,
+      characterShortcutEvents: _shortcuts,
       commandShortcutEvents: noteCommandShortcuts,
       focusNode: _focus,
       autoFocus: widget.editable && widget.box.autofocus,
@@ -276,9 +303,7 @@ class _NoteEditorState extends State<_NoteEditor> {
         ),
         cursorColor: scheme.primary,
         selectionColor: scheme.primary.withValues(alpha: 0.25),
-        textStyleConfiguration: TextStyleConfiguration(
-          text: TextStyle(fontSize: 15, color: scheme.onSurface),
-        ),
+        textStyleConfiguration: noteTextStyles(scheme),
       ),
     );
   }
@@ -297,22 +322,20 @@ const List<LocalizationsDelegate<Object>> noteLocalizationsDelegates = [
 
 /// appflowy's standard blocks (which include the table), with a placeholder
 /// short enough to fit on one line of a new note, plus the equation block.
-Map<String, BlockComponentBuilder> _blockBuilders(EditorState editor) => {
-  ...standardBlockComponentBuilderMap,
-  ParagraphBlockKeys.type: ParagraphBlockComponentBuilder(
-    configuration: standardBlockComponentConfiguration.copyWith(
-      placeholderText: (_) => 'Type here',
-    ),
-  ),
+Map<String, BlockComponentBuilder> _blockBuilders(
+  EditorState editor,
+  ColorScheme scheme,
+) => {
+  ...themedStandardBlocks(scheme, paragraphPlaceholder: 'Type here'),
   ...mathBlockBuilders(editor),
 };
 
 /// appflowy's typing shortcuts, with the math ones first and the slash menu
 /// extended with the equation item.
-final List<CharacterShortcutEvent> _characterShortcuts = [
+List<CharacterShortcutEvent> _characterShortcuts(ColorScheme scheme) => [
   inlineMathShortcut,
   blockMathShortcut,
   for (final e in standardCharacterShortcutEvents)
     if (e.key != slashCommand.key) e,
-  noteSlashCommand,
+  noteSlashCommandWith(noteSelectionMenuStyle(scheme)),
 ];

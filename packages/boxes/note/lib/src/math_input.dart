@@ -37,10 +37,16 @@ final CharacterShortcutEvent blockMathShortcut = CharacterShortcutEvent(
 
 /// The slash menu: appflowy's items (text, headings, lists, table, ...) plus
 /// the equation block.
-final CharacterShortcutEvent noteSlashCommand = customSlashCommand([
-  ...standardSelectionMenuItems,
-  mathMenuItem,
-]);
+final CharacterShortcutEvent noteSlashCommand = noteSlashCommandWith(
+  SelectionMenuStyle.light,
+);
+
+/// The slash menu drawn with [style] (the app passes the theme's).
+CharacterShortcutEvent noteSlashCommandWith(SelectionMenuStyle style) =>
+    customSlashCommand([
+      ...standardSelectionMenuItems,
+      mathMenuItem,
+    ], style: style);
 
 /// The slash-menu entry for a block equation.
 final SelectionMenuItem mathMenuItem = SelectionMenuItem(

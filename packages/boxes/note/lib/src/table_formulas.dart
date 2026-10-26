@@ -7,6 +7,7 @@ import 'dart:async';
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:noted_canvas/noted_canvas.dart' show NotedColors;
 
 import 'formula/formula.dart';
 import 'note_codec.dart';
@@ -311,11 +312,12 @@ TextSpanDecoratorForAttribute formulaSpanDecorator(
   EditorState editor,
   TextSpanDecoratorForAttribute inner,
 ) => (context, node, index, text, before, after) {
-  final span = _formulaSpan(editor, node, index, text, before);
+  final span = _formulaSpan(context, editor, node, index, text, before);
   return span ?? inner(context, node, index, text, before, after);
 };
 
 TextSpan? _formulaSpan(
+  BuildContext context,
   EditorState editor,
   Node node,
   int index,
@@ -351,7 +353,7 @@ TextSpan? _formulaSpan(
           value,
           key: const ValueKey('formula-value'),
           style: isError
-              ? style.copyWith(color: const Color(0xFFB3261E))
+              ? style.copyWith(color: NotedColors.of(context).formulaError)
               : style,
         ),
       ),

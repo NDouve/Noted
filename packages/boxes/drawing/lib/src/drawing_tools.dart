@@ -12,6 +12,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'drawing_codec.dart';
 import 'drawing_module.dart';
+import 'ink_color.dart';
 import 'stroke_render.dart';
 
 /// A stroke that starts this close to a drawing box (page pixels) is added
@@ -24,7 +25,7 @@ const double eraserRadius = 10;
 /// The pen's color and size, chosen in the toolbar.
 class PenSettings extends ChangeNotifier {
   static const List<int> colors = [
-    0xFF202124,
+    defaultInkValue,
     0xFF1A73E8,
     0xFFD93025,
     0xFF188038,
@@ -152,7 +153,7 @@ class _PenSession extends ToolSession {
       hasPressure: hasPressure,
       complete: false,
     );
-    canvas.drawPath(path, Paint()..color = Color(color));
+    canvas.drawPath(path, Paint()..color = displayInkColor(color, context.brightness));
   }
 
   @override
@@ -346,7 +347,7 @@ class _EraserSession extends ToolSession {
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1 / scale
-        ..color = const Color(0xFF5F6368),
+        ..color = context.colors.toolRing,
     );
   }
 }
@@ -411,7 +412,7 @@ class _PenOptions extends StatelessWidget {
             onPressed: () => settings.color = c,
             icon: Icon(
               settings.color == c ? Icons.radio_button_checked : Icons.circle,
-              color: Color(c),
+              color: displayInkColor(c, Theme.of(context).brightness),
               size: 20,
             ),
           ),

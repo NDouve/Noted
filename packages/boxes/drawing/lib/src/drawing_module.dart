@@ -12,6 +12,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'drawing_codec.dart';
 import 'drawing_tools.dart';
+import 'ink_color.dart';
 import 'stroke_render.dart';
 
 /// The drawing box module (0016, 0034): ink anywhere on a page with the pen
@@ -165,7 +166,12 @@ class _DrawingViewState extends State<DrawingView> {
           return RepaintBoundary(
             child: CustomPaint(
               size: Size.infinite,
-              painter: _StrokesPainter(data, clamped, _outlines),
+              painter: StrokesPainter(
+                data,
+                clamped,
+                _outlines,
+                Theme.of(context).brightness,
+              ),
             ),
           );
         },
@@ -174,12 +180,20 @@ class _DrawingViewState extends State<DrawingView> {
   }
 }
 
-class _StrokesPainter extends CustomPainter {
-  _StrokesPainter(this.data, this.scroll, this.outlines);
+/// Paints a drawing box's strokes. Default ink is drawn black or white to
+/// suit [brightness]; other colors as stored.
+class StrokesPainter extends CustomPainter {
+  StrokesPainter(this.data, this.scroll, this.outlines, this.brightness);
 
   final DrawingData data;
   final Offset scroll;
   final Map<String, Path> outlines;
+  final Brightness brightness;
+
+  /// The color each stroke is painted in, in order.
+  List<Color> get resolvedColors => [
+    for (final s in data.strokes) displayInkColor(s.color, brightness),
+  ];
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -196,12 +210,14 @@ class _StrokesPainter extends CustomPainter {
           complete: true,
         ),
       );
-      canvas.drawPath(path, paint..color = Color(s.color));
+      canvas.drawPath(path, paint..color = displayInkColor(s.color, brightness));
     }
     canvas.restore();
   }
 
   @override
-  bool shouldRepaint(_StrokesPainter old) =>
-      !identical(old.data, data) || old.scroll != scroll;
+  bool shouldRepaint(StrokesPainter old) =>
+      !identical(old.data, data) ||
+      old.scroll != scroll ||
+      old.brightness != brightness;
 }

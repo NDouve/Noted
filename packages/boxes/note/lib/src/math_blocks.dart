@@ -4,6 +4,7 @@
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
+import 'package:noted_canvas/noted_canvas.dart' show NotedColors;
 import 'package:flutter_math_fork/flutter_math.dart';
 
 import 'note_codec.dart';
@@ -57,17 +58,20 @@ class MathView extends StatelessWidget {
       return Text(
         display ? 'Empty equation: click to edit' : '[ ]',
         style: style.copyWith(
-          color: style.color?.withValues(alpha: 0.5),
+          color: NotedColors.of(context).mutedText,
           fontStyle: FontStyle.italic,
         ),
       );
     }
+    final textStyle = style.color == null
+        ? style.copyWith(color: Theme.of(context).colorScheme.onSurface)
+        : style;
     return Math.tex(
       formula,
       mathStyle: display ? MathStyle.display : MathStyle.text,
-      textStyle: style,
+      textStyle: textStyle,
       onErrorFallback: (error) =>
-          MathErrorPlaceholder(formula: formula, style: style),
+          MathErrorPlaceholder(formula: formula, style: textStyle),
     );
   }
 }

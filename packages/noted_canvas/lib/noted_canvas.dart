@@ -16,4 +16,5 @@ export 'src/canvas_view.dart';
 export 'src/conflict_dialog.dart';
 export 'src/geometry.dart';
 export 'src/module_registry.dart';
+export 'src/noted_colors.dart';
 export 'src/page_canvas.dart';

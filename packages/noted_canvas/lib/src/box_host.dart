@@ -13,6 +13,7 @@ import 'box_module.dart';
 import 'canvas_controller.dart';
 import 'conflict_dialog.dart';
 import 'geometry.dart';
+import 'noted_colors.dart';
 
 /// Width of the resize strip on each edge, centred on the edge.
 const double boxHandleSize = 10;
@@ -138,6 +139,7 @@ class _BoxHostState extends State<BoxHost> {
     }
 
     final scheme = Theme.of(context).colorScheme;
+    final noted = NotedColors.of(context);
     final conflicted = node is BoxRecord && node.isConflicted;
     final showChrome = editable && (_hover || selected || editing);
 
@@ -183,12 +185,12 @@ class _BoxHostState extends State<BoxHost> {
                 top: boxGripHeight,
                 width: b.width,
                 height: b.height,
-                child: const IgnorePointer(
+                child: IgnorePointer(
                   child: DecoratedBox(
-                    key: ValueKey('conflict-frame'),
+                    key: const ValueKey('conflict-frame'),
                     decoration: BoxDecoration(
                       border: Border.fromBorderSide(
-                        BorderSide(color: conflictColor, width: 2),
+                        BorderSide(color: noted.conflict, width: 2),
                       ),
                     ),
                   ),
@@ -216,11 +218,9 @@ class _BoxHostState extends State<BoxHost> {
                     child: showChrome
                         ? DecoratedBox(
                             decoration: BoxDecoration(
-                              color:
-                                  (selected || editing
-                                          ? scheme.primary
-                                          : scheme.outlineVariant)
-                                      .withValues(alpha: 0.35),
+                              color: selected || editing
+                                  ? scheme.primary
+                                  : scheme.outline,
                               borderRadius: const BorderRadius.vertical(
                                 top: Radius.circular(3),
                               ),
@@ -250,17 +250,17 @@ class _BoxHostState extends State<BoxHost> {
                     child: Container(
                       alignment: Alignment.center,
                       padding: const EdgeInsets.symmetric(horizontal: 6),
-                      decoration: const BoxDecoration(
-                        color: conflictColor,
-                        borderRadius: BorderRadius.vertical(top: Radius.circular(3)),
+                      decoration: BoxDecoration(
+                        color: noted.conflictBadge,
+                        borderRadius: const BorderRadius.vertical(top: Radius.circular(3)),
                       ),
-                      child: const Text(
+                      child: Text(
                         'Conflict',
                         style: TextStyle(
                           fontSize: 10,
                           height: 1,
                           fontWeight: FontWeight.w600,
-                          color: Colors.black,
+                          color: noted.onConflictBadge,
                         ),
                       ),
                     ),

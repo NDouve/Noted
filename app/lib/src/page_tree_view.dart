@@ -3,10 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show conflictColor;
+import 'package:noted_canvas/noted_canvas.dart' show NotedColors;
 import 'package:noted_core/noted_core.dart';
 
-import 'binder_cover.dart';
+import 'binder_colors.dart';
 import 'notebook.dart';
 import 'storage_dialog.dart';
 import 'template_dialogs.dart';
@@ -82,7 +82,7 @@ class _PageTreeViewState extends State<PageTreeView> {
       if (!b.available) continue;
       cantOpen.addAll(b.unreadable);
       if (!_collapsed.contains(_binderKey(b))) {
-        addTree(b.tree, parseBinderColor(b.color));
+        addTree(b.tree, binderSidebarColor(context, b.color));
       }
     }
 
@@ -314,7 +314,7 @@ class _PageTreeViewState extends State<PageTreeView> {
 
   Widget _binderHeader(BuildContext context, BinderSection b) {
     final theme = Theme.of(context);
-    final color = parseBinderColor(b.color);
+    final color = binderSidebarColor(context, b.color);
     if (!b.available) {
       final unreadable = b.status == BinderStatus.unreadable;
       return Tooltip(
@@ -596,7 +596,7 @@ class _PageTreeViewState extends State<PageTreeView> {
                       Icons.circle,
                       key: ValueKey('page-conflict-${p.id}'),
                       size: 10,
-                      color: conflictColor,
+                      color: NotedColors.of(context).conflict,
                     ),
                   ),
                 PopupMenuButton<String>(

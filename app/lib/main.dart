@@ -13,6 +13,8 @@ import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'src/app_settings.dart';
+import 'src/app_theme.dart';
 import 'src/home.dart';
 import 'src/notebook.dart';
 
@@ -44,14 +46,17 @@ Future<void> main() async {
     watchFiles: true,
     deviceName: computerName(),
   );
-  runApp(NotedApp(notebook: notebook));
+  runApp(NotedApp(notebook: notebook, settings: AppSettings(defaultSettingsFile())));
   await notebook.load();
 }
 
 class NotedApp extends StatefulWidget {
-  const NotedApp({super.key, required this.notebook});
+  const NotedApp({super.key, required this.notebook, this.settings});
 
   final Notebook notebook;
+
+  /// This device's settings (the theme). Null: the defaults, not saved.
+  final AppSettings? settings;
 
   @override
   State<NotedApp> createState() => _NotedAppState();
@@ -59,6 +64,7 @@ class NotedApp extends StatefulWidget {
 
 class _NotedAppState extends State<NotedApp> {
   late final AppLifecycleListener _lifecycle;
+  late final AppSettings _settings = widget.settings ?? AppSettings(null);
 
   @override
   void initState() {
@@ -84,10 +90,19 @@ class _NotedAppState extends State<NotedApp> {
 
   @override
   Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: _settings,
+      builder: (context, _) => _app(),
+    );
+  }
+
+  Widget _app() {
     return MaterialApp(
       title: 'Noted',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorSchemeSeed: const Color(0xFF3F51B5), useMaterial3: true),
+      theme: buildNotedTheme(Brightness.light),
+      darkTheme: buildNotedTheme(Brightness.dark),
+      themeMode: _settings.themeMode,
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
@@ -95,7 +110,7 @@ class _NotedAppState extends State<NotedApp> {
         ...noteLocalizationsDelegates,
       ],
       supportedLocales: const [Locale('en')],
-      home: Home(notebook: widget.notebook),
+      home: Home(notebook: widget.notebook, settings: _settings),
     );
   }
 }
