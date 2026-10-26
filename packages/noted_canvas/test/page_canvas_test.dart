@@ -352,4 +352,86 @@ void main() {
     expect(scroll.offset, before);
     expect(outer, 1);
   });
+
+  testWidgets('panning and zooming do not rebuild the boxes; a change does', (
+    t,
+  ) async {
+    // Every pan or zoom frame rebuilds the canvas; the boxes (editors) must
+    // be left alone, or a page with hundreds of them cannot keep up.
+    final counting = _CountingModule();
+    modules = ModuleRegistry()
+      ..register(counting, alwaysOn: true, isDefault: true);
+    var page = emptyPage();
+    for (var i = 0; i < 3; i++) {
+      page = page.insertNode(
+        BoxRecord.create(
+          id: 'b$i',
+          typeId: 'test.text',
+          dataVersion: 1,
+          bounds: Bounds(100.0 + i * 400, 200, 300, 80),
+          data: RawJson.parse('"box $i"'),
+          snapshotText: 'box $i',
+          rev: 'r',
+        ),
+      );
+    }
+    final c = controllerFor(page);
+    await pump(t, c);
+    await t.pump();
+    final built = counting.editorBuilds;
+    expect(built, greaterThanOrEqualTo(3));
+
+    final pointer = TestPointer(1, PointerDeviceKind.mouse)
+      ..hover(const Offset(600, 500));
+    for (var i = 0; i < 5; i++) {
+      await t.sendEventToBinding(pointer.scroll(const Offset(40, 20)));
+      await t.pump();
+    }
+    final before = t.state<PageCanvasState>(find.byType(PageCanvas)).view!;
+    for (var i = 0; i < 5; i++) {
+      await t.sendEventToBinding(
+        PointerScaleEvent(position: const Offset(600, 500), scale: 1.2),
+      );
+      await t.pump();
+    }
+    final after = t.state<PageCanvasState>(find.byType(PageCanvas)).view!;
+    expect(after.scale, greaterThan(before.scale * 2));
+    expect(after.offset, isNot(before.offset));
+    expect(counting.editorBuilds, built, reason: 'no box was rebuilt');
+
+    // A change the boxes show rebuilds them.
+    c.select('b1');
+    await t.pump();
+    expect(counting.editorBuilds, greaterThan(built));
+
+    // Dragging a grip uses the zoom at that moment, not the one at the last
+    // rebuild: 100 screen pixels are 100 / scale page pixels. Zoom around the
+    // grip so it stays where it is.
+    final b = c.page.node('b1')!.bounds!;
+    final state = t.state<PageCanvasState>(find.byType(PageCanvas));
+    state.fitAll();
+    await t.pump();
+    final grip = bar + state.view!.toScreen(Offset(b.x + 40, b.y - boxGripHeight / 2));
+    expect(Rect.fromLTWH(0, 0, 1200, 800).contains(grip), isTrue, reason: '$grip');
+    for (var i = 0; i < 4; i++) {
+      await t.sendEventToBinding(PointerScaleEvent(position: grip, scale: 1.2));
+      await t.pump();
+    }
+    final scale = state.view!.scale;
+    expect(scale, greaterThan(1.5));
+    await t.dragFrom(grip, const Offset(100, 0));
+    await t.pump();
+    expect(c.page.node('b1')!.bounds!.x - b.x, closeTo(100 / scale, 1));
+  });
+}
+
+/// [_TextModule] that counts how often a box's editor is built.
+class _CountingModule extends _TextModule {
+  _CountingModule();
+  int editorBuilds = 0;
+  @override
+  Widget buildEditor(BuildContext context, BoxContext<String> box) {
+    editorBuilds++;
+    return super.buildEditor(context, box);
+  }
 }

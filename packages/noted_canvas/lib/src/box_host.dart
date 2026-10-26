@@ -34,7 +34,7 @@ class BoxHost extends StatefulWidget {
     required this.node,
     required this.controller,
     required this.childOrigin,
-    required this.scale,
+    required this.scaleOf,
     required this.onGripTap,
     this.readOnly = false,
     this.find,
@@ -54,8 +54,9 @@ class BoxHost extends StatefulWidget {
   /// World position of the canvas child's top-left corner.
   final Offset childOrigin;
 
-  /// Current zoom, to turn pointer movement into page distance.
-  final double scale;
+  /// Current zoom, read when it is needed (to turn pointer movement into
+  /// page distance), so that zooming does not rebuild every box.
+  final ValueGetter<double> scaleOf;
 
   /// Called when the grip is clicked, so the canvas can take focus.
   final VoidCallback onGripTap;
@@ -485,7 +486,7 @@ class _BoxHostState extends State<BoxHost> {
     final start = _gestureStart;
     final sb = _gestureBounds;
     if (start == null || sb == null) return;
-    final d = (global - start) / widget.scale;
+    final d = (global - start) / widget.scaleOf();
     final Bounds next;
     var setsHeight = false;
     if (edge == null) {

@@ -469,6 +469,7 @@ class PageCanvasState extends State<PageCanvas>
     // The page turned read-only under a running tool: end it.
     if (_readOnly) _cancelSession();
     _find.refresh();
+    _hostsRevision++;
     setState(() {});
   }
 
@@ -588,6 +589,37 @@ class PageCanvasState extends State<PageCanvas>
         ],
       ),
     );
+  }
+
+  // The boxes' widgets, kept while nothing they show has changed. Panning and
+  // zooming rebuild this widget on every frame, but a BoxHost reads the zoom
+  // when it needs it (BoxHost.scaleOf), so the same widget instances can be
+  // handed to the Stack again and Flutter then skips every box (editors
+  // included). They are made again whenever the controller notifies (the
+  // page, the selection, editing, read-only), and when the canvas child's
+  // origin, the read-only state, the find model or the controller change.
+  List<Widget>? _hostWidgets;
+  int _hostsRevision = 0;
+  (int, CanvasController, Offset, bool, PageFind)? _hostsKey;
+
+  List<Widget> _boxHosts(Offset childOrigin, bool readOnly) {
+    final key = (_hostsRevision, _c, childOrigin, readOnly, _find);
+    final cached = _hostWidgets;
+    if (cached != null && _hostsKey == key) return cached;
+    _hostsKey = key;
+    return _hostWidgets = [
+      for (final node in _c.page.nodes)
+        BoxHost(
+          key: ValueKey(node.id),
+          node: node,
+          controller: _c,
+          childOrigin: childOrigin,
+          scaleOf: () => scale,
+          onGripTap: _focus.requestFocus,
+          readOnly: readOnly,
+          find: _find,
+        ),
+    ];
   }
 
   Widget _canvasArea(ColorScheme scheme) {
@@ -712,19 +744,7 @@ class PageCanvasState extends State<PageCanvas>
                               ignoring: tool != null,
                               child: Stack(
                                 clipBehavior: Clip.none,
-                                children: [
-                                  for (final node in _c.page.nodes)
-                                    BoxHost(
-                                      key: ValueKey(node.id),
-                                      node: node,
-                                      controller: _c,
-                                      childOrigin: g.child.topLeft,
-                                      scale: view.scale,
-                                      onGripTap: _focus.requestFocus,
-                                      readOnly: readOnly,
-                                      find: _find,
-                                    ),
-                                ],
+                                children: _boxHosts(g.child.topLeft, readOnly),
                               ),
                             ),
                           ),
