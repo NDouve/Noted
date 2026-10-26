@@ -34,7 +34,7 @@ class Home extends StatelessWidget {
               SizedBox(
                 width: NotedMetrics.of(context).sidebarWidth,
                 child: ColoredBox(
-                  color: Theme.of(context).colorScheme.surfaceContainerLow,
+                  color: NotedColors.of(context).bgSidebar,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
@@ -67,17 +67,9 @@ class Home extends StatelessWidget {
                           ),
                           const Divider(height: 1),
                           if (notebook.readOnlyReason != null)
-                            Container(
+                            ReadOnlyBanner(
                               key: const ValueKey('read-only-banner'),
-                              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                              padding: EdgeInsets.symmetric(horizontal: NotedMetrics.of(context).space6, vertical: NotedMetrics.of(context).space2),
-                              child: Row(
-                                children: [
-                                  Icon(Icons.lock_outline, size: NotedMetrics.of(context).icon),
-                                  SizedBox(width: NotedMetrics.of(context).space2),
-                                  Expanded(child: Text(notebook.readOnlyReason!)),
-                                ],
-                              ),
+                              reason: notebook.readOnlyReason!,
                             ),
                           Expanded(
                             child: PageCanvas(

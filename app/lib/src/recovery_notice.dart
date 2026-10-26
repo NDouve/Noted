@@ -44,7 +44,7 @@ Future<void> showRecoveryNoticeOnExit(Notebook notebook, GlobalKey<NavigatorStat
         ),
       ),
       actions: [
-        TextButton(
+        FilledButton(
           key: const ValueKey('recovery-exit-ok'),
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Quit'),

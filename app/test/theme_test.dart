@@ -171,13 +171,13 @@ void main() {
         );
 
         // Conflict badge and frame use the theme's conflict colors.
-        final badge = t.widget<Container>(
+        final badge = t.widget<DecoratedBox>(
           find.descendant(
             of: find.byKey(const ValueKey('conflict-badge-mine')),
-            matching: find.byType(Container),
+            matching: find.byType(DecoratedBox),
           ),
         );
-        expect((badge.decoration! as BoxDecoration).color, noted.conflict);
+        expect((badge.decoration as BoxDecoration).color, noted.conflict);
         final badgeText = t.widget<Text>(find.text('Conflict'));
         expect(badgeText.style?.color, noted.onConflict);
         final frame = t.widget<DecoratedBox>(

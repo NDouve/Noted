@@ -7,4 +7,5 @@ import 'package:noted_canvas/noted_canvas.dart' show notedThemeData;
 
 /// The app's theme in [brightness], built from the design tokens in
 /// `docs/design/tokens.json` (see `notedThemeData`).
-ThemeData buildNotedTheme(Brightness brightness) => notedThemeData(brightness);
+ThemeData buildNotedTheme(Brightness brightness, {bool touch = false}) =>
+    notedThemeData(brightness, touch: touch);

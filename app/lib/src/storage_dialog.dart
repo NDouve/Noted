@@ -78,7 +78,7 @@ class _StorageDialogState extends State<_StorageDialog> {
     return ListTile(
       key: ValueKey('storage-option-$path'),
       dense: true,
-      leading: Icon(on ? Icons.radio_button_checked : Icons.radio_button_unchecked),
+      leading: Icon(on ? Icons.radio_button_checked_rounded : Icons.radio_button_unchecked_rounded),
       title: Text(label, overflow: TextOverflow.ellipsis),
       selected: on,
       onTap: () {
@@ -108,7 +108,7 @@ class _StorageDialogState extends State<_StorageDialog> {
               ListTile(
                 key: const ValueKey('storage-choose-other'),
                 dense: true,
-                leading: const Icon(Icons.folder_open_outlined),
+                leading: const Icon(Icons.folder_open_rounded),
                 title: const Text('Choose another folder…'),
                 onTap: _chooseOther,
               ),

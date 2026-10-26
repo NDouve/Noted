@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
+import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics, notedDestructiveButtonStyle;
 
 import 'notebook.dart';
 
@@ -64,7 +64,7 @@ class _SaveTemplateDialogState extends State<_SaveTemplateDialog> {
     return ListTile(
       key: ValueKey(key),
       dense: true,
-      leading: Icon(on ? Icons.radio_button_checked : Icons.radio_button_unchecked),
+      leading: Icon(on ? Icons.radio_button_checked_rounded : Icons.radio_button_unchecked_rounded),
       title: Text(label),
       selected: on,
       onTap: () => setState(() => _inBinder = inBinder),
@@ -158,7 +158,11 @@ class _PickTemplateDialogState extends State<_PickTemplateDialog> {
         content: Text('"${_name(item)}" will be deleted. Pages made from it are not affected.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+          OutlinedButton(
+            style: notedDestructiveButtonStyle(context),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
         ],
       ),
     );
@@ -187,7 +191,7 @@ class _PickTemplateDialogState extends State<_PickTemplateDialog> {
                     ListTile(
                       key: ValueKey('template-${t.template.id}'),
                       dense: true,
-                      leading: const Icon(Icons.description_outlined),
+                      leading: const Icon(Icons.description_rounded),
                       title: Text(_name(t), overflow: TextOverflow.ellipsis),
                       subtitle: Text(
                         t.binderPath == null ? 'All binders and pages' : 'This binder',
@@ -196,7 +200,7 @@ class _PickTemplateDialogState extends State<_PickTemplateDialog> {
                       trailing: IconButton(
                         key: ValueKey('template-delete-${t.template.id}'),
                         tooltip: 'Delete template',
-                        icon: Icon(Icons.delete_outline, size: NotedMetrics.of(context).icon),
+                        icon: Icon(Icons.delete_outline_rounded, size: NotedMetrics.of(context).icon),
                         onPressed: () => _delete(t),
                       ),
                     ),
@@ -205,7 +209,7 @@ class _PickTemplateDialogState extends State<_PickTemplateDialog> {
                       key: ValueKey('template-unreadable-${u.path}'),
                       dense: true,
                       enabled: false,
-                      leading: Icon(Icons.block, size: NotedMetrics.of(context).icon),
+                      leading: Icon(Icons.block_rounded, size: NotedMetrics.of(context).icon),
                       title: Text(u.path.split(RegExp(r'[\\/]')).last, overflow: TextOverflow.ellipsis),
                       subtitle: Text("Can't open: ${u.reason}"),
                     ),

@@ -111,13 +111,22 @@ class _NotedAppState extends State<NotedApp> {
   }
 
   Widget _app() {
+    // The last input being touch grows controls to 44px and rows to 40px.
+    return ValueListenableBuilder<bool>(
+      valueListenable: InputModeNotifier.instance,
+      builder: (context, touch, _) => _materialApp(touch),
+    );
+  }
+
+  Widget _materialApp(bool touch) {
     return MaterialApp(
       title: 'Noted',
       navigatorKey: _navigatorKey,
       debugShowCheckedModeBanner: false,
-      theme: buildNotedTheme(Brightness.light),
-      darkTheme: buildNotedTheme(Brightness.dark),
+      theme: buildNotedTheme(Brightness.light, touch: touch),
+      darkTheme: buildNotedTheme(Brightness.dark, touch: touch),
       themeMode: _settings.themeMode,
+      builder: (context, child) => InputModeScope(child: child!),
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,

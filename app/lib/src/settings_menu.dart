@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
+import 'package:noted_canvas/noted_canvas.dart' show NotedMenuHeading, NotedMenuItem, NotedMetrics;
 
 import 'app_commands.dart';
 import 'app_settings.dart';
@@ -23,22 +23,26 @@ class SettingsMenu extends StatelessWidget {
         child: PopupMenuButton<String>(
           key: const ValueKey('settings-menu'),
           tooltip: 'Settings',
-          icon: const Icon(Icons.settings_outlined),
+          icon: const Icon(Icons.settings_rounded),
           onSelected: (id) => themeCommands(settings).invoke(id),
           itemBuilder: (context) {
             final theme = themeCommands(settings);
             return [
-              PopupMenuItem<String>(
-                enabled: false,
-                height: NotedMetrics.of(context).row,
-                child: Text('Theme'),
-              ),
+              const NotedMenuHeading('Theme'),
               for (final s in ThemeSetting.values)
-                CheckedPopupMenuItem<String>(
+                NotedMenuItem<String>(
                   key: ValueKey('theme-${s.value}'),
                   value: AppCommands.themeId(s),
-                  checked: theme[AppCommands.themeId(s)]!.checked ?? false,
-                  child: Text(theme[AppCommands.themeId(s)]!.label),
+                  label: theme[AppCommands.themeId(s)]!.label,
+                  leading: SizedBox(
+                    width: NotedMetrics.of(context).icon,
+                    child: (theme[AppCommands.themeId(s)]!.checked ?? false)
+                        ? Icon(
+                            Icons.check_rounded,
+                            size: NotedMetrics.of(context).icon,
+                          )
+                        : null,
+                  ),
                 ),
             ];
           },

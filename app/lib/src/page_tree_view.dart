@@ -3,12 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show CommandRegistry, DesignMetrics, NotedColors, NotedMetrics;
+import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'app_commands.dart';
 import 'binder_colors.dart';
 import 'notebook.dart';
+import 'sidebar_row.dart';
 import 'storage_dialog.dart';
 import 'template_dialogs.dart';
 
@@ -39,7 +40,6 @@ class PageTreeView extends StatefulWidget {
 }
 
 class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
-  static const double _rowHeight = DesignMetrics.control;
 
   // Collapsed state lasts for the session only.
   final Set<String> _collapsed = {};
@@ -57,30 +57,8 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
 
   /// A menu entry for command [id] of [registry]: its label, enabled as the
   /// command is. The menu's value is the command's id.
-  PopupMenuItem<String> _item(CommandRegistry registry, String id) {
-    final c = registry[id]!;
-    return PopupMenuItem<String>(value: id, enabled: c.enabled, child: Text(c.label));
-  }
-
-  /// Like [_item], with a check mark when the command is checked.
-  PopupMenuItem<String> _checkedItem(CommandRegistry registry, String id) {
-    final c = registry[id]!;
-    return PopupMenuItem<String>(
-      value: id,
-      enabled: c.enabled,
-      child: Row(
-        children: [
-          SizedBox(
-            width: DesignMetrics.space6,
-            child: (c.checked ?? false)
-                ? const Icon(Icons.check, size: DesignMetrics.space4)
-                : null,
-          ),
-          Flexible(child: Text(c.label)),
-        ],
-      ),
-    );
-  }
+  PopupMenuEntry<String> _item(CommandRegistry registry, String id, {bool destructive = false}) =>
+      NotedMenuItem.forCommand(registry[id]!, destructive: destructive);
 
   @override
   Widget build(BuildContext context) {
@@ -144,12 +122,12 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
             setState(() => _hoverHeader = null);
             _guard(() => _nb.moveToLocation(d.data));
           },
-          builder: (context, _, _) => Container(
-            color: _hoverHeader == '' ? theme.colorScheme.primaryContainer : null,
-            padding: EdgeInsets.fromLTRB(NotedMetrics.of(context).space4, NotedMetrics.of(context).space3, NotedMetrics.of(context).space2, NotedMetrics.of(context).space1),
-            child: Row(
+          builder: (context, _, _) => SidebarGroupHeader(
+            title: 'Pages',
+            fill: _hoverHeader == '' ? theme.colorScheme.primaryContainer : null,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(child: Text('Pages', style: theme.textTheme.titleSmall)),
                 if (_nb.pickFolder != null)
                   IconButton(
                     tooltip: header[AppCommands.newBinder]!.label,
@@ -161,16 +139,15 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
                   icon: Icon(header[AppCommands.newPage]!.icon),
                   onPressed: () => header.invoke(AppCommands.newPage),
                 ),
-                PopupMenuButton<String>(
+                SidebarMenuButton<String>(
                   key: const ValueKey('pages-menu'),
                   tooltip: 'Pages options',
-                  iconSize: NotedMetrics.of(context).icon,
                   onSelected: (id) => header.invoke(id),
                   itemBuilder: (_) => [
                     _item(header, AppCommands.newPage),
                     _item(header, AppCommands.newPageFromTemplate),
                     if (_nb.pickFolder != null) ...[
-                      const PopupMenuDivider(),
+                      const NotedMenuDivider(),
                       _item(header, AppCommands.newBinder),
                       _item(header, AppCommands.newBinderFromTemplate),
                     ],
@@ -187,21 +164,17 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
               if (cantOpen.isNotEmpty)
                 SliverList(
                   delegate: SliverChildListDelegate([
-                    const Divider(),
-                    Padding(
-                      padding: EdgeInsets.fromLTRB(NotedMetrics.of(context).space4, NotedMetrics.of(context).space1, NotedMetrics.of(context).space4, NotedMetrics.of(context).space1),
-                      child: Text("Can't open", style: theme.textTheme.labelSmall),
-                    ),
+                    SidebarGroupHeader(title: "Can't open", disabled: true),
                     for (final u in cantOpen)
                       Tooltip(
                         message: u.reason,
-                        child: ListTile(
-                          dense: true,
-                          enabled: false,
-                          leading: Icon(Icons.block, size: NotedMetrics.of(context).icon),
-                          title: Text(
-                            u.path.split(RegExp(r'[\\/]')).last,
-                            overflow: TextOverflow.ellipsis,
+                        child: SidebarRow(
+                          title: u.path.split(RegExp(r'[\\/]')).last,
+                          disabled: true,
+                          leading: Icon(
+                            Icons.block_rounded,
+                            size: NotedMetrics.of(context).icon,
+                            color: NotedColors.of(context).textDisabled,
                           ),
                         ),
                       ),
@@ -330,42 +303,23 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
     VoidCallback? remove,
     Key? menuKey,
   }) {
-    final theme = Theme.of(context);
     return Tooltip(
       message: reason,
-      child: Opacity(
-        opacity: 0.6,
-        child: SizedBox(
-          key: key,
-          height: _rowHeight + 20,
-          child: Row(
-            children: [
-              SizedBox(width: NotedMetrics.of(context).space3),
-              Icon(Icons.cloud_off_outlined, size: NotedMetrics.of(context).icon),
-              SizedBox(width: NotedMetrics.of(context).space2),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(name, overflow: TextOverflow.ellipsis),
-                    Text('On another device', style: theme.textTheme.labelSmall),
-                  ],
-                ),
+      child: SidebarGroupHeader(
+        key: key,
+        title: name,
+        disabled: true,
+        status: 'On another device',
+        trailing: remove == null
+            ? null
+            : SidebarMenuButton<String>(
+                key: menuKey,
+                tooltip: 'Folder options',
+                onSelected: (_) => remove(),
+                itemBuilder: (_) => const [
+                  NotedMenuItem<String>(value: 'remove', label: 'Remove from list'),
+                ],
               ),
-              if (remove != null)
-                PopupMenuButton<String>(
-                  key: menuKey,
-                  tooltip: 'Folder options',
-                  iconSize: NotedMetrics.of(context).icon,
-                  onSelected: (_) => remove(),
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'remove', child: Text('Remove from list')),
-                  ],
-                ),
-            ],
-          ),
-        ),
       ),
     );
   }
@@ -377,38 +331,17 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
       final unreadable = b.status == BinderStatus.unreadable;
       return Tooltip(
         message: b.reason ?? '',
-        child: Opacity(
-          opacity: 0.6,
-          child: SizedBox(
-            key: ValueKey('binder-header-${b.path}'),
-            height: _rowHeight + 20,
-            child: Row(
-              children: [
-                SizedBox(width: NotedMetrics.of(context).space3),
-                Icon(unreadable ? Icons.block : Icons.cloud_off_outlined, size: NotedMetrics.of(context).icon),
-                SizedBox(width: NotedMetrics.of(context).space2),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(b.title, overflow: TextOverflow.ellipsis),
-                      Text(
-                        unreadable ? "Binder file can't be read" : 'On another device',
-                        style: theme.textTheme.labelSmall,
-                      ),
-                    ],
-                  ),
-                ),
-                PopupMenuButton<String>(
-                  key: ValueKey('binder-menu-${b.path}'),
-                  tooltip: 'Binder options',
-                  iconSize: NotedMetrics.of(context).icon,
-                  onSelected: (v) => binderCommands(_nb, b, this).invoke(v),
-                  itemBuilder: (_) => _binderItems(b),
-                ),
-              ],
-            ),
+        child: SidebarGroupHeader(
+          key: ValueKey('binder-header-${b.path}'),
+          chipKey: ValueKey('binder-stripe-${b.path}'),
+          title: b.title,
+          disabled: true,
+          status: unreadable ? "Binder file can't be read" : 'On another device',
+          trailing: SidebarMenuButton<String>(
+            key: ValueKey('binder-menu-${b.path}'),
+            tooltip: 'Binder options',
+            onSelected: (v) => binderCommands(_nb, b, this).invoke(v),
+            itemBuilder: (_) => _binderItems(b),
           ),
         ),
       );
@@ -435,52 +368,23 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
         });
         _guard(() => _nb.moveToLocation(d.data, binderPath: b.path));
       },
-      builder: (context, _, _) => Material(
-        color: hover
-            ? color.withValues(alpha: 0.25)
-            : shown
-            ? theme.colorScheme.secondaryContainer
-            : color.withValues(alpha: 0.08),
-        child: InkWell(
-          onTap: () => _nb.showCover(b.path),
-          child: SizedBox(
-            height: _rowHeight + 4,
-            child: Row(
-              children: [
-                Container(key: ValueKey('binder-stripe-${b.path}'), width: NotedMetrics.of(context).space1, color: color),
-                SizedBox(
-                  width: NotedMetrics.of(context).control - NotedMetrics.of(context).space2,
-                  child: IconButton(
-                    padding: EdgeInsets.zero,
-                    iconSize: NotedMetrics.of(context).icon,
-                    tooltip: collapsed ? 'Expand' : 'Collapse',
-                    icon: Icon(collapsed ? Icons.chevron_right : Icons.expand_more),
-                    onPressed: () => setState(
-                      () => collapsed
-                          ? _collapsed.remove(_binderKey(b))
-                          : _collapsed.add(_binderKey(b)),
-                    ),
-                  ),
-                ),
-                Icon(Icons.book_outlined, size: NotedMetrics.of(context).icon, color: color),
-                SizedBox(width: NotedMetrics.of(context).space2),
-                Expanded(
-                  child: Text(
-                    b.title,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-                PopupMenuButton<String>(
-                  key: ValueKey('binder-menu-${b.path}'),
-                  tooltip: 'Binder options',
-                  iconSize: NotedMetrics.of(context).icon,
-                  onSelected: (v) => binderCommands(_nb, b, this).invoke(v),
-                  itemBuilder: (_) => _binderItems(b),
-                ),
-              ],
-            ),
+      builder: (context, _, _) => SidebarGroupHeader(
+        chipKey: ValueKey('binder-stripe-${b.path}'),
+        title: b.title,
+        chipColor: color,
+        fill: hover || shown ? theme.colorScheme.primaryContainer : null,
+        onTap: () => _nb.showCover(b.path),
+        chevron: SidebarChevron(
+          collapsed: collapsed,
+          onPressed: () => setState(
+            () => collapsed ? _collapsed.remove(_binderKey(b)) : _collapsed.add(_binderKey(b)),
           ),
+        ),
+        trailing: SidebarMenuButton<String>(
+          key: ValueKey('binder-menu-${b.path}'),
+          tooltip: 'Binder options',
+          onSelected: (v) => binderCommands(_nb, b, this).invoke(v),
+          itemBuilder: (_) => _binderItems(b),
         ),
       ),
     );
@@ -493,9 +397,9 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
         _item(r, AppCommands.binderNewPage),
         _item(r, AppCommands.binderNewPageFromTemplate),
         _item(r, AppCommands.binderCover),
-        const PopupMenuDivider(),
+        const NotedMenuDivider(),
         _item(r, AppCommands.binderSaveAsTemplate),
-        const PopupMenuDivider(),
+        const NotedMenuDivider(),
       ],
       _item(r, AppCommands.binderRemove),
     ];
@@ -601,80 +505,35 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
     final title = p.title.isEmpty ? 'Untitled page' : p.title;
     final key = _rowKeys.putIfAbsent(p.id, () => GlobalKey());
     final hover = _hoverRow == p.id ? _hoverZone : null;
-    final indent = 8.0 + depth * 16;
+    final indent = NotedMetrics.of(context).space2 + depth * sidebarIndent;
     // Pages of a binder whose file can't be read: greyed, to view only.
     final locked = _nb.isReadOnlyPage(p.id);
-    final greyed = NotedColors.of(context).textDisabled;
 
-    final content = Material(
-      color: hover == DropZone.into
-          ? theme.colorScheme.primaryContainer
-          : selected
-          ? theme.colorScheme.secondaryContainer
-          : Colors.transparent,
-      child: InkWell(
-        onTap: () => _guard(() => _nb.open(p.id)),
-        onDoubleTap: locked ? null : () => _rename(context, p),
-        child: Padding(
-          padding: EdgeInsets.only(left: indent, right: NotedMetrics.of(context).space1),
-          child: SizedBox(
-            height: _rowHeight,
-            child: Row(
-              children: [
-                SizedBox(
-                  width: NotedMetrics.of(context).space6,
-                  child: divider
-                      ? IconButton(
-                          padding: EdgeInsets.zero,
-                          iconSize: NotedMetrics.of(context).icon,
-                          tooltip: collapsed ? 'Expand' : 'Collapse',
-                          icon: Icon(collapsed ? Icons.chevron_right : Icons.expand_more),
-                          onPressed: () => setState(
-                            () => collapsed ? _collapsed.remove(p.id) : _collapsed.add(p.id),
-                          ),
-                        )
-                      : null,
-                ),
-                Icon(
-                  divider ? Icons.topic_outlined : Icons.article_outlined,
-                  size: NotedMetrics.of(context).icon,
-                  color: locked ? greyed : stripe,
-                ),
-                SizedBox(width: NotedMetrics.of(context).space2),
-                Expanded(
-                  child: Text(
-                    title,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontWeight: divider ? FontWeight.w600 : null,
-                      color: locked ? greyed : null,
-                    ),
-                  ),
-                ),
-                if (_nb.hasConflict(p.id))
-                  Tooltip(
-                    message: 'Has conflicting changes',
-                    child: Icon(
-                      Icons.circle,
-                      key: ValueKey('page-conflict-${p.id}'),
-                      size: NotedMetrics.of(context).space2,
-                      color: NotedColors.of(context).conflict,
-                    ),
-                  ),
-                if (locked)
-                  SizedBox(width: NotedMetrics.of(context).space2)
-                else
-                  PopupMenuButton<String>(
-                    tooltip: 'Page options',
-                    iconSize: NotedMetrics.of(context).icon,
-                    onSelected: (v) => pageCommands(_nb, p, this).invoke(v),
-                    itemBuilder: (_) => _menuItems(p),
-                  ),
-              ],
+    final content = SidebarRow(
+      title: title,
+      depth: depth,
+      selected: selected,
+      highlight: hover == DropZone.into,
+      disabled: locked,
+      conflict: _nb.hasConflict(p.id),
+      conflictKey: ValueKey('page-conflict-${p.id}'),
+      chevron: divider
+          ? SidebarChevron(
+              collapsed: collapsed,
+              onPressed: () => setState(
+                () => collapsed ? _collapsed.remove(p.id) : _collapsed.add(p.id),
+              ),
+            )
+          : null,
+      trailing: locked
+          ? null
+          : SidebarMenuButton<String>(
+              tooltip: 'Page options',
+              onSelected: (v) => pageCommands(_nb, p, this).invoke(v),
+              itemBuilder: (_) => _menuItems(p),
             ),
-          ),
-        ),
-      ),
+      onTap: () => _guard(() => _nb.open(p.id)),
+      onDoubleTap: locked ? null : () => _rename(context, p),
     );
 
     final line = Container(
@@ -692,7 +551,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
           : DecoratedBox(
               key: ValueKey('page-stripe-${p.id}'),
               decoration: BoxDecoration(
-                border: Border(left: BorderSide(color: stripe, width: 3)),
+                border: Border(left: BorderSide(color: stripe, width: 2)),
               ),
               child: content,
             ),
@@ -785,16 +644,16 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
       _item(r, AppCommands.newSubpageFromTemplate),
       _item(r, AppCommands.saveAsTemplate),
       _item(r, AppCommands.rename),
-      const PopupMenuDivider(),
+      const NotedMenuDivider(),
       for (final b in PageBackground.values)
-        _checkedItem(r, AppCommands.backgroundId(b)),
-      const PopupMenuDivider(),
+        NotedMenuItem.forCommand(r[AppCommands.backgroundId(b)]!, showCheck: true),
+      const NotedMenuDivider(),
       _item(r, AppCommands.moveUp),
       _item(r, AppCommands.moveDown),
       _item(r, AppCommands.indent),
       _item(r, AppCommands.outdent),
-      const PopupMenuDivider(),
-      _item(r, AppCommands.delete),
+      const NotedMenuDivider(),
+      _item(r, AppCommands.delete, destructive: true),
     ];
   }
 
@@ -889,7 +748,11 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+          OutlinedButton(
+            style: notedDestructiveButtonStyle(context),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
         ],
       ),
     );

@@ -83,12 +83,12 @@ void main() {
 
   testWidgets('the sidebar shows a section per binder, tinted with its color', (tester) async {
     await start(tester);
-    expect(find.text('Pages'), findsOneWidget);
-    expect(find.text('Work'), findsOneWidget);
+    expect(find.text('PAGES'), findsOneWidget);
+    expect(find.text('WORK'), findsOneWidget);
     expect(row(inBinder), findsOneWidget);
     final color = parseBinderColor(binder.binder!.color);
     final stripe = tester.widget<Container>(find.byKey(ValueKey('binder-stripe-${binder.path}')));
-    expect(stripe.color, color);
+    expect((stripe.decoration! as BoxDecoration).color, color);
     final rowStripe = tester.widget<DecoratedBox>(find.byKey(ValueKey('page-stripe-$inBinder')));
     final border = (rowStripe.decoration as BoxDecoration).border! as Border;
     expect(border.left.color, color);
@@ -96,7 +96,7 @@ void main() {
     expect(find.byKey(ValueKey('page-stripe-$a')), findsNothing);
 
     // The chevron collapses the section.
-    await tester.tap(find.descendant(of: header(binder.path), matching: find.byIcon(Icons.expand_more)));
+    await tester.tap(find.descendant(of: header(binder.path), matching: find.byIcon(Icons.expand_more_rounded)));
     await tester.pump();
     expect(row(inBinder), findsNothing);
     await finish(tester);
@@ -119,7 +119,6 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: Home(notebook: nb)));
     await tester.pump();
     expect(find.text('On another device'), findsOneWidget);
-    expect(find.byIcon(Icons.cloud_off_outlined), findsOneWidget);
     expect(row(inBinder), findsNothing);
     // It is still in the list.
     expect(nb.binders.single.status, BinderStatus.unavailable);
@@ -128,7 +127,7 @@ void main() {
 
   testWidgets('clicking a binder header shows its cover; edits are saved', (tester) async {
     await start(tester);
-    await tester.tap(find.text('Work'));
+    await tester.tap(find.text('WORK'));
     await tester.pump();
     expect(find.text('Binder cover'), findsOneWidget);
     expect(find.byKey(const ValueKey('cover-path')), findsOneWidget);
@@ -195,7 +194,7 @@ void main() {
     await tester.runAsync(() => tester.tap(find.text('Remove')));
     await settle(tester);
     expect(nb.binders, isEmpty);
-    expect(find.text('Work'), findsNothing);
+    expect(find.text('WORK'), findsNothing);
     expect(File('${folder.path}/$inBinder.canvas').existsSync(), isTrue);
     await finish(tester);
   });

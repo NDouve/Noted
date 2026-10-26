@@ -204,9 +204,13 @@ void main() {
     IconButton btn(String tooltip) => t.widget<IconButton>(
       find.ancestor(of: find.byTooltip(tooltip), matching: find.byType(IconButton)),
     );
+    // Table and Equation are ghost text buttons.
+    TextButton textBtn(String tooltip) => t.widget<TextButton>(
+      find.descendant(of: find.byTooltip(tooltip), matching: find.byType(TextButton)),
+    );
     expect(btn('Undo (Ctrl+Z)').onPressed, isNull);
-    expect(btn('Insert table').onPressed, isNull);
-    expect(btn('Insert equation').onPressed, isNull);
+    expect(textBtn('Insert table').onPressed, isNull);
+    expect(textBtn('Insert equation').onPressed, isNull);
 
     expect(checked('Select and type (V)'), isTrue);
     await t.sendKeyEvent(LogicalKeyboardKey.keyP);
@@ -223,7 +227,10 @@ void main() {
     await t.pump();
     expect(checked('Pen (P)'), isTrue);
     // Colors are enabled with the pen.
-    expect(btn('Ink color: Blue').onPressed, isNotNull);
+    expect(
+      t.widget<InkResponse>(find.descendant(of: find.byTooltip('Ink color: Blue'), matching: find.byType(InkResponse))).onTap,
+      isNotNull,
+    );
 
     await t.pumpWidget(const SizedBox());
   });

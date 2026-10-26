@@ -11,7 +11,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/app_commands.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_tree_view.dart';
-import 'package:noted_canvas/noted_canvas.dart' show CommandRegistry;
+import 'package:noted_canvas/noted_canvas.dart' show CommandRegistry, NotedMenuItem;
 import 'package:noted_core/noted_core.dart';
 
 class _NoActions implements PageTreeActions {
@@ -133,17 +133,17 @@ void main() {
           findsOneWidget);
     }
     // Plain is the current one: exactly one check mark.
-    expect(find.byIcon(Icons.check), findsOneWidget);
+    expect(find.byIcon(Icons.check_rounded), findsOneWidget);
     await tester.tap(find.text('Page background: Dots'));
     await tester.pump();
     await settle(tester);
     expect(await onDisk(tester, b), PageBackground.dots);
 
     await rightClick(b);
-    expect(find.byIcon(Icons.check), findsOneWidget);
+    expect(find.byIcon(Icons.check_rounded), findsOneWidget);
     final checked = find.ancestor(
-      of: find.byIcon(Icons.check),
-      matching: find.byType(PopupMenuItem<String>),
+      of: find.byIcon(Icons.check_rounded),
+      matching: find.byType(NotedMenuItem<String>),
     );
     expect(
       find.descendant(of: checked, matching: find.text('Page background: Dots')),

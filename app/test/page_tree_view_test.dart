@@ -8,8 +8,10 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
+import 'package:noted/src/app_commands.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_tree_view.dart';
+import 'package:noted_canvas/noted_canvas.dart' show NotedMenuItem, notedThemeData;
 import 'package:noted_core/noted_core.dart';
 
 void main() {
@@ -30,7 +32,7 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  Future<void> start(WidgetTester tester) async {
+  Future<void> start(WidgetTester tester, {ThemeData? theme}) async {
     await tester.runAsync(() async {
       dir = await Directory.systemTemp.createTemp('noted_tree_ui');
       nb = Notebook(PageStore(dir), buildModules(), saveDelay: Duration.zero);
@@ -44,6 +46,7 @@ void main() {
     });
     await tester.pumpWidget(
       MaterialApp(
+        theme: theme,
         home: Scaffold(
           body: SizedBox(
             width: 260,
@@ -120,8 +123,8 @@ void main() {
     await start(tester);
     await rightClick(tester, a);
     await tester.pumpAndSettle();
-    final up = tester.widget<PopupMenuItem<String>>(
-      find.ancestor(of: find.text('Move up'), matching: find.byType(PopupMenuItem<String>)),
+    final up = tester.widget<NotedMenuItem<String>>(
+      find.ancestor(of: find.text('Move up'), matching: find.byType(NotedMenuItem<String>)),
     );
     expect(up.enabled, isFalse);
     await tester.tap(find.text('Move up'), warnIfMissed: false);
@@ -201,7 +204,7 @@ void main() {
     await tester.tap(find.text('Delete'));
     await settle(tester);
     expect(find.text('Delete page?'), findsOneWidget);
-    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Delete'));
     await tester.pump();
     await settle(tester);
     expect(rootIds(), [a, c]);
@@ -213,6 +216,48 @@ void main() {
     expect(File('${dir.path}/$b.canvas').existsSync(), isTrue);
     await finish(tester);
   });
+
+  for (final brightness in Brightness.values) {
+    testWidgets('page menu and dialogs follow the design (${brightness.name})', (tester) async {
+      final theme = notedThemeData(brightness);
+      await start(tester, theme: theme);
+      await rightClick(tester, b);
+      await tester.pumpAndSettle();
+      // Menu items are 32px; Delete page is destructive (error), others text.
+      final del = find.byKey(const ValueKey('menu-${AppCommands.delete}'));
+      expect(tester.getSize(del).height, 32);
+      expect(
+        tester.widget<Text>(find.descendant(of: del, matching: find.text('Delete'))).style!.color,
+        theme.colorScheme.error,
+      );
+      final up = find.byKey(const ValueKey('menu-${AppCommands.moveUp}'));
+      expect(
+        tester.widget<Text>(find.descendant(of: up, matching: find.text('Move up'))).style!.color,
+        theme.colorScheme.onSurface,
+      );
+      // Delete asks first: a destructive button, no primary.
+      await tester.tap(find.text('Delete'));
+      await settle(tester);
+      expect(find.byType(FilledButton), findsNothing);
+      final confirm = find.widgetWithText(OutlinedButton, 'Delete');
+      expect(
+        DefaultTextStyle.of(tester.element(find.descendant(of: confirm, matching: find.text('Delete')))).style.color,
+        theme.colorScheme.error,
+      );
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await settle(tester);
+      // Rename has exactly one primary button.
+      await rightClick(tester, b);
+      await tester.tap(find.byKey(const ValueKey('menu-${AppCommands.rename}')));
+      await settle(tester);
+      expect(find.text('Rename page'), findsOneWidget);
+      expect(find.byType(FilledButton), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, 'Rename'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await settle(tester);
+      await finish(tester);
+    });
+  }
 
   testWidgets('a damaged recovery entry is listed under Can\'t open and kept', (tester) async {
     late Directory rec;
@@ -245,7 +290,7 @@ void main() {
       ),
     );
     await tester.pump();
-    expect(find.text("Can't open"), findsOneWidget);
+    expect(find.text("CAN'T OPEN"), findsOneWidget);
     expect(find.text('bad-1'), findsOneWidget);
     expect(
       find.byWidgetPredicate(
