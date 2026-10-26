@@ -409,7 +409,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0040 — Box API 0.2: canvas tools and content diffs
 - **Date:** 2026-10-25
-- **Status:** Active
+- **Status:** Active; extended by 0062 (Box API 0.3)
 - **Decision:**
   - The Box API is at version 0.2. While the major version is 0, a module must target the host's exact version.
   - **Canvas tools:** a module can add tools to the canvas, each with an id, label, icon, keyboard shortcut, cursor and toolbar options.
@@ -618,7 +618,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0054 — Desktop and Start menu shortcuts
 - **Date:** 2026-10-25
-- **Status:** Active
+- **Status:** Active; extended by 0063
 - **Decision:** On the development machine, shortcuts named "Noted" on the Desktop and in the Start menu point to the release build, `app\build\windows\x64\runner\Release\noted.exe`, and use its icon. The release exe is rebuilt after each change to the app, so the shortcuts always launch the current build.
 - **Rationale:** Hands-on testing of the current build without a terminal.
 
@@ -716,7 +716,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0061 — Copying formulas in tables
 - **Date:** 2026-10-25
-- **Status:** Active (extends 0055)
+- **Status:** Active (extends 0055); duplicate detection superseded by 0065
 - **Decision:**
   - A copied formula shifts its relative references the way Excel does. Row and column parts move by the copy's offset, while parts anchored with `$` stay (`$A$1` fixed, `$A1` column fixed, `A$1` row fixed).
   - The two ends of a range shift independently. A reference pushed before row 1 or column A becomes `#REF!`.
@@ -726,6 +726,62 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - Pasting rows, several cells, or text from outside the editor stays verbatim, as does cut and paste.
 - **Rationale:** Duplicating a row of formulas should produce the next row's calculation, as in a spreadsheet.
 - **Alternatives considered:** copying formulas verbatim (the old behavior).
+
+## 0062 — Box API 0.3
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0040)
+- **Decision:**
+  - The Box API is at version 0.3.
+  - `ToolContext` gives tool sessions the theme's brightness and its `NotedColors`, so live feedback such as the stroke being drawn matches the theme (0058). The change is additive and implemented by the canvas.
+  - Every Box API version is recorded in `packages/noted_core/BOX_API_CHANGELOG.md`, newest first, with the decision that introduced it.
+- **Rationale:** While the major version is 0, any change to the API is a new version (0034, 0040), and a changelog keeps those changes traceable for module authors.
+
+## 0063 — Second-machine package and shortcut script
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0054)
+- **Decision:**
+  - `app/scripts/package-windows.ps1` builds the release and writes `app/build/Noted-windows-x64.zip`. The zip holds:
+    - the release folder
+    - the Visual C++ runtime DLLs the exe and plugins import (`msvcp140.dll`, `vcruntime140.dll`, `vcruntime140_1.dll`), copied next to the exe as app-local deployment
+    - `install-shortcuts.ps1`
+    - a README covering how to run it, the shortcuts, the VC++ 2015–2022 x64 redistributable as a fallback, and where data lives.
+  - The zip runs on another Windows PC by unzipping it; nothing is installed. Data stays in that PC's `%APPDATA%\Noted`.
+  - `app/scripts/install-shortcuts.ps1` creates "Noted" shortcuts on the Desktop and in the Start menu, with the exe's icon. They point to the `noted.exe` next to the script when run from an unzipped package, or to the repository's release build otherwise.
+- **Rationale:** Testing on a second machine, including two-machine sync (0051, 0053), without a development setup there.
+- **Alternatives considered:** requiring the VC++ redistributable to be installed first (an extra step on every test machine); an installer (more than testing needs).
+
+## 0064 — Live checks for storage folders
+- **Date:** 2026-10-26
+- **Status:** Active
+- **Decision:**
+  - Every storage folder, both standalone folders (0056) and binder folders (0049), is checked while the app runs: every 3 seconds, and whenever a folder watcher reports an error or closes. A folder that can't be watched because it doesn't exist is caught this way.
+  - **When a folder disappears:**
+    - Pending saves are written first if they still can be.
+    - Its location shows "On another device", and its pages stay listed greyed.
+    - A page from it that is open stays open read-only, with a banner (0060).
+    - Nothing is written to it: saves, moves in or out, renames, deletes, new pages, templates, cover edits and conflict-copy merges are refused. Its watcher stops.
+  - **When it comes back:**
+    - For a binder, `noted-binder.json` is re-read; a damaged or missing file keeps its existing state (0050, 0060).
+    - Its pages are rescanned, its watcher restarts, and conflict copies are merged (0053).
+    - The open page is merged three-way with its file (0051) and becomes editable again.
+  - A folder that was missing at startup appears without a restart. The app never creates or deletes a storage folder.
+- **Rationale:** Storage folders can live on removable or synced drives (0007), so they can go away and come back at any time without losing edits or writing to the wrong place.
+- **Alternatives considered:** detecting a folder only at startup (it needed a restart).
+
+## 0065 — Duplicating table rows and columns
+- **Date:** 2026-10-26
+- **Status:** Active (supersedes the duplicate detection in 0061)
+- **Decision:**
+  - `appflowy_editor` hard-wires its table menu's Duplicate to private code, so the note module supplies its own row and column handle menu (through the table and cell builders' `menuBuilder`).
+  - Its "Duplicate row" and "Duplicate column":
+    - copy the cells as new nodes with the same content and attributes
+    - apply the insert adjustment to every formula in the table
+    - shift the copy's relative references by one row or column (0061).
+    - All of this is one transaction and one undo step.
+  - The menu's other items are kept: insert before and after, delete, background color and clear. Background color offers a short list of colors from the theme, stored as concrete values.
+  - Duplicates are no longer recognised by matching cell text. A plain inserted row or column only gets the insert adjustment, and a formula typed by hand is never shifted.
+- **Rationale:** Knowing exactly which row or column was duplicated is reliable, while guessing from matching text could shift a formula the user typed by hand.
+- **Alternatives considered:** recognising duplicates by matching text (0061); patching `appflowy_editor` (it is pinned to an upstream commit, 0037).
 
 ---
 
