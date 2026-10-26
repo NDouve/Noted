@@ -17,9 +17,13 @@ import 'suites/notes_suite.dart';
 import 'suites/page_tree_suite.dart';
 import 'suites/search_suite.dart';
 import 'suites/templates_suite.dart';
+import 'support/semantics_guard.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  // A Windows accessibility client connecting mid-test must not fail it; see
+  // support/semantics_guard.dart.
+  ignorePlatformSemantics();
   pageTreeSuite();
   foldersBindersSuite();
   notesSuite();
