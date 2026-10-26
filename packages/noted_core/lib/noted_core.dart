@@ -8,6 +8,7 @@ library;
 
 export 'src/binder/binder.dart';
 export 'src/box_api/box_codec.dart';
+export 'src/box_api/box_find.dart';
 export 'src/box_api/codec_registry.dart';
 export 'src/edit/page_history.dart';
 export 'src/format/page_format.dart';
@@ -17,6 +18,9 @@ export 'src/merge/page_merge.dart';
 export 'src/model/bounds.dart';
 export 'src/model/ids.dart';
 export 'src/model/page.dart';
+export 'src/search/search_index.dart';
+export 'src/search/search_query.dart';
+export 'src/search/text_folding.dart';
 export 'src/storage/page_store.dart';
 export 'src/template/template.dart';
 export 'src/tree/page_tree.dart';

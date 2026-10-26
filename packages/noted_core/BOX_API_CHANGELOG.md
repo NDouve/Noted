@@ -8,6 +8,12 @@ version.
 
 Versions are listed newest first.
 
+## 0.6 — 2026-10-26
+- `BoxFind` (noted_core): the state of Find on page for a module: the `SearchQuery`, the box that holds the current match and which of its matches is current.
+- `BoxContext.find` (noted_canvas): a `ValueListenable<BoxFind?>`; null while the find bar is closed. A module may use it to mark matches inside its own content, matching against its own text snapshot with `SearchQuery.rangesIn` / `termRangesIn`. The core never reports positions inside a box's data and never reads it.
+- Search itself (the in-memory index, whole-word AND matching, the "Search all pages" panel) reads only `BoxRecord.snapshotText`; it needs no module hook.
+- Additive: a module that ignores `find` is unaffected (the canvas still frames the matching boxes). Decision 0085.
+
 ## 0.5 — 2026-10-26
 - `BoxModule.frameStyle`: how the canvas frames the module's boxes.
   - `BoxFrameStyle.framed` (the default): a surface fill and a hairline frame while idle, and an accent border when selected.
