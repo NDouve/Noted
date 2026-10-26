@@ -7,6 +7,8 @@ import 'dart:math' as math;
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
 
+import 'note_codec.dart';
+import 'note_theme.dart';
 import 'table_formulas.dart';
 
 /// The menu on the handle of a table row or column.
@@ -38,11 +40,11 @@ TableBlockComponentMenuBuilder tableMenuBuilder(
 
 enum _Action { before, after, delete, duplicate, clear }
 
-/// A background color choice; null removes the color.
+/// A background color choice; a null role removes the color.
 final class _Fill {
-  const _Fill(this.label, this.color);
+  const _Fill(this.label, this.role);
   final String label;
-  final Color? color;
+  final FillRole? role;
 }
 
 class _Handle extends StatelessWidget {
@@ -68,16 +70,17 @@ class _Handle extends StatelessWidget {
 
   bool get _col => dir == TableDirection.col;
 
-  /// Hex in the `0xAARRGGBB` form appflowy reads for cell backgrounds.
-  static String _hex(Color c) =>
-      '0x${c.toARGB32().toRadixString(16).padLeft(8, '0')}';
-
+  /// The choices. A color is stored as its theme role ([TableFill]), not as
+  /// the color it has now, so it follows the theme.
   List<_Fill> get _fills => [
     const _Fill('No color', null),
-    _Fill('Accent', scheme.primary.withValues(alpha: 0.25)),
-    _Fill('Secondary', scheme.secondary.withValues(alpha: 0.25)),
-    _Fill('Tertiary', scheme.tertiary.withValues(alpha: 0.25)),
-    _Fill('Alert', scheme.error.withValues(alpha: 0.25)),
+    for (final (label, role) in [
+      ('Accent', FillRole.accent),
+      ('Secondary', FillRole.secondary),
+      ('Tertiary', FillRole.tertiary),
+      ('Alert', FillRole.alert),
+    ])
+      _Fill(label, role),
   ];
 
   void _select(Object choice) {
@@ -94,12 +97,12 @@ class _Handle extends StatelessWidget {
         formulas.duplicate(node, position, dir);
       case _Action.clear:
         TableActions.clear(node, position, editor, dir);
-      case _Fill(:final color):
+      case _Fill(:final role):
         TableActions.setBgColor(
           node,
           position,
           editor,
-          color == null ? null : _hex(color),
+          role == null ? null : TableFill.encode(role),
           dir,
         );
     }
@@ -124,7 +127,7 @@ class _Handle extends StatelessWidget {
       width: 20,
       height: 20,
       decoration: BoxDecoration(
-        color: f.color,
+        color: f.role == null ? null : fillColor(scheme, f.role!),
         shape: BoxShape.circle,
         border: Border.all(color: scheme.outline),
       ),

@@ -6,6 +6,8 @@ import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'note_codec.dart';
+
 /// appflowy_editor's colors come from constants inside the package (grey
 /// placeholders, a light-blue link, a red code color, a fixed quote bar, a
 /// fixed light slash menu). Everything it lets a caller set is set here from
@@ -136,6 +138,36 @@ Map<String, BlockComponentBuilder> themedStandardBlocks(
     // The row handles live in the cells, so they need the menu too.
     TableCellBlockKeys.type: TableCellBlockComponentBuilder(
       menuBuilder: tableMenuBuilder,
+      colorBuilder: tableCellColors(scheme),
     ),
   };
 }
+
+/// The color a [role] fill has in [scheme].
+Color fillColor(ColorScheme scheme, FillRole role) => switch (role) {
+  FillRole.accent => scheme.primary,
+  FillRole.secondary => scheme.secondary,
+  FillRole.tertiary => scheme.tertiary,
+  FillRole.alert => scheme.error,
+}.withValues(alpha: 0.25);
+
+/// The background of a table cell: its column's, else its row's (as in
+/// appflowy). A stored role, or a fixed value the first version wrote for a
+/// role (see [TableFill]), is resolved in [scheme] each time the cell is
+/// built, so it follows the theme; any other value is the fixed color it
+/// says. The stored value is never touched.
+TableBlockCellComponentColorBuilder tableCellColors(ColorScheme scheme) =>
+    (context, node) {
+      for (final key in [
+        NoteFormat.colBackgroundKey,
+        NoteFormat.rowBackgroundKey,
+      ]) {
+        final stored = node.attributes[key];
+        if (stored is! String) continue;
+        final role = TableFill.roleOf(stored);
+        if (role != null) return fillColor(scheme, role);
+        final fixed = stored.tryToColor();
+        if (fixed != null) return fixed;
+      }
+      return null;
+    };

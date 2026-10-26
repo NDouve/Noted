@@ -15,6 +15,7 @@ import 'package:noted_core/noted_core.dart';
 import 'math_blocks.dart';
 import 'math_input.dart';
 import 'note_codec.dart';
+import 'note_editor_state.dart';
 import 'note_theme.dart';
 import 'table_formulas.dart';
 import 'table_menu.dart';
@@ -88,7 +89,7 @@ class _NoteEditorState extends State<_NoteEditor> {
     _shown = data;
     // Give the editor its own deep copy: it mutates its document in place.
     final json = jsonDecode(jsonEncode(data.document)) as Map<String, dynamic>;
-    _editor = EditorState(document: Document.fromJson(json));
+    _editor = NoteEditorState(document: Document.fromJson(json));
     _scroll = EditorScrollController(editorState: _editor, shrinkWrap: true);
     _formulas = TableFormulas(_editor);
     // Fills in the stored value of formula cells that have none (before the
@@ -147,6 +148,24 @@ class _NoteEditorState extends State<_NoteEditor> {
     super.didUpdateWidget(oldWidget);
     // Data changed outside this editor (for example a reload): start over.
     if (!identical(widget.box.data, _shown)) {
+      // The host can rebuild with data older than what this editor has
+      // committed: it only hears of a commit when something else changes the
+      // page, so a rebuild for another reason (the pointer entering or
+      // leaving the box, which a table's menu causes) hands over the node it
+      // was last given. That is the data it gave last time, not a change
+      // from outside; starting over from it would drop the editor's undo
+      // history and its latest edits.
+      if (identical(widget.box.data, oldWidget.box.data) ||
+          jsonEncode(widget.box.data.document) ==
+              jsonEncode(oldWidget.box.data.document)) {
+        return;
+      }
+      // The same content in another object (the host decoded it again): the
+      // editor already shows it.
+      if (jsonEncode(widget.box.data.document) == jsonEncode(_shown.document)) {
+        _shown = widget.box.data;
+        return;
+      }
       _unload();
       _load(widget.box.data);
       _applyTheme(_scheme!, renderer: false);

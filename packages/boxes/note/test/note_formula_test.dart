@@ -409,12 +409,16 @@ void main() {
       TableActions.add(tableNode, 1, editor, TableDirection.row);
       await frames(t, 10);
       expect(textAt(editor, 3, 1), '=SUM(B1:B3)');
+      // One undo takes back the row and the formula rewrite together.
       editor.undoManager.undo();
       await frames(t, 10);
-      expect(tableNode.attributes['rowsLen'], isIn([3, 4]));
-      if (tableNode.attributes['rowsLen'] == 3) {
-        expect(textAt(editor, 2, 1), '=SUM(B1:B2)');
-      }
+      expect(tableNode.attributes['rowsLen'], 3);
+      expect(textAt(editor, 2, 1), '=SUM(B1:B2)');
+      expect(valueAt(editor, 2, 1), '6');
+      editor.undoManager.redo();
+      await frames(t, 10);
+      expect(tableNode.attributes['rowsLen'], 4);
+      expect(textAt(editor, 3, 1), '=SUM(B1:B3)');
       expect(t.takeException(), isNull);
     });
 
@@ -822,25 +826,15 @@ void main() {
       expect(tableNode.attributes['rowsLen'], 3);
       expect(textAt(editor, 1, 1), r'=A2+$A$1');
       // The copy, the moved rows and every rewritten formula are one undo
-      // step. (appflowy adds steps of its own for the table's measured
-      // size; they touch no cell, and undoing one makes the table measure
-      // itself again, so the step is applied as an undo directly here.)
-      final steps = <dynamic>[];
-      var item = editor.undoManager.undoStack.last as dynamic;
-      while (item != null) {
-        final ops = item.operations as List<Operation>;
-        if (ops.any((o) => o is InsertOperation)) steps.add(item);
-        item = item.previous;
-      }
-      expect(steps, hasLength(1));
-      final ops = steps.single.operations as List<Operation>;
+      // step, and the only one.
+      expect(editor.undoManager.undoStack.length, 1);
+      final ops =
+          (editor.undoManager.undoStack.last as dynamic).operations
+              as List<Operation>;
       // The inserted cells (one per column) and the formula rewrites.
       expect(ops.whereType<InsertOperation>(), hasLength(2));
       expect(ops.whereType<UpdateOperation>().length, greaterThan(2));
-      await editor.apply(
-        steps.single.toTransaction(editor) as Transaction,
-        options: const ApplyOptions(source: TransactionSource.undo),
-      );
+      editor.undoManager.undo();
       await frames(t, 10);
       expect(tableNode.attributes['rowsLen'], 2);
       expect(textAt(editor, 0, 1), r'=A1+$A$1');

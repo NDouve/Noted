@@ -118,6 +118,69 @@ abstract final class NoteFormat {
   /// "formulaValue": "3"}}`. Absent on cells that are not formulas. The
   /// snapshot shows this value instead of the formula text.
   static const String formulaValueKey = 'formulaValue';
+
+  /// Keys, in the data of a table cell, of the background of its row and of
+  /// its column (appflowy's own keys). The value is a [TableFill] role, see
+  /// there; absent means no background. The text snapshot does not mention
+  /// backgrounds: they are decoration, not content.
+  static const String rowBackgroundKey = 'rowBackgroundColor';
+  static const String colBackgroundKey = 'colBackgroundColor';
+}
+
+/// The theme roles a table row, column or cell can be filled with. "No
+/// fill" is the absence of the attribute.
+enum FillRole { accent, secondary, tertiary, alert }
+
+/// How a table background is stored: as a theme role, so it follows the
+/// theme (light and dark) instead of being one fixed color.
+///
+/// The value of `rowBackgroundColor` / `colBackgroundColor` is `"role:"` and
+/// the role's name, for example `{"colBackgroundColor": "role:accent"}`.
+/// appflowy's keys are kept, so a document is still a plain appflowy
+/// document: an older Noted, or appflowy itself, cannot read the role as a
+/// color (`tryToColor` returns null for it) and simply shows no background;
+/// nothing breaks, so the note data version stays 1.
+///
+/// Values written before roles existed were fixed `0xAARRGGBB` strings at 25%
+/// alpha computed from the app's light or dark scheme. A value that is
+/// exactly one of those eight is read as its role; any other value is a
+/// fixed color and is rendered as stored. Reading never rewrites a value.
+abstract final class TableFill {
+  static const String prefix = 'role:';
+
+  /// The stored form of [role].
+  static String encode(FillRole role) => '$prefix${role.name}';
+
+  /// The role a stored background value stands for, or null if it is not a
+  /// role and not one of the legacy fixed values.
+  static FillRole? roleOf(Object? stored) {
+    if (stored is! String) return null;
+    if (stored.startsWith(prefix)) {
+      final name = stored.substring(prefix.length);
+      for (final r in FillRole.values) {
+        if (r.name == name) return r;
+      }
+      return null;
+    }
+    final m = _hex.firstMatch(stored);
+    if (m == null) return null;
+    return _legacy[int.parse(m.group(1)!, radix: 16)];
+  }
+
+  static final RegExp _hex = RegExp(r'^0x([0-9a-fA-F]{8})$');
+
+  /// What the first version wrote: each role at 25% alpha, from the light
+  /// and the dark scheme of the app's seed color.
+  static const Map<int, FillRole> _legacy = {
+    0x40515b92: FillRole.accent,
+    0x405b5d72: FillRole.secondary,
+    0x4077536d: FillRole.tertiary,
+    0x40ba1a1a: FillRole.alert,
+    0x40bac3ff: FillRole.accent,
+    0x40c3c5dd: FillRole.secondary,
+    0x40e6bad7: FillRole.tertiary,
+    0x40ffb4ab: FillRole.alert,
+  };
 }
 
 /// A block's plain text, or null if it has none. Equations keep their LaTeX
