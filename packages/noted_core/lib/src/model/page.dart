@@ -8,6 +8,23 @@ import 'bounds.dart';
 /// The page file format version this build reads and writes.
 const int pageFormatVersion = 1;
 
+/// How a page's canvas is drawn behind its boxes. Decoration only: it is a
+/// page header field and never part of a box snapshot or the text snapshot.
+enum PageBackground {
+  plain,
+  dots,
+  graph,
+  ruled;
+
+  /// The background named [value]; null or an unknown name is [plain].
+  static PageBackground parse(String? value) {
+    for (final b in values) {
+      if (b.name == value) return b;
+    }
+    return plain;
+  }
+}
+
 /// Anything on a page: a Noted box, or a node Noted doesn't own.
 sealed class CanvasNode {
   /// The node's id. A [ForeignNode] without a usable id gets a synthetic one
@@ -513,6 +530,38 @@ final class PageMeta {
   /// Returns a copy with a new parent and position among siblings.
   PageMeta withPlacement({required String? parentId, required int order}) =>
       withParent(parentId).withOrder(order);
+
+  /// The page background (`"background"` in the header). A missing value, a
+  /// value that isn't a string and a value this build doesn't know all read
+  /// as [PageBackground.plain]; the stored value is left as written until the
+  /// user picks a background ([withBackground]).
+  PageBackground get background =>
+      PageBackground.parse(fields.string('background'));
+
+  /// The stored `background` value exactly as written, or null if absent.
+  RawJson? get rawBackground => fields['background'];
+
+  /// Returns a copy with [value] chosen. Plain removes the key (so a plain
+  /// page's header is the same as before backgrounds existed); the others
+  /// write `"dots"`, `"graph"` or `"ruled"`. Choosing what the page already
+  /// shows with the same stored text keeps it unchanged. Every other header
+  /// field is kept as written.
+  PageMeta withBackground(PageBackground value) {
+    final raw = rawBackground;
+    if (value == PageBackground.plain) {
+      if (raw == null || raw.text == '"plain"') return this;
+      return withRawBackground(null);
+    }
+    if (raw != null && raw.text == '"${value.name}"') return this;
+    return withRawBackground(RawJson.encode(value.name));
+  }
+
+  /// Returns a copy whose stored `background` is [raw] (null removes the
+  /// key). For undo, which restores whatever was stored, unknown values
+  /// included.
+  PageMeta withRawBackground(RawJson? raw) => PageMeta.tryRead(
+    raw == null ? fields.remove('background') : fields.set('background', raw),
+  )!;
 
   PageMeta _with(String key, RawJson value) => PageMeta.tryRead(fields.set(key, value))!;
 }

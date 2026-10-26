@@ -4,6 +4,7 @@
 
 import '../box_api/box_codec.dart';
 import '../box_api/codec_registry.dart';
+import '../json/raw_json.dart';
 import '../model/bounds.dart';
 import '../model/page.dart';
 
@@ -48,9 +49,26 @@ sealed class PageChange {
   /// order they were made.
   const factory PageChange.group(List<PageChange> changes) = _Group;
 
+  /// Records that the page background was changed from [before], the stored
+  /// `background` value (null: none). Reverting restores exactly that text;
+  /// the other header fields are kept as they are now.
+  const factory PageChange.background(RawJson? before) = _BackgroundChanged;
+
   /// Reverts this change on [page]. Returns null if the change no longer
   /// applies, for example because its box is gone.
   (NotedPage, PageChange)? revert(NotedPage page, CodecRegistry codecs);
+}
+
+final class _BackgroundChanged extends PageChange {
+  const _BackgroundChanged(this.before);
+
+  final RawJson? before;
+
+  @override
+  (NotedPage, PageChange)? revert(NotedPage page, CodecRegistry codecs) => (
+    page.withMeta(page.meta.withRawBackground(before)),
+    PageChange.background(page.meta.rawBackground),
+  );
 }
 
 final class _Replaced extends PageChange {
