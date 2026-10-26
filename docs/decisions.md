@@ -556,7 +556,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0050 — Binder file and binders.json
 - **Date:** 2026-10-25
-- **Status:** Active
+- **Status:** Active; the damaged-binder display is superseded by 0060
 - **Decision:**
   - **The binder file:** `noted-binder.json` in the binder folder: `{"format":1,"binderId":"<16 hex>","title":"…","description":"…","owner":"…","color":"#AARRGGBB","created":<ms since the epoch>}`.
     - It is read and written so unknown fields round-trip byte for byte.
@@ -624,7 +624,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0055 — Formulas and equations in table cells
 - **Date:** 2026-10-25
-- **Status:** Active
+- **Status:** Active; copy behavior extended by 0061
 - **Decision:**
   - **Equations:** block and inline equations work inside table cells, with the same dialog and rendering as in notes (0048). A block equation replaces the cell's paragraph; emptying or cancelling it reverts the cell to text.
   - **Formulas:** a cell whose text starts with `=` is a formula. It shows its result while the caret is elsewhere and its formula while the caret is in it. Errors show in red.
@@ -643,7 +643,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0056 — Storage choice for standalone pages
 - **Date:** 2026-10-25
-- **Status:** Active (implements the storage prompt of 0027)
+- **Status:** Active (implements the storage prompt of 0027); the refusal of cross-folder nesting is superseded by 0059
 - **Decision:**
   - Creating a top-level standalone page asks where to store it. The options are:
     - the default folder (preselected, so Enter accepts it)
@@ -673,6 +673,59 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - The format is described in the doc comment of `packages/noted_core/lib/src/template/template.dart`.
 - **Rationale:** Repeated page layouts and binder structures can be reused. A plain, documented format leaves room for templates to carry AI rules and skills later.
 - **Alternatives considered:** templates as ordinary pages in a special folder (no place for template metadata or extensions).
+
+## 0058 — Dark mode
+- **Date:** 2026-10-25
+- **Status:** Active
+- **Decision:**
+  - **Theme setting:** Light, Dark or Follow system, saved per device in `settings.json` in the app settings folder (next to `binders.json`, 0050): `{"format":1,"theme":"system"|"light"|"dark"}`.
+    - The default is Follow system, which tracks the OS theme while the app runs.
+    - Unknown fields are kept. A corrupt file gives the defaults and is left alone until the setting is changed.
+    - The setting is changed from a gear menu at the bottom of the sidebar and applies at once.
+  - **No hard-coded colors:** every UI color comes from `ThemeData`/`ColorScheme`, with a `NotedColors` theme extension for app-specific roles (default ink, conflict frame and badge, grid labels, formula errors, the debug readout, the eraser ring, muted text).
+  - **What it covers:** the canvas, sidebar, box chrome, toolbars, menus and dialogs, the `appflowy_editor` text and blocks (including tables and the `/` menu), equations and the formula grid.
+  - **Ink:** strokes stored in the pen's default color (`#FF202124`) draw black in light mode and white in dark mode, in the box, the live stroke and the color swatch. Every other stored color is drawn as stored. Stored values never change with the theme, so no page-format change.
+  - **Binder colors:** shown with HSL lightness adjusted until they reach 3:1 contrast against the surface they sit on. The stored value is unchanged. Text next to binder colors uses the theme's text colors.
+  - **Contrast:** text meets WCAG AA (4.5:1), and handles, borders and other UI components meet 3:1, in both themes. Greyed rows for inactive pages are exempt, as inactive UI in WCAG.
+  - **Box API:** `ToolContext` gives tool sessions the theme's brightness and `NotedColors`, so live feedback matches the theme. This is additive to 0040.
+- **Rationale:** Comfortable use in dark environments. Treating the default value as adaptive keeps existing drawings readable in both themes without changing the format.
+- **Alternatives considered:** a new "adaptive ink" marker in stroke data (a page-format change); storing the theme in `binders.json` (it describes storage, not appearance).
+
+## 0059 — Moving pages across standalone folders
+- **Date:** 2026-10-25
+- **Status:** Active (supersedes the refusal of cross-folder nesting in 0056)
+- **Decision:**
+  - Nesting a page under, or placing it before or after, a page in a different standalone folder moves the page's file and its subpages' files into that folder.
+  - It uses the same copy, read-back-and-compare, delete-the-sources algorithm as binder moves (0049). On any failure the copies are removed and the sources stay.
+  - Dropping a page on the "Pages" header keeps it in its own folder, at the top level.
+- **Rationale:** A page's parent must be in the same location, and moving the files keeps that rule without refusing a natural drag.
+- **Alternatives considered:** refusing the move (0056).
+
+## 0060 — Damaged binder file display
+- **Date:** 2026-10-25
+- **Status:** Active (supersedes the damaged-binder display in 0050)
+- **Decision:**
+  - When a binder's `noted-binder.json` can't be read (invalid JSON, a newer format, or no id), at startup or when the watcher sees it change, the binder stays in the sidebar labelled "Binder file can't be read".
+  - Its pages are listed greyed and read-only. A page opens in a read-only view with a banner: no editing, box creation, tools, moving, renaming, deleting or saving.
+  - Nothing is written to the binder folder while the file is damaged.
+  - When the file becomes readable again, the binder returns to normal. A deleted binder file still makes the binder unavailable (0050).
+  - The canvas has a read-only mode for this: every edit, gesture, tool and save is blocked, and boxes are drawn with their module's read-only view.
+  - The same read-only view is used for an open page whose standalone folder disappears while the app runs.
+- **Rationale:** A damaged binder file shouldn't hide the binder's pages or risk writing over them before the file is fixed.
+- **Alternatives considered:** removing the binder's pages from the sidebar until the file is fixed (0050).
+
+## 0061 — Copying formulas in tables
+- **Date:** 2026-10-25
+- **Status:** Active (extends 0055)
+- **Decision:**
+  - A copied formula shifts its relative references the way Excel does. Row and column parts move by the copy's offset, while parts anchored with `$` stay (`$A$1` fixed, `$A1` column fixed, `A$1` row fixed).
+  - The two ends of a range shift independently. A reference pushed before row 1 or column A becomes `#REF!`.
+  - **When it applies:**
+    - appflowy's duplicate row and duplicate column. A duplicate is recognised as new cells whose text equals the neighbour's.
+    - copying a whole single formula cell and pasting it at the start of a cell in the same table.
+  - Pasting rows, several cells, or text from outside the editor stays verbatim, as does cut and paste.
+- **Rationale:** Duplicating a row of formulas should produce the next row's calculation, as in a spreadsheet.
+- **Alternatives considered:** copying formulas verbatim (the old behavior).
 
 ---
 
