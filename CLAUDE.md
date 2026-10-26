@@ -56,6 +56,7 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 - the recovery store
 - dark mode and the design system in `docs/design`
 - the command registry and the default toolbar
+- search (find on page and search all pages)
 
 **Out of scope until the maintainer starts the next phase:**
 - binder passwords and encryption
