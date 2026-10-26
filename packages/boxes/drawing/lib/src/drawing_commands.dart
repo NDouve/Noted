@@ -10,7 +10,13 @@ import 'drawing_tools.dart';
 import 'ink_color.dart';
 
 /// Names of the pen colors, in the order of [PenSettings.colors].
-const List<String> _colorNames = ['Default ink', 'Blue', 'Red', 'Green'];
+const List<String> _colorNames = [
+  'Default ink',
+  'Blue',
+  'Orange',
+  'Green',
+  'Purple',
+];
 
 /// Id of the command that chooses pen color number [index]
 /// (`noted.drawing.color.0` ...).
@@ -42,7 +48,7 @@ List<Command> drawingCommands(DrawingModule module, CommandHost host) {
         iconBuilder: (context, checked) => Icon(
           checked ? Icons.radio_button_checked : Icons.circle,
           color: displayInkColor(color, Theme.of(context).brightness),
-          size: 20,
+          size: NotedMetrics.of(context).icon,
         ),
         invoke: () {
           settings.color = color;
@@ -58,12 +64,13 @@ List<Command> drawingCommands(DrawingModule module, CommandHost host) {
         listenable: changes,
         iconBuilder: (context, checked) {
           final scheme = Theme.of(context).colorScheme;
+          final metrics = NotedMetrics.of(context);
           return Container(
-            width: 18,
+            width: metrics.icon,
             height: size + 1,
             decoration: BoxDecoration(
               color: checked ? scheme.primary : scheme.onSurfaceVariant,
-              borderRadius: BorderRadius.circular(size),
+              borderRadius: metrics.borderFull,
             ),
           );
         },

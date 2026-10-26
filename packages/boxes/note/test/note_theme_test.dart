@@ -51,14 +51,7 @@ Map<String, Object?> _math(String formula) => {
   'data': {'formula': formula},
 };
 
-ThemeData _theme(Brightness b) {
-  final base = ThemeData(
-    colorSchemeSeed: const Color(0xFF3F51B5),
-    brightness: b,
-    useMaterial3: true,
-  );
-  return base.copyWith(extensions: [NotedColors.fromScheme(base.colorScheme)]);
-}
+ThemeData _theme(Brightness b) => notedThemeData(b);
 
 void main() {
   for (final brightness in Brightness.values) {
@@ -120,7 +113,6 @@ void main() {
       testWidgets('text, formulas and equations use the theme', (t) async {
         await pump(t);
         final scheme = theme.colorScheme;
-        final noted = theme.extension<NotedColors>()!;
 
         final values = find.byKey(const ValueKey('formula-value'));
         expect(values, findsNWidgets(2));
@@ -129,7 +121,7 @@ void main() {
         expect(ok.data, '2');
         expect(ok.style?.color, scheme.onSurface);
         expect(bad.data, '#DIV/0!');
-        expect(bad.style?.color, noted.formulaError);
+        expect(bad.style?.color, scheme.error);
 
         final maths = t.widgetList<Math>(find.byType(Math)).toList();
         expect(maths, isNotEmpty);
@@ -160,19 +152,17 @@ void main() {
           Position(path: cell.children.first.path),
         );
         await frames(t, 8);
-        final noted = theme.extension<NotedColors>()!;
         final label = find.descendant(
           of: find.byKey(const ValueKey('col-header-A')),
           matching: find.byType(Text),
         );
         expect(label, findsOneWidget);
-        expect(t.widget<Text>(label).style?.color, noted.gridLabel);
-        expect(noted.gridLabel, theme.colorScheme.onSurfaceVariant);
+        expect(t.widget<Text>(label).style?.color, theme.colorScheme.onSurfaceVariant);
         final row = find.descendant(
           of: find.byKey(const ValueKey('row-header-1')),
           matching: find.byType(Text),
         );
-        expect(t.widget<Text>(row).style?.color, noted.gridLabel);
+        expect(t.widget<Text>(row).style?.color, theme.colorScheme.onSurfaceVariant);
       });
     });
   }

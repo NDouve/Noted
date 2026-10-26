@@ -6,7 +6,7 @@ import 'dart:async';
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show NotedColors;
+import 'package:noted_canvas/noted_canvas.dart' show NotedTypography;
 import 'package:flutter/scheduler.dart';
 
 import 'formula/formula.dart';
@@ -151,10 +151,9 @@ class TableHeadersState extends State<TableHeaders> {
   Widget build(BuildContext context) {
     refresh();
     if (_columns.isEmpty && _rows.isEmpty) return const SizedBox.shrink();
-    final style = TextStyle(
-      fontSize: 9,
+    final style = NotedTypography.of(context).small.copyWith(
       height: 1,
-      color: NotedColors.of(context).gridLabel,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
     );
     Widget label(String text, Alignment alignment) => Align(
       alignment: alignment,

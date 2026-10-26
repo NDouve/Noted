@@ -13,17 +13,16 @@ const int binderFormatVersion = 1;
 /// The name of the metadata file inside a binder's folder.
 const String binderFileName = 'noted-binder.json';
 
-/// The colors a binder can have, as `#AARRGGBB`. New binders take the next
-/// one in turn.
+/// The colors a binder can have, as `#AARRGGBB`: the light values of the
+/// `binder-*` design tokens (`docs/design/tokens.json`), in token order. New
+/// binders take the next one in turn. Binders already stored with another
+/// color keep it.
 const List<String> binderPalette = [
-  '#FF3F51B5', // indigo
-  '#FF00897B', // teal
-  '#FF43A047', // green
-  '#FFF9A825', // amber
-  '#FFEF6C00', // orange
-  '#FFE53935', // red
-  '#FFD81B60', // pink
-  '#FF8E24AA', // purple
+  '#FF2E8B57', // binder-green
+  '#FFC2410C', // binder-orange
+  '#FF2563EB', // binder-blue
+  '#FF7C3AED', // binder-purple
+  '#FF0F766E', // binder-teal
 ];
 
 /// The binder file isn't a readable Noted binder.

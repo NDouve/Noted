@@ -56,7 +56,7 @@ void main() {
       'Eraser (E)',
       'Ink color: Default ink',
       'Ink color: Blue',
-      'Ink color: Red',
+      'Ink color: Orange',
       'Ink color: Green',
       'Pen width 2',
       'Pen width 4',
@@ -99,13 +99,13 @@ void main() {
   testWidgets('clicking a color with Select active selects the Pen', (t) async {
     await pump(t);
     expect(tools.active, isNull);
-    await t.tap(find.byTooltip('Ink color: Red'));
+    await t.tap(find.byTooltip('Ink color: Orange'));
     await t.pump();
     expect(tools.active, module.pen);
     expect(module.settings.color, PenSettings.colors[2]);
     expect(checked(t, 'Pen (P)'), isTrue);
     expect(checked(t, 'Select and type (V)'), isFalse);
-    expect(checked(t, 'Ink color: Red'), isTrue);
+    expect(checked(t, 'Ink color: Orange'), isTrue);
   });
 
   testWidgets('clicking a width with the Eraser active selects the Pen', (t) async {
@@ -127,10 +127,10 @@ void main() {
     expect(checked(t, 'Ink color: Default ink'), isTrue);
     expect(checked(t, 'Pen width 4'), isTrue);
 
-    await t.tap(find.byTooltip('Ink color: Red'));
+    await t.tap(find.byTooltip('Ink color: Orange'));
     await t.pump();
     expect(module.settings.color, PenSettings.colors[2]);
-    expect(checked(t, 'Ink color: Red'), isTrue);
+    expect(checked(t, 'Ink color: Orange'), isTrue);
     expect(checked(t, 'Ink color: Default ink'), isFalse);
 
     await t.tap(find.byTooltip('Pen width 8'));
@@ -178,7 +178,7 @@ void main() {
       );
       expect(
         icon.color,
-        brightness == Brightness.dark ? Colors.white : Colors.black,
+        NotedColors.forBrightness(brightness).inkDefault,
       );
     }
   });

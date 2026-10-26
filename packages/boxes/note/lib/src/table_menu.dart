@@ -6,6 +6,7 @@ import 'dart:math' as math;
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
+import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 
 import 'note_codec.dart';
 import 'note_theme.dart';
@@ -114,18 +115,18 @@ class _Handle extends StatelessWidget {
     PopupMenuItem<Object> item(Object value, String text, IconData icon) =>
         PopupMenuItem<Object>(
           value: value,
-          height: 36,
+          height: NotedMetrics.of(context).control,
           child: Row(
             children: [
-              Icon(icon, size: 20),
-              const SizedBox(width: 12),
+              Icon(icon, size: NotedMetrics.of(context).icon),
+              SizedBox(width: NotedMetrics.of(context).space3),
               Text(text),
             ],
           ),
         );
     Widget swatch(_Fill f) => Container(
-      width: 20,
-      height: 20,
+      width: NotedMetrics.of(context).icon,
+      height: NotedMetrics.of(context).icon,
       decoration: BoxDecoration(
         color: f.role == null ? null : fillColor(scheme, f.role!),
         shape: BoxShape.circle,
@@ -169,15 +170,15 @@ class _Handle extends StatelessWidget {
         const PopupMenuDivider(),
         PopupMenuItem<Object>(
           enabled: false,
-          height: 28,
+          height: NotedMetrics.of(context).control - NotedMetrics.of(context).space2,
           child: Text(l10n.backgroundColor),
         ),
         for (final f in _fills)
           PopupMenuItem<Object>(
             value: f,
-            height: 36,
+            height: NotedMetrics.of(context).control,
             child: Row(
-              children: [swatch(f), const SizedBox(width: 12), Text(f.label)],
+              children: [swatch(f), SizedBox(width: NotedMetrics.of(context).space3), Text(f.label)],
             ),
           ),
         const PopupMenuDivider(),

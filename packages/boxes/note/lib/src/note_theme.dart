@@ -6,6 +6,8 @@ import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:noted_canvas/noted_canvas.dart' show DesignMetrics, DesignType;
+
 import 'note_codec.dart';
 
 /// appflowy_editor's colors come from constants inside the package (grey
@@ -16,7 +18,11 @@ import 'note_codec.dart';
 /// Text styles for the editor body, links and inline code.
 TextStyleConfiguration noteTextStyles(ColorScheme scheme) =>
     TextStyleConfiguration(
-      text: TextStyle(fontSize: 15, color: scheme.onSurface),
+      text: DesignType.body.copyWith(
+        color: scheme.onSurface,
+        fontFamily: DesignType.fontFamily,
+        fontFamilyFallback: DesignType.fontFamilyFallback,
+      ),
       href: TextStyle(
         color: scheme.primary,
         decoration: TextDecoration.underline,
@@ -69,8 +75,8 @@ Map<String, BlockComponentBuilder> themedStandardBlocks(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.only(right: 4),
-        child: Icon(icon, size: 22, color: color),
+        padding: const EdgeInsets.only(right: DesignMetrics.space1),
+        child: Icon(icon, size: DesignMetrics.icon, color: color),
       ),
     ),
   );
@@ -112,8 +118,8 @@ Map<String, BlockComponentBuilder> themedStandardBlocks(
       iconBuilder: (context, node) => Container(
         alignment: Alignment.center,
         constraints: const BoxConstraints(minWidth: 26, minHeight: 22),
-        padding: const EdgeInsets.only(right: 4),
-        child: Container(width: 4, color: scheme.primary),
+        padding: const EdgeInsets.only(right: DesignMetrics.space1),
+        child: Container(width: DesignMetrics.space1, color: scheme.primary),
       ),
     ),
     HeadingBlockKeys.type: HeadingBlockComponentBuilder(
@@ -125,7 +131,7 @@ Map<String, BlockComponentBuilder> themedStandardBlocks(
     DividerBlockKeys.type: DividerBlockComponentBuilder(
       lineColor: scheme.outline,
       configuration: standardBlockComponentConfiguration.copyWith(
-        padding: (node) => const EdgeInsets.symmetric(vertical: 8),
+        padding: (node) => const EdgeInsets.symmetric(vertical: DesignMetrics.space2),
       ),
     ),
     TableBlockKeys.type: TableBlockComponentBuilder(

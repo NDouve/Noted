@@ -345,7 +345,7 @@ class _NoteEditorState extends State<_NoteEditor>
       editorStyle: EditorStyle.desktop(
         // Applied around every block, so only horizontal; the header and
         // footer give the vertical padding.
-        padding: const EdgeInsets.symmetric(horizontal: 10),
+        padding: const EdgeInsets.symmetric(horizontal: DesignMetrics.space2),
         textSpanDecorator: formulaSpanDecorator(
           _editor,
           mathTextSpanDecorator(_editor),

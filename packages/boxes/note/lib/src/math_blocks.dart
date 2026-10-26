@@ -4,7 +4,7 @@
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show NotedColors;
+import 'package:noted_canvas/noted_canvas.dart' show DesignType, NotedMetrics;
 import 'package:flutter_math_fork/flutter_math.dart';
 
 import 'note_codec.dart';
@@ -58,7 +58,7 @@ class MathView extends StatelessWidget {
       return Text(
         display ? 'Empty equation: click to edit' : '[ ]',
         style: style.copyWith(
-          color: NotedColors.of(context).mutedText,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
           fontStyle: FontStyle.italic,
         ),
       );
@@ -163,7 +163,7 @@ class _MathDialogState extends State<_MathDialog> {
                 hintText: r'x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}',
               ),
             ),
-            const SizedBox(height: 16),
+            SizedBox(height: NotedMetrics.of(context).space4),
             ListenableBuilder(
               listenable: _controller,
               builder: (_, _) => SingleChildScrollView(
@@ -404,7 +404,7 @@ class _MathBlockComponentWidgetState extends State<MathBlockComponentWidget>
     final editor = widget.editor;
     final formula = node.attributes[NoteFormat.formulaKey];
     final style = editor.editorStyle.textStyleConfiguration.text.copyWith(
-      fontSize: 18,
+      fontSize: DesignType.boxTitle.fontSize,
     );
 
     Widget child = Center(

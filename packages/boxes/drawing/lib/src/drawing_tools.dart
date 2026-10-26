@@ -24,11 +24,13 @@ const double eraserRadius = 10;
 
 /// The pen's color and size, chosen in the toolbar.
 class PenSettings extends ChangeNotifier {
-  static const List<int> colors = [
+  /// The pen swatches as stored: default ink and the four `ink-*` tokens.
+  static final List<int> colors = [
     defaultInkValue,
-    0xFF1A73E8,
-    0xFFD93025,
-    0xFF188038,
+    DesignColors.light.inkBlue.toARGB32(),
+    DesignColors.light.inkOrange.toARGB32(),
+    DesignColors.light.inkGreen.toARGB32(),
+    DesignColors.light.inkPurple.toARGB32(),
   ];
   static const List<double> sizes = [2, 4, 8];
 

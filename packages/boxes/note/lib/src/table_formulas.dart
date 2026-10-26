@@ -7,7 +7,6 @@ import 'dart:async';
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show NotedColors;
 
 import 'formula/formula.dart';
 import 'note_codec.dart';
@@ -611,7 +610,7 @@ TextSpan? _formulaSpan(
           value,
           key: const ValueKey('formula-value'),
           style: isError
-              ? style.copyWith(color: NotedColors.of(context).formulaError)
+              ? style.copyWith(color: Theme.of(context).colorScheme.error)
               : style,
         ),
       ),
