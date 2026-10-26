@@ -34,7 +34,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0003 — Canvas implementation
 - **Date:** 2026-10-24
-- **Status:** Active
+- **Status:** Active; extended by 0083 (zoom anchoring)
 - **Decision:** A custom canvas built on Flutter's `InteractiveViewer`:
   - Zoom and pan, with panning bounded to the content plus padding.
   - A "Fit all" control.
@@ -386,7 +386,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0038 — Page storage location for Prototype 1
 - **Date:** 2026-10-24
-- **Status:** Active
+- **Status:** Active; the default page folder became a setting in 0084
 - **Decision:**
   - Prototype 1 stores pages as `<pageId>.canvas` files in one local folder: `%APPDATA%\Noted\pages` on Windows, `~/.noted/pages` on other platforms.
   - `--dart-define=NOTED_PAGES_DIR=<path>` overrides the folder.
@@ -540,7 +540,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0049 — Optional binders, without passwords
 - **Date:** 2026-10-25
-- **Status:** Active (implements 0026 except passwords, locking and encryption)
+- **Status:** Active (implements 0026 except passwords, locking and encryption); "New binder asks for a folder" superseded by 0084
 - **Decision:**
   - **Creating a binder:** "New binder" asks for a folder. A folder that already has a binder file is opened, never overwritten. Otherwise a binder file is created, and any page files already in the folder become its pages.
   - **Cover page:** title, description and owner are editable. It also shows last edited (the latest change to the binder's files), the storage folder, and a color chosen from an 8-color palette. The color is applied to the binder's sidebar entries.
@@ -643,7 +643,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0056 — Storage choice for standalone pages
 - **Date:** 2026-10-25
-- **Status:** Active (implements the storage prompt of 0027); the refusal of cross-folder nesting is superseded by 0059
+- **Status:** Active (implements the storage prompt of 0027); the refusal of cross-folder nesting is superseded by 0059; the prompt when creating a top-level standalone page is superseded by 0084
 - **Decision:**
   - Creating a top-level standalone page asks where to store it. The options are:
     - the default folder (preselected, so Enter accepts it)
@@ -1031,6 +1031,55 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Contrast:** every swatch is at least 3:1 against `bg-canvas` in both themes, and a test checks it.
 - **Rationale:** Ink drawn in a swatch color should be readable on the dark canvas, the way binder colors are lifted in dark mode, without changing what is stored.
 - **Alternatives considered:** fixed dark values in the design tokens (needs a token change in `docs/design`); lifting purple only (blue is also under 3:1).
+
+## 0082 — App icon
+- **Date:** 2026-10-26
+- **Status:** Active
+- **Decision:**
+  - **Master:** `docs/design/icon/noted-icon.svg`, with a transparent 1024 px PNG beside it.
+  - **Generated files:** `app/scripts/generate_icons.dart` rasterizes the SVG directly, with no new dependency. It writes:
+    - the Windows `.ico` (16, 24, 32, 48, 64, 128 and 256 px) to `app/windows/runner/resources/app_icon.ico`
+    - the macOS `AppIcon.icns` and the Android and iOS icon sets to `app/icons/`, ready for when those platform projects are added.
+    - Every size keeps the transparent background.
+  - **Small sizes:** at 32 px and below, the shapes are fitted to the pixel grid (edges on pixel boundaries, whole-pixel stroke widths) and the small mark on the fold is left out, so the 16 px icon is sharp instead of a blurred reduction.
+  - **Where it shows:** the Windows icon is the exe's icon resource, so it is the window, taskbar and Alt+Tab icon, the icon of both shortcuts (0054, 0063) and of the exe in the zip.
+- **Rationale:** One master keeps every platform's icon the same, and generating from the SVG keeps small sizes crisp.
+- **Alternatives considered:** `flutter_launcher_icons` (it scales the PNG down, which blurs 16 px, and it needs the platform projects to exist).
+
+## 0083 — Zoom anchored to the pointer
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0003)
+- **Decision:**
+  - **Anchor:** Ctrl+mouse wheel and touchpad pinch keep the canvas point under the pointer (for a pinch, under the fingers' current centre) in place after every zoom step.
+    - Each step is computed from the current view and the current pointer position.
+    - A pinch uses the scale the view had when it started times the gesture's cumulative scale, so a long pinch doesn't drift.
+  - **Bounds:** the bounded pan (0003) applies after anchoring and moves the view only by the overshoot on each axis, so there is no sideways jump.
+  - **Keyboard:** Ctrl+= and Ctrl+- zoom around the mouse when it is over the canvas, and around the centre of the view otherwise.
+  - **Unchanged:** clicking the zoom readout (and Ctrl+0) resets to 100% around the centre, and Fit all is unchanged.
+  - **Limits:** at the minimum or maximum zoom, further zoom input does nothing.
+- **Rationale:** Zooming toward what you point at is expected on every platform, and drift made pinch zoom unreliable.
+- **Alternatives considered:** always zooming around the view centre (the earlier keyboard behaviour); computing a pinch from the start view only (pan overshoot would unwind on the way back).
+
+## 0084 — Instant new pages and binders
+- **Date:** 2026-10-26
+- **Status:** Active (supersedes the prompt when creating a top-level standalone page in 0056, and "New binder asks for a folder" in 0049; extends 0038)
+- **Decision:**
+  - **New page:** the + next to Pages, the "New page" menu item and Ctrl+N (a registry command that also works while a note or the title is being edited) create the page at once in the default page folder.
+    - The page opens with the caret in its title, which is an inline field above the canvas. Enter or leaving the field renames the page.
+    - There is no dialog. New page from template keeps its template picker and uses the default folder.
+    - Subpages keep their parent's location, and pages in a binder stay in the binder.
+  - **Default folders:** "Default page folder" and "Default binder folder" are in the gear menu, stored per device in `settings.json` as `"defaultPageFolder"` and `"defaultBinderFolder"`.
+    - Out of the box they are `%APPDATA%\Noted\pages` and `%APPDATA%\Noted\binders` (`~/.noted/…` elsewhere). Nothing is asked on first run.
+    - The app creates only these built-in folders. A chosen folder that is missing is shown as unavailable and is never recreated (0064).
+    - A chosen default page folder joins the standalone folders (0056); pages in the previous default stay listed.
+  - **Move to folder…:** in the page's menu. It opens the folder picker and moves the page and its subpages with the verified copy-then-delete move (0049, 0059). A binder folder is refused as the target; pages still move into a binder by dragging. The folder picker for pages appears only here.
+  - **New binder:** created at once in a new subfolder of the default binder folder, named after the binder.
+    - A taken name gets a number: "New binder 2", "New binder 3" and so on.
+    - Characters not allowed in file names are replaced.
+    - Its cover opens with the title field focused. Renaming the binder later doesn't rename its folder.
+  - **Folder pickers kept:** "New binder in another folder…" keeps the picker. "Open binder…" opens an existing binder folder with the picker and refuses a folder with no binder file.
+- **Rationale:** Creating a page or binder should be one action, with the location chosen once in settings and changed per page only when needed.
+- **Alternatives considered:** asking where to store every new top-level page (0056); asking for a folder for every new binder (0049).
 
 ---
 
