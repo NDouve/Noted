@@ -86,7 +86,10 @@ class _BoxHostState extends State<BoxHost> {
 
   @override
   Widget build(BuildContext context) {
-    final node = widget.node;
+    // The page's current node, not the one this widget was built with: a
+    // content commit doesn't rebuild the canvas, so a rebuild for another
+    // reason (hover, a menu opening) must not hand the module older data.
+    final node = widget.controller.page.node(widget.node.id) ?? widget.node;
     final b = node.bounds;
     if (b == null) {
       return const Positioned(left: 0, top: 0, child: SizedBox.shrink());
