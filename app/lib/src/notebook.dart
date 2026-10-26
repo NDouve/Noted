@@ -11,6 +11,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'app_settings.dart';
 import 'recovery_store.dart';
+import 'search_scope.dart';
 
 /// Where page files live in Prototype 1: one local folder (0007).
 ///
@@ -366,6 +367,68 @@ class Notebook extends ChangeNotifier {
   // page is read-only now.
   String? _orphanLoc;
   String? _readOnlyReason;
+
+  /// Called with a page and its location (the key search uses to group pages)
+  /// whenever the page's content is written by the app or read after a change
+  /// on disk, so the in-memory search index stays current. Null: nobody
+  /// listens.
+  void Function(String location, NotedPage page)? onPageContent;
+
+  /// Everything search can read now, and what it has to skip and why:
+  /// unavailable folders, binders that are away or damaged, and page files
+  /// that can't be read. Pages are loaded through their stores.
+  SearchScope searchScope() {
+    final pages = <SearchablePage>[];
+    final skipped = <NotSearched>[];
+    for (final e in _loc.entries) {
+      if (_isLocked(e.value)) continue;
+      final PageStore st;
+      try {
+        st = _storeOf(e.value);
+      } on NotebookException {
+        continue;
+      }
+      pages.add(SearchablePage(e.key, e.value, () => st.load(e.key)));
+    }
+    if (_defaultGone) {
+      skipped.add(const NotSearched('Pages', 'Folder not found. It may be on another device.'));
+    }
+    for (final f in _folders.values) {
+      if (!f.available) {
+        skipped.add(NotSearched(f.name, f.reason ?? 'Folder not available.'));
+      }
+    }
+    for (final b in _binders.values) {
+      if (!b.available) {
+        skipped.add(
+          NotSearched(
+            b.title,
+            b.reason ??
+                (b.readOnly ? "The binder's file can't be read." : 'The binder is not available.'),
+          ),
+        );
+      }
+    }
+    for (final u in [...unreadable, for (final b in _binders.values) ...b.unreadable]) {
+      skipped.add(NotSearched(_folderName(u.path), u.reason));
+    }
+    return SearchScope(pages, skipped);
+  }
+
+  /// Where page [id] sits, for showing a search result: the binder's title
+  /// (`Pages` for a standalone page), then its parents, then its own title.
+  List<String> pagePath(String id) {
+    final loc = _loc[id];
+    final tree = _treeOf(loc ?? _standalone);
+    final titles = <String>[];
+    String? cur = id;
+    while (cur != null) {
+      final t = _metas[cur]?.title ?? '';
+      titles.add(t.isEmpty ? 'Untitled page' : t);
+      cur = tree.parentIdOf(cur);
+    }
+    return [_binders[loc]?.title ?? 'Pages', ...titles.reversed];
+  }
 
   /// The standalone pages' tree.
   PageTree get tree => _tree;
@@ -1866,6 +1929,7 @@ class Notebook extends ChangeNotifier {
     _known[key] = writePage(page);
     _pathId[key] = page.id;
     if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
+    onPageContent?.call(loc, page);
   }
 
   Future<void> _delete(String loc, String id) async {
@@ -2378,6 +2442,7 @@ class Notebook extends ChangeNotifier {
     }
     _setConflict(id, hasConflicts(page));
     _touch(loc);
+    onPageContent?.call(loc, page);
     _rebuildTree();
   }
 
@@ -2392,6 +2457,8 @@ class Notebook extends ChangeNotifier {
     final save = writePage(merged) != text || _pendingSave?.id == merged.id;
     _metas[merged.id] = merged.meta;
     c.applyExternal(merged, save: save);
+    final loc = _loc[merged.id];
+    if (loc != null) onPageContent?.call(loc, merged);
     _setConflict(merged.id, hasConflicts(merged));
     _rebuildTree();
   }

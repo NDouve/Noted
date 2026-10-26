@@ -9,6 +9,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'app_settings.dart';
 import 'notebook.dart';
+import 'notebook_search.dart';
 
 /// Ids of the app's commands (Box API 0.4 command registry).
 abstract final class AppCommands {
@@ -45,6 +46,9 @@ abstract final class AppCommands {
   // Default folders (the settings menu).
   static const String defaultPageFolder = 'app.settings.defaultPageFolder';
   static const String defaultBinderFolder = 'app.settings.defaultBinderFolder';
+
+  // Search.
+  static const String search = 'app.search';
 
   static const String themeSystem = 'app.theme.system';
   static const String themeLight = 'app.theme.light';
@@ -285,6 +289,23 @@ CommandRegistry folderSettingsCommands(Notebook nb) => CommandRegistry()
       },
     ),
   ]);
+
+/// The "Search all pages" command (Ctrl+Shift+F, or the toolbar's Search
+/// button): it puts the caret in the sidebar's search field. It works in a
+/// note editor and on a read-only page. The registry that gets it owns and
+/// disposes it, so every registry needs its own.
+Command searchCommand(NotebookSearch search) => Command(
+  id: AppCommands.search,
+  label: 'Search all pages',
+  icon: Icons.manage_search_rounded,
+  shortcut: const SingleActivator(LogicalKeyboardKey.keyF, control: true, shift: true),
+  alternateShortcuts: const [
+    SingleActivator(LogicalKeyboardKey.keyF, meta: true, shift: true),
+  ],
+  whileEditing: true,
+  whileReadOnly: true,
+  invoke: search.requestFocus,
+);
 
 /// The theme commands: Follow system, Light, Dark. The one in use is
 /// checked.

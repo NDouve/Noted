@@ -10,15 +10,20 @@ import 'app_commands.dart';
 import 'app_settings.dart';
 import 'binder_cover.dart';
 import 'notebook.dart';
+import 'notebook_search.dart';
 import 'page_title_field.dart';
+import 'search_panel.dart';
 import 'page_tree_view.dart';
 import 'settings_menu.dart';
 
 /// Sidebar with the page tree, and the open page's canvas.
 class Home extends StatefulWidget {
-  const Home({super.key, required this.notebook, this.settings});
+  const Home({super.key, required this.notebook, this.settings, this.search});
 
   final Notebook notebook;
+
+  /// Search over all pages. Null: the home makes its own.
+  final NotebookSearch? search;
 
   /// This device's settings; the settings menu is shown when given.
   final AppSettings? settings;
@@ -32,16 +37,51 @@ class _HomeState extends State<Home> {
 
   Notebook get notebook => widget.notebook;
 
-  /// App-level shortcuts (Ctrl+N: new page). Keys bubble up from the canvas,
-  /// a note editor or the title field to here; only the commands that work
-  /// while editing answer, and the rest is left alone.
+  late final NotebookSearch _search = widget.search ?? NotebookSearch(notebook);
+  late final CommandRegistry _searchCommands = CommandRegistry()..register(searchCommand(_search));
+
+  /// Asks the open page's canvas to open Find on page (from a search result).
+  final ValueNotifier<FindRequest?> _findRequests = ValueNotifier<FindRequest?>(null);
+
+  @override
+  void dispose() {
+    _searchCommands.dispose();
+    _findRequests.dispose();
+    if (widget.search == null) _search.dispose();
+    super.dispose();
+  }
+
+  /// A search result was chosen: opens its page, and the page's canvas brings
+  /// the match into view and highlights it, with the search text in its find
+  /// bar.
+  Future<void> _openResult(SearchResultPage page, SearchResultBox box) async {
+    try {
+      await notebook.open(page.pageId);
+    } on NotebookException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      }
+      return;
+    }
+    _findRequests.value = FindRequest(
+      pageId: page.pageId,
+      text: _search.text,
+      boxId: box.boxId,
+    );
+  }
+
+  /// App-level shortcuts (Ctrl+N: new page, Ctrl+Shift+F: search). Keys bubble
+  /// up from the canvas, a note editor or the title field to here; only the
+  /// commands that work while editing answer, and the rest is left alone.
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     final actions = _tree.currentState;
     if (actions == null) return KeyEventResult.ignored;
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
     final k = HardwareKeyboard.instance;
     if (!k.isControlPressed && !k.isMetaPressed) return KeyEventResult.ignored;
-    final command = pagesHeaderCommands(notebook, actions).resolve(event, editing: true);
+    final command =
+        pagesHeaderCommands(notebook, actions).resolve(event, editing: true) ??
+        _searchCommands.resolve(event, editing: true);
     if (command == null) return KeyEventResult.ignored;
     command.run();
     return KeyEventResult.handled;
@@ -73,7 +113,31 @@ class _HomeState extends State<Home> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Expanded(child: PageTreeView(key: _tree, notebook: notebook)),
+                    SearchField(search: _search, onOpen: _openResult),
+                    Expanded(
+                      child: ListenableBuilder(
+                        listenable: _search,
+                        builder: (context, _) {
+                          final searching = _search.hasQuery;
+                          // The tree stays mounted (its expanded state and
+                          // the page shortcuts) while results are shown.
+                          return Stack(
+                            children: [
+                              Positioned.fill(
+                                child: Offstage(
+                                  offstage: searching,
+                                  child: PageTreeView(key: _tree, notebook: notebook),
+                                ),
+                              ),
+                              if (searching)
+                                Positioned.fill(
+                                  child: SearchResultsView(search: _search, onOpen: _openResult),
+                                ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
                     if (widget.settings != null)
                       SettingsMenu(settings: widget.settings!, notebook: notebook),
                   ],
@@ -113,6 +177,8 @@ class _HomeState extends State<Home> {
                             controller: current,
                             tools: notebook.tools,
                             readOnly: notebook.readOnlyReason != null,
+                            findRequests: _findRequests,
+                            extraCommands: () => [searchCommand(_search)],
                           ),
                         ),
                       ],
