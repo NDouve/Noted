@@ -70,6 +70,8 @@ Shortcuts
     powershell -ExecutionPolicy Bypass -File install-shortcuts.ps1
   It creates "Noted" on the Desktop and in the Start menu, pointing to
   noted.exe in this folder. Run it again after moving the folder.
+  If a shortcut or the taskbar still shows an old icon after an update, run
+  it with -ResetIconCache (Explorer restarts and rebuilds its icon cache).
 
 Runtime
   The Visual C++ runtime DLLs the app needs (msvcp140.dll,
