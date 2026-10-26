@@ -708,26 +708,10 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
   }
 
   Future<void> _rename(BuildContext context, PageMeta p) async {
-    final text = TextEditingController(text: p.title);
     final title = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Rename page'),
-        content: TextField(
-          controller: text,
-          autofocus: true,
-          onSubmitted: (v) => Navigator.pop(context, v),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, text.text),
-            child: const Text('Rename'),
-          ),
-        ],
-      ),
+      builder: (context) => _RenameDialog(initial: p.title),
     );
-    text.dispose();
     if (title != null && title.trim().isNotEmpty) await _nb.rename(p.id, title.trim());
   }
 
@@ -771,5 +755,46 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         .then((reason) {
           if (reason != SnackBarClosedReason.action) _nb.discardDeleted(deleted);
         });
+  }
+}
+
+/// The Rename page dialog. It owns its text controller, so the controller
+/// lives as long as the dialog's exit transition (a controller disposed by
+/// the caller as soon as the dialog closes is still used while it fades out).
+class _RenameDialog extends StatefulWidget {
+  const _RenameDialog({required this.initial});
+
+  final String initial;
+
+  @override
+  State<_RenameDialog> createState() => _RenameDialogState();
+}
+
+class _RenameDialogState extends State<_RenameDialog> {
+  late final TextEditingController _text = TextEditingController(text: widget.initial);
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Rename page'),
+      content: TextField(
+        controller: _text,
+        autofocus: true,
+        onSubmitted: (v) => Navigator.pop(context, v),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _text.text),
+          child: const Text('Rename'),
+        ),
+      ],
+    );
   }
 }
