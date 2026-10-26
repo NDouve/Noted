@@ -99,7 +99,13 @@ class PageCanvasState extends State<PageCanvas>
   CanvasGeometry? _geometry;
   Rect? _content;
   int? _middlePointer;
-  double _panZoomScale = 1;
+  // A touchpad pinch: the zoom the view had when it started, and the
+  // two-finger pan applied so far (to move only by what is new).
+  double _pinchStartScale = 1;
+  Offset _pinchPan = Offset.zero;
+
+  /// Where the mouse last was over the canvas, null when it is elsewhere.
+  Offset? _hover;
   ToolSession? _session;
   int? _sessionPointer;
   PointerEvent? _lastToolEvent;
@@ -382,14 +388,26 @@ class PageCanvasState extends State<PageCanvas>
   @override
   void fitAll() => _setView((g, _) => g.fitAll(_content));
 
+  /// Zooms around the mouse if it is over the canvas, else around the
+  /// centre of the view.
   @override
-  void zoomBy(double factor) =>
-      _setView((g, v) => g.zoomAt(v, g.viewport.center(Offset.zero), factor));
+  void zoomBy(double factor) => _setView(
+    (g, v) => g.zoomAt(
+      v,
+      _hover ?? g.viewport.center(Offset.zero),
+      factor,
+    ),
+  );
 
+  /// Zooms to [scale] around the centre of the view.
   @override
-  void zoomTo(double scale) => zoomBy(scale / (_view?.scale ?? 1));
+  void zoomTo(double scale) => _setView(
+    (g, v) =>
+        g.zoomAt(v, g.viewport.center(Offset.zero), scale / v.scale),
+  );
 
   void _onSignal(PointerSignalEvent event) {
+    if (event.kind == PointerDeviceKind.mouse) _hover = event.localPosition;
     // Registering lets a scrollable box claim the wheel first.
     GestureBinding.instance.pointerSignalResolver.register(event, (e) {
       if (e is PointerScrollEvent) {
@@ -525,25 +543,44 @@ class PageCanvasState extends State<PageCanvas>
                     if (e.pointer == _middlePointer) _middlePointer = null;
                     if (e.pointer == _sessionPointer) _cancelSession();
                   },
-                  onPointerPanZoomStart: (_) => _panZoomScale = 1,
+                  onPointerHover: (e) {
+                    if (e.kind == PointerDeviceKind.mouse) {
+                      _hover = e.localPosition;
+                    }
+                  },
+                  onPointerPanZoomStart: (_) {
+                    _pinchStartScale = _view?.scale ?? 1;
+                    _pinchPan = Offset.zero;
+                  },
                   onPointerPanZoomUpdate: (e) {
-                    final factor = e.scale / _panZoomScale;
-                    _panZoomScale = e.scale;
                     // A box that scrolls has claimed this gesture's panning
                     // (BoxScrollScope); a pinch still zooms the canvas.
-                    final pans = !TrackpadClaims.isClaimed(e.pointer);
-                    _setView((g, v) {
-                      final panned = pans ? g.pan(v, e.panDelta) : v;
-                      return factor == 1
-                          ? panned
-                          : g.zoomAt(panned, e.localPosition, factor);
-                    });
+                    final claimed = TrackpadClaims.isClaimed(e.pointer);
+                    // The focal point is where the fingers are now: the
+                    // gesture's start plus its pan so far. The scale is
+                    // the start scale times the gesture's cumulative scale,
+                    // so it never drifts; the content under the fingers
+                    // stays under them at every step.
+                    // (e.pan, not e.localPan: Flutter transforms that as a
+                    // position, so it would include the canvas's offset.)
+                    final pan = claimed ? Offset.zero : e.pan;
+                    final step = pan - _pinchPan;
+                    _pinchPan = pan;
+                    _setView(
+                      (g, v) => g.zoomAt(
+                        v,
+                        e.localPosition + pan,
+                        _pinchStartScale * e.scale / v.scale,
+                        pan: step,
+                      ),
+                    );
                   },
                   onPointerPanZoomEnd: (e) => TrackpadClaims.release(e.pointer),
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onTapUp: _onBackgroundTap,
                     child: MouseRegion(
+                      onExit: (_) => _hover = null,
                       cursor: tool?.cursor ?? MouseCursor.defer,
                       child: ColoredBox(
                         color: scheme.surfaceContainerLowest,

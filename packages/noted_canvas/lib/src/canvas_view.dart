@@ -143,9 +143,21 @@ final class CanvasGeometry {
       lo > hi ? (lo + hi) / 2 : v.clamp(lo, hi).toDouble();
 
   /// Zooms by [factor] around [focal], a viewport point that stays put.
-  CanvasView zoomAt(CanvasView view, Offset focal, double factor) {
-    final world = view.toWorld(focal);
+  ///
+  /// [pan] first moves the content by that many viewport pixels (a pinch
+  /// whose fingers also move): the world point that was under
+  /// `focal - pan` ends up under [focal]. The anchor is exact; the pan
+  /// bounds then move the view only by the overshoot on each axis. At a
+  /// zoom limit, with no [pan], the view is returned untouched.
+  CanvasView zoomAt(
+    CanvasView view,
+    Offset focal,
+    double factor, {
+    Offset pan = Offset.zero,
+  }) {
     final s = (view.scale * factor).clamp(minScale, maxScale).toDouble();
+    if (s == view.scale && pan == Offset.zero) return view;
+    final world = view.toWorld(focal - pan);
     return clamp(CanvasView(s, focal - world * s));
   }
 
