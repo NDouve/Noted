@@ -1,0 +1,32 @@
+<!-- @dsCard group="Canvas" height=260 width=1120 subtitle="Idle, selected, conflict, read-only" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;padding:28px 24px;background:var(--bg-canvas);font-family:var(--font-sans);color:var(--text);font-size:14px;line-height:22px}
+.row{display:flex;gap:var(--space-6);align-items:flex-start;flex-wrap:wrap}
+.box{position:relative;width:240px;box-sizing:border-box;padding:14px var(--space-4);background:var(--surface);border:1px solid var(--border-box);border-radius:var(--radius-lg)}
+.t{font-size:16px;line-height:22px;font-weight:600;margin-bottom:6px}
+.sel{border-color:var(--accent);box-shadow:var(--shadow-selected)}
+.h{position:absolute;width:var(--handle);height:var(--handle);box-sizing:border-box;background:var(--surface);border:1px solid var(--accent)}
+.cf{border:2px solid var(--conflict)}
+.badge{position:absolute;top:-12px;right:12px;padding:2px 8px;border-radius:var(--radius-full);background:var(--conflict);color:var(--on-conflict);font-size:12px;line-height:16px;font-weight:600}
+.meta{margin-top:8px;font-size:12px;line-height:16px;color:var(--text-muted)}
+.ro{padding:0;overflow:hidden}
+.banner{padding:6px var(--space-4);background:var(--conflict-soft);color:var(--text);font-size:12px;line-height:16px}
+.ro .in{padding:12px var(--space-4) 14px}
+</style>
+</head>
+<body>
+<div class="row">
+  <div class="box"><div class="t">Field notes</div>Access road washes out after heavy rain.</div>
+  <div class="box sel"><div class="t">Selected</div>Accent border, soft ring, same handles on every box.
+    <span class="h" style="left:-5px;top:calc(50% - 4px)"></span><span class="h" style="right:-5px;top:calc(50% - 4px)"></span><span class="h" style="left:calc(50% - 4px);bottom:-5px"></span><span class="h" style="left:-5px;bottom:-5px"></span><span class="h" style="right:-5px;bottom:-5px"></span>
+  </div>
+  <div class="box cf"><span class="badge">Conflict</span><div class="t">Next steps</div>Book the soil lab for the week of the 9th.<div class="meta">Edited on LAPTOP and DESKTOP</div></div>
+  <div class="box ro"><div class="banner">Folder unavailable: read-only until it's back.</div><div class="in"><div class="t">Survey photos</div>Edits are paused, nothing is lost.</div></div>
+</div>
+</body>
+</html>

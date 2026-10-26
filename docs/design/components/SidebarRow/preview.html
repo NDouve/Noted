@@ -1,0 +1,36 @@
+<!-- @dsCard group="Navigation" height=300 subtitle="Header, divider, active with conflict, normal, unavailable" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;padding:16px;background:var(--bg-sidebar);font-family:var(--font-sans);color:var(--text);font-size:14px}
+nav{width:var(--sidebar-width);display:flex;flex-direction:column;gap:2px}
+.hd{display:flex;align-items:center;gap:var(--space-2);padding:4px var(--space-2);font-size:12px;line-height:16px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-muted)}
+.chip{width:8px;height:8px;border-radius:var(--radius-sm);background:var(--binder-green)}
+.row{display:flex;align-items:center;gap:var(--space-2);min-height:var(--row);padding:0 var(--space-2);border-radius:var(--radius-md);color:var(--text);text-decoration:none}
+.row:hover{background:var(--surface-hover)}
+.row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.chev{width:12px;font-size:10px;color:var(--text-muted)}
+.l1{padding-left:28px}
+.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.on:hover{background:var(--accent-soft)}
+.dot{margin-left:auto;width:8px;height:8px;border-radius:var(--radius-full);background:var(--conflict)}
+.off{color:var(--text-disabled);flex-direction:column;align-items:flex-start;justify-content:center;padding-top:4px;padding-bottom:4px}
+.off small{font-size:12px;line-height:16px;color:var(--text-muted)}
+</style>
+</head>
+<body>
+<nav aria-label="Page tree">
+  <div class="hd"><span class="chip"></span>Projects</div>
+  <a class="row" href="#"><span class="chev">▾</span>Projects</a>
+  <a class="row l1 on" href="#" aria-current="page">Phase 1 — Site survey<span class="dot" role="img" aria-label="Has a conflict"></span></a>
+  <a class="row l1" href="#">Phase 2 — Design</a>
+  <a class="row l1" href="#">Meetings</a>
+  <div class="hd" style="margin-top:12px"><span class="chip" style="background:var(--text-muted)"></span>Pages</div>
+  <a class="row" href="#">Inbox</a>
+  <a class="row off" href="#">Survey photos<small>On another device · read-only</small></a>
+</nav>
+</body>
+</html>

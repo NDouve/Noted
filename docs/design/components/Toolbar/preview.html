@@ -1,0 +1,46 @@
+<!-- @dsCard group="Canvas" height=120 subtitle="Select active, Pen inactive, swatches dimmed" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;padding:16px;background:var(--bg-app);font-family:var(--font-sans);color:var(--text)}
+.bar{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-1);min-height:var(--toolbar-height);box-sizing:border-box;padding:0 var(--space-4);background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg)}
+.ib{width:var(--control);height:var(--control);display:grid;place-items:center;border:0;border-radius:var(--radius-md);background:transparent;color:var(--text);cursor:pointer}
+.ib:hover{background:var(--surface-hover)}
+.ib[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
+.ib:focus-visible,.tb:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.sep{width:1px;height:24px;margin:0 var(--space-2);background:var(--border)}
+.sw{width:28px;height:28px;border-radius:var(--radius-full);border:2px solid transparent;opacity:.45;padding:0}
+.sw.on{border-color:var(--accent)}
+.tb{height:var(--control);padding:0 10px;border:0;border-radius:var(--radius-md);background:transparent;color:var(--text);font:inherit;font-size:14px;cursor:pointer}
+.tb:hover{background:var(--surface-hover)}
+.tb[disabled]{color:var(--text-disabled);cursor:default;background:transparent}
+.zoom{height:32px;min-width:56px;border:1px solid var(--border);background:var(--surface);font-variant-numeric:tabular-nums}
+.grow{flex-grow:1}
+</style>
+</head>
+<body>
+<div class="bar" role="toolbar" aria-label="Tools">
+  <button class="ib" type="button" aria-label="Select (V)" aria-pressed="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3l14 8-6 2-2 6z"/></svg></button>
+  <button class="ib" type="button" aria-label="Pen (P)" aria-pressed="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
+  <button class="ib" type="button" aria-label="Eraser (E)" aria-pressed="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20H8l-5-5 10-10 8 8-6 6"/></svg></button>
+  <span class="sep"></span>
+  <button class="sw on" type="button" aria-label="Default ink" style="background:var(--ink-default)" disabled></button>
+  <button class="sw" type="button" aria-label="Blue ink" style="background:var(--ink-blue)" disabled></button>
+  <button class="sw" type="button" aria-label="Orange ink" style="background:var(--ink-orange)" disabled></button>
+  <button class="sw" type="button" aria-label="Green ink" style="background:var(--ink-green)" disabled></button>
+  <button class="sw" type="button" aria-label="Purple ink" style="background:var(--ink-purple)" disabled></button>
+  <span class="sep"></span>
+  <button class="ib" type="button" aria-label="Undo (Ctrl+Z)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
+  <button class="ib" type="button" aria-label="Redo (Ctrl+Y)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
+  <span class="sep"></span>
+  <button class="tb" type="button">Table</button>
+  <button class="tb" type="button" disabled>Equation</button>
+  <span class="grow"></span>
+  <button class="tb" type="button">Fit all</button>
+  <button class="tb zoom" type="button" aria-label="Zoom 100%, click to reset">100%</button>
+</div>
+</body>
+</html>

@@ -1,0 +1,29 @@
+<!-- @dsCard group="Actions" height=96 subtitle="Primary, secondary, ghost, destructive, disabled" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;padding:24px;background:var(--surface);font-family:var(--font-sans);color:var(--text)}
+.row{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.b{height:var(--control);padding:0 14px;border-radius:var(--radius-md);font:inherit;font-size:14px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--surface);color:var(--text)}
+.b:hover{background:var(--surface-hover)}
+.b:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.p{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.p:hover{background:var(--accent)}
+.g{border-color:transparent;background:transparent}
+.d{color:var(--error)}
+.b[disabled]{color:var(--text-disabled);cursor:default;background:var(--surface)}
+</style>
+</head>
+<body>
+<div class="row">
+  <button class="b p" type="button">Use this version</button>
+  <button class="b" type="button">Keep both</button>
+  <button class="b g" type="button">Cancel</button>
+  <button class="b d" type="button">Delete page…</button>
+  <button class="b" type="button" disabled>Merge</button>
+</div>
+</body>
+</html>

@@ -1,0 +1,31 @@
+<!-- @dsCard group="Overlays" height=300 subtitle="Page context menu" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;padding:20px;background:var(--bg-canvas);font-family:var(--font-sans);color:var(--text);font-size:14px}
+.menu{width:240px;box-sizing:border-box;padding:var(--space-1);background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-popover);display:flex;flex-direction:column}
+.it{display:flex;align-items:center;min-height:var(--row);padding:0 10px;border:0;border-radius:var(--radius-md);background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer}
+.it:hover,.it:focus-visible{background:var(--surface-hover);outline:none}
+.it kbd{margin-left:auto;font-family:inherit;font-size:12px;color:var(--text-muted)}
+.it[disabled]{color:var(--text-disabled);cursor:default;background:transparent}
+.sep{height:1px;margin:var(--space-1) 0;background:var(--border)}
+.danger{color:var(--error)}
+</style>
+</head>
+<body>
+<div class="menu" role="menu" aria-label="Page">
+  <button class="it" type="button" role="menuitem">Rename<kbd>F2</kbd></button>
+  <button class="it" type="button" role="menuitem">New subpage<kbd>Ctrl+Shift+N</kbd></button>
+  <button class="it" type="button" role="menuitem">New subpage from template…</button>
+  <button class="it" type="button" role="menuitem">Save as template…</button>
+  <div class="sep" role="separator"></div>
+  <button class="it" type="button" role="menuitem">Indent<kbd>Tab</kbd></button>
+  <button class="it" type="button" role="menuitem" disabled>Outdent<kbd>Shift+Tab</kbd></button>
+  <div class="sep" role="separator"></div>
+  <button class="it danger" type="button" role="menuitem">Delete page…</button>
+</div>
+</body>
+</html>
