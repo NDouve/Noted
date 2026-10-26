@@ -35,6 +35,8 @@ final class PageHits {
     required this.pageId,
     required this.location,
     required this.boxes,
+    this.title = '',
+    this.titleRanges = const [],
   });
 
   final String pageId;
@@ -42,11 +44,22 @@ final class PageHits {
   /// Where the page is kept (a key the caller chose when it added the page).
   final String location;
 
-  /// In the page's own box order.
+  /// In the page's own box order. Empty when only the title matched.
   final List<BoxHit> boxes;
 
-  /// Total matches on the page.
-  int get matchCount => boxes.fold(0, (n, b) => n + b.ranges.length);
+  /// The page's title as stored in its header.
+  final String title;
+
+  /// Where the query is in [title]; empty if the title did not match. A
+  /// title matches when it holds every term of the query by itself: title
+  /// words and box words are never mixed for one match.
+  final List<SearchRange> titleRanges;
+
+  bool get titleMatched => titleRanges.isNotEmpty;
+
+  /// Total matches on the page (title and boxes).
+  int get matchCount =>
+      boxes.fold(titleRanges.length, (n, b) => n + b.ranges.length);
 }
 
 class _IndexedBox {
@@ -59,9 +72,12 @@ class _IndexedBox {
 }
 
 class _IndexedPage {
-  _IndexedPage(this.location, this.boxes);
+  _IndexedPage(this.location, this.title, this.boxes)
+    : foldedTitle = foldText(title);
 
   final String location;
+  final String title;
+  final FoldedText foldedTitle;
   final List<_IndexedBox> boxes;
 }
 
@@ -103,7 +119,7 @@ final class SearchIndex {
       if (text.trim().isEmpty) continue;
       boxes.add(_IndexedBox(node.id, node.typeId, text));
     }
-    _pages[page.id] = _IndexedPage(location, boxes);
+    _pages[page.id] = _IndexedPage(location, page.meta.title, boxes);
   }
 
   void removePage(String pageId) => _pages.remove(pageId);
@@ -114,12 +130,20 @@ final class SearchIndex {
 
   void clear() => _pages.clear();
 
-  /// The pages with at least one box that holds every term of [query], in
-  /// the order the pages were first added.
+  /// The pages whose title holds every term of [query], or with at least one
+  /// box that does. Pages matched by title come first; within each group the
+  /// pages are in the order they were first added.
   List<PageHits> search(SearchQuery query) {
     if (query.isEmpty) return const [];
+    final titled = <PageHits>[];
     final result = <PageHits>[];
     for (final entry in _pages.entries) {
+      final page = entry.value;
+      var titleRanges = const <SearchRange>[];
+      if (page.title.isNotEmpty &&
+          query.matchesFolded(page.foldedTitle.text)) {
+        titleRanges = query.rangesInFolded(page.foldedTitle) ?? const [];
+      }
       List<BoxHit>? hits;
       for (final box in entry.value.boxes) {
         if (!query.matchesFolded(box.folded.text)) continue;
@@ -134,16 +158,18 @@ final class SearchIndex {
           ),
         );
       }
-      if (hits != null) {
-        result.add(
+      if (hits != null || titleRanges.isNotEmpty) {
+        (titleRanges.isNotEmpty ? titled : result).add(
           PageHits(
             pageId: entry.key,
-            location: entry.value.location,
-            boxes: hits,
+            location: page.location,
+            boxes: hits ?? const [],
+            title: page.title,
+            titleRanges: titleRanges,
           ),
         );
       }
     }
-    return result;
+    return [...titled, ...result];
   }
 }

@@ -259,4 +259,77 @@ void main() {
       expect(hits.single.boxes.single.text.substring(r.first.start, r.first.end), 'Crème');
     });
   });
+
+  group('page titles', () {
+    NotedPage titled(String id, String title, List<BoxRecord> boxes) {
+      var p = NotedPage.create(PageMeta.create(id: id, title: title, order: 0));
+      for (final b in boxes) {
+        p = p.insertNode(b);
+      }
+      return p;
+    }
+
+    test('a title is matched with the same rules as boxes', () {
+      final index = SearchIndex()
+        ..setPage(titled('p1', 'Café Budget', []), 'l')
+        ..setPage(titled('p2', 'Budgets', []), 'l');
+      final hits = index.search(SearchQuery.parse('CAFE'));
+      expect(hits.single.pageId, 'p1');
+      expect(hits.single.boxes, isEmpty);
+      expect(hits.single.title, 'Café Budget');
+      expect(hits.single.titleRanges, [const SearchRange(0, 4)]);
+      expect(hits.single.matchCount, 1);
+      // Whole words only.
+      expect(index.search(SearchQuery.parse('budget')).map((h) => h.pageId), ['p1']);
+      // AND and phrases.
+      expect(index.search(SearchQuery.parse('budget cafe')).single.pageId, 'p1');
+      expect(index.search(SearchQuery.parse('"cafe budget"')).single.pageId, 'p1');
+      expect(index.search(SearchQuery.parse('"budget cafe"')), isEmpty);
+    });
+
+    test('title words and box words are not mixed', () {
+      final index = SearchIndex()
+        ..setPage(titled('p1', 'Plan', [box('a', 'budget')]), 'l');
+      expect(index.search(SearchQuery.parse('plan budget')), isEmpty);
+      final both = index.search(SearchQuery.parse('plan')).single;
+      expect(both.titleMatched, isTrue);
+      expect(both.boxes, isEmpty);
+    });
+
+    test('a page can match by title and by boxes', () {
+      final index = SearchIndex()
+        ..setPage(titled('p1', 'Budget', [box('a', 'the budget')]), 'l');
+      final h = index.search(SearchQuery.parse('budget')).single;
+      expect(h.titleMatched, isTrue);
+      expect(h.boxes.single.boxId, 'a');
+      expect(h.matchCount, 2);
+    });
+
+    test('title-matched pages come first, insertion order kept in each group', () {
+      final index = SearchIndex()
+        ..setPage(titled('a', 'Other', [box('x', 'budget')]), 'l')
+        ..setPage(titled('b', 'Budget two', []), 'l')
+        ..setPage(titled('c', 'More', [box('x', 'budget')]), 'l')
+        ..setPage(titled('d', 'Budget one', [box('x', 'budget')]), 'l');
+      expect(index.search(SearchQuery.parse('budget')).map((h) => h.pageId), [
+        'b',
+        'd',
+        'a',
+        'c',
+      ]);
+    });
+
+    test('rename reindexes, removal and empty titles', () {
+      final index = SearchIndex()..setPage(titled('p', 'Old name', []), 'l');
+      expect(index.search(SearchQuery.parse('old')), hasLength(1));
+      index.setPage(titled('p', 'New name', []), 'l');
+      expect(index.search(SearchQuery.parse('old')), isEmpty);
+      expect(index.search(SearchQuery.parse('new')), hasLength(1));
+      index.setPage(titled('p', '', []), 'l');
+      expect(index.search(SearchQuery.parse('new')), isEmpty);
+      index.setPage(titled('p', 'Name', []), 'l');
+      index.removePage('p');
+      expect(index.search(SearchQuery.parse('name')), isEmpty);
+    });
+  });
 }
