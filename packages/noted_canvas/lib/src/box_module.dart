@@ -74,6 +74,9 @@ abstract class BoxModule<D> {
   /// list only the others. Ids are namespaced by module and must be unique.
   List<Command> commands(CommandHost host) => const [];
 
+  /// How the canvas frames this module's boxes (Box API 0.5).
+  BoxFrameStyle get frameStyle => BoxFrameStyle.framed;
+
   /// Renders an image snapshot (0035) as PNG bytes, or returns null for a
   /// text-only snapshot. Not stored yet: Prototype 1 boxes are text only.
   Future<Uint8List?> snapshotImage(D data, Size size) async => null;
@@ -86,13 +89,6 @@ abstract class BoxModule<D> {
         : buildEditor(context, box);
   }
 }
-
-/// Implemented by a box module whose boxes draw no idle frame (the drawing
-/// box: ink straight on the page). The host then shows no fill and no border
-/// until the box is selected, and draws a dashed `accent` outline instead of
-/// the solid selection border. Not part of the Box API: it is a host-side
-/// check on the module (BoxFrame guidelines).
-abstract interface class FramelessBoxModule {}
 
 /// The host's untyped side of a [BoxContext].
 final class BoxBinding {
@@ -138,4 +134,16 @@ final class _TypedBoxContext<D> implements BoxContext<D> {
   void commit(D data) => _b.commit(data);
   @override
   void requestBounds(Rect bounds) => _b.requestBounds(bounds);
+}
+
+/// How the canvas frames a module's boxes (Box API 0.5, BoxFrame
+/// guidelines).
+enum BoxFrameStyle {
+  /// A surface fill and a hairline frame while idle; an accent border when
+  /// selected.
+  framed,
+
+  /// No fill and no frame until selected (the drawing box: ink straight on
+  /// the page); a dashed accent outline when selected.
+  framelessUntilSelected,
 }

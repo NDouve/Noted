@@ -8,6 +8,14 @@ version.
 
 Versions are listed newest first.
 
+## 0.5 — 2026-10-26
+- `BoxModule.frameStyle`: how the canvas frames the module's boxes.
+  - `BoxFrameStyle.framed` (the default): a surface fill and a hairline frame while idle, and an accent border when selected.
+  - `BoxFrameStyle.framelessUntilSelected`: no fill and no frame until the box is selected, then a dashed accent outline. The drawing module uses it.
+- `Command.menu`: the ids of the commands a command offers as a toolbar dropdown.
+- `Command.readout`: the toolbar shows the command's text as an outlined numeric readout, as it does for the zoom level.
+- All additive. Decisions 0073, 0074 and 0078.
+
 ## 0.4 — 2026-10-26
 - Commands: `BoxModule.commands(CommandHost host)` returns the `Command`s a
   module adds (id, label, icon, optional shortcut, enabled and checked state,

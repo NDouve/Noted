@@ -47,8 +47,11 @@ class _Module extends BoxModule<String> {
 }
 
 /// Like the drawing box: no idle frame.
-class _Frameless extends _Module implements FramelessBoxModule {
+class _Frameless extends _Module {
   const _Frameless() : super('test.ink');
+
+  @override
+  BoxFrameStyle get frameStyle => BoxFrameStyle.framelessUntilSelected;
 }
 
 BoxRecord _box(String id, String type, {Bounds? at}) => BoxRecord.create(
@@ -62,6 +65,11 @@ BoxRecord _box(String id, String type, {Bounds? at}) => BoxRecord.create(
 );
 
 void main() {
+  test('a module is framed unless it says otherwise (Box API 0.5)', () {
+    expect(const _Module('test.note').frameStyle, BoxFrameStyle.framed);
+    expect(const _Frameless().frameStyle, BoxFrameStyle.framelessUntilSelected);
+  });
+
   for (final brightness in Brightness.values) {
     group('in ${brightness.name} mode', () {
       final theme = notedThemeData(brightness);

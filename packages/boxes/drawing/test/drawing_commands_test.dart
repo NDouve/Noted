@@ -66,6 +66,10 @@ void main() {
     return t.widget<IconButton>(button(tooltip)).onPressed != null;
   }
 
+  test('drawing boxes have no frame until selected', () {
+    expect(DrawingModule().frameStyle, BoxFrameStyle.framelessUntilSelected);
+  });
+
   testWidgets('the default toolbar has the pen, eraser, colors and widths', (t) async {
     await pump(t);
     for (final tip in [

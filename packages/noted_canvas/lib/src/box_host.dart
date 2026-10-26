@@ -153,7 +153,7 @@ class _BoxHostState extends State<BoxHost> {
     final metrics = NotedMetrics.of(context);
     final type = NotedTypography.of(context);
     final conflicted = node is BoxRecord && node.isConflicted;
-    final frameless = module is FramelessBoxModule;
+    final frameless = module?.frameStyle == BoxFrameStyle.framelessUntilSelected;
     final lit = selected || editing;
     final showGrip = editable && (_hover || lit);
     final w = b.width;
