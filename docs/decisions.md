@@ -1062,7 +1062,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0084 — Instant new pages and binders
 - **Date:** 2026-10-26
-- **Status:** Active (supersedes the prompt when creating a top-level standalone page in 0056, and "New binder asks for a folder" in 0049; extends 0038)
+- **Status:** Active (supersedes the prompt when creating a top-level standalone page in 0056, and "New binder asks for a folder" in 0049; extends 0038); extended by 0087 (binders from templates)
 - **Decision:**
   - **New page:** the + next to Pages, the "New page" menu item and Ctrl+N (a registry command that also works while a note or the title is being edited) create the page at once in the default page folder.
     - The page opens with the caret in its title, which is an inline field above the canvas. Enter or leaving the field renames the page.
@@ -1080,6 +1080,75 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Folder pickers kept:** "New binder in another folder…" keeps the picker. "Open binder…" opens an existing binder folder with the picker and refuses a folder with no binder file.
 - **Rationale:** Creating a page or binder should be one action, with the location chosen once in settings and changed per page only when needed.
 - **Alternatives considered:** asking where to store every new top-level page (0056); asking for a folder for every new binder (0049).
+
+## 0085 — Search and Box API 0.6
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0035 and 0067)
+- **Decision:**
+  - **Find on page (Ctrl+F):** a find bar at the top right of the canvas.
+    - It shows "3 of 12". Enter, Shift+Enter, F3 and Shift+F3 step between matches, and Esc closes it and clears every highlight.
+    - Each step brings the match's box into view, zooming out only if the box doesn't fit and never zooming in.
+    - Boxes with matches get a frame, thicker on the current one.
+    - Note boxes also mark matches in text, table cells and equations. A formula cell is marked only by its box's frame, since it shows its value.
+  - **Search all pages (Ctrl+Shift+F, and a search field at the top of the sidebar):**
+    - Results are grouped by page in sidebar order, each with the page path (binder or "Pages", parents, title) and snippets with the matches highlighted.
+    - Clicking a result opens the page with the find bar filled in and the clicked match current.
+    - Folders and binders that are unavailable or damaged, and page files that can't be read, are listed under "Not searched" with the reason.
+    - Search is the last item in the toolbar's view group.
+  - **Scope:** every reachable page in the standalone folders and the open binders. Page titles are not searched yet.
+  - **Index:**
+    - It is in memory only. It is never written to disk and never logged.
+    - It is built from the page files on first use, and kept current by the app's saves and by file watching (0051), including deletes, moves and folders that go away or come back.
+    - The open page is searched as committed to its model, not from the live editor.
+  - **What is searched:** only each box's text snapshot (0035). The core never reads box data, so unsupported boxes and future encrypted boxes are never parsed (invariants 2 and 3). Drawing boxes have no snapshot text and are skipped.
+  - **Matching:**
+    - Case- and accent-insensitive, using a folding table in pure Dart that covers Latin, Vietnamese, Greek tonos and common ligatures.
+    - Every word must appear in the same box, each as a whole word. A phrase in double quotes matches as a whole-word phrase.
+  - **Speed:** a benchmark test (500 pages × 20 boxes) checks that the median query is under 300 ms. It measured about 25 ms.
+  - **Box API 0.6:** `BoxContext.find` gives a module the find state (`BoxFind`: query, current box and current match), so it can mark matches in its own content by matching its own snapshot. The change is additive and recorded in `BOX_API_CHANGELOG.md`.
+  - **Commands:** `canvas.find` and find next or previous, and `app.search`. They are in the registry and work while a note is being edited.
+- **Rationale:** Finding text across a notebook is basic note-taking. Searching only the snapshots keeps search outside box data, and keeping the index in memory keeps plaintext off disk.
+- **Alternatives considered:** a persistent on-disk index (stores text outside the page files); having the core parse each module's data (breaks invariant 2).
+
+## 0086 — Refreshing Windows' icon cache
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0054 and 0063)
+- **Decision:**
+  - **What happened:** after the icon changed (0082), Explorer kept showing the old one on the Desktop, in the Start menu and on the taskbar. The exe already carried the new icon, and any new process read the new icon from it. Explorer was serving the old one from its memory and its cache files (`iconcache_*.db`), which it hadn't rewritten since before the change.
+  - **`install-shortcuts.ps1`:** it now deletes and recreates both shortcuts (with `IconLocation` set to the exe), then runs `ie4uinit.exe -show`.
+  - **`-ResetIconCache`:** this switch also stops Explorer, deletes `%LOCALAPPDATA%\Microsoft\Windows\Explorer\iconcache*.db` and `IconCache.db`, and starts Explorer again, which rebuilds the cache. It is opt-in, because the taskbar disappears for a moment.
+  - The package README describes it.
+- **Rationale:** An updated exe should show its new icon without manual cache cleaning.
+- **Alternatives considered:** always restarting Explorer (disruptive on every install); renaming the exe so Explorer sees a new file (breaks existing shortcuts and pins).
+
+## 0087 — New binder from template creates at once
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0057 and 0084)
+- **Decision:**
+  - After the template is chosen, "New binder from template…" creates the binder at once, as New binder does (0084).
+  - **Where:** in a new subfolder of the default binder folder named after the template ("Project", then "Project 2" and so on, with characters that aren't allowed in file names replaced). There is no folder picker.
+  - **After creating:** the cover opens with the title field focused.
+  - **If writing fails:** the new empty folder is removed again.
+- **Rationale:** Both ways of making a binder behave the same, with the location chosen once in settings.
+- **Alternatives considered:** keeping the folder picker for template binders.
+
+## 0088 — Automated hands-on checklist
+- **Date:** 2026-10-26
+- **Status:** Active
+- **Decision:**
+  - **Where:** the hands-on checklist is automated with Flutter's `integration_test` (an SDK package, BSD) in `app/integration_test/`, which drives the real `NotedApp` in a Windows window. Run it from `app/` with `flutter test integration_test -d windows`. Plain `flutter test` doesn't run it.
+  - **Isolation:**
+    - Every test builds its `Notebook` and `AppSettings` with all their locations in a per-test temp directory: pages, `binders.json`, `settings.json`, recovery, templates, and binder and extra folders.
+    - It asserts at the start that nothing resolves under `%APPDATA%\Noted`. The folder picker is a stub, and the real clipboard is never used.
+  - **Mapping:** test names start with the checklist step numbers they cover, and `app/integration_test/step_map.json` maps them.
+  - **Coverage file:** `docs/testing/checklist-coverage.md` lists every step as automated, partly automated, superseded and re-tested (naming the decision), or manual only, with the reason.
+  - **What stays manual:** steps that need eyes, real touchpad, touch or pen hardware, the Windows shell, a second machine or OneDrive.
+  - **Limits:**
+    - Text goes into note editors through editor transactions, because synthetic keys don't produce IME text.
+    - The OS theme is simulated by overriding the platform brightness.
+    - A second device is simulated by writing the page file through a second store.
+- **Rationale:** Most of the checklist can be checked on every change without human time, so hands-on testing can focus on what needs eyes and hardware.
+- **Alternatives considered:** widget tests only (they don't run the real app window and plugins); driving the app through OS automation (fragile and slow).
 
 ---
 
