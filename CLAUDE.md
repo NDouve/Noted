@@ -46,18 +46,23 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 ## Current phase: Prototype 1
 
 **In scope:**
-- the canvas (zoom, bounded pan, Fit all)
+- the canvas (zoom, bounded pan, Fit all, page backgrounds)
 - the page tree (pages that become dividers once they have subpages)
 - the Box API
-- the plain note box, using `appflowy_editor` (the only box type in Prototype 1)
+- note boxes, using `appflowy_editor` (tables, formulas, equations), and drawing boxes
+- binders without passwords
+- templates
+- file-based sync with per-box conflicts (OneDrive conflict copies)
+- the recovery store
+- dark mode and the design system in `docs/design`
+- the command registry and the default toolbar
 
 **Out of scope until the maintainer starts the next phase:**
-- drawing
+- binder passwords and encryption
 - AI and MCP
-- encryption
-- sync
-- binders
-- integrations
+- integrations and Microsoft sign-in
+- conflict copies from providers other than OneDrive
+- customizable toolbars
 - reMarkable
 
-**Dev loop:** run the app on Windows with `flutter run -d windows`. Test interactively with a mouse and keyboard. Check typing on a page crowded with boxes, editing while zoomed, and dragging and resizing boxes. These are the known risk areas.
+**Dev loop:** run the app on Windows with `flutter run -d windows`. Test interactively with a mouse and keyboard. Check typing on a page crowded with boxes, editing while zoomed, dragging and resizing boxes, drawing, and sync between two machines. These are the known risk areas.
