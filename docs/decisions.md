@@ -857,7 +857,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0071 — Design system and theme from tokens
 - **Date:** 2026-10-26
-- **Status:** Active (supersedes the color roles and the border contrast rule in 0058)
+- **Status:** Active (supersedes the color roles and the border contrast rule in 0058); ink display in dark mode superseded by 0081
 - **Decision:**
   - **Source:** the Noted design system in `docs/design/` (direction A, "Quiet Utility") defines the look. `docs/design/tokens.json` is the single source of colors, type, spacing, radii, shadows and sizes. The HTML previews there are visual references, not code.
   - **Generated code:** `app/scripts/generate_tokens.dart` writes `packages/noted_canvas/lib/src/design_tokens.g.dart` from `tokens.json`. A test fails if the generated file is out of date.
@@ -888,7 +888,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0073 — Components restyled to the design guidelines
 - **Date:** 2026-10-26
-- **Status:** Active (extends 0068)
+- **Status:** Active (extends 0068); the `FramelessBoxModule` marker superseded by 0079; extended by 0080
 - **Decision:** The toolbar, sidebar, boxes, menus and dialog buttons follow the component guidelines in `docs/design/components/`. Icons are Flutter's built-in rounded Material icons (`Icons.*_rounded`), with no icon package.
   - **Toolbar:** 52px high on `surface` with a bottom hairline. Buttons are 36px with `radius-md`; the active tool has an `accent-soft` fill and an `accent` icon. Groups are separated by 1×24px rules.
     - The view controls (Fit all, zoom, page background) sit at the far right; the other groups scroll sideways if the window is narrow.
@@ -964,6 +964,73 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Decision:** Recovery entries that are corrupt or can't be verified are also listed in the sidebar under "Can't open", with the reason in the tooltip. They are kept and never deleted, as before.
 - **Rationale:** A pending edit that can't be restored should be visible where other unreadable files are shown.
 - **Alternatives considered:** reporting them only in the log.
+
+## 0078 — Scope of the current phase
+- **Date:** 2026-10-26
+- **Status:** Active
+- **Decision:**
+  - **In scope:**
+    - the canvas: zoom, bounded pan, Fit all and page backgrounds
+    - the page tree
+    - the Box API
+    - note boxes, with tables, formulas and equations
+    - drawing boxes
+    - binders without passwords
+    - templates
+    - file-based sync with per-box conflicts, including OneDrive conflict copies
+    - the recovery store
+    - dark mode and the design system in `docs/design`
+    - the command registry and the default toolbar
+  - **Out of scope until the next phase:**
+    - binder passwords and encryption
+    - AI and MCP
+    - integrations and Microsoft sign-in
+    - conflict copies from providers other than OneDrive
+    - customizable toolbars
+    - reMarkable
+  - **Known risk areas for hands-on testing:**
+    - typing on a crowded page
+    - editing while zoomed
+    - dragging and resizing boxes
+    - drawing
+    - sync between two machines
+  - `CLAUDE.md`'s "Current phase" section states the same.
+- **Rationale:** The phase description had fallen behind the features already approved and built. Drawing is kept.
+- **Alternatives considered:** limiting the phase to the note box only, which would have meant switching off approved, built features.
+
+## 0079 — Box API 0.5: box frame style
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0067; supersedes the `FramelessBoxModule` marker in 0073)
+- **Decision:**
+  - The Box API is at version 0.5.
+  - **`BoxModule.frameStyle`:** says how the canvas frames a module's boxes.
+    - `BoxFrameStyle.framed` is the default: a surface fill and a hairline frame while idle, and an accent border when selected.
+    - `BoxFrameStyle.framelessUntilSelected` shows no fill and no frame until the box is selected, then a dashed accent outline. The drawing module uses it.
+  - **Commands:** the same version records `Command.menu` (a toolbar dropdown's command ids, 0074) and `Command.readout` (an outlined numeric readout, such as the zoom level).
+  - All changes are additive and listed in `BOX_API_CHANGELOG.md`.
+- **Rationale:** How a box is framed is part of what a module declares, so it belongs in the versioned API rather than in a check the host makes on the module's class.
+- **Alternatives considered:** the host-side marker interface (0073); a check on the box type id (it ties the host to one module).
+
+## 0080 — Conflict view header and box headings
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0073)
+- **Decision:**
+  - The conflict view and its manual-edit view show their title on a `conflict-soft` band across the top of the dialog.
+  - Inside note boxes, Heading 1 uses the `box-title` style (16/22, semibold). Deeper heading levels use `body-strong`, so they stay above body text and below Heading 1.
+- **Rationale:** These complete the BoxFrame and Button guidelines.
+- **Alternatives considered:** `appflowy_editor`'s default heading sizes (28px and larger for Heading 1, out of scale with box text).
+
+## 0081 — Swatch inks lifted on the dark canvas
+- **Date:** 2026-10-26
+- **Status:** Active (supersedes the ink display in dark mode in 0071)
+- **Decision:**
+  - **What changes:** in dark mode, a stroke stored in one of the swatch inks (blue, orange, green, purple) that would have less than 3:1 contrast against the dark `bg-canvas` is shown with its HSL lightness raised, in 1% steps, until it reaches 3:1. Hue and saturation are kept.
+  - **Which inks:** purple and blue are lifted. Orange and green already pass and are shown as stored.
+  - **What stays:** the light theme and stored values are unchanged. Default ink still follows the theme (0071). Any other stored color is drawn as stored.
+  - **Swatches:** they show the same display color.
+  - **Contrast:** every swatch is at least 3:1 against `bg-canvas` in both themes, and a test checks it.
+- **Rationale:** Ink drawn in a swatch color should be readable on the dark canvas, the way binder colors are lifted in dark mode, without changing what is stored.
+- **Alternatives considered:** fixed dark values in the design tokens (needs a token change in `docs/design`); lifting purple only (blue is also under 3:1).
 
 ---
 
