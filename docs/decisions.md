@@ -729,7 +729,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0062 — Box API 0.3
 - **Date:** 2026-10-26
-- **Status:** Active (extends 0040)
+- **Status:** Active (extends 0040); extended by 0067 (Box API 0.4)
 - **Decision:**
   - The Box API is at version 0.3.
   - `ToolContext` gives tool sessions the theme's brightness and its `NotedColors`, so live feedback such as the stroke being drawn matches the theme (0058). The change is additive and implemented by the canvas.
@@ -770,7 +770,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0065 — Duplicating table rows and columns
 - **Date:** 2026-10-26
-- **Status:** Active (supersedes the duplicate detection in 0061)
+- **Status:** Active (supersedes the duplicate detection in 0061); background color storage superseded by 0069
 - **Decision:**
   - `appflowy_editor` hard-wires its table menu's Duplicate to private code, so the note module supplies its own row and column handle menu (through the table and cell builders' `menuBuilder`).
   - Its "Duplicate row" and "Duplicate column":
@@ -782,6 +782,78 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - Duplicates are no longer recognised by matching cell text. A plain inserted row or column only gets the insert adjustment, and a formula typed by hand is never shifted.
 - **Rationale:** Knowing exactly which row or column was duplicated is reliable, while guessing from matching text could shift a formula the user typed by hand.
 - **Alternatives considered:** recognising duplicates by matching text (0061); patching `appflowy_editor` (it is pinned to an upstream commit, 0037).
+
+## 0066 — Undo for table changes
+- **Date:** 2026-10-26
+- **Status:** Active
+- **Decision:**
+  - `appflowy_editor`'s table measures itself after every build and writes cell `height` and table `colsHeight` through ordinary transactions. The note module's editor state applies any transaction that only sets `height`, `width` or `colsHeight` on table nodes without recording undo, and drops operations with an empty path.
+  - A column-border drag becomes one undoable step.
+  - **The result:** one Ctrl+Z, and one redo, covers exactly the last table change:
+    - typing in a cell (appflowy's usual typing burst)
+    - insert, delete, duplicate or clear a row or column
+    - background color
+    - column resize.
+  - Formula rewrites caused by a change stay in its undo step, and storing formula values adds none.
+  - The canvas box host builds from the page's current node, so a rebuild for another reason (hover, a menu opening) never hands a module older data than it committed.
+- **Rationale:** Undo must reverse what the user did. Measurement is derived from layout and is recomputed after every undo and redo.
+- **Alternatives considered:** filtering measurements out after the fact by position in the undo stack (they also stored stale cell positions with them).
+
+## 0067 — Command registry and Box API 0.4
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0040 and 0062)
+- **Decision:**
+  - Every action in the core and the box modules is a command: an id (stable and namespaced, for example `canvas.undo` or `noted.drawing.pen`), a label, a default icon, an optional shortcut, observable enabled and checked state, and an action.
+  - **One registry per context:** each page canvas builds its own from the canvas commands (select, undo, redo, delete, deselect, zoom in, zoom out, zoom to 100%, Fit all), each module tool exposed as a command that is checked while the tool is active, and the modules' own commands. App menus build a small registry for the page or binder they act on.
+  - **Keyboard shortcuts** resolve through the registry. Zoom and Escape also work inside a focused editor, and a read-only page answers only to zoom.
+  - **Menus:** the page, binder, Pages header and theme menus are built from commands and invoke them. Gestures (tap, double-click, drag-and-drop) still act directly.
+  - **Box API 0.4:** `BoxModule.commands(CommandHost)` returns a module's commands, with `CommandHost` giving the page's controller and the tool selection. It is additive and recorded in `BOX_API_CHANGELOG.md`.
+  - **Module commands:**
+    - Drawing: pen, eraser, four ink colors and three pen widths.
+    - Note: insert table and insert equation, enabled while a note editor has focus.
+- **Rationale:** One definition per action keeps shortcuts, menus and the toolbar in step, and lets the toolbar be configured later (0068).
+- **Alternatives considered:** a single global registry (commands like undo depend on the open page).
+
+## 0068 — Default toolbar
+- **Date:** 2026-10-26
+- **Status:** Active
+- **Decision:**
+  - One fixed toolbar runs along the top of the canvas, built only from registry commands (0067). It replaces the floating tool bar and the zoom bar.
+  - **Order:** Select, Pen, Eraser (the active tool shown as checked), ink color swatches, pen widths, Undo, Redo, Insert table, Insert equation, Fit all, and the zoom level (clicking it resets to 100%).
+  - Colors and widths are always shown, enabled while the pen is active.
+  - Disabled commands render disabled, tooltips show the label and shortcut ("Pen (P)"), and the toolbar follows the theme.
+  - Clicking it doesn't take focus from a note editor.
+  - The layout is data: an ordered list of groups of command ids (`toolbar_layout.dart`), with unknown ids skipped, so it can become user-editable later. There is no customization yet.
+- **Rationale:** The common actions are one click away and always in the same place.
+- **Alternatives considered:** keeping the floating tool bar and the zoom bar; showing the pen options only while the pen is active (the toolbar would change width).
+
+## 0069 — Table background colors as theme roles
+- **Date:** 2026-10-26
+- **Status:** Active (supersedes the background color storage in 0065)
+- **Decision:**
+  - **Storage:** table row and column backgrounds store a theme role instead of a fixed color, in `appflowy_editor`'s own keys: `"colBackgroundColor"` / `"rowBackgroundColor": "role:accent"`, `"role:secondary"`, `"role:tertiary"` or `"role:alert"`. No color means the key is absent.
+  - **Rendering:** a role resolves per theme at 25% alpha (accent → primary, secondary, tertiary, alert → error), so it follows theme changes. A column's color wins over a row's.
+  - **Earlier values:** the eight exact fixed values the previous version wrote read as their roles. Any other stored value renders as that fixed color. Opening a note never rewrites a stored value; only picking a color does.
+  - The note data version stays 1. Older builds see a role as an unreadable color and show no background.
+  - Background colors don't appear in the text snapshot.
+- **Rationale:** Colors chosen in one theme stay readable in the other.
+- **Alternatives considered:** storing fixed values (they don't follow the theme); a separate attribute key (appflowy's renderer reads its own keys).
+
+## 0070 — Recovery store for edits that can't be saved
+- **Date:** 2026-10-26
+- **Status:** Active
+- **Decision:**
+  - **Writing an entry:** when a save can't land because its folder (standalone or binder) is unavailable (0064), the page is written at once to `%APPDATA%\Noted\recovery` as two files:
+    - `<name>.canvas`: exactly the text a normal save would write, so it can never hold anything a page file wouldn't (invariant 3)
+    - `<name>.json`: the target folder, page id, time and base text (the page as last read or written by the app).
+    - Writes are atomic, there is one entry per page, and a newer edit replaces it.
+  - **On quit,** if entries are pending, a notice says they'll be saved when the folder is back. Quitting is never blocked.
+  - **When the folder returns,** while running or at the next launch, each entry is merged three-way with the current file (0051): base is the entry's base, mine is the entry, theirs is the file. Conflicts are recorded as usual.
+    - The result is written, read back and verified, and only then is the entry deleted.
+    - A page deleted while away is written from the entry.
+  - Corrupt or unverifiable entries are kept and reported, and never deleted.
+- **Rationale:** An edit made just before a folder disappears is not lost when the app quits before the folder comes back.
+- **Alternatives considered:** keeping such edits only in memory (lost on quit); writing them to another storage folder (could put a page in the wrong place).
 
 ---
 
