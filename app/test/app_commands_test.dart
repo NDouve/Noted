@@ -24,6 +24,12 @@ class _Actions implements PageTreeActions {
   @override
   Future<void> newBinder() async => calls.add('newBinder');
   @override
+  Future<void> newBinderInFolder() async => calls.add('newBinderInFolder');
+  @override
+  Future<void> openBinder() async => calls.add('openBinder');
+  @override
+  Future<void> moveToFolder(PageMeta page) async => calls.add('moveToFolder ${page.id}');
+  @override
   Future<void> newBinderFromTemplate() async => calls.add('newBinderFromTemplate');
   @override
   Future<void> newSubpage(PageMeta page) async => calls.add('newSubpage ${page.id}');
@@ -79,6 +85,7 @@ void main() {
           ('app.page.moveDown', 'Move down'),
           ('app.page.indent', 'Indent'),
           ('app.page.outdent', 'Outdent'),
+          ('app.page.moveToFolder', 'Move to folder…'),
           ('app.page.delete', 'Delete'),
           ('app.page.background.plain', 'Page background: Plain'),
           ('app.page.background.dots', 'Page background: Dots'),
@@ -140,7 +147,12 @@ void main() {
       await r.invoke(AppCommands.newPageFromTemplate);
       expect(actions.calls, ['newPage', 'newPageFromTemplate']);
       // Without a folder picker (no binders on this device) binders are off.
-      expect(r[AppCommands.newBinder]!.enabled, nb.pickFolder != null);
+      // New binder needs no picker; the folder-picking items do.
+      expect(r[AppCommands.newBinder]!.enabled, isTrue);
+      expect(r[AppCommands.newBinderInFolder]!.enabled, nb.pickFolder != null);
+      expect(r[AppCommands.openBinder]!.enabled, nb.pickFolder != null);
+      expect(r[AppCommands.newPage]!.shortcut!.trigger, LogicalKeyboardKey.keyN);
+      expect(r[AppCommands.newPage]!.whileEditing, isTrue);
     });
   });
 

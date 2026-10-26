@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'app_settings.dart';
 import 'recovery_store.dart';
 
 /// Where page files live in Prototype 1: one local folder (0007).
@@ -24,6 +25,26 @@ Directory defaultPagesDirectory() {
     return Directory('${env['APPDATA']}${sep}Noted${sep}pages');
   }
   return Directory('${env['HOME'] ?? '.'}$sep.noted${sep}pages');
+}
+
+/// The built-in default folder for new binders: `binders` next to the default
+/// pages folder (`%APPDATA%\Noted\binders` on Windows, `~/.noted/binders`
+/// elsewhere).
+Directory defaultBindersDirectory() {
+  final pages = defaultPagesDirectory().absolute;
+  return Directory('${pages.parent.path}${Platform.pathSeparator}binders');
+}
+
+/// A folder name for a binder called [name]: characters that are invalid in
+/// Windows file names become `_`, trailing dots and spaces go, and reserved
+/// device names get a `_` appended. An empty result is "New binder".
+String binderFolderName(String name) {
+  var n = name.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f]'), '_').trim();
+  n = n.replaceAll(RegExp(r'[. ]+$'), '');
+  if (n.isEmpty) return 'New binder';
+  final stem = n.split('.').first.trim().toUpperCase();
+  if (RegExp(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$').hasMatch(stem)) n = '${n}_';
+  return n;
 }
 
 /// The file listing the binder folders the app knows (0026): `binders.json`
@@ -218,7 +239,27 @@ class Notebook extends ChangeNotifier {
     this.templatesDirectory,
     this.folderCheckInterval = const Duration(seconds: 3),
     this.recoveryDirectory,
+    this.settings,
   });
+
+  /// This device's settings; they hold the default page and binder folders.
+  /// Null: the built-in defaults.
+  final AppSettings? settings;
+
+  // Which title field should take the caret next: a page id, or
+  // `cover:<binder path>`. Set after creating a page or binder.
+  String? _titleFocus;
+
+  /// Asks the title field of [target] (a page id, or `cover:<binder path>`)
+  /// to take focus when it is shown.
+  void requestTitleFocus(String target) => _titleFocus = target;
+
+  /// True once if the title field of [target] was asked to take focus.
+  bool takeTitleFocus(String target) {
+    if (_titleFocus != target) return false;
+    _titleFocus = null;
+    return true;
+  }
 
   /// Where edits that can't be saved are kept (see [RecoveryStore]). Null:
   /// `recovery` next to [bindersFile]; with neither, nothing is kept.
@@ -383,6 +424,27 @@ class Notebook extends ChangeNotifier {
   /// The default folder of standalone pages.
   String get defaultFolderPath => _normalizePath(store.directory.path);
 
+  /// The folder a new top-level standalone page goes to: the "Default page
+  /// folder" setting, or the built-in default folder ([defaultFolderPath]).
+  String get newPageFolderPath {
+    final s = settings?.defaultPageFolder;
+    return s == null ? defaultFolderPath : _normalizePath(s);
+  }
+
+  /// The built-in default folder for new binders: `binders` next to the
+  /// settings file.
+  String get builtinBinderFolderPath {
+    final parent = bindersFile?.absolute.parent ?? store.directory.absolute.parent;
+    return _normalizePath('${parent.path}${Platform.pathSeparator}binders');
+  }
+
+  /// The folder new binders are created in (one subfolder per binder): the
+  /// "Default binder folder" setting, or [builtinBinderFolderPath].
+  String get defaultBinderFolderPath {
+    final s = settings?.defaultBinderFolder;
+    return s == null ? builtinBinderFolderPath : _normalizePath(s);
+  }
+
   CanvasController? get current => _current;
   String? get currentId => _current?.page.id;
 
@@ -434,7 +496,10 @@ class Notebook extends ChangeNotifier {
     for (final path in await _readBinderPaths()) {
       _binders[path] = await _openBinder(path);
     }
-    for (final raw in _readFolderPaths()) {
+    // A default page folder chosen in the settings is a standalone folder in
+    // use, so the pages already there are listed.
+    final chosen = settings?.defaultPageFolder;
+    for (final raw in [..._readFolderPaths(), ?chosen]) {
       final path = _normalizePath(raw);
       if (path == defaultFolderPath || _folders.containsKey(path)) continue;
       if (_binders.keys.any((b) => _key(b) == _key(path))) continue;
@@ -446,9 +511,20 @@ class Notebook extends ChangeNotifier {
     await _mergePendingCopies();
     await _recoverPending();
     if (_tree.roots.isEmpty) {
-      await createPage();
+      await _createFallbackPage();
     } else {
       await open(_tree.roots.first.id);
+    }
+  }
+
+  // A page for an empty notebook: in the default page folder, or in the
+  // built-in folder if the chosen one can't be used.
+  Future<void> _createFallbackPage() async {
+    try {
+      await createPage();
+    } on NotebookException {
+      if (_key(newPageFolderPath) == _key(defaultFolderPath)) rethrow;
+      await createPage(folderPath: defaultFolderPath);
     }
   }
 
@@ -522,7 +598,15 @@ class Notebook extends ChangeNotifier {
   /// A top-level standalone page goes to the default folder, or to
   /// [folderPath] (remembered as a standalone folder, see
   /// [addStandaloneFolder]).
-  Future<String> createPage({String? parentId, String? binderPath, String? folderPath}) async {
+  ///
+  /// With [focusTitle] the page's title field is asked to take the caret when
+  /// the page is shown (see [requestTitleFocus]).
+  Future<String> createPage({
+    String? parentId,
+    String? binderPath,
+    String? folderPath,
+    bool focusTitle = false,
+  }) async {
     final loc = await _placeFor(parentId, binderPath, folderPath);
     final meta = PageMeta.create(
       id: newId(),
@@ -535,6 +619,7 @@ class Notebook extends ChangeNotifier {
     _touch(loc);
     _metas[meta.id] = meta;
     _loc[meta.id] = loc;
+    if (focusTitle) requestTitleFocus(meta.id);
     await open(meta.id);
     return meta.id;
   }
@@ -549,7 +634,9 @@ class Notebook extends ChangeNotifier {
     } else if (folderPath != null) {
       loc = await addStandaloneFolder(folderPath);
     } else {
-      loc = _standalone;
+      // The default page folder. Unlike a chosen folder, the built-in one is
+      // created when it is missing (see PageStore.scan).
+      loc = await addStandaloneFolder(newPageFolderPath);
     }
     _assertWritable(loc); // throws if the binder or folder can't be written
     _storeOf(loc);
@@ -625,7 +712,7 @@ class Notebook extends ChangeNotifier {
     } else if (_tree.roots.isNotEmpty) {
       await open(_tree.roots.first.id);
     } else {
-      await createPage();
+      await _createFallbackPage();
     }
   }
 
@@ -905,9 +992,51 @@ class Notebook extends ChangeNotifier {
 
   // Binders -----------------------------------------------------------------
 
+  /// Creates a binder at once in a new subfolder of the default binder
+  /// folder ([defaultBinderFolderPath]) named after [name] (see
+  /// [binderFolderName]; a number is added if the folder exists), shows its
+  /// cover and asks for its title field to take focus.
+  ///
+  /// The built-in default folder is created if it is missing. A default
+  /// folder the user chose is never created: a missing one throws a
+  /// [NotebookException].
+  Future<BinderSection> createBinder({String name = 'New binder'}) async {
+    final root = defaultBinderFolderPath;
+    final builtin = settings?.defaultBinderFolder == null || _key(root) == _key(builtinBinderFolderPath);
+    try {
+      if (builtin) {
+        await Directory(root).create(recursive: true);
+      } else if (!await Directory(root).exists()) {
+        throw const NotebookException(
+          'The default binder folder was not found. Choose another one in Settings.',
+        );
+      }
+      final base = binderFolderName(name);
+      for (var n = 1;; n++) {
+        final path = _normalizePath(
+          '$root${Platform.pathSeparator}${n == 1 ? base : '$base $n'}',
+        );
+        if (_binders.keys.any((b) => _key(b) == _key(path)) ||
+            await FileSystemEntity.type(path) != FileSystemEntityType.notFound) {
+          continue;
+        }
+        await Directory(path).create();
+        final section = await addBinder(path);
+        if (section.available) {
+          requestTitleFocus('cover:${section.path}');
+          showCover(section.path);
+        }
+        return section;
+      }
+    } on FileSystemException catch (e) {
+      throw NotebookException('Could not create the binder: ${e.message}');
+    }
+  }
+
   /// Asks for a folder with [pickFolder] and adds it as a binder (see
-  /// [addBinder]), then shows its cover. Returns null if cancelled.
-  Future<BinderSection?> newBinder() async {
+  /// [addBinder]), then shows its cover. A folder that has a binder is
+  /// opened. Returns null if cancelled.
+  Future<BinderSection?> newBinderInFolder() async {
     final pick = pickFolder;
     if (pick == null) return null;
     final path = await pick();
@@ -915,6 +1044,60 @@ class Notebook extends ChangeNotifier {
     final section = await addBinder(path);
     if (section.available) showCover(section.path);
     return section;
+  }
+
+  /// Asks for a folder with [pickFolder] and opens the binder in it, then
+  /// shows its cover. A folder without a binder file is refused. Returns
+  /// null if cancelled.
+  Future<BinderSection?> openBinder() async {
+    final pick = pickFolder;
+    if (pick == null) return null;
+    final path = await pick();
+    if (path == null) return null;
+    if (!await BinderStore(Directory(_normalizePath(path))).file.exists()) {
+      throw const NotebookException('That folder has no binder. Use "New binder in another folder…" to make one.');
+    }
+    final section = await addBinder(path);
+    if (section.available) showCover(section.path);
+    return section;
+  }
+
+  /// Sets the default page folder: the folder must exist and not hold a
+  /// binder. It becomes a standalone folder in use (so its pages are listed),
+  /// and new top-level pages go there. Pages in the old default stay listed.
+  Future<void> setDefaultPageFolder(String path) async {
+    final s = settings;
+    if (s == null) return;
+    final normal = await checkStandaloneFolder(path);
+    await addStandaloneFolder(normal);
+    s.defaultPageFolder = normal;
+    notifyListeners();
+  }
+
+  /// Sets the default binder folder, which must exist.
+  Future<void> setDefaultBinderFolder(String path) async {
+    final s = settings;
+    if (s == null) return;
+    final normal = _normalizePath(path);
+    if (!await Directory(normal).exists()) {
+      throw const NotebookException('That folder was not found.');
+    }
+    s.defaultBinderFolder = normal;
+    notifyListeners();
+  }
+
+  /// Moves the page [id] and its subpages to the standalone folder [path]
+  /// (made a standalone folder in use), as a top-level page there. Uses the
+  /// same copy, verify, delete algorithm as other moves; throws a
+  /// [NotebookException] on failure with the sources left in place. A binder
+  /// folder is refused. Returns false if the page is in that folder already.
+  Future<bool> moveToFolder(String id, String path) async {
+    final from = _loc[id];
+    if (from == null) return false;
+    final to = await addStandaloneFolder(path);
+    if (to == from) return false;
+    await _moveAcross(id, to, parentId: null);
+    return true;
   }
 
   /// Adds the folder [path] to the binders. A folder that already has a
@@ -1165,6 +1348,7 @@ class Notebook extends ChangeNotifier {
     String? parentId,
     String? binderPath,
     String? folderPath,
+    bool focusTitle = false,
   }) async {
     if (template.kind != TemplateKind.page) {
       throw const NotebookException('That is not a page template.');
@@ -1178,6 +1362,7 @@ class Notebook extends ChangeNotifier {
     _touch(loc);
     _metas[page.id] = page.meta;
     _loc[page.id] = loc;
+    if (focusTitle) requestTitleFocus(page.id);
     await open(page.id);
     return page.id;
   }

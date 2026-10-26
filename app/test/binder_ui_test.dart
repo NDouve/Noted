@@ -78,6 +78,14 @@ void main() {
     });
   }
 
+  Future<void> until(WidgetTester tester, bool Function() done) async {
+    for (var i = 0; i < 100 && !done(); i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+    }
+    await settle(tester);
+  }
+
   Finder row(String id) => find.byKey(ValueKey('page-row-$id'));
   Finder header(String path) => find.byKey(ValueKey('binder-header-$path'));
 
@@ -160,16 +168,47 @@ void main() {
     await finish(tester);
   });
 
-  testWidgets('New binder asks for a folder and shows the new cover', (tester) async {
+  testWidgets('New binder in another folder asks for a folder and shows the new cover', (
+    tester,
+  ) async {
     await start(tester, withBinder: false);
     final other = await tester.runAsync(() => Directory('${root.path}/Ideas').create());
     pickAnswer = other!.path;
-    await tester.runAsync(() => tester.tap(find.byTooltip('New binder')));
-    await settle(tester);
+    await tester.tap(find.byKey(const ValueKey('pages-menu')));
+    await tester.pumpAndSettle();
+    await tester.runAsync(() => tester.tap(find.text('New binder in another folder…')));
+    await until(tester, () => nb.binders.isNotEmpty);
     expect(nb.binders.single.title, 'Ideas');
     expect(find.text('Binder cover'), findsOneWidget);
     expect(find.text('Ideas'), findsWidgets);
     expect(File('${other.path}/$binderFileName').existsSync(), isTrue);
+    await finish(tester);
+  });
+
+  testWidgets('Open binder asks for a folder and opens the binder in it', (tester) async {
+    await start(tester, withBinder: false);
+    final other = await tester.runAsync(() async {
+      final d = await Directory('${root.path}/Ideas').create();
+      await BinderStore(d).create(Binder.create(title: 'My ideas', color: '#FF1E88E5'));
+      return d;
+    });
+    pickAnswer = other!.path;
+    await tester.tap(find.byKey(const ValueKey('pages-menu')));
+    await tester.pumpAndSettle();
+    await tester.runAsync(() => tester.tap(find.text('Open binder…')));
+    await until(tester, () => nb.binders.isNotEmpty || find.textContaining('has no binder').evaluate().isNotEmpty);
+    expect(nb.binders.single.title, 'My ideas');
+    expect(find.text('Binder cover'), findsOneWidget);
+
+    // A folder without a binder is refused.
+    final empty = await tester.runAsync(() => Directory('${root.path}/Empty').create());
+    pickAnswer = empty!.path;
+    await tester.tap(find.byKey(const ValueKey('pages-menu')));
+    await tester.pumpAndSettle();
+    await tester.runAsync(() => tester.tap(find.text('Open binder…')));
+    await until(tester, () => nb.binders.isNotEmpty || find.textContaining('has no binder').evaluate().isNotEmpty);
+    expect(find.textContaining('has no binder'), findsOneWidget);
+    expect(nb.binders, hasLength(1));
     await finish(tester);
   });
 

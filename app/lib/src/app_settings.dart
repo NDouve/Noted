@@ -62,6 +62,35 @@ class AppSettings extends ChangeNotifier {
 
   ThemeMode get themeMode => _theme.mode;
 
+  /// The folder new top-level pages are created in, as chosen on this device
+  /// (`"defaultPageFolder"`), or null for the built-in default.
+  String? get defaultPageFolder => _folder('defaultPageFolder');
+
+  set defaultPageFolder(String? value) => _setFolder('defaultPageFolder', value);
+
+  /// The folder new binders are created in (`"defaultBinderFolder"`), or null
+  /// for the built-in default.
+  String? get defaultBinderFolder => _folder('defaultBinderFolder');
+
+  set defaultBinderFolder(String? value) => _setFolder('defaultBinderFolder', value);
+
+  String? _folder(String key) {
+    final v = _raw[key];
+    return v is String && v.isNotEmpty ? v : null;
+  }
+
+  void _setFolder(String key, String? value) {
+    if (_folder(key) == value) return;
+    _raw = {..._raw};
+    if (value == null) {
+      _raw.remove(key);
+    } else {
+      _raw[key] = value;
+    }
+    notifyListeners();
+    _write();
+  }
+
   set theme(ThemeSetting value) {
     if (value == _theme && _raw['theme'] == value.value) return;
     _theme = value;

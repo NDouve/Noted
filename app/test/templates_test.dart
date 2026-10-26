@@ -5,7 +5,6 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/home.dart';
@@ -404,7 +403,7 @@ void main() {
       await finish(tester);
     });
 
-    testWidgets('Pages menu: New page from template picks, then asks where to store', (tester) async {
+    testWidgets('Pages menu: New page from template picks, then creates it in the default folder', (tester) async {
       await start(tester);
       await tester.runAsync(() => nb.savePageAsTemplate(nb.currentId!, name: 'Alpha template'));
       final before = pages.listSync().where((f) => f.path.endsWith('.canvas')).length;
@@ -415,8 +414,8 @@ void main() {
       await tapAsync(tester, find.text('New page from template…'));
       expect(find.text('Alpha template'), findsOneWidget);
       await tapAsync(tester, find.text('Alpha template'));
-      expect(find.text('Where should this page be stored?'), findsOneWidget);
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      // No question about where to store it: the default folder is used.
+      expect(find.text('Where should this page be stored?'), findsNothing);
       await settle(tester);
       expect(pages.listSync().where((f) => f.path.endsWith('.canvas')), hasLength(before + 1));
       final page = await tester.runAsync(() => loadPage(nb, nb.currentId!));

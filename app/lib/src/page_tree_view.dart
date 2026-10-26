@@ -10,7 +10,6 @@ import 'app_commands.dart';
 import 'binder_colors.dart';
 import 'notebook.dart';
 import 'sidebar_row.dart';
-import 'storage_dialog.dart';
 import 'template_dialogs.dart';
 
 /// Where on a row a dragged page is dropped.
@@ -36,10 +35,10 @@ class PageTreeView extends StatefulWidget {
   final Notebook notebook;
 
   @override
-  State<PageTreeView> createState() => _PageTreeViewState();
+  State<PageTreeView> createState() => PageTreeViewState();
 }
 
-class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
+class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
 
   // Collapsed state lasts for the session only.
   final Set<String> _collapsed = {};
@@ -128,12 +127,11 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (_nb.pickFolder != null)
-                  IconButton(
-                    tooltip: header[AppCommands.newBinder]!.label,
-                    icon: Icon(header[AppCommands.newBinder]!.icon),
-                    onPressed: () => header.invoke(AppCommands.newBinder),
-                  ),
+                IconButton(
+                  tooltip: header[AppCommands.newBinder]!.label,
+                  icon: Icon(header[AppCommands.newBinder]!.icon),
+                  onPressed: () => header.invoke(AppCommands.newBinder),
+                ),
                 IconButton(
                   tooltip: header[AppCommands.newPage]!.label,
                   icon: Icon(header[AppCommands.newPage]!.icon),
@@ -146,10 +144,12 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
                   itemBuilder: (_) => [
                     _item(header, AppCommands.newPage),
                     _item(header, AppCommands.newPageFromTemplate),
+                    const NotedMenuDivider(),
+                    _item(header, AppCommands.newBinder),
                     if (_nb.pickFolder != null) ...[
-                      const NotedMenuDivider(),
-                      _item(header, AppCommands.newBinder),
+                      _item(header, AppCommands.newBinderInFolder),
                       _item(header, AppCommands.newBinderFromTemplate),
+                      _item(header, AppCommands.openBinder),
                     ],
                   ],
                 ),
@@ -203,38 +203,38 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
     }
   }
 
-  /// Asks where a new top-level standalone page goes (0027), unless there is
-  /// nothing to choose from, and returns the folder (null: the default one).
-  /// [cancelled] is true if the user cancelled.
-  Future<(String?, bool)> _askFolder() async {
-    if (_nb.pickFolder == null && _nb.standaloneFolders.isEmpty) return (null, false);
-    final folder = await askStorageFolder(context, _nb);
-    return (folder, folder == null);
-  }
-
-  Future<void> _newStandalonePage() async {
-    final (folder, cancelled) = await _askFolder();
-    if (cancelled) return;
-    await _nb.createPage(folderPath: folder);
-  }
-
   // The page tree's actions, which the app's commands (app_commands.dart)
   // call. Menus and buttons invoke the commands, not these directly.
 
+  // A new page: created at once in the default page folder, with the caret
+  // going to its title.
   @override
-  Future<void> newStandalonePage() => _guard(_newStandalonePage);
+  Future<void> newStandalonePage() => _guard(() => _nb.createPage(focusTitle: true));
 
   @override
   Future<void> newPageFromTemplate() => _guard(() async {
     final t = await _pickTemplate(TemplateKind.page, 'New page from template');
     if (t == null || !mounted) return;
-    final (folder, cancelled) = await _askFolder();
-    if (cancelled) return;
-    await _nb.createPageFromTemplate(t.template, folderPath: folder);
+    await _nb.createPageFromTemplate(t.template, focusTitle: true);
   });
 
   @override
-  Future<void> newBinder() => _guard(_nb.newBinder);
+  Future<void> newBinder() => _guard(_nb.createBinder);
+
+  @override
+  Future<void> newBinderInFolder() => _guard(_nb.newBinderInFolder);
+
+  @override
+  Future<void> openBinder() => _guard(_nb.openBinder);
+
+  @override
+  Future<void> moveToFolder(PageMeta p) => _guard(() async {
+    final pick = _nb.pickFolder;
+    if (pick == null) return;
+    final path = await pick();
+    if (path == null) return;
+    await _nb.moveToFolder(p.id, path);
+  });
 
   @override
   Future<void> newBinderFromTemplate() => _guard(_newBinderFromTemplate);
@@ -408,7 +408,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
   @override
   Future<void> binderNewPage(BinderSection b) async {
     setState(() => _collapsed.remove(_binderKey(b)));
-    await _guard(() => _nb.createPage(binderPath: b.path));
+    await _guard(() => _nb.createPage(binderPath: b.path, focusTitle: true));
   }
 
   @override
@@ -416,7 +416,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
     final t = await _pickTemplate(TemplateKind.page, 'New page from template', binderPath: b.path);
     if (t == null) return;
     setState(() => _collapsed.remove(_binderKey(b)));
-    await _nb.createPageFromTemplate(t.template, binderPath: b.path);
+    await _nb.createPageFromTemplate(t.template, binderPath: b.path, focusTitle: true);
   });
 
   @override
@@ -644,6 +644,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
       _item(r, AppCommands.newSubpageFromTemplate),
       _item(r, AppCommands.saveAsTemplate),
       _item(r, AppCommands.rename),
+      _item(r, AppCommands.moveToFolder),
       const NotedMenuDivider(),
       for (final b in PageBackground.values)
         NotedMenuItem.forCommand(r[AppCommands.backgroundId(b)]!, showCheck: true),
@@ -662,7 +663,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
   @override
   Future<void> newSubpage(PageMeta p) async {
     setState(() => _collapsed.remove(p.id));
-    await _guard(() => _nb.createPage(parentId: p.id));
+    await _guard(() => _nb.createPage(parentId: p.id, focusTitle: true));
   }
 
   @override
@@ -674,7 +675,7 @@ class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions 
     );
     if (t == null) return;
     setState(() => _collapsed.remove(p.id));
-    await _nb.createPageFromTemplate(t.template, parentId: p.id);
+    await _nb.createPageFromTemplate(t.template, parentId: p.id, focusTitle: true);
   });
 
   @override

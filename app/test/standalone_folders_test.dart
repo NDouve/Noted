@@ -6,7 +6,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/home.dart';
@@ -233,7 +232,7 @@ void main() {
     }, timeout: const Timeout(Duration(seconds: 60)));
   });
 
-  group('storage dialog', () {
+  group('new page and move to folder', () {
     String? pickAnswer;
     late Notebook nb;
 
@@ -268,80 +267,62 @@ void main() {
       await tester.runAsync(tearDownDirs);
     }
 
-    Future<void> openDialog(WidgetTester tester) async {
-      await tester.tap(find.byTooltip('New page'));
-      await tester.pumpAndSettle();
-      expect(find.text('Where should this page be stored?'), findsOneWidget);
+    Future<void> until(WidgetTester tester, bool Function() done) async {
+      for (var i = 0; i < 100 && !done(); i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+      }
+      await settle(tester);
     }
 
-    testWidgets('Enter accepts the preselected default folder', (tester) async {
+    Future<void> pageMenu(WidgetTester tester, String item) async {
+      await tester.tap(find.byTooltip('Page options').first);
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+      await tester.runAsync(() => tester.tap(find.text(item)));
+      await settle(tester);
+    }
+
+    testWidgets('New page is created at once in the default folder, without a dialog', (
+      tester,
+    ) async {
       await start(tester);
       final before = canvasFiles(pages).length;
-      await openDialog(tester);
-      expect(find.textContaining('Default ('), findsOneWidget);
-      expect(find.textContaining(nb.defaultFolderPath), findsOneWidget);
-      expect(find.text('Choose another folder…'), findsOneWidget);
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.runAsync(() => tester.tap(find.byTooltip('New page')));
       await settle(tester);
-      expect(find.text('Where should this page be stored?'), findsNothing);
+      expect(find.byType(AlertDialog), findsNothing);
       expect(canvasFiles(pages), hasLength(before + 1));
       expect(nb.standaloneFolders, isEmpty);
       await finish(tester);
     });
 
-    testWidgets('Cancel creates nothing', (tester) async {
+    testWidgets('Move to folder moves the page to the chosen folder and remembers it', (
+      tester,
+    ) async {
       await start(tester);
-      final before = canvasFiles(pages).length;
-      await openDialog(tester);
-      await tester.tap(find.text('Cancel'));
-      await settle(tester);
-      expect(canvasFiles(pages), hasLength(before));
-      expect(nb.tree.roots, hasLength(before));
-      await finish(tester);
-    });
-
-    testWidgets('choosing another folder creates the page there and remembers it', (tester) async {
-      await start(tester);
+      final id = nb.currentId!;
       pickAnswer = extra.path;
-      await openDialog(tester);
-      await tester.runAsync(() => tester.tap(find.text('Choose another folder…')));
-      await settle(tester);
-      // Selected now; Enter creates it.
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      await settle(tester);
-      for (var i = 0; i < 60 && canvasFiles(extra).isEmpty; i++) {
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
-        await tester.pump(const Duration(milliseconds: 50));
-      }
-      await settle(tester);
-      expect(canvasFiles(extra), hasLength(1));
+      await pageMenu(tester, 'Move to folder…');
+      await until(tester, () => !File('${pages.path}/$id.canvas').existsSync());
+      expect(File('${extra.path}/$id.canvas').existsSync(), isTrue);
+      expect(File('${pages.path}/$id.canvas').existsSync(), isFalse);
       expect(norm(nb.standaloneFolders.single.path), norm(extra.path));
       expect(savedSettings()['standaloneFolders'], hasLength(1));
-      final id = File(canvasFiles(extra).single).uri.pathSegments.last.replaceAll('.canvas', '');
       expect(nb.currentId, id);
-
-      // Next time the folder is offered, and the default is still preselected.
-      await openDialog(tester);
-      expect(find.text(nb.standaloneFolders.single.path), findsOneWidget);
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      await settle(tester);
-      expect(canvasFiles(extra), hasLength(1));
-      expect(canvasFiles(pages), hasLength(2));
       await finish(tester);
     });
 
-    testWidgets('a binder folder is refused with a message', (tester) async {
+    testWidgets('Move to folder refuses a binder folder with a message', (tester) async {
       await start(tester);
       await tester.runAsync(() => nb.addBinder(binderDir.path));
       await tester.pump();
+      final id = nb.tree.roots.first.id;
       pickAnswer = binderDir.path;
-      await openDialog(tester);
-      await tester.runAsync(() => tester.tap(find.text('Choose another folder…')));
-      await settle(tester);
-      expect(find.byKey(const ValueKey('storage-error')), findsOneWidget);
+      await pageMenu(tester, 'Move to folder…');
+      await until(tester, () => find.textContaining('holds a binder').evaluate().isNotEmpty);
+      expect(find.textContaining('holds a binder'), findsOneWidget);
       expect(nb.standaloneFolders, isEmpty);
-      await tester.tap(find.text('Cancel'));
-      await settle(tester);
+      expect(File('${pages.path}/$id.canvas').existsSync(), isTrue);
       expect(canvasFiles(binderDir), isEmpty);
       await finish(tester);
     });

@@ -415,14 +415,14 @@ void main() {
     expect(nb.binderOfPage(nb.currentId!), isNull);
   });
 
-  test('New binder asks for a folder; cancelling does nothing', () async {
+  test('New binder in another folder asks for a folder; cancelling does nothing', () async {
     String? answer;
     final nb = make(pick: () async => answer);
     await nb.load();
-    expect(await nb.newBinder(), isNull);
+    expect(await nb.newBinderInFolder(), isNull);
     expect(nb.binders, isEmpty);
     answer = folder.path;
-    final s = await nb.newBinder();
+    final s = await nb.newBinderInFolder();
     expect(s!.available, isTrue);
     expect(nb.coverPath, s.path);
     await nb.open(nb.tree.roots.first.id);

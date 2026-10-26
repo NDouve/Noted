@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -23,12 +24,15 @@ abstract final class AppCommands {
   static const String indent = 'app.page.indent';
   static const String outdent = 'app.page.outdent';
   static const String delete = 'app.page.delete';
+  static const String moveToFolder = 'app.page.moveToFolder';
 
   /// Chooses a page's background: `app.page.background.dots`.
   static String backgroundId(PageBackground b) => 'app.page.background.${b.name}';
 
   // Binders (the "Pages" header, and a binder header's menu).
   static const String newBinder = 'app.binder.new';
+  static const String newBinderInFolder = 'app.binder.newInFolder';
+  static const String openBinder = 'app.binder.open';
   static const String newBinderFromTemplate = 'app.binder.newFromTemplate';
   static const String binderNewPage = 'app.binder.newPage';
   static const String binderNewPageFromTemplate =
@@ -38,6 +42,10 @@ abstract final class AppCommands {
   static const String binderRemove = 'app.binder.remove';
 
   // Theme.
+  // Default folders (the settings menu).
+  static const String defaultPageFolder = 'app.settings.defaultPageFolder';
+  static const String defaultBinderFolder = 'app.settings.defaultBinderFolder';
+
   static const String themeSystem = 'app.theme.system';
   static const String themeLight = 'app.theme.light';
   static const String themeDark = 'app.theme.dark';
@@ -51,6 +59,8 @@ abstract interface class PageTreeActions {
   Future<void> newStandalonePage();
   Future<void> newPageFromTemplate();
   Future<void> newBinder();
+  Future<void> newBinderInFolder();
+  Future<void> openBinder();
   Future<void> newBinderFromTemplate();
   Future<void> newSubpage(PageMeta page);
   Future<void> newSubpageFromTemplate(PageMeta page);
@@ -58,14 +68,16 @@ abstract interface class PageTreeActions {
   Future<void> rename(PageMeta page);
   Future<void> indent(PageMeta page);
   Future<void> delete(PageMeta page);
+  Future<void> moveToFolder(PageMeta page);
   Future<void> binderNewPage(BinderSection binder);
   Future<void> binderNewPageFromTemplate(BinderSection binder);
   Future<void> binderSaveAsTemplate(BinderSection binder);
   Future<void> binderRemove(BinderSection binder);
 }
 
-/// The commands of the "Pages" header: new page, new binder (when this
-/// device can pick a folder), and the same from a template.
+/// The commands of the "Pages" header: new page (Ctrl+N), new binder, new
+/// binder in another folder and open binder (when this device can pick a
+/// folder), and the same from a template.
 CommandRegistry pagesHeaderCommands(Notebook nb, PageTreeActions a) {
   final canPickFolder = nb.pickFolder != null;
   return CommandRegistry()..registerAll([
@@ -73,6 +85,12 @@ CommandRegistry pagesHeaderCommands(Notebook nb, PageTreeActions a) {
       id: AppCommands.newPage,
       label: 'New page',
       icon: Icons.add_rounded,
+      // Works anywhere in the window, also in a note editor (the editor has
+      // no Ctrl+N of its own) and on a read-only page.
+      shortcut: const SingleActivator(LogicalKeyboardKey.keyN, control: true),
+      alternateShortcuts: const [SingleActivator(LogicalKeyboardKey.keyN, meta: true)],
+      whileEditing: true,
+      whileReadOnly: true,
       invoke: a.newStandalonePage,
     ),
     Command(
@@ -85,8 +103,21 @@ CommandRegistry pagesHeaderCommands(Notebook nb, PageTreeActions a) {
       id: AppCommands.newBinder,
       label: 'New binder',
       icon: Icons.create_new_folder_rounded,
-      enabled: () => canPickFolder,
       invoke: a.newBinder,
+    ),
+    Command(
+      id: AppCommands.newBinderInFolder,
+      label: 'New binder in another folder…',
+      icon: Icons.create_new_folder_rounded,
+      enabled: () => canPickFolder,
+      invoke: a.newBinderInFolder,
+    ),
+    Command(
+      id: AppCommands.openBinder,
+      label: 'Open binder…',
+      icon: Icons.folder_open_rounded,
+      enabled: () => canPickFolder,
+      invoke: a.openBinder,
     ),
     Command(
       id: AppCommands.newBinderFromTemplate,
@@ -158,6 +189,13 @@ CommandRegistry pageCommands(Notebook nb, PageMeta p, PageTreeActions a) {
       invoke: () => nb.outdent(p.id),
     ),
     Command(
+      id: AppCommands.moveToFolder,
+      label: 'Move to folder…',
+      icon: Icons.drive_file_move_rounded,
+      enabled: () => nb.pickFolder != null,
+      invoke: () => a.moveToFolder(p),
+    ),
+    Command(
       id: AppCommands.delete,
       label: 'Delete',
       icon: Icons.delete_outline_rounded,
@@ -221,6 +259,33 @@ CommandRegistry binderCommands(
   );
   return registry;
 }
+
+/// The settings commands that change a default folder: each opens the folder
+/// picker and stores the folder. A [NotebookException] (a folder that holds a
+/// binder, or is missing) is thrown to the caller.
+CommandRegistry folderSettingsCommands(Notebook nb) => CommandRegistry()
+  ..registerAll([
+    Command(
+      id: AppCommands.defaultPageFolder,
+      label: 'Default page folder',
+      icon: Icons.folder_open_rounded,
+      enabled: () => nb.pickFolder != null,
+      invoke: () async {
+        final path = await nb.pickFolder?.call();
+        if (path != null) await nb.setDefaultPageFolder(path);
+      },
+    ),
+    Command(
+      id: AppCommands.defaultBinderFolder,
+      label: 'Default binder folder',
+      icon: Icons.folder_open_rounded,
+      enabled: () => nb.pickFolder != null,
+      invoke: () async {
+        final path = await nb.pickFolder?.call();
+        if (path != null) await nb.setDefaultBinderFolder(path);
+      },
+    ),
+  ]);
 
 /// The theme commands: Follow system, Light, Dark. The one in use is
 /// checked.

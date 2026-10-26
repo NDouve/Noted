@@ -49,6 +49,7 @@ Future<void> main() async {
       await rootBundle.loadString('assets/fonts/Inter/OFL.txt'),
     );
   });
+  final settings = AppSettings(defaultSettingsFile());
   final notebook = Notebook(
     PageStore(defaultPagesDirectory()),
     buildModules(),
@@ -57,8 +58,9 @@ Future<void> main() async {
     pickFolder: () => getDirectoryPath(confirmButtonText: 'Use this folder'),
     watchFiles: true,
     deviceName: computerName(),
+    settings: settings,
   );
-  runApp(NotedApp(notebook: notebook, settings: AppSettings(defaultSettingsFile())));
+  runApp(NotedApp(notebook: notebook, settings: settings));
   await notebook.load();
 }
 

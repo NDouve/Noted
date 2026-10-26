@@ -39,6 +39,7 @@ class _BinderCoverState extends State<BinderCover> {
   late final TextEditingController _title;
   late final TextEditingController _description;
   late final TextEditingController _owner;
+  final FocusNode _titleFocus = FocusNode();
 
   BinderSection? get _section => widget.notebook.binders
       .cast<BinderSection?>()
@@ -53,6 +54,8 @@ class _BinderCoverState extends State<BinderCover> {
     _owner = TextEditingController(text: b?.owner ?? '');
     _applied = (b?.title ?? '', b?.description ?? '', b?.owner ?? '');
     widget.notebook.addListener(_takeExternalChanges);
+    // A binder just created asks for the caret in its title.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _takeFocusIfAsked());
   }
 
   // The values of the binder the fields were last brought in line with.
@@ -90,6 +93,7 @@ class _BinderCoverState extends State<BinderCover> {
     Future.microtask(
       () => nb.updateBinder(path, title: title, description: description, owner: owner),
     );
+    _titleFocus.dispose();
     _title.dispose();
     _description.dispose();
     _owner.dispose();
@@ -105,7 +109,19 @@ class _BinderCoverState extends State<BinderCover> {
     );
   }
 
-  Widget _field(String key, String label, TextEditingController c, {int maxLines = 1}) {
+  void _takeFocusIfAsked() {
+    if (!mounted || !widget.notebook.takeTitleFocus('cover:${widget.path}')) return;
+    _titleFocus.requestFocus();
+    _title.selection = TextSelection(baseOffset: 0, extentOffset: _title.text.length);
+  }
+
+  Widget _field(
+    String key,
+    String label,
+    TextEditingController c, {
+    int maxLines = 1,
+    FocusNode? focusNode,
+  }) {
     return Focus(
       onFocusChange: (focused) {
         if (!focused) _save();
@@ -113,6 +129,7 @@ class _BinderCoverState extends State<BinderCover> {
       child: TextField(
         key: ValueKey(key),
         controller: c,
+        focusNode: focusNode,
         maxLines: maxLines,
         minLines: 1,
         decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
@@ -145,7 +162,7 @@ class _BinderCoverState extends State<BinderCover> {
                   SizedBox(height: NotedMetrics.of(context).space4),
                   Text('Binder cover', style: theme.textTheme.labelMedium),
                   SizedBox(height: NotedMetrics.of(context).space3),
-                  _field('cover-title', 'Title', _title),
+                  _field('cover-title', 'Title', _title, focusNode: _titleFocus),
                   SizedBox(height: NotedMetrics.of(context).space4),
                   _field('cover-description', 'Description', _description, maxLines: 5),
                   SizedBox(height: NotedMetrics.of(context).space4),
