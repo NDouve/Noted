@@ -60,7 +60,14 @@ Future<void> _tableMenu(Session s, dynamic editor, String dir, int index, String
   final c = cell(editor, dir == 'row' ? index : 0, dir == 'col' ? index : 0);
   final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
   await mouse.addPointer(location: Offset.zero);
-  final center = t.getCenter(find.byKey(c.key as Key));
+  // Where a user hovers: for a row, the left part of its first cell (the
+  // row's handle sits on the table's left edge); for a column, the middle of
+  // its first cell. Not the middle of a row's first cell: in a one-line row
+  // (about 33 px) the column handle that the hover shows covers that point,
+  // so the pointer leaves the cell and the row handle goes away (see
+  // docs/testing/checklist-coverage.md, step 143).
+  final rect = t.getRect(find.byKey(c.key as Key));
+  final center = dir == 'row' ? Offset(rect.left + 15, rect.center.dy) : rect.center;
   await mouse.moveTo(center + const Offset(5, 0));
   await s.pump(200);
   await mouse.moveTo(center);
@@ -71,7 +78,7 @@ Future<void> _tableMenu(Session s, dynamic editor, String dir, int index, String
         .evaluate()
         .map((e) => e.widget.key)
         .toList();
-    fail('no handle $dir-$index; present: $keys; mouse at $center');
+    fail('no handle $dir-$index; present: $keys; mouse at $center; cell $rect');
   }
   await t.tap(find.byKey(ValueKey('table-handle-$dir-$index')));
   await s.pump(500);
@@ -377,7 +384,7 @@ void notesSuite() {
       });
     });
 
-    testWidgets('step 143-145: column colors are stored as roles, so they follow the theme and are not rewritten', (t) async {
+    testWidgets('step 143-145: a row and a column color are stored as roles, so they follow the theme and are not rewritten', (t) async {
       await withSession(t, 'fills', (s) async {
         final id = await _openWith(s, [
           table([
@@ -386,11 +393,11 @@ void notesSuite() {
           ]),
         ]);
         var editor = await editNote(s, id);
-        await _tableMenu(s, editor, 'col', 0, 'Accent');
+        await _tableMenu(s, editor, 'row', 0, 'Accent');
         editor = editorState(t);
         await _tableMenu(s, editor, 'col', 1, 'Alert');
         editor = editorState(t);
-        expect(cell(editor, 0, 0).attributes['colBackgroundColor'], 'role:accent');
+        expect(cell(editor, 0, 0).attributes['rowBackgroundColor'], 'role:accent');
         expect(cell(editor, 1, 1).attributes['colBackgroundColor'], 'role:alert');
         await s.flush();
         final stored = (s.nb.current!.page.node(id)! as BoxRecord).data.toString();

@@ -334,6 +334,33 @@ void main() {
         expect(find.byType(NotedMenuHeading), findsOneWidget);
       });
 
+      testWidgets('the first row handle is reached the way a user reaches it (${b.name})', (t) async {
+        // Hover the left of the first cell, then move onto the handle, which
+        // straddles the table's left edge, and click it. (Not the middle of
+        // the cell: the column handle that shows there covers that point in
+        // a one-line row, and the row handle goes away with the hover.)
+        await pump(t, _doc(plain), b);
+        final editor = await edit(t);
+        final rect = t.getRect(find.byKey(cell(editor, 0, 0).key));
+        final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
+        await mouse.addPointer(location: Offset.zero);
+        addTearDown(mouse.removePointer);
+        await mouse.moveTo(Offset(rect.left + 15, rect.center.dy));
+        await frames(t);
+        final handle = find.byKey(const ValueKey('table-handle-row-0'));
+        expect(handle, findsOneWidget);
+        // The handle is not clipped by the note box: it is fully inside it.
+        final box = t.getRect(find.byType(AppFlowyEditor));
+        expect(box.contains(t.getRect(handle).topLeft), isTrue);
+        await mouse.moveTo(t.getCenter(handle));
+        await frames(t);
+        expect(handle, findsOneWidget);
+        await mouse.down(t.getCenter(handle));
+        await mouse.up();
+        await frames(t, 12);
+        expect(find.byType(NotedMenuItem<Object>), findsWidgets);
+      });
+
       testWidgets('each role has its theme color (${b.name})', (t) async {
         await pump(
           t,
