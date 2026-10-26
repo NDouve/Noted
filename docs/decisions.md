@@ -1083,7 +1083,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0085 — Search and Box API 0.6
 - **Date:** 2026-10-26
-- **Status:** Active (extends 0035 and 0067)
+- **Status:** Active (extends 0035 and 0067); "page titles are not searched" superseded by 0089
 - **Decision:**
   - **Find on page (Ctrl+F):** a find bar at the top right of the canvas.
     - It shows "3 of 12". Enter, Shift+Enter, F3 and Shift+F3 step between matches, and Esc closes it and clears every highlight.
@@ -1134,7 +1134,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0088 — Automated hands-on checklist
 - **Date:** 2026-10-26
-- **Status:** Active
+- **Status:** Active; extended by 0090
 - **Decision:**
   - **Where:** the hands-on checklist is automated with Flutter's `integration_test` (an SDK package, BSD) in `app/integration_test/`, which drives the real `NotedApp` in a Windows window. Run it from `app/` with `flutter test integration_test -d windows`. Plain `flutter test` doesn't run it.
   - **Isolation:**
@@ -1149,6 +1149,53 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
     - A second device is simulated by writing the page file through a second store.
 - **Rationale:** Most of the checklist can be checked on every change without human time, so hands-on testing can focus on what needs eyes and hardware.
 - **Alternatives considered:** widget tests only (they don't run the real app window and plugins); driving the app through OS automation (fragile and slow).
+
+## 0089 — Search includes page titles
+- **Date:** 2026-10-26
+- **Status:** Active (supersedes "page titles are not searched" in 0085)
+- **Decision:**
+  - **Indexing:** each page's stored title is indexed with its boxes, folded and matched by the same rules (0085).
+  - **Matching:** a page matches by title when the title alone has every term or phrase. Title words and box words are never combined into one match. An empty stored title never matches.
+  - **Ranking:** pages that match by title come first, then pages with box matches only, in sidebar order within each group. In a page's group the title hit is shown first, with the match highlighted, then the box snippets.
+  - **Opening a title result:** it opens the page with the matched part of the inline title marked. The mark is paint only: no selection, no focus and no change to the title. It clears when the title is edited, another page opens, or the search is cleared. Box results open the find bar as before.
+  - Find on page (Ctrl+F) still searches box content only.
+- **Rationale:** People look for pages by name first, and a title match is usually what they want.
+- **Alternatives considered:** combining title and box words for one match (finds pages where the words are unrelated); selecting the matched title text (risks overwriting the title when typing).
+
+## 0090 — Integration suite: accessibility semantics and table handles
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0088)
+- **Decision:**
+  - **Semantics:** when a Windows accessibility client (UI Automation) queries the window, the engine turns semantics on mid-test and `testWidgets` reports a handle as leaked. The suite replaces only `PlatformDispatcher.onSemanticsEnabledChanged`, so semantics the platform asks for are ignored. Handles a test opens itself are still counted, so real leaks are still caught.
+  - **Table row handles (step 143):** the row handle of a table's first row was not missing. A test that hovers the centre of cell (0,0) lands on the column handle, which covers the middle of a one-line row, so the row handle hides.
+    - Users reach the row handle from the table's left edge, so they don't hit this.
+    - The test hovers the left of the cell, and a note-package test checks that the row handle opens its menu.
+  - **Results:** the suite (49 tests) passed three full runs in a row after both changes.
+- **Rationale:** The suite has to fail only on real problems, and every finding is checked against what a user would do.
+- **Alternatives considered:** retrying failed tests (hides real failures); turning accessibility off for the app (it must stay available to users).
+
+## 0091 — Canvas performance on large pages
+- **Date:** 2026-10-26
+- **Status:** Active (extends 0003)
+- **Decision:**
+  - **Rebuilds:** panning and zooming no longer rebuild the boxes.
+    - A box host reads the zoom only when it needs it (dragging or resizing).
+    - The canvas hands the same box widgets to its stack until the page, the selection, editing, read-only state or find changes. Theme changes still reach every box.
+  - **Benchmark:** `app/integration_test/perf_benchmark.dart` measures a page with 200 note boxes (text, paragraphs, 3×3 formula tables) and 20 drawing boxes.
+    - It measures page open, per-keystroke latency and pan and zoom frame times, and prints a summary line. It asserts only loose bounds.
+    - It runs in profile mode through `flutter drive` with `perf_driver.dart`, and is not part of the checklist run.
+  - **Results (profile mode, UI thread; the raster thread wasn't measured, it reads 0 on this setup):**
+
+    | | Before | After |
+    |---|---|---|
+    | Pan, average build per frame | 38.7 ms (160 of 450 frames over 16 ms) | 6.4 ms (none over) |
+    | Zoom, average build per frame | 32.9 ms | 6.8 ms (none over) |
+    | Page open (first frame) | — | about 0.6 s |
+    | Typing, key to frame | — | 15.4 ms average |
+
+  - **Typing spikes:** about one typing frame in fifteen takes 80–140 ms, likely garbage collection on a large heap. This is not proven and is left open.
+- **Rationale:** A page with hundreds of boxes has to pan and zoom within a 16 ms frame.
+- **Alternatives considered:** a repaint boundary around all boxes or around each box (measured slower); building only visible boxes (a larger change; open time is acceptable for now).
 
 ---
 
