@@ -6,6 +6,8 @@ import 'package:noted_core/noted_core.dart';
 
 import 'box_module.dart';
 import 'canvas_tool.dart';
+import 'command_host.dart';
+import 'commands.dart';
 
 /// The box modules compiled into this build (stage 1 of 0034).
 final class ModuleRegistry {
@@ -44,6 +46,13 @@ final class ModuleRegistry {
   List<CanvasTool> get tools => [
     for (final m in _modules.values)
       if (codecs.isEnabled(m.codec.typeId)) ...m.tools,
+  ];
+
+  /// Commands of the modules that are switched on (Box API 0.4), made for
+  /// [host]. The tools are not included: the canvas exposes them itself.
+  List<Command> commandsFor(CommandHost host) => [
+    for (final m in _modules.values)
+      if (codecs.isEnabled(m.codec.typeId)) ...m.commands(host),
   ];
 
   /// The module new boxes are created with.

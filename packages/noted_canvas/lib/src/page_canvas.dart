@@ -13,11 +13,15 @@ import 'package:noted_core/noted_core.dart';
 
 import 'box_host.dart';
 import 'box_scroll.dart';
+import 'canvas_commands.dart';
 import 'canvas_controller.dart';
 import 'canvas_tool.dart';
 import 'canvas_view.dart';
+import 'command_toolbar.dart';
+import 'commands.dart';
 import 'geometry.dart';
 import 'noted_colors.dart';
+import 'toolbar_layout.dart';
 
 /// Auto-pan during a tool session: the edge zone, in screen pixels.
 const double autoPanEdge = 40;
@@ -48,9 +52,14 @@ class PageCanvas extends StatefulWidget {
     required this.controller,
     this.tools,
     this.readOnly = false,
+    this.toolbarLayout = defaultToolbarLayout,
   });
 
   final CanvasController controller;
+
+  /// Which commands the toolbar along the top shows, and in what order. It
+  /// is built only from this canvas's [PageCanvasState.commands].
+  final ToolbarLayout toolbarLayout;
 
   /// Show the page without any way to change it: boxes use their module's
   /// read-only view, with no grip, handles or editing; there is no toolbar
@@ -71,8 +80,12 @@ class PageCanvas extends StatefulWidget {
 
 class PageCanvasState extends State<PageCanvas>
     with SingleTickerProviderStateMixin
-    implements ToolContext {
+    implements ToolContext, CanvasCommandTarget {
   final TransformationController _transform = TransformationController();
+  CommandRegistry _commands = CommandRegistry();
+
+  /// The zoom the toolbar was last built with.
+  double? _toolbarScale;
   final FocusNode _focus = FocusNode(debugLabel: 'PageCanvas');
   final CanvasToolSelection _ownTools = CanvasToolSelection();
   final _OverlayRepaint _overlay = _OverlayRepaint();
@@ -99,6 +112,28 @@ class PageCanvasState extends State<PageCanvas>
   CanvasController get _c => widget.controller;
   bool get _readOnly => widget.readOnly || _c.readOnly;
   CanvasToolSelection get _tools => widget.tools ?? _ownTools;
+
+  @override
+  CanvasToolSelection get tools => _tools;
+
+  @override
+  bool get isReadOnly => _readOnly;
+
+  @override
+  void focusCanvas() => _focus.requestFocus();
+
+  /// This canvas's commands: its own, its modules' tools and the modules'
+  /// commands (Box API 0.4). Key presses and the toolbar go through it.
+  /// Made again when the page or the tool selection changes.
+  CommandRegistry get commands => _commands;
+
+  void _buildCommands() {
+    final old = _commands;
+    _commands = CommandRegistry()
+      ..registerAll(buildCanvasCommands(this))
+      ..registerAll(_c.modules.commandsFor(this));
+    old.dispose();
+  }
 
   /// The current view, for tests and the app shell.
   CanvasView? get view => _view;
@@ -130,6 +165,7 @@ class PageCanvasState extends State<PageCanvas>
     super.initState();
     _c.addListener(_changed);
     _tools.addListener(_toolChanged);
+    _buildCommands();
   }
 
   @override
@@ -145,10 +181,15 @@ class PageCanvasState extends State<PageCanvas>
       (oldWidget.tools ?? _ownTools).removeListener(_toolChanged);
       _tools.addListener(_toolChanged);
     }
+    if (oldWidget.controller != widget.controller ||
+        oldWidget.tools != widget.tools) {
+      _buildCommands();
+    }
   }
 
   @override
   void dispose() {
+    _commands.dispose();
     _cancelSession();
     _autoPan?.dispose();
     _c.removeListener(_changed);
@@ -336,11 +377,14 @@ class PageCanvasState extends State<PageCanvas>
     setState(() => _view = f(g, v));
   }
 
+  @override
   void fitAll() => _setView((g, _) => g.fitAll(_content));
 
+  @override
   void zoomBy(double factor) =>
       _setView((g, v) => g.zoomAt(v, g.viewport.center(Offset.zero), factor));
 
+  @override
   void zoomTo(double scale) => zoomBy(scale / (_view?.scale ?? 1));
 
   void _onSignal(PointerSignalEvent event) {
@@ -385,74 +429,19 @@ class PageCanvasState extends State<PageCanvas>
     _c.createBoxAt(Bounds(world.dx - 10, world.dy - 14, 0, 0));
   }
 
+  /// Keys are looked up in the command registry. Keys bubble up from a
+  /// focused editor: only the commands that work while editing (zoom,
+  /// Escape) answer them, the rest is left to the editor. A read-only page
+  /// answers only to the commands that work there (zoom).
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-      return KeyEventResult.ignored;
-    }
-    final k = event.logicalKey;
-    final ctrl = HardwareKeyboard.instance.isControlPressed;
-    final shift = HardwareKeyboard.instance.isShiftPressed;
-
-    if (ctrl &&
-        (k == LogicalKeyboardKey.equal || k == LogicalKeyboardKey.numpadAdd)) {
-      zoomBy(1.25);
-      return KeyEventResult.handled;
-    }
-    if (ctrl &&
-        (k == LogicalKeyboardKey.minus ||
-            k == LogicalKeyboardKey.numpadSubtract)) {
-      zoomBy(1 / 1.25);
-      return KeyEventResult.handled;
-    }
-    if (ctrl &&
-        (k == LogicalKeyboardKey.digit0 || k == LogicalKeyboardKey.numpad0)) {
-      zoomTo(1);
-      return KeyEventResult.handled;
-    }
-
-    // Zoom keys are all a read-only page answers to.
-    if (_readOnly) return KeyEventResult.ignored;
-
-    // Keys bubble up from a focused editor; leave its keys to it.
-    if (_c.editingId != null) {
-      if (k == LogicalKeyboardKey.escape) {
-        _focus.requestFocus();
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    }
-    if (k == LogicalKeyboardKey.delete || k == LogicalKeyboardKey.backspace) {
-      final id = _c.selectedId;
-      if (id == null) return KeyEventResult.ignored;
-      _c.delete(id);
-      return KeyEventResult.handled;
-    }
-    if (ctrl && k == LogicalKeyboardKey.keyZ) {
-      shift ? _c.redo() : _c.undo();
-      return KeyEventResult.handled;
-    }
-    if (ctrl && k == LogicalKeyboardKey.keyY) {
-      _c.redo();
-      return KeyEventResult.handled;
-    }
-    if (k == LogicalKeyboardKey.escape) {
-      // First Escape leaves the tool, the next clears the selection.
-      _tools.active != null ? _tools.select(null) : _c.select(null);
-      return KeyEventResult.handled;
-    }
-    if (!ctrl && k == LogicalKeyboardKey.keyV) {
-      _tools.select(null);
-      return KeyEventResult.handled;
-    }
-    if (!ctrl) {
-      for (final tool in _c.modules.tools) {
-        if (tool.shortcut == k) {
-          _tools.select(tool);
-          return KeyEventResult.handled;
-        }
-      }
-    }
-    return KeyEventResult.ignored;
+    final command = _commands.resolve(
+      event,
+      editing: _c.editingId != null,
+      readOnly: _readOnly,
+    );
+    if (command == null) return KeyEventResult.ignored;
+    command.run();
+    return KeyEventResult.handled;
   }
 
   @override
@@ -460,11 +449,27 @@ class PageCanvasState extends State<PageCanvas>
     final scheme = Theme.of(context).colorScheme;
     _brightness = Theme.of(context).brightness;
     _colors = NotedColors.of(context);
+    _toolbarScale = _view?.scale;
     return Focus(
       focusNode: _focus,
       autofocus: true,
       onKeyEvent: _onKey,
-      child: LayoutBuilder(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          CommandToolbar(
+            registry: _commands,
+            layout: widget.toolbarLayout,
+            readOnly: _readOnly,
+          ),
+          Expanded(child: _canvasArea(scheme)),
+        ],
+      ),
+    );
+  }
+
+  Widget _canvasArea(ColorScheme scheme) {
+    return LayoutBuilder(
         builder: (context, constraints) {
           final size = constraints.biggest;
           final content = _contentRect();
@@ -478,6 +483,13 @@ class PageCanvasState extends State<PageCanvas>
           _geometry = g;
           final view = g.clamp(_view ?? g.initial(content));
           _view = view;
+          // The toolbar is built before this runs: if the view settled on a
+          // zoom it doesn't show, rebuild once so its percentage is right.
+          if (view.scale != _toolbarScale) {
+            SchedulerBinding.instance.addPostFrameCallback((_) {
+              if (mounted) setState(() {});
+            });
+          }
           final matrix = g.matrixFor(view);
           if (_transform.value != matrix) _transform.value = matrix;
 
@@ -584,89 +596,15 @@ class PageCanvasState extends State<PageCanvas>
                   ),
                 ),
               ),
-              if (!readOnly && _c.modules.tools.isNotEmpty)
-                Positioned(
-                  left: 12,
-                  top: 12,
-                  child: _ToolBar(
-                    tools: _c.modules.tools,
-                    active: tool,
-                    onSelect: _tools.select,
-                  ),
-                ),
               if (kDebugMode)
                 Positioned(
                   left: 12,
                   bottom: 12,
                   child: _InputReadout(stats: _stats),
                 ),
-              Positioned(
-                right: 12,
-                bottom: 12,
-                child: _ZoomBar(
-                  scale: view.scale,
-                  onZoomIn: () => zoomBy(1.25),
-                  onZoomOut: () => zoomBy(1 / 1.25),
-                  onReset: () => zoomTo(1),
-                  onFitAll: fitAll,
-                ),
-              ),
             ],
           );
         },
-      ),
-    );
-  }
-}
-
-class _ZoomBar extends StatelessWidget {
-  const _ZoomBar({
-    required this.scale,
-    required this.onZoomIn,
-    required this.onZoomOut,
-    required this.onReset,
-    required this.onFitAll,
-  });
-
-  final double scale;
-  final VoidCallback onZoomIn;
-  final VoidCallback onZoomOut;
-  final VoidCallback onReset;
-  final VoidCallback onFitAll;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      elevation: 2,
-      borderRadius: BorderRadius.circular(8),
-      color: Theme.of(context).colorScheme.surfaceContainer,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              tooltip: 'Zoom out (Ctrl+-)',
-              icon: const Icon(Icons.remove),
-              onPressed: onZoomOut,
-            ),
-            TextButton(
-              onPressed: onReset,
-              child: Text('${(scale * 100).round()}%'),
-            ),
-            IconButton(
-              tooltip: 'Zoom in (Ctrl+=)',
-              icon: const Icon(Icons.add),
-              onPressed: onZoomIn,
-            ),
-            TextButton.icon(
-              onPressed: onFitAll,
-              icon: const Icon(Icons.fit_screen),
-              label: const Text('Fit all'),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -749,51 +687,4 @@ class _InputReadout extends StatelessWidget {
             ),
           ),
   );
-}
-
-/// Select/type plus the modules' tools, and the active tool's options.
-class _ToolBar extends StatelessWidget {
-  const _ToolBar({
-    required this.tools,
-    required this.active,
-    required this.onSelect,
-  });
-
-  final List<CanvasTool> tools;
-  final CanvasTool? active;
-  final ValueChanged<CanvasTool?> onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    final options = active?.buildOptions(context);
-    Widget button(CanvasTool? tool, IconData icon, String label) {
-      final key = tool?.shortcut?.keyLabel ?? 'V';
-      return IconButton(
-        isSelected: identical(active, tool),
-        tooltip: '$label ($key)',
-        icon: Icon(icon),
-        onPressed: () => onSelect(tool),
-      );
-    }
-
-    return Material(
-      elevation: 2,
-      borderRadius: BorderRadius.circular(8),
-      color: Theme.of(context).colorScheme.surfaceContainer,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            button(null, Icons.text_fields, 'Select and type'),
-            for (final t in tools) button(t, t.icon, t.label),
-            if (options != null) ...[
-              const SizedBox(height: 32, child: VerticalDivider(width: 12)),
-              options,
-            ],
-          ],
-        ),
-      ),
-    );
-  }
 }

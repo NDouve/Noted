@@ -33,8 +33,8 @@ final class BoxApiVersion {
 /// The Box API version this core implements (0034).
 ///
 /// 0.2 added canvas tools (on the Flutter side) and [BoxEdit]; 0.3 added
-/// the theme to `ToolContext`. See `BOX_API_CHANGELOG.md` in this package.
-const BoxApiVersion boxApiVersion = BoxApiVersion(0, 3);
+/// the theme to `ToolContext`; 0.4 added commands. See `BOX_API_CHANGELOG.md` in this package.
+const BoxApiVersion boxApiVersion = BoxApiVersion(0, 4);
 
 /// How a box's size relates to its content.
 enum BoxSizing {

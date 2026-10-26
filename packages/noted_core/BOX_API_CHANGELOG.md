@@ -8,6 +8,21 @@ version.
 
 Versions are listed newest first.
 
+## 0.4 — 2026-10-26
+- Commands: `BoxModule.commands(CommandHost host)` returns the `Command`s a
+  module adds (id, label, icon, optional shortcut, enabled and checked state,
+  invoke). The canvas registers them, with its own, in a `CommandRegistry`;
+  keyboard shortcuts and the default toolbar are built only from that
+  registry.
+- `CommandHost` gives a module the open page's `CanvasController` and the
+  shared `CanvasToolSelection`.
+- Each `CanvasTool` is also exposed by the canvas as a command with the tool's
+  id, label, icon and shortcut, checked while the tool is active.
+- `CanvasTool.buildOptions` is no longer shown by the default toolbar; a
+  tool's options are commands (for example pen colors and widths).
+- Additive: a module that doesn't override `commands` is unaffected.
+  Decision 0067.
+
 ## 0.3 — 2026-10-26
 - `ToolContext.brightness`: the theme's brightness, so a tool session's live
   feedback (for example the stroke being drawn) can match the theme.

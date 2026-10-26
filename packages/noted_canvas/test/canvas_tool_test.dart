@@ -93,6 +93,9 @@ class _Module extends BoxModule<String> {
 
 int taps = 0;
 
+/// The toolbar sits above the canvas, so screen y is the canvas's plus this.
+const Offset bar = Offset(0, CommandToolbar.height);
+
 void main() {
   late _RecordingTool tool;
   late CanvasController c;
@@ -130,7 +133,13 @@ void main() {
             children: [
               SizedBox(width: sidebar),
               Expanded(
-                child: PageCanvas(controller: c, tools: selection),
+                child: PageCanvas(
+                  controller: c,
+                  tools: selection,
+                  toolbarLayout: const [
+                    [CanvasCommands.select, 'test.tool'],
+                  ],
+                ),
               ),
             ],
           ),
@@ -151,7 +160,7 @@ void main() {
     final view = canvas(t).view!;
 
     // A fast stroke: 300 moves with large jumps, starting over the box.
-    final start = view.toScreen(const Offset(50, 50));
+    final start = view.toScreen(const Offset(50, 50)) + bar;
     final g = await t.startGesture(start, kind: PointerDeviceKind.mouse);
     for (var i = 1; i <= 300; i++) {
       await g.moveTo(start + Offset(i * 3.0, (i % 7) * 40.0));
@@ -164,7 +173,7 @@ void main() {
     expect(tool.samples.first.position.dx, closeTo(50, 1e-6));
     expect(
       tool.samples.last.position,
-      view.toWorld(start + Offset(900, (300 % 7) * 40.0)),
+      view.toWorld(start - bar + Offset(900, (300 % 7) * 40.0)),
     );
     expect(tool.ended, 1);
     expect(tool.interactingDuringSession, isTrue);
@@ -211,8 +220,8 @@ void main() {
   testWidgets('without a tool, boxes get the pointer again', (t) async {
     await pump(t);
     final view = canvas(t).view!;
-    // Away from the floating toolbar in the top-left corner.
-    await t.tapAt(view.toScreen(const Offset(150, 80)));
+    // The toolbar is above the canvas, not over it.
+    await t.tapAt(view.toScreen(const Offset(150, 80)) + bar);
     await t.pump();
     expect(taps, 1);
     expect(tool.samples, isEmpty);
@@ -267,10 +276,10 @@ void main() {
         const Offset(600, 400),
         kind: PointerDeviceKind.mouse,
       );
-      expected.add(canvas(t).view!.toWorld(const Offset(600, 400)));
+      expected.add(canvas(t).view!.toWorld(const Offset(600, 400) - bar));
       for (final x in [800.0, 1000.0, 1185.0]) {
         await g.moveTo(Offset(x, 400));
-        expected.add(canvas(t).view!.toWorld(Offset(x, 400)));
+        expected.add(canvas(t).view!.toWorld(Offset(x, 400) - bar));
       }
       // Hold 15 px from the right edge for three seconds.
       for (var i = 0; i < 60; i++) {
@@ -289,14 +298,14 @@ void main() {
       );
       // Past the edge: faster.
       await g.moveTo(const Offset(1260, 400));
-      expected.add(canvas(t).view!.toWorld(const Offset(1260, 400)));
+      expected.add(canvas(t).view!.toWorld(const Offset(1260, 400) - bar));
       final before = canvas(t).view!.offset.dx;
       await t.pump(const Duration(milliseconds: 50));
       await t.pump(const Duration(milliseconds: 50));
       final fastStep = before - canvas(t).view!.offset.dx;
       // Back inside: the panning stops.
       await g.moveTo(const Offset(700, 400));
-      expected.add(canvas(t).view!.toWorld(const Offset(700, 400)));
+      expected.add(canvas(t).view!.toWorld(const Offset(700, 400) - bar));
       final stopped = canvas(t).view!.offset;
       await t.pump(const Duration(milliseconds: 200));
       expect(canvas(t).view!.offset, stopped);

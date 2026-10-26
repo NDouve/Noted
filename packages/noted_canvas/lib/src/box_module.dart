@@ -8,6 +8,8 @@ import 'package:flutter/widgets.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'canvas_tool.dart';
+import 'command_host.dart';
+import 'commands.dart';
 
 /// What a box module sees of its box while it is on screen.
 ///
@@ -65,6 +67,12 @@ abstract class BoxModule<D> {
 
   /// Canvas tools this module adds, for example a pen (Box API 0.2).
   List<CanvasTool> get tools => const [];
+
+  /// Commands this module adds, for example "insert table" (Box API 0.4).
+  /// Called once for each open page canvas; the canvas owns the commands and
+  /// disposes them. Each tool in [tools] is already a command (same id), so
+  /// list only the others. Ids are namespaced by module and must be unique.
+  List<Command> commands(CommandHost host) => const [];
 
   /// Renders an image snapshot (0035) as PNG bytes, or returns null for a
   /// text-only snapshot. Not stored yet: Prototype 1 boxes are text only.

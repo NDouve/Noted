@@ -104,6 +104,9 @@ BoxRecord _foreignTypeBox() => BoxRecord.create(
   rev: 'r',
 );
 
+/// The toolbar sits above the canvas, so screen y is the canvas's plus this.
+const Offset bar = Offset(0, CommandToolbar.height);
+
 void main() {
   late ModuleRegistry modules;
   late List<NotedPage> saved;
@@ -178,7 +181,7 @@ void main() {
     final grip = c.page.nodes.single.bounds!;
     // The grip sits just above the box; the view is at 100% on the origin.
     final view = t.state<PageCanvasState>(find.byType(PageCanvas)).view!;
-    final gripScreen = view.toScreen(
+    final gripScreen = bar + view.toScreen(
       Offset(grip.x + 40, grip.y - boxGripHeight / 2),
     );
     await t.dragFrom(gripScreen, const Offset(120, 80));
@@ -257,7 +260,7 @@ void main() {
   });
 
   Offset screenOf(WidgetTester t, Offset world) =>
-      t.state<PageCanvasState>(find.byType(PageCanvas)).view!.toScreen(world);
+      bar + t.state<PageCanvasState>(find.byType(PageCanvas)).view!.toScreen(world);
 
   testWidgets(
     'a height resize fixes the height; double-clicking the bottom edge restores auto height',
