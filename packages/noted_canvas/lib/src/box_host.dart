@@ -34,10 +34,15 @@ class BoxHost extends StatefulWidget {
     required this.childOrigin,
     required this.scale,
     required this.onGripTap,
+    this.readOnly = false,
   });
 
   final CanvasNode node;
   final CanvasController controller;
+
+  /// Show every box with its module's read-only view and without grip,
+  /// handles or conflict badge.
+  final bool readOnly;
 
   /// World position of the canvas child's top-left corner.
   final Offset childOrigin;
@@ -97,7 +102,8 @@ class _BoxHostState extends State<BoxHost> {
         module = c.modules.moduleFor(node.typeId);
       }
     }
-    final editable = module != null && live != null;
+    final readOnly = widget.readOnly || c.readOnly;
+    final editable = module != null && live != null && !readOnly;
     final liveBox = live;
     final selected = c.selectedId == node.id;
     final editing = c.editingId == node.id;
@@ -118,7 +124,7 @@ class _BoxHostState extends State<BoxHost> {
             boxId: node.id,
             data: liveBox.data,
             bounds: b.rect,
-            readOnly: false,
+            readOnly: readOnly,
             autoHeight: c.isAutoHeight(node as BoxRecord),
             autofocus: _autofocus,
             commit: (data) => _commit(node.id, liveBox.codec, data),
@@ -236,7 +242,7 @@ class _BoxHostState extends State<BoxHost> {
               _handle(_Edge.bottomLeft, b),
               _handle(_Edge.bottomRight, b),
             ],
-            if (conflicted)
+            if (conflicted && !readOnly)
               Positioned(
                 right: m,
                 top: 0,

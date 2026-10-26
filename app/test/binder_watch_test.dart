@@ -102,8 +102,11 @@ void main() {
       await nb.checkBinderFile(binderFile().path);
       expect(section.status, BinderStatus.unreadable);
       expect(section.binder, isNull);
-      expect(nb.tree[inBinder], isNull); // its pages left the notebook
-      expect(nb.currentId, standalone); // the open page fell back
+      // Its pages stay listed, read-only; the open page stays open.
+      expect(section.tree[inBinder], isNotNull);
+      expect(nb.isReadOnlyPage(inBinder), isTrue);
+      expect(nb.currentId, inBinder);
+      expect(nb.current!.readOnly, isTrue);
       await nb.updateBinder(section.path, title: 'Nope');
       await nb.flush();
       expect(binderFile().readAsStringSync(), '{ not json');

@@ -73,16 +73,26 @@ class _PageTreeViewState extends State<PageTreeView> {
     }
 
     addTree(_nb.tree, null);
+    if (!_nb.defaultFolderAvailable) {
+      rows.add(
+        _unavailableFolder(
+          context,
+          const ValueKey('folder-header-default'),
+          'Default pages folder',
+          'Folder not found. It may be on another device.',
+        ),
+      );
+    }
     for (final f in _nb.standaloneFolders) {
       if (!f.available) rows.add(_folderHeader(context, f));
     }
     final cantOpen = <UnreadablePage>[..._nb.unreadable];
     for (final b in _nb.binders) {
       rows.add(_binderHeader(context, b));
-      if (!b.available) continue;
+      if (!b.available && !b.readOnly) continue;
       cantOpen.addAll(b.unreadable);
       if (!_collapsed.contains(_binderKey(b))) {
-        addTree(b.tree, binderSidebarColor(context, b.color));
+        addTree(b.tree, b.readOnly ? null : binderSidebarColor(context, b.color));
       }
     }
 
@@ -92,7 +102,8 @@ class _PageTreeViewState extends State<PageTreeView> {
         DragTarget<String>(
           key: const ValueKey('pages-header'),
           // Dropping a page on the "Pages" header makes it a standalone page.
-          onWillAcceptWithDetails: (d) => _nb.treeOfPage(d.data)[d.data] != null,
+          onWillAcceptWithDetails: (d) =>
+          _nb.treeOfPage(d.data)[d.data] != null && !_nb.isReadOnlyPage(d.data),
           onMove: (_) {
             if (_hoverHeader != '') setState(() => _hoverHeader = '');
           },
@@ -272,14 +283,31 @@ class _PageTreeViewState extends State<PageTreeView> {
   }
 
   // A remembered standalone folder that can't be used now (0027).
-  Widget _folderHeader(BuildContext context, StandaloneFolder f) {
+  Widget _folderHeader(BuildContext context, StandaloneFolder f) => _unavailableFolder(
+    context,
+    ValueKey('folder-header-${f.path}'),
+    f.name,
+    f.reason ?? '',
+    remove: () => _guard(() => _nb.removeStandaloneFolder(f.path)),
+    menuKey: ValueKey('folder-menu-${f.path}'),
+  );
+
+  // A standalone folder that isn't there; [remove] is null for the default one.
+  Widget _unavailableFolder(
+    BuildContext context,
+    Key key,
+    String name,
+    String reason, {
+    VoidCallback? remove,
+    Key? menuKey,
+  }) {
     final theme = Theme.of(context);
     return Tooltip(
-      message: f.reason ?? '',
+      message: reason,
       child: Opacity(
         opacity: 0.6,
         child: SizedBox(
-          key: ValueKey('folder-header-${f.path}'),
+          key: key,
           height: _rowHeight + 20,
           child: Row(
             children: [
@@ -291,20 +319,21 @@ class _PageTreeViewState extends State<PageTreeView> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(f.name, overflow: TextOverflow.ellipsis),
+                    Text(name, overflow: TextOverflow.ellipsis),
                     Text('On another device', style: theme.textTheme.labelSmall),
                   ],
                 ),
               ),
-              PopupMenuButton<String>(
-                key: ValueKey('folder-menu-${f.path}'),
-                tooltip: 'Folder options',
-                iconSize: 18,
-                onSelected: (_) => _guard(() => _nb.removeStandaloneFolder(f.path)),
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'remove', child: Text('Remove from list')),
-                ],
-              ),
+              if (remove != null)
+                PopupMenuButton<String>(
+                  key: menuKey,
+                  tooltip: 'Folder options',
+                  iconSize: 18,
+                  onSelected: (_) => remove(),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'remove', child: Text('Remove from list')),
+                  ],
+                ),
             ],
           ),
         ),
@@ -336,7 +365,7 @@ class _PageTreeViewState extends State<PageTreeView> {
                     children: [
                       Text(b.title, overflow: TextOverflow.ellipsis),
                       Text(
-                        unreadable ? "Can't open" : 'On another device',
+                        unreadable ? "Binder file can't be read" : 'On another device',
                         style: theme.textTheme.labelSmall,
                       ),
                     ],
@@ -364,7 +393,8 @@ class _PageTreeViewState extends State<PageTreeView> {
     return DragTarget<String>(
       key: ValueKey('binder-header-${b.path}'),
       // Dropping a page on a binder header moves it (and its subpages) in.
-      onWillAcceptWithDetails: (d) => _nb.treeOfPage(d.data)[d.data] != null,
+      onWillAcceptWithDetails: (d) =>
+          _nb.treeOfPage(d.data)[d.data] != null && !_nb.isReadOnlyPage(d.data),
       onMove: (_) {
         if (_hoverHeader != b.path) setState(() => _hoverHeader = b.path);
       },
@@ -484,7 +514,8 @@ class _PageTreeViewState extends State<PageTreeView> {
   Widget _endTarget(ThemeData theme) {
     return DragTarget<String>(
       key: const ValueKey('page-tree-end'),
-      onWillAcceptWithDetails: (d) => _nb.treeOfPage(d.data)[d.data] != null,
+      onWillAcceptWithDetails: (d) =>
+          _nb.treeOfPage(d.data)[d.data] != null && !_nb.isReadOnlyPage(d.data),
       onMove: (_) {
         if (!_hoverEnd) {
           setState(() {
@@ -546,6 +577,9 @@ class _PageTreeViewState extends State<PageTreeView> {
     final key = _rowKeys.putIfAbsent(p.id, () => GlobalKey());
     final hover = _hoverRow == p.id ? _hoverZone : null;
     final indent = 8.0 + depth * 16;
+    // Pages of a binder whose file can't be read: greyed, to view only.
+    final locked = _nb.isReadOnlyPage(p.id);
+    final greyed = theme.colorScheme.onSurface.withValues(alpha: 0.38);
 
     final content = Material(
       color: hover == DropZone.into
@@ -555,7 +589,7 @@ class _PageTreeViewState extends State<PageTreeView> {
           : Colors.transparent,
       child: InkWell(
         onTap: () => _nb.open(p.id),
-        onDoubleTap: () => _rename(context, p),
+        onDoubleTap: locked ? null : () => _rename(context, p),
         child: Padding(
           padding: EdgeInsets.only(left: indent, right: 4),
           child: SizedBox(
@@ -579,14 +613,17 @@ class _PageTreeViewState extends State<PageTreeView> {
                 Icon(
                   divider ? Icons.topic_outlined : Icons.article_outlined,
                   size: 18,
-                  color: stripe,
+                  color: locked ? greyed : stripe,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     title,
                     overflow: TextOverflow.ellipsis,
-                    style: divider ? const TextStyle(fontWeight: FontWeight.w600) : null,
+                    style: TextStyle(
+                      fontWeight: divider ? FontWeight.w600 : null,
+                      color: locked ? greyed : null,
+                    ),
                   ),
                 ),
                 if (_nb.hasConflict(p.id))
@@ -599,12 +636,15 @@ class _PageTreeViewState extends State<PageTreeView> {
                       color: NotedColors.of(context).conflict,
                     ),
                   ),
-                PopupMenuButton<String>(
-                  tooltip: 'Page options',
-                  iconSize: 18,
-                  onSelected: (v) => _act(context, p, v),
-                  itemBuilder: (_) => _menuItems(p),
-                ),
+                if (locked)
+                  const SizedBox(width: 8)
+                else
+                  PopupMenuButton<String>(
+                    tooltip: 'Page options',
+                    iconSize: 18,
+                    onSelected: (v) => _act(context, p, v),
+                    itemBuilder: (_) => _menuItems(p),
+                  ),
               ],
             ),
           ),
@@ -621,6 +661,7 @@ class _PageTreeViewState extends State<PageTreeView> {
     final draggable = _draggable(
       p,
       title,
+      locked,
       stripe == null
           ? content
           : DecoratedBox(
@@ -638,6 +679,8 @@ class _PageTreeViewState extends State<PageTreeView> {
       // Pages in other locations are moved across (their subpages with them).
       onWillAcceptWithDetails: (d) =>
           d.data != p.id &&
+          !locked &&
+          !_nb.isReadOnlyPage(d.data) &&
           _nb.treeOfPage(d.data)[d.data] != null &&
           !(_nb.binderOfPage(d.data) == _nb.binderOfPage(p.id) &&
               _nb.treeOfPage(p.id).wouldCycle(d.data, p.id)),
@@ -669,7 +712,7 @@ class _PageTreeViewState extends State<PageTreeView> {
       },
       builder: (context, _, _) => GestureDetector(
         behavior: HitTestBehavior.translucent,
-        onSecondaryTapDown: (d) => _contextMenu(context, p, d.globalPosition),
+        onSecondaryTapDown: locked ? null : (d) => _contextMenu(context, p, d.globalPosition),
         child: Stack(
           key: key,
           children: [
@@ -684,7 +727,8 @@ class _PageTreeViewState extends State<PageTreeView> {
 
   /// Wraps a row so it can be dragged. Touch needs a long press so scrolling
   /// the list still works; a mouse drags at once.
-  Widget _draggable(PageMeta p, String title, Widget child) {
+  Widget _draggable(PageMeta p, String title, bool locked, Widget child) {
+    if (locked) return child; // read-only pages can't be dragged
     final feedback = Material(
       elevation: 4,
       borderRadius: BorderRadius.circular(4),

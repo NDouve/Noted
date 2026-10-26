@@ -193,18 +193,16 @@ void main() {
       expect(savedSettings()['standaloneFolders'], isEmpty);
     });
 
-    test('pages are not nested across folders; the Pages header keeps a page in its folder', () async {
+    test('nesting across folders moves the files; the Pages header keeps a page in its folder', () async {
       final nb = make();
       await nb.load();
       final inDefault = nb.currentId!;
       final inExtra = await nb.createPage(folderPath: extra.path);
       final child = await nb.createPage(parentId: inExtra);
-      await expectLater(
-        nb.move(inDefault, parentId: inExtra),
-        throwsA(isA<NotebookException>()),
-      );
-      await expectLater(nb.move(child, parentId: inDefault), throwsA(isA<NotebookException>()));
-      expect(File('${pages.path}/$inDefault.canvas').existsSync(), isTrue);
+      expect(await nb.move(child, parentId: inDefault), isTrue);
+      expect(File('${pages.path}/$child.canvas').existsSync(), isTrue);
+      expect(File('${extra.path}/$child.canvas').existsSync(), isFalse);
+      expect(await nb.move(child, parentId: inExtra), isTrue);
       expect(File('${extra.path}/$child.canvas').existsSync(), isTrue);
 
       // Dropping on the "Pages" header: a top-level page of its own folder.
@@ -212,9 +210,10 @@ void main() {
       expect(nb.tree.parentIdOf(child), isNull);
       expect(File('${extra.path}/$child.canvas').existsSync(), isTrue);
       expect(File('${pages.path}/$child.canvas').existsSync(), isFalse);
-      // Reordering next to a page of the other folder is fine.
+      // Dropping next to a page of the other folder moves it to that folder.
       expect(await nb.moveRelative(child, inDefault, after: false), isTrue);
-      expect(File('${extra.path}/$child.canvas').existsSync(), isTrue);
+      expect(File('${pages.path}/$child.canvas').existsSync(), isTrue);
+      expect(File('${extra.path}/$child.canvas').existsSync(), isFalse);
     });
 
     test('a watcher sees a page file added to another folder', () async {

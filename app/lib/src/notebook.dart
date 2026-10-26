@@ -96,6 +96,10 @@ class BinderSection {
 
   bool get available => status == BinderStatus.available;
 
+  /// The binder file can't be read: the pages are listed and can be viewed,
+  /// but nothing in the binder can be changed.
+  bool get readOnly => status == BinderStatus.unreadable;
+
   String get title {
     final t = binder?.title.trim() ?? '';
     return t.isNotEmpty ? t : _folderName(path);
@@ -114,6 +118,7 @@ class StandaloneFolder {
     this.store,
     this.reason,
     this.unreadable = const [],
+    this.missing = false,
   });
 
   /// The folder.
@@ -121,6 +126,10 @@ class StandaloneFolder {
 
   /// False if the folder is gone or can't be used, e.g. on another device.
   bool available;
+
+  /// The folder isn't there (as opposed to being unusable). The app looks
+  /// for it again, and uses it when it comes back.
+  bool missing;
   PageStore? store;
 
   /// Why the folder is unavailable.
@@ -194,7 +203,14 @@ class Notebook extends ChangeNotifier {
     this.watchDebounce = const Duration(milliseconds: 300),
     this.deviceName,
     this.templatesDirectory,
+    this.folderCheckInterval = const Duration(seconds: 3),
   });
+
+  /// How often, with [watchFiles] on, the standalone folders are checked for
+  /// having disappeared or come back (a watcher can't watch a folder that
+  /// isn't there). [Duration.zero] turns the timer off; [checkFolders] still
+  /// works.
+  final Duration folderCheckInterval;
 
   /// The folder of app-wide templates. Null: `templates` next to
   /// [bindersFile]; with neither, templates can't be saved.
@@ -263,9 +279,55 @@ class Notebook extends ChangeNotifier {
   RawObject _settings = RawObject.empty;
   bool _settingsCorrupt = false;
   bool _disposed = false;
+  Timer? _folderTimer;
+  // The default folder disappeared while the app was running.
+  bool _defaultGone = false;
+  // The location of the open page when that folder went away: the page stays
+  // open, read-only, although it is no longer in the tree. And why the open
+  // page is read-only now.
+  String? _orphanLoc;
+  String? _readOnlyReason;
 
   /// The standalone pages' tree.
   PageTree get tree => _tree;
+
+  /// False if the default folder of standalone pages disappeared while the app
+  /// was running. Its pages are gone from the tree until it comes back.
+  bool get defaultFolderAvailable => !_defaultGone;
+
+  /// Why the open page can't be edited, or null if it can. The page is shown
+  /// read-only when its binder's file can't be read or its folder isn't
+  /// available.
+  String? get readOnlyReason => _readOnlyReason;
+
+  /// Whether the page [id] can't be changed, moved, renamed or deleted: it is
+  /// in a binder whose file can't be read, or in a folder that isn't there.
+  bool isReadOnlyPage(String id) {
+    final loc = _loc[id];
+    return loc != null && _isLocked(loc);
+  }
+
+  // A location whose files must not be written.
+  bool _isLocked(String loc) {
+    if (loc == _standalone) return _defaultGone;
+    final f = _folders[loc];
+    if (f != null) return !f.available;
+    final s = _binders[loc];
+    return s == null || !s.available;
+  }
+
+  String _lockedMessage(String loc) {
+    final s = _binders[loc];
+    if (s != null && s.readOnly) {
+      return "This binder's file can't be read, so its pages are read-only.";
+    }
+    if (s != null) return 'That binder is not available.';
+    return 'That folder is not available.';
+  }
+
+  void _assertWritable(String loc) {
+    if (_isLocked(loc)) throw NotebookException(_lockedMessage(loc));
+  }
 
   /// Standalone page files that couldn't be read. They are listed, never
   /// overwritten.
@@ -315,11 +377,9 @@ class Notebook extends ChangeNotifier {
       }
       return st;
     }
-    final s = _binders[loc];
-    final st = s?.store;
-    if (s == null || !s.available || st == null) {
-      throw const NotebookException('That binder is not available.');
-    }
+    // A binder whose file can't be read keeps its store, for reading.
+    final st = _binders[loc]?.store;
+    if (st == null) throw const NotebookException('That binder is not available.');
     return st;
   }
 
@@ -331,14 +391,8 @@ class Notebook extends ChangeNotifier {
     _loc.clear();
     _binders.clear();
     _folders.clear();
-    for (final e in entries.whereType<ReadablePage>()) {
-      _metas[e.meta.id] = e.meta;
-      _loc[e.meta.id] = _standalone;
-      _pathId[_key(e.path)] = e.meta.id;
-      if (e.conflicted) _conflicts.add(e.meta.id);
-    }
-    _unreadable = entries.whereType<UnreadablePage>().toList();
-    _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
+    _defaultGone = false;
+    _adoptDefault(entries);
     for (final path in await _readBinderPaths()) {
       _binders[path] = await _openBinder(path);
     }
@@ -350,12 +404,25 @@ class Notebook extends ChangeNotifier {
     }
     _rebuildTree();
     _syncWatchers();
+    _startFolderTimer();
     await _mergePendingCopies();
     if (_tree.roots.isEmpty) {
       await createPage();
     } else {
       await open(_tree.roots.first.id);
     }
+  }
+
+  // The pages found in the default folder.
+  void _adoptDefault(List<PageEntry> entries) {
+    for (final e in entries.whereType<ReadablePage>()) {
+      _metas[e.meta.id] = e.meta;
+      _loc[e.meta.id] = _standalone;
+      _pathId[_key(e.path)] = e.meta.id;
+      if (e.conflicted) _conflicts.add(e.meta.id);
+    }
+    _unreadable = entries.whereType<UnreadablePage>().toList();
+    _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
   }
 
   Future<void> open(String id) async {
@@ -378,7 +445,30 @@ class Notebook extends ChangeNotifier {
       onChanged: _pageChanged,
       deviceName: deviceName,
     );
+    _syncReadOnly();
     _rebuildTree();
+  }
+
+  // Makes the open page read-only if its location can't be written, and
+  // writable again when it can.
+  void _syncReadOnly() {
+    final c = _current;
+    String? why;
+    if (c != null) {
+      final loc = _loc[c.page.id];
+      if (loc == null) {
+        why = _orphanLoc == null ? null : "This page's folder isn't available, so it is read-only.";
+      } else if (_isLocked(loc)) {
+        why = _binders[loc]?.readOnly ?? false
+            ? "This binder's file can't be read, so this page is read-only."
+            : "This page's folder isn't available, so it is read-only.";
+      }
+      c.readOnly = why != null;
+    }
+    if (why != _readOnlyReason) {
+      _readOnlyReason = why;
+      if (!_disposed) notifyListeners();
+    }
   }
 
   /// Creates a page and opens it. A subpage when [parentId] is given, in its
@@ -418,11 +508,13 @@ class Notebook extends ChangeNotifier {
     } else {
       loc = _standalone;
     }
-    _storeOf(loc); // throws if the binder or folder is unavailable
+    _assertWritable(loc); // throws if the binder or folder can't be written
+    _storeOf(loc);
     return loc;
   }
 
   Future<void> rename(String id, String title) async {
+    _assertWritable(_loc[id] ?? _standalone);
     final c = _current;
     if (c != null && c.page.id == id) {
       c.updateMeta(c.page.meta.withTitle(title));
@@ -442,6 +534,7 @@ class Notebook extends ChangeNotifier {
   /// be undone: the previous one is dropped.
   Future<DeletedPages> delete(String id) async {
     final loc = _loc[id] ?? _standalone;
+    _assertWritable(loc);
     final st = _storeOf(loc);
     final ids = [id, ..._treeOf(loc).descendantsOf(id)];
     final openId = ids.contains(currentId) ? currentId : null;
@@ -479,6 +572,7 @@ class Notebook extends ChangeNotifier {
     if (!identical(_lastDeleted, deleted)) return;
     _lastDeleted = null;
     try {
+      _assertWritable(deleted._location);
       _storeOf(deleted._location);
     } on NotebookException {
       return;
@@ -505,25 +599,35 @@ class Notebook extends ChangeNotifier {
   ///
   /// Within a location, siblings are renumbered 0..n-1; only pages whose
   /// parent or order changed are written, and only those two header values
-  /// change. If [parentId] is in another location, the page and its subpages
-  /// move there (see [moveToLocation]) and a [NotebookException] reports a
-  /// failure.
+  /// change. If [parentId] is in another location (a binder, or another
+  /// standalone folder), the page and its subpages move there (see
+  /// [moveToLocation]) and a [NotebookException] reports a failure.
   Future<bool> move(String id, {required String? parentId, int? index}) async {
     final from = _loc[id];
     if (from == null || !_metas.containsKey(id)) return false;
+    var to = from;
     if (parentId != null) {
-      final to = _loc[parentId];
-      if (to == null) return false;
-      if (to != from) {
-        if (_isStandaloneLoc(from) && _isStandaloneLoc(to)) {
-          // Standalone folders are not merged by nesting pages across them.
-          throw const NotebookException(
-            "A page can't be placed under a page that is stored in another folder.",
-          );
-        }
-        await _moveAcross(id, to, parentId: parentId, index: index);
-        return true;
+      final parentLoc = _loc[parentId];
+      if (parentLoc == null) return false;
+      to = parentLoc;
+    }
+    return _place(id, to, parentId: parentId, index: index);
+  }
+
+  // Puts [id] under [parentId] in the location [to], which may be another
+  // location than the page's own.
+  Future<bool> _place(String id, String to, {required String? parentId, int? index}) async {
+    final from = _loc[id];
+    if (from == null || !_metas.containsKey(id)) return false;
+    _assertWritable(from);
+    if (to != from) {
+      _assertWritable(to);
+      // Standalone folders share one tree.
+      if (_isStandaloneLoc(from) && _isStandaloneLoc(to) && _tree.wouldCycle(id, parentId)) {
+        return false;
       }
+      await _moveAcross(id, to, parentId: parentId, index: index);
+      return true;
     }
     final tree = _treeOf(from);
     if (tree.wouldCycle(id, parentId)) return false;
@@ -562,16 +666,19 @@ class Notebook extends ChangeNotifier {
   }
 
   /// Moves [id] next to [targetId], under the same parent, before it or (with
-  /// [after]) after it. The target may be in another location.
+  /// [after]) after it. The target may be in another location (a binder or
+  /// another standalone folder): the page then moves to the target's location.
   Future<bool> moveRelative(String id, String targetId, {required bool after}) async {
     final to = _loc[targetId];
-    if (id == targetId || to == null || !_metas.containsKey(id)) return false;
+    final from = _loc[id];
+    if (id == targetId || to == null || from == null || !_metas.containsKey(id)) return false;
     final tree = _treeOf(to);
     final parent = tree.parentIdOf(targetId);
-    if (to == _loc[id] && tree.wouldCycle(id, parent)) return false;
+    final sameTree = to == from || (_isStandaloneLoc(from) && _isStandaloneLoc(to));
+    if (sameTree && tree.wouldCycle(id, parent)) return false;
     final others = [for (final s in tree.siblingsOf(targetId)) if (s.id != id) s.id];
     final at = others.indexOf(targetId) + (after ? 1 : 0);
-    return move(id, parentId: parent, index: at);
+    return _place(id, to, parentId: parent, index: at);
   }
 
   /// Moves [id] one place up among its siblings.
@@ -630,9 +737,23 @@ class Notebook extends ChangeNotifier {
   /// target files are removed again and the sources stay as they were.
   Future<void> _moveAcross(String id, String toLoc, {String? parentId, int? index}) async {
     final fromLoc = _loc[id]!;
+    _assertWritable(fromLoc);
+    _assertWritable(toLoc);
     final fromStore = _storeOf(fromLoc);
     final toStore = _storeOf(toLoc);
-    final ids = [id, ..._treeOf(fromLoc).descendantsOf(id)];
+    // The page and the subpages stored with it (standalone folders share a
+    // tree, so a subpage kept in another folder stays where it is).
+    final tree = _treeOf(fromLoc);
+    final ids = <String>[id];
+    void collect(String parent) {
+      for (final c in tree.childrenOf(parent)) {
+        if (_loc[c.id] != fromLoc) continue;
+        ids.add(c.id);
+        collect(c.id);
+      }
+    }
+
+    collect(id);
     final reopen = ids.contains(currentId) ? currentId : null;
     // Closing or flushing writes pending edits, so the copies read below are
     // current.
@@ -802,7 +923,7 @@ class Notebook extends ChangeNotifier {
     final folder = _folders[path];
     if (folder == null) return;
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
-    final openHere = ids.contains(currentId);
+    final openHere = ids.contains(currentId) || _orphanLoc == path;
     if (openHere) await _closeCurrent();
     for (final id in ids) {
       _metas.remove(id);
@@ -825,11 +946,13 @@ class Notebook extends ChangeNotifier {
   }
 
   Future<StandaloneFolder> _openFolder(String path) async {
-    StandaloneFolder unavailable(String why) =>
-        StandaloneFolder._(path, available: false, reason: why);
+    StandaloneFolder unavailable(String why, {bool missing = false}) =>
+        StandaloneFolder._(path, available: false, reason: why, missing: missing);
     final dir = Directory(path);
     try {
-      if (!await dir.exists()) return unavailable('Folder not found. It may be on another device.');
+      if (!await dir.exists()) {
+        return unavailable('Folder not found. It may be on another device.', missing: true);
+      }
       if (await BinderStore(dir).file.exists()) return unavailable('This folder holds a binder.');
       final pages = storeFactory(dir);
       final entries = await pages.scan();
@@ -908,6 +1031,7 @@ class Notebook extends ChangeNotifier {
     if (inBinder && binder == null) {
       throw const NotebookException('Only a page in a binder can be saved to the binder.');
     }
+    if (inBinder) _assertWritable(binder!); // the binder's folder is not written when damaged
     final dir = _templatesDirFor(inBinder ? binder : null);
     await flush();
     final page = await _storeOf(loc).load(pageId);
@@ -1127,10 +1251,8 @@ class Notebook extends ChangeNotifier {
           ),
         );
       }
-      if (read is BinderUnreadable) {
-        return BinderSection._(path, BinderStatus.unreadable, reason: read.reason);
-      }
-      final binder = (read as BinderFound).binder;
+      // A binder whose file can't be read still lists its pages, read-only.
+      final binder = read is BinderFound ? read.binder : null;
       try {
         _binderText[_key(path)] = await binders.file.readAsString();
       } on Object {
@@ -1138,18 +1260,22 @@ class Notebook extends ChangeNotifier {
       }
       final pages = storeFactory(dir);
       final entries = await pages.scan();
-      _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
+      if (binder != null) {
+        // Conflict copies are merged by writing, which a damaged binder forbids.
+        _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
+      }
       var latest = (await binders.file.lastModified());
       final bad = <UnreadablePage>[...entries.whereType<UnreadablePage>()];
       final section = BinderSection._(
         path,
-        BinderStatus.available,
+        binder != null ? BinderStatus.available : BinderStatus.unreadable,
         binder: binder,
         store: pages,
+        reason: read is BinderUnreadable ? read.reason : null,
         unreadable: bad,
       );
       for (final e in entries.whereType<ReadablePage>()) {
-        if (_metas.containsKey(e.meta.id)) {
+        if (_metas.containsKey(e.meta.id) && _loc[e.meta.id] != path) {
           bad.add(UnreadablePage(e.path, 'duplicate page id ${e.meta.id}'));
           continue;
         }
@@ -1252,6 +1378,8 @@ class Notebook extends ChangeNotifier {
   }
 
   void _pageChanged(NotedPage page) {
+    final loc = _loc[page.id];
+    if (loc != null && _isLocked(loc)) return; // a read-only page is never saved
     _pendingSave = page;
     if (_metas[page.id] != page.meta) {
       _metas[page.id] = page.meta;
@@ -1266,7 +1394,7 @@ class Notebook extends ChangeNotifier {
   void _enqueueSave(NotedPage page) {
     _saving = _saving.then((_) async {
       final loc = _loc[page.id];
-      if (loc == null) return;
+      if (loc == null || _isLocked(loc)) return;
       final st = _storeOf(loc);
       var toSave = page;
       final path = st.pathFor(page.id);
@@ -1285,7 +1413,18 @@ class Notebook extends ChangeNotifier {
     });
   }
 
+  // Throws unless the pages of [loc] may be written. A folder that has gone
+  // is never created again by a save.
+  Future<void> _assertCanWrite(String loc) async {
+    _assertWritable(loc);
+    final st = _storeOf(loc);
+    if (!await st.directory.exists()) {
+      throw const NotebookException('That folder was not found.');
+    }
+  }
+
   Future<void> _write(String loc, NotedPage page) async {
+    await _assertCanWrite(loc);
     final st = _storeOf(loc);
     await st.save(page);
     final key = _key(st.pathFor(page.id));
@@ -1295,6 +1434,7 @@ class Notebook extends ChangeNotifier {
   }
 
   Future<void> _delete(String loc, String id) async {
+    _assertWritable(loc);
     final st = _storeOf(loc);
     final key = _key(st.pathFor(id));
     await st.delete(id);
@@ -1324,12 +1464,13 @@ class Notebook extends ChangeNotifier {
 
   String? _locationOf(String path) {
     final dir = _key(File(path).parent.path);
-    if (dir == _key(store.directory.path)) return _standalone;
+    if (dir == _key(store.directory.path)) return _defaultGone ? null : _standalone;
     for (final f in _folders.values) {
       if (f.available && _key(f.path) == dir) return f.path;
     }
     for (final b in _binders.values) {
-      if (b.available && _key(b.path) == dir) return b.path;
+      // A binder with a damaged file still has its pages looked after.
+      if ((b.available || b.readOnly) && _key(b.path) == dir) return b.path;
     }
     return null;
   }
@@ -1338,7 +1479,7 @@ class Notebook extends ChangeNotifier {
   void _syncWatchers() {
     if (!watchFiles || _disposed) return;
     final wanted = <String, String>{
-      _standalone: store.directory.path,
+      if (!_defaultGone) _standalone: store.directory.path,
       for (final f in _folders.values)
         if (f.available) f.path: f.path,
       // A binder that can't be used is watched too, as long as its folder
@@ -1352,9 +1493,18 @@ class Notebook extends ChangeNotifier {
     wanted.forEach((loc, dir) {
       if (_watchers.containsKey(loc)) return;
       try {
+        // A watcher that fails or ends usually means its folder went away:
+        // look at the folders now instead of waiting for the timer.
         _watchers[loc] = Directory(dir).watch().listen(
           _onFileEvent,
-          onError: (Object e) => debugPrint('Watching $dir failed: $e'),
+          onError: (Object e) {
+            debugPrint('Watching $dir failed: $e');
+            unawaited(checkFolders());
+          },
+          onDone: () {
+            _watchers.remove(loc);
+            unawaited(checkFolders());
+          },
         );
       } on FileSystemException catch (e) {
         debugPrint('Watching $dir failed: $e');
@@ -1468,9 +1618,34 @@ class Notebook extends ChangeNotifier {
         BinderStatus.unavailable,
         'No $binderFileName in this folder.',
       );
-    } else if (section.status != BinderStatus.unreadable || section.reason != unreadable) {
-      await _disableBinder(section, BinderStatus.unreadable, unreadable ?? 'unreadable');
+    } else if (section.available) {
+      await _damageBinder(section, unreadable ?? 'unreadable');
+    } else if (section.status == BinderStatus.unavailable) {
+      // The folder was unusable and now holds a damaged file: list its pages.
+      await _reopenBinder(section.path);
+    } else if (section.reason != unreadable) {
+      section.reason = unreadable;
+      notifyListeners();
     }
+  }
+
+  /// The binder file of an available binder can't be read any more. The binder
+  /// stays in the sidebar with its pages, which turn read-only: an open page
+  /// is saved first, then switched to a read-only view. Neither the binder file
+  /// nor any page of the binder is written until the file is readable again.
+  Future<void> _damageBinder(BinderSection section, String reason) async {
+    final path = section.path;
+    await flush(); // pending edits of the open page land while writing is allowed
+    if (_disposed || _binders[path] != section) return;
+    section
+      ..status = BinderStatus.unreadable
+      ..reason = reason
+      ..binder = null;
+    if (_coverPath == path) _coverPath = null;
+    final last = _lastDeleted;
+    if (last != null && last._location == path) _lastDeleted = null;
+    _syncReadOnly();
+    notifyListeners();
   }
 
   /// Takes the pages of the binder out of the notebook and marks it unusable.
@@ -1508,12 +1683,31 @@ class Notebook extends ChangeNotifier {
 
   /// A binder whose file is readable again: reads the folder afresh.
   Future<void> _reopenBinder(String path) async {
+    // Pages left over from a binder that was listed read-only are read again;
+    // the open one stays, so its view isn't torn down.
+    for (final e in _loc.entries.where((e) => e.value == path && e.key != currentId).toList()) {
+      _forgetPage(e.key);
+    }
     final fresh = await _openBinder(path);
     if (_disposed) return;
     _binders[path] = fresh;
+    _syncReadOnly();
     _rebuildTree();
     _syncWatchers();
     await _mergePendingCopies(inQueue: true);
+  }
+
+  // Drops what the notebook knows of page [id] (not its file).
+  void _forgetPage(String id) {
+    _metas.remove(id);
+    _loc.remove(id);
+    _conflicts.remove(id);
+    for (final e in _pathId.entries.toList()) {
+      if (e.value == id) {
+        _pathId.remove(e.key);
+        _known.remove(e.key);
+      }
+    }
   }
 
   Future<void> _checkFile(String path) async {
@@ -1540,6 +1734,7 @@ class Notebook extends ChangeNotifier {
       return;
     }
     if (conflictCopyOriginalNames(path.split(RegExp(r'[\\/]')).last).isNotEmpty &&
+        !_isLocked(loc) &&
         await _tryConflictCopy(loc, key, path, text, time)) {
       return;
     }
@@ -1732,7 +1927,8 @@ class Notebook extends ChangeNotifier {
     if (_isStandaloneLoc(loc) || _binders[loc]?.store != null) {
       final st = _storeOf(loc);
       // Make the store find files whose names aren't the page id.
-      if (_key(st.pathFor(id)) != key) await st.scan();
+      // (Never when the folder is gone: a scan would create it.)
+      if (_key(st.pathFor(id)) != key && await st.directory.exists()) await st.scan();
     }
     _setConflict(id, hasConflicts(page));
     _touch(loc);
@@ -1754,6 +1950,137 @@ class Notebook extends ChangeNotifier {
     _rebuildTree();
   }
 
+  // Folders that come and go -------------------------------------------------
+
+  void _startFolderTimer() {
+    _folderTimer?.cancel();
+    _folderTimer = null;
+    if (!watchFiles || _disposed || folderCheckInterval <= Duration.zero) return;
+    _folderTimer = Timer.periodic(folderCheckInterval, (_) => unawaited(checkFolders()));
+  }
+
+  /// Looks for standalone folders (the default one and the extra ones) that
+  /// have disappeared or come back since the last look; with [watchFiles] on
+  /// this also runs every [folderCheckInterval] and when a watcher fails.
+  ///
+  /// A folder that is gone loses its pages from the tree and is listed as
+  /// "on another device". Its open page is saved if possible, then stays open
+  /// read-only. When the folder comes back it is read again, its watcher is
+  /// restarted and the open page is merged with its file. The folder itself is
+  /// never created or deleted here.
+  Future<void> checkFolders() {
+    final job = _checking.then((_) async {
+      await _saving;
+      if (!_disposed) await _checkFolders();
+    }).catchError((Object e) {
+      debugPrint('Checking the folders failed: $e');
+    });
+    _checking = job;
+    return job;
+  }
+
+  Future<void> _checkFolders() async {
+    final defaultExists = await store.directory.exists();
+    if (_disposed) return;
+    if (!_defaultGone && !defaultExists) {
+      await _folderGone(_standalone);
+    } else if (_defaultGone && defaultExists) {
+      await _folderBack(_standalone);
+    }
+    for (final f in _folders.values.toList()) {
+      if (_disposed) return;
+      if (!identical(_folders[f.path], f)) continue;
+      final exists = await Directory(f.path).exists();
+      if (_disposed) return;
+      if (f.available && !exists) {
+        await _folderGone(f.path);
+      } else if (!f.available && f.missing && exists) {
+        await _folderBack(f.path);
+      }
+    }
+    _syncWatchers(); // restarts a watcher that ended
+  }
+
+  Future<void> _folderGone(String loc) async {
+    // Pending edits of the open page are written first if that is still
+    // possible; if not, they stay in the page on screen.
+    await flush();
+    if (_disposed) return;
+    final ids = [for (final e in _loc.entries) if (e.value == loc) e.key];
+    if (ids.contains(currentId)) _orphanLoc = loc;
+    for (final id in ids) {
+      _forgetPage(id);
+    }
+    if (loc == _standalone) {
+      _defaultGone = true;
+      _unreadable = const [];
+    } else {
+      final f = _folders[loc];
+      if (f != null) {
+        f
+          ..available = false
+          ..missing = true
+          ..store = null
+          ..reason = 'Folder not found. It may be on another device.'
+          ..unreadable = const [];
+      }
+    }
+    final last = _lastDeleted;
+    if (last != null && last._location == loc) _lastDeleted = null;
+    _syncReadOnly();
+    _rebuildTree();
+    _syncWatchers();
+  }
+
+  Future<void> _folderBack(String loc) async {
+    if (loc == _standalone) {
+      final entries = await store.scan();
+      _defaultGone = false;
+      _adoptDefault(entries);
+    } else {
+      final fresh = await _openFolder(loc);
+      if (_disposed) return;
+      if (!fresh.available) {
+        // Still can't be used (for example it now holds a binder).
+        final f = _folders[loc];
+        if (f != null) {
+          f
+            ..missing = fresh.missing
+            ..reason = fresh.reason;
+        }
+        return;
+      }
+      _folders[loc] = fresh;
+    }
+    _syncReadOnly();
+    _rebuildTree();
+    _syncWatchers();
+    await _mergePendingCopies(inQueue: true);
+    await _resumeOpenPage(loc);
+  }
+
+  // The open page was kept read-only while its folder was away: it is
+  // writable again and merged with whatever its file holds now.
+  Future<void> _resumeOpenPage(String loc) async {
+    final c = _current;
+    if (c == null || _orphanLoc != loc) return;
+    final id = c.page.id;
+    if (_loc[id] != loc) return; // the page is not in the folder any more
+    _orphanLoc = null;
+    _syncReadOnly();
+    try {
+      final path = _storeOf(loc).pathFor(id);
+      final file = File(path);
+      final text = await file.readAsString();
+      final time = (await file.lastModified()).millisecondsSinceEpoch;
+      final page = readPage(text);
+      _known[_key(path)] = text;
+      if (_current == c) _mergeOpen(page, text, time);
+    } on Object catch (e) {
+      debugPrint('Reading the open page after its folder came back failed: $e');
+    }
+  }
+
   Future<void> _closeCurrent() async {
     // Leaving a page ends editing, so an empty new box is discarded, not saved.
     final c = _current;
@@ -1763,6 +2090,8 @@ class Notebook extends ChangeNotifier {
     _current?.dispose();
     _current = null;
     _base = null;
+    _orphanLoc = null;
+    _readOnlyReason = null;
   }
 
   void _rebuildTree() {
@@ -1784,6 +2113,7 @@ class Notebook extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _saveTimer?.cancel();
+    _folderTimer?.cancel();
     for (final t in _debounce.values) {
       t.cancel();
     }

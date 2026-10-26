@@ -66,11 +66,25 @@ class Home extends StatelessWidget {
                             ),
                           ),
                           const Divider(height: 1),
+                          if (notebook.readOnlyReason != null)
+                            Container(
+                              key: const ValueKey('read-only-banner'),
+                              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.lock_outline, size: 16),
+                                  const SizedBox(width: 8),
+                                  Expanded(child: Text(notebook.readOnlyReason!)),
+                                ],
+                              ),
+                            ),
                           Expanded(
                             child: PageCanvas(
                               key: ValueKey(current.page.id),
                               controller: current,
                               tools: notebook.tools,
+                              readOnly: notebook.readOnlyReason != null,
                             ),
                           ),
                         ],

@@ -28,7 +28,10 @@ class CanvasController extends ChangeNotifier {
     this.onChanged,
     this.deviceName,
     int Function()? clock,
+    bool readOnly = false,
   }) : _page = page,
+       // ignore: prefer_initializing_formals
+       _readOnly = readOnly,
        _clock = clock ?? _systemClock;
 
   static int _systemClock() => DateTime.now().millisecondsSinceEpoch;
@@ -57,8 +60,28 @@ class CanvasController extends ChangeNotifier {
   bool _gestureFixesHeight = false;
   int _toolSessions = 0;
   bool _disposed = false;
+  bool _readOnly;
 
   NotedPage get page => _page;
+
+  /// A read-only controller shows its page but never changes it: every
+  /// mutation (creating, editing, moving, resizing, deleting, undo, conflict
+  /// resolution, renaming) is ignored and [onChanged] is never called, so the
+  /// page is never saved. Changes made by someone else ([applyExternal]) are
+  /// still shown. Switching to read-only drops any gesture or editing state in
+  /// progress. Changing it notifies the listeners.
+  bool get readOnly => _readOnly;
+  set readOnly(bool value) {
+    if (_readOnly == value || _disposed) return;
+    _readOnly = value;
+    if (value) {
+      _editingId = null;
+      _autofocusId = null;
+      _gestureId = null;
+      _gestureStart = null;
+    }
+    _notify();
+  }
 
   /// The box with the selection frame.
   String? get selectedId => _selectedId;
@@ -82,7 +105,9 @@ class CanvasController extends ChangeNotifier {
   }
 
   /// Creates a box of the default type with its top-left corner at [at].
+  /// Throws a [StateError] on a read-only controller.
   BoxRecord createBoxAt(Bounds at) {
+    if (_readOnly) throw StateError('The page is read-only.');
     final codec = modules.defaultModule.codec;
     final box = createBox(
       codec,
@@ -116,6 +141,10 @@ class CanvasController extends ChangeNotifier {
     // Another box may already have reported gaining focus, so don't assume
     // this box is still the one being edited.
     if (_editingId == id) _editingId = null;
+    if (_readOnly) {
+      _notify();
+      return;
+    }
     if (_isEmpty(id)) {
       _history.forgetAdded(id);
       if (_selectedId == id) _selectedId = null;
@@ -128,6 +157,7 @@ class CanvasController extends ChangeNotifier {
   /// Saves new content for box [id] through its codec. Returns the updated
   /// record, or null if the box is gone.
   BoxRecord? commit(String id, Object? data) {
+    if (_readOnly) return null;
     final box = _page.node(id);
     if (box is! BoxRecord) return null;
     final codec = modules.codecs.codecFor(box.typeId);
@@ -141,7 +171,7 @@ class CanvasController extends ChangeNotifier {
   /// A module asks for new bounds, for example to grow with its content.
   /// Not recorded for undo; ignored while the user drags that box.
   void requestBounds(String id, Bounds bounds) {
-    if (_disposed || _gestureId == id) return;
+    if (_disposed || _readOnly || _gestureId == id) return;
     final box = _page.node(id);
     if (box is! BoxRecord) return;
     final next = box.withBounds(bounds);
@@ -157,6 +187,7 @@ class CanvasController extends ChangeNotifier {
       !box.fixedHeight;
 
   void beginGesture(String id) {
+    if (_readOnly) return;
     final box = _page.node(id);
     if (box is! BoxRecord) return;
     _gestureId = id;
@@ -209,6 +240,7 @@ class CanvasController extends ChangeNotifier {
 
   /// Returns a box whose height the user set to growing with its content.
   void setAutoHeight(String id) {
+    if (_readOnly) return;
     final box = _page.node(id);
     if (box is! BoxRecord || !box.fixedHeight) return;
     _history.record(PageChange.bounds(id, box.bounds, fixedHeightBefore: true));
@@ -217,6 +249,7 @@ class CanvasController extends ChangeNotifier {
 
   /// Adds a box a tool built, with its content, on top. Recorded for undo.
   void insertBox(BoxRecord box) {
+    if (_readOnly) return;
     _history.record(PageChange.added(box.id));
     _set(_page.insertNode(box));
   }
@@ -226,6 +259,7 @@ class CanvasController extends ChangeNotifier {
   /// diff (and restores the old bounds) instead of keeping a copy of the
   /// content. Returns the updated record, or null if the box is gone.
   BoxRecord? editBox(String id, Object? data, {Bounds? bounds, BoxEdit? undo}) {
+    if (_readOnly) return null;
     final box = _page.node(id);
     if (box is! BoxRecord) return null;
     final codec = modules.codecs.codecFor(box.typeId);
@@ -247,11 +281,15 @@ class CanvasController extends ChangeNotifier {
 
   /// Records a change that has already been applied, for example several
   /// erasures made during one eraser drag, kept as one undo step.
-  void recordChange(PageChange change) => _history.record(change);
+  void recordChange(PageChange change) {
+    if (!_readOnly) _history.record(change);
+  }
 
   /// A tool session started or ended. While one is running, page bounds
-  /// stay fixed (0016).
-  void beginToolSession() => _toolSessions++;
+  /// stay fixed (0016). Ignored on a read-only controller.
+  void beginToolSession() {
+    if (!_readOnly) _toolSessions++;
+  }
 
   void endToolSession() {
     if (_toolSessions > 0) _toolSessions--;
@@ -265,6 +303,7 @@ class CanvasController extends ChangeNotifier {
   /// that emptied a box before deleting it passes the box as it was before,
   /// so one undo restores it whole.
   void delete(String id, {BoxRecord? undoTo}) {
+    if (_readOnly) return;
     final box = _page.node(id);
     if (box is! BoxRecord || modules.codecs.codecFor(box.typeId) == null) {
       return;
@@ -276,17 +315,21 @@ class CanvasController extends ChangeNotifier {
   }
 
   void undo() {
+    if (_readOnly) return;
     final next = _history.undo(_page, modules.codecs);
     if (next != null) _set(next);
   }
 
   void redo() {
+    if (_readOnly) return;
     final next = _history.redo(_page, modules.codecs);
     if (next != null) _set(next);
   }
 
   /// Replaces the page header, for example after a rename.
-  void updateMeta(PageMeta meta) => _set(_page.withMeta(meta));
+  void updateMeta(PageMeta meta) {
+    if (!_readOnly) _set(_page.withMeta(meta));
+  }
 
   /// Replaces the whole page with the result of merging a change made by
   /// someone else (0020). Not recorded for undo. [save] says whether the
@@ -300,7 +343,7 @@ class CanvasController extends ChangeNotifier {
     if (_editingId != null && _page.node(_editingId!) == null) {
       _editingId = null;
     }
-    if (save) onChanged?.call(_page);
+    if (save && !_readOnly) onChanged?.call(_page);
     _notify();
   }
 
@@ -316,6 +359,7 @@ class CanvasController extends ChangeNotifier {
   /// Keeps this device's version of the conflicted box [id]; for a box the
   /// other side deleted, keeps the box. One undo step.
   void resolveKeepMine(String id) {
+    if (_readOnly) return;
     final box = _page.node(id);
     if (box is! BoxRecord || !box.isConflicted) return;
     _history.record(PageChange.replaced(box));
@@ -325,6 +369,7 @@ class CanvasController extends ChangeNotifier {
   /// Replaces the conflicted box [id] with the other version (the latest
   /// recorded). One undo step.
   void resolveKeepTheirs(String id) {
+    if (_readOnly) return;
     final box = _page.node(id);
     if (box is! BoxRecord) return;
     final other = box.conflicts.where((c) => c.node != null).lastOrNull;
@@ -343,6 +388,7 @@ class CanvasController extends ChangeNotifier {
   /// recorded versions. One undo step. Returns false if the box is gone, isn't
   /// conflicted or this device can't run it.
   bool resolveWithData(String id, Object? data) {
+    if (_readOnly) return false;
     final box = _page.node(id);
     if (box is! BoxRecord || !box.isConflicted) return false;
     final codec = modules.codecs.codecFor(box.typeId);
@@ -362,6 +408,7 @@ class CanvasController extends ChangeNotifier {
   /// Keeps this device's version and adds each other version as a new box
   /// with a new id, just to the right of it. One undo step.
   void resolveKeepBoth(String id) {
+    if (_readOnly) return;
     final box = _page.node(id);
     if (box is! BoxRecord) return;
     final others = [
@@ -394,6 +441,7 @@ class CanvasController extends ChangeNotifier {
   /// that this side kept. Also works for boxes this device can't run. One
   /// undo step.
   void resolveDelete(String id) {
+    if (_readOnly) return;
     final box = _page.node(id);
     if (box is! BoxRecord || !box.isConflicted) return;
     _history.record(PageChange.removed(box, _page.indexOf(id)));
@@ -410,6 +458,7 @@ class CanvasController extends ChangeNotifier {
   }
 
   void _set(NotedPage page) {
+    if (_readOnly) return; // safety net: no mutator gets past its own guard
     _page = page;
     if (_selectedId != null && _page.node(_selectedId!) == null) {
       _selectedId = null;

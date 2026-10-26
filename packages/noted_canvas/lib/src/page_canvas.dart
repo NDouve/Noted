@@ -43,9 +43,21 @@ const double autoPanMaxSpeed = 3000;
 /// the tool and boxes receive none; wheel, Ctrl+wheel, middle-drag and the
 /// touchpad still pan and zoom.
 class PageCanvas extends StatefulWidget {
-  const PageCanvas({super.key, required this.controller, this.tools});
+  const PageCanvas({
+    super.key,
+    required this.controller,
+    this.tools,
+    this.readOnly = false,
+  });
 
   final CanvasController controller;
+
+  /// Show the page without any way to change it: boxes use their module's
+  /// read-only view, with no grip, handles or editing; there is no toolbar
+  /// and no tool, no box creation on click and no delete or undo keys. Panning
+  /// and zooming still work. A controller that is itself read-only
+  /// ([CanvasController.readOnly]) gets the same canvas.
+  final bool readOnly;
 
   /// The clipped overlay that shows a tool session's live feedback.
   static const Key overlayKey = ValueKey('PageCanvas.toolOverlay');
@@ -85,6 +97,7 @@ class PageCanvasState extends State<PageCanvas>
   Duration _lastTick = Duration.zero;
 
   CanvasController get _c => widget.controller;
+  bool get _readOnly => widget.readOnly || _c.readOnly;
   CanvasToolSelection get _tools => widget.tools ?? _ownTools;
 
   /// The current view, for tests and the app shell.
@@ -168,7 +181,7 @@ class PageCanvasState extends State<PageCanvas>
 
   void _toolDown(PointerDownEvent e) {
     final tool = _tools.active;
-    if (tool == null || _session != null || _view == null) return;
+    if (_readOnly || tool == null || _session != null || _view == null) return;
     final usable = e.kind == PointerDeviceKind.mouse
         ? e.buttons & kPrimaryButton != 0
         : e.buttons & kMiddleMouseButton == 0;
@@ -303,7 +316,11 @@ class PageCanvasState extends State<PageCanvas>
     _overlay.repaint();
   }
 
-  void _changed() => setState(() {});
+  void _changed() {
+    // The page turned read-only under a running tool: end it.
+    if (_readOnly) _cancelSession();
+    setState(() {});
+  }
 
   /// Page bounds follow the content, except during a drag or resize: they
   /// update when the gesture ends, never under the pointer (0016).
@@ -350,7 +367,7 @@ class PageCanvasState extends State<PageCanvas>
 
   void _onBackgroundTap(TapUpDetails d) {
     final v = _view;
-    if (v == null || _tools.active != null) return;
+    if (v == null || _readOnly || _tools.active != null) return;
     final world = v.toWorld(d.localPosition);
     // A click that lands on a box's chrome or snapshot isn't a canvas click.
     for (final n in _c.page.nodes) {
@@ -392,6 +409,9 @@ class PageCanvasState extends State<PageCanvas>
       zoomTo(1);
       return KeyEventResult.handled;
     }
+
+    // Zoom keys are all a read-only page answers to.
+    if (_readOnly) return KeyEventResult.ignored;
 
     // Keys bubble up from a focused editor; leave its keys to it.
     if (_c.editingId != null) {
@@ -461,7 +481,9 @@ class PageCanvasState extends State<PageCanvas>
           final matrix = g.matrixFor(view);
           if (_transform.value != matrix) _transform.value = matrix;
 
-          final tool = _tools.active;
+          final readOnly = _readOnly;
+          // A tool picked on another page does nothing on a read-only one.
+          final tool = readOnly ? null : _tools.active;
           return Stack(
             children: [
               Positioned.fill(
@@ -536,6 +558,7 @@ class PageCanvasState extends State<PageCanvas>
                                       childOrigin: g.child.topLeft,
                                       scale: view.scale,
                                       onGripTap: _focus.requestFocus,
+                                      readOnly: readOnly,
                                     ),
                                 ],
                               ),
@@ -561,7 +584,7 @@ class PageCanvasState extends State<PageCanvas>
                   ),
                 ),
               ),
-              if (_c.modules.tools.isNotEmpty)
+              if (!readOnly && _c.modules.tools.isNotEmpty)
                 Positioned(
                   left: 12,
                   top: 12,
