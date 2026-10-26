@@ -64,7 +64,8 @@ List<Command> noteCommands(CommandHost host) {
     Command(
       id: NoteCommands.insertTable,
       label: 'Insert table',
-      icon: Icons.table_view,
+      icon: Icons.table_view_rounded,
+      text: () => 'Table',
       enabled: canInsert,
       listenable: NoteCommandFocus.active,
       invoke: () => NoteCommandFocus.active.value?.insertTable(),
@@ -72,7 +73,8 @@ List<Command> noteCommands(CommandHost host) {
     Command(
       id: NoteCommands.insertEquation,
       label: 'Insert equation',
-      icon: Icons.functions,
+      icon: Icons.functions_rounded,
+      text: () => 'Equation',
       enabled: canInsert,
       listenable: NoteCommandFocus.active,
       invoke: () => NoteCommandFocus.active.value?.insertEquation(),

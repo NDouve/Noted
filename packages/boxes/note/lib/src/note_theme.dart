@@ -34,15 +34,17 @@ TextStyleConfiguration noteTextStyles(ColorScheme scheme) =>
       autoComplete: TextStyle(color: scheme.onSurfaceVariant),
     );
 
-/// The `/` menu in the theme's colors.
+/// The `/` menu in the theme's colors: `surface`, hover and keyboard
+/// selection `surface-hover`. appflowy_editor draws the menu's shape, shadow
+/// and text size itself, so only colors follow the Menu guidelines.
 SelectionMenuStyle noteSelectionMenuStyle(ColorScheme scheme) =>
     SelectionMenuStyle(
-      selectionMenuBackgroundColor: scheme.surfaceContainerHigh,
+      selectionMenuBackgroundColor: scheme.surface,
       selectionMenuItemTextColor: scheme.onSurface,
-      selectionMenuItemIconColor: scheme.onSurface,
-      selectionMenuItemSelectedTextColor: scheme.onSecondaryContainer,
-      selectionMenuItemSelectedIconColor: scheme.onSecondaryContainer,
-      selectionMenuItemSelectedColor: scheme.secondaryContainer,
+      selectionMenuItemIconColor: scheme.onSurfaceVariant,
+      selectionMenuItemSelectedTextColor: scheme.onSurface,
+      selectionMenuItemSelectedIconColor: scheme.onSurface,
+      selectionMenuItemSelectedColor: scheme.surfaceContainerHighest, // surface-hover
       selectionMenuUnselectedLabelColor: scheme.onSurfaceVariant,
       selectionMenuDividerColor: scheme.outlineVariant,
       selectionMenuLinkBorderColor: scheme.outline,
@@ -101,7 +103,7 @@ Map<String, BlockComponentBuilder> themedStandardBlocks(
       iconBuilder: (context, node, onCheck) {
         final checked = node.attributes[TodoListBlockKeys.checked] == true;
         return box(
-          checked ? Icons.check_box : Icons.check_box_outline_blank,
+          checked ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded,
           checked ? scheme.primary : scheme.onSurfaceVariant,
           onCheck,
         );

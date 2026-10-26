@@ -181,10 +181,16 @@ void main() {
       }
     }
 
+    /// An item of the slash menu (the toolbar has Table and Equation too).
+    Finder menuItem(String label) => find.descendant(
+      of: find.byType(SelectionMenuWidget),
+      matching: find.text(label),
+    );
+
     /// The slash menu is a lazy list: scroll until [label] is built.
     Future<void> revealMenuItem(WidgetTester t, String label) async {
       await t.scrollUntilVisible(
-        find.text(label),
+        menuItem(label),
         60,
         scrollable: find
             .descendant(
@@ -194,7 +200,7 @@ void main() {
             .last,
         duration: const Duration(milliseconds: 50),
       );
-      await t.ensureVisible(find.text(label));
+      await t.ensureVisible(menuItem(label));
       await t.pump();
     }
 
@@ -315,8 +321,8 @@ void main() {
       await frames(t);
       // The menu offers both appflowy's table and the equation.
       await revealMenuItem(t, 'Equation');
-      expect(find.text('Equation'), findsOneWidget);
-      await t.tap(find.text('Table'));
+      expect(menuItem('Equation'), findsOneWidget);
+      await t.tap(menuItem('Table'));
       await frames(t, 10);
       expect(editor.document.root.children.first.type, 'table');
       expect(find.byType(TableBlockComponentWidget), findsOneWidget);
@@ -333,7 +339,7 @@ void main() {
       await noteSlashCommand.execute(editor);
       await frames(t);
       await revealMenuItem(t, 'Equation');
-      await t.tap(find.text('Equation'));
+      await t.tap(menuItem('Equation'));
       await frames(t, 10);
       // The formula dialog opens straight away.
       expect(find.byKey(const ValueKey('math-source')), findsOneWidget);

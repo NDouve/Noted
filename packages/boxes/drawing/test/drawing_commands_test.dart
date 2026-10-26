@@ -42,11 +42,29 @@ void main() {
     matching: find.byType(IconButton),
   );
 
-  bool checked(WidgetTester t, String tooltip) =>
-      t.widget<IconButton>(button(tooltip)).isSelected ?? false;
+  // Ink colors are swatches (a disc with a ring), not icon buttons.
+  Finder swatch(String tooltip) => find.descendant(
+    of: find.byTooltip(tooltip),
+    matching: find.byType(ToolbarSwatch),
+  );
 
-  bool enabled(WidgetTester t, String tooltip) =>
-      t.widget<IconButton>(button(tooltip)).onPressed != null;
+  bool checked(WidgetTester t, String tooltip) {
+    if (swatch(tooltip).evaluate().isNotEmpty) {
+      return t.widget<ToolbarSwatch>(swatch(tooltip)).selected;
+    }
+    return t.widget<IconButton>(button(tooltip)).isSelected ?? false;
+  }
+
+  bool enabled(WidgetTester t, String tooltip) {
+    if (swatch(tooltip).evaluate().isNotEmpty) {
+      final ink = find.descendant(
+        of: find.byTooltip(tooltip),
+        matching: find.byType(InkResponse),
+      );
+      return t.widget<InkResponse>(ink).onTap != null;
+    }
+    return t.widget<IconButton>(button(tooltip)).onPressed != null;
+  }
 
   testWidgets('the default toolbar has the pen, eraser, colors and widths', (t) async {
     await pump(t);
@@ -170,14 +188,9 @@ void main() {
         theme: ThemeData(brightness: brightness),
       );
       await t.pumpAndSettle(); // the theme change animates
-      final icon = t.widget<Icon>(
-        find.descendant(
-          of: find.byTooltip('Ink color: Default ink'),
-          matching: find.byType(Icon),
-        ),
-      );
+      final disc = t.widget<ToolbarSwatch>(swatch('Ink color: Default ink'));
       expect(
-        icon.color,
+        disc.color,
         NotedColors.forBrightness(brightness).inkDefault,
       );
     }

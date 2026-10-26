@@ -19,7 +19,8 @@ import 'stroke_render.dart';
 /// The drawing box module (0016, 0034): ink anywhere on a page with the pen
 /// and eraser tools. Its boxes grow to fit every stroke; a resize crops the
 /// visible area and the rest scrolls.
-final class DrawingModule extends BoxModule<DrawingData> {
+final class DrawingModule extends BoxModule<DrawingData>
+    implements FramelessBoxModule {
   DrawingModule() {
     pen = PenTool(this);
     eraser = EraserTool(this);

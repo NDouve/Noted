@@ -299,6 +299,41 @@ void main() {
         expect(shown(t, 0, 0), isNull);
       });
 
+      testWidgets('the handle menu follows the Menu guidelines (${b.name})', (t) async {
+        await pump(t, _doc(plain), b);
+        final editor = await edit(t);
+        final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
+        await mouse.addPointer(location: Offset.zero);
+        addTearDown(mouse.removePointer);
+        await mouse.moveTo(t.getCenter(find.byKey(cell(editor, 1, 0).key)));
+        await frames(t);
+        await t.tap(find.byKey(const ValueKey('table-handle-row-1')));
+        await frames(t, 12);
+        final items = find.byType(NotedMenuItem<Object>);
+        expect(items, findsWidgets);
+        // Every item is a `row` (32px) high.
+        for (final e in items.evaluate()) {
+          expect(t.getSize(find.byWidget(e.widget)).height, 32);
+        }
+        // Delete row is destructive: `error`; the others are `text`.
+        final destructive = find.byWidgetPredicate(
+          (w) => w is NotedMenuItem<Object> && w.destructive,
+        );
+        expect(destructive, findsOneWidget);
+        Color colorOf(Finder item) => t
+            .widget<Text>(find.descendant(of: item, matching: find.byType(Text)).first)
+            .style!
+            .color!;
+        expect(colorOf(destructive), scheme.error);
+        final normal = find.byWidgetPredicate(
+          (w) => w is NotedMenuItem<Object> && !w.destructive && w.value is Enum,
+        );
+        expect(colorOf(normal.first), scheme.onSurface);
+        // One separator before the colors and one before Clear.
+        expect(find.byType(NotedMenuDivider), findsNWidgets(2));
+        expect(find.byType(NotedMenuHeading), findsOneWidget);
+      });
+
       testWidgets('each role has its theme color (${b.name})', (t) async {
         await pump(
           t,

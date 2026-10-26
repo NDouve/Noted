@@ -74,13 +74,14 @@ void main() {
   PageCanvasState canvas(WidgetTester t) =>
       t.state<PageCanvasState>(find.byType(PageCanvas));
 
-  Finder button(String tooltip) => find.ancestor(
+  // Table and Equation are ghost text buttons inside their tooltip.
+  Finder button(String tooltip) => find.descendant(
     of: find.byTooltip(tooltip),
-    matching: find.byType(IconButton),
+    matching: find.byType(TextButton),
   );
 
   bool enabled(WidgetTester t, String tooltip) =>
-      t.widget<IconButton>(button(tooltip)).onPressed != null;
+      t.widget<TextButton>(button(tooltip)).onPressed != null;
 
   Future<EditorState> focusNote(WidgetTester t) async {
     final b = c.page.node('n')!.bounds!;

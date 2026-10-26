@@ -6,7 +6,8 @@ import 'dart:math' as math;
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
+import 'package:noted_canvas/noted_canvas.dart'
+    show NotedMenuDivider, NotedMenuHeading, NotedMenuItem, NotedMetrics;
 
 import 'note_codec.dart';
 import 'note_theme.dart';
@@ -112,18 +113,17 @@ class _Handle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppFlowyEditorL10n.current;
-    PopupMenuItem<Object> item(Object value, String text, IconData icon) =>
-        PopupMenuItem<Object>(
-          value: value,
-          height: NotedMetrics.of(context).control,
-          child: Row(
-            children: [
-              Icon(icon, size: NotedMetrics.of(context).icon),
-              SizedBox(width: NotedMetrics.of(context).space3),
-              Text(text),
-            ],
-          ),
-        );
+    NotedMenuItem<Object> item(
+      Object value,
+      String text,
+      IconData icon, {
+      bool destructive = false,
+    }) => NotedMenuItem<Object>(
+      value: value,
+      label: text,
+      icon: icon,
+      destructive: destructive,
+    );
     Widget swatch(_Fill f) => Container(
       width: NotedMetrics.of(context).icon,
       height: NotedMetrics.of(context).icon,
@@ -136,9 +136,9 @@ class _Handle extends StatelessWidget {
     final icon = _col
         ? Transform.rotate(
             angle: math.pi / 2,
-            child: const Icon(Icons.drag_indicator),
+            child: const Icon(Icons.drag_indicator_rounded),
           )
-        : const Icon(Icons.drag_indicator);
+        : const Icon(Icons.drag_indicator_rounded);
     return PopupMenuButton<Object>(
       key: ValueKey('table-handle-${dir.name}-$position'),
       tooltip: '',
@@ -150,39 +150,38 @@ class _Handle extends StatelessWidget {
         item(
           _Action.before,
           _col ? l10n.colAddBefore : l10n.rowAddBefore,
-          _col ? Icons.first_page : Icons.vertical_align_top,
+          _col ? Icons.first_page_rounded : Icons.vertical_align_top_rounded,
         ),
         item(
           _Action.after,
           _col ? l10n.colAddAfter : l10n.rowAddAfter,
-          _col ? Icons.last_page : Icons.vertical_align_bottom,
+          _col ? Icons.last_page_rounded : Icons.vertical_align_bottom_rounded,
         ),
         item(
           _Action.delete,
           _col ? l10n.colRemove : l10n.rowRemove,
-          Icons.delete,
+          Icons.delete_outline_rounded,
+          destructive: true,
         ),
         item(
           _Action.duplicate,
           _col ? l10n.colDuplicate : l10n.rowDuplicate,
-          Icons.content_copy,
+          Icons.content_copy_rounded,
         ),
-        const PopupMenuDivider(),
-        PopupMenuItem<Object>(
-          enabled: false,
-          height: NotedMetrics.of(context).control - NotedMetrics.of(context).space2,
-          child: Text(l10n.backgroundColor),
-        ),
+        const NotedMenuDivider(),
+        NotedMenuHeading(l10n.backgroundColor),
         for (final f in _fills)
-          PopupMenuItem<Object>(
+          NotedMenuItem<Object>(
             value: f,
-            height: NotedMetrics.of(context).control,
-            child: Row(
-              children: [swatch(f), SizedBox(width: NotedMetrics.of(context).space3), Text(f.label)],
-            ),
+            label: f.label,
+            leading: swatch(f),
           ),
-        const PopupMenuDivider(),
-        item(_Action.clear, _col ? l10n.colClear : l10n.rowClear, Icons.clear),
+        const NotedMenuDivider(),
+        item(
+          _Action.clear,
+          _col ? l10n.colClear : l10n.rowClear,
+          Icons.clear_rounded,
+        ),
       ],
       child: MouseRegion(cursor: SystemMouseCursors.click, child: icon),
     );

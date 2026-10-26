@@ -52,7 +52,7 @@ CharacterShortcutEvent noteSlashCommandWith(SelectionMenuStyle style) =>
 final SelectionMenuItem mathMenuItem = SelectionMenuItem(
   getName: () => 'Equation',
   icon: (editorState, isSelected, style) => SelectionMenuIconWidget(
-    icon: Icons.functions,
+    icon: Icons.functions_rounded,
     isSelected: isSelected,
     style: style,
   ),

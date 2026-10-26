@@ -42,13 +42,12 @@ List<Command> drawingCommands(DrawingModule module, CommandHost host) {
       Command(
         id: penColorCommandId(i),
         label: 'Ink color: ${_colorNames[i]}',
-        icon: Icons.circle,
+        icon: Icons.circle_rounded,
         checked: () => settings.color == color,
         listenable: changes,
-        iconBuilder: (context, checked) => Icon(
-          checked ? Icons.radio_button_checked : Icons.circle,
+        iconBuilder: (context, checked) => ToolbarSwatch(
           color: displayInkColor(color, Theme.of(context).brightness),
-          size: NotedMetrics.of(context).icon,
+          selected: checked,
         ),
         invoke: () {
           settings.color = color;
@@ -59,7 +58,7 @@ List<Command> drawingCommands(DrawingModule module, CommandHost host) {
       Command(
         id: penWidthCommandId(size),
         label: 'Pen width ${size.toInt()}',
-        icon: Icons.horizontal_rule,
+        icon: Icons.horizontal_rule_rounded,
         checked: () => settings.size == size,
         listenable: changes,
         iconBuilder: (context, checked) {
