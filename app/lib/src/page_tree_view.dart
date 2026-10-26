@@ -3,9 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show NotedColors;
+import 'package:noted_canvas/noted_canvas.dart' show CommandRegistry, NotedColors;
 import 'package:noted_core/noted_core.dart';
 
+import 'app_commands.dart';
 import 'binder_colors.dart';
 import 'notebook.dart';
 import 'storage_dialog.dart';
@@ -37,7 +38,7 @@ class PageTreeView extends StatefulWidget {
   State<PageTreeView> createState() => _PageTreeViewState();
 }
 
-class _PageTreeViewState extends State<PageTreeView> {
+class _PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
   static const double _rowHeight = 36;
 
   // Collapsed state lasts for the session only.
@@ -54,9 +55,17 @@ class _PageTreeViewState extends State<PageTreeView> {
 
   Notebook get _nb => widget.notebook;
 
+  /// A menu entry for command [id] of [registry]: its label, enabled as the
+  /// command is. The menu's value is the command's id.
+  PopupMenuItem<String> _item(CommandRegistry registry, String id) {
+    final c = registry[id]!;
+    return PopupMenuItem<String>(value: id, enabled: c.enabled, child: Text(c.label));
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final header = pagesHeaderCommands(_nb, this);
     final rows = <Widget>[];
     void addTree(PageTree tree, Color? stripe) {
       void add(PageMeta p, int depth) {
@@ -123,30 +132,27 @@ class _PageTreeViewState extends State<PageTreeView> {
                 Expanded(child: Text('Pages', style: theme.textTheme.titleSmall)),
                 if (_nb.pickFolder != null)
                   IconButton(
-                    tooltip: 'New binder',
-                    icon: const Icon(Icons.create_new_folder_outlined),
-                    onPressed: () => _guard(_nb.newBinder),
+                    tooltip: header[AppCommands.newBinder]!.label,
+                    icon: Icon(header[AppCommands.newBinder]!.icon),
+                    onPressed: () => header.invoke(AppCommands.newBinder),
                   ),
                 IconButton(
-                  tooltip: 'New page',
-                  icon: const Icon(Icons.add),
-                  onPressed: () => _guard(_newStandalonePage),
+                  tooltip: header[AppCommands.newPage]!.label,
+                  icon: Icon(header[AppCommands.newPage]!.icon),
+                  onPressed: () => header.invoke(AppCommands.newPage),
                 ),
                 PopupMenuButton<String>(
                   key: const ValueKey('pages-menu'),
                   tooltip: 'Pages options',
                   iconSize: 18,
-                  onSelected: _pagesAction,
+                  onSelected: (id) => header.invoke(id),
                   itemBuilder: (_) => [
-                    const PopupMenuItem(value: 'new', child: Text('New page')),
-                    const PopupMenuItem(value: 'from-template', child: Text('New page from template…')),
-                    if (_nb.pickFolder != null) ...const [
-                      PopupMenuDivider(),
-                      PopupMenuItem(value: 'binder', child: Text('New binder')),
-                      PopupMenuItem(
-                        value: 'binder-from-template',
-                        child: Text('New binder from template…'),
-                      ),
+                    _item(header, AppCommands.newPage),
+                    _item(header, AppCommands.newPageFromTemplate),
+                    if (_nb.pickFolder != null) ...[
+                      const PopupMenuDivider(),
+                      _item(header, AppCommands.newBinder),
+                      _item(header, AppCommands.newBinderFromTemplate),
                     ],
                   ],
                 ),
@@ -219,24 +225,26 @@ class _PageTreeViewState extends State<PageTreeView> {
     await _nb.createPage(folderPath: folder);
   }
 
-  Future<void> _pagesAction(String action) async {
-    switch (action) {
-      case 'new':
-        await _guard(_newStandalonePage);
-      case 'from-template':
-        await _guard(() async {
-          final t = await _pickTemplate(TemplateKind.page, 'New page from template');
-          if (t == null || !mounted) return;
-          final (folder, cancelled) = await _askFolder();
-          if (cancelled) return;
-          await _nb.createPageFromTemplate(t.template, folderPath: folder);
-        });
-      case 'binder':
-        await _guard(_nb.newBinder);
-      case 'binder-from-template':
-        await _guard(_newBinderFromTemplate);
-    }
-  }
+  // The page tree's actions, which the app's commands (app_commands.dart)
+  // call. Menus and buttons invoke the commands, not these directly.
+
+  @override
+  Future<void> newStandalonePage() => _guard(_newStandalonePage);
+
+  @override
+  Future<void> newPageFromTemplate() => _guard(() async {
+    final t = await _pickTemplate(TemplateKind.page, 'New page from template');
+    if (t == null || !mounted) return;
+    final (folder, cancelled) = await _askFolder();
+    if (cancelled) return;
+    await _nb.createPageFromTemplate(t.template, folderPath: folder);
+  });
+
+  @override
+  Future<void> newBinder() => _guard(_nb.newBinder);
+
+  @override
+  Future<void> newBinderFromTemplate() => _guard(_newBinderFromTemplate);
 
   Future<TemplateItem?> _pickTemplate(TemplateKind kind, String title, {String? binderPath}) async {
     final listing = await _nb.listTemplates(kind, binderPath: binderPath);
@@ -376,10 +384,8 @@ class _PageTreeViewState extends State<PageTreeView> {
                   key: ValueKey('binder-menu-${b.path}'),
                   tooltip: 'Binder options',
                   iconSize: 18,
-                  onSelected: (v) => _binderAction(context, b, v),
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'remove', child: Text('Remove from sidebar')),
-                  ],
+                  onSelected: (v) => binderCommands(_nb, b, this).invoke(v),
+                  itemBuilder: (_) => _binderItems(b),
                 ),
               ],
             ),
@@ -449,16 +455,8 @@ class _PageTreeViewState extends State<PageTreeView> {
                   key: ValueKey('binder-menu-${b.path}'),
                   tooltip: 'Binder options',
                   iconSize: 18,
-                  onSelected: (v) => _binderAction(context, b, v),
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'new', child: Text('New page')),
-                    PopupMenuItem(value: 'new-template', child: Text('New page from template…')),
-                    PopupMenuItem(value: 'cover', child: Text('Open cover')),
-                    PopupMenuDivider(),
-                    PopupMenuItem(value: 'save-template', child: Text('Save as template…')),
-                    PopupMenuDivider(),
-                    PopupMenuItem(value: 'remove', child: Text('Remove from sidebar')),
-                  ],
+                  onSelected: (v) => binderCommands(_nb, b, this).invoke(v),
+                  itemBuilder: (_) => _binderItems(b),
                 ),
               ],
             ),
@@ -468,48 +466,54 @@ class _PageTreeViewState extends State<PageTreeView> {
     );
   }
 
-  Future<void> _binderAction(BuildContext context, BinderSection b, String action) async {
-    switch (action) {
-      case 'new':
-        setState(() => _collapsed.remove(_binderKey(b)));
-        await _guard(() => _nb.createPage(binderPath: b.path));
-      case 'new-template':
-        await _guard(() async {
-          final t = await _pickTemplate(
-            TemplateKind.page,
-            'New page from template',
-            binderPath: b.path,
-          );
-          if (t == null) return;
-          setState(() => _collapsed.remove(_binderKey(b)));
-          await _nb.createPageFromTemplate(t.template, binderPath: b.path);
-        });
-      case 'save-template':
-        await _guard(() => _saveBinderAsTemplate(b));
-      case 'cover':
-        _nb.showCover(b.path);
-      case 'remove':
-        final ok = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Remove binder from sidebar?'),
-            content: Text(
-              '"${b.title}" will no longer be listed. Its folder and files are not deleted.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('Remove'),
-              ),
-            ],
-          ),
-        );
-        if (ok ?? false) await _nb.removeBinder(b.path);
-    }
+  List<PopupMenuEntry<String>> _binderItems(BinderSection b) {
+    final r = binderCommands(_nb, b, this);
+    return [
+      if (r[AppCommands.binderNewPage] != null) ...[
+        _item(r, AppCommands.binderNewPage),
+        _item(r, AppCommands.binderNewPageFromTemplate),
+        _item(r, AppCommands.binderCover),
+        const PopupMenuDivider(),
+        _item(r, AppCommands.binderSaveAsTemplate),
+        const PopupMenuDivider(),
+      ],
+      _item(r, AppCommands.binderRemove),
+    ];
+  }
+
+  @override
+  Future<void> binderNewPage(BinderSection b) async {
+    setState(() => _collapsed.remove(_binderKey(b)));
+    await _guard(() => _nb.createPage(binderPath: b.path));
+  }
+
+  @override
+  Future<void> binderNewPageFromTemplate(BinderSection b) => _guard(() async {
+    final t = await _pickTemplate(TemplateKind.page, 'New page from template', binderPath: b.path);
+    if (t == null) return;
+    setState(() => _collapsed.remove(_binderKey(b)));
+    await _nb.createPageFromTemplate(t.template, binderPath: b.path);
+  });
+
+  @override
+  Future<void> binderSaveAsTemplate(BinderSection b) => _guard(() => _saveBinderAsTemplate(b));
+
+  @override
+  Future<void> binderRemove(BinderSection b) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove binder from sidebar?'),
+        content: Text(
+          '"${b.title}" will no longer be listed. Its folder and files are not deleted.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Remove')),
+        ],
+      ),
+    );
+    if (ok ?? false) await _nb.removeBinder(b.path);
   }
 
   Widget _endTarget(ThemeData theme) {
@@ -643,7 +647,7 @@ class _PageTreeViewState extends State<PageTreeView> {
                   PopupMenuButton<String>(
                     tooltip: 'Page options',
                     iconSize: 18,
-                    onSelected: (v) => _act(context, p, v),
+                    onSelected: (v) => pageCommands(_nb, p, this).invoke(v),
                     itemBuilder: (_) => _menuItems(p),
                   ),
               ],
@@ -755,30 +759,58 @@ class _PageTreeViewState extends State<PageTreeView> {
   }
 
   List<PopupMenuEntry<String>> _menuItems(PageMeta p) {
-    final siblings = _nb.treeOfPage(p.id).siblingsOf(p.id);
-    final i = siblings.indexWhere((s) => s.id == p.id);
+    final r = pageCommands(_nb, p, this);
     return [
-      const PopupMenuItem(value: 'sub', child: Text('New subpage')),
-      const PopupMenuItem(value: 'sub-template', child: Text('New subpage from template…')),
-      const PopupMenuItem(value: 'save-template', child: Text('Save as template…')),
-      const PopupMenuItem(value: 'rename', child: Text('Rename')),
+      _item(r, AppCommands.newSubpage),
+      _item(r, AppCommands.newSubpageFromTemplate),
+      _item(r, AppCommands.saveAsTemplate),
+      _item(r, AppCommands.rename),
       const PopupMenuDivider(),
-      PopupMenuItem(value: 'up', enabled: i > 0, child: const Text('Move up')),
-      PopupMenuItem(
-        value: 'down',
-        enabled: i >= 0 && i < siblings.length - 1,
-        child: const Text('Move down'),
-      ),
-      PopupMenuItem(value: 'indent', enabled: i > 0, child: const Text('Indent')),
-      PopupMenuItem(
-        value: 'outdent',
-        enabled: _nb.treeOfPage(p.id).parentIdOf(p.id) != null,
-        child: const Text('Outdent'),
-      ),
+      _item(r, AppCommands.moveUp),
+      _item(r, AppCommands.moveDown),
+      _item(r, AppCommands.indent),
+      _item(r, AppCommands.outdent),
       const PopupMenuDivider(),
-      const PopupMenuItem(value: 'delete', child: Text('Delete')),
+      _item(r, AppCommands.delete),
     ];
   }
+
+  // The page's actions, which its commands call.
+
+  @override
+  Future<void> newSubpage(PageMeta p) async {
+    setState(() => _collapsed.remove(p.id));
+    await _guard(() => _nb.createPage(parentId: p.id));
+  }
+
+  @override
+  Future<void> newSubpageFromTemplate(PageMeta p) => _guard(() async {
+    final t = await _pickTemplate(
+      TemplateKind.page,
+      'New subpage from template',
+      binderPath: _nb.binderOfPage(p.id),
+    );
+    if (t == null) return;
+    setState(() => _collapsed.remove(p.id));
+    await _nb.createPageFromTemplate(t.template, parentId: p.id);
+  });
+
+  @override
+  Future<void> saveAsTemplate(PageMeta p) => _guard(() => _saveAsTemplate(p));
+
+  @override
+  Future<void> rename(PageMeta p) => _rename(context, p);
+
+  @override
+  Future<void> indent(PageMeta p) async {
+    final above = _aboveSibling(p.id);
+    if (await _nb.indent(p.id) && above != null) {
+      setState(() => _collapsed.remove(above));
+    }
+  }
+
+  @override
+  Future<void> delete(PageMeta p) => _delete(context, p);
 
   Future<void> _contextMenu(BuildContext context, PageMeta p, Offset at) async {
     final overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
@@ -787,43 +819,7 @@ class _PageTreeViewState extends State<PageTreeView> {
       position: RelativeRect.fromRect(at & Size.zero, Offset.zero & overlay.size),
       items: _menuItems(p),
     );
-    if (v != null && context.mounted) await _act(context, p, v);
-  }
-
-  Future<void> _act(BuildContext context, PageMeta p, String action) async {
-    switch (action) {
-      case 'sub':
-        setState(() => _collapsed.remove(p.id));
-        await _guard(() => _nb.createPage(parentId: p.id));
-      case 'sub-template':
-        await _guard(() async {
-          final t = await _pickTemplate(
-            TemplateKind.page,
-            'New subpage from template',
-            binderPath: _nb.binderOfPage(p.id),
-          );
-          if (t == null) return;
-          setState(() => _collapsed.remove(p.id));
-          await _nb.createPageFromTemplate(t.template, parentId: p.id);
-        });
-      case 'save-template':
-        await _guard(() => _saveAsTemplate(p));
-      case 'rename':
-        await _rename(context, p);
-      case 'up':
-        await _nb.moveUp(p.id);
-      case 'down':
-        await _nb.moveDown(p.id);
-      case 'indent':
-        final above = _aboveSibling(p.id);
-        if (await _nb.indent(p.id) && above != null) {
-          setState(() => _collapsed.remove(above));
-        }
-      case 'outdent':
-        await _nb.outdent(p.id);
-      case 'delete':
-        await _delete(context, p);
-    }
+    if (v != null && context.mounted) await pageCommands(_nb, p, this).invoke(v);
   }
 
   String? _aboveSibling(String id) {

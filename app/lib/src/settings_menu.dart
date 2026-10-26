@@ -4,6 +4,7 @@
 
 import 'package:flutter/material.dart';
 
+import 'app_commands.dart';
 import 'app_settings.dart';
 
 /// The gear at the bottom of the sidebar: a menu to choose the theme.
@@ -18,25 +19,28 @@ class SettingsMenu extends StatelessWidget {
       listenable: settings,
       builder: (context, _) => Align(
         alignment: Alignment.centerLeft,
-        child: PopupMenuButton<ThemeSetting>(
+        child: PopupMenuButton<String>(
           key: const ValueKey('settings-menu'),
           tooltip: 'Settings',
           icon: const Icon(Icons.settings_outlined),
-          onSelected: (v) => settings.theme = v,
-          itemBuilder: (_) => [
-            const PopupMenuItem<ThemeSetting>(
-              enabled: false,
-              height: 32,
-              child: Text('Theme'),
-            ),
-            for (final s in ThemeSetting.values)
-              CheckedPopupMenuItem<ThemeSetting>(
-                key: ValueKey('theme-${s.value}'),
-                value: s,
-                checked: settings.theme == s,
-                child: Text(s.label),
+          onSelected: (id) => themeCommands(settings).invoke(id),
+          itemBuilder: (_) {
+            final theme = themeCommands(settings);
+            return [
+              const PopupMenuItem<String>(
+                enabled: false,
+                height: 32,
+                child: Text('Theme'),
               ),
-          ],
+              for (final s in ThemeSetting.values)
+                CheckedPopupMenuItem<String>(
+                  key: ValueKey('theme-${s.value}'),
+                  value: AppCommands.themeId(s),
+                  checked: theme[AppCommands.themeId(s)]!.checked ?? false,
+                  child: Text(theme[AppCommands.themeId(s)]!.label),
+                ),
+            ];
+          },
         ),
       ),
     );
