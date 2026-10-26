@@ -14,6 +14,7 @@ import 'canvas_controller.dart';
 import 'conflict_dialog.dart';
 import 'geometry.dart';
 import 'noted_colors.dart';
+import 'noted_theme.dart';
 
 /// Width of the resize strip on each edge, centred on the edge.
 const double boxHandleSize = 10;
@@ -149,6 +150,8 @@ class _BoxHostState extends State<BoxHost> {
 
     final scheme = Theme.of(context).colorScheme;
     final noted = NotedColors.of(context);
+    final metrics = NotedMetrics.of(context);
+    final type = NotedTypography.of(context);
     final conflicted = node is BoxRecord && node.isConflicted;
     final showChrome = editable && (_hover || selected || editing);
 
@@ -230,8 +233,8 @@ class _BoxHostState extends State<BoxHost> {
                               color: selected || editing
                                   ? scheme.primary
                                   : scheme.outline,
-                              borderRadius: const BorderRadius.vertical(
-                                top: Radius.circular(3),
+                              borderRadius: BorderRadius.vertical(
+                                top: Radius.circular(metrics.radiusSm),
                               ),
                             ),
                           )
@@ -258,18 +261,21 @@ class _BoxHostState extends State<BoxHost> {
                     onTap: () => showConflictDialog(context, c, node.id),
                     child: Container(
                       alignment: Alignment.center,
-                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: metrics.space2,
+                      ),
                       decoration: BoxDecoration(
-                        color: noted.conflictBadge,
-                        borderRadius: const BorderRadius.vertical(top: Radius.circular(3)),
+                        color: noted.conflict,
+                        borderRadius: BorderRadius.vertical(
+                          top: Radius.circular(metrics.radiusSm),
+                        ),
                       ),
                       child: Text(
                         'Conflict',
-                        style: TextStyle(
-                          fontSize: 10,
+                        style: type.small.copyWith(
                           height: 1,
                           fontWeight: FontWeight.w600,
-                          color: noted.onConflictBadge,
+                          color: noted.onConflict,
                         ),
                       ),
                     ),
@@ -417,13 +423,14 @@ class UnsupportedBoxView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final metrics = NotedMetrics.of(context);
     return DecoratedBox(
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
         border: Border.all(color: theme.colorScheme.outlineVariant),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(8),
+        padding: EdgeInsets.all(metrics.space2),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -434,7 +441,7 @@ class UnsupportedBoxView extends StatelessWidget {
                 color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
-            const SizedBox(height: 4),
+            SizedBox(height: metrics.space1),
             Expanded(
               child: Text(
                 text,

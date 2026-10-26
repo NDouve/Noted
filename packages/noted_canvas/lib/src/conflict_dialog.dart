@@ -7,6 +7,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'box_module.dart';
 import 'canvas_controller.dart';
+import 'noted_theme.dart';
 
 /// Height of one editable pane in the manual merge view.
 const double _paneHeight = 320;
@@ -74,6 +75,7 @@ class _ConflictDialogState extends State<_ConflictDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final metrics = NotedMetrics.of(context);
     final box = controller.page.node(boxId);
     if (box is! BoxRecord || !box.isConflicted) {
       return const SizedBox.shrink();
@@ -113,8 +115,8 @@ class _ConflictDialogState extends State<_ConflictDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (deleted)
-              const Padding(
-                padding: EdgeInsets.only(bottom: 12),
+              Padding(
+                padding: EdgeInsets.only(bottom: metrics.space3),
                 child: Text(
                   'This box was deleted on the other side while it was edited '
                   'here. It was kept.',
@@ -131,7 +133,7 @@ class _ConflictDialogState extends State<_ConflictDialog> {
                       text: box.snapshotText,
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  SizedBox(width: metrics.space3),
                   Expanded(
                     child: _Side(
                       key: const ValueKey('conflict-theirs'),
@@ -144,7 +146,7 @@ class _ConflictDialogState extends State<_ConflictDialog> {
             ),
             if (extra > 0)
               Padding(
-                padding: const EdgeInsets.only(top: 12),
+                padding: EdgeInsets.only(top: metrics.space3),
                 child: Text('$extra more version${extra == 1 ? '' : 's'} recorded.'),
               ),
           ],
@@ -219,6 +221,7 @@ class _ConflictDialogState extends State<_ConflictDialog> {
   Widget _editDialog(String mineLabel, String theirsLabel) {
     final mine = _mine!;
     final theirs = _theirs!;
+    final metrics = NotedMetrics.of(context);
 
     void use(_Held held) {
       if (controller.resolveWithData(boxId, held.data)) {
@@ -244,7 +247,7 @@ class _ConflictDialogState extends State<_ConflictDialog> {
                 onUse: () => use(mine),
               ),
             ),
-            const SizedBox(width: 12),
+            SizedBox(width: metrics.space3),
             Expanded(
               child: _EditPane(
                 key: const ValueKey('conflict-edit-theirs'),
@@ -289,19 +292,20 @@ class _EditPane extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final metrics = NotedMetrics.of(context);
     final theme = Theme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(label, style: theme.textTheme.labelLarge),
-        const SizedBox(height: 6),
+        SizedBox(height: metrics.space1),
         Container(
           height: _paneHeight,
           width: double.infinity,
           clipBehavior: Clip.hardEdge,
           decoration: BoxDecoration(
             border: Border.all(color: theme.colorScheme.outlineVariant),
-            borderRadius: BorderRadius.circular(4),
+            borderRadius: metrics.borderSm,
           ),
           child: LayoutBuilder(
             builder: (context, c) => held.module.hostBuild(
@@ -319,7 +323,7 @@ class _EditPane extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(height: 8),
+        SizedBox(height: metrics.space2),
         FilledButton(
           key: useKey,
           onPressed: onUse,
@@ -338,19 +342,20 @@ class _Side extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final metrics = NotedMetrics.of(context);
     final theme = Theme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(label, style: theme.textTheme.labelLarge),
-        const SizedBox(height: 6),
+        SizedBox(height: metrics.space1),
         Container(
           constraints: const BoxConstraints(minHeight: 80, maxHeight: 320),
           width: double.infinity,
-          padding: const EdgeInsets.all(8),
+          padding: EdgeInsets.all(metrics.space2),
           decoration: BoxDecoration(
             border: Border.all(color: theme.colorScheme.outlineVariant),
-            borderRadius: BorderRadius.circular(4),
+            borderRadius: metrics.borderSm,
           ),
           child: SingleChildScrollView(child: SelectableText(text)),
         ),

@@ -21,6 +21,7 @@ import 'command_toolbar.dart';
 import 'commands.dart';
 import 'geometry.dart';
 import 'noted_colors.dart';
+import 'noted_theme.dart';
 import 'toolbar_layout.dart';
 
 /// Auto-pan during a tool session: the edge zone, in screen pixels.
@@ -153,7 +154,7 @@ class PageCanvasState extends State<PageCanvas>
   @override
   NotedColors get colors => _colors;
 
-  NotedColors _colors = NotedColors.fromScheme(const ColorScheme.light());
+  NotedColors _colors = NotedColors.light;
 
   Brightness _brightness = Brightness.light;
 
@@ -544,7 +545,7 @@ class PageCanvasState extends State<PageCanvas>
                     child: MouseRegion(
                       cursor: tool?.cursor ?? MouseCursor.defer,
                       child: ColoredBox(
-                        color: scheme.surface,
+                        color: scheme.surfaceContainerLowest,
                         child: InteractiveViewer(
                           transformationController: _transform,
                           constrained: false,
@@ -665,26 +666,32 @@ class _InputReadout extends StatelessWidget {
   final ValueListenable<_InputStats?> stats;
 
   @override
-  Widget build(BuildContext context) => ValueListenableBuilder<_InputStats?>(
-    valueListenable: stats,
-    builder: (context, s, _) => s == null
-        ? const SizedBox.shrink()
-        : DecoratedBox(
-            decoration: BoxDecoration(
-              color: NotedColors.of(context).readoutBackground,
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Text(
-                s.toString(),
-                style: TextStyle(
-                  color: NotedColors.of(context).onReadout,
-                  fontSize: 12,
-                  fontFamily: 'monospace',
+  Widget build(BuildContext context) {
+    final metrics = NotedMetrics.of(context);
+    final colors = NotedColors.of(context);
+    return ValueListenableBuilder<_InputStats?>(
+      valueListenable: stats,
+      builder: (context, s, _) => s == null
+          ? const SizedBox.shrink()
+          : DecoratedBox(
+              decoration: BoxDecoration(
+                color: colors.readoutBackground,
+                borderRadius: metrics.borderSm,
+              ),
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: metrics.space2,
+                  vertical: metrics.space1,
+                ),
+                child: Text(
+                  s.toString(),
+                  style: NotedTypography.of(context).small.copyWith(
+                    color: colors.onReadout,
+                    fontFamily: 'monospace',
+                  ),
                 ),
               ),
             ),
-          ),
-  );
+    );
+  }
 }

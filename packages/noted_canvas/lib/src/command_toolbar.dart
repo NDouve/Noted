@@ -5,6 +5,8 @@
 import 'package:flutter/material.dart';
 
 import 'commands.dart';
+import 'design_tokens.g.dart';
+import 'noted_theme.dart';
 import 'toolbar_layout.dart';
 
 /// The commands [layout] names, group by group, in the layout's order.
@@ -50,11 +52,12 @@ class CommandToolbar extends StatelessWidget {
   final bool readOnly;
 
   /// The height of the toolbar.
-  static const double height = 48;
+  static const double height = DesignMetrics.toolbarHeight;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final metrics = NotedMetrics.of(context);
     return ListenableBuilder(
       listenable: registry,
       builder: (context, _) {
@@ -77,17 +80,17 @@ class CommandToolbar extends StatelessWidget {
                   scrollDirection: Axis.horizontal,
                   child: Row(
                     children: [
-                      const SizedBox(width: 8),
+                      SizedBox(width: metrics.space2),
                       for (final (i, group) in groups.indexed) ...[
                         if (i > 0)
-                          const SizedBox(
-                            height: 28,
-                            child: VerticalDivider(width: 17),
+                          SizedBox(
+                            height: metrics.control - metrics.space2,
+                            child: VerticalDivider(width: metrics.space4 + 1),
                           ),
                         for (final c in group)
                           _CommandButton(key: ValueKey(c.id), command: c),
                       ],
-                      const SizedBox(width: 8),
+                      SizedBox(width: metrics.space2),
                     ],
                   ),
                 ),
@@ -120,7 +123,9 @@ class _CommandButton extends StatelessWidget {
             ? TextButton(
                 onPressed: onPressed,
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(minWidth: 40),
+                  constraints: BoxConstraints(
+                    minWidth: NotedMetrics.of(context).control,
+                  ),
                   child: Center(widthFactor: 1, child: label),
                 ),
               )
