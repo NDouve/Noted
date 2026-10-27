@@ -1231,6 +1231,41 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Rationale:** An editor per note made the cost of a page grow with the number of notes. A page with hundreds of notes should cost about as much as the notes being edited.
 - **Alternatives considered:** building only the boxes in view (a canvas change, and an editor still has to be built when a note scrolls into view); drawing the light view from the text snapshot (loses formatting, tables and equations, so it can't look identical); a light view that estimates table row heights (box heights would change when the editor measured them); removing a table note's editor after editing (blocked by the table's leftover listeners).
 
+## 0093 — Continuous integration (GitHub Actions)
+- **Date:** 2026-10-27
+- **Status:** Active
+- **Decision:**
+  - **Workflow:** `.github/workflows/ci.yml` runs on every push, every pull request, and by hand. It has read-only repository permissions, and a newer run on the same branch cancels the one still in progress.
+  - **Flutter version:** pinned to 3.47.8 stable, the version used for development, through `subosito/flutter-action@v2` with caching. Actions are pinned to major versions.
+  - **Jobs:**
+    - **Analyze and test** (Windows runner): `flutter pub get` and `flutter analyze` at the workspace root, then `flutter test` in every package with a `test/` directory (`app`, `packages/*`, `packages/boxes/*`), so a new box module's tests run without changing the workflow. A failing package doesn't stop the others; the job fails at the end and names them.
+    - **Windows release build** (Windows runner, in parallel with the tests): `app/scripts/package-windows.ps1` builds the release and writes the zip, uploaded as the `Noted-windows-x64` artifact.
+    - **macOS release build** (macOS runner): `flutter build macos --release`, unsigned and not notarized, zipped with `ditto` and uploaded as the `Noted-macos` artifact.
+  - Artifacts are kept for 14 days.
+  - **Not in CI:** `app/integration_test` (the checklist suite and the performance benchmark), which needs an interactive desktop session. It stays a local check.
+  - **macOS platform project:** `app/macos/` was created with `flutter create` (organisation `org.noted`, as on Windows). The product name is `Noted` and the bundle id `org.noted.noted`, with no signing team. The App Sandbox is on, plus access to files the user selects (`file_selector`). The icon script also writes the macOS asset catalog icons.
+  - The first run on 2026-10-27 passed all three jobs.
+- **Rationale:**
+  - Every change is analysed, tested and built on the platforms it ships to, without depending on the development machine.
+  - The macOS build is the first step on the Apple build path (see Open items): it checks that the app compiles for macOS before anyone runs it there.
+  - The tests run on Windows, the only platform they have been run on; a Linux runner is cheaper and can replace it once the tests are shown to be platform independent.
+- **Alternatives considered:** gating the release builds on the tests (slower to report build problems); running the tests on Linux (cheaper, untested); signing and notarizing the macOS build (needs an Apple developer account; not needed to check that it builds).
+
+## 0094 — Box module template and author guide
+- **Date:** 2026-10-27
+- **Status:** Active (implements the template and guide of 0034, stage 1)
+- **Decision:**
+  - **Template:** `packages/boxes/template` (`noted_box_template`) is a minimal, commented box module, a *sticky label*: one line of text and a colour.
+    - It implements every required member of Box API 0.6: the codec (type id `noted.template.sticky-label`, data version 1, API version, fixed sizing, create, decode, encode, text snapshot, `isEmpty`, AI exposure as text, field-by-field three-way merge, no permissions) and the module (`buildEditor`, `buildView`, saving only through `BoxContext.commit`).
+    - Optional hooks (settings, tools, commands, frame style, image snapshot, Find on page, resize requests) are listed in a comment and not used. It has no insert command, so a label can be created only in code.
+    - The colour is stored by name (`blue`, `orange`, `green`, `purple`) and drawn with the theme's ink colours, so it works in light and dark.
+    - Decoding never throws: bad or missing fields take defaults. Keys the module doesn't know, including an unknown colour name, are kept and written back unchanged.
+  - **Registration:** the app registers it **switched off** (`enabled: false`), so it is compiled in but its boxes show their snapshot until it is switched on in `main.dart` or with `ModuleRegistry.setEnabled`. A page that is already open must be reopened after switching.
+  - **Tests:** codec, merge, a save and load round trip through the page format, byte-for-byte pass-through of unknown data, the snapshot shown when the module is off or not registered, and editing updating the snapshot.
+  - **Guide:** `docs/box-modules.md` explains how to create, register, test and switch on a box type, Box API versioning and its changelog, and what the architecture invariants mean for a module author: touch only your own box, keep unknown fields, keep the snapshot accurate and free of secrets, set AI exposure explicitly, keep encrypted plaintext in the editor only, use no developer-run backend, and remember that the MCP server reads saved data only. Where the guide and an active decision differ, the decision wins.
+- **Rationale:** 0034 delivers new box types in source using a published template and guide. A small working module that the tests keep compiling shows every part of the API in use, and is a safer starting point than copying the note or drawing module.
+- **Alternatives considered:** documenting the API without a module (the example could drift from the API); using the drawing module as the template (too large, and has tools and commands most modules don't need); registering the template switched on (it would appear to users).
+
 ---
 
 ## Open items
