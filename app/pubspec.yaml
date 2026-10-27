@@ -18,6 +18,8 @@ dependencies:
     path: ../packages/noted_canvas
   noted_box_drawing:
     path: ../packages/boxes/drawing
+  noted_box_template:
+    path: ../packages/boxes/template
   noted_box_note:
     path: ../packages/boxes/note
   file_selector: ^1.1.0

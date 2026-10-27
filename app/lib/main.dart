@@ -12,6 +12,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:noted_box_drawing/noted_box_drawing.dart';
 import 'package:noted_box_note/noted_box_note.dart';
+import 'package:noted_box_template/noted_box_template.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -26,7 +27,10 @@ import 'src/recovery_store.dart';
 ModuleRegistry buildModules() =>
     ModuleRegistry()
       ..register(const NoteModule(), alwaysOn: true, isDefault: true)
-      ..register(DrawingModule());
+      ..register(DrawingModule())
+      // The template box module (docs/box-modules.md): compiled in, off by
+      // default. Set enabled: true to try it.
+      ..register(const StickyLabelModule(), enabled: false);
 
 /// This computer's name, or null if it can't be found.
 String? computerName() {
