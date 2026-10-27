@@ -19,9 +19,11 @@
 //
 // * page open: `Notebook.open` to the first frame, and to the frame after
 //   which every box is laid out and no box changes its height any more;
-// * typing: for each of 50 characters, the time from applying the editor
-//   transaction to the end of the frame that shows it (the build and layout
-//   side, on the UI thread), plus the build and raster time of those frames;
+// * typing: for each of 200 characters (PERF_KEYSTROKES), the time from
+//   applying the editor transaction to the end of the frame that shows it
+//   (the build and layout side, on the UI thread), plus the build and raster
+//   time of those frames; each keystroke over 50 ms is listed with the number
+//   of note editors in the tree and whether one was mounted just before it;
 // * panning (mouse wheel) and zooming (Ctrl + wheel): build and raster time of
 //   every frame (`FrameTiming`), as average, 90th and 99th percentile, worst,
 //   and the number of frames over 16 ms.
@@ -54,6 +56,15 @@ const int columns = 22;
 const double cellW = 420;
 const double cellH = 250;
 const double frameBudgetMs = 16;
+
+/// Characters typed in the typing measurement. Override with
+/// `--dart-define=PERF_KEYSTROKES=<n>`.
+const int _keystrokes = int.fromEnvironment('PERF_KEYSTROKES', defaultValue: 200);
+
+/// The note editors (`AppFlowyEditor`) in the tree. By type name: the app
+/// doesn't depend on appflowy_editor directly.
+int _editorCount() =>
+    find.byWidgetPredicate((w) => w.runtimeType.toString() == 'AppFlowyEditor').evaluate().length;
 
 /// The kind of note at slot [i]: mostly one paragraph, some several, one in
 /// ten with a 3 x 3 table with formulas.
@@ -237,16 +248,24 @@ void main() {
       };
       await s.pump(500);
 
-      // Typing: 50 characters into a plain note.
+      // Typing: _keystrokes characters into a plain note.
       final target = firstPlain.first;
+      final before = snapshotOf(s, target);
       final editor = await editNote(s, target);
       await s.pump(300);
       final latencies = <double>[];
       final applyTimes = <double>[];
+      // Every keystroke over 50 ms, with the number of note editors in the
+      // tree before and after it, and whether an editor was mounted since
+      // the keystroke before (the first keystroke counts the one editNote
+      // mounted). Counted outside the timed part.
+      final slow = <Map<String, Object>>[];
+      var editors = _editorCount();
+      var mounted = true;
       late _Frames typing;
       await binding.watchPerformance(() async {
         typing = await _watch(() async {
-          for (var k = 0; k < 50; k++) {
+          for (var k = 0; k < _keystrokes; k++) {
             final node = editor.document.root.children.first;
             final at = (node.delta.toPlainText() as String).length;
             final w = Stopwatch()..start();
@@ -254,17 +273,33 @@ void main() {
             applyTimes.add(w.elapsedMicroseconds / 1000);
             await t.pump();
             w.stop();
-            latencies.add(w.elapsedMicroseconds / 1000);
+            final ms = w.elapsedMicroseconds / 1000;
+            latencies.add(ms);
+            final now = _editorCount();
+            if (ms > 50) {
+              slow.add({
+                'keystroke': k,
+                'ms': (ms * 10).round() / 10,
+                'editorsBefore': editors,
+                'editorsAfter': now,
+                'firstAfterMount': mounted,
+              });
+            }
+            mounted = now > editors;
+            editors = now;
             await Future<void>.delayed(const Duration(milliseconds: 60));
           }
         });
       }, reportKey: 'typing');
-      expect(snapshotOf(s, target), contains('abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwx'));
+      final typed = String.fromCharCodes([for (var k = 0; k < _keystrokes; k++) 97 + k % 26]);
+      expect(snapshotOf(s, target), contains(typed));
+      expect(snapshotOf(s, target).length, before.length + _keystrokes);
       final flush = Stopwatch()..start();
       await s.flush();
       summary['typing'] = {
         'keystrokeToFrameMs': _stats(latencies),
         'applyTransactionMs': _stats(applyTimes),
+        'slowKeystrokes': slow,
         'frames': _frameStats(typing),
         'buildMsPerFrame': [for (final b in typing.build) (b * 10).round() / 10],
         'saveAfterTypingMs': _ms(flush),
