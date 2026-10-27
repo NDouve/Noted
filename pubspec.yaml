@@ -10,6 +10,7 @@ workspace:
   - packages/noted_canvas
   - packages/boxes/note
   - packages/boxes/drawing
+  - packages/boxes/template
 
 dev_dependencies:
   flutter_lints: ^6.0.0

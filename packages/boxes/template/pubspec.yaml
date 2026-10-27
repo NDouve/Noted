@@ -1,0 +1,24 @@
+name: noted_box_template
+description: "A minimal example box module for Noted: a sticky label. Copy it to start a new box type."
+publish_to: none
+version: 0.1.0
+resolution: workspace
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  noted_core:
+    path: ../../noted_core
+  noted_canvas:
+    path: ../../noted_canvas
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
