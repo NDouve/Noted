@@ -215,30 +215,44 @@ void main() {
       return t.widget<AppFlowyEditor>(find.byType(AppFlowyEditor)).editorState;
     }
 
-    testWidgets('block and inline equations render with the LaTeX renderer', (
-      t,
-    ) async {
-      await pump(
+    // A note not being edited is drawn by the light view, which has no
+    // editor and no block components; both must render the equations.
+    for (final light in [true, false]) {
+      final mode = light ? 'light view' : 'editor';
+      testWidgets('block and inline equations render with the LaTeX renderer ($mode)', (
         t,
-        doc([
-          blockMath(r'\frac{a}{b}'),
-          {
-            'type': 'paragraph',
-            'data': {
-              'delta': [
-                {'insert': 'area '},
-                inlineMath('\\pi r^2'),
-              ],
+      ) async {
+        noteLightViewEnabled = light;
+        addTearDown(() => noteLightViewEnabled = true);
+        await pump(
+          t,
+          doc([
+            blockMath(r'\frac{a}{b}'),
+            {
+              'type': 'paragraph',
+              'data': {
+                'delta': [
+                  {'insert': 'area '},
+                  inlineMath('\\pi r^2'),
+                ],
+              },
             },
-          },
-        ]),
-      );
-      expect(find.byType(MathBlockComponentWidget), findsOneWidget);
-      // One Math for the block, one for the inline run.
-      expect(find.byType(Math), findsNWidgets(2));
-      expect(find.byType(MathErrorPlaceholder), findsNothing);
-      expect(t.takeException(), isNull);
-    });
+          ]),
+        );
+        expect(
+          find.byType(AppFlowyEditor),
+          light ? findsNothing : findsOneWidget,
+        );
+        expect(
+          find.byType(MathBlockComponentWidget),
+          light ? findsNothing : findsOneWidget,
+        );
+        // One Math for the block, one for the inline run.
+        expect(find.byType(Math), findsNWidgets(2));
+        expect(find.byType(MathErrorPlaceholder), findsNothing);
+        expect(t.takeException(), isNull);
+      });
+    }
 
     testWidgets('invalid LaTeX shows an error placeholder, not an exception', (
       t,
@@ -265,23 +279,31 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
-    testWidgets('a table renders in the box, which grows to fit it', (t) async {
-      final c = await pump(
-        t,
-        doc([
-          table([
-            ['a', 'b'],
-            ['c', 'd'],
-            ['e', 'f'],
+    for (final light in [true, false]) {
+      final mode = light ? 'light view' : 'editor';
+      testWidgets('a table renders in the box, which grows to fit it ($mode)', (t) async {
+        noteLightViewEnabled = light;
+        addTearDown(() => noteLightViewEnabled = true);
+        final c = await pump(
+          t,
+          doc([
+            table([
+              ['a', 'b'],
+              ['c', 'd'],
+              ['e', 'f'],
+            ]),
           ]),
-        ]),
-      );
-      expect(find.byType(TableBlockComponentWidget), findsOneWidget);
-      expect(find.text('c', findRichText: true), findsOneWidget);
-      // Three rows of at least 40 px each, plus borders and padding.
-      expect(c.page.node('n')!.bounds!.height, greaterThan(130));
-      expect(t.takeException(), isNull);
-    });
+        );
+        expect(
+          find.byType(TableBlockComponentWidget),
+          light ? findsNothing : findsOneWidget,
+        );
+        expect(find.text('c', findRichText: true), findsOneWidget);
+        // Three rows of at least 40 px each, plus borders and padding.
+        expect(c.page.node('n')!.bounds!.height, greaterThan(130));
+        expect(t.takeException(), isNull);
+      });
+    }
 
     testWidgets('editing a table cell commits and shows in the snapshot', (
       t,

@@ -207,8 +207,13 @@ void main() {
         );
 
     /// The background the cell at (row, col) is painted with.
+    ///
+    /// Works for a note being edited and for the light view of one that is
+    /// not (its cells are keyed by position).
     Color? shown(WidgetTester t, int row, int col) {
-      final key = cell(editorOf(t), row, col).key;
+      final Key key = find.byType(AppFlowyEditor).evaluate().isEmpty
+          ? ValueKey('note-cell-$row-$col')
+          : cell(editorOf(t), row, col).key;
       final boxes = find.descendant(
         of: find.byKey(key),
         matching: find.byType(Container),

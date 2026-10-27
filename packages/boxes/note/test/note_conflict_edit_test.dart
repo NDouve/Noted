@@ -48,10 +48,20 @@ void main() {
       of: find.byKey(ValueKey(key)),
       matching: find.byType(AppFlowyEditor),
     );
-    expect(editorIn('conflict-edit-mine'), findsOneWidget);
-    expect(editorIn('conflict-edit-theirs'), findsOneWidget);
+    // A pane shows its note without an editor until it is clicked.
+    expect(editorIn('conflict-edit-mine'), findsNothing);
+    expect(editorIn('conflict-edit-theirs'), findsNothing);
     expect(find.textContaining('their text', findRichText: true), findsWidgets);
     expect(find.text('LAPTOP · saved 2026-10-25 10:30'), findsOneWidget);
+    await t.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey('conflict-edit-theirs')),
+        matching: find.textContaining('their text', findRichText: true),
+      ),
+    );
+    await t.pump(const Duration(milliseconds: 300));
+    expect(editorIn('conflict-edit-mine'), findsNothing);
+    expect(editorIn('conflict-edit-theirs'), findsOneWidget);
 
     // Edit the other version in its pane.
     final editor = t.widget<AppFlowyEditor>(editorIn('conflict-edit-theirs')).editorState;

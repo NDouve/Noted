@@ -295,6 +295,37 @@ TextSpanDecoratorForAttribute mathTextSpanDecorator(EditorState editor) =>
       );
     };
 
+/// Like [mathTextSpanDecorator] for the light view, which has no editor:
+/// inline equations are drawn the same way, and [onEdit] is called with the
+/// node and the index of the equation when one is clicked (null: not
+/// clickable). [fallback] makes the span of every other run.
+TextSpanDecoratorForAttribute lightMathSpanDecorator({
+  required TextSpanDecoratorForAttribute fallback,
+  required void Function(BuildContext context, Node node, int index)? onEdit,
+}) => (context, node, index, text, before, after) {
+  final formula = text.attributes?[NoteFormat.formulaKey];
+  if (formula is! String) {
+    return fallback(context, node, index, text, before, after);
+  }
+  final style = before.style ?? const TextStyle();
+  return TextSpan(
+    children: [
+      for (var i = 0; i < text.text.length; i++)
+        WidgetSpan(
+          alignment: PlaceholderAlignment.baseline,
+          baseline: TextBaseline.alphabetic,
+          child: _InlineMath(
+            formula: formula,
+            style: style,
+            onTap: onEdit == null
+                ? null
+                : () => onEdit(context, node, index + i),
+          ),
+        ),
+    ],
+  );
+};
+
 class _InlineMath extends StatelessWidget {
   const _InlineMath({
     required this.formula,
@@ -370,6 +401,56 @@ class MathBlockComponentBuilder extends BlockComponentBuilder {
       (node) => node.children.isEmpty;
 }
 
+/// The inside of an equation block: the rendered formula, centred, with the
+/// find highlight when its source matches and a click target when [onTap] is
+/// given. Shared by the editor's block and the light view's, which must look
+/// the same.
+Widget mathBlockContent(
+  BuildContext context, {
+  required Node node,
+  required TextStyle textStyle,
+  required VoidCallback? onTap,
+}) {
+  final formula = node.attributes[NoteFormat.formulaKey];
+  Widget child = Center(
+    child: SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: MathView(
+        formula: formula is String ? formula : '',
+        display: true,
+        style: textStyle.copyWith(fontSize: DesignType.boxTitle.fontSize),
+      ),
+    ),
+  );
+  // Find on page: an equation block whose source matches is highlighted
+  // (it shows math, not source, so the block is marked as a whole).
+  final hits = NoteFindScope.of(context)?.hitsFor(node);
+  if (hits != null) {
+    child = DecoratedBox(
+      key: ValueKey(
+        hits.any((h) => h.current) ? 'find-math-current' : 'find-math-match',
+      ),
+      decoration: equationFindDecoration(
+        context,
+        current: hits.any((h) => h.current),
+        radius: 6,
+      ),
+      child: child,
+    );
+  }
+  if (onTap != null) {
+    child = MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: child,
+      ),
+    );
+  }
+  return child;
+}
+
 class MathBlockComponentWidget extends BlockComponentStatefulWidget {
   const MathBlockComponentWidget({
     super.key,
@@ -403,47 +484,14 @@ class _MathBlockComponentWidgetState extends State<MathBlockComponentWidget>
   @override
   Widget build(BuildContext context) {
     final editor = widget.editor;
-    final formula = node.attributes[NoteFormat.formulaKey];
-    final style = editor.editorStyle.textStyleConfiguration.text.copyWith(
-      fontSize: DesignType.boxTitle.fontSize,
+    Widget child = mathBlockContent(
+      context,
+      node: node,
+      textStyle: editor.editorStyle.textStyleConfiguration.text,
+      onTap: editor.editable
+          ? () => editMathBlock(context, editor, node)
+          : null,
     );
-
-    Widget child = Center(
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: MathView(
-          formula: formula is String ? formula : '',
-          display: true,
-          style: style,
-        ),
-      ),
-    );
-    // Find on page: an equation block whose source matches is highlighted
-    // (it shows math, not source, so the block is marked as a whole).
-    final hits = NoteFindScope.of(context)?.hitsFor(node);
-    if (hits != null) {
-      child = DecoratedBox(
-        key: ValueKey(
-          hits.any((h) => h.current) ? 'find-math-current' : 'find-math-match',
-        ),
-        decoration: equationFindDecoration(
-          context,
-          current: hits.any((h) => h.current),
-          radius: 6,
-        ),
-        child: child,
-      );
-    }
-    if (editor.editable) {
-      child = MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => editMathBlock(context, editor, node),
-          child: child,
-        ),
-      );
-    }
     child = Padding(key: _contentKey, padding: padding, child: child);
 
     child = BlockSelectionContainer(
