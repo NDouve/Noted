@@ -1,0 +1,130 @@
+# Continuous integration: static checks and tests on every push and pull
+# request, plus release builds of the Windows and macOS apps.
+#
+# Not run here: app/integration_test. It drives the real app and needs an
+# interactive desktop session, so it stays a local check.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer run on the same ref replaces the one still in progress.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: 3.47.8
+
+jobs:
+  checks:
+    name: Analyze and test
+    # Windows, the only platform the tests have been run on. Switch to
+    # ubuntu-latest if they prove platform independent (it is cheaper).
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Get dependencies (workspace root)
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      # Every package that has a test/ directory: app, packages/* and
+      # packages/boxes/*. All of them depend on Flutter's test framework, so
+      # flutter test runs them all. A failing package does not stop the rest.
+      - name: Test
+        shell: bash
+        run: |
+          failed=""
+          for dir in app packages/* packages/boxes/*; do
+            if [ -d "$dir/test" ]; then
+              echo "::group::flutter test $dir"
+              (cd "$dir" && flutter test) || failed="$failed $dir"
+              echo "::endgroup::"
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::Tests failed in:$failed"
+            exit 1
+          fi
+
+  windows-release:
+    name: Windows release build
+    # Runs in parallel with checks so a build problem shows up without
+    # waiting for the tests. The zip is a build, not a published release.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Get dependencies (workspace root)
+        run: flutter pub get
+
+      # Builds app/ in release mode, adds the Visual C++ runtime DLLs from
+      # System32 (present on the runner image) and writes the zip.
+      - name: Build and package
+        shell: pwsh
+        run: ./app/scripts/package-windows.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Noted-windows-x64
+          path: app/build/Noted-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  macos-build:
+    name: macOS release build
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Get dependencies (workspace root)
+        run: flutter pub get
+
+      # Unsigned: no team or certificate is configured, so the app is for
+      # inspection and Gatekeeper will not open it without an override.
+      - name: Build
+        working-directory: app
+        run: flutter build macos --release
+
+      - name: Zip Noted.app
+        working-directory: app/build/macos/Build/Products/Release
+        run: ditto -c -k --keepParent Noted.app "$GITHUB_WORKSPACE/Noted-macos.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Noted-macos
+          path: Noted-macos.zip
+          if-no-files-found: error
+          retention-days: 14
