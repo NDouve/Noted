@@ -3,8 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Generates the app icons from the master, docs/design/icon/noted-icon.svg:
-// the Windows .ico, the macOS .icns, and the Android and iOS icon sets, all
-// with a transparent background.
+// the Windows .ico, the macOS .icns and asset catalog PNGs, and the Android
+// and iOS icon sets, all with a transparent background.
 //
 // Run from the repository root:
 //
@@ -24,6 +24,7 @@ import 'dart:typed_data';
 const _master = 'docs/design/icon/noted-icon.svg';
 const _windowsIco = 'app/windows/runner/resources/app_icon.ico';
 const _outDir = 'app/icons';
+const _macosAppIconSet = 'app/macos/Runner/Assets.xcassets/AppIcon.appiconset';
 
 void main(List<String> args) {
   final svg = Svg.parse(File(_master).readAsStringSync());
@@ -52,6 +53,12 @@ void main(List<String> args) {
     ('ic14', png(512)),
   ];
   _write('$_outDir/macos/AppIcon.icns', encodeIcns(icns));
+
+  // The Flutter macOS project's asset catalog (its Contents.json names these
+  // files).
+  for (final s in const [16, 32, 64, 128, 256, 512, 1024]) {
+    _write('$_macosAppIconSet/app_icon_$s.png', png(s));
+  }
 
   // Android launcher icons per density, and the 512 px store icon.
   const android = {
