@@ -175,6 +175,10 @@ class NoteLightView extends StatelessWidget {
     final env = _Env(builders, scheme, actions);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
+      // The tap handler has no action to offer a screen reader, and the
+      // semantics node of a gesture detector around a scroll view broke
+      // the semantics update under Windows accessibility.
+      excludeFromSemantics: true,
       onTapUp: (d) {
         final root = context.findRenderObject();
         actions.onTap(
