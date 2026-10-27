@@ -1176,7 +1176,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0091 — Canvas performance on large pages
 - **Date:** 2026-10-26
-- **Status:** Active (extends 0003)
+- **Status:** Active (extends 0003; extended by 0092)
 - **Decision:**
   - **Rebuilds:** panning and zooming no longer rebuild the boxes.
     - A box host reads the zoom only when it needs it (dragging or resizing).
@@ -1196,6 +1196,40 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Typing spikes:** about one typing frame in fifteen takes 80–140 ms, likely garbage collection on a large heap. This is not proven and is left open.
 - **Rationale:** A page with hundreds of boxes has to pan and zoom within a 16 ms frame.
 - **Alternatives considered:** a repaint boundary around all boxes or around each box (measured slower); building only visible boxes (a larger change; open time is acceptable for now).
+
+## 0092 — Lazy note editors
+- **Date:** 2026-10-27
+- **Status:** Active (extends 0091)
+- **Decision:**
+  - **Light view:** a note box builds an `appflowy_editor` editor only while it is being edited. Every other note is drawn by a light, read-only view of the same document, built from the same block builders, text styles and padding, with no editor state, selection or keyboard services.
+    - It draws paragraphs, headings, bulleted, numbered and to-do lists, quotes, dividers, equation blocks, inline equations, tables (stored column widths and row heights, formula cells showing their stored value) and Find on page highlights.
+    - It must look identical to the editor without a caret. Tests compare the two renderings pixel for pixel in light and dark themes.
+    - Box height is measured the same way in both, so switching never resizes the box.
+  - **Fallback to the editor:** a note keeps the real editor when the light view can't draw it exactly: other block types (images, unknown types), nested blocks, blocks with an alignment, text direction or background color, a table that hasn't been measured yet, or a formula cell with no stored value. Once the editor has stored the missing measurements or values, the note goes back to the light view.
+  - **Entering a note:** a click places the caret on the clicked character at any zoom, then mounts the editor with that selection. A box created by a click starts as an editor. A click on an equation opens its editor. A to-do checkbox toggles without mounting an editor, as an undoable change. On a read-only page a click mounts the non-editable editor, so text can still be selected and copied.
+  - **Leaving a note:** when the editor loses focus it is replaced by the light view, except while one of its own menus or dialogs is open.
+  - **Undo:** the editor's state and its undo history are kept while the page is open, so undo still works after leaving a note and returning.
+  - **Notes with a table:** a table note the user has edited keeps its editor while the page is open. `appflowy_editor`'s table leaves listeners on its nodes when its editor is removed, and mounting a second editor on the same state made row heights change endlessly.
+  - **Scope:** the change is inside the note module. It changes neither the Box API nor the page format.
+  - **Results (same benchmark as 0091; profile mode, UI thread, 50 keystrokes):** "Before" is one run before the change; "After" is two runs, one figure per run where they differ. The NVIDIA driver changed from 537.13 to 621.01 between the before and after runs, and Windows was updated, so some of the difference may come from the system.
+
+    | | Before | After |
+    |---|---|---|
+    | Page open, first frame / settled | 618 / 812 ms | 507–516 / 698–706 ms |
+    | Typing, key to frame: average, p90, worst | 15.5, 19.8, 26.9 ms | 14.8–15.8, 15.7–17.3, 52.7–56.8 ms |
+    | Keystrokes over 50 ms | 0 of 50 | 2 of 50 in each run |
+    | Frames over 50 ms while typing (worst) | 4 of 55 (106 ms) | 3 of 59–60 (54–60 ms) |
+    | Pan, average build per frame (worst) | 6.7 ms (19.7) | 5.9 ms (9.5–11.9) |
+    | Zoom, average build per frame (worst) | 7.7 ms (12.3) | 5.8–5.9 ms (10.1–10.6) |
+    | Garbage collections while typing (new / old) | 86 / 16 | 54–56 / 6–10 |
+
+  - **Reading the results:**
+    - Opening is about 18% faster.
+    - The worst typing frames are about half as long, and there are fewer garbage collections.
+    - The remaining ~55 ms frames now coincide with a keystroke about once in 25. Before the change, the longer ~100 ms frames fell between keystrokes.
+    - The benchmark's tables have no stored measurements, so its 20 table notes open as editors and switch to the light view after measuring. A saved page, whose tables are measured, opens with fewer editors than the benchmark shows.
+- **Rationale:** An editor per note made the cost of a page grow with the number of notes. A page with hundreds of notes should cost about as much as the notes being edited.
+- **Alternatives considered:** building only the boxes in view (a canvas change, and an editor still has to be built when a note scrolls into view); drawing the light view from the text snapshot (loses formatting, tables and equations, so it can't look identical); a light view that estimates table row heights (box heights would change when the editor measured them); removing a table note's editor after editing (blocked by the table's leftover listeners).
 
 ---
 
