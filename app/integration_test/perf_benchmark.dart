@@ -137,6 +137,9 @@ Map<String, Object> _stats(List<double> v) {
     'p99': r(pct(0.99)),
     'worst': r(s.last),
     'over16': s.where((x) => x > frameBudgetMs).length,
+    // Spikes the user feels as a stutter while typing.
+    'over50': s.where((x) => x > 50).length,
+    'over50Pct': r(100 * s.where((x) => x > 50).length / s.length),
   };
 }
 
