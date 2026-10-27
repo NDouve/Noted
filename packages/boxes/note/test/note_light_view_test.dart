@@ -5,6 +5,7 @@
 import 'dart:io';
 
 import 'package:appflowy_editor/appflowy_editor.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -572,6 +573,63 @@ void main() {
 
         // A click to the right of a short line goes to its end.
         // (Back to the light view first.)
+        expect(t.takeException(), isNull);
+      });
+    }
+
+    for (final zoom in [1.0, 0.5, 2.0]) {
+      testWidgets('the first press can drag a selection (zoom $zoom)', (
+        t,
+      ) async {
+        await pump(t, [
+          record(
+            'n',
+            _doc([
+              _para('first line of the note'),
+              _para('last paragraph, with some words'),
+            ]),
+            x: 450,
+            y: 250,
+          ),
+        ]);
+        final canvas = t.state<PageCanvasState>(find.byType(PageCanvas));
+        if (zoom != 1) {
+          canvas.fitAll();
+          await t.pumpAndSettle();
+          canvas.zoomTo(zoom);
+          await t.pumpAndSettle();
+        }
+        expect(find.byType(AppFlowyEditor), findsNothing);
+        Offset charAt(String line, int offset) {
+          final render = t.renderObject<RenderParagraph>(
+            find.textContaining(line, findRichText: true),
+          );
+          final boxes = render.getBoxesForSelection(
+            TextSelection(baseOffset: offset, extentOffset: offset + 1),
+          );
+          return render.localToGlobal(boxes.first.toRect().center);
+        }
+
+        // From "fi|rst" on the first line to "last par|agraph" on the second.
+        final from = charAt('first line', 2);
+        final to = charAt('last paragraph', 8);
+        final g = await t.startGesture(from, kind: PointerDeviceKind.mouse);
+        await t.pump();
+        // In steps, so the drag starts before the editor is there.
+        for (var i = 1; i <= 8; i++) {
+          await g.moveTo(Offset.lerp(from, to, i / 8)!);
+          await t.pump(const Duration(milliseconds: 16));
+        }
+        await g.up();
+        await frames(t);
+
+        expect(find.byType(AppFlowyEditor), findsOneWidget);
+        final sel = editorOf(t).selection!.normalized;
+        expect(sel.isCollapsed, isFalse);
+        expect(sel.start.path, [0]);
+        expect(sel.start.offset, anyOf(2, 3));
+        expect(sel.end.path, [1]);
+        expect(sel.end.offset, anyOf(8, 9));
         expect(t.takeException(), isNull);
       });
     }

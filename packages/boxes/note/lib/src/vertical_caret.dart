@@ -112,6 +112,18 @@ List<(Node, Rect)> _blocksOnScreen(EditorState editorState) {
   return out;
 }
 
+/// The document position under [global], correct at any zoom: in the
+/// innermost block level with it, or above or below the text the first or
+/// last block. Null if no block is laid out.
+Position? positionOnScreen(EditorState editorState, Offset global) {
+  final blocks = _blocksOnScreen(editorState);
+  if (blocks.isEmpty) return null;
+  final found = _positionAt(blocks, global);
+  if (found != null) return found;
+  final (node, _) = global.dy < blocks.first.$2.top ? blocks.first : blocks.last;
+  return node.selectable?.getPositionInOffset(global);
+}
+
 /// The position under [point]: in the innermost block whose band contains
 /// its height. Nested blocks come after their parent in document order.
 Position? _positionAt(List<(Node, Rect)> blocks, Offset point) {

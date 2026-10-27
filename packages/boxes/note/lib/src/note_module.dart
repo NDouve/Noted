@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:appflowy_editor/appflowy_editor.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -113,6 +114,7 @@ class _NoteEditorState extends State<_NoteEditor>
   final GlobalKey _rootKey = GlobalKey();
   final GlobalKey _headerKey = GlobalKey();
   final GlobalKey _footerKey = GlobalKey();
+  final GlobalKey _lightKey = GlobalKey();
   final GlobalKey _lightHeaderKey = GlobalKey();
   final GlobalKey _lightFooterKey = GlobalKey();
   final GlobalKey<TableHeadersState> _headersKey = GlobalKey();
@@ -605,16 +607,90 @@ class _NoteEditorState extends State<_NoteEditor>
         },
         child: KeyedSubtree(
           key: _rootKey,
-          child: NoteFindScope(
-            find: _currentFind(),
-            child: _editing ? _editorView(scheme) : _lightView(scheme),
+          child: RawGestureDetector(
+            // Above the light view and the editor, so a drag that starts on
+            // the light view keeps going after the editor replaces it.
+            excludeFromSemantics: true,
+            gestures: {
+              _LightDragRecognizer:
+                  GestureRecognizerFactoryWithHandlers<_LightDragRecognizer>(
+                    () => _LightDragRecognizer(
+                      allowed: () => !_editing,
+                      debugOwner: this,
+                    ),
+                    (r) => r
+                      ..dragStartBehavior = DragStartBehavior.down
+                      ..onStart = _lightDragStart
+                      ..onUpdate = _lightDragUpdate
+                      ..onEnd = _lightDragFinished
+                      ..onCancel = _lightDragEnd,
+                  ),
+            },
+            child: NoteFindScope(
+              find: _currentFind(),
+              child: _editing ? _editorView(scheme) : _lightView(scheme),
+            ),
           ),
         ),
       ),
     );
   }
 
+  // A drag that starts on the light view: the first press mounts the
+  // editor with the caret where it was made, and the drag then selects in
+  // the editor, as it would have had the editor been there already.
+
+  /// Where the drag started in the document, and where the pointer is now
+  /// (null while no drag from the light view is going on).
+  Position? _dragAnchor;
+  Offset? _dragAt;
+
+  void _lightDragStart(DragStartDetails d) {
+    if (_editing) return;
+    final root = _lightKey.currentContext?.findRenderObject();
+    final hit = root == null ? null : lightHitTest(root, d.globalPosition);
+    final anchor = hit == null
+        ? Position(path: [0])
+        : Position(path: hit.node.path, offset: hit.offset);
+    _dragAnchor = anchor;
+    _dragAt = d.globalPosition;
+    _activate(
+      selection: Selection.collapsed(anchor),
+      afterMount: _applyDrag,
+    );
+  }
+
+  void _lightDragUpdate(DragUpdateDetails d) {
+    if (_dragAnchor == null) return;
+    _dragAt = d.globalPosition;
+    _applyDrag();
+  }
+
+  void _lightDragFinished(DragEndDetails _) => _lightDragEnd();
+
+  void _lightDragEnd() {
+    _dragAnchor = null;
+    _dragAt = null;
+  }
+
+  /// Selects from the drag's start to the pointer, once the editor is laid
+  /// out (before that, the post-mount call does it).
+  void _applyDrag() {
+    final editor = _editor;
+    final anchor = _dragAnchor;
+    final at = _dragAt;
+    if (editor == null || anchor == null || at == null || !_editing) return;
+    if (editor.isDisposed) return;
+    final end = positionOnScreen(editor, at);
+    if (end == null) return;
+    editor.updateSelectionWithReason(
+      Selection(start: anchor, end: end),
+      reason: SelectionUpdateReason.uiEvent,
+    );
+  }
+
   Widget _lightView(ColorScheme scheme) => NoteLightView(
+    key: _lightKey,
     document: _document,
     builders: _lightBuildersFor(scheme),
     scheme: scheme,
@@ -676,6 +752,19 @@ class _NoteEditorState extends State<_NoteEditor>
       ),
     );
   }
+}
+
+/// A pan that only starts on a note without its editor; while the editor
+/// is there, its own gestures handle the pointer and this one stays out of
+/// the arena.
+class _LightDragRecognizer extends PanGestureRecognizer {
+  _LightDragRecognizer({required this.allowed, super.debugOwner});
+
+  final bool Function() allowed;
+
+  @override
+  bool isPointerAllowed(PointerEvent event) =>
+      allowed() && super.isPointerAllowed(event);
 }
 
 const double _verticalPadding = 6;
