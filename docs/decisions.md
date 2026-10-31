@@ -1363,7 +1363,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
     - It takes PNG, JPEG, GIF (shown as its first frame), WebP and BMP. A new box is the image's pixel size, with the longer side at most 480.
     - The original is kept. It is displayed from a PNG copy downscaled to at most 1600 px on the longer side, cached in the local app data `cache` folder, which is outside the page folders and never synced.
     - Resizing keeps the aspect ratio; holding Shift resizes freely.
-    - Alt text is edited in a field over the image's bottom edge, shown on hover. The text snapshot is `[image: <alt text>]`, and the AI sees only that.
+    - Alt text is edited in a field over the image's bottom edge, shown on hover or while the box is selected. A click on an image or file box selects it. The text snapshot is `[image: <alt text>]`, and the AI sees only that.
   - **File box (`noted.file`):** created by Insert → File or by dropping any non-image file. It shows an icon for the file type, the name and the size; a double-click opens the file with the system's default app (an embedded file opens from a temporary copy). The snapshot is `[file: <name>]`.
   - **Modules:** both are box modules in `packages/boxes/attachments`. They go through the Box API (0.7: `AttachmentStore`, `fileAffinity`, `createFromFile`, `convertAttachments`, `aspectRatio`, `insertFiles`).
   - **Toolbars:** Image and File are real commands in the Tabs (Insert) and Contextual (insert section) layouts, replacing their placeholders (0097).
