@@ -78,7 +78,8 @@ void main() {
   });
 
   test('the package depends on dart_mcp and noted_core only', () {
-    final pubspec = File('pubspec.yaml').readAsStringSync();
+    // Line endings follow the checkout (CRLF on a Windows runner).
+    final pubspec = File('pubspec.yaml').readAsStringSync().replaceAll('\r\n', '\n');
     final deps = RegExp(r'^dependencies:\n((?:  .*\n|\s*#.*\n|\n)*)', multiLine: true).firstMatch(pubspec)!.group(1)!;
     final names = RegExp(r'^  (\w+):', multiLine: true).allMatches(deps).map((m) => m.group(1)).toSet();
     expect(names, {'dart_mcp', 'noted_core'});
