@@ -1315,7 +1315,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0097 — Two built-in toolbar layouts: Tabs and Contextual
 - **Date:** 2026-10-31
-- **Status:** Active (supersedes the layout part of 0068 and the far-right view controls of 0073)
+- **Status:** Active (supersedes the layout part of 0068 and the far-right view controls of 0073); the Image and File placeholders replaced by 0098 and the Link placeholder by 0099
 - **Decision:**
   - **Choice:** Settings (the gear menu) has a Toolbar section with Tabs and Contextual. The choice is saved per device in `settings.json` as `"toolbar":"tabs"|"contextual"` and applies at once, without a restart. A missing, unknown or damaged value means Tabs, the default.
   - **Tabs (OneNote-style):** a 40px row of tabs above the 52px bar. Undo and Redo sit left of the tabs and Search all pages at the right end of the row, always visible. The bar shows the chosen tab's commands; Home is chosen at start.
@@ -1338,6 +1338,61 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - The full Home set in the Contextual text section: it overflows a canvas about 1100 px wide.
   - The paragraph style as a dropdown: opening a menu takes focus from the note, which disables the note commands before the choice runs.
   - Leaving table and equation out of the Contextual text section: they insert at the caret, so the insert section, which shows when no note has the caret, could never run them.
+
+## 0098 — Image and file boxes, and where their files are stored
+- **Date:** 2026-10-31
+- **Status:** Active (page format change approved by the maintainer; Box API 0.7)
+- **Decision:**
+  - **Setting "Store images and files":** on pages and binders, either *In a folder beside the page* (the default) or *In the page file*.
+    - It is stored as `"attachments":"folder"|"embedded"` in the page header's `noted` object or in the binder file. An absent value means the page follows its parent.
+    - It is inherited like the other settings (0027): the page's own choice, else the nearest parent page's, else the binder's, else folder. The page menu also offers *Same as parent*.
+    - An unknown value is kept as written and read as "follow the parent".
+  - **Folder mode:** a file is written once to `<page id>.assets/<content hash>.<ext>` beside the page file, where the hash is SHA-256 and the extension is lowercase. The box stores the file's name relative to that folder, its hash, its display name and its size. Because the name is the content hash, two devices adding the same file write the same name, so they can't conflict. A file already there is left alone.
+  - **Embedded mode:** the box stores the bytes as base64, with the hash.
+  - **Reading:** every box reads both kinds, whatever the current setting.
+  - **Size guard:** files over `embedLimitBytes` (5 MB) always go to the folder, even in embedded mode, with a one-line notice.
+  - **Converting:** the page menu's *Embed attachments* and *Move attachments to folder* convert every image and file box on the page as one undo step. Over-limit files and files that haven't arrived stay in the folder, and the action reports the over-limit ones by name. Folder files are not deleted by embedding.
+  - **The core and the assets folder:** the core never reads box data (invariant 2). It handles the folder by name only:
+    - it moves with its page, including between storage folders (copy, then remove the original);
+    - saving a template copies it to `<templateId>.assets/<page id>/` beside the template file, and using the template copies it under the new page id; deleting the template removes the copy;
+    - deleting a page sets the folder aside in `deleted-attachments` beside `binders.json`; undo puts it back, and it is removed once the delete can no longer be undone;
+    - a file that can't be written because the page's folder is away is kept in the recovery folder (0070) as `<page id>.assets/` and read from there. It is moved into place when the recovered page lands.
+  - **Missing files:** a box whose folder file isn't there yet shows *Still syncing*. It fills in when the file arrives: the notebook's folder watcher and a watcher on the open page's assets folder notify the boxes.
+  - **Image box (`noted.image`):**
+    - It is created by Insert → Image (a file dialog), by pasting an image on the canvas, or by dropping an image onto it, at the drop point. Pasting an image while the caret is in a note creates an image box to the right of the note, top-aligned, not inline.
+    - It takes PNG, JPEG, GIF (shown as its first frame), WebP and BMP. A new box is the image's pixel size, with the longer side at most 480.
+    - The original is kept. It is displayed from a PNG copy downscaled to at most 1600 px on the longer side, cached in the local app data `cache` folder, which is outside the page folders and never synced.
+    - Resizing keeps the aspect ratio; holding Shift resizes freely.
+    - Alt text is edited in a field over the image's bottom edge, shown on hover. The text snapshot is `[image: <alt text>]`, and the AI sees only that.
+  - **File box (`noted.file`):** created by Insert → File or by dropping any non-image file. It shows an icon for the file type, the name and the size; a double-click opens the file with the system's default app (an embedded file opens from a temporary copy). The snapshot is `[file: <name>]`.
+  - **Modules:** both are box modules in `packages/boxes/attachments`. They go through the Box API (0.7: `AttachmentStore`, `fileAffinity`, `createFromFile`, `convertAttachments`, `aspectRatio`, `insertFiles`).
+  - **Toolbars:** Image and File are real commands in the Tabs (Insert) and Contextual (insert section) layouts, replacing their placeholders (0097).
+  - **Dependencies:** `crypto` (BSD-3-Clause) for SHA-256; `desktop_drop` 0.8.4 (Apache-2.0) for drops, because 0.9 needs a `cross_file` that appflowy_editor doesn't allow yet; `pasteboard` (Apache-2.0) for clipboard images; `url_launcher` (BSD-3-Clause) to open files.
+- **Rationale:**
+  - A folder beside the page keeps page files small and lets sync clients move large files on their own; content-hash names make concurrent adds safe.
+  - Embedding suits a page that must travel as one file.
+  - Inheriting the setting matches the other page settings.
+  - The size guard keeps page files, which are rewritten on every save, from growing past what sync handles well.
+- **Alternatives considered:**
+  - Folder only (8/10): simplest, but a page couldn't travel as one file.
+  - Embedded only (5/10): every save rewrites large files, and page files grow without limit.
+  - One shared folder per binder (6/10): files would be shared between pages, but moving a page out of the binder, templates and deletes would need reference counting.
+
+## 0099 — Links in notes
+- **Date:** 2026-10-31
+- **Status:** Active (replaces the Link placeholder of 0097)
+- **Decision:**
+  - **Link (Ctrl+K)** is a note command, in the Tabs layout (Home and Insert) and the Contextual layout (text and insert sections). It opens a dialog for the address:
+    - With text selected, the selection becomes the link.
+    - With the caret inside a link, the whole link is edited, and the dialog offers *Remove link*.
+    - With a bare caret elsewhere, the address is inserted as linked text.
+    - An address without a scheme gets `https://`; `mailto:` and other schemes are kept.
+    - Saving with an empty address on an existing link removes it.
+  - The link is appflowy_editor's own `href` text attribute, so the note format is unchanged.
+  - Ctrl+K replaces appflowy's link menu in notes.
+  - **Ctrl+click** (Cmd+click on macOS) on a link opens it with the system's browser or default app, both in the editor and in the light view (0092).
+- **Rationale:** Links are common in notes. One dialog covers insert, edit and remove, and uses the storage the editor already has.
+- **Alternatives considered:** appflowy's own link menu (a separate overlay with its own styling); opening links on a plain click (it would move the caret instead of letting the user edit the link text).
 
 ---
 
