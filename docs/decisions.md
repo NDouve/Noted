@@ -1034,7 +1034,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0082 — App icon
 - **Date:** 2026-10-26
-- **Status:** Active
+- **Status:** Superseded by 0096
 - **Decision:**
   - **Master:** `docs/design/icon/noted-icon.svg`, with a transparent 1024 px PNG beside it.
   - **Generated files:** `app/scripts/generate_icons.dart` rasterizes the SVG directly, with no new dependency. It writes:
@@ -1176,7 +1176,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0091 — Canvas performance on large pages
 - **Date:** 2026-10-26
-- **Status:** Active (extends 0003; extended by 0092)
+- **Status:** Active (extends 0003; extended by 0092 and 0095)
 - **Decision:**
   - **Rebuilds:** panning and zooming no longer rebuild the boxes.
     - A box host reads the zoom only when it needs it (dragging or resizing).
@@ -1265,6 +1265,52 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Guide:** `docs/box-modules.md` explains how to create, register, test and switch on a box type, Box API versioning and its changelog, and what the architecture invariants mean for a module author: touch only your own box, keep unknown fields, keep the snapshot accurate and free of secrets, set AI exposure explicitly, keep encrypted plaintext in the editor only, use no developer-run backend, and remember that the MCP server reads saved data only. Where the guide and an active decision differ, the decision wins.
 - **Rationale:** 0034 delivers new box types in source using a published template and guide. A small working module that the tests keep compiling shows every part of the API in use, and is a safer starting point than copying the note or drawing module.
 - **Alternatives considered:** documenting the API without a module (the example could drift from the API); using the drawing module as the template (too large, and has tools and commands most modules don't need); registering the template switched on (it would appear to users).
+
+## 0095 — A growing note rebuilds only itself
+- **Date:** 2026-10-31
+- **Status:** Active (extends 0091; resolves its open question about typing spikes)
+- **Decision:**
+  - **Cause of the slow keystrokes:** when a note grows or shrinks by a line as the user types, it asks the canvas for new bounds. Until now that page change made the canvas create every box's widget again, so all 220 boxes in the benchmark rebuilt in the next frame. The keystroke after each height change took 50–75 ms. The benchmark now records, for each keystroke over 50 ms, whether the note's height changed and whether the other boxes were rebuilt. Every slow keystroke in the "before" runs followed one of those rebuilds.
+  - **Change:** the canvas keeps each box's widget while the box shows nothing new: the same node object (the page replaces only the node that changed), the same selected and editing state, and the same read-only state. A box whose node changes is rebuilt alone.
+    - Every box is still rebuilt when something they all use changes: the controller, the canvas origin, read-only, or the find model.
+    - Panning and zooming still rebuild no boxes (0091).
+  - **Test:** a canvas test grows one of three boxes and checks that only that box rebuilds. It also checks that selecting rebuilds the box selected and the one that was, and that turning on read-only rebuilds all three.
+  - **Scope:** a canvas change only. It changes neither the Box API nor the page format.
+  - **Results (benchmark of 0091; profile mode, UI thread; 200 keystrokes per run, three runs each, alternating; "Before" is main before the change):**
+
+    | | Before | After |
+    |---|---|---|
+    | Keystrokes over 50 ms | 7, 2, 3 of 200 | 0, 0, 0 of 200 |
+    | Typing, key to frame: average / p90 / worst | 13.9–17.0 / 15.6–18.6 / 51.0–74.9 ms | 12.4–13.4 / 14.9–16.2 / 17.7–18.6 ms |
+    | Typing frames over 50 ms (worst) | 5–7 per run (55.6–82.6 ms) | none (6.5–9.3 ms) |
+    | Note height changes / rebuilds of the other boxes | 7 / 7 per run | 7 / 0 per run |
+    | Page open, first frame / settled | 530–710 / 713–966 ms | 498–582 / 689–801 ms |
+    | Pan, average build per frame (worst) | 5.7–7.7 ms (8.3–14.5) | 5.6–6.8 ms (8.3–10.2) |
+    | Zoom, average build per frame (worst) | 5.7–7.5 ms (8.2–11.6) | 5.5–6.7 ms (8.2–15.3) |
+    | Garbage collections while typing (new / old) | 468 / 388 | 424–426 / 386 |
+
+    The first "before" run was slower across the board than the other five. Page open, pan and zoom don't depend on the change; their differences are within run-to-run variation.
+- **Rationale:** Typing on a crowded page is a known risk area. A line wrap in one note should cost what that note costs, not what the whole page costs.
+- **Alternatives considered:** rebuilding the boxes in view only (still rebuilds dozens of boxes on every wrap); deferring the height change until typing pauses (the box would lag its text); caching inside the note module (other box types would still rebuild, and BoxHost itself would still be rebuilt for every box).
+
+## 0096 — App icon: N with a superscript d
+- **Date:** 2026-10-31
+- **Status:** Active (supersedes 0082)
+- **Decision:**
+  - **Master:** `docs/design/icon/noted-icon.svg`, with a transparent 1024 px PNG beside it: a blue N with a superscript d, all strokes with round caps and joins, painted with one two-stop linear gradient (`gradientUnits="userSpaceOnUse"`), lighter at top left. The background is transparent.
+  - **Generated files:** `app/scripts/generate_icons.dart` rasterizes the SVG directly, with no new dependency. It supports solid colours and two-stop linear gradients as fill or stroke paints, interpolated in sRGB and padded beyond the stops. It writes the same files as before:
+    - the Windows `.ico` (16, 24, 32, 48, 64, 128 and 256 px) to `app/windows/runner/resources/app_icon.ico`
+    - the macOS asset catalog PNGs in `app/macos/Runner/Assets.xcassets/AppIcon.appiconset`
+    - the macOS `AppIcon.icns` and the Android and iOS icon sets in `app/icons/`.
+    - Every size keeps the transparent background.
+  - **Small sizes (32 px and below)** are fitted to the pixel grid:
+    - Stroke widths round to whole pixels, and stroke edges fall on pixel boundaries. The N's stems are whole opaque pixel columns at 16, 24 and 32 px.
+    - At 16 and 20 px only the N is drawn, centred across the icon. The d is dropped because it would be a smudge of one or two pixels.
+    - From 24 px the d is kept. It is snapped to the grid (whole-pixel circle radius) and moved right by whole pixels until a clear pixel column separates it from the N, as far as the icon's edge allows. At these sizes the master's gap between them is under one pixel, so they would otherwise merge.
+  - **Test:** `app/test/icon_generator_test.dart` checks the gradient interpolation, that the master renders with its gradient, the N-only rule at 16 and 20 px, the d and its clear column at 24, 29, 32 and 48 px, and the whole-pixel stems at 16, 24 and 32 px.
+  - **Where it shows:** unchanged from 0082: the exe's icon resource (window, taskbar, Alt+Tab), both shortcuts (0054, 0063) and the exe in the zip.
+- **Rationale:** The new master is the maintainer's chosen design. Generating every size from it keeps the platforms consistent, and fitting the small sizes keeps the 16 px taskbar and shortcut icon sharp.
+- **Alternatives considered:** keeping the d at 16–20 px (unreadable at that size); scaling the N up to fill the 16 px square (its stroke weight would no longer match the larger sizes); an image library to rasterize the SVG (a new dependency, and it would blur the small sizes).
 
 ---
 
