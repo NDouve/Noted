@@ -1,0 +1,199 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+import 'package:appflowy_editor/appflowy_editor.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:noted_box_note/noted_box_note.dart';
+import 'package:noted_canvas/noted_canvas.dart';
+import 'package:noted_core/noted_core.dart';
+
+BoxRecord _note(String id, List<Map<String, Object?>> delta) {
+  const codec = NoteCodec();
+  final data = NoteData({
+    'document': {
+      'type': 'page',
+      'children': [
+        {
+          'type': 'paragraph',
+          'data': {'delta': delta},
+        },
+      ],
+    },
+  });
+  return BoxRecord.create(
+    id: id,
+    typeId: NoteCodec.id,
+    dataVersion: 1,
+    bounds: const Bounds(100, 100, 400, 40),
+    data: RawJson.encode(codec.encode(data)),
+    snapshotText: codec.snapshotText(data),
+    rev: 'r',
+  );
+}
+
+void main() {
+  late CanvasController c;
+
+  Future<void> frames(WidgetTester t, [int n = 6]) async {
+    for (var i = 0; i < n; i++) {
+      await t.pump(const Duration(milliseconds: 50));
+    }
+  }
+
+  Future<void> pump(WidgetTester t, List<Map<String, Object?>> delta) async {
+    t.view.physicalSize = const Size(1600, 800);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    final modules = ModuleRegistry()..register(const NoteModule(), alwaysOn: true, isDefault: true);
+    c = CanvasController(
+      NotedPage.create(PageMeta.create(id: 'p', title: '', order: 0)).insertNode(_note('n', delta)),
+      modules,
+    );
+    await t.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: noteLocalizationsDelegates,
+        home: Scaffold(body: PageCanvas(controller: c)),
+      ),
+    );
+    await t.pumpAndSettle();
+  }
+
+  PageCanvasState canvas(WidgetTester t) => t.state<PageCanvasState>(find.byType(PageCanvas));
+
+  Future<EditorState> focusNote(WidgetTester t, {double dx = 20}) async {
+    final b = c.page.node('n')!.bounds!;
+    await t.tapAt(canvas(t).view!.toScreen(Offset(b.x + dx, b.y + 10)) + const Offset(0, CommandToolbar.height));
+    await frames(t);
+    expect(c.editingId, 'n');
+    return t.widget<AppFlowyEditor>(find.byType(AppFlowyEditor)).editorState;
+  }
+
+  Future<void> ctrlK(WidgetTester t) async {
+    await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await t.sendKeyEvent(LogicalKeyboardKey.keyK);
+    await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await frames(t);
+  }
+
+  List<Map<String, Object?>> delta(EditorState e) =>
+      e.document.root.children.first.delta!.toJson().cast<Map<String, Object?>>();
+
+  test('addresses without a scheme become https; linkAt finds the whole link', () {
+    expect(normalizeLink('example.com'), 'https://example.com');
+    expect(normalizeLink(' mailto:a@b.c '), 'mailto:a@b.c');
+    expect(normalizeLink('   '), isNull);
+  });
+
+  testWidgets('Ctrl+K links the selection to the address typed', (t) async {
+    await pump(t, [
+      {'insert': 'see the docs here'},
+    ]);
+    final editor = await focusNote(t);
+    editor.selection = Selection.single(path: [0], startOffset: 8, endOffset: 12);
+    await frames(t);
+    await ctrlK(t);
+    expect(find.text('Insert link'), findsOneWidget);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'docs.example.com');
+    await t.tap(find.byKey(const ValueKey('link-save')));
+    await frames(t);
+    expect(delta(editor), [
+      {'insert': 'see the '},
+      {
+        'insert': 'docs',
+        'attributes': {'href': 'https://docs.example.com'},
+      },
+      {'insert': ' here'},
+    ]);
+    // The link reached the page.
+    expect((c.page.node('n')! as BoxRecord).data!.text, contains('https://docs.example.com'));
+  });
+
+  testWidgets('Ctrl+K in a link edits it; Remove link takes it off', (t) async {
+    await pump(t, [
+      {'insert': 'a '},
+      {
+        'insert': 'link',
+        'attributes': {'href': 'https://old.example'},
+      },
+      {'insert': ' b'},
+    ]);
+    final editor = await focusNote(t);
+    editor.selection = Selection.collapsed(Position(path: [0], offset: 4));
+    await frames(t);
+    expect(linkAt(editor, editor.selection!.start)?.href, 'https://old.example');
+    await ctrlK(t);
+    expect(find.text('Edit link'), findsOneWidget);
+    expect(find.text('https://old.example'), findsOneWidget);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://new.example');
+    await t.tap(find.byKey(const ValueKey('link-save')));
+    await frames(t);
+    expect(delta(editor)[1], {
+      'insert': 'link',
+      'attributes': {'href': 'https://new.example'},
+    });
+
+    editor.selection = Selection.collapsed(Position(path: [0], offset: 3));
+    await frames(t);
+    await ctrlK(t);
+    await t.tap(find.byKey(const ValueKey('link-remove')));
+    await frames(t);
+    expect(delta(editor).every((op) => op['attributes'] == null || (op['attributes']! as Map)['href'] == null), isTrue);
+  });
+
+  testWidgets('with a bare caret outside a link, the address is inserted as a link', (t) async {
+    await pump(t, [
+      {'insert': 'go: '},
+    ]);
+    final editor = await focusNote(t);
+    editor.selection = Selection.collapsed(Position(path: [0], offset: 4));
+    await frames(t);
+    await ctrlK(t);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
+    await t.testTextInput.receiveAction(TextInputAction.done);
+    await frames(t);
+    expect(delta(editor).last, {
+      'insert': 'https://noted.example',
+      'attributes': {'href': 'https://noted.example'},
+    });
+  });
+
+  testWidgets('the Link command is enabled only in a note and opens the same dialog', (t) async {
+    await pump(t, [
+      {'insert': 'text'},
+    ]);
+    final link = canvas(t).commands[NoteCommands.link]!;
+    expect(link.enabled, isFalse);
+    expect(link.tooltip, 'Link (Ctrl+K)');
+    await focusNote(t);
+    expect(link.enabled, isTrue);
+    await t.tap(find.byTooltip('Link (Ctrl+K)'));
+    await frames(t);
+    expect(find.text('Insert link'), findsOneWidget);
+    await t.tap(find.text('Cancel'));
+    await frames(t);
+    expect(c.editingId, 'n', reason: 'the note is still being edited');
+  });
+
+  testWidgets('Ctrl+click on a link opens it', (t) async {
+    final opened = <String>[];
+    final before = linkOpener;
+    linkOpener = (url) async => opened.add(url);
+    addTearDown(() => linkOpener = before);
+    await pump(t, [
+      {
+        'insert': 'linked words here',
+        'attributes': {'href': 'https://open.example'},
+      },
+    ]);
+    await focusNote(t, dx: 40);
+    await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    final b = c.page.node('n')!.bounds!;
+    await t.tapAt(canvas(t).view!.toScreen(Offset(b.x + 60, b.y + 14)) + const Offset(0, CommandToolbar.height));
+    await frames(t);
+    await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    expect(opened, ['https://open.example']);
+  });
+}

@@ -2,10 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
+
+import 'note_commands.dart';
+import 'note_link.dart';
 
 /// Arrow up/down (and Shift+arrow) that work on a zoomed canvas.
 ///
@@ -21,6 +25,8 @@ final List<CommandShortcutEvent> noteCommandShortcuts = [
   for (final e in standardCommandShortcutEvents)
     if (!_replaced.contains(e.key)) e,
   _escape,
+  _linkCommand,
+  _pasteCommand,
   _vertical(moveCursorUpCommand, up: true, extend: false),
   _vertical(moveCursorDownCommand, up: false, extend: false),
   _vertical(moveCursorUpSelectCommand, up: true, extend: true),
@@ -29,13 +35,44 @@ final List<CommandShortcutEvent> noteCommandShortcuts = [
 
 final Set<String> _replaced = {
   exitEditingCommand.key,
+  showLinkMenuCommand.key,
+  pasteCommand.key,
   moveCursorUpCommand.key,
   moveCursorDownCommand.key,
   moveCursorUpSelectCommand.key,
   moveCursorDownSelectCommand.key,
 };
 
+/// Ctrl+K: Noted's own link dialog (insert, edit or remove) instead of
+/// appflowy's link menu.
+final CommandShortcutEvent _linkCommand = showLinkMenuCommand.copyWith(
+  handler: (editorState) {
+    final target = NoteCommandFocus.active.value;
+    if (target == null || !target.canInsert) return KeyEventResult.ignored;
+    unawaited(target.editLink());
+    return KeyEventResult.handled;
+  },
+);
+
+/// Ctrl+V: an image on the clipboard becomes an image box beside the note
+/// (not inline); anything else is pasted into the note as before.
+final CommandShortcutEvent _pasteCommand = pasteCommand.copyWith(
+  handler: (editorState) {
+    final target = NoteCommandFocus.active.value;
+    unawaited(() async {
+      final images = await clipboardImages();
+      if (images.isNotEmpty && target != null) {
+        target.insertFilesBeside(images);
+      } else if (!editorState.isDisposed) {
+        pasteCommand.handler(editorState);
+      }
+    }());
+    return KeyEventResult.handled;
+  },
+);
+
 CommandShortcutEvent _vertical(
+
   CommandShortcutEvent original, {
   required bool up,
   required bool extend,

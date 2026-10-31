@@ -20,6 +20,7 @@ import 'note_codec.dart';
 import 'note_commands.dart';
 import 'note_editor_state.dart';
 import 'note_find.dart';
+import 'note_link.dart';
 import 'note_light_view.dart';
 import 'note_theme.dart';
 import 'table_formulas.dart';
@@ -221,6 +222,29 @@ class _NoteEditorState extends State<_NoteEditor>
   EditorState? get commandEditor => canInsert ? _editor : null;
 
   void _selectionChanged() => NoteCommandFocus.edited(this);
+
+  @override
+  Future<void> editLink() async {
+    final editor = _editor;
+    if (!canInsert || editor == null) return;
+    await editLinkIn(context, editor);
+  }
+
+  @override
+  void insertFilesBeside(List<IncomingFile> files) => widget.box.insertFilesBeside(files);
+
+  // Ctrl+click on a link opens it. The click has already put the caret
+  // there by the time the pointer goes up.
+  void _maybeOpenLink(PointerUpEvent e) {
+    if (!linkModifierPressed) return;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      final editor = _editor;
+      final sel = editor?.selection;
+      if (editor == null || sel == null || !sel.isCollapsed) return;
+      final link = linkAt(editor, sel.start);
+      if (link != null) unawaited(openLink(link.href));
+    });
+  }
 
   @override
   Future<void> insertTable() async {
@@ -735,30 +759,33 @@ class _NoteEditorState extends State<_NoteEditor>
 
   Widget _editorWidget(ColorScheme scheme) {
     final editor = _editor!;
-    return AppFlowyEditor(
-      editorState: editor,
-      editorScrollController: _scroll,
-      editable: widget.editable,
-      shrinkWrap: true,
-      // Caret-follow is done by _revealCaret; see there for why.
-      disableAutoScroll: true,
-      blockComponentBuilders: _builders,
-      characterShortcutEvents: _shortcuts,
-      commandShortcutEvents: _formulas.commandShortcuts(noteCommandShortcuts),
-      focusNode: _focus,
-      autoFocus: widget.editable && widget.box.autofocus,
-      header: SizedBox(key: _headerKey, height: _verticalPadding),
-      footer: SizedBox(key: _footerKey, height: _verticalPadding),
-      editorStyle: EditorStyle.desktop(
-        // Applied around every block, so only horizontal; the header and
-        // footer give the vertical padding.
-        padding: const EdgeInsets.symmetric(horizontal: DesignMetrics.space2),
-        textSpanDecorator: findSpanDecorator(
-          formulaSpanDecorator(editor, mathTextSpanDecorator(editor)),
+    return Listener(
+      onPointerUp: _maybeOpenLink,
+      child: AppFlowyEditor(
+        editorState: editor,
+        editorScrollController: _scroll,
+        editable: widget.editable,
+        shrinkWrap: true,
+        // Caret-follow is done by _revealCaret; see there for why.
+        disableAutoScroll: true,
+        blockComponentBuilders: _builders,
+        characterShortcutEvents: _shortcuts,
+        commandShortcutEvents: _formulas.commandShortcuts(noteCommandShortcuts),
+        focusNode: _focus,
+        autoFocus: widget.editable && widget.box.autofocus,
+        header: SizedBox(key: _headerKey, height: _verticalPadding),
+        footer: SizedBox(key: _footerKey, height: _verticalPadding),
+        editorStyle: EditorStyle.desktop(
+          // Applied around every block, so only horizontal; the header and
+          // footer give the vertical padding.
+          padding: const EdgeInsets.symmetric(horizontal: DesignMetrics.space2),
+          textSpanDecorator: findSpanDecorator(
+            formulaSpanDecorator(editor, mathTextSpanDecorator(editor)),
+          ),
+          cursorColor: scheme.primary,
+          selectionColor: scheme.primary.withValues(alpha: 0.25),
+          textStyleConfiguration: noteTextStyles(scheme),
         ),
-        cursorColor: scheme.primary,
-        selectionColor: scheme.primary.withValues(alpha: 0.25),
-        textStyleConfiguration: noteTextStyles(scheme),
       ),
     );
   }

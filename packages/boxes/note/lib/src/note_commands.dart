@@ -32,6 +32,7 @@ abstract final class NoteCommands {
   static const String outdent = 'noted.note.outdent';
   static const String indent = 'noted.note.indent';
   static const String clearFormatting = 'noted.note.clearFormatting';
+  static const String link = 'noted.note.link';
 
   /// The heading command for [level] 1 to 3.
   static String heading(int level) => 'noted.note.style.heading$level';
@@ -48,6 +49,13 @@ abstract interface class NoteCommandTarget {
 
   /// Inserts a table at the caret, as the slash menu's Table item does.
   Future<void> insertTable();
+
+  /// Inserts or edits the link on the selection (Ctrl+K).
+  Future<void> editLink();
+
+  /// Creates boxes for [files] beside this note (an image pasted while the
+  /// caret is in it).
+  void insertFilesBeside(List<IncomingFile> files);
 
   /// Inserts an equation at the caret, as the slash menu's Equation item
   /// does (it asks for the formula).
@@ -230,6 +238,15 @@ List<Command> noteCommands(CommandHost host) {
     shortcut(NoteCommands.indent, 'Indent', Icons.format_indent_increase_rounded,
         indentCommand,
         key: const SingleActivator(LogicalKeyboardKey.tab)),
+    Command(
+      id: NoteCommands.link,
+      label: 'Link',
+      icon: Icons.link_rounded,
+      shortcut: const SingleActivator(LogicalKeyboardKey.keyK, control: true),
+      enabled: canInsert,
+      listenable: NoteCommandFocus.active,
+      invoke: () => NoteCommandFocus.active.value?.editLink(),
+    ),
     Command(
       id: NoteCommands.clearFormatting,
       label: 'Clear formatting',
