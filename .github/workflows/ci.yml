@@ -52,7 +52,8 @@ jobs:
       # Each package's dart_test.yaml fails a test after 2 minutes, but a test
       # stuck in a synchronous loop never lets that timer run. So a package
       # gets 8 minutes in all; then its test process is killed and the last
-      # tests it started are reported. Failed tests are reported by name.
+      # tests it started are reported. Failed tests are reported by name, with
+      # the start of their error message.
       # (Annotations can be read without signing in; the log can't.)
       - name: Test
         shell: bash
@@ -76,7 +77,17 @@ jobs:
                   last=$(grep -E '^[0-9]+:[0-9]+ \+' "$log" | tail -n 3 | tr '\n' ' ' || true)
                   echo "::error title=Timed out in $dir::Still running after 8 minutes. Last tests: $last"
                 fi
-                { grep -F '[E]' "$log" || true; } | sort -u | head -n 10 | while read -r line; do
+                # Each failed test with the first lines of its error, as one
+                # annotation (%0A is a line break there; % is escaped first).
+                { awk '
+                  function out() { if (msg != "") print msg; msg = ""; n = 0 }
+                  /^[0-9]+:[0-9]+ \+/ { out() }
+                  /\[E\]\r?$/ { gsub(/\r/, ""); msg = $0; n = 0; next }
+                  msg != "" && n < 8 && $0 !~ /^[[:space:]]*$/ {
+                    gsub(/\r/, ""); gsub(/%/, "%25"); msg = msg "%0A" $0; n++
+                  }
+                  END { out() }
+                ' "$log" || true; } | head -n 10 | while read -r line; do
                   echo "::error title=Test failed in $dir::$line"
                 done
               fi
