@@ -816,7 +816,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0068 — Default toolbar
 - **Date:** 2026-10-26
-- **Status:** Active; extended by 0073 (look and order of the view controls) and 0074 (page background dropdown); pen options enabled only with the pen superseded by 0075
+- **Status:** Active; extended by 0073 (look and order of the view controls) and 0074 (page background dropdown); pen options enabled only with the pen superseded by 0075; the layout (one fixed toolbar, its order and its view group) superseded by 0097
 - **Decision:**
   - One fixed toolbar runs along the top of the canvas, built only from registry commands (0067). It replaces the floating tool bar and the zoom bar.
   - **Order:** Select, Pen, Eraser (the active tool shown as checked), ink color swatches, pen widths, Undo, Redo, Insert table, Insert equation, Fit all, and the zoom level (clicking it resets to 100%).
@@ -888,7 +888,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0073 — Components restyled to the design guidelines
 - **Date:** 2026-10-26
-- **Status:** Active (extends 0068); the `FramelessBoxModule` marker superseded by 0079; extended by 0080
+- **Status:** Active (extends 0068); the `FramelessBoxModule` marker superseded by 0079; extended by 0080; the toolbar's view controls at the far right superseded by 0097 (each layout places them)
 - **Decision:** The toolbar, sidebar, boxes, menus and dialog buttons follow the component guidelines in `docs/design/components/`. Icons are Flutter's built-in rounded Material icons (`Icons.*_rounded`), with no icon package.
   - **Toolbar:** 52px high on `surface` with a bottom hairline. Buttons are 36px with `radius-md`; the active tool has an `accent-soft` fill and an `accent` icon. Groups are separated by 1×24px rules.
     - The view controls (Fit all, zoom, page background) sit at the far right; the other groups scroll sideways if the window is narrow.
@@ -1312,6 +1312,32 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Where it shows:** unchanged from 0082: the exe's icon resource (window, taskbar, Alt+Tab), both shortcuts (0054, 0063) and the exe in the zip.
 - **Rationale:** The new master is the maintainer's chosen design. Generating every size from it keeps the platforms consistent, and fitting the small sizes keeps the 16 px taskbar and shortcut icon sharp. Filling the square makes the N as large as the 16 and 20 px slots allow. Keeping the master's proportions would leave the N almost the same size as when centred, because the N is taller than it is wide.
 - **Alternatives considered:** keeping the d at 16–20 px (unreadable at that size); keeping the master's proportions at 16–20 px, centred (the first version of this entry; it leaves empty columns either side); an image library to rasterize the SVG (a new dependency, and it would blur the small sizes).
+
+## 0097 — Two built-in toolbar layouts: Tabs and Contextual
+- **Date:** 2026-10-31
+- **Status:** Active (supersedes the layout part of 0068 and the far-right view controls of 0073)
+- **Decision:**
+  - **Choice:** Settings (the gear menu) has a Toolbar section with Tabs and Contextual. The choice is saved per device in `settings.json` as `"toolbar":"tabs"|"contextual"` and applies at once, without a restart. A missing, unknown or damaged value means Tabs, the default.
+  - **Tabs (OneNote-style):** a 40px row of tabs above the 52px bar. Undo and Redo sit left of the tabs and Search all pages at the right end of the row, always visible. The bar shows the chosen tab's commands; Home is chosen at start.
+    - **Home:** paragraph style (Normal, H1, H2, H3); bold, italic, underline, strikethrough, highlight, text colour; bulleted, numbered and check lists, outdent, indent; link, clear formatting.
+    - **Insert:** table, equation, link, date and time; image, file, AI box, encrypted box.
+    - **Draw:** select, pen, eraser, highlighter, lasso; the ink colours; the pen widths.
+    - **View:** zoom out, zoom to 100%, zoom in, Fit all; page background, find on page.
+    - On a read-only page a tab whose commands are all left out is hidden, which leaves View.
+  - **Contextual:** one 52px bar. Select, Pen and Eraser, then Undo and Redo, at the left; Search, Fit all, the zoom level and the page background at the right. Between them a section filled with `surface-hover` shows the first that applies:
+    - the ink colours and widths while the Pen is the active tool;
+    - text tools while the caret is in a note: bold, italic, underline, strikethrough, highlight; the three lists, outdent, indent, clear formatting; table and equation;
+    - otherwise the insert tools.
+    - On touch input the left end and the middle wrap together.
+  - **Layouts are data:** `toolbar_layout.dart` describes both as lists of command-id groups with tab labels and section conditions (a command that must be checked, or any of the section's commands enabled). They write to and read from JSON. Commands are only taken from the canvas registry (0067), and ids it doesn't have are skipped.
+  - **Placeholders:** text colour, link, image, file, AI box, encrypted box, highlighter and lasso have no command yet. Each gets a disabled command with its label followed by "(coming later)". A module that registers the same id later replaces the placeholder.
+  - **New note commands** (through `BoxModule.commands`, no Box API change): paragraph styles, bold, italic, underline, strikethrough, highlight (the editor's own highlight), bulleted, numbered and check lists, outdent, indent, clear formatting (removes bold, italic, underline, strikethrough, code, text colour and highlight; keeps links, formulas and equations) and insert date and time (`2026-10-31 14:05`). They act on the focused note and are enabled only while one has focus. Styles, marks and lists show as checked for the text at the caret. Their tooltips show the editor's own keys.
+  - **Accessibility:** a checked text button (the paragraph styles) shows its state visually only. With a toggled semantics flag changing as the caret moved, the Windows app exited without an error during the integration suite.
+- **Rationale:** The maintainer approved two built-in layouts. Tabs keep every command one tab away without crowding a single bar. Contextual keeps one short bar by showing only what fits the current task. Keeping both as data lets user-arranged toolbars build on them later; that customisation stays out of scope.
+- **Alternatives considered:**
+  - The full Home set in the Contextual text section: it overflows a canvas about 1100 px wide.
+  - The paragraph style as a dropdown: opening a menu takes focus from the note, which disables the note commands before the choice runs.
+  - Leaving table and equation out of the Contextual text section: they insert at the caret, so the insert section, which shows when no note has the caret, could never run them.
 
 ---
 
