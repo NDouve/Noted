@@ -76,15 +76,31 @@ Future<String> putNote(Session s, String text, {double x = 100, double y = 100})
 
 PageCanvasState canvasState(WidgetTester t) => t.state<PageCanvasState>(find.byType(PageCanvas));
 
+/// The toolbar's height: with Tabs (the default) the row of tabs and the bar.
+double toolbarHeight(WidgetTester t) => t.getSize(find.byType(CommandToolbar)).height;
+
+/// The toolbar button of command [id]. With Tabs, first opens the tab that
+/// has it if it isn't showing.
+Future<Finder> toolbarButton(WidgetTester t, String id) async {
+  final button = find.byKey(ValueKey(id));
+  if (button.evaluate().isNotEmpty) return button;
+  for (final tab in tabbedToolbarLayout.tabs) {
+    final key = find.byKey(CommandToolbar.tabKey(tab.id));
+    if (key.evaluate().isEmpty || !tab.groups.any((g) => g.contains(id))) continue;
+    await t.tap(key);
+    await t.pump();
+    break;
+  }
+  return button;
+}
+
 /// Screen position of a page (world) point.
 Offset toScreen(WidgetTester t, Offset world) =>
-    canvasState(t).view!.toScreen(world) +
-    t.getTopLeft(find.byType(PageCanvas)) +
-    const Offset(0, CommandToolbar.height);
+    canvasState(t).view!.toScreen(world) + t.getTopLeft(find.byType(PageCanvas)) + Offset(0, toolbarHeight(t));
 
 /// Screen position of a canvas-local point (the viewport, below the toolbar).
 Offset viewportPoint(WidgetTester t, Offset local) =>
-    t.getTopLeft(find.byType(PageCanvas)) + const Offset(0, CommandToolbar.height) + local;
+    t.getTopLeft(find.byType(PageCanvas)) + Offset(0, toolbarHeight(t)) + local;
 
 /// Clicks the empty canvas: a new note box takes focus.
 Future<void> clickNewNote(Session s, {Offset at = const Offset(700, 300)}) async {

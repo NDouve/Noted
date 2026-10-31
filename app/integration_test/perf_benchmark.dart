@@ -344,7 +344,7 @@ void main() {
       // simulator does not work in profile builds.
       final pointer = TestPointer(7, PointerDeviceKind.mouse);
       final viewport = t.getSize(find.byType(PageCanvas));
-      final mid = Offset(viewport.width / 2, (viewport.height - CommandToolbar.height) / 2);
+      final mid = Offset(viewport.width / 2, (viewport.height - toolbarHeight(t)) / 2);
       await t.sendEventToBinding(pointer.hover(viewportPoint(t, mid)));
       await s.pump(200);
 
@@ -368,7 +368,7 @@ void main() {
         }
       });
       // Zoomed out (the whole page in view) and in.
-      await t.tap(find.byKey(const ValueKey('canvas.fitAll')));
+      await t.tap(await toolbarButton(t, 'canvas.fitAll'));
       await s.pump(500);
       final fitScale = canvasState(t).view!.scale;
       final panFit = await _watch(() async {
@@ -383,7 +383,7 @@ void main() {
           await wheel(const Offset(-80, 0));
         }
       });
-      await t.tap(find.byKey(const ValueKey('canvas.fitAll')));
+      await t.tap(await toolbarButton(t, 'canvas.fitAll'));
       await s.pump(500);
       final zoom = await _watch(() async {
         for (var i = 0; i < 30; i++) {

@@ -55,6 +55,12 @@ abstract final class AppCommands {
   static const String themeDark = 'app.theme.dark';
 
   static String themeId(ThemeSetting s) => 'app.theme.${s.value}';
+
+  // Toolbar (the settings menu).
+  static const String toolbarTabs = 'app.toolbar.tabs';
+  static const String toolbarContextual = 'app.toolbar.contextual';
+
+  static String toolbarId(ToolbarStyle s) => 'app.toolbar.${s.value}';
 }
 
 /// What the page tree can do that needs the screen (dialogs, asking for a
@@ -306,6 +312,23 @@ Command searchCommand(NotebookSearch search) => Command(
   whileReadOnly: true,
   invoke: search.requestFocus,
 );
+
+/// The toolbar commands: Tabs, Contextual. The one in use is checked.
+CommandRegistry toolbarCommands(AppSettings settings) => CommandRegistry()
+  ..registerAll([
+    for (final s in ToolbarStyle.values)
+      Command(
+        id: AppCommands.toolbarId(s),
+        label: s.label,
+        icon: switch (s) {
+          ToolbarStyle.tabs => Icons.tab_rounded,
+          ToolbarStyle.contextual => Icons.view_stream_rounded,
+        },
+        checked: () => settings.toolbar == s,
+        listenable: settings,
+        invoke: () => settings.toolbar = s,
+      ),
+  ]);
 
 /// The theme commands: Follow system, Light, Dark. The one in use is
 /// checked.

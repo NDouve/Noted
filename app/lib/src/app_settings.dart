@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:noted_canvas/noted_canvas.dart' show ToolbarStyle;
 
 import 'notebook.dart' show defaultPagesDirectory;
 
@@ -40,7 +41,8 @@ File defaultSettingsFile() {
 }
 
 /// Settings that belong to this device, not to the notebook: kept in
-/// `settings.json` as `{"format":1,"theme":"system"|"light"|"dark"}`.
+/// `settings.json` as `{"format":1,"theme":"system"|"light"|"dark",
+/// "toolbar":"tabs"|"contextual"}`.
 ///
 /// Fields this build doesn't know are kept when the file is rewritten. A
 /// missing, damaged or unreadable file gives the defaults and is left alone
@@ -54,6 +56,7 @@ class AppSettings extends ChangeNotifier {
   final File? file;
 
   ThemeSetting _theme = ThemeSetting.system;
+  ToolbarStyle _toolbar = ToolbarStyle.tabs;
 
   /// Everything that was in the file, so unknown fields survive a rewrite.
   Map<String, Object?> _raw = {};
@@ -61,6 +64,18 @@ class AppSettings extends ChangeNotifier {
   ThemeSetting get theme => _theme;
 
   ThemeMode get themeMode => _theme.mode;
+
+  /// Which built-in toolbar the canvas shows (`"toolbar"`): Tabs unless
+  /// chosen otherwise.
+  ToolbarStyle get toolbar => _toolbar;
+
+  set toolbar(ToolbarStyle value) {
+    if (value == _toolbar && _raw['toolbar'] == value.value) return;
+    _toolbar = value;
+    _raw = {..._raw, 'toolbar': value.value};
+    notifyListeners();
+    _write();
+  }
 
   /// The folder new top-level pages are created in, as chosen on this device
   /// (`"defaultPageFolder"`), or null for the built-in default.
@@ -107,10 +122,12 @@ class AppSettings extends ChangeNotifier {
       if (json is! Map<String, dynamic>) return;
       _raw = Map<String, Object?>.of(json);
       _theme = ThemeSetting.parse(json['theme']) ?? ThemeSetting.system;
+      _toolbar = ToolbarStyle.parse(json['toolbar']) ?? ToolbarStyle.tabs;
     } on Object {
       // Damaged: use the defaults; the file stays as it is.
       _raw = {};
       _theme = ThemeSetting.system;
+      _toolbar = ToolbarStyle.tabs;
     }
   }
 

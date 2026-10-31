@@ -424,9 +424,9 @@ void main() {
     await start(t);
     final button = find.byKey(const ValueKey('app.search'));
     expect(button, findsOneWidget);
-    // In the view group, after the page background.
-    final fit = t.getCenter(find.byKey(const ValueKey('canvas.fitAll'))).dx;
-    expect(t.getCenter(button).dx, greaterThan(fit));
+    // At the right end of the row of tabs, on every tab.
+    final view = t.getCenter(find.byKey(CommandToolbar.tabKey('view'))).dx;
+    expect(t.getCenter(button).dx, greaterThan(view));
     await t.tap(button);
     await t.pump();
     await t.pump();

@@ -126,7 +126,8 @@ class _HomeState extends State<Home> {
 
   Widget _body() {
     return ListenableBuilder(
-      listenable: notebook,
+      // The settings choose the toolbar; a change applies at once.
+      listenable: Listenable.merge([notebook, ?widget.settings]),
       builder: (context, _) {
         final current = notebook.current;
         final m = NotedMetrics.of(context);
@@ -207,6 +208,7 @@ class _HomeState extends State<Home> {
                             readOnly: notebook.readOnlyReason != null,
                             findRequests: _findRequests,
                             extraCommands: () => [searchCommand(_search)],
+                            toolbar: (widget.settings?.toolbar ?? ToolbarStyle.tabs).layout,
                           ),
                         ),
                       ],

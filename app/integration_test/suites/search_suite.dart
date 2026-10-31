@@ -54,7 +54,7 @@ void searchSuite() {
         addNote(s, [para('here')], x: 0, y: 0);
         addNote(s, [para('distant needle')], x: 3000, y: 2500);
         await s.pump(400);
-        await t.tap(find.byKey(const ValueKey('canvas.zoomReset')));
+        await t.tap(await toolbarButton(t, 'canvas.zoomReset'));
         await s.pump(300);
         await s.ctrl(LogicalKeyboardKey.keyF);
         await t.enterText(find.byKey(const ValueKey('find-field')), 'needle');

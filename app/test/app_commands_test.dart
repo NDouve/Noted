@@ -12,6 +12,7 @@ import 'package:noted/src/app_commands.dart';
 import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
+import 'package:noted_canvas/noted_canvas.dart' show CommandToolbar;
 import 'package:noted_core/noted_core.dart';
 
 /// Records which UI actions the commands asked for.
@@ -190,20 +191,25 @@ void main() {
     await t.pump();
     await t.pump();
 
-    for (final tip in [
-      'Select and type (V)',
-      'Pen (P)',
-      'Eraser (E)',
-      'Undo (Ctrl+Z)',
-      'Redo (Ctrl+Y)',
-      'Insert table',
-      'Insert equation',
-      'Fit all',
-      'Zoom to 100% (Ctrl+0)',
-    ]) {
-      expect(find.byTooltip(tip), findsOneWidget, reason: tip);
+    // The default toolbar is Tabs: Undo, Redo and Search outside the tabs,
+    // Home chosen.
+    Future<void> openTab(String id) async {
+      await t.tap(find.byKey(CommandToolbar.tabKey(id)));
+      await t.pump();
     }
+
+    void shows(List<String> tips) {
+      for (final tip in tips) {
+        expect(find.byTooltip(tip), findsOneWidget, reason: tip);
+      }
+    }
+
+    shows(['Undo (Ctrl+Z)', 'Redo (Ctrl+Y)', 'Search all pages (Ctrl+Shift+F)', 'Bold (Ctrl+B)']);
+    await openTab('view');
+    shows(['Fit all', 'Zoom to 100% (Ctrl+0)', 'Zoom in (Ctrl+=)', 'Find on page (Ctrl+F)']);
     expect(find.text('100%'), findsOneWidget);
+    await openTab('insert');
+    shows(['Insert table', 'Insert equation', 'Image (coming later)']);
 
     bool checked(String tooltip) => t
         .widget<IconButton>(
@@ -223,6 +229,10 @@ void main() {
     expect(btn('Undo (Ctrl+Z)').onPressed, isNull);
     expect(textBtn('Insert table').onPressed, isNull);
     expect(textBtn('Insert equation').onPressed, isNull);
+    expect(textBtn('Image (coming later)').onPressed, isNull);
+
+    await openTab('draw');
+    shows(['Select and type (V)', 'Pen (P)', 'Eraser (E)', 'Undo (Ctrl+Z)']);
 
     expect(checked('Select and type (V)'), isTrue);
     await t.sendKeyEvent(LogicalKeyboardKey.keyP);

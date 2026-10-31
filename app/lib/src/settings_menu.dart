@@ -3,14 +3,15 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show NotedMenuHeading, NotedMenuItem, NotedMetrics;
+import 'package:noted_canvas/noted_canvas.dart'
+    show Command, NotedMenuHeading, NotedMenuItem, NotedMetrics, ToolbarStyle;
 
 import 'app_commands.dart';
 import 'app_settings.dart';
 import 'notebook.dart';
 
-/// The gear at the bottom of the sidebar: a menu to choose the theme and the
-/// default folders for new pages and binders.
+/// The gear at the bottom of the sidebar: a menu to choose the theme, the
+/// toolbar and the default folders for new pages and binders.
 class SettingsMenu extends StatelessWidget {
   const SettingsMenu({super.key, required this.settings, this.notebook});
 
@@ -33,14 +34,27 @@ class SettingsMenu extends StatelessWidget {
           icon: const Icon(Icons.settings_rounded),
           onSelected: (id) {
             final theme = themeCommands(settings);
+            final toolbar = toolbarCommands(settings);
             if (theme[id] != null) {
               theme.invoke(id);
+            } else if (toolbar[id] != null) {
+              toolbar.invoke(id);
             } else if (nb != null) {
               _guard(context, () => folderSettingsCommands(nb).invoke(id));
             }
           },
           itemBuilder: (context) {
             final theme = themeCommands(settings);
+            final toolbar = toolbarCommands(settings);
+            Widget check(Command c) => SizedBox(
+              width: NotedMetrics.of(context).icon,
+              child: (c.checked ?? false)
+                  ? Icon(
+                      Icons.check_rounded,
+                      size: NotedMetrics.of(context).icon,
+                    )
+                  : null,
+            );
             return [
               const NotedMenuHeading('Theme'),
               for (final s in ThemeSetting.values)
@@ -48,15 +62,15 @@ class SettingsMenu extends StatelessWidget {
                   key: ValueKey('theme-${s.value}'),
                   value: AppCommands.themeId(s),
                   label: theme[AppCommands.themeId(s)]!.label,
-                  leading: SizedBox(
-                    width: NotedMetrics.of(context).icon,
-                    child: (theme[AppCommands.themeId(s)]!.checked ?? false)
-                        ? Icon(
-                            Icons.check_rounded,
-                            size: NotedMetrics.of(context).icon,
-                          )
-                        : null,
-                  ),
+                  leading: check(theme[AppCommands.themeId(s)]!),
+                ),
+              const NotedMenuHeading('Toolbar'),
+              for (final s in ToolbarStyle.values)
+                NotedMenuItem<String>(
+                  key: ValueKey('toolbar-${s.value}'),
+                  value: AppCommands.toolbarId(s),
+                  label: toolbar[AppCommands.toolbarId(s)]!.label,
+                  leading: check(toolbar[AppCommands.toolbarId(s)]!),
                 ),
               if (canPick) ...[
                 const NotedMenuHeading('Default page folder'),

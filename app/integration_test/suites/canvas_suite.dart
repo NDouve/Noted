@@ -18,14 +18,14 @@ const _select = 'canvas.select';
 const _pen = 'noted.drawing.pen';
 const _eraser = 'noted.drawing.eraser';
 
-Command _cmd(WidgetTester t, String id) => t.widget<ToolbarEntry>(find.byKey(ValueKey(id))).command;
+Command _cmd(WidgetTester t, String id) => canvasState(t).commands[id]!;
 
 bool _checked(WidgetTester t, String id) => _cmd(t, id).checked ?? false;
 
 String? _activeTool(Session s) => s.nb.tools.active?.id;
 
 Future<void> _tapTool(Session s, String id) async {
-  await s.tester.tap(find.byKey(ValueKey(id)));
+  await s.tester.tap(await toolbarButton(s.tester, id));
   await s.pump(150);
 }
 
@@ -164,6 +164,7 @@ void canvasSuite() {
         final purple = PenSettings.colors[4];
         expect(Color(purple), DesignColors.light.inkPurple);
         expect(displayInkColor(purple, Brightness.dark), isNot(Color(purple)));
+        await toolbarButton(t, 'noted.drawing.color.4');
         final swatch = t.widget<ToolbarEntry>(find.byKey(const ValueKey('noted.drawing.color.4'))).command.iconBuilder!(
           t.element(find.byKey(const ValueKey('noted.drawing.color.4'))),
           false,
@@ -187,10 +188,10 @@ void canvasSuite() {
         await putNote(s, 'edit me');
         int count() => s.nb.current!.page.nodes.whereType<BoxRecord>().length;
         expect(count(), 1);
-        await t.tap(find.byKey(const ValueKey('canvas.undo')));
+        await t.tap(await toolbarButton(t, 'canvas.undo'));
         await s.pump(300);
         expect(count(), 0);
-        await t.tap(find.byKey(const ValueKey('canvas.redo')));
+        await t.tap(await toolbarButton(t, 'canvas.redo'));
         await s.pump(300);
         expect(count(), 1);
         // 151: inside a note, Insert table puts a table at the caret.
@@ -198,11 +199,11 @@ void canvasSuite() {
         await editNote(s, id);
         expect(_cmd(t, 'noted.note.insertTable').enabled, isTrue);
         expect(_cmd(t, 'noted.note.insertEquation').enabled, isTrue);
-        await t.tap(find.byKey(const ValueKey('noted.note.insertTable')));
+        await t.tap(await toolbarButton(t, 'noted.note.insertTable'));
         await s.pump(600);
         expect(editorState(t).document.root.children.any((n) => n.type == 'table'), isTrue);
         // 152: Insert equation opens the dialog.
-        await t.tap(find.byKey(const ValueKey('noted.note.insertEquation')));
+        await t.tap(await toolbarButton(t, 'noted.note.insertEquation'));
         await s.pump(600);
         expect(find.byKey(const ValueKey('math-source')), findsOneWidget);
         await t.tap(find.text('Cancel'));
@@ -217,19 +218,19 @@ void canvasSuite() {
         }
         await s.pump(500);
         // 154: Fit all brings all boxes into view.
-        await t.tap(find.byKey(const ValueKey('canvas.fitAll')));
+        await t.tap(await toolbarButton(t, 'canvas.fitAll'));
         await s.pump(500);
         final size = t.getSize(find.byType(PageCanvas));
-        final viewport = Size(size.width, size.height - CommandToolbar.height);
+        final viewport = Size(size.width, size.height - toolbarHeight(t));
         final visible = canvasState(t).view!.visible(viewport);
         for (final b in s.nb.current!.page.nodes.whereType<BoxRecord>()) {
           expect(visible.contains(b.bounds.rect.topLeft), isTrue, reason: 'box ${b.id} in view');
         }
         // 155: the zoom readout returns to 100%.
-        await t.tap(find.byKey(const ValueKey('canvas.zoomReset')));
+        await t.tap(await toolbarButton(t, 'canvas.zoomReset'));
         await s.pump(400);
         expect(canvasState(t).view!.scale, closeTo(1, 1e-9));
-        await t.tap(find.byKey(const ValueKey('canvas.fitAll')));
+        await t.tap(await toolbarButton(t, 'canvas.fitAll'));
         await s.pump(400);
 
         final wheelPointer = TestPointer(1, PointerDeviceKind.mouse);
@@ -248,7 +249,7 @@ void canvasSuite() {
         }
 
         for (final local in [const Offset(20, 20), Offset(viewport.width - 20, viewport.height - 20), Offset(viewport.width / 2, viewport.height / 2)]) {
-          await t.tap(find.byKey(const ValueKey('canvas.fitAll')));
+          await t.tap(await toolbarButton(t, 'canvas.fitAll'));
           await s.pump(300);
           for (var i = 0; i < 5; i++) {
             await wheel(local, -60);
@@ -260,7 +261,7 @@ void canvasSuite() {
 
         // 198-199: Ctrl+= zooms around the mouse over a box, and around the
         // centre when the mouse is on the sidebar.
-        await t.tap(find.byKey(const ValueKey('canvas.fitAll')));
+        await t.tap(await toolbarButton(t, 'canvas.fitAll'));
         await s.pump(300);
         final local = const Offset(300, 200);
         await hoverAt(viewportPoint(t, local));
@@ -271,7 +272,7 @@ void canvasSuite() {
         await s.pump(300);
         expect(canvasState(t).view!.scale, greaterThan(before));
         expect((canvasState(t).view!.toScreen(world) - local).distance, lessThan(1.5), reason: 'around the mouse');
-        await t.tap(find.byKey(const ValueKey('canvas.fitAll')));
+        await t.tap(await toolbarButton(t, 'canvas.fitAll'));
         await s.pump(300);
         await hoverAt(const Offset(100, 300)); // on the sidebar
         await s.pump(100);
@@ -311,12 +312,12 @@ void canvasSuite() {
         await s.pump(300);
         expect(s.nb.current!.page.meta.background, PageBackground.dots);
         // 173-174: from the toolbar dropdown.
-        await t.tap(find.byKey(const ValueKey('canvas.pageBackground')));
+        await t.tap(await toolbarButton(t, 'canvas.pageBackground'));
         await s.pump(500);
         await t.tap(find.textContaining('Graph').last);
         await s.pump(400);
         expect(s.nb.current!.page.meta.background, PageBackground.graph);
-        await t.tap(find.byKey(const ValueKey('canvas.pageBackground')));
+        await t.tap(await toolbarButton(t, 'canvas.pageBackground'));
         await s.pump(500);
         await t.tap(find.textContaining('Ruled').last);
         await s.pump(400);
@@ -386,8 +387,10 @@ void canvasSuite() {
           expect(contrastRatio(scheme.primary, surface), greaterThanOrEqualTo(3.0), reason: '$theme accent');
           final colors = NotedColors.forBrightness(theme == 'dark' ? Brightness.dark : Brightness.light);
           expect(contrastRatio(colors.inkDefault, theme == 'dark' ? DesignColors.dark.bgCanvas : DesignColors.light.bgCanvas), greaterThanOrEqualTo(7));
-          // The toolbar is 52px tall.
-          expect(t.getSize(find.byType(CommandToolbar)).height, 52);
+          // Tabs: the row of tabs (a control and space-1; controls grow
+          // after touch input) above the 52px bar.
+          final m = NotedMetrics.of(t.element(find.byType(CommandToolbar)));
+          expect(toolbarHeight(t), m.controlSize + m.space1 + 52);
         }
       });
     });
