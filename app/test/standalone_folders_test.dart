@@ -11,6 +11,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/real_io.dart';
 
 void main() {
   late Directory root;
@@ -239,7 +240,7 @@ void main() {
     Future<void> settle(WidgetTester tester) async {
       for (var i = 0; i < 6; i++) {
         await tester.pump(const Duration(milliseconds: 300));
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.runAsync(() => realIoPause(50));
       }
       await tester.pumpAndSettle();
     }
@@ -262,7 +263,7 @@ void main() {
       await tester.pumpWidget(const SizedBox());
       for (var i = 0; i < 4; i++) {
         await tester.pump(const Duration(milliseconds: 100));
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+        await tester.runAsync(() => realIoPause(30));
       }
       await tester.runAsync(tearDownDirs);
     }
@@ -270,7 +271,7 @@ void main() {
     Future<void> until(WidgetTester tester, bool Function() done) async {
       for (var i = 0; i < 100 && !done(); i++) {
         await tester.pump(const Duration(milliseconds: 50));
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+        await tester.runAsync(() => realIoPause(30));
       }
       await settle(tester);
     }

@@ -13,6 +13,7 @@ import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/real_io.dart';
 
 /// A store whose writes always fail, to test that a failed move keeps the
 /// sources.
@@ -356,14 +357,14 @@ void main() {
     Future<void> settle(WidgetTester tester) async {
       for (var i = 0; i < 6; i++) {
         await tester.pump(const Duration(milliseconds: 300));
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 40)));
+        await tester.runAsync(() => realIoPause(40));
       }
     }
 
     Future<void> until(WidgetTester tester, bool Function() done) async {
       for (var i = 0; i < 100 && !done(); i++) {
         await tester.pump(const Duration(milliseconds: 50));
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+        await tester.runAsync(() => realIoPause(30));
       }
       await settle(tester);
     }
@@ -386,7 +387,7 @@ void main() {
       // Saves started from the widgets hop between the test clock and real IO.
       for (var i = 0; i < 25; i++) {
         await tester.pump(const Duration(milliseconds: 100));
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+        await tester.runAsync(() => realIoPause(30));
       }
       await tester.runAsync(cleanup);
     }

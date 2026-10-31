@@ -13,6 +13,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_tree_view.dart';
 import 'package:noted_canvas/noted_canvas.dart' show NotedMenuItem, notedThemeData;
 import 'package:noted_core/noted_core.dart';
+import 'support/real_io.dart';
 
 void main() {
   late Directory dir;
@@ -27,7 +28,7 @@ void main() {
   Future<void> settle(WidgetTester tester) async {
     for (var i = 0; i < 8; i++) {
       await tester.pump(const Duration(milliseconds: 400));
-      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.runAsync(() => realIoPause(50));
     }
     await tester.pumpAndSettle();
   }
@@ -37,7 +38,7 @@ void main() {
   Future<void> until(WidgetTester tester, bool Function() done) async {
     for (var i = 0; i < 300 && !done(); i++) {
       await tester.pump(const Duration(milliseconds: 50));
-      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+      await tester.runAsync(() => realIoPause(30));
     }
     await settle(tester);
   }

@@ -60,8 +60,24 @@ void main() {
     }
   }
 
-  void takeAway() => folder.renameSync(away.path);
-  void bringBack() => away.renameSync(folder.path);
+  // Windows refuses to rename a folder while a file in it is open, which
+  // happens for a moment when the notebook reads it. Retry, as a sync client
+  // moving the folder would.
+  Future<void> rename(Directory from, String to) async {
+    final end = DateTime.now().add(const Duration(seconds: 5));
+    while (true) {
+      try {
+        from.renameSync(to);
+        return;
+      } on FileSystemException {
+        if (DateTime.now().isAfter(end)) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    }
+  }
+
+  Future<void> takeAway() => rename(folder, away.path);
+  Future<void> bringBack() => rename(away, folder.path);
 
   // A binder with a page and a subpage; the page is open and has a box.
   Future<({Notebook nb, BinderSection s, String page, String sub})> setUpBinder() async {
@@ -80,7 +96,7 @@ void main() {
     final d = await setUpBinder();
     final nb = d.nb;
     final s = d.s;
-    takeAway();
+    await takeAway();
     await until(() => s.missing);
 
     expect(s.status, BinderStatus.unavailable);
@@ -111,9 +127,9 @@ void main() {
   test('restored: editable again, watcher and cover work', () async {
     final d = await setUpBinder();
     final nb = d.nb;
-    takeAway();
+    await takeAway();
     await until(() => d.s.missing);
-    bringBack();
+    await bringBack();
     await until(() => nb.binders.single.available);
     final back = nb.binders.single;
     expect(back.missing, isFalse);
@@ -143,9 +159,9 @@ void main() {
   test('a change made elsewhere while away is merged into the open page', () async {
     final d = await setUpBinder();
     final nb = d.nb;
-    takeAway();
+    await takeAway();
     await until(() => d.s.missing);
-    bringBack();
+    await bringBack();
     final second = make(watch: false);
     await second.load();
     await second.open(d.page);
@@ -164,7 +180,7 @@ void main() {
     await first.flush();
     first.dispose();
     opened.clear();
-    takeAway();
+    await takeAway();
 
     final nb = make();
     await nb.load();
@@ -174,7 +190,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 300));
     expect(folder.existsSync(), isFalse);
 
-    bringBack();
+    await bringBack();
     await until(() => nb.binders.single.available);
     expect(nb.binders.single.tree[p], isNotNull);
     await nb.open(p);
@@ -190,24 +206,24 @@ void main() {
     binderFile().writeAsStringSync('{ not json');
     await nb.checkBinderFile(binderFile().path);
     expect(nb.binders.single.status, BinderStatus.unreadable);
-    takeAway();
-    await until(() => nb.binders.single.missing);
+    await takeAway();
+    await until(() => nb.binders.single.missing && nb.binders.single.status == BinderStatus.unavailable);
     expect(nb.binders.single.status, BinderStatus.unavailable);
     expect(nb.isReadOnlyPage(d.page), isTrue);
 
     // Back, still damaged: the damaged state.
-    bringBack();
-    await until(() => !nb.binders.single.missing);
+    await bringBack();
+    await until(() => !nb.binders.single.missing && nb.binders.single.status == BinderStatus.unreadable && nb.current!.readOnly);
     expect(nb.binders.single.status, BinderStatus.unreadable);
     expect(nb.current!.readOnly, isTrue);
     expect(binderFile().readAsStringSync(), '{ not json');
 
-    takeAway();
-    await until(() => nb.binders.single.missing);
+    await takeAway();
+    await until(() => nb.binders.single.missing && nb.binders.single.status == BinderStatus.unavailable);
     // Back with a good file.
     File('${away.path}/$binderFileName').writeAsStringSync(good);
-    bringBack();
-    await until(() => nb.binders.single.available);
+    await bringBack();
+    await until(() => nb.binders.single.available && !nb.current!.readOnly && !nb.isReadOnlyPage(d.page));
     expect(nb.current!.readOnly, isFalse);
     expect(nb.isReadOnlyPage(d.page), isFalse);
   });
@@ -216,7 +232,7 @@ void main() {
     final d = await setUpBinder();
     final nb = d.nb;
     final standalone = nb.tree.roots.first.id;
-    takeAway();
+    await takeAway();
     await until(() => d.s.missing);
     await expectLater(
       nb.moveToLocation(standalone, binderPath: d.s.path),
@@ -234,7 +250,7 @@ void main() {
     late ({Notebook nb, BinderSection s, String page, String sub}) d;
     await tester.runAsync(() async {
       d = await setUpBinder();
-      takeAway();
+      await takeAway();
       await d.nb.checkFolders();
     });
     await tester.pumpWidget(MaterialApp(home: Home(notebook: d.nb)));

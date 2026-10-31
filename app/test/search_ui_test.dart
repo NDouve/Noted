@@ -14,6 +14,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/real_io.dart';
 
 const _codec = NoteCodec();
 
@@ -70,14 +71,14 @@ void main() {
   Future<void> settle(WidgetTester t) async {
     for (var i = 0; i < 6; i++) {
       await t.pump(const Duration(milliseconds: 100));
-      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+      await t.runAsync(() => realIoPause(30));
     }
   }
 
   Future<void> until(WidgetTester t, bool Function() done) async {
     for (var i = 0; i < 100 && !done(); i++) {
       await t.pump(const Duration(milliseconds: 50));
-      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+      await t.runAsync(() => realIoPause(30));
     }
     await t.pump(const Duration(milliseconds: 50));
   }

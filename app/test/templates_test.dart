@@ -10,6 +10,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/real_io.dart';
 
 Map<String, Object?> doc(String text) => {
   'document': {
@@ -314,14 +315,14 @@ void main() {
     Future<void> settle(WidgetTester tester) async {
       for (var i = 0; i < 10; i++) {
         await tester.pump(const Duration(milliseconds: 100));
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.runAsync(() => realIoPause(50));
       }
       await tester.pumpAndSettle();
     }
 
     Future<void> untilCount(WidgetTester tester, Directory d, int n) async {
       for (var i = 0; i < 60 && tplFiles(d).length != n; i++) {
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.runAsync(() => realIoPause(50));
         await tester.pump(const Duration(milliseconds: 50));
       }
       expect(tplFiles(d), hasLength(n));
@@ -329,7 +330,7 @@ void main() {
 
     Future<void> untilFound(WidgetTester tester, Finder f) async {
       for (var i = 0; i < 40 && f.evaluate().isEmpty; i++) {
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.runAsync(() => realIoPause(50));
         await tester.pump(const Duration(milliseconds: 50));
       }
       expect(f, findsOneWidget);
@@ -354,14 +355,14 @@ void main() {
       await tester.pumpWidget(const SizedBox());
       for (var i = 0; i < 4; i++) {
         await tester.pump(const Duration(milliseconds: 100));
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+        await tester.runAsync(() => realIoPause(30));
       }
       await tester.runAsync(tearDownDirs);
     }
 
     Future<void> tapWhenFound(WidgetTester tester, Finder f) async {
       for (var i = 0; i < 60 && f.evaluate().isEmpty; i++) {
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.runAsync(() => realIoPause(50));
         await tester.pump(const Duration(milliseconds: 50));
       }
       await tester.runAsync(() => tester.tap(f));
@@ -420,7 +421,7 @@ void main() {
       await tester.pump();
       await tapAsync(tester, find.text('Save'));
       for (var i = 0; i < 40 && tplFiles(appTemplates()).length < 2; i++) {
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.runAsync(() => realIoPause(50));
         await tester.pump(const Duration(milliseconds: 50));
       }
       expect(tplFiles(appTemplates()), hasLength(2));
@@ -503,7 +504,7 @@ void main() {
         await tapAsync(tester, find.text('New binder from template…'));
         await tapWhenFound(tester, find.descendant(of: find.byType(AlertDialog), matching: find.text('Work')));
         for (var i = 0; i < 60 && nb.binders.length < expected; i++) {
-          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+          await tester.runAsync(() => realIoPause(50));
           await tester.pump(const Duration(milliseconds: 50));
         }
         await settle(tester);
