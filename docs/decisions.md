@@ -273,7 +273,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0028 — AI read scope per page
 - **Date:** 2026-10-24
-- **Status:** Active
+- **Status:** Active; the setting implemented by 0100, reading by the MCP server by 0101
 - **Decision:**
   - Each page's AI setting is one of:
     - **Off:** no AI boxes, and the page is invisible to MCP.
@@ -1341,7 +1341,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0098 — Image and file boxes, and where their files are stored
 - **Date:** 2026-10-31
-- **Status:** Active (page format change approved by the maintainer; Box API 0.7)
+- **Status:** Active (page format change approved by the maintainer; Box API 0.7 and the attachments package approved retroactively); amended by 0102 (Delete, alt text below the picture)
 - **Decision:**
   - **Setting "Store images and files":** on pages and binders, either *In a folder beside the page* (the default) or *In the page file*.
     - It is stored as `"attachments":"folder"|"embedded"` in the page header's `noted` object or in the binder file. An absent value means the page follows its parent.
@@ -1393,6 +1393,67 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Ctrl+click** (Cmd+click on macOS) on a link opens it with the system's browser or default app, both in the editor and in the light view (0092).
 - **Rationale:** Links are common in notes. One dialog covers insert, edit and remove, and uses the storage the editor already has.
 - **Alternatives considered:** appflowy's own link menu (a separate overlay with its own styling); opening links on a plain click (it would move the caret instead of letting the user edit the link text).
+
+## 0100 — The page AI setting
+- **Date:** 2026-11-01
+- **Status:** Active (first entry of the AI phase; implements the setting of 0028)
+- **Decision:**
+  - **Values:** each page has an AI setting:
+    - **Off:** invisible to AI.
+    - **Box only:** listed, but an AI reads only its own boxes there.
+    - **Whole page:** every box can be read.
+  - **Storage:** `"ai":"off"|"box"|"page"` in the page header's `noted` object, and the same key in a binder file. An absent value means the page follows its parent. An unknown value is kept as written and read the same way as an absent one.
+  - **Inheritance (0027):** the page's own choice, else the nearest parent page's, else its binder's, else **Off**, the app-wide default.
+  - **Where it shows:** the page menu has an *AI access* section: *Same as parent (…)*, which shows the value it inherits, then Off, Box only and Whole page. The binder menu has the same section, headed by *App default (Off)*.
+  - **Code:** `AiSetting`, `effectiveAiSetting` and the header and binder accessors are in noted_core (`src/ai/ai_setting.dart`).
+- **Rationale:** AI access has to be chosen per page and default to nothing. Inheriting it like the other settings lets a whole binder or subtree be opened, or kept closed, with one choice.
+- **Alternatives considered:** a default of Box only (it would list every page's title to any connected AI without the user choosing it); an app-wide switch only (too coarse for notebooks that mix private and shared pages).
+
+## 0101 — Read-only MCP server
+- **Date:** 2026-11-01
+- **Status:** Active (AI phase; implements reading for 0028 and invariant 4)
+- **Decision:**
+  - **Program:** `packages/noted_mcp`, a separate pure-Dart executable (`noted_mcp.exe`) speaking MCP over stdio with the Dart team's `dart_mcp` (BSD-3-Clause, approved by the maintainer).
+  - **Reads:** saved page and binder files only, from the folders the app lists in `%APPDATA%\Noted`:
+    - the default `pages` folder;
+    - `settings.json`'s default page folder;
+    - `binders.json`'s standalone folders and binders.
+  - Every call reads the files afresh. It never writes, never creates a folder, and never uses anything from a running app's screen or memory.
+  - **Tools:**
+    - `list_pages`: id, title, parent, AI setting and folder or binder. The parent is the nearest visible ancestor, so a hidden page in between isn't revealed.
+    - `read_page`: markdown. The title, then each box in reading order (top to bottom, then left to right) with its type. Notes are written as markdown, including headings, styles, lists, check lists, links, equations and tables, with a formula cell showing its value. Drawings are `[drawing]`, images `[image: alt]`, files `[file: name]`.
+    - `read_box`: one box as `read_page` shows it.
+    - `search`: titles, plus the text of Whole page pages, with core search matching and snippets.
+  - **Enforced on every call:**
+    - Off pages are invisible in every tool. Asking for one gets the same answer as for a missing page, and a `noted:` link to one keeps only its text.
+    - Box only pages are listed and their titles searchable, but no box content is returned.
+    - Whole page pages are readable in full.
+    - Encrypted boxes (an encrypted type, or a header that says so) and boxes of unknown types are always a placeholder, never their data or stored snapshot.
+    - Binders whose file is unreadable or marked locked or encrypted are left out whole.
+  - **No key access, no decryption code (invariant 4):**
+    - The server imports only `noted_core_read.dart`, the read-only part of the core (model, format, binder, tree, search, AI setting), and `dart_mcp`.
+    - A test walks its whole import graph. It fails on any Flutter, crypto, key or encryption library, on `dart:ffi`, on any other Noted library, and on any dependency besides `dart_mcp` and `noted_core`.
+  - **Hookup:**
+    - `noted_mcp.exe` is compiled into the release folder and the zip.
+    - `app/scripts/register-mcp.ps1` registers it with Claude Code (`claude mcp add noted -s user`) and prints the Claude desktop `mcpServers` entry.
+    - `docs/mcp.md` documents both.
+- **Rationale:** A separate, read-only process that knows only saved files can't leak live edits, keys or decrypted content, and enforcing the AI setting on every call keeps the page owner in control.
+- **Alternatives considered:**
+  - A minimal JSON-RPC implementation written in-house: no dependency, but the protocol would be kept up to date by hand.
+  - Serving from the running app: it would break invariant 4 and expose live screen state.
+  - Using the stored text snapshot of unsupported boxes: it is the module's own text, but the maintainer requires a placeholder for anything the server can't vouch for.
+
+## 0102 — Image and file boxes: Delete, and the alt text below the picture
+- **Date:** 2026-11-01
+- **Status:** Active (amends 0098; Box API 0.8, approved by the maintainer)
+- **Decision:**
+  - **Selecting:** a click on a box's content that doesn't move the focus into it selects the box, as a click on its grip does. This applies to an image, a file and a drawing. The canvas checks two frames after the click, so content that takes the focus (a note opening its editor) keeps it. A click inside a box that is being edited, or one that opens a menu, never selects.
+  - **Deleting:** Delete or Backspace removes the selected image or file box through the canvas's Delete command, and undo brings it back. Typing in the alt-text field doesn't delete the box.
+  - **Alt text:** the field is a strip below the picture (28 page units) and never covers it. A new image box is the picture's size plus that strip. The picture is fitted inside its area without distortion.
+  - **Box API 0.8:** `BoxModule.aspectRatioExtraHeight` (default 0) is a fixed height below the part that keeps `aspectRatio`. While resizing, the canvas keeps `height − extra = width / aspectRatio`, so the picture keeps its shape and the strip its height.
+  - **Approvals:** the maintainer approved Box API 0.7 and `packages/boxes/attachments` retroactively, and requires asking before any further Box API change or new package, even an additive one.
+- **Rationale:** Images and files should be deleted like any selected box. A caption over the picture hid part of it.
+- **Alternatives considered:** letterboxing the picture inside a box that keeps its overall shape (no API change, but resizing could leave empty bands); a delete hook in the Box API (unneeded once a click selects the box).
 
 ---
 

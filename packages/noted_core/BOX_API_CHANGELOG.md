@@ -11,7 +11,7 @@ Versions are listed newest first.
 ## 0.8 — 2026-11-01
 - `BoxModule.aspectRatioExtraHeight` (default 0): a fixed height below the part that keeps `aspectRatio`, such as the image box's alt-text strip. While resizing, the canvas keeps `height - extra = width / aspectRatio`.
 - Not part of the API but visible to modules: a click on a box's content that doesn't move the focus into it (an image, a file, a drawing) now selects the box, as a click on its grip does, so Delete and Backspace remove it.
-- Additive. Approved by the maintainer; decision 0103.
+- Additive. Approved by the maintainer; decision 0102.
 
 ## 0.7 — 2026-10-31
 - `AttachmentStore` (noted_canvas): the open page's images and files. `put` stores bytes embedded or in the page's assets folder (`<page id>.assets/<content hash>.<ext>`) as the page's "Store images and files" setting says, with files over `embedLimitBytes` (5 MB) always in the folder; `read`, `exists`, `changes` (files arriving from sync), `cacheDirectory` (never synced), `notify`, `open` (default app) and `pick` (file dialog).
