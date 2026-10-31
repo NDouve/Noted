@@ -23,7 +23,9 @@
 //   applying the editor transaction to the end of the frame that shows it
 //   (the build and layout side, on the UI thread), plus the build and raster
 //   time of those frames; each keystroke over 50 ms is listed with the number
-//   of note editors in the tree and whether one was mounted just before it;
+//   of note editors in the tree, whether one was mounted just before it,
+//   and, since the keystroke before, whether the note's height changed and
+//   whether the canvas rebuilt the other boxes;
 // * panning (mouse wheel) and zooming (Ctrl + wheel): build and raster time of
 //   every frame (`FrameTiming`), as average, 90th and 99th percentile, worst,
 //   and the number of frames over 16 ms.
@@ -258,16 +260,28 @@ void main() {
       // Every keystroke over 50 ms, with the number of note editors in the
       // tree before and after it, and whether an editor was mounted since
       // the keystroke before (the first keystroke counts the one editNote
-      // mounted). Counted outside the timed part.
+      // mounted). Also, since the previous keystroke's frame: whether the
+      // note's height changed, and whether the canvas rebuilt the other boxes
+      // (another box's BoxHost widget is a new instance); a box grows after
+      // its frame (requestBounds), so the canvas rebuilds in a frame between
+      // keystrokes. `canvasRebuiltInFrame` is a rebuild in this keystroke's
+      // own frame. Counted outside the timed part.
       final slow = <Map<String, Object>>[];
       var editors = _editorCount();
       var mounted = true;
+      var heightChanges = 0;
+      var hostRebuilds = 0;
+      final other = find.byKey(ValueKey(firstPlain.last));
+      double targetHeight() => s.nb.current!.page.node(target)!.bounds!.height;
+      var lastHeight = targetHeight();
+      var lastHost = t.widget(other);
       late _Frames typing;
       await binding.watchPerformance(() async {
         typing = await _watch(() async {
           for (var k = 0; k < _keystrokes; k++) {
             final node = editor.document.root.children.first;
             final at = (node.delta.toPlainText() as String).length;
+            final hostAtStart = t.widget(other);
             final w = Stopwatch()..start();
             await insertTextAt(editor, node, at, String.fromCharCode(97 + k % 26));
             applyTimes.add(w.elapsedMicroseconds / 1000);
@@ -276,6 +290,12 @@ void main() {
             final ms = w.elapsedMicroseconds / 1000;
             latencies.add(ms);
             final now = _editorCount();
+            final height = targetHeight();
+            final host = t.widget(other);
+            final grew = height != lastHeight;
+            final rebuilt = !identical(host, lastHost);
+            if (grew) heightChanges++;
+            if (rebuilt) hostRebuilds++;
             if (ms > 50) {
               slow.add({
                 'keystroke': k,
@@ -283,10 +303,16 @@ void main() {
                 'editorsBefore': editors,
                 'editorsAfter': now,
                 'firstAfterMount': mounted,
+                'heightBefore': lastHeight,
+                'heightAfter': height,
+                'canvasRebuilt': rebuilt,
+                'canvasRebuiltInFrame': !identical(host, hostAtStart),
               });
             }
             mounted = now > editors;
             editors = now;
+            lastHeight = height;
+            lastHost = host;
             await Future<void>.delayed(const Duration(milliseconds: 60));
           }
         });
@@ -300,6 +326,11 @@ void main() {
         'keystrokeToFrameMs': _stats(latencies),
         'applyTransactionMs': _stats(applyTimes),
         'slowKeystrokes': slow,
+        // Keystrokes after which the note's height had changed, and those
+        // after which the other boxes' widgets had been rebuilt (each since
+        // the keystroke before).
+        'heightChanges': heightChanges,
+        'canvasRebuilds': hostRebuilds,
         'frames': _frameStats(typing),
         'buildMsPerFrame': [for (final b in typing.build) (b * 10).round() / 10],
         'saveAfterTypingMs': _ms(flush),
