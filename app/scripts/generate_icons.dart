@@ -13,9 +13,10 @@
 // The SVG is rasterized here directly (no image package, no new
 // dependency): each pixel is sampled on a grid and the shapes are composited
 // in document order, which is exact anti-aliasing for the shapes the master
-// uses (straight-line paths and circles, round joins and caps). Sizes of 32
-// px and below are drawn from a pixel-fitted variant (see [_fitted]) so they
-// stay sharp instead of being a blurred reduction of the large icon.
+// uses (straight-line paths and circles, round joins and caps, solid colors
+// and two-stop linear gradients). Sizes of 32 px and below are drawn from a
+// pixel-fitted variant (see [_fitted]) so they stay sharp instead of being a
+// blurred reduction of the large icon.
 
 import 'dart:io';
 import 'dart:math' as math;
@@ -123,7 +124,7 @@ void main(List<String> args) {
   // sharpness by eye.
   if (args.contains('--preview')) {
     final dir = args[args.indexOf('--preview') + 1];
-    for (final s in [16, 24, 32, 48]) {
+    for (final s in [16, 20, 24, 32, 48]) {
       _write(
         '$dir/preview-$s.png',
         encodePng(enlarge(render(svg, s), 256 ~/ s)),
@@ -140,7 +141,71 @@ void _write(String path, Uint8List bytes) {
 
 // ---------------------------------------------------------------------------
 // SVG subset: a viewBox, <path> with absolute M/L/H/V/Z, <circle>; fill,
-// stroke, stroke-width, round joins and caps.
+// stroke, stroke-width, round joins and caps; paints that are a #rrggbb color
+// or url(#id) of a <linearGradient> with gradientUnits="userSpaceOnUse" and
+// two stops.
+
+/// A fill or stroke paint: a solid color, or a linear gradient between two
+/// stops, padded beyond them (SVG's default spreadMethod).
+final class Paint {
+  const Paint.solid(int color) : this._(color, color, 0, 1, null, null);
+
+  const Paint.linear({
+    required math.Point<double> start,
+    required math.Point<double> end,
+    required int from,
+    required int to,
+    double fromOffset = 0,
+    double toOffset = 1,
+  }) : this._(from, to, fromOffset, toOffset, start, end);
+
+  const Paint._(
+    this.from,
+    this.to,
+    this.fromOffset,
+    this.toOffset,
+    this.start,
+    this.end,
+  );
+
+  /// The stop colors (opaque ARGB) and their offsets along the gradient.
+  final int from, to;
+  final double fromOffset, toOffset;
+
+  /// The gradient vector, in the same units as the shapes; null for a solid
+  /// color.
+  final math.Point<double>? start, end;
+
+  /// The color at (x, y): the stops interpolated per channel in sRGB.
+  int at(double x, double y) {
+    final a = start, b = end;
+    if (a == null || b == null) return from;
+    final dx = b.x - a.x, dy = b.y - a.y;
+    final len2 = dx * dx + dy * dy;
+    final g = len2 == 0 ? 0.0 : ((x - a.x) * dx + (y - a.y) * dy) / len2;
+    final span = toOffset - fromOffset;
+    final t = span <= 0
+        ? (g < toOffset ? 0.0 : 1.0)
+        : ((g - fromOffset) / span).clamp(0.0, 1.0);
+    int channel(int shift) {
+      final c0 = (from >> shift) & 0xFF, c1 = (to >> shift) & 0xFF;
+      return (c0 + (c1 - c0) * t).round();
+    }
+
+    return 0xFF000000 | channel(16) << 16 | channel(8) << 8 | channel(0);
+  }
+
+  Paint transformed(math.Point<double> Function(math.Point<double>) f) {
+    final a = start, b = end;
+    if (a == null || b == null) return this;
+    return Paint._(from, to, fromOffset, toOffset, f(a), f(b));
+  }
+}
+
+Map<String, String> _attributes(String text) => {
+  for (final a in RegExp(r'([\w-]+)="([^"]*)"').allMatches(text))
+    a.group(1)!: a.group(2)!,
+};
 
 final class Shape {
   Shape({
@@ -158,10 +223,12 @@ final class Shape {
 
   /// (centre, radius) for a circle.
   final (math.Point<double>, double)? circle;
-  final int? fill;
-  final int? stroke;
+  final Paint? fill;
+  final Paint? stroke;
   final double strokeWidth;
 
+  /// This shape moved by [f], which scales lengths by [s]. Gradients move
+  /// with it.
   Shape transformed(
     math.Point<double> Function(math.Point<double>) f,
     double s,
@@ -171,8 +238,8 @@ final class Shape {
     ],
     closed: closed,
     circle: circle == null ? null : (f(circle!.$1), circle!.$2 * s),
-    fill: fill,
-    stroke: stroke,
+    fill: fill?.transformed(f),
+    stroke: stroke?.transformed(f),
     strokeWidth: strokeWidth * s,
   );
 }
@@ -190,19 +257,72 @@ final class Svg {
         .split(RegExp(r'[\s,]+'))
         .map(double.parse)
         .toList();
+    int hex(String v) {
+      if (!RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(v)) {
+        throw FormatException('unsupported color $v');
+      }
+      return 0xFF000000 | int.parse(v.substring(1), radix: 16);
+    }
+
+    final gradients = <String, Paint>{};
+    for (final m in RegExp(
+      r'<linearGradient\b([^>]*)>(.*?)</linearGradient>',
+      dotAll: true,
+    ).allMatches(text)) {
+      final attrs = _attributes(m.group(1)!);
+      final id = attrs['id'];
+      if (id == null) continue;
+      if (attrs['gradientUnits'] != 'userSpaceOnUse') {
+        throw FormatException('gradient $id: only userSpaceOnUse is supported');
+      }
+      for (final k in ['gradientTransform', 'href', 'xlink:href']) {
+        if (attrs.containsKey(k)) throw FormatException('gradient $id: $k');
+      }
+      if ((attrs['spreadMethod'] ?? 'pad') != 'pad') {
+        throw FormatException('gradient $id: spreadMethod');
+      }
+      final stops = [
+        for (final s in RegExp(r'<stop\b([^>]*)/?>').allMatches(m.group(2)!))
+          _attributes(s.group(1)!),
+      ];
+      if (stops.length != 2) {
+        throw FormatException('gradient $id: ${stops.length} stops, not 2');
+      }
+      double offset(Map<String, String> stop) {
+        final v = stop['offset'] ?? '0';
+        return v.endsWith('%')
+            ? double.parse(v.substring(0, v.length - 1)) / 100
+            : double.parse(v);
+      }
+
+      for (final s in stops) {
+        if (s.containsKey('stop-opacity') || s.containsKey('style')) {
+          throw FormatException('gradient $id: stop-opacity or style');
+        }
+      }
+      double coord(String k) => double.parse(attrs[k]!);
+      gradients[id] = Paint.linear(
+        start: math.Point(coord('x1'), coord('y1')),
+        end: math.Point(coord('x2'), coord('y2')),
+        from: hex(stops[0]['stop-color']!),
+        to: hex(stops[1]['stop-color']!),
+        fromOffset: offset(stops[0]),
+        toOffset: math.max(offset(stops[0]), offset(stops[1])),
+      );
+    }
+
     final shapes = <Shape>[];
     for (final m in RegExp(r'<(path|circle)\b([^>]*)/?>').allMatches(text)) {
       final tag = m.group(1)!;
-      final attrs = {
-        for (final a in RegExp(r'([\w-]+)="([^"]*)"').allMatches(m.group(2)!))
-          a.group(1)!: a.group(2)!,
-      };
-      int? color(String? v) {
+      final attrs = _attributes(m.group(2)!);
+      Paint? color(String? v) {
         if (v == null || v == 'none') return null;
-        if (!RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(v)) {
-          throw FormatException('unsupported color $v');
+        final url = RegExp(r'^url\(#([^)]+)\)$').firstMatch(v);
+        if (url != null) {
+          return gradients[url.group(1)!] ??
+              (throw FormatException('no gradient ${url.group(1)}'));
         }
-        return 0xFF000000 | int.parse(v.substring(1), radix: 16);
+        return Paint.solid(hex(v));
       }
 
       final stroke = color(attrs['stroke']);
@@ -323,17 +443,35 @@ List<Shape> _shapesAt(Svg svg, int size) {
   return size <= 32 ? _fitted(shapes, size) : shapes;
 }
 
+/// The largest size drawn with the N only ([_fitted]).
+const nOnlyMaxSize = 20;
+
 /// Pixel fitting for small sizes:
+/// - at [nOnlyMaxSize] px and below only the N is drawn (the shapes with the
+///   widest stroke), centred across the icon: the superscript d would be a
+///   smudge of one or two pixels there. From 24 px the d is kept;
 /// - every path vertex snaps so that a stroke's edges fall on pixel
 ///   boundaries (to a pixel edge for even pixel widths, a pixel centre for
-///   odd ones);
-/// - stroke widths round to whole pixels, at least 1;
-/// - unfilled details drawn thinner than 3/4 pixel (the mark on the fold) are
-///   left out, since they can only render as a smudge.
+///   odd ones), which keeps the N's stems sharp;
+/// - stroke widths round to whole pixels, at least 1.
 List<Shape> _fitted(List<Shape> shapes, int size) {
+  if (size <= nOnlyMaxSize) {
+    final widest = shapes.map((sh) => sh.strokeWidth).reduce(math.max);
+    final n = [
+      for (final sh in shapes)
+        if (sh.stroke != null && sh.strokeWidth == widest) sh,
+    ];
+    final xs = [
+      for (final sh in n)
+        for (final p in sh.subpaths) ...p.map((q) => q.x),
+    ];
+    final dx = size / 2 - (xs.reduce(math.min) + xs.reduce(math.max)) / 2;
+    shapes = [
+      for (final sh in n) sh.transformed((p) => math.Point(p.x + dx, p.y), 1),
+    ];
+  }
   final out = <Shape>[];
   for (final sh in shapes) {
-    if (sh.stroke != null && sh.fill == null && sh.strokeWidth < 0.75) continue;
     final w = sh.stroke == null
         ? 0.0
         : math.max(1, sh.strokeWidth.round()).toDouble();
@@ -346,14 +484,59 @@ List<Shape> _fitted(List<Shape> shapes, int size) {
             [for (final q in p) math.Point(snap(q.x), snap(q.y))],
         ],
         closed: sh.closed,
-        circle: sh.circle,
+        circle: switch (sh.circle) {
+          (final c, final r) => (
+            math.Point(snap(c.x), snap(c.y)),
+            math.max(1, r.round()).toDouble(),
+          ),
+          null => null,
+        },
         fill: sh.fill,
         stroke: sh.stroke,
         strokeWidth: sh.stroke == null ? sh.strokeWidth : w,
       ),
     );
   }
-  return out;
+  return _separated(out, size);
+}
+
+/// [shapes] with the thinner ones (the d) moved right by whole pixels until
+/// a clear pixel column separates them from the widest stroke (the N), as far
+/// as the icon's edge allows. At small sizes the master's gap between the
+/// two is under a pixel, so they would merge.
+List<Shape> _separated(List<Shape> shapes, int size) {
+  final widest = shapes.map((sh) => sh.strokeWidth).reduce(math.max);
+  bool isN(Shape sh) => sh.strokeWidth == widest;
+  (double, double) extent(Iterable<Shape> group) {
+    var lo = double.infinity, hi = double.negativeInfinity;
+    for (final sh in group) {
+      final half = sh.stroke == null ? 0.0 : sh.strokeWidth / 2;
+      if (sh.circle case (final c, final r)) {
+        lo = math.min(lo, c.x - r - half);
+        hi = math.max(hi, c.x + r + half);
+      }
+      for (final p in sh.subpaths) {
+        for (final q in p) {
+          lo = math.min(lo, q.x - half);
+          hi = math.max(hi, q.x + half);
+        }
+      }
+    }
+    return (lo, hi);
+  }
+
+  final d = shapes.where((sh) => !isN(sh));
+  if (d.isEmpty) return shapes;
+  final (_, nRight) = extent(shapes.where(isN));
+  final (dLeft, dRight) = extent(d);
+  var dx = 0;
+  while (dLeft + dx - nRight < 1 && dRight + dx + 1 <= size) {
+    dx++;
+  }
+  return [
+    for (final sh in shapes)
+      isN(sh) ? sh : sh.transformed((p) => math.Point(p.x + dx, p.y), 1),
+  ];
 }
 
 double _segDist(
@@ -391,24 +574,24 @@ int? _paint(Shape sh, double x, double y) {
   final half = sh.strokeWidth / 2;
   if (sh.circle case (final c, final r)) {
     final d = p.distanceTo(c);
-    if (sh.stroke != null && (d - r).abs() <= half) return sh.stroke;
-    if (sh.fill != null && d <= r) return sh.fill;
+    if (sh.stroke != null && (d - r).abs() <= half) return sh.stroke!.at(x, y);
+    if (sh.fill != null && d <= r) return sh.fill!.at(x, y);
     return null;
   }
-  if (sh.stroke != null) {
+  if (sh.stroke case final stroke?) {
     for (var k = 0; k < sh.subpaths.length; k++) {
       final pts = sh.subpaths[k];
       final n = sh.closed[k] ? pts.length : pts.length - 1;
       for (var i = 0; i < n; i++) {
         if (_segDist(p, pts[i], pts[(i + 1) % pts.length]) <= half) {
-          return sh.stroke;
+          return stroke.at(x, y);
         }
       }
     }
   }
-  if (sh.fill != null) {
+  if (sh.fill case final fill?) {
     for (final pts in sh.subpaths) {
-      if (_inside(pts, x, y)) return sh.fill;
+      if (_inside(pts, x, y)) return fill.at(x, y);
     }
   }
   return null;
