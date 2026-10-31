@@ -55,7 +55,7 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 - file-based sync with per-box conflicts (OneDrive conflict copies)
 - the recovery store
 - dark mode and the design system in `docs/design`
-- the command registry and the default toolbar
+- the command registry and two built-in toolbar layouts (Tabs and Contextual), switchable in settings
 - search (find on page and search all pages)
 
 **Out of scope until the maintainer starts the next phase:**
@@ -63,7 +63,7 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 - AI and MCP
 - integrations and Microsoft sign-in
 - conflict copies from providers other than OneDrive
-- customizable toolbars
+- customizable toolbars (user-arranged or scripted)
 - reMarkable
 
 **Dev loop:** run the app on Windows with `flutter run -d windows`. Test interactively with a mouse and keyboard. Check typing on a page crowded with boxes, editing while zoomed, dragging and resizing boxes, drawing, and sync between two machines. These are the known risk areas.
