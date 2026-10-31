@@ -1295,7 +1295,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0096 — App icon: N with a superscript d
 - **Date:** 2026-10-31
-- **Status:** Active (supersedes 0082)
+- **Status:** Active (supersedes 0082); amended 2026-10-31: at 16 and 20 px the N fills the icon less a 1 px margin
 - **Decision:**
   - **Master:** `docs/design/icon/noted-icon.svg`, with a transparent 1024 px PNG beside it: a blue N with a superscript d, all strokes with round caps and joins, painted with one two-stop linear gradient (`gradientUnits="userSpaceOnUse"`), lighter at top left. The background is transparent.
   - **Generated files:** `app/scripts/generate_icons.dart` rasterizes the SVG directly, with no new dependency. It supports solid colours and two-stop linear gradients as fill or stroke paints, interpolated in sRGB and padded beyond the stops. It writes the same files as before:
@@ -1304,13 +1304,14 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
     - the macOS `AppIcon.icns` and the Android and iOS icon sets in `app/icons/`.
     - Every size keeps the transparent background.
   - **Small sizes (32 px and below)** are fitted to the pixel grid:
-    - Stroke widths round to whole pixels, and stroke edges fall on pixel boundaries. The N's stems are whole opaque pixel columns at 16, 24 and 32 px.
-    - At 16 and 20 px only the N is drawn, centred across the icon. The d is dropped because it would be a smudge of one or two pixels.
+    - Stroke widths round to whole pixels, and stroke edges fall on pixel boundaries. The N's stems are whole opaque pixel columns at 16, 20, 24 and 32 px.
+    - At 16 and 20 px only the N is drawn. The d is dropped because it would be a smudge of one or two pixels.
+    - *(Amended)* At 16 and 20 px the N is scaled up to fill the icon square, leaving a clear 1 px margin on every side. Its stroke width scales with the height (3 px at 16, 4 px at 20). The stems are spread apart so the N's outline is as wide as it is tall, which makes it wider than in the master. The first version of this entry kept the master's proportions and centred the N.
     - From 24 px the d is kept. It is snapped to the grid (whole-pixel circle radius) and moved right by whole pixels until a clear pixel column separates it from the N, as far as the icon's edge allows. At these sizes the master's gap between them is under one pixel, so they would otherwise merge.
-  - **Test:** `app/test/icon_generator_test.dart` checks the gradient interpolation, that the master renders with its gradient, the N-only rule at 16 and 20 px, the d and its clear column at 24, 29, 32 and 48 px, and the whole-pixel stems at 16, 24 and 32 px.
+  - **Test:** `app/test/icon_generator_test.dart` checks the gradient interpolation, that the master renders with its gradient, the N-only rule and the 1 px margin at 16 and 20 px, the d and its clear column at 24, 29, 32 and 48 px, and the whole-pixel stems at 16, 20, 24 and 32 px.
   - **Where it shows:** unchanged from 0082: the exe's icon resource (window, taskbar, Alt+Tab), both shortcuts (0054, 0063) and the exe in the zip.
-- **Rationale:** The new master is the maintainer's chosen design. Generating every size from it keeps the platforms consistent, and fitting the small sizes keeps the 16 px taskbar and shortcut icon sharp.
-- **Alternatives considered:** keeping the d at 16–20 px (unreadable at that size); scaling the N up to fill the 16 px square (its stroke weight would no longer match the larger sizes); an image library to rasterize the SVG (a new dependency, and it would blur the small sizes).
+- **Rationale:** The new master is the maintainer's chosen design. Generating every size from it keeps the platforms consistent, and fitting the small sizes keeps the 16 px taskbar and shortcut icon sharp. Filling the square makes the N as large as the 16 and 20 px slots allow. Keeping the master's proportions would leave the N almost the same size as when centred, because the N is taller than it is wide.
+- **Alternatives considered:** keeping the d at 16–20 px (unreadable at that size); keeping the master's proportions at 16–20 px, centred (the first version of this entry; it leaves empty columns either side); an image library to rasterize the SVG (a new dependency, and it would blur the small sizes).
 
 ---
 
