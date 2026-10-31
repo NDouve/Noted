@@ -7,8 +7,12 @@ resolution: workspace
 environment:
   sdk: ^3.13.0
 
-# No runtime dependencies. lib/ must stay free of Flutter imports so a
+# Pure Dart only. lib/ must stay free of Flutter imports so a
 # separate pure-Dart executable (the future MCP server) can depend on it.
+
+dependencies:
+  # SHA-256 content hashes of attachments (BSD-3-Clause, the Dart team).
+  crypto: ^3.0.7
 
 dev_dependencies:
   flutter_test:
