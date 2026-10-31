@@ -1,8 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="80 72 368 368">
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="46 51 410 410">
   <title>Noted</title>
-  <path d="M140 92 H316 L388 164 V420 H140 Z" fill="#c9d3dc" stroke="#0b3954" stroke-width="12" stroke-linejoin="round"/>
-  <path d="M316 92 V164 H388 Z" fill="#0b3954" stroke="#0b3954" stroke-width="12" stroke-linejoin="round"/>
-  <path d="M196 352 V198 L298 352 V198" fill="none" stroke="#0b3954" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="342" cy="140" r="9" fill="none" stroke="#c9d3dc" stroke-width="6"/>
-  <path d="M351 118 V150" fill="none" stroke="#c9d3dc" stroke-width="6" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="blue" gradientUnits="userSpaceOnUse" x1="60" y1="60" x2="460" y2="460">
+      <stop offset="0" stop-color="#2f86c8"/>
+      <stop offset="1" stop-color="#0d4a78"/>
+    </linearGradient>
+  </defs>
+  <path d="M100 420 V140 L300 420 V140" fill="none" stroke="url(#blue)" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="392" cy="160" r="34" fill="none" stroke="url(#blue)" stroke-width="26"/>
+  <path d="M426 70 V194" fill="none" stroke="url(#blue)" stroke-width="26" stroke-linecap="round"/>
 </svg>
