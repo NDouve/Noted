@@ -11,8 +11,10 @@
   Builds the release (unless -SkipBuild), copies it into
   app\build\package\Noted, adds the Visual C++ runtime DLLs the exe and
   plugins import (msvcp140.dll, vcruntime140.dll, vcruntime140_1.dll,
-  app-local deployment from this machine's System32), the shortcut script
-  and a README, and writes app\build\Noted-windows-x64.zip.
+  app-local deployment from this machine's System32), the read-only MCP
+  server (noted_mcp.exe, compiled from packages\noted_mcp), the shortcut
+  and MCP registration scripts and a README, and writes
+  app\build\Noted-windows-x64.zip.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File app\scripts\package-windows.ps1
@@ -41,6 +43,12 @@ if (-not (Test-Path (Join-Path $release 'noted.exe'))) {
   throw "No release build at $release"
 }
 
+# The read-only MCP server (invariant 4): a separate executable next to
+# noted.exe, so a registration made from the release folder keeps working.
+$mcpSource = Join-Path $app '..\packages\noted_mcp\bin\noted_mcp.dart'
+dart compile exe $mcpSource -o (Join-Path $release 'noted_mcp.exe')
+if ($LASTEXITCODE -ne 0) { throw "dart compile exe failed ($LASTEXITCODE)" }
+
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item (Join-Path $release '*') $stage -Recurse
@@ -55,6 +63,7 @@ foreach ($dll in $runtime) {
 }
 
 Copy-Item (Join-Path $PSScriptRoot 'install-shortcuts.ps1') $stage
+Copy-Item (Join-Path $PSScriptRoot 'register-mcp.ps1') $stage
 
 $version = (Select-String -Path (Join-Path $app 'pubspec.yaml') -Pattern '^version:\s*(.+)$').Matches[0].Groups[1].Value
 $commit = (git -C $app rev-parse --short HEAD) 2>$null
@@ -72,6 +81,13 @@ Shortcuts
   noted.exe in this folder. Run it again after moving the folder.
   If a shortcut or the taskbar still shows an old icon after an update, run
   it with -ResetIconCache (Explorer restarts and rebuilds its icon cache).
+
+AI (read-only MCP server)
+  noted_mcp.exe lets an AI app read the pages whose AI setting allows it
+  (right-click a page > AI access). To add it to Claude Code and print the
+  Claude desktop configuration, run:
+    powershell -ExecutionPolicy Bypass -File register-mcp.ps1
+  See docs/mcp.md in the source for details.
 
 Runtime
   The Visual C++ runtime DLLs the app needs (msvcp140.dll,
