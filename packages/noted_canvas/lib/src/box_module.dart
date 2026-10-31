@@ -111,6 +111,11 @@ abstract class BoxModule<D> {
   /// 0.7), or null for none. Holding Shift resizes freely.
   double? aspectRatio(D data) => null;
 
+  /// Height in page units added below the part that keeps [aspectRatio]
+  /// (Box API 0.8), for example a caption under a picture: while resizing,
+  /// `height - aspectRatioExtraHeight = width / aspectRatio`.
+  double aspectRatioExtraHeight(D data) => 0;
+
   /// The same content with its files kept the [to] way (Box API 0.7: "Embed
   /// attachments", "Move attachments to folder"), or null if nothing
   /// changes. Names of files that stay in the folder because they are over
@@ -128,6 +133,9 @@ abstract class BoxModule<D> {
 
   /// Untyped [aspectRatio], for the canvas.
   double? hostAspectRatio(Object? data) => data is D ? aspectRatio(data) : null;
+
+  /// Untyped [aspectRatioExtraHeight], for the canvas.
+  double hostAspectRatioExtraHeight(Object? data) => data is D ? aspectRatioExtraHeight(data) : 0;
 
   /// Untyped [convertAttachments], for the canvas.
   Future<Object?> hostConvertAttachments(

@@ -258,7 +258,7 @@ void main() {
         width: 8,
         height: 4,
       ),
-      const Bounds(100, 100, 200, 100),
+      const Bounds(100, 100, 200, 100 + imageCaptionHeight),
     );
     await pump(t, nodes: [image]);
     Future<void> dragRight(double dx) async {
@@ -278,14 +278,15 @@ void main() {
     await dragRight(100 * scale);
     var b = c.page.node('img')!.bounds!;
     expect(b.width, closeTo(300, 1));
-    expect(b.height, closeTo(150, 1));
+    // The picture keeps 2:1; the caption strip below keeps its height.
+    expect(b.height, closeTo(150 + imageCaptionHeight, 1));
 
     await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
     await dragRight(100 * scale);
     await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
     b = c.page.node('img')!.bounds!;
     expect(b.width, closeTo(400, 1));
-    expect(b.height, closeTo(150, 1));
+    expect(b.height, closeTo(150 + imageCaptionHeight, 1));
   });
 
   testWidgets('a click on an image or a file box selects it', (t) async {
@@ -297,7 +298,12 @@ void main() {
           const ImageCodec(),
           'img',
           ImageData(
-            ref: AttachmentRef(name: 'red.png', size: 1, hash: hash, bytes: redPng),
+            ref: AttachmentRef(
+              name: 'red.png',
+              size: 1,
+              hash: hash,
+              bytes: redPng,
+            ),
             width: 4,
             height: 4,
           ),
@@ -313,14 +319,92 @@ void main() {
         ),
       ],
     );
+    Future<void> frames() async {
+      for (var i = 0; i < 4; i++) {
+        await t.pump(const Duration(milliseconds: 100));
+      }
+    }
+
     expect(c.selectedId, isNull);
     await t.tap(find.byKey(const ValueKey('image-box')));
-    await t.pump();
+    await frames();
     expect(c.selectedId, 'img');
+    expect(c.editingId, isNull, reason: 'selected, not edited');
     await t.tap(find.byKey(const ValueKey('file-box')));
-    await t.pump(const Duration(milliseconds: 400));
+    await frames();
     expect(c.selectedId, 'file');
     expect(store.opened, isEmpty, reason: 'one click selects; two open');
+
+    // Backspace removes the selected file box; Delete the image; undo
+    // brings each back.
+    await t.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await t.pump();
+    expect(c.page.node('file'), isNull);
+    await t.tap(find.byKey(const ValueKey('image-box')));
+    await frames();
+    await t.sendKeyEvent(LogicalKeyboardKey.delete);
+    await t.pump();
+    expect(boxes(), isEmpty);
+    c.undo();
+    c.undo();
+    await t.pump();
+    expect(boxes().map((b) => b.id).toSet(), {'img', 'file'});
+  });
+
+  testWidgets('typing in the alt text doesn\'t delete the box', (t) async {
+    final hash = contentHash(redPng);
+    await pump(
+      t,
+      nodes: [
+        _box(
+          const ImageCodec(),
+          'img',
+          ImageData(
+            ref: AttachmentRef(name: 'red.png', size: 1, hash: hash, bytes: redPng),
+            width: 4,
+            height: 4,
+            alt: 'Red',
+          ),
+          const Bounds(40, 40, 120, 148),
+        ),
+      ],
+    );
+    await t.tap(find.byKey(const ValueKey('image-alt-text')));
+    await t.pump();
+    expect(c.editingId, 'img');
+    await t.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await t.pump();
+    expect(c.page.node('img'), isNotNull);
+  });
+
+  testWidgets('the alt text sits below the picture, never over it', (t) async {
+    final hash = contentHash(redPng);
+    await pump(
+      t,
+      nodes: [
+        _box(
+          const ImageCodec(),
+          'img',
+          ImageData(
+            ref: AttachmentRef(name: 'red.png', size: 1, hash: hash, bytes: redPng),
+            width: 4,
+            height: 4,
+            alt: 'A red square',
+          ),
+          const Bounds(40, 40, 120, 148),
+        ),
+      ],
+    );
+    final picture = t.getRect(find.byKey(const ValueKey('image-box')));
+    final caption = t.getRect(find.byKey(const ValueKey('image-caption')));
+    expect(caption.top, closeTo(picture.bottom, 0.01));
+    expect(picture.overlaps(caption), isFalse);
+    final scale = canvas(t).view!.scale;
+    expect(caption.height, closeTo(imageCaptionHeight * scale, 0.01));
+    expect(find.text('A red square'), findsOneWidget);
+    // A new box makes room for it.
+    expect(newImageBoxSize(400, 200), const Size(400, 200 + imageCaptionHeight));
+    expect(newImageBoxSize(1000, 500).width, newImageMaxSide);
   });
 
   testWidgets('converting a page\'s attachments is one undo step, both ways', (

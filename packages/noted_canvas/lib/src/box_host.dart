@@ -158,6 +158,13 @@ class _BoxHostState extends State<BoxHost> {
           ),
         ),
       );
+      if (editable) {
+        content = Listener(
+          onPointerDown: _contentDown,
+          onPointerUp: (e) => _contentUp(e, node.id),
+          child: content,
+        );
+      }
     } else {
       content = UnsupportedBoxView(
         text: switch (node) {
@@ -526,7 +533,7 @@ class _BoxHostState extends State<BoxHost> {
       // A box whose module keeps an aspect ratio (an image) keeps it unless
       // Shift is held: the edge dragged sets the size, the other side
       // follows; a corner follows the larger change.
-      final ratio = _aspectRatio();
+      final (ratio, extra) = _aspectRatio() ?? (null, 0.0);
       if (ratio != null && ratio > 0 && !HardwareKeyboard.instance.isShiftPressed) {
         final widthLeads = switch (edge) {
           _Edge.left || _Edge.right => true,
@@ -534,10 +541,10 @@ class _BoxHostState extends State<BoxHost> {
           _ => (w - sb.width).abs() / sb.width >= (h - sb.height).abs() / sb.height,
         };
         if (widthLeads) {
-          h = math.max(minBoxHeight, w / ratio);
+          h = math.max(minBoxHeight, w / ratio + extra);
         } else {
           final right = x + w;
-          w = math.max(minBoxWidth, h * ratio);
+          w = math.max(minBoxWidth, (h - extra) * ratio);
           if (edge == _Edge.bottomLeft) x = right - w;
         }
         setsHeight = h != sb.height;
@@ -551,12 +558,59 @@ class _BoxHostState extends State<BoxHost> {
     );
   }
 
-  double? _aspectRatio() {
+  // A click on a box's content that doesn't give the content the focus (an
+  // image, a file, a drawing) selects the box, as a click on its grip does,
+  // so Delete and Backspace remove it. Content that takes the focus (a note
+  // opening its editor, a text field) is left alone: that is checked two
+  // frames later, once such content has had time to take the focus.
+  Offset? _downAt;
+  Duration? _downTime;
+
+  void _contentDown(PointerDownEvent e) {
+    // Not in a box that is being edited (a click on a note's table handle
+    // or menu keeps the note as it is).
+    if (e.buttons != kPrimaryButton || widget.controller.editingId == widget.node.id) {
+      _downAt = null;
+      return;
+    }
+    _downAt = e.position;
+    _downTime = e.timeStamp;
+  }
+
+  void _contentUp(PointerUpEvent e, String id) {
+    final at = _downAt;
+    final time = _downTime;
+    _downAt = null;
+    if (at == null || time == null) return;
+    if ((e.position - at).distance > kTouchSlop || e.timeStamp - time > kLongPressTimeout) return;
+    void check() {
+      final c = widget.controller;
+      if (!mounted || c.readOnly || c.editingId == id) return;
+      // A menu or dialog the click opened has the focus.
+      if (!(ModalRoute.of(context)?.isCurrent ?? true)) return;
+      if (c.page.node(id) == null) return;
+      widget.onGripTap();
+      c.select(id);
+    }
+
+    final binding = SchedulerBinding.instance;
+    binding.addPostFrameCallback((_) {
+      binding.addPostFrameCallback((_) => check());
+      binding.scheduleFrame();
+    });
+    binding.scheduleFrame();
+  }
+
+  // The ratio the box keeps while resizing and the height below the part
+  // that keeps it (Box API 0.7, 0.8), or null.
+  (double?, double)? _aspectRatio() {
     final node = widget.controller.page.node(widget.node.id);
     if (node is! BoxRecord) return null;
     final r = _resolve(node);
     if (r is! LiveBox) return null;
-    return widget.controller.modules.moduleFor(node.typeId)?.hostAspectRatio(r.data);
+    final module = widget.controller.modules.moduleFor(node.typeId);
+    if (module == null) return null;
+    return (module.hostAspectRatio(r.data), module.hostAspectRatioExtraHeight(r.data));
   }
 
   void _end() {

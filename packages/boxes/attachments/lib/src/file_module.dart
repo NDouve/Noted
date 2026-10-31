@@ -111,16 +111,7 @@ class _FileBox extends StatefulWidget {
 }
 
 class _FileBoxState extends State<_FileBox> {
-  // A click gives the box the focus, which selects it.
-  final FocusNode _focus = FocusNode(debugLabel: 'file box');
-
   BoxContext<FileData?> get box => widget.box;
-
-  @override
-  void dispose() {
-    _focus.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -160,12 +151,12 @@ class _FileBoxState extends State<_FileBox> {
       message: missing
           ? '${ref.name}: still syncing'
           : 'Double-click to open ${ref.name}',
+      // A click selects the box (the canvas does that); two open the file.
       child: Focus(
-        focusNode: _focus,
+        canRequestFocus: false,
         child: GestureDetector(
           key: const ValueKey('file-box'),
           behavior: HitTestBehavior.opaque,
-          onTap: _focus.requestFocus,
           onDoubleTap: open,
           child: Padding(
             padding: EdgeInsets.symmetric(

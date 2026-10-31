@@ -70,6 +70,10 @@ final class ImageModule extends BoxModule<ImageData?> {
   double? aspectRatio(ImageData? data) =>
       data == null ? null : data.width / data.height;
 
+  /// The alt-text strip under the picture keeps its height while resizing.
+  @override
+  double aspectRatioExtraHeight(ImageData? data) => imageCaptionHeight;
+
   @override
   Future<ImageData?> convertAttachments(
     ImageData? data,
@@ -110,11 +114,16 @@ final class ImageModule extends BoxModule<ImageData?> {
 }
 
 /// The size of a new image box for an image of [w] × [h] pixels: its pixel
-/// size, scaled down so the longer side is at most [newImageMaxSide].
+/// size, scaled down so the longer side is at most [newImageMaxSide], plus
+/// the alt-text strip below it ([imageCaptionHeight]).
 Size newImageBoxSize(int w, int h) {
   final scale = math.min(1.0, newImageMaxSide / math.max(w, h));
-  return Size(math.max(24, w * scale), math.max(24, h * scale));
+  final width = math.max(24.0, w * scale);
+  return Size(width, width * h / w + imageCaptionHeight);
 }
+
+/// The height of the alt-text strip under the picture, in page units.
+const double imageCaptionHeight = 28;
 
 /// The pixel size of the image in [bytes] (its first frame), or null if it
 /// can't be decoded.
@@ -207,12 +216,7 @@ class _ImageBoxState extends State<_ImageBox> {
   bool _loading = false;
   bool _retry = false;
   bool _failed = false;
-  bool _hover = false;
   final FocusNode _altFocus = FocusNode();
-
-  // A click on the picture gives the box the focus, which selects it (the
-  // canvas selects the box whose content has focus).
-  final FocusNode _boxFocus = FocusNode(debugLabel: 'image box');
   late final TextEditingController _alt = TextEditingController(
     text: widget.box.data?.alt ?? '',
   );
@@ -223,7 +227,6 @@ class _ImageBoxState extends State<_ImageBox> {
     super.initState();
     _listen();
     _altFocus.addListener(() => setState(() {}));
-    _boxFocus.addListener(() => setState(() {}));
     _load();
   }
 
@@ -286,7 +289,6 @@ class _ImageBoxState extends State<_ImageBox> {
   void dispose() {
     _changes?.removeListener(_filesChanged);
     _altFocus.dispose();
-    _boxFocus.dispose();
     _alt.dispose();
     super.dispose();
   }
@@ -309,7 +311,7 @@ class _ImageBoxState extends State<_ImageBox> {
       picture = Image.memory(
         pixels,
         key: const ValueKey('image-box-picture'),
-        fit: BoxFit.fill,
+        fit: BoxFit.contain,
         gaplessPlayback: true,
         filterQuality: FilterQuality.medium,
         semanticLabel: data.alt.isEmpty ? null : data.alt,
@@ -328,57 +330,56 @@ class _ImageBoxState extends State<_ImageBox> {
     } else {
       picture = ColoredBox(color: scheme.surfaceContainerHighest);
     }
-    if (!widget.editable || data == null) return picture;
-    final showAlt = _hover || _altFocus.hasFocus || _boxFocus.hasFocus;
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Focus(
-            focusNode: _boxFocus,
-            child: GestureDetector(
-              key: const ValueKey('image-box'),
-              behavior: HitTestBehavior.opaque,
-              onTap: _boxFocus.requestFocus,
-              child: picture,
-            ),
+    // The picture above, the alt text below it in its own strip
+    // ([imageCaptionHeight]), so the caption never covers the picture. A
+    // click on the picture selects the box (the canvas does that for content
+    // that doesn't take the focus).
+    final Widget caption;
+    if (data == null) {
+      caption = const SizedBox.shrink();
+    } else if (widget.editable) {
+      caption = TextField(
+        key: const ValueKey('image-alt-text'),
+        controller: _alt,
+        focusNode: _altFocus,
+        style: type.small,
+        maxLines: 1,
+        decoration: InputDecoration(
+          isDense: true,
+          hintText: 'Alt text',
+          border: InputBorder.none,
+          contentPadding: EdgeInsets.symmetric(
+            horizontal: m.space2,
+            vertical: m.space1,
           ),
-          Positioned(
-            left: m.space1,
-            right: m.space1,
-            bottom: m.space1,
-            child: Visibility(
-              visible: showAlt,
-              maintainState: true,
-              maintainAnimation: true,
-              maintainSize: true,
-              child: Material(
-                color: scheme.surface.withValues(alpha: 0.92),
-                borderRadius: m.borderSm,
-                child: TextField(
-                  key: const ValueKey('image-alt-text'),
-                  controller: _alt,
-                  focusNode: _altFocus,
-                  style: type.small,
-                  decoration: InputDecoration(
-                    isDense: true,
-                    hintText: 'Alt text',
-                    border: InputBorder.none,
-                    contentPadding: EdgeInsets.symmetric(
-                      horizontal: m.space2,
-                      vertical: m.space1,
-                    ),
-                  ),
-                  onChanged: _commitAlt,
-                  onSubmitted: _commitAlt,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+        ),
+        onChanged: _commitAlt,
+        onSubmitted: _commitAlt,
+      );
+    } else {
+      caption = Padding(
+        padding: EdgeInsets.symmetric(horizontal: m.space2),
+        child: Text(
+          data.alt,
+          key: const ValueKey('image-alt-caption'),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: type.small.copyWith(color: scheme.onSurfaceVariant),
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          child: KeyedSubtree(key: const ValueKey('image-box'), child: picture),
+        ),
+        SizedBox(
+          key: const ValueKey('image-caption'),
+          height: imageCaptionHeight,
+          child: Align(alignment: Alignment.centerLeft, child: caption),
+        ),
+      ],
     );
   }
 

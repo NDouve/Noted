@@ -35,7 +35,7 @@ final class BoxApiVersion {
 /// 0.2 added canvas tools (on the Flutter side) and [BoxEdit]; 0.3 added
 /// the theme to `ToolContext`; 0.4 added commands; 0.5 added a module's
 /// frame style; 0.6 added Find on page (`BoxFind`). See `BOX_API_CHANGELOG.md` in this package.
-const BoxApiVersion boxApiVersion = BoxApiVersion(0, 7);
+const BoxApiVersion boxApiVersion = BoxApiVersion(0, 8);
 
 /// How a box's size relates to its content.
 enum BoxSizing {
