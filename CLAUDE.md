@@ -12,7 +12,7 @@ Noted is an open-source, OneNote-style notebook built with Flutter (Dart) from o
 ## Working rules
 
 - **Don't change scope without the maintainer's sign-off.** Discuss first, then build what was agreed.
-- Ask before:
+- Ask before (except what the PM may decide under "Build team and delegated authority"):
   - adding a dependency (check its license against the rule below)
   - changing the page file format
   - changing the Box API
@@ -20,6 +20,17 @@ Noted is an open-source, OneNote-style notebook built with Flutter (Dart) from o
 - Make small, focused commits with clear messages. Don't change the git author identity that's already configured.
 - Before every commit, run `flutter analyze` and `flutter test` and fix what they report.
 - Never commit personal information: no real names other than the maintainer's handle, no email addresses, device serials, employer details or account identifiers.
+
+## Build team and delegated authority
+
+Runs are led by the agents in `.claude/agents/`: `pm` plans and finishes a run, `builder` implements one task, `reviewer` reviews every diff, and `reviewer-ui` checks visible changes with screenshots. The loop is in `docs/runs/README.md`.
+
+**The PM may decide, and must log in the run report:**
+- additive Box API changes (new members with defaults; record them in `BOX_API_CHANGELOG.md`);
+- dependencies published by the Dart or Flutter team with an allowed licence (see Licensing), pinned to an exact version;
+- new packages under `packages/boxes/`.
+
+**Everything else still goes to the maintainer:** the rest of "Ask before" (other dependencies, file format changes, breaking Box API changes, other packages and top-level directories), scope changes, the architecture invariants, encryption and the MCP boundary. The PM never stops a run to ask. It parks the task and lists it in the report under "Needs the maintainer", with options and a recommendation.
 
 ## "Curate" means updating `docs/decisions.md`
 
