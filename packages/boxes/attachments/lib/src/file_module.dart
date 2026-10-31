@@ -30,7 +30,10 @@ final class FileModule extends BoxModule<FileData?> {
   int fileAffinity(IncomingFile file) => 1;
 
   @override
-  Future<(FileData?, Size)?> createFromFile(IncomingFile file, AttachmentStore store) async {
+  Future<(FileData?, Size)?> createFromFile(
+    IncomingFile file,
+    AttachmentStore store,
+  ) async {
     final ref = await storeIncoming(file, store);
     return (FileData(ref: ref), newFileBoxSize);
   }
@@ -66,35 +69,69 @@ final class FileModule extends BoxModule<FileData?> {
   ];
 
   @override
-  Widget buildEditor(BuildContext context, BoxContext<FileData?> box) => _FileBox(box: box);
+  Widget buildEditor(BuildContext context, BoxContext<FileData?> box) =>
+      _FileBox(box: box);
 
   @override
-  Widget buildView(BuildContext context, BoxContext<FileData?> box) => _FileBox(box: box);
+  Widget buildView(BuildContext context, BoxContext<FileData?> box) =>
+      _FileBox(box: box);
 }
 
 /// The icon for a file with [extension].
 IconData fileIcon(String extension) => switch (extension) {
   'pdf' => Icons.picture_as_pdf_rounded,
-  'doc' || 'docx' || 'odt' || 'rtf' || 'txt' || 'md' => Icons.description_rounded,
+  'doc' ||
+  'docx' ||
+  'odt' ||
+  'rtf' ||
+  'txt' ||
+  'md' => Icons.description_rounded,
   'xls' || 'xlsx' || 'ods' || 'csv' => Icons.table_chart_rounded,
   'ppt' || 'pptx' || 'odp' => Icons.slideshow_rounded,
   'zip' || '7z' || 'rar' || 'gz' || 'tar' => Icons.folder_zip_rounded,
   'mp3' || 'wav' || 'flac' || 'm4a' || 'ogg' => Icons.audio_file_rounded,
   'mp4' || 'mov' || 'mkv' || 'avi' || 'webm' => Icons.video_file_rounded,
-  'png' || 'jpg' || 'jpeg' || 'gif' || 'webp' || 'bmp' || 'svg' => Icons.image_rounded,
+  'png' ||
+  'jpg' ||
+  'jpeg' ||
+  'gif' ||
+  'webp' ||
+  'bmp' ||
+  'svg' => Icons.image_rounded,
   _ => Icons.insert_drive_file_rounded,
 };
 
-class _FileBox extends StatelessWidget {
+class _FileBox extends StatefulWidget {
   const _FileBox({required this.box});
 
   final BoxContext<FileData?> box;
 
   @override
+  State<_FileBox> createState() => _FileBoxState();
+}
+
+class _FileBoxState extends State<_FileBox> {
+  // A click gives the box the focus, which selects it.
+  final FocusNode _focus = FocusNode(debugLabel: 'file box');
+
+  BoxContext<FileData?> get box => widget.box;
+
+  @override
+  void dispose() {
+    _focus.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final store = box.attachments;
     final changes = store?.changes;
-    return changes == null ? _content(context) : ListenableBuilder(listenable: changes, builder: (c, _) => _content(c));
+    return changes == null
+        ? _content(context)
+        : ListenableBuilder(
+            listenable: changes,
+            builder: (c, _) => _content(c),
+          );
   }
 
   Widget _content(BuildContext context) {
@@ -104,48 +141,71 @@ class _FileBox extends StatelessWidget {
     final m = NotedMetrics.of(context);
     final type = NotedTypography.of(context);
     if (data == null) {
-      return Center(child: Text('This file can\'t be shown', style: type.small));
+      return Center(
+        child: Text('This file can\'t be shown', style: type.small),
+      );
     }
     final ref = data.ref;
     final missing = attachmentMissing(ref, store);
     Future<void> open() async {
       if (store == null || missing) return;
-      await store.open(ref.name, fileName: ref.isEmbedded ? null : ref.file, bytes: ref.bytes);
+      await store.open(
+        ref.name,
+        fileName: ref.isEmbedded ? null : ref.file,
+        bytes: ref.bytes,
+      );
     }
 
     return Tooltip(
-      message: missing ? '${ref.name}: still syncing' : 'Double-click to open ${ref.name}',
-      child: GestureDetector(
-        key: const ValueKey('file-box'),
-        behavior: HitTestBehavior.opaque,
-        onDoubleTap: open,
-        child: Padding(
-          padding: EdgeInsets.symmetric(horizontal: m.space3, vertical: m.space2),
-          child: Row(
-            children: [
-              Icon(fileIcon(ref.extension), size: m.icon * 1.6, color: scheme.primary),
-              SizedBox(width: m.space3),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      ref.name,
-                      key: const ValueKey('file-box-name'),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: type.bodyStrong,
-                    ),
-                    Text(
-                      missing ? 'Still syncing' : formatByteSize(ref.size),
-                      key: ValueKey(missing ? 'still-syncing' : 'file-box-size'),
-                      style: type.small.copyWith(color: scheme.onSurfaceVariant),
-                    ),
-                  ],
+      message: missing
+          ? '${ref.name}: still syncing'
+          : 'Double-click to open ${ref.name}',
+      child: Focus(
+        focusNode: _focus,
+        child: GestureDetector(
+          key: const ValueKey('file-box'),
+          behavior: HitTestBehavior.opaque,
+          onTap: _focus.requestFocus,
+          onDoubleTap: open,
+          child: Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: m.space3,
+              vertical: m.space2,
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  fileIcon(ref.extension),
+                  size: m.icon * 1.6,
+                  color: scheme.primary,
                 ),
-              ),
-            ],
+                SizedBox(width: m.space3),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        ref.name,
+                        key: const ValueKey('file-box-name'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: type.bodyStrong,
+                      ),
+                      Text(
+                        missing ? 'Still syncing' : formatByteSize(ref.size),
+                        key: ValueKey(
+                          missing ? 'still-syncing' : 'file-box-size',
+                        ),
+                        style: type.small.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

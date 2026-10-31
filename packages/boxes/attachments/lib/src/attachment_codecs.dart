@@ -106,9 +106,15 @@ final class ImageCodec extends BoxCodec<ImageData?> {
   AiExposure aiExposure(ImageData? data) => AiText(snapshotText(data));
 
   @override
-  MergeResult<ImageData?> merge(ImageData? base, ImageData? mine, ImageData? theirs) {
+  MergeResult<ImageData?> merge(
+    ImageData? base,
+    ImageData? mine,
+    ImageData? theirs,
+  ) {
     if (mine == null || theirs == null) {
-      return mine == null && theirs == null ? const Merged(null) : const Conflicted();
+      return mine == null && theirs == null
+          ? const Merged(null)
+          : const Conflicted();
     }
     final ref = pickMerged(base?.ref, mine.ref, theirs.ref);
     final alt = pickMerged(base?.alt, mine.alt, theirs.alt);
@@ -142,7 +148,8 @@ final class FileData {
   final AttachmentRef ref;
   final Map<String, Object?> extra;
 
-  FileData copyWith({AttachmentRef? ref}) => FileData(ref: ref ?? this.ref, extra: extra);
+  FileData copyWith({AttachmentRef? ref}) =>
+      FileData(ref: ref ?? this.ref, extra: extra);
 }
 
 /// The data side of the file box (`noted.file`).
@@ -190,9 +197,15 @@ final class FileCodec extends BoxCodec<FileData?> {
   AiExposure aiExposure(FileData? data) => AiText(snapshotText(data));
 
   @override
-  MergeResult<FileData?> merge(FileData? base, FileData? mine, FileData? theirs) {
+  MergeResult<FileData?> merge(
+    FileData? base,
+    FileData? mine,
+    FileData? theirs,
+  ) {
     if (mine == null || theirs == null) {
-      return mine == null && theirs == null ? const Merged(null) : const Conflicted();
+      return mine == null && theirs == null
+          ? const Merged(null)
+          : const Conflicted();
     }
     final ref = pickMerged(base?.ref, mine.ref, theirs.ref);
     if (ref == null) return const Conflicted();

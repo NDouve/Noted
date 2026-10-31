@@ -116,7 +116,8 @@ T? pickMerged<T>(T base, T mine, T theirs) {
 
 /// Keys of [json] other than [known], kept so a newer version's fields
 /// survive.
-Map<String, Object?> extraKeys(Map<Object?, Object?> json, Set<String> known) => {
-  for (final e in json.entries)
-    if (e.key is String && !known.contains(e.key)) e.key as String: e.value,
-};
+Map<String, Object?> extraKeys(Map<Object?, Object?> json, Set<String> known) =>
+    {
+      for (final e in json.entries)
+        if (e.key is String && !known.contains(e.key)) e.key as String: e.value,
+    };

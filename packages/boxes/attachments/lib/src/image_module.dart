@@ -22,7 +22,14 @@ abstract final class ImageCommands {
 }
 
 /// The image formats an image box takes (a GIF shows its first frame).
-const Set<String> imageExtensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'};
+const Set<String> imageExtensions = {
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'bmp',
+};
 
 /// The longest side, in pixels, of an image's display copy.
 const int displayCopyMaxSide = 1600;
@@ -43,10 +50,14 @@ final class ImageModule extends BoxModule<ImageData?> {
   BoxFrameStyle get frameStyle => BoxFrameStyle.framelessUntilSelected;
 
   @override
-  int fileAffinity(IncomingFile file) => imageExtensions.contains(file.extension) ? 10 : 0;
+  int fileAffinity(IncomingFile file) =>
+      imageExtensions.contains(file.extension) ? 10 : 0;
 
   @override
-  Future<(ImageData?, Size)?> createFromFile(IncomingFile file, AttachmentStore store) async {
+  Future<(ImageData?, Size)?> createFromFile(
+    IncomingFile file,
+    AttachmentStore store,
+  ) async {
     final size = await imageSize(file.bytes);
     if (size == null) return null;
     final ref = await storeIncoming(file, store);
@@ -56,7 +67,8 @@ final class ImageModule extends BoxModule<ImageData?> {
   }
 
   @override
-  double? aspectRatio(ImageData? data) => data == null ? null : data.width / data.height;
+  double? aspectRatio(ImageData? data) =>
+      data == null ? null : data.width / data.height;
 
   @override
   Future<ImageData?> convertAttachments(
@@ -144,13 +156,19 @@ Future<Uint8List?> makeDisplayCopy(Uint8List bytes) async {
 }
 
 /// Where the display copy of the image with [hash] is cached.
-File displayCopyFile(Directory cache, String hash) =>
-    File('${cache.path}${Platform.pathSeparator}images${Platform.pathSeparator}$hash-$displayCopyMaxSide.png');
+File displayCopyFile(Directory cache, String hash) => File(
+  '${cache.path}${Platform.pathSeparator}images${Platform.pathSeparator}$hash-$displayCopyMaxSide.png',
+);
 
 /// The display copy of [ref]: from the cache, or made from the original and
 /// cached. Null while the original isn't there or doesn't decode.
-Future<Uint8List?> loadDisplayCopy(AttachmentRef ref, AttachmentStore? store) async {
-  final cache = store == null ? null : displayCopyFile(store.cacheDirectory, ref.hash);
+Future<Uint8List?> loadDisplayCopy(
+  AttachmentRef ref,
+  AttachmentStore? store,
+) async {
+  final cache = store == null
+      ? null
+      : displayCopyFile(store.cacheDirectory, ref.hash);
   if (cache != null) {
     try {
       if (await cache.exists()) return await cache.readAsBytes();
@@ -191,7 +209,13 @@ class _ImageBoxState extends State<_ImageBox> {
   bool _failed = false;
   bool _hover = false;
   final FocusNode _altFocus = FocusNode();
-  late final TextEditingController _alt = TextEditingController(text: widget.box.data?.alt ?? '');
+
+  // A click on the picture gives the box the focus, which selects it (the
+  // canvas selects the box whose content has focus).
+  final FocusNode _boxFocus = FocusNode(debugLabel: 'image box');
+  late final TextEditingController _alt = TextEditingController(
+    text: widget.box.data?.alt ?? '',
+  );
   Listenable? _changes;
 
   @override
@@ -199,6 +223,7 @@ class _ImageBoxState extends State<_ImageBox> {
     super.initState();
     _listen();
     _altFocus.addListener(() => setState(() {}));
+    _boxFocus.addListener(() => setState(() {}));
     _load();
   }
 
@@ -240,7 +265,9 @@ class _ImageBoxState extends State<_ImageBox> {
     if (!mounted) return;
     setState(() {
       _pixels = pixels;
-      _failed = pixels == null && !attachmentMissing(data.ref, widget.box.attachments);
+      _failed =
+          pixels == null &&
+          !attachmentMissing(data.ref, widget.box.attachments);
       _loadedHash = pixels == null ? null : hash;
     });
     if (_retry && pixels == null) {
@@ -259,6 +286,7 @@ class _ImageBoxState extends State<_ImageBox> {
   void dispose() {
     _changes?.removeListener(_filesChanged);
     _altFocus.dispose();
+    _boxFocus.dispose();
     _alt.dispose();
     super.dispose();
   }
@@ -272,7 +300,11 @@ class _ImageBoxState extends State<_ImageBox> {
     final pixels = _pixels;
     final Widget picture;
     if (data == null) {
-      picture = _note(context, Icons.broken_image_rounded, 'This image can\'t be shown');
+      picture = _note(
+        context,
+        Icons.broken_image_rounded,
+        'This image can\'t be shown',
+      );
     } else if (pixels != null) {
       picture = Image.memory(
         pixels,
@@ -283,21 +315,36 @@ class _ImageBoxState extends State<_ImageBox> {
         semanticLabel: data.alt.isEmpty ? null : data.alt,
       );
     } else if (_failed) {
-      picture = _note(context, Icons.broken_image_rounded, 'This image can\'t be shown');
+      picture = _note(
+        context,
+        Icons.broken_image_rounded,
+        'This image can\'t be shown',
+      );
     } else if (attachmentMissing(data.ref, widget.box.attachments)) {
-      picture = ColoredBox(color: scheme.surfaceContainerHighest, child: StillSyncing(name: data.ref.name));
+      picture = ColoredBox(
+        color: scheme.surfaceContainerHighest,
+        child: StillSyncing(name: data.ref.name),
+      );
     } else {
       picture = ColoredBox(color: scheme.surfaceContainerHighest);
     }
     if (!widget.editable || data == null) return picture;
-    final showAlt = _hover || _altFocus.hasFocus;
+    final showAlt = _hover || _altFocus.hasFocus || _boxFocus.hasFocus;
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
       child: Stack(
         fit: StackFit.expand,
         children: [
-          picture,
+          Focus(
+            focusNode: _boxFocus,
+            child: GestureDetector(
+              key: const ValueKey('image-box'),
+              behavior: HitTestBehavior.opaque,
+              onTap: _boxFocus.requestFocus,
+              child: picture,
+            ),
+          ),
           Positioned(
             left: m.space1,
             right: m.space1,
@@ -319,7 +366,10 @@ class _ImageBoxState extends State<_ImageBox> {
                     isDense: true,
                     hintText: 'Alt text',
                     border: InputBorder.none,
-                    contentPadding: EdgeInsets.symmetric(horizontal: m.space2, vertical: m.space1),
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: m.space2,
+                      vertical: m.space1,
+                    ),
                   ),
                   onChanged: _commitAlt,
                   onSubmitted: _commitAlt,
@@ -347,7 +397,8 @@ class _ImageBoxState extends State<_ImageBox> {
               child: Text(
                 text,
                 overflow: TextOverflow.ellipsis,
-                style: NotedTypography.of(context).small.copyWith(color: scheme.onSurfaceVariant),
+                style: NotedTypography.of(context).small
+                    .copyWith(color: scheme.onSurfaceVariant),
               ),
             ),
           ],

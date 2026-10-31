@@ -12,15 +12,25 @@ import 'attachment_ref.dart';
 
 /// Stores [file] through [store] the way the page's setting says and
 /// returns the ref to keep in the box.
-Future<AttachmentRef> storeIncoming(IncomingFile file, AttachmentStore store) async {
+Future<AttachmentRef> storeIncoming(
+  IncomingFile file,
+  AttachmentStore store,
+) async {
   final s = await store.put(file.bytes, extension: file.extension);
-  final ref = AttachmentRef(name: file.name, size: file.bytes.length, hash: s.hash);
+  final ref = AttachmentRef(
+    name: file.name,
+    size: file.bytes.length,
+    hash: s.hash,
+  );
   final embedded = s.embedded;
   return embedded != null ? ref.embedded(embedded) : ref.inFolder(s.fileName);
 }
 
 /// The bytes of [ref], or null if its folder file isn't there (yet).
-Future<Uint8List?> loadAttachment(AttachmentRef ref, AttachmentStore? store) async {
+Future<Uint8List?> loadAttachment(
+  AttachmentRef ref,
+  AttachmentStore? store,
+) async {
   final bytes = ref.bytes;
   if (bytes != null) return bytes;
   final file = ref.file;
@@ -59,7 +69,11 @@ Future<AttachmentRef?> convertAttachment(
     case AttachmentStorage.folder:
       final bytes = ref.bytes;
       if (bytes == null) return null;
-      final s = await store.put(bytes, extension: ref.extension, storage: AttachmentStorage.folder);
+      final s = await store.put(
+        bytes,
+        extension: ref.extension,
+        storage: AttachmentStorage.folder,
+      );
       return ref.inFolder(s.fileName);
   }
 }
@@ -85,7 +99,11 @@ class StillSyncing extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.cloud_sync_rounded, size: m.icon, color: scheme.onSurfaceVariant),
+              Icon(
+                Icons.cloud_sync_rounded,
+                size: m.icon,
+                color: scheme.onSurfaceVariant,
+              ),
               SizedBox(width: m.space2),
               Flexible(
                 child: Text(
