@@ -43,13 +43,15 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 4. **The MCP server is a separate executable with no key access and no decryption code.** It reads saved page data only. AI-facing output is never built from the live screen.
 5. **There is no developer-run backend.** All data stays on the user's devices and in their chosen storage.
 
-## Current phase: Prototype 1
+## Current phase: Prototype 1, start of the AI phase
 
 **In scope:**
 - the canvas (zoom, bounded pan, Fit all, page backgrounds)
 - the page tree (pages that become dividers once they have subpages)
 - the Box API
 - note boxes, using `appflowy_editor` (tables, formulas, equations), and drawing boxes
+- image and file boxes, with their files in a folder beside the page or embedded in it
+- links in notes (Ctrl+K)
 - binders without passwords
 - templates
 - file-based sync with per-box conflicts (OneDrive conflict copies)
@@ -57,10 +59,11 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 - dark mode and the design system in `docs/design`
 - the command registry and two built-in toolbar layouts (Tabs and Contextual), switchable in settings
 - search (find on page and search all pages)
+- the read-only MCP server (`packages/noted_mcp`, a separate executable) and the page AI setting (Off, Box only, Whole page)
 
 **Out of scope until the maintainer starts the next phase:**
 - binder passwords and encryption
-- AI and MCP
+- AI boxes and AI writing, AI tokens, per-AI rules (the next run)
 - integrations and Microsoft sign-in
 - conflict copies from providers other than OneDrive
 - customizable toolbars (user-arranged or scripted)
