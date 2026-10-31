@@ -27,6 +27,14 @@ abstract final class AppCommands {
   static const String delete = 'app.page.delete';
   static const String moveToFolder = 'app.page.moveToFolder';
   static const String attachmentsInherit = 'app.page.attachments.inherit';
+  static const String aiInherit = 'app.page.ai.inherit';
+
+  /// The page command that sets the AI setting to [s].
+  static String aiId(AiSetting s) => 'app.page.ai.${s.value}';
+  static const String binderAiDefault = 'app.binder.ai.default';
+
+  /// The binder command that sets the AI setting to [s].
+  static String binderAiId(AiSetting s) => 'app.binder.ai.${s.value}';
   static const String embedAttachments = 'app.page.embedAttachments';
   static const String attachmentsToFolder = 'app.page.attachmentsToFolder';
 
@@ -220,6 +228,28 @@ CommandRegistry pageCommands(Notebook nb, PageMeta p, PageTreeActions a) {
       icon: Icons.delete_outline_rounded,
       invoke: () => a.delete(p),
     ),
+    // AI access (0028): the page's own choice, or its parent's, shown.
+    Command(
+      id: AppCommands.aiInherit,
+      label: 'Same as parent (${nb.inheritedAiSetting(p.id).label})',
+      icon: Icons.subdirectory_arrow_left_rounded,
+      enabled: () => !nb.isReadOnlyPage(p.id),
+      checked: () => nb.ownAiSetting(p.id) == null,
+      invoke: () => nb.setAiSetting(p.id, null),
+    ),
+    for (final s in AiSetting.values)
+      Command(
+        id: AppCommands.aiId(s),
+        label: s.label,
+        icon: switch (s) {
+          AiSetting.off => Icons.visibility_off_rounded,
+          AiSetting.boxOnly => Icons.crop_square_rounded,
+          AiSetting.wholePage => Icons.article_rounded,
+        },
+        enabled: () => !nb.isReadOnlyPage(p.id),
+        checked: () => nb.ownAiSetting(p.id) == s,
+        invoke: () => nb.setAiSetting(p.id, s),
+      ),
     // Store images and files: the page's own choice, or its parent's.
     Command(
       id: AppCommands.attachmentsInherit,
@@ -292,6 +322,25 @@ CommandRegistry binderCommands(
         icon: Icons.book_rounded,
         invoke: () => nb.showCover(b.path),
       ),
+      Command(
+        id: AppCommands.binderAiDefault,
+        label: 'App default (${defaultAiSetting.label})',
+        icon: Icons.settings_suggest_rounded,
+        checked: () => b.binder?.aiSetting == null,
+        invoke: () => nb.setBinderAiSetting(b.path, null),
+      ),
+      for (final s in AiSetting.values)
+        Command(
+          id: AppCommands.binderAiId(s),
+          label: s.label,
+          icon: switch (s) {
+            AiSetting.off => Icons.visibility_off_rounded,
+            AiSetting.boxOnly => Icons.crop_square_rounded,
+            AiSetting.wholePage => Icons.article_rounded,
+          },
+          checked: () => b.binder?.aiSetting == s,
+          invoke: () => nb.setBinderAiSetting(b.path, s),
+        ),
       for (final s in AttachmentStorage.values)
         Command(
           id: AppCommands.binderAttachmentsId(s),

@@ -6,6 +6,7 @@
 /// side of the Box API. Pure Dart; nothing in this library imports Flutter.
 library;
 
+export 'src/ai/ai_setting.dart';
 export 'src/attachments/attachments.dart';
 export 'src/binder/binder.dart';
 export 'src/box_api/box_codec.dart';

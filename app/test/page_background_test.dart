@@ -134,15 +134,15 @@ void main() {
           findsOneWidget);
     }
     // Plain is the current one: one check mark for the background (the
-    // other is "Store images and files: Same as parent").
-    expect(find.byIcon(Icons.check_rounded), findsNWidgets(2));
+    // others are "Same as parent" for AI access and for storing files).
+    expect(find.byIcon(Icons.check_rounded), findsNWidgets(3));
     await tester.tap(find.text('Page background: Dots'));
     await tester.pump();
     await settle(tester);
     expect(await onDisk(tester, b), PageBackground.dots);
 
     await rightClick(b);
-    expect(find.byIcon(Icons.check_rounded), findsNWidgets(2));
+    expect(find.byIcon(Icons.check_rounded), findsNWidgets(3));
     final checked = find.ancestor(
       of: find.byIcon(Icons.check_rounded),
       matching: find.byType(NotedMenuItem<String>),

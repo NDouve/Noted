@@ -682,6 +682,86 @@ class Notebook extends ChangeNotifier {
     watch: watchFiles,
   );
 
+  // The page AI setting (0028) -------------------------------------------------
+
+  /// Page [id]'s header, then its parents' up to the top, nearest first. The
+  /// open page's header comes from its controller.
+  List<PageMeta> _metaChain(String id) {
+    final tree = _treeOf(_loc[id] ?? _standalone);
+    final chain = <PageMeta>[];
+    final seen = <String>{};
+    String? at = id;
+    while (at != null && seen.add(at)) {
+      final m = (at == currentId ? _current?.page.meta : null) ?? _metas[at];
+      if (m == null) break;
+      chain.add(m);
+      at = tree.parentIdOf(at);
+    }
+    return chain;
+  }
+
+  /// The AI setting that applies to page [id]: its own, else its nearest
+  /// parent page's, else its binder's, else Off.
+  AiSetting aiSettingFor(String id) =>
+      effectiveAiSetting(_metaChain(id), binder: _binders[_loc[id] ?? _standalone]?.binder);
+
+  /// What page [id] would have without its own choice: its parent's, its
+  /// binder's or the app default.
+  AiSetting inheritedAiSetting(String id) {
+    final chain = _metaChain(id);
+    return effectiveAiSetting(chain.skip(1), binder: _binders[_loc[id] ?? _standalone]?.binder);
+  }
+
+  /// Page [id]'s own AI choice, or null if it follows its parent.
+  AiSetting? ownAiSetting(String id) =>
+      ((id == currentId ? _current?.page.meta : null) ?? _metas[id])?.aiSetting;
+
+  /// Sets page [id]'s own AI choice (null: follow the parent). Only the
+  /// header changes.
+  Future<void> setAiSetting(String id, AiSetting? value) async {
+    final loc = _loc[id] ?? _standalone;
+    _assertWritable(loc);
+    final c = _current;
+    if (c != null && c.page.id == id) {
+      final meta = c.page.meta.withAiSetting(value);
+      if (identical(meta, c.page.meta)) return;
+      c.updateMeta(meta);
+      _metas[id] = meta;
+      notifyListeners();
+      return;
+    }
+    final page = await _storeOf(loc).load(id);
+    final meta = page.meta.withAiSetting(value);
+    if (identical(meta, page.meta)) return;
+    final next = page.withMeta(meta);
+    await _write(loc, next);
+    _touch(loc);
+    _metas[id] = next.meta;
+    _rebuildTree();
+  }
+
+  /// Sets binder [path]'s AI choice (null: the app default, Off), which its
+  /// pages follow unless they have their own.
+  Future<void> setBinderAiSetting(String path, AiSetting? value) async {
+    final s = _binders[path];
+    final b = s?.binder;
+    if (s == null || b == null || !s.available) return;
+    if (b.aiSetting == value && (value != null || b.fields[aiSettingKey] == null)) return;
+    s.binder = b.withAiSetting(value);
+    notifyListeners();
+    final job = _saving.then((_) async {
+      final latest = s.binder;
+      if (latest != null) {
+        await BinderStore(Directory(path)).save(latest);
+        _binderText[_key(path)] = latest.write();
+      }
+    }).catchError((Object e) {
+      debugPrint('Saving binder $path failed: $e');
+    });
+    _saving = job;
+    await job;
+  }
+
   // Attachments (images and files) -----------------------------------------
 
   /// The "Store images and files" setting that applies to page [id]: its

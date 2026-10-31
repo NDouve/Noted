@@ -409,6 +409,11 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         _item(r, AppCommands.binderNewPageFromTemplate),
         _item(r, AppCommands.binderCover),
         const NotedMenuDivider(),
+        const NotedMenuHeading('AI access'),
+        NotedMenuItem.forCommand(r[AppCommands.binderAiDefault]!, showCheck: true),
+        for (final s in AiSetting.values)
+          NotedMenuItem.forCommand(r[AppCommands.binderAiId(s)]!, showCheck: true),
+        const NotedMenuDivider(),
         const NotedMenuHeading('Store images and files'),
         for (final s in AttachmentStorage.values)
           NotedMenuItem.forCommand(r[AppCommands.binderAttachmentsId(s)]!, showCheck: true),
@@ -663,6 +668,11 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       const NotedMenuDivider(),
       for (final b in PageBackground.values)
         NotedMenuItem.forCommand(r[AppCommands.backgroundId(b)]!, showCheck: true),
+      const NotedMenuDivider(),
+      const NotedMenuHeading('AI access'),
+      NotedMenuItem.forCommand(r[AppCommands.aiInherit]!, showCheck: true),
+      for (final s in AiSetting.values)
+        NotedMenuItem.forCommand(r[AppCommands.aiId(s)]!, showCheck: true),
       const NotedMenuDivider(),
       const NotedMenuHeading('Store images and files'),
       NotedMenuItem.forCommand(r[AppCommands.attachmentsInherit]!, showCheck: true),
