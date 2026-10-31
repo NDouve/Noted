@@ -76,14 +76,26 @@ void main() {
   }
 
   for (final size in [16, 20]) {
-    test('$size px draws the N only, centred', () {
+    test('$size px draws the N only, filling the square less 1 px', () {
       final img = render(master, size);
-      expect(inkInTopRight(img), 0);
-      final cols = [
-        for (var x = 0; x < size; x++)
-          if (List.generate(size, (y) => alpha(img, x, y)).any((a) => a > 0)) x,
-      ];
-      expect(cols.first + cols.last, size - 1);
+      bool inkedCol(int x) =>
+          List.generate(size, (y) => alpha(img, x, y)).any((a) => a > 0);
+      bool inkedRow(int y) =>
+          List.generate(size, (x) => alpha(img, x, y)).any((a) => a > 0);
+      final cols = [for (var x = 0; x < size; x++) if (inkedCol(x)) x];
+      final rows = [for (var y = 0; y < size; y++) if (inkedRow(y)) y];
+      expect([cols.first, cols.last], [1, size - 2]);
+      expect([rows.first, rows.last], [1, size - 2]);
+      // The N alone looks the same turned half a turn; a d would not.
+      for (var y = 0; y < size; y++) {
+        for (var x = 0; x < size; x++) {
+          expect(
+            alpha(img, x, y),
+            alpha(img, size - 1 - x, size - 1 - y),
+            reason: '($x, $y)',
+          );
+        }
+      }
     });
   }
 
@@ -108,11 +120,15 @@ void main() {
     });
   }
 
-  for (final size in [16, 24, 32]) {
+  for (final size in [16, 20, 24, 32]) {
     test('$size px: the N stems are whole opaque pixels', () {
       final img = render(master, size);
-      // The master's N stroke width, rounded to whole pixels.
-      final width = (72 * size / 410).round();
+      // The master's N stroke width, rounded to whole pixels: up to 20 px
+      // scaled with the N's outline (352 units tall) to the square less
+      // 1 px each side, from 24 px with the 410-unit view box.
+      final width = size <= nOnlyMaxSize
+          ? (72 * (size - 2) / 352).round()
+          : (72 * size / 410).round();
       // From the outside in, the first inked pixel of a stem row starts a
       // run of `width` opaque pixels: no partly covered edge column.
       List<int> fromEdge(int y, {required bool left}) {

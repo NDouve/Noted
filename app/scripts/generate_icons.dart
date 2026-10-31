@@ -446,10 +446,14 @@ List<Shape> _shapesAt(Svg svg, int size) {
 /// The largest size drawn with the N only ([_fitted]).
 const nOnlyMaxSize = 20;
 
+/// The clear margin, in pixels, around the N at [nOnlyMaxSize] and below.
+const nMargin = 1;
+
 /// Pixel fitting for small sizes:
 /// - at [nOnlyMaxSize] px and below only the N is drawn (the shapes with the
-///   widest stroke), centred across the icon: the superscript d would be a
-///   smudge of one or two pixels there. From 24 px the d is kept;
+///   widest stroke), scaled to fill the icon less [nMargin] on every side:
+///   the superscript d would be a smudge of one or two pixels there. From
+///   24 px the d is kept;
 /// - every path vertex snaps so that a stroke's edges fall on pixel
 ///   boundaries (to a pixel edge for even pixel widths, a pixel centre for
 ///   odd ones), which keeps the N's stems sharp;
@@ -461,13 +465,35 @@ List<Shape> _fitted(List<Shape> shapes, int size) {
       for (final sh in shapes)
         if (sh.stroke != null && sh.strokeWidth == widest) sh,
     ];
-    final xs = [
+    final pts = [
       for (final sh in n)
-        for (final p in sh.subpaths) ...p.map((q) => q.x),
+        for (final p in sh.subpaths) ...p,
     ];
-    final dx = size / 2 - (xs.reduce(math.min) + xs.reduce(math.max)) / 2;
+    final x0 = pts.map((q) => q.x).reduce(math.min);
+    final x1 = pts.map((q) => q.x).reduce(math.max);
+    final y0 = pts.map((q) => q.y).reduce(math.min);
+    final y1 = pts.map((q) => q.y).reduce(math.max);
+    // The stroke grows with the height; the outline then spans the square
+    // less the margin both ways (wider than the master's proportions).
+    final w = math
+        .max(1, (widest * (size - 2 * nMargin) / (y1 - y0 + widest)).round())
+        .toDouble();
+    final lo = nMargin + w / 2, hi = size - nMargin - w / 2;
+    math.Point<double> fit(math.Point<double> p) => math.Point(
+      lo + (p.x - x0) / (x1 - x0) * (hi - lo),
+      lo + (p.y - y0) / (y1 - y0) * (hi - lo),
+    );
     shapes = [
-      for (final sh in n) sh.transformed((p) => math.Point(p.x + dx, p.y), 1),
+      for (final sh in n)
+        Shape(
+          subpaths: [
+            for (final p in sh.subpaths) [for (final q in p) fit(q)],
+          ],
+          closed: sh.closed,
+          fill: sh.fill?.transformed(fit),
+          stroke: sh.stroke?.transformed(fit),
+          strokeWidth: w,
+        ),
     ];
   }
   final out = <Shape>[];
