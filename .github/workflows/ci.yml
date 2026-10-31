@@ -77,15 +77,18 @@ jobs:
                   last=$(grep -E '^[0-9]+:[0-9]+ \+' "$log" | tail -n 3 | tr '\n' ' ' || true)
                   echo "::error title=Timed out in $dir::Still running after 8 minutes. Last tests: $last"
                 fi
-                # Each failed test with the first lines of its error, as one
-                # annotation (%0A is a line break there; % is escaped first).
+                # Each failed test as one annotation: its name, the start of
+                # the exception Flutter printed before it, and the lines after
+                # it (%0A is a line break there; % is escaped first).
                 { awk '
                   function out() { if (msg != "") print msg; msg = ""; n = 0 }
-                  /^[0-9]+:[0-9]+ \+/ { out() }
-                  /\[E\]\r?$/ { gsub(/\r/, ""); msg = $0; n = 0; next }
-                  msg != "" && n < 8 && $0 !~ /^[[:space:]]*$/ {
-                    gsub(/\r/, ""); gsub(/%/, "%25"); msg = msg "%0A" $0; n++
-                  }
+                  { gsub(/\r/, ""); gsub(/%/, "%25") }
+                  /^[0-9]+:[0-9]+ \+/ && !/\[E\]$/ { out(); exc = ""; e = -1 }
+                  /EXCEPTION CAUGHT BY/ { exc = ""; e = 0; next }
+                  e >= 0 && e < 4 && $0 !~ /^[[:space:]]*$/ && !/^When the exception/ { exc = exc "%0A" $0; e++; next }
+                  e >= 0 && /^When the exception/ { e = 4 }
+                  /\[E\]$/ { out(); msg = $0 exc; exc = ""; e = -1; next }
+                  msg != "" && n < 6 && $0 !~ /^[[:space:]]*$/ { msg = msg "%0A" $0; n++ }
                   END { out() }
                 ' "$log" || true; } | head -n 10 | while read -r line; do
                   echo "::error title=Test failed in $dir::$line"
