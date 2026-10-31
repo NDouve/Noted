@@ -10,6 +10,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'app_settings.dart';
+import 'page_attachments.dart';
 import 'recovery_store.dart';
 import 'search_scope.dart';
 
@@ -72,7 +73,7 @@ class FolderUnavailableException extends NotebookException {
 
 /// Pages removed by one delete, held in full so the delete can be undone.
 class DeletedPages {
-  DeletedPages._(this.pages, this.openId, this._location);
+  DeletedPages._(this.pages, this.openId, this._location, this._assets);
 
   /// The deleted page and its subpages, parents before children.
   final List<NotedPage> pages;
@@ -81,6 +82,10 @@ class DeletedPages {
   final String? openId;
 
   final String _location;
+
+  // Each deleted page's assets folder, set aside until the delete is undone
+  // (moved back) or forgotten (removed).
+  final Map<String, Directory> _assets;
 }
 
 /// Whether a binder's folder could be used.
@@ -241,7 +246,40 @@ class Notebook extends ChangeNotifier {
     this.folderCheckInterval = const Duration(seconds: 3),
     this.recoveryDirectory,
     this.settings,
+    this.cacheDirectory,
+    this.attachmentPicker,
+    this.attachmentOpener,
   });
+
+  /// Where derived files (image display copies) are cached; never in a page
+  /// folder, so never synced. Null: `cache` next to [bindersFile], or a
+  /// temporary folder.
+  final Directory? cacheDirectory;
+
+  /// Asks the user for files to attach (Insert → Image, Insert → File).
+  final FilePicker? attachmentPicker;
+
+  /// Opens an attachment with the system's default app.
+  final FileOpener? attachmentOpener;
+
+  // This app's own folder (beside binders.json), or a temporary one.
+  Directory get _appDir =>
+      bindersFile?.parent ?? Directory('${Directory.systemTemp.path}${Platform.pathSeparator}noted-app');
+
+  Directory get _cacheDir => cacheDirectory ?? Directory('${_appDir.path}${Platform.pathSeparator}cache');
+
+  // Assets folders of deleted pages, kept until the delete can't be undone.
+  Directory get _deletedAssetsDir => Directory('${_appDir.path}${Platform.pathSeparator}deleted-attachments');
+
+  final StreamController<String> _notices = StreamController<String>.broadcast();
+
+  /// One-line notices about attachments (a file too large to embed).
+  Stream<String> get attachmentNotices => _notices.stream;
+
+  PageAttachments? _attachments;
+
+  /// The open page's images and files, or null with no page open.
+  PageAttachments? get attachments => _attachments;
 
   /// This device's settings; they hold the default page and binder folders.
   /// Null: the built-in defaults.
@@ -627,8 +665,147 @@ class Notebook extends ChangeNotifier {
       onChanged: _pageChanged,
       deviceName: deviceName,
     );
+    _attachments = _makeAttachments(id, _loc[id] ?? _standalone);
     _syncReadOnly();
     _rebuildTree();
+  }
+
+  PageAttachments _makeAttachments(String id, String loc) => PageAttachments(
+    pageFolder: _storeOf(loc).directory,
+    pageId: id,
+    storage: () => attachmentStorageFor(id),
+    cacheDirectory: _cacheDir,
+    recoveryDirectory: _recovery?.directory,
+    onNotice: _notices.add,
+    picker: attachmentPicker,
+    opener: attachmentOpener,
+    watch: watchFiles,
+  );
+
+  // Attachments (images and files) -----------------------------------------
+
+  /// The "Store images and files" setting that applies to page [id]: its
+  /// own, else its nearest parent page's, else its binder's, else folder
+  /// (configuration inheritance, 0027).
+  AttachmentStorage attachmentStorageFor(String id) {
+    final loc = _loc[id] ?? _standalone;
+    final tree = _treeOf(loc);
+    final chain = <PageMeta>[];
+    final seen = <String>{};
+    String? at = id;
+    while (at != null && seen.add(at)) {
+      final m = (at == currentId ? _current?.page.meta : null) ?? _metas[at];
+      if (m == null) break;
+      chain.add(m);
+      at = tree.parentIdOf(at);
+    }
+    return effectiveAttachmentStorage(chain, binder: _binders[loc]?.binder);
+  }
+
+  /// Page [id]'s own "Store images and files" choice, or null if it follows
+  /// its parent.
+  AttachmentStorage? ownAttachmentStorage(String id) =>
+      ((id == currentId ? _current?.page.meta : null) ?? _metas[id])?.attachmentStorage;
+
+  /// Sets page [id]'s own choice (null: follow the parent). Only the header
+  /// changes; existing boxes keep their files where they are (see
+  /// [convertAttachments]).
+  Future<void> setAttachmentStorage(String id, AttachmentStorage? value) async {
+    final loc = _loc[id] ?? _standalone;
+    _assertWritable(loc);
+    final c = _current;
+    if (c != null && c.page.id == id) {
+      final meta = c.page.meta.withAttachmentStorage(value);
+      if (identical(meta, c.page.meta)) return;
+      c.updateMeta(meta);
+      _metas[id] = meta;
+      notifyListeners();
+      return;
+    }
+    final page = await _storeOf(loc).load(id);
+    final meta = page.meta.withAttachmentStorage(value);
+    if (identical(meta, page.meta)) return;
+    final next = page.withMeta(meta);
+    await _write(loc, next);
+    _touch(loc);
+    _metas[id] = next.meta;
+    _rebuildTree();
+  }
+
+  /// Sets binder [path]'s "Store images and files" choice, which its pages
+  /// follow unless they have their own.
+  Future<void> setBinderAttachmentStorage(String path, AttachmentStorage value) async {
+    final s = _binders[path];
+    final b = s?.binder;
+    if (s == null || b == null || !s.available) return;
+    if (b.attachmentStorage == value) return;
+    s.binder = b.withAttachmentStorage(value);
+    notifyListeners();
+    final job = _saving.then((_) async {
+      final latest = s.binder;
+      if (latest != null) {
+        await BinderStore(Directory(path)).save(latest);
+        _binderText[_key(path)] = latest.write();
+      }
+    }).catchError((Object e) {
+      debugPrint('Saving binder $path failed: $e');
+    });
+    _saving = job;
+    await job;
+  }
+
+  /// "Embed attachments" / "Move attachments to folder" on page [id]
+  /// (opened first if it isn't): every image and file box keeps its file
+  /// the [to] way, as one undo step. Files over [embedLimitBytes] stay in
+  /// the folder and are listed in the result.
+  Future<AttachmentConversion> convertAttachments(String id, AttachmentStorage to) async {
+    _assertWritable(_loc[id] ?? _standalone);
+    if (currentId != id) await open(id);
+    final c = _current;
+    final store = _attachments;
+    if (c == null || store == null || c.readOnly) {
+      return const AttachmentConversion(changed: 0, overLimit: []);
+    }
+    return convertPageAttachments(c, store, to);
+  }
+
+  Directory _assetsDir(String loc, String id) =>
+      Directory('${_storeOf(loc).directory.path}${Platform.pathSeparator}${assetsFolderName(id)}');
+
+  /// Copies the files of [from] into [to] (made if needed), leaving files
+  /// that are there already (same name, same content).
+  static Future<void> _copyDir(Directory from, Directory to) async {
+    if (!await from.exists()) return;
+    await to.create(recursive: true);
+    await for (final e in from.list()) {
+      final name = e.path.split(RegExp(r'[\\/]')).last;
+      final target = '${to.path}${Platform.pathSeparator}$name';
+      if (e is Directory) {
+        await _copyDir(e, Directory(target));
+      } else if (e is File && !name.endsWith('.tmp') && !await File(target).exists()) {
+        await e.copy(target);
+      }
+    }
+  }
+
+  /// Moves [from] to [to]: a rename, or a copy and delete across drives.
+  static Future<void> _moveDir(Directory from, Directory to) async {
+    if (!await from.exists()) return;
+    await to.parent.create(recursive: true);
+    try {
+      await from.rename(to.path);
+    } on FileSystemException {
+      await _copyDir(from, to);
+      await from.delete(recursive: true);
+    }
+  }
+
+  static Future<void> _removeDir(Directory d) async {
+    try {
+      if (await d.exists()) await d.delete(recursive: true);
+    } on FileSystemException catch (e) {
+      debugPrint('Removing ${d.path} failed: $e');
+    }
   }
 
   // Makes the open page read-only if its location can't be written, and
@@ -755,7 +932,23 @@ class Notebook extends ChangeNotifier {
     // Closing saves the open page, so the copies read below are current.
     if (openId != null) await _closeCurrent();
     final pages = [for (final p in ids) await st.load(p)];
-    final deleted = DeletedPages._(pages, openId, loc);
+    final previous = _lastDeleted;
+    if (previous != null) discardDeleted(previous);
+    // Each page's assets folder is set aside, so undo can bring it back.
+    final stash = <String, Directory>{};
+    final trash = Directory('${_deletedAssetsDir.path}${Platform.pathSeparator}${newId()}');
+    for (final p in ids) {
+      final dir = _assetsDir(loc, p);
+      if (!await dir.exists()) continue;
+      final to = Directory('${trash.path}${Platform.pathSeparator}${assetsFolderName(p)}');
+      try {
+        await _moveDir(dir, to);
+        stash[p] = to;
+      } on FileSystemException catch (e) {
+        debugPrint('Setting aside ${dir.path} failed: $e');
+      }
+    }
+    final deleted = DeletedPages._(pages, openId, loc, stash);
     _lastDeleted = deleted;
     for (final p in ids) {
       await _delete(loc, p);
@@ -791,6 +984,13 @@ class Notebook extends ChangeNotifier {
     } on NotebookException {
       return;
     }
+    for (final MapEntry(key: id, value: dir) in deleted._assets.entries) {
+      try {
+        await _moveDir(dir, _assetsDir(deleted._location, id));
+      } on FileSystemException catch (e) {
+        debugPrint('Restoring the attachments of page $id failed: $e');
+      }
+    }
     for (final page in deleted.pages) {
       await _write(deleted._location, page);
       _metas[page.id] = page.meta;
@@ -805,6 +1005,9 @@ class Notebook extends ChangeNotifier {
   /// Drops the in-memory copy of [deleted] (its snackbar went away).
   void discardDeleted(DeletedPages deleted) {
     if (identical(_lastDeleted, deleted)) _lastDeleted = null;
+    for (final d in deleted._assets.values) {
+      unawaited(_removeDir(d.parent));
+    }
   }
 
   /// Moves [id] under [parentId] (null: top level) at [index] among that
@@ -1000,6 +1203,7 @@ class Notebook extends ChangeNotifier {
           } on Object catch (e) {
             debugPrint('Removing copy of page $w failed: $e');
           }
+          await _removeDir(_assetsDir(toLoc, w));
         }
       }
 
@@ -1012,6 +1216,8 @@ class Notebook extends ChangeNotifier {
               'A page was not copied correctly, so nothing was moved.',
             );
           }
+          // Its images and files go with it.
+          await _copyDir(_assetsDir(fromLoc, p.id), _assetsDir(toLoc, p.id));
         }
       } on Object catch (e) {
         await removeCopies();
@@ -1036,6 +1242,9 @@ class Notebook extends ChangeNotifier {
         }
         await removeCopies();
         throw NotebookException('Could not remove the old files, so nothing was moved: $e');
+      }
+      for (final id in ids) {
+        await _removeDir(_assetsDir(fromLoc, id));
       }
 
       for (final p in moved) {
@@ -1392,7 +1601,31 @@ class Notebook extends ChangeNotifier {
       page: page,
     );
     await _saveTemplate(dir, template);
+    await _copyDir(_assetsDir(loc, pageId), _templateAssets(dir, template.id, pageId));
     return template;
+  }
+
+  /// Where template [templateId] in [dir] keeps the images and files of its
+  /// page [pageId]: `<templateId>.assets/<pageId>/` beside the template file.
+  static Directory _templateAssets(Directory dir, String templateId, String pageId) => Directory(
+    '${dir.path}${Platform.pathSeparator}$templateId.assets${Platform.pathSeparator}$pageId',
+  );
+
+  /// Copies the images and files of template page [fromId] into the assets
+  /// folder of the new page [toId] in [loc]. The template is looked for in
+  /// the binder's templates (if [loc] is a binder) and the app-wide ones.
+  Future<void> _copyTemplateAssets(NotedTemplate template, String fromId, String loc, String toId) async {
+    final dirs = [
+      if (_binders.containsKey(loc)) _templatesDirFor(loc),
+      ?appTemplatesDirectory,
+    ];
+    for (final d in dirs) {
+      final src = _templateAssets(d, template.id, fromId);
+      if (await src.exists()) {
+        await _copyDir(src, _assetsDir(loc, toId));
+        return;
+      }
+    }
   }
 
   /// Saves the settings and whole page tree of the binder [path] as an
@@ -1425,6 +1658,9 @@ class Notebook extends ChangeNotifier {
       pages: pages,
     );
     await _saveTemplate(dir, template);
+    for (final id in ordered) {
+      await _copyDir(_assetsDir(path, id), _templateAssets(dir, template.id, id));
+    }
     return template;
   }
 
@@ -1440,6 +1676,10 @@ class Notebook extends ChangeNotifier {
   Future<void> deleteTemplate(TemplateItem item) async {
     try {
       await TemplateStore(_templatesDirFor(item.binderPath)).delete(item.path);
+      final stem = item.path.endsWith(templateExtension)
+          ? item.path.substring(0, item.path.length - templateExtension.length)
+          : item.path;
+      await _removeDir(Directory('$stem.assets'));
     } on FileSystemException catch (e) {
       throw NotebookException('Could not delete the template: ${e.message}');
     }
@@ -1462,6 +1702,8 @@ class Notebook extends ChangeNotifier {
       parentId: parentId,
       order: _treeOf(loc).nextOrder(parentId),
     );
+    // Its images and files first, so the page never shows without them.
+    await _copyTemplateAssets(template, template.page.id, loc, page.id);
     await _write(loc, page);
     _touch(loc);
     _metas[page.id] = page.meta;
@@ -1503,6 +1745,15 @@ class Notebook extends ChangeNotifier {
       for (final p in made.pages) {
         await pages.save(p);
         written.add(p.id);
+      }
+      // Binder templates are app-wide; their pages' images and files follow
+      // the new page ids.
+      final templates = appTemplatesDirectory;
+      for (var i = 0; templates != null && i < made.pages.length; i++) {
+        await _copyDir(
+          _templateAssets(templates, template.id, template.pages[i].id),
+          Directory('${dir.path}${Platform.pathSeparator}${assetsFolderName(made.pages[i].id)}'),
+        );
       }
     } on Object catch (e) {
       for (final id in written) {
@@ -1889,6 +2140,7 @@ class Notebook extends ChangeNotifier {
         return;
       }
       await rec.delete(e);
+      await _landRecoveredAssets(rec, loc, id);
       return;
     }
     final path = st.pathFor(id);
@@ -1919,6 +2171,21 @@ class Notebook extends ChangeNotifier {
     }
     await _applyClosed(readPage(back), loc, _key(path), path);
     await rec.delete(e);
+    await _landRecoveredAssets(rec, loc, id);
+  }
+
+  // Files added while the page's folder was away were kept beside the
+  // recovery entry; with the page saved, they move into its assets folder.
+  Future<void> _landRecoveredAssets(RecoveryStore rec, String loc, String id) async {
+    final kept = Directory('${rec.directory.path}${Platform.pathSeparator}${assetsFolderName(id)}');
+    if (!await kept.exists()) return;
+    try {
+      await _copyDir(kept, _assetsDir(loc, id));
+      await kept.delete(recursive: true);
+      _attachments?.filesChanged();
+    } on FileSystemException catch (e) {
+      debugPrint('Moving the kept attachments of page $id failed: $e');
+    }
   }
 
   Future<void> _write(String loc, NotedPage page) async {
@@ -2012,6 +2279,11 @@ class Notebook extends ChangeNotifier {
   }
 
   void _onFileEvent(FileSystemEvent e) {
+    // Something in or about an assets folder: the open page's boxes may be
+    // waiting for a file.
+    if (e.path.contains('.assets') || (e is FileSystemMoveEvent && (e.destination ?? '').contains('.assets'))) {
+      _attachments?.filesChanged();
+    }
     _schedule(e.path);
     if (e is FileSystemMoveEvent && e.destination != null) _schedule(e.destination!);
   }
@@ -2669,6 +2941,8 @@ class Notebook extends ChangeNotifier {
     await flush();
     _current?.dispose();
     _current = null;
+    _attachments?.dispose();
+    _attachments = null;
     _base = null;
     _orphanLoc = null;
     _readOnlyReason = null;
@@ -2703,6 +2977,8 @@ class Notebook extends ChangeNotifier {
     }
     _watchers.clear();
     _current?.dispose();
+    _attachments?.dispose();
+    unawaited(_notices.close());
     tools.dispose();
     super.dispose();
   }

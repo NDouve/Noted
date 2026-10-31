@@ -26,6 +26,12 @@ abstract final class AppCommands {
   static const String outdent = 'app.page.outdent';
   static const String delete = 'app.page.delete';
   static const String moveToFolder = 'app.page.moveToFolder';
+  static const String attachmentsInherit = 'app.page.attachments.inherit';
+  static const String embedAttachments = 'app.page.embedAttachments';
+  static const String attachmentsToFolder = 'app.page.attachmentsToFolder';
+
+  /// The page command that stores images and files the [s] way.
+  static String attachmentsId(AttachmentStorage s) => 'app.page.attachments.${s.value}';
 
   /// Chooses a page's background: `app.page.background.dots`.
   static String backgroundId(PageBackground b) => 'app.page.background.${b.name}';
@@ -41,6 +47,9 @@ abstract final class AppCommands {
   static const String binderCover = 'app.binder.cover';
   static const String binderSaveAsTemplate = 'app.binder.saveAsTemplate';
   static const String binderRemove = 'app.binder.remove';
+
+  /// The binder command that stores images and files the [s] way.
+  static String binderAttachmentsId(AttachmentStorage s) => 'app.binder.attachments.${s.value}';
 
   // Theme.
   // Default folders (the settings menu).
@@ -79,6 +88,7 @@ abstract interface class PageTreeActions {
   Future<void> indent(PageMeta page);
   Future<void> delete(PageMeta page);
   Future<void> moveToFolder(PageMeta page);
+  Future<void> convertAttachments(PageMeta page, AttachmentStorage to);
   Future<void> binderNewPage(BinderSection binder);
   Future<void> binderNewPageFromTemplate(BinderSection binder);
   Future<void> binderSaveAsTemplate(BinderSection binder);
@@ -210,6 +220,38 @@ CommandRegistry pageCommands(Notebook nb, PageMeta p, PageTreeActions a) {
       icon: Icons.delete_outline_rounded,
       invoke: () => a.delete(p),
     ),
+    // Store images and files: the page's own choice, or its parent's.
+    Command(
+      id: AppCommands.attachmentsInherit,
+      label: 'Same as parent',
+      icon: Icons.subdirectory_arrow_left_rounded,
+      enabled: () => !nb.isReadOnlyPage(p.id),
+      checked: () => nb.ownAttachmentStorage(p.id) == null,
+      invoke: () => nb.setAttachmentStorage(p.id, null),
+    ),
+    for (final s in AttachmentStorage.values)
+      Command(
+        id: AppCommands.attachmentsId(s),
+        label: s.label,
+        icon: s == AttachmentStorage.folder ? Icons.folder_rounded : Icons.description_rounded,
+        enabled: () => !nb.isReadOnlyPage(p.id),
+        checked: () => nb.ownAttachmentStorage(p.id) == s,
+        invoke: () => nb.setAttachmentStorage(p.id, s),
+      ),
+    Command(
+      id: AppCommands.embedAttachments,
+      label: 'Embed attachments',
+      icon: Icons.move_down_rounded,
+      enabled: () => !nb.isReadOnlyPage(p.id),
+      invoke: () => a.convertAttachments(p, AttachmentStorage.embedded),
+    ),
+    Command(
+      id: AppCommands.attachmentsToFolder,
+      label: 'Move attachments to folder',
+      icon: Icons.drive_folder_upload_rounded,
+      enabled: () => !nb.isReadOnlyPage(p.id),
+      invoke: () => a.convertAttachments(p, AttachmentStorage.folder),
+    ),
     for (final b in PageBackground.values)
       Command(
         id: AppCommands.backgroundId(b),
@@ -250,6 +292,14 @@ CommandRegistry binderCommands(
         icon: Icons.book_rounded,
         invoke: () => nb.showCover(b.path),
       ),
+      for (final s in AttachmentStorage.values)
+        Command(
+          id: AppCommands.binderAttachmentsId(s),
+          label: s.label,
+          icon: s == AttachmentStorage.folder ? Icons.folder_rounded : Icons.description_rounded,
+          checked: () => (b.binder?.attachmentStorage ?? AttachmentStorage.folder) == s,
+          invoke: () => nb.setBinderAttachmentStorage(b.path, s),
+        ),
       Command(
         id: AppCommands.binderSaveAsTemplate,
         label: 'Save as template…',

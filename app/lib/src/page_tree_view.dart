@@ -237,6 +237,21 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
   });
 
   @override
+  Future<void> convertAttachments(PageMeta p, AttachmentStorage to) => _guard(() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final r = await _nb.convertAttachments(p.id, to);
+    final done = switch (to) {
+      AttachmentStorage.embedded => 'Embedded ${r.changed} ${r.changed == 1 ? 'attachment' : 'attachments'}',
+      AttachmentStorage.folder => 'Moved ${r.changed} ${r.changed == 1 ? 'attachment' : 'attachments'} to the folder',
+    };
+    final kept = r.overLimit.isEmpty
+        ? ''
+        : '. Kept in the folder (over 5 MB): ${r.overLimit.join(', ')}';
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(SnackBar(content: Text('$done$kept.'.replaceAll('..', '.'))));
+  });
+
+  @override
   Future<void> newBinderFromTemplate() => _guard(_newBinderFromTemplate);
 
   Future<TemplateItem?> _pickTemplate(TemplateKind kind, String title, {String? binderPath}) async {
@@ -393,6 +408,10 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         _item(r, AppCommands.binderNewPage),
         _item(r, AppCommands.binderNewPageFromTemplate),
         _item(r, AppCommands.binderCover),
+        const NotedMenuDivider(),
+        const NotedMenuHeading('Store images and files'),
+        for (final s in AttachmentStorage.values)
+          NotedMenuItem.forCommand(r[AppCommands.binderAttachmentsId(s)]!, showCheck: true),
         const NotedMenuDivider(),
         _item(r, AppCommands.binderSaveAsTemplate),
         const NotedMenuDivider(),
@@ -644,6 +663,13 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       const NotedMenuDivider(),
       for (final b in PageBackground.values)
         NotedMenuItem.forCommand(r[AppCommands.backgroundId(b)]!, showCheck: true),
+      const NotedMenuDivider(),
+      const NotedMenuHeading('Store images and files'),
+      NotedMenuItem.forCommand(r[AppCommands.attachmentsInherit]!, showCheck: true),
+      for (final s in AttachmentStorage.values)
+        NotedMenuItem.forCommand(r[AppCommands.attachmentsId(s)]!, showCheck: true),
+      _item(r, AppCommands.embedAttachments),
+      _item(r, AppCommands.attachmentsToFolder),
       const NotedMenuDivider(),
       _item(r, AppCommands.moveUp),
       _item(r, AppCommands.moveDown),

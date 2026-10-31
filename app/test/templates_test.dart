@@ -467,6 +467,11 @@ void main() {
       await tester.runAsync(() => nb.savePageAsTemplate(parent, name: 'Again'));
       await pageMenu(tester, 'New subpage from template…');
       await tapAsync(tester, find.text('Again'));
+      // Making the page reads and writes files: wait for it.
+      for (var i = 0; i < 60 && nb.tree.childrenOf(parent).isEmpty; i++) {
+        await tester.runAsync(() => realIoPause(50));
+        await tester.pump(const Duration(milliseconds: 50));
+      }
       expect(nb.tree.childrenOf(parent), hasLength(1));
       await finish(tester);
     });

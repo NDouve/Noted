@@ -31,6 +31,9 @@ class _Actions implements PageTreeActions {
   @override
   Future<void> moveToFolder(PageMeta page) async => calls.add('moveToFolder ${page.id}');
   @override
+  Future<void> convertAttachments(PageMeta page, AttachmentStorage to) async =>
+      calls.add('convertAttachments ${page.id} ${to.value}');
+  @override
   Future<void> newBinderFromTemplate() async => calls.add('newBinderFromTemplate');
   @override
   Future<void> newSubpage(PageMeta page) async => calls.add('newSubpage ${page.id}');
@@ -88,6 +91,11 @@ void main() {
           ('app.page.outdent', 'Outdent'),
           ('app.page.moveToFolder', 'Move to folder…'),
           ('app.page.delete', 'Delete'),
+          ('app.page.attachments.inherit', 'Same as parent'),
+          ('app.page.attachments.folder', 'In a folder beside the page'),
+          ('app.page.attachments.embedded', 'In the page file'),
+          ('app.page.embedAttachments', 'Embed attachments'),
+          ('app.page.attachmentsToFolder', 'Move attachments to folder'),
           ('app.page.background.plain', 'Page background: Plain'),
           ('app.page.background.dots', 'Page background: Dots'),
           ('app.page.background.graph', 'Page background: Graph'),
@@ -209,7 +217,7 @@ void main() {
     shows(['Fit all', 'Zoom to 100% (Ctrl+0)', 'Zoom in (Ctrl+=)', 'Find on page (Ctrl+F)']);
     expect(find.text('100%'), findsOneWidget);
     await openTab('insert');
-    shows(['Insert table', 'Insert equation', 'Image (coming later)']);
+    shows(['Insert table', 'Insert equation', 'Insert image', 'Insert file', 'AI box (coming later)']);
 
     bool checked(String tooltip) => t
         .widget<IconButton>(
@@ -229,7 +237,8 @@ void main() {
     expect(btn('Undo (Ctrl+Z)').onPressed, isNull);
     expect(textBtn('Insert table').onPressed, isNull);
     expect(textBtn('Insert equation').onPressed, isNull);
-    expect(textBtn('Image (coming later)').onPressed, isNull);
+    expect(textBtn('AI box (coming later)').onPressed, isNull);
+    expect(textBtn('Insert image').onPressed, isNotNull, reason: 'the page has an assets folder');
 
     await openTab('draw');
     shows(['Select and type (V)', 'Pen (P)', 'Eraser (E)', 'Undo (Ctrl+Z)']);

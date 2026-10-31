@@ -22,7 +22,16 @@ dependencies:
     path: ../packages/boxes/template
   noted_box_note:
     path: ../packages/boxes/note
+  noted_box_attachments:
+    path: ../packages/boxes/attachments
   file_selector: ^1.1.0
+  # Files dropped onto the canvas (Apache-2.0). 0.9 needs cross_file 0.4,
+  # which appflowy_editor (through file_picker) does not allow yet.
+  desktop_drop: ^0.8.4
+  # Images on the clipboard (Apache-2.0).
+  pasteboard: ^0.6.0
+  # Opens attachments and links with the default app (BSD-3-Clause).
+  url_launcher: ^6.3.3
 
 dev_dependencies:
   flutter_test:

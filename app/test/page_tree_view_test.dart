@@ -44,6 +44,12 @@ void main() {
   }
 
   Future<void> start(WidgetTester tester, {ThemeData? theme}) async {
+    // Room for the whole page menu.
+    if (tester.view.physicalSize.height / tester.view.devicePixelRatio < 1400) {
+      tester.view.physicalSize = const Size(800, 1400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+    }
     await tester.runAsync(() async {
       dir = await Directory.systemTemp.createTemp('noted_tree_ui');
       nb = Notebook(PageStore(dir), buildModules(), saveDelay: Duration.zero);

@@ -2,6 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
+import 'dart:io';
+
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:noted_canvas/noted_canvas.dart';
@@ -47,10 +51,49 @@ class _HomeState extends State<Home> {
   /// title result). Only decoration; it never touches the title text.
   final ValueNotifier<TitleHighlight?> _titleHighlight = ValueNotifier<TitleHighlight?>(null);
 
+  /// The open page's canvas, for files dropped on it.
+  GlobalKey<PageCanvasState>? _canvasKey;
+  String? _canvasKeyFor;
+
+  StreamSubscription<String>? _notices;
+
   @override
   void initState() {
     super.initState();
     _search.addListener(_searchChanged);
+    _notices = notebook.attachmentNotices.listen(_showNotice);
+  }
+
+  // A one-line notice about attachments (a file too large to embed).
+  void _showNotice(String message) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  // A new canvas (and key) for each page, as the page id key gave before.
+  GlobalKey<PageCanvasState> _keyFor(String pageId) {
+    if (_canvasKeyFor != pageId || _canvasKey == null) {
+      _canvasKeyFor = pageId;
+      _canvasKey = GlobalKey<PageCanvasState>(debugLabel: pageId);
+    }
+    return _canvasKey!;
+  }
+
+  // Files dropped on the canvas become boxes where they were dropped.
+  Future<void> _dropped(DropDoneDetails d) async {
+    final canvas = _canvasKey?.currentState;
+    if (canvas == null) return;
+    final files = <IncomingFile>[];
+    for (final f in d.files) {
+      try {
+        files.add(IncomingFile(f.name, await f.readAsBytes()));
+      } on FileSystemException catch (e) {
+        debugPrint('Reading dropped file ${f.path} failed: $e');
+      }
+    }
+    if (files.isNotEmpty && canvas.mounted) await canvas.dropFiles(files, d.globalPosition);
   }
 
   // Clearing the search also clears the title highlight it put there.
@@ -62,6 +105,7 @@ class _HomeState extends State<Home> {
   void dispose() {
     _search.removeListener(_searchChanged);
     _titleHighlight.dispose();
+    unawaited(_notices?.cancel());
     _searchCommands.dispose();
     _findRequests.dispose();
     if (widget.search == null) _search.dispose();
@@ -201,14 +245,18 @@ class _HomeState extends State<Home> {
                             reason: notebook.readOnlyReason!,
                           ),
                         Expanded(
-                          child: PageCanvas(
-                            key: ValueKey(current.page.id),
-                            controller: current,
-                            tools: notebook.tools,
-                            readOnly: notebook.readOnlyReason != null,
-                            findRequests: _findRequests,
-                            extraCommands: () => [searchCommand(_search)],
-                            toolbar: (widget.settings?.toolbar ?? ToolbarStyle.tabs).layout,
+                          child: DropTarget(
+                            onDragDone: _dropped,
+                            child: PageCanvas(
+                              key: _keyFor(current.page.id),
+                              attachments: notebook.attachments,
+                              controller: current,
+                              tools: notebook.tools,
+                              readOnly: notebook.readOnlyReason != null,
+                              findRequests: _findRequests,
+                              extraCommands: () => [searchCommand(_search)],
+                              toolbar: (widget.settings?.toolbar ?? ToolbarStyle.tabs).layout,
+                            ),
                           ),
                         ),
                       ],

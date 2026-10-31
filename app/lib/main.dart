@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:noted_box_attachments/noted_box_attachments.dart';
 import 'package:noted_box_drawing/noted_box_drawing.dart';
 import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_box_template/noted_box_template.dart';
@@ -17,6 +18,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'src/app_settings.dart';
+import 'src/attachment_platform.dart';
 import 'src/app_theme.dart';
 import 'src/home.dart';
 import 'src/notebook.dart';
@@ -28,6 +30,10 @@ ModuleRegistry buildModules() =>
     ModuleRegistry()
       ..register(const NoteModule(), alwaysOn: true, isDefault: true)
       ..register(DrawingModule())
+      // Images before files: a picture becomes an image box, anything else a
+      // file box (BoxModule.fileAffinity).
+      ..register(const ImageModule())
+      ..register(const FileModule())
       // The template box module (docs/box-modules.md): compiled in, off by
       // default. Set enabled: true to try it.
       ..register(const StickyLabelModule(), enabled: false);
@@ -63,7 +69,11 @@ Future<void> main() async {
     watchFiles: true,
     deviceName: computerName(),
     settings: settings,
+    cacheDirectory: defaultCacheDirectory(),
+    attachmentPicker: pickAttachments,
+    attachmentOpener: openWithDefaultApp,
   );
+  FileClipboard.read = readClipboardFiles;
   runApp(NotedApp(notebook: notebook, settings: settings));
   await notebook.load();
 }

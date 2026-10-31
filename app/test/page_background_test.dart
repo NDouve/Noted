@@ -133,15 +133,16 @@ void main() {
       expect(find.text('Page background: ${bg.name[0].toUpperCase()}${bg.name.substring(1)}'),
           findsOneWidget);
     }
-    // Plain is the current one: exactly one check mark.
-    expect(find.byIcon(Icons.check_rounded), findsOneWidget);
+    // Plain is the current one: one check mark for the background (the
+    // other is "Store images and files: Same as parent").
+    expect(find.byIcon(Icons.check_rounded), findsNWidgets(2));
     await tester.tap(find.text('Page background: Dots'));
     await tester.pump();
     await settle(tester);
     expect(await onDisk(tester, b), PageBackground.dots);
 
     await rightClick(b);
-    expect(find.byIcon(Icons.check_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.check_rounded), findsNWidgets(2));
     final checked = find.ancestor(
       of: find.byIcon(Icons.check_rounded),
       matching: find.byType(NotedMenuItem<String>),
