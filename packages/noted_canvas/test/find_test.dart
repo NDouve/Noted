@@ -391,8 +391,12 @@ void main() {
     expect(key.currentState!.find.isOpen, isFalse);
   });
 
-  test('the default toolbar has Search in its view group', () {
-    expect(defaultToolbarLayout.last, contains('app.search'));
-    expect(defaultToolbarLayout.last, contains('canvas.fitAll'));
+  test('both toolbars always show Search; Find on page is on View', () {
+    expect(tabbedToolbarLayout.trailing.expand((g) => g), contains('app.search'));
+    expect(
+      tabbedToolbarLayout.tabs.last.groups.expand((g) => g),
+      containsAll(['canvas.find', 'canvas.fitAll']),
+    );
+    expect(contextualToolbarLayout.trailing.expand((g) => g), containsAll(['app.search', 'canvas.fitAll']));
   });
 }

@@ -33,136 +33,317 @@ List<List<Command>> resolveToolbarLayout(
   return groups;
 }
 
-/// The toolbar along the top of a canvas: one button for each command in
-/// [layout], built only from [registry] and drawn to the Toolbar guidelines.
+/// The toolbar along the top of a canvas, laid out by [layout] (one of the
+/// built-in [ToolbarStyle]s) and built only from [registry]. Commands the
+/// layout names that the registry doesn't have are skipped.
+///
+/// - [TabbedToolbarLayout]: a row of tabs, with the layout's leading
+///   commands left of them and its trailing commands at the right end, above
+///   a bar with the chosen tab's commands. A tab with nothing to show (all
+///   its commands are left out on a read-only page) is hidden.
+/// - [ContextualToolbarLayout]: one bar; the leading commands at the left,
+///   the trailing ones at the right, and between them a shaded section, the
+///   first of the layout's sections whose condition holds.
 ///
 /// Each button shows the command's state (checked, disabled), has a tooltip
 /// with the label and shortcut, and invokes the command. The toolbar never
 /// takes keyboard focus, so pressing a button leaves the editor you were
-/// typing in focused (insert table and insert equation need that).
+/// typing in focused (the note commands need that).
 ///
-/// The last group of the layout (view controls: Fit all, zoom) sits at the
-/// far right; the groups before it scroll sideways, or wrap on touch input.
-class CommandToolbar extends StatelessWidget {
+/// The bar's trailing commands sit at the far right and shrink to fit; the
+/// commands before them scroll sideways, or wrap on touch input.
+class CommandToolbar extends StatefulWidget {
   const CommandToolbar({
     super.key,
     required this.registry,
-    this.layout = defaultToolbarLayout,
+    this.layout = contextualToolbarLayout,
     this.readOnly = false,
   });
 
   final CommandRegistry registry;
-  final ToolbarLayout layout;
+  final ToolbarArrangement layout;
   final bool readOnly;
 
-  /// The height of the toolbar.
+  /// The height of one bar: the whole [ContextualToolbarLayout] toolbar, or
+  /// the command bar under a [TabbedToolbarLayout]'s tabs.
   static const double height = DesignMetrics.toolbarHeight;
+
+  /// The height of the row of tabs, on desktop.
+  static const double tabRowHeight =
+      DesignMetrics.control + DesignMetrics.space1;
+
+  /// The toolbar's height for [layout] on desktop.
+  static double heightFor(ToolbarArrangement layout) => switch (layout) {
+    TabbedToolbarLayout() => tabRowHeight + height,
+    ContextualToolbarLayout() => height,
+  };
+
+  /// The key of the tab with [id] in the row of tabs.
+  static Key tabKey(String id) => ValueKey('toolbar-tab-$id');
+
+  /// The key of the shaded middle section with [id] of a contextual
+  /// toolbar.
+  static Key sectionKey(String id) => ValueKey('toolbar-section-$id');
+
+  @override
+  State<CommandToolbar> createState() => _CommandToolbarState();
+}
+
+class _CommandToolbarState extends State<CommandToolbar> {
+  /// The chosen tab of a tabbed layout (null: the first shown).
+  String? _tab;
+
+  List<List<Command>> _resolve(ToolbarLayout groups) => resolveToolbarLayout(
+    widget.registry,
+    groups,
+    readOnly: widget.readOnly,
+  );
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final m = NotedMetrics.of(context);
     return ListenableBuilder(
-      listenable: registry,
-      builder: (context, _) {
-        final groups = resolveToolbarLayout(
-          registry,
-          layout,
-          readOnly: readOnly,
-        );
-        // Everything before the last group; the last is the view group.
-        final lead = groups.length > 1
-            ? groups.sublist(0, groups.length - 1)
-            : <List<Command>>[];
-        final view = groups.isEmpty ? <Command>[] : groups.last;
+      listenable: widget.registry,
+      builder: (context, _) => Material(
+        color: scheme.surface,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            border: Border(bottom: BorderSide(color: scheme.outline)),
+          ),
+          child: SizedBox(
+            width: double.infinity,
+            child: ExcludeFocus(
+              child: switch (widget.layout) {
+                final TabbedToolbarLayout l => _tabbed(context, l),
+                final ContextualToolbarLayout l => _contextual(context, l),
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
-        Widget row(List<Command> group) => Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (final (i, c) in group.indexed) ...[
-              if (i > 0) SizedBox(width: m.space1),
-              ToolbarEntry(key: ValueKey(c.id), command: c, registry: registry),
-            ],
-          ],
-        );
-        final leadWidgets = <Widget>[
-          for (final (i, g) in lead.indexed) ...[
-            if (i > 0) const ToolbarSeparator(),
-            row(g),
-          ],
+  Widget _row(List<Command> group) {
+    final m = NotedMetrics.of(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final (i, c) in group.indexed) ...[
+          if (i > 0) SizedBox(width: m.space1),
+          ToolbarEntry(
+            key: ValueKey(c.id),
+            command: c,
+            registry: widget.registry,
+          ),
+        ],
+      ],
+    );
+  }
+
+  List<Widget> _groups(List<List<Command>> groups) => [
+    for (final (i, g) in groups.indexed) ...[
+      if (i > 0) const ToolbarSeparator(),
+      _row(g),
+    ],
+  ];
+
+  /// One bar: [leading] fixed at the left, [middle] scrolling after it,
+  /// [trailing] at the far right; the fixed ends shrink to fit a narrow bar.
+  /// On touch input [leading] and [middle] wrap together instead.
+  Widget _bar({
+    List<Widget> leading = const [],
+    List<Widget> middle = const [],
+    List<Widget> trailing = const [],
+  }) {
+    final m = NotedMetrics.of(context);
+    return LayoutBuilder(
+      builder: (context, c) {
+        // Each fixed end may take at most 40% of the bar; the rest is for
+        // the middle.
+        Widget fit(List<Widget> children, Alignment alignment) =>
+            ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: c.maxWidth * 0.4),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: alignment,
+                child: Row(mainAxisSize: MainAxisSize.min, children: children),
+              ),
+            );
+        final end = trailing.isEmpty
+            ? const SizedBox.shrink()
+            : fit(trailing, Alignment.centerRight);
+        final start = [
+          if (leading.isNotEmpty) fit(leading, Alignment.centerLeft),
+          if (leading.isNotEmpty && middle.isNotEmpty) SizedBox(width: m.space2),
         ];
+        if (m.touch) middle = [...leading, ...middle];
+        return m.touch
+            ? ConstrainedBox(
+                constraints: BoxConstraints(minHeight: m.toolbarHeight),
+                child: Padding(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: m.space4,
+                    vertical: m.space1,
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Wrap(
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          runSpacing: m.space1,
+                          children: middle,
+                        ),
+                      ),
+                      end,
+                    ],
+                  ),
+                ),
+              )
+            : SizedBox(
+                height: m.toolbarHeight,
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: m.space4),
+                  child: Row(
+                    children: [
+                      ...start,
+                      Expanded(
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(children: middle),
+                        ),
+                      ),
+                      end,
+                    ],
+                  ),
+                ),
+              );
+      },
+    );
+  }
 
-        // The view group never overflows a narrow toolbar: it shrinks to fit.
-        // It may take at most 40% of the toolbar; the rest is for the tools.
-        Widget buildBody(double toolbarWidth) {
-          Widget fitView(Widget w) => ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: toolbarWidth * 0.4),
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerRight,
-              child: w,
+  Widget _contextual(BuildContext context, ContextualToolbarLayout l) {
+    final m = NotedMetrics.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    ContextualSection? shown;
+    var groups = <List<Command>>[];
+    for (final s in l.sections) {
+      final g = _resolve(s.groups);
+      final holds =
+          s.unconditional ||
+          (s.whileChecked != null &&
+              (widget.registry[s.whileChecked!]?.checked ?? false)) ||
+          (s.whileEnabled && g.any((group) => group.any((c) => c.enabled)));
+      if (holds && g.isNotEmpty) {
+        shown = s;
+        groups = g;
+        break;
+      }
+    }
+    return _bar(
+      leading: _groups(_resolve(l.leading)),
+      middle: [
+        if (shown != null)
+          Container(
+            key: CommandToolbar.sectionKey(shown.id),
+            padding: EdgeInsets.symmetric(
+              horizontal: m.space1,
+              vertical: m.space1 / 2,
             ),
-          );
-
-          return m.touch
-              ? ConstrainedBox(
-                  constraints: BoxConstraints(minHeight: m.toolbarHeight),
-                  child: Padding(
-                    padding: EdgeInsets.symmetric(
-                      horizontal: m.space4,
-                      vertical: m.space1,
-                    ),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        Expanded(
-                          child: Wrap(
-                            crossAxisAlignment: WrapCrossAlignment.center,
-                            runSpacing: m.space1,
-                            children: leadWidgets,
-                          ),
-                        ),
-                        fitView(row(view)),
-                      ],
-                    ),
-                  ),
-                )
-              : SizedBox(
-                  height: m.toolbarHeight,
-                  child: Padding(
-                    padding: EdgeInsets.symmetric(horizontal: m.space4),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: Row(children: leadWidgets),
-                          ),
-                        ),
-                        fitView(row(view)),
-                      ],
-                    ),
-                  ),
-                );
-        }
-
-        return Material(
-          color: scheme.surface,
-          child: DecoratedBox(
             decoration: BoxDecoration(
-              border: Border(bottom: BorderSide(color: scheme.outline)),
+              color: scheme.surfaceContainerHighest,
+              borderRadius: m.borderMd,
             ),
-            child: SizedBox(
-              width: double.infinity,
-              child: ExcludeFocus(
-                child: LayoutBuilder(
-                  builder: (context, c) => buildBody(c.maxWidth),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: _groups(groups),
+            ),
+          ),
+      ],
+      trailing: _groups(_resolve(l.trailing)),
+    );
+  }
+
+  Widget _tabbed(BuildContext context, TabbedToolbarLayout l) {
+    final m = NotedMetrics.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final type = NotedTypography.of(context);
+    final tabs = [
+      for (final t in l.tabs)
+        if (_resolve(t.groups).isNotEmpty) t,
+    ];
+    final current = tabs.where((t) => t.id == _tab).firstOrNull ?? tabs.firstOrNull;
+    final leading = _groups(_resolve(l.leading));
+    Widget tab(ToolbarTab t) {
+      final selected = t.id == current?.id;
+      return Semantics(
+        selected: selected,
+        child: TextButton(
+          key: CommandToolbar.tabKey(t.id),
+          onPressed: () => setState(() => _tab = t.id),
+          style: TextButton.styleFrom(
+            minimumSize: Size(m.controlSize, m.controlSize),
+            padding: EdgeInsets.symmetric(horizontal: m.space3),
+            foregroundColor: selected ? scheme.primary : scheme.onSurface,
+            textStyle: selected ? type.bodyStrong : type.body,
+            shape: RoundedRectangleBorder(borderRadius: m.borderMd),
+          ),
+          child: DecoratedBox(
+            // The chosen tab is underlined in accent.
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(
+                  color: selected ? scheme.primary : Colors.transparent,
+                  width: 2,
                 ),
               ),
             ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Text(t.label),
+            ),
           ),
-        );
-      },
+        ),
+      );
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ConstrainedBox(
+          // Exactly this tall on desktop (Windows pads buttons to 48px
+          // otherwise); on touch it grows with its controls.
+          constraints: m.touch
+              ? BoxConstraints(minHeight: m.controlSize + m.space1)
+              : BoxConstraints.tightFor(height: m.controlSize + m.space1),
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: m.space4),
+            child: Row(
+              children: [
+                ...leading,
+                if (leading.isNotEmpty) const ToolbarSeparator(),
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        for (final (i, t) in tabs.indexed) ...[
+                          if (i > 0) SizedBox(width: m.space1),
+                          tab(t),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                ..._groups(_resolve(l.trailing)),
+              ],
+            ),
+          ),
+        ),
+        _bar(
+          middle: current == null ? const [] : _groups(_resolve(current.groups)),
+        ),
+      ],
     );
   }
 }
@@ -287,6 +468,10 @@ class ToolbarEntry extends StatelessWidget {
       );
     }
     if (text != null || c.showLabel) {
+      // Checked (the paragraph style at the caret) is shown as on a checked
+      // icon button, but not given a toggled semantics flag: with that flag
+      // changing as the caret moved, the Windows app exited without an error
+      // during the integration suite (3 of 4 runs; 0 of 3 without it).
       return Tooltip(
         message: c.tooltip,
         child: TextButton(
@@ -295,6 +480,8 @@ class ToolbarEntry extends StatelessWidget {
             minimumSize: Size(m.controlSize, m.controlSize),
             padding: const EdgeInsets.symmetric(horizontal: 10),
             textStyle: type.body,
+            backgroundColor: checked ? scheme.primaryContainer : null,
+            foregroundColor: checked ? scheme.primary : null,
           ),
           child: Text(text ?? c.label),
         ),

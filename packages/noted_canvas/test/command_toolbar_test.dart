@@ -124,7 +124,7 @@ void main() {
           body: PageCanvas(
             controller: c,
             tools: selection,
-            toolbarLayout: layout,
+            toolbar: _flat(layout),
             readOnly: readOnly,
           ),
         ),
@@ -414,3 +414,11 @@ void main() {
   });
 }
 
+
+/// A one-bar layout like the earlier fixed toolbar: every group but the last
+/// at the left, the last at the far right.
+ContextualToolbarLayout _flat(ToolbarLayout groups) => ContextualToolbarLayout(
+  leading: groups.sublist(0, groups.length - 1),
+  sections: const [],
+  trailing: [groups.last],
+);

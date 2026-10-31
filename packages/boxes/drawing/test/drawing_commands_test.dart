@@ -28,10 +28,17 @@ void main() {
       MaterialApp(
         theme: theme,
         home: Scaffold(
-          body: PageCanvas(controller: c, tools: tools),
+          body: PageCanvas(
+            controller: c,
+            tools: tools,
+            toolbar: tabbedToolbarLayout,
+          ),
         ),
       ),
     );
+    // Colors and widths can be clicked with any tool on the Draw tab.
+    await t.tap(find.byKey(CommandToolbar.tabKey('draw')));
+    await t.pump();
   }
 
   PageCanvasState canvas(WidgetTester t) =>
@@ -70,7 +77,7 @@ void main() {
     expect(DrawingModule().frameStyle, BoxFrameStyle.framelessUntilSelected);
   });
 
-  testWidgets('the default toolbar has the pen, eraser, colors and widths', (t) async {
+  testWidgets('the Draw tab has the pen, eraser, colors and widths', (t) async {
     await pump(t);
     for (final tip in [
       'Select and type (V)',

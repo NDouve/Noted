@@ -26,6 +26,7 @@ import 'noted_theme.dart';
 import 'page_background.dart';
 import 'page_find.dart';
 import 'toolbar_layout.dart';
+import 'toolbar_placeholders.dart';
 
 /// Auto-pan during a tool session: the edge zone, in screen pixels.
 const double autoPanEdge = 40;
@@ -56,7 +57,7 @@ class PageCanvas extends StatefulWidget {
     required this.controller,
     this.tools,
     this.readOnly = false,
-    this.toolbarLayout = defaultToolbarLayout,
+    this.toolbar = contextualToolbarLayout,
     this.findRequests,
     this.extraCommands,
   });
@@ -73,9 +74,11 @@ class PageCanvas extends StatefulWidget {
   /// each time the registry is made; the registry owns and disposes them.
   final List<Command> Function()? extraCommands;
 
-  /// Which commands the toolbar along the top shows, and in what order. It
-  /// is built only from this canvas's [PageCanvasState.commands].
-  final ToolbarLayout toolbarLayout;
+  /// The toolbar along the top: which commands it shows, where and when
+  /// (one of the built-in [ToolbarStyle] layouts; the app passes the one
+  /// chosen in the settings). It is built only from this canvas's
+  /// [PageCanvasState.commands].
+  final ToolbarArrangement toolbar;
 
   /// Show the page without any way to change it: boxes use their module's
   /// read-only view, with no grip, handles or editing; there is no toolbar
@@ -227,6 +230,8 @@ class PageCanvasState extends State<PageCanvas>
       ..registerAll(buildCanvasCommands(this))
       ..registerAll(_c.modules.commandsFor(this))
       ..registerAll(widget.extraCommands?.call() ?? const []);
+    // Last, so a real command with a placeholder's id wins.
+    _commands.registerAll(placeholderCommands(_commands));
     old.dispose();
   }
 
@@ -582,7 +587,7 @@ class PageCanvasState extends State<PageCanvas>
         children: [
           CommandToolbar(
             registry: _commands,
-            layout: widget.toolbarLayout,
+            layout: widget.toolbar,
             readOnly: _readOnly,
           ),
           Expanded(child: _canvasArea(scheme)),

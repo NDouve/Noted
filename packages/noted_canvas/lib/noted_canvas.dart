@@ -36,3 +36,4 @@ export 'src/page_canvas.dart';
 export 'src/page_find.dart';
 export 'src/read_only_banner.dart';
 export 'src/toolbar_layout.dart';
+export 'src/toolbar_placeholders.dart';

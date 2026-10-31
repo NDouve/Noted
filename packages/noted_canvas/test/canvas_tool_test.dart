@@ -136,9 +136,13 @@ void main() {
                 child: PageCanvas(
                   controller: c,
                   tools: selection,
-                  toolbarLayout: const [
-                    [CanvasCommands.select, 'test.tool'],
-                  ],
+                  toolbar: const ContextualToolbarLayout(
+                    leading: [],
+                    sections: [],
+                    trailing: [
+                      [CanvasCommands.select, 'test.tool'],
+                    ],
+                  ),
                 ),
               ),
             ],

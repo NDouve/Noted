@@ -121,7 +121,7 @@ void main() {
         home: Scaffold(
           body: Align(
             alignment: Alignment.topLeft,
-            child: CommandToolbar(registry: registry, layout: layout),
+            child: CommandToolbar(registry: registry, layout: _flat(layout)),
           ),
         ),
       ),
@@ -389,3 +389,11 @@ void main() {
     expect(notifier.value, isFalse);
   });
 }
+
+/// A one-bar layout like the earlier fixed toolbar: every group but the last
+/// at the left, the last at the far right.
+ContextualToolbarLayout _flat(ToolbarLayout groups) => ContextualToolbarLayout(
+  leading: groups.sublist(0, groups.length - 1),
+  sections: const [],
+  trailing: [groups.last],
+);

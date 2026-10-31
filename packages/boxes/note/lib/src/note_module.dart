@@ -218,6 +218,11 @@ class _NoteEditorState extends State<_NoteEditor>
       mounted && widget.editable && _editor != null && _focus.hasFocus;
 
   @override
+  EditorState? get commandEditor => canInsert ? _editor : null;
+
+  void _selectionChanged() => NoteCommandFocus.edited(this);
+
+  @override
   Future<void> insertTable() async {
     if (canInsert) insertTableAtCaret(_editor!, context);
   }
@@ -245,6 +250,8 @@ class _NoteEditorState extends State<_NoteEditor>
     if (widget.editable) _formulas.initialize();
     _sub = editor.transactionStream.listen(_onTransaction);
     editor.selectionNotifier.addListener(_scheduleReveal);
+    editor.selectionNotifier.addListener(_selectionChanged);
+    editor.toggledStyleNotifier.addListener(_selectionChanged);
     _applyTheme(_scheme!, renderer: false);
   }
 
@@ -252,6 +259,8 @@ class _NoteEditorState extends State<_NoteEditor>
     final editor = _editor;
     if (editor == null) return;
     editor.selectionNotifier.removeListener(_scheduleReveal);
+    editor.selectionNotifier.removeListener(_selectionChanged);
+    editor.toggledStyleNotifier.removeListener(_selectionChanged);
     _sub.cancel();
     _scroll.dispose();
     editor.dispose();
@@ -361,6 +370,7 @@ class _NoteEditorState extends State<_NoteEditor>
     final (time, _, options) = value;
     if (time != TransactionTime.after) return;
     _scheduleMeasure();
+    NoteCommandFocus.edited(this);
     if (_forced && _editing && !_focus.hasFocus) _scheduleDemote();
     if (!widget.editable || _syncing) return;
     // Formula values, and references after rows or columns changed. Its own

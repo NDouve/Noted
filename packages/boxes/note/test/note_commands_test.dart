@@ -51,7 +51,8 @@ void main() {
   }
 
   Future<void> pump(WidgetTester t, {CanvasToolSelection? tools}) async {
-    t.view.physicalSize = const Size(1200, 800);
+    // Wide enough for the text tools and Table and Equation in the test font.
+    t.view.physicalSize = const Size(1600, 800);
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
     final modules = ModuleRegistry()
@@ -220,5 +221,163 @@ void main() {
     await t.sendKeyEvent(LogicalKeyboardKey.escape);
     await frames(t);
     expect(c.editingId, isNull);
+  });
+
+  group('formatting commands', () {
+    const formatting = [
+      NoteCommands.paragraph,
+      NoteCommands.heading1,
+      NoteCommands.heading2,
+      NoteCommands.heading3,
+      NoteCommands.bold,
+      NoteCommands.italic,
+      NoteCommands.underline,
+      NoteCommands.strikethrough,
+      NoteCommands.highlight,
+      NoteCommands.bulletedList,
+      NoteCommands.numberedList,
+      NoteCommands.checkList,
+      NoteCommands.outdent,
+      NoteCommands.indent,
+      NoteCommands.clearFormatting,
+      NoteCommands.insertDateTime,
+    ];
+
+    Future<void> run(WidgetTester t, String id) async {
+      expect(await canvas(t).commands.invoke(id), isTrue, reason: id);
+      await frames(t);
+    }
+
+    bool? isChecked(WidgetTester t, String id) => canvas(t).commands[id]!.checked;
+
+    Map<String, dynamic>? marks(EditorState e) =>
+        e.document.root.children.first.delta!.toJson().first['attributes'] as Map<String, dynamic>?;
+
+    testWidgets('all registered, enabled only while a note has focus', (t) async {
+      await pump(t);
+      final r = canvas(t).commands;
+      for (final id in formatting) {
+        expect(r[id], isNotNull, reason: id);
+        expect(r[id]!.enabled, isFalse, reason: id);
+      }
+      await focusNote(t);
+      for (final id in formatting) {
+        expect(r[id]!.enabled, isTrue, reason: id);
+      }
+    });
+
+    testWidgets('bold, italic, underline, strikethrough toggle the selected text and show checked', (
+      t,
+    ) async {
+      await pump(t);
+      final editor = await focusNote(t);
+      editor.selection = Selection.single(path: [0], startOffset: 0, endOffset: 10);
+      await frames(t);
+      for (final (id, key) in [
+        (NoteCommands.bold, 'bold'),
+        (NoteCommands.italic, 'italic'),
+        (NoteCommands.underline, 'underline'),
+        (NoteCommands.strikethrough, 'strikethrough'),
+      ]) {
+        expect(isChecked(t, id), isFalse, reason: id);
+        await run(t, id);
+        expect(marks(editor)?[key], isTrue, reason: id);
+        expect(isChecked(t, id), isTrue, reason: id);
+      }
+      await run(t, NoteCommands.bold);
+      expect(marks(editor)?['bold'], isNot(isTrue));
+      expect(isChecked(t, NoteCommands.bold), isFalse);
+      // The change reached the page.
+      expect(
+        (c.page.node('n')! as BoxRecord).data!.text,
+        contains('italic'),
+      );
+    });
+
+    testWidgets('highlight marks the selection; clear formatting removes it all', (t) async {
+      await pump(t);
+      final editor = await focusNote(t);
+      editor.selection = Selection.single(path: [0], startOffset: 0, endOffset: 5);
+      await frames(t);
+      await run(t, NoteCommands.highlight);
+      await run(t, NoteCommands.bold);
+      expect(marks(editor)?['bg_color'], isNotNull);
+      expect(marks(editor)?['bold'], isTrue);
+      await run(t, NoteCommands.clearFormatting);
+      expect(marks(editor), anyOf(isNull, isEmpty));
+    });
+
+    testWidgets('styles and lists change the block, keep its text, and show checked', (t) async {
+      await pump(t);
+      final editor = await focusNote(t);
+      Node block() => editor.document.root.children.first;
+      for (final (id, type) in [
+        (NoteCommands.heading2, 'heading'),
+        (NoteCommands.bulletedList, 'bulleted_list'),
+        (NoteCommands.numberedList, 'numbered_list'),
+        (NoteCommands.checkList, 'todo_list'),
+        (NoteCommands.paragraph, 'paragraph'),
+      ]) {
+        await run(t, id);
+        expect(block().type, type, reason: id);
+        expect(block().delta!.toPlainText(), 'first line', reason: id);
+        expect(isChecked(t, id), isTrue, reason: id);
+      }
+      await run(t, NoteCommands.heading2);
+      expect(block().attributes['level'], 2);
+      expect(isChecked(t, NoteCommands.heading1), isFalse);
+      // A list command on a list of its kind turns it back into body text.
+      await run(t, NoteCommands.bulletedList);
+      await run(t, NoteCommands.bulletedList);
+      expect(block().type, 'paragraph');
+    });
+
+    testWidgets('indent and outdent nest a list item under the one above', (t) async {
+      await pump(t);
+      final editor = await focusNote(t);
+      // Two bullets: the second can be indented under the first.
+      editor.selection = Selection.collapsed(Position(path: [0], offset: 10));
+      await frames(t);
+      await editor.insertNewLine();
+      await editor.insertTextAtCurrentSelection('second');
+      editor.selection = Selection(
+        start: Position(path: [0]),
+        end: Position(path: [1], offset: 6),
+      );
+      await run(t, NoteCommands.bulletedList);
+      editor.selection = Selection.collapsed(Position(path: [1], offset: 2));
+      await frames(t);
+      await run(t, NoteCommands.indent);
+      expect(editor.document.root.children, hasLength(1));
+      expect(editor.document.root.children.first.children.single.delta!.toPlainText(), 'second');
+      await run(t, NoteCommands.outdent);
+      expect(editor.document.root.children, hasLength(2));
+    });
+
+    testWidgets('insert date and time writes it at the caret', (t) async {
+      await pump(t);
+      final editor = await focusNote(t);
+      editor.selection = Selection.collapsed(Position(path: [0], offset: 10));
+      await frames(t);
+      final before = DateTime.now();
+      await run(t, NoteCommands.insertDateTime);
+      final text = editor.document.root.children.first.delta!.toPlainText();
+      expect(text, startsWith('first line'));
+      expect(text.substring(10), matches(RegExp(r'^\d{4}-\d\d-\d\d \d\d:\d\d$')));
+      expect(text.substring(10, 20), formatDateTime(before).substring(0, 10));
+      expect(formatDateTime(DateTime(2026, 3, 4, 5, 6)), '2026-03-04 05:06');
+    });
+
+    testWidgets('the toolbar button works without taking focus from the note', (t) async {
+      await pump(t);
+      final editor = await focusNote(t);
+      editor.selection = Selection.single(path: [0], startOffset: 0, endOffset: 5);
+      await frames(t);
+      await t.tap(find.byTooltip('Bold (Ctrl+B)'));
+      await frames(t);
+      expect(marks(editor)?['bold'], isTrue);
+      expect(c.editingId, 'n');
+      expect(canvas(t).commands[NoteCommands.bold]!.enabled, isTrue);
+    });
   });
 }

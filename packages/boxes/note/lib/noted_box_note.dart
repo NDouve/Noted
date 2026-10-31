@@ -6,5 +6,5 @@
 library;
 
 export 'src/note_codec.dart';
-export 'src/note_commands.dart' show NoteCommands;
+export 'src/note_commands.dart' show NoteCommands, formatDateTime;
 export 'src/note_module.dart';

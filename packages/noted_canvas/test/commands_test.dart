@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -280,18 +282,134 @@ void main() {
   });
 
   group('toolbar layout data', () {
-    test('the default layout lists known ids in groups', () {
-      expect(defaultToolbarLayout.first, [
+    test('Tabs: Home, Insert, Draw, View; Undo/Redo and Search outside them', () {
+      const l = tabbedToolbarLayout;
+      expect(l.tabs.map((t) => t.label), ['Home', 'Insert', 'Draw', 'View']);
+      expect(l.leading, [
+        ['canvas.undo', 'canvas.redo'],
+      ]);
+      expect(l.trailing, [
+        ['app.search'],
+      ]);
+      List<String> ids(String tab) =>
+          l.tabs.firstWhere((t) => t.id == tab).groups.expand((g) => g).toList();
+      expect(ids('home'), [
+        'noted.note.style.paragraph',
+        'noted.note.style.heading1',
+        'noted.note.style.heading2',
+        'noted.note.style.heading3',
+        'noted.note.bold',
+        'noted.note.italic',
+        'noted.note.underline',
+        'noted.note.strikethrough',
+        'noted.note.highlight',
+        'noted.note.textColor',
+        'noted.note.bulletedList',
+        'noted.note.numberedList',
+        'noted.note.checkList',
+        'noted.note.outdent',
+        'noted.note.indent',
+        'noted.note.link',
+        'noted.note.clearFormatting',
+      ]);
+      expect(ids('insert'), [
+        'noted.note.insertTable',
+        'noted.note.insertEquation',
+        'noted.note.link',
+        'noted.note.insertDateTime',
+        'noted.image.insert',
+        'noted.file.insert',
+        'noted.ai.insert',
+        'noted.encrypted.insert',
+      ]);
+      expect(ids('draw'), [
         'canvas.select',
         'noted.drawing.pen',
         'noted.drawing.eraser',
+        'noted.drawing.highlighter',
+        'noted.drawing.lasso',
+        for (var i = 0; i < 5; i++) 'noted.drawing.color.$i',
+        'noted.drawing.width.2',
+        'noted.drawing.width.4',
+        'noted.drawing.width.8',
       ]);
-      expect(defaultToolbarLayout.last, [
-        'canvas.fitAll',
+      expect(ids('view'), [
+        'canvas.zoomOut',
         'canvas.zoomReset',
+        'canvas.zoomIn',
+        'canvas.fitAll',
         'canvas.pageBackground',
-        'app.search',
+        'canvas.find',
       ]);
+    });
+
+    test('Contextual: tools and history left, view right, three sections', () {
+      const l = contextualToolbarLayout;
+      expect(l.leading, [
+        ['canvas.select', 'noted.drawing.pen', 'noted.drawing.eraser'],
+        ['canvas.undo', 'canvas.redo'],
+      ]);
+      expect(l.trailing, [
+        ['app.search', 'canvas.fitAll', 'canvas.zoomReset', 'canvas.pageBackground'],
+      ]);
+      expect(l.sections.map((s) => s.id), ['pen', 'text', 'insert']);
+      expect(l.sections[0].whileChecked, 'noted.drawing.pen');
+      expect(l.sections[1].whileEnabled, isTrue);
+      expect(l.sections[2].unconditional, isTrue);
+      expect(l.sections[0].groups.expand((g) => g), [
+        for (var i = 0; i < 5; i++) 'noted.drawing.color.$i',
+        'noted.drawing.width.2',
+        'noted.drawing.width.4',
+        'noted.drawing.width.8',
+      ]);
+      expect(l.sections[1].groups.expand((g) => g), contains('noted.note.bold'));
+      expect(l.sections[2].groups.expand((g) => g), contains('noted.ai.insert'));
+    });
+
+    test('the styles name their layouts and parse from settings', () {
+      expect(ToolbarStyle.tabs.layout, same(tabbedToolbarLayout));
+      expect(ToolbarStyle.contextual.layout, same(contextualToolbarLayout));
+      expect(ToolbarStyle.parse('tabs'), ToolbarStyle.tabs);
+      expect(ToolbarStyle.parse('contextual'), ToolbarStyle.contextual);
+      expect(ToolbarStyle.parse('ribbon'), isNull);
+      expect(ToolbarStyle.parse(null), isNull);
+    });
+
+    test('both layouts go through JSON unchanged', () {
+      for (final l in [tabbedToolbarLayout, contextualToolbarLayout]) {
+        final json = jsonDecode(jsonEncode(l.toJson()));
+        final back = ToolbarArrangement.fromJson(json)!;
+        expect(back.runtimeType, l.runtimeType);
+        expect(back.toJson(), l.toJson());
+      }
+      expect(ToolbarArrangement.fromJson('nope'), isNull);
+      expect(ToolbarArrangement.fromJson({'kind': 'tabs'}), isNull);
+      expect(
+        ToolbarArrangement.fromJson({
+          'kind': 'contextual',
+          'leading': [],
+          'trailing': [],
+          'sections': [
+            {'id': 's', 'groups': [], 'whileChecked': 3},
+          ],
+        }),
+        isNull,
+      );
+    });
+
+    test('placeholders fill in only for ids nothing registered', () {
+      final r = CommandRegistry()..register(_cmd('noted.image.insert'));
+      final p = placeholderCommands(r);
+      expect(p.map((c) => c.id), isNot(contains('noted.image.insert')));
+      expect(p.map((c) => c.id), contains('noted.ai.insert'));
+      for (final c in p) {
+        expect(c.enabled, isFalse, reason: c.id);
+        expect(c.label, endsWith('(coming later)'));
+      }
+      for (final c in p) {
+        c.dispose();
+      }
+      r.dispose();
     });
 
     test('reads a layout from JSON, or null for anything else', () {
