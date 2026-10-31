@@ -78,8 +78,11 @@ void main() {
     });
   }
 
+  /// Alternates the test clock and real IO until [done] (at most about 9 s
+  /// of real time, for a slow CI runner), then settles. [done] should cover
+  /// everything the test then checks, not just the first step.
   Future<void> until(WidgetTester tester, bool Function() done) async {
-    for (var i = 0; i < 100 && !done(); i++) {
+    for (var i = 0; i < 300 && !done(); i++) {
       await tester.pump(const Duration(milliseconds: 50));
       await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
     }
@@ -177,7 +180,13 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('pages-menu')));
     await tester.pumpAndSettle();
     await tester.runAsync(() => tester.tap(find.text('New binder in another folder…')));
-    await until(tester, () => nb.binders.isNotEmpty);
+    await until(
+      tester,
+      () =>
+          nb.binders.isNotEmpty &&
+          find.text('Binder cover').evaluate().isNotEmpty &&
+          File('${other.path}/$binderFileName').existsSync(),
+    );
     expect(nb.binders.single.title, 'Ideas');
     expect(find.text('Binder cover'), findsOneWidget);
     expect(find.text('Ideas'), findsWidgets);
@@ -196,7 +205,12 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('pages-menu')));
     await tester.pumpAndSettle();
     await tester.runAsync(() => tester.tap(find.text('Open binder…')));
-    await until(tester, () => nb.binders.isNotEmpty || find.textContaining('has no binder').evaluate().isNotEmpty);
+    await until(
+      tester,
+      () =>
+          (nb.binders.isNotEmpty && find.text('Binder cover').evaluate().isNotEmpty) ||
+          find.textContaining('has no binder').evaluate().isNotEmpty,
+    );
     expect(nb.binders.single.title, 'My ideas');
     expect(find.text('Binder cover'), findsOneWidget);
 
@@ -251,7 +265,13 @@ void main() {
     await g.moveTo(target + const Offset(0, 0.5));
     await tester.pump();
     await tester.runAsync(() => g.up());
-    await settle(tester);
+    await until(
+      tester,
+      () =>
+          binder.tree.roots.any((p) => p.id == b) &&
+          File('${folder.path}/$b.canvas').existsSync() &&
+          !File('${pages.path}/$b.canvas').existsSync(),
+    );
 
     expect(binder.tree.roots.map((p) => p.id), contains(b));
     expect(nb.tree.roots.map((p) => p.id), [a]);
@@ -270,7 +290,13 @@ void main() {
     await g2.moveTo(pagesHeader + const Offset(0, 0.5));
     await tester.pump();
     await tester.runAsync(() => g2.up());
-    await settle(tester);
+    await until(
+      tester,
+      () =>
+          nb.tree.roots.any((p) => p.id == b) &&
+          File('${pages.path}/$b.canvas').existsSync() &&
+          !File('${folder.path}/$b.canvas').existsSync(),
+    );
     expect(nb.tree.roots.map((p) => p.id), containsAll([a, b]));
     expect(File('${pages.path}/$b.canvas').existsSync(), isTrue);
     expect(File('${folder.path}/$b.canvas').existsSync(), isFalse);

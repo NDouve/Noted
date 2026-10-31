@@ -32,6 +32,16 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  /// Alternates the test clock and real IO until [done] (at most about 9 s
+  /// of real time, for a slow CI runner), then settles.
+  Future<void> until(WidgetTester tester, bool Function() done) async {
+    for (var i = 0; i < 300 && !done(); i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+    }
+    await settle(tester);
+  }
+
   Future<void> start(WidgetTester tester, {ThemeData? theme}) async {
     await tester.runAsync(() async {
       dir = await Directory.systemTemp.createTemp('noted_tree_ui');
@@ -206,12 +216,12 @@ void main() {
     expect(find.text('Delete page?'), findsOneWidget);
     await tester.tap(find.widgetWithText(OutlinedButton, 'Delete'));
     await tester.pump();
-    await settle(tester);
+    await until(tester, () => rootIds().length == 2 && find.text('Undo').evaluate().isNotEmpty);
     expect(rootIds(), [a, c]);
     expect(find.text('Undo'), findsOneWidget);
     // Undo's handler awaits file IO, so tap it in the real-async zone.
     await tester.runAsync(() => tester.tap(find.text('Undo')));
-    await settle(tester);
+    await until(tester, () => rootIds().length == 3 && File('${dir.path}/$b.canvas').existsSync());
     expect(rootIds(), [a, b, c]);
     expect(File('${dir.path}/$b.canvas').existsSync(), isTrue);
     await finish(tester);
