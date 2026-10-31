@@ -423,15 +423,90 @@ void main() {
     await t.pump();
     expect(c.page.node('b1')!.bounds!.x - b.x, closeTo(100 / scale, 1));
   });
+
+  testWidgets('a box that grows rebuilds alone, not its siblings', (t) async {
+    // A note growing with its text changes the page; the other boxes show
+    // nothing new, so their widgets must be kept (a page with hundreds of
+    // notes would otherwise rebuild them all on every line wrap).
+    final counting = _CountingModule();
+    modules = ModuleRegistry()
+      ..register(counting, alwaysOn: true, isDefault: true);
+    var page = emptyPage();
+    for (var i = 0; i < 3; i++) {
+      page = page.insertNode(
+        BoxRecord.create(
+          id: 'b$i',
+          typeId: 'test.text',
+          dataVersion: 1,
+          bounds: Bounds(100.0 + i * 400, 200, 300, 80),
+          data: RawJson.parse('"box $i"'),
+          snapshotText: 'box $i',
+          rev: 'r',
+        ),
+      );
+    }
+    final c = controllerFor(page);
+    await pump(t, c);
+    await t.pump();
+    Map<String, int> builds() => Map.of(counting.buildsPerBox);
+    var before = builds();
+
+    c.requestBounds('b0', const Bounds(100, 200, 300, 140));
+    await t.pump();
+    expect(c.page.node('b0')!.bounds!.height, 140);
+    var after = builds();
+    expect(after['b0'], greaterThan(before['b0']!));
+    expect(after['b1'], before['b1'], reason: 'b1 not rebuilt');
+    expect(after['b2'], before['b2'], reason: 'b2 not rebuilt');
+    expect(
+      t.getSize(find.byKey(const ValueKey('b0'))).height,
+      greaterThan(140),
+      reason: 'the grown box is laid out at its new height',
+    );
+
+    // Selecting rebuilds the box selected, and the one that was.
+    before = builds();
+    c.select('b1');
+    await t.pump();
+    after = builds();
+    expect(after['b1'], greaterThan(before['b1']!));
+    expect(after['b0'], before['b0']);
+    expect(after['b2'], before['b2']);
+    before = after;
+    c.select('b2');
+    await t.pump();
+    after = builds();
+    expect(after['b1'], greaterThan(before['b1']!));
+    expect(after['b2'], greaterThan(before['b2']!));
+    expect(after['b0'], before['b0']);
+
+    // Read-only changes every box.
+    before = after;
+    c.readOnly = true;
+    await t.pump();
+    after = builds();
+    for (final id in ['b0', 'b1', 'b2']) {
+      expect(after[id], greaterThan(before[id]!), reason: id);
+    }
+  });
 }
 
-/// [_TextModule] that counts how often a box's editor is built.
+/// [_TextModule] that counts how often a box's editor is built, and how
+/// often each box's content (editor or view) is built.
 class _CountingModule extends _TextModule {
   _CountingModule();
   int editorBuilds = 0;
+  final Map<String, int> buildsPerBox = {};
   @override
   Widget buildEditor(BuildContext context, BoxContext<String> box) {
     editorBuilds++;
+    buildsPerBox.update(box.boxId, (n) => n + 1, ifAbsent: () => 1);
     return super.buildEditor(context, box);
+  }
+
+  @override
+  Widget buildView(BuildContext context, BoxContext<String> box) {
+    buildsPerBox.update(box.boxId, (n) => n + 1, ifAbsent: () => 1);
+    return super.buildView(context, box);
   }
 }

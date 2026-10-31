@@ -595,31 +595,54 @@ class PageCanvasState extends State<PageCanvas>
   // zooming rebuild this widget on every frame, but a BoxHost reads the zoom
   // when it needs it (BoxHost.scaleOf), so the same widget instances can be
   // handed to the Stack again and Flutter then skips every box (editors
-  // included). They are made again whenever the controller notifies (the
+  // included). The list is made again whenever the controller notifies (the
   // page, the selection, editing, read-only), and when the canvas child's
   // origin, the read-only state, the find model or the controller change.
+  //
+  // Each box's widget is also kept on its own while what that box shows is
+  // unchanged: its node (the page replaces the node object of a box that
+  // changes and keeps the others; compared by identity), whether it is
+  // selected or being edited, and the read-only state. So when one note grows
+  // with its text, only that box rebuilds, not every box on the page.
   List<Widget>? _hostWidgets;
   int _hostsRevision = 0;
   (int, CanvasController, Offset, bool, PageFind)? _hostsKey;
+  final Map<String, ((CanvasNode, bool, bool, bool), BoxHost)> _hostPerBox = {};
 
   List<Widget> _boxHosts(Offset childOrigin, bool readOnly) {
     final key = (_hostsRevision, _c, childOrigin, readOnly, _find);
     final cached = _hostWidgets;
     if (cached != null && _hostsKey == key) return cached;
+    final previous = _hostsKey;
+    // Something every box uses changed: make every widget again.
+    if (previous == null || (previous.$2, previous.$3, previous.$4, previous.$5) != (key.$2, key.$3, key.$4, key.$5)) {
+      _hostPerBox.clear();
+    }
     _hostsKey = key;
-    return _hostWidgets = [
-      for (final node in _c.page.nodes)
-        BoxHost(
-          key: ValueKey(node.id),
-          node: node,
-          controller: _c,
-          childOrigin: childOrigin,
-          scaleOf: () => scale,
-          onGripTap: _focus.requestFocus,
-          readOnly: readOnly,
-          find: _find,
-        ),
-    ];
+    final kept = <String, ((CanvasNode, bool, bool, bool), BoxHost)>{};
+    final hosts = <Widget>[];
+    for (final node in _c.page.nodes) {
+      final boxKey = (node, _c.selectedId == node.id, _c.editingId == node.id, _c.readOnly);
+      final old = _hostPerBox[node.id];
+      final host = old != null && old.$1 == boxKey
+          ? old.$2
+          : BoxHost(
+              key: ValueKey(node.id),
+              node: node,
+              controller: _c,
+              childOrigin: childOrigin,
+              scaleOf: () => scale,
+              onGripTap: _focus.requestFocus,
+              readOnly: readOnly,
+              find: _find,
+            );
+      kept[node.id] = (boxKey, host);
+      hosts.add(host);
+    }
+    _hostPerBox
+      ..clear()
+      ..addAll(kept);
+    return _hostWidgets = hosts;
   }
 
   Widget _canvasArea(ColorScheme scheme) {
