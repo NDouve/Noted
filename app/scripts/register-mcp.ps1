@@ -52,8 +52,16 @@ $Exe = (Resolve-Path $Exe).Path
 if (-not $PrintOnly) {
   $claude = Get-Command claude -ErrorAction SilentlyContinue
   if ($claude) {
-    # Replace an earlier registration with the same name.
-    & claude mcp remove $Name -s $Scope 2>$null | Out-Null
+    # Replace an earlier registration with the same name. ("No MCP server
+    # named ..." on stderr when there is none: not an error here.)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      & claude mcp remove $Name -s $Scope 2>&1 | Out-Null
+    } catch {
+      # Nothing to remove.
+    }
+    $ErrorActionPreference = $previous
     & claude mcp add $Name -s $Scope -- $Exe
     if ($LASTEXITCODE -ne 0) { throw "claude mcp add failed ($LASTEXITCODE)" }
     Write-Host "Registered '$Name' with Claude Code ($Scope scope): $Exe"
