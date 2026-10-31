@@ -4,6 +4,7 @@
 
 import 'package:noted_core/noted_core.dart';
 
+import 'attachment_store.dart';
 import 'box_module.dart';
 import 'canvas_tool.dart';
 import 'command_host.dart';
@@ -54,6 +55,27 @@ final class ModuleRegistry {
     for (final m in _modules.values)
       if (codecs.isEnabled(m.codec.typeId)) ...m.commands(host),
   ];
+
+  /// The switched-on modules, in registration order.
+  Iterable<BoxModule<Object?>> get enabled => [
+    for (final m in _modules.values)
+      if (codecs.isEnabled(m.codec.typeId)) m,
+  ];
+
+  /// The switched-on module that holds [file] best (Box API 0.7), or null
+  /// if none takes it. On a tie the first registered wins.
+  BoxModule<Object?>? moduleForFile(IncomingFile file) {
+    BoxModule<Object?>? best;
+    var bestScore = 0;
+    for (final m in enabled) {
+      final score = m.fileAffinity(file);
+      if (score > bestScore) {
+        best = m;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
 
   /// The module new boxes are created with.
   BoxModule<Object?> get defaultModule {

@@ -279,6 +279,27 @@ class CanvasController extends ChangeNotifier {
     return next;
   }
 
+  /// Replaces the data of several boxes through their codecs as one undo
+  /// step, for example when their attachments are embedded or moved to the
+  /// folder. Boxes that are gone are skipped. Returns how many changed.
+  int replaceBoxData(Map<String, Object?> dataById) {
+    if (_readOnly) return 0;
+    var page = _page;
+    final before = <PageChange>[];
+    dataById.forEach((id, data) {
+      final box = page.node(id);
+      if (box is! BoxRecord) return;
+      final codec = modules.codecs.codecFor(box.typeId);
+      if (codec == null) return;
+      before.add(PageChange.replaced(box));
+      page = page.replaceNode(commitBox(box, codec, data, device: deviceName, at: _stampTime));
+    });
+    if (before.isEmpty) return 0;
+    _history.record(before.length == 1 ? before.single : PageChange.group(before));
+    _set(page);
+    return before.length;
+  }
+
   /// Records a change that has already been applied, for example several
   /// erasures made during one eraser drag, kept as one undo step.
   void recordChange(PageChange change) {

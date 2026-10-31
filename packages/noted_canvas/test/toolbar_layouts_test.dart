@@ -158,7 +158,7 @@ void main() {
       await pump(t, tabbedToolbarLayout);
       await t.tap(find.byKey(CommandToolbar.tabKey('insert')));
       await t.pump();
-      for (final label in ['Image', 'File', 'AI box', 'Encrypted box']) {
+      for (final label in ['AI box', 'Encrypted box']) {
         final b = find.descendant(
           of: find.byTooltip('$label (coming later)'),
           matching: find.byType(TextButton),

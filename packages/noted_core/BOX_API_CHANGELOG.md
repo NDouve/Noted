@@ -8,6 +8,16 @@ version.
 
 Versions are listed newest first.
 
+## 0.7 — 2026-10-31
+- `AttachmentStore` (noted_canvas): the open page's images and files. `put` stores bytes embedded or in the page's assets folder (`<page id>.assets/<content hash>.<ext>`) as the page's "Store images and files" setting says, with files over `embedLimitBytes` (5 MB) always in the folder; `read`, `exists`, `changes` (files arriving from sync), `cacheDirectory` (never synced), `notify`, `open` (default app) and `pick` (file dialog).
+- `BoxContext.attachments` and `CommandHost.attachments`: the store, or null.
+- `IncomingFile` and file handling on `BoxModule`: `fileAffinity` (which module takes a pasted, dropped or picked file), `createFromFile` (data and size of the new box), `convertAttachments` (embed or move to folder), `aspectRatio` (kept while resizing unless Shift is held).
+- `CommandHost.insertFiles` and `BoxContext.insertFilesBeside`: create boxes for files at a point or beside a box.
+- `FileClipboard.read`: files (an image) on the system clipboard, set by the app.
+- The core reads none of it: box data stays the module's, and the core only moves, copies and removes the assets folder with its page.
+- noted_core: `AttachmentStorage`, the page header and binder setting (`"attachments"`), `effectiveAttachmentStorage`, `contentHash`, `attachmentFileName`, `assetsFolderName`, `embedLimitBytes`.
+- Additive: a module that overrides none of these is unaffected. Decision 0098.
+
 ## 0.6 — 2026-10-26
 - `BoxFind` (noted_core): the state of Find on page for a module: the `SearchQuery`, the box that holds the current match and which of its matches is current.
 - `BoxContext.find` (noted_canvas): a `ValueListenable<BoxFind?>`; null while the find bar is closed. A module may use it to mark matches inside its own content, matching against its own text snapshot with `SearchQuery.rangesIn` / `termRangesIn`. The core never reports positions inside a box's data and never reads it.

@@ -6,6 +6,8 @@
 /// Box API.
 library;
 
+export 'src/attachment_convert.dart';
+export 'src/attachment_store.dart';
 export 'src/box_host.dart'
     show
         BoxHost,

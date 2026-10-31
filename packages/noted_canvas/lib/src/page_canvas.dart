@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -17,6 +18,7 @@ import 'canvas_commands.dart';
 import 'canvas_controller.dart';
 import 'canvas_tool.dart';
 import 'canvas_view.dart';
+import 'attachment_store.dart';
 import 'command_toolbar.dart';
 import 'find_bar.dart';
 import 'commands.dart';
@@ -60,9 +62,14 @@ class PageCanvas extends StatefulWidget {
     this.toolbar = contextualToolbarLayout,
     this.findRequests,
     this.extraCommands,
+    this.attachments,
   });
 
   final CanvasController controller;
+
+  /// The page's images and files (Box API 0.7), handed to the modules;
+  /// null where the page has none (nothing can be pasted or dropped then).
+  final AttachmentStore? attachments;
 
   /// Asks this canvas to open Find on page (for example from the results of
   /// a search of all pages). A request for another page is left alone; one
@@ -146,6 +153,70 @@ class PageCanvasState extends State<PageCanvas>
 
   @override
   void focusCanvas() => _focus.requestFocus();
+
+  @override
+  AttachmentStore? get attachments => widget.attachments;
+
+  /// Gap between boxes made for several files at once, in page units.
+  static const double _fileGap = 16;
+
+  /// The page point in the middle of the view.
+  Offset get _viewCentre {
+    final v = _view;
+    final g = _geometry;
+    if (v == null || g == null) return Offset.zero;
+    return v.toWorld(g.viewport.center(Offset.zero));
+  }
+
+  @override
+  Future<void> insertFiles(List<IncomingFile> files, {Offset? at}) async {
+    final store = widget.attachments;
+    if (store == null || _readOnly || files.isEmpty) return;
+    var point = at ?? _viewCentre;
+    String? last;
+    for (final f in files) {
+      final module = _c.modules.moduleForFile(f);
+      if (module == null) continue;
+      final made = await module.hostCreateFromFile(f, store);
+      if (made == null || !mounted || _readOnly) continue;
+      final (data, size) = made;
+      final codec = module.codec;
+      final box = commitBox(
+        createBox(
+          codec,
+          Bounds(point.dx, point.dy, size.width, size.height),
+          device: _c.deviceName,
+        ),
+        codec,
+        data,
+        device: _c.deviceName,
+      ).withFixedHeight(true);
+      _c.insertBox(box);
+      last = box.id;
+      point = point.translate(0, size.height + _fileGap);
+    }
+    if (last != null) _c.select(last);
+  }
+
+  /// Boxes for [files] to the right of box [boxId], top-aligned with it.
+  void _insertFilesBeside(String boxId, List<IncomingFile> files) {
+    final b = _c.page.node(boxId)?.bounds;
+    unawaited(
+      insertFiles(
+        files,
+        at: b == null ? null : Offset(b.x + b.width + _fileGap * 1.5, b.y),
+      ),
+    );
+  }
+
+  @override
+  Future<bool> pasteFiles() async {
+    final files = await FileClipboard.read();
+    if (files.isEmpty || !mounted) return false;
+    final h = _hover;
+    await insertFiles(files, at: h == null ? null : _view?.toWorld(h));
+    return true;
+  }
 
   /// Find on page for the open page (the find bar's model), for tests and
   /// the app shell.
@@ -286,6 +357,10 @@ class PageCanvasState extends State<PageCanvas>
       oldWidget.findRequests?.removeListener(_takeFindRequest);
       widget.findRequests?.addListener(_takeFindRequest);
       _takeFindRequest();
+    }
+    if (oldWidget.attachments != widget.attachments) {
+      _hostsRevision++;
+      _hostPerBox.clear();
     }
     if (oldWidget.tools != widget.tools) {
       (oldWidget.tools ?? _ownTools).removeListener(_toolChanged);
@@ -640,6 +715,8 @@ class PageCanvasState extends State<PageCanvas>
               onGripTap: _focus.requestFocus,
               readOnly: readOnly,
               find: _find,
+              attachments: widget.attachments,
+              insertFilesBeside: _readOnly ? null : _insertFilesBeside,
             );
       kept[node.id] = (boxKey, host);
       hosts.add(host);
@@ -651,6 +728,25 @@ class PageCanvasState extends State<PageCanvas>
   }
 
   Widget _canvasArea(ColorScheme scheme) {
+    return KeyedSubtree(key: _areaKey, child: _canvasLayout(scheme));
+  }
+
+  final GlobalKey _areaKey = GlobalKey();
+
+  /// The page point under the screen point [global], or null if the canvas
+  /// isn't laid out.
+  Offset? pageAtGlobal(Offset global) {
+    final box = _areaKey.currentContext?.findRenderObject();
+    final v = _view;
+    if (box is! RenderBox || !box.hasSize || v == null) return null;
+    return v.toWorld(box.globalToLocal(global));
+  }
+
+  /// Creates boxes for files dropped at the screen point [global].
+  Future<void> dropFiles(List<IncomingFile> files, Offset global) =>
+      insertFiles(files, at: pageAtGlobal(global));
+
+  Widget _canvasLayout(ColorScheme scheme) {
     return LayoutBuilder(
         builder: (context, constraints) {
           final size = constraints.biggest;

@@ -330,7 +330,7 @@ const ContextualToolbarLayout contextualToolbarLayout = ContextualToolbarLayout(
           'noted.note.indent',
           'noted.note.clearFormatting',
         ],
-        ['noted.note.insertTable', 'noted.note.insertEquation'],
+        ['noted.note.link', 'noted.note.insertTable', 'noted.note.insertEquation'],
       ],
     ),
     ContextualSection(id: 'insert', groups: _insertTools),

@@ -22,6 +22,7 @@ abstract final class CanvasCommands {
   static const String fitAll = 'canvas.fitAll';
   static const String pageBackground = 'canvas.pageBackground';
   static const String find = 'canvas.find';
+  static const String paste = 'canvas.paste';
   static const String findNext = 'canvas.findNext';
   static const String findPrevious = 'canvas.findPrevious';
 
@@ -55,6 +56,10 @@ abstract interface class CanvasCommandTarget implements CommandHost {
 
   /// Moves keyboard focus from a box's editor to the canvas.
   void focusCanvas();
+
+  /// Pastes the files (an image) on the clipboard as boxes at the pointer,
+  /// or in the middle of the view. False if there were none.
+  Future<bool> pasteFiles();
 }
 
 const double _zoomStep = 1.25;
@@ -195,6 +200,18 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
     ),
     // Find on page. These work in a note editor too (appflowy has no Ctrl+F
     // of its own in this build), and on a read-only page.
+    // Paste an image (or another file) from the clipboard as a box. In a
+    // box's editor the editor pastes; a note pastes an image beside itself.
+    Command(
+      id: CanvasCommands.paste,
+      label: 'Paste',
+      icon: Icons.content_paste_rounded,
+      shortcut: _key(LogicalKeyboardKey.keyV, ctrl: true),
+      alternateShortcuts: const [SingleActivator(LogicalKeyboardKey.keyV, meta: true)],
+      enabled: () => !t.isReadOnly && t.attachments != null,
+      listenable: c,
+      invoke: t.pasteFiles,
+    ),
     Command(
       id: CanvasCommands.find,
       label: 'Find on page',

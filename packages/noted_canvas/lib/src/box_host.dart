@@ -7,8 +7,10 @@ import 'dart:math' as math;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart' show HardwareKeyboard;
 import 'package:noted_core/noted_core.dart';
 
+import 'attachment_store.dart';
 import 'box_module.dart';
 import 'canvas_controller.dart';
 import 'conflict_dialog.dart';
@@ -38,6 +40,8 @@ class BoxHost extends StatefulWidget {
     required this.onGripTap,
     this.readOnly = false,
     this.find,
+    this.attachments,
+    this.insertFilesBeside,
   });
 
   final CanvasNode node;
@@ -60,6 +64,12 @@ class BoxHost extends StatefulWidget {
 
   /// Called when the grip is clicked, so the canvas can take focus.
   final VoidCallback onGripTap;
+
+  /// The page's images and files, handed to the module (Box API 0.7).
+  final AttachmentStore? attachments;
+
+  /// Creates boxes for files beside the box [boxId] (Box API 0.7).
+  final void Function(String boxId, List<IncomingFile> files)? insertFilesBeside;
 
   @override
   State<BoxHost> createState() => _BoxHostState();
@@ -141,6 +151,10 @@ class _BoxHostState extends State<BoxHost> {
             commit: (data) => _commit(node.id, liveBox.codec, data),
             requestBounds: (r) => _requestBounds(node.id, r),
             find: widget.find?.boxFind,
+            attachments: widget.attachments,
+            insertFilesBeside: widget.insertFilesBeside == null
+                ? null
+                : (files) => widget.insertFilesBeside!(node.id, files),
           ),
         ),
       );
@@ -509,6 +523,25 @@ class _BoxHostState extends State<BoxHost> {
         h = math.max(minBoxHeight, sb.height + d.dy);
         setsHeight = h != sb.height;
       }
+      // A box whose module keeps an aspect ratio (an image) keeps it unless
+      // Shift is held: the edge dragged sets the size, the other side
+      // follows; a corner follows the larger change.
+      final ratio = _aspectRatio();
+      if (ratio != null && ratio > 0 && !HardwareKeyboard.instance.isShiftPressed) {
+        final widthLeads = switch (edge) {
+          _Edge.left || _Edge.right => true,
+          _Edge.bottom => false,
+          _ => (w - sb.width).abs() / sb.width >= (h - sb.height).abs() / sb.height,
+        };
+        if (widthLeads) {
+          h = math.max(minBoxHeight, w / ratio);
+        } else {
+          final right = x + w;
+          w = math.max(minBoxWidth, h * ratio);
+          if (edge == _Edge.bottomLeft) x = right - w;
+        }
+        setsHeight = h != sb.height;
+      }
       next = Bounds(x, sb.y, w, h);
     }
     widget.controller.updateGesture(
@@ -516,6 +549,14 @@ class _BoxHostState extends State<BoxHost> {
       next,
       setsHeight: setsHeight,
     );
+  }
+
+  double? _aspectRatio() {
+    final node = widget.controller.page.node(widget.node.id);
+    if (node is! BoxRecord) return null;
+    final r = _resolve(node);
+    if (r is! LiveBox) return null;
+    return widget.controller.modules.moduleFor(node.typeId)?.hostAspectRatio(r.data);
   }
 
   void _end() {

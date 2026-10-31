@@ -15,9 +15,6 @@ const Map<String, (String, IconData, {bool showLabel})> toolbarPlaceholders = {
     Icons.format_color_text_rounded,
     showLabel: false,
   ),
-  'noted.note.link': ('Link', Icons.link_rounded, showLabel: false),
-  'noted.image.insert': ('Image', Icons.image_rounded, showLabel: true),
-  'noted.file.insert': ('File', Icons.attach_file_rounded, showLabel: true),
   'noted.ai.insert': ('AI box', Icons.auto_awesome_rounded, showLabel: true),
   'noted.encrypted.insert': (
     'Encrypted box',

@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart' show ValueListenable, ValueNotifier;
 import 'package:flutter/widgets.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'attachment_store.dart';
 import 'canvas_tool.dart';
 import 'command_host.dart';
 import 'commands.dart';
@@ -53,6 +54,14 @@ abstract interface class BoxContext<D> {
   /// its content. The host applies the request after the current frame and
   /// ignores it while the user is dragging or resizing that box.
   void requestBounds(Rect bounds);
+
+  /// The page's images and files (Box API 0.7), or null where there are
+  /// none (a page that isn't stored in a folder, a conflict preview).
+  AttachmentStore? get attachments;
+
+  /// Creates boxes for [files] beside this box (Box API 0.7), for example an
+  /// image pasted while the caret is in a note.
+  void insertFilesBeside(List<IncomingFile> files);
 }
 
 /// The Flutter side of a box type (0034). Each box type is one module.
@@ -88,6 +97,46 @@ abstract class BoxModule<D> {
   /// text-only snapshot. Not stored yet: Prototype 1 boxes are text only.
   Future<Uint8List?> snapshotImage(D data, Size size) async => null;
 
+  /// How well this module can hold [file] (Box API 0.7): 0 for not at all;
+  /// a pasted, dropped or picked file goes to the module with the highest
+  /// value (an image module above a module that takes any file).
+  int fileAffinity(IncomingFile file) => 0;
+
+  /// Makes the data and size of a new box holding [file], storing the file
+  /// through [store] (Box API 0.7). Null if the file can't be used (an
+  /// image that doesn't decode).
+  Future<(D, Size)?> createFromFile(IncomingFile file, AttachmentStore store) async => null;
+
+  /// The width / height the box keeps while the user resizes it (Box API
+  /// 0.7), or null for none. Holding Shift resizes freely.
+  double? aspectRatio(D data) => null;
+
+  /// The same content with its files kept the [to] way (Box API 0.7: "Embed
+  /// attachments", "Move attachments to folder"), or null if nothing
+  /// changes. Names of files that stay in the folder because they are over
+  /// [embedLimitBytes] are added to [overLimit].
+  Future<D?> convertAttachments(
+    D data,
+    AttachmentStorage to,
+    AttachmentStore store,
+    List<String> overLimit,
+  ) async => null;
+
+  /// Untyped [createFromFile], for the canvas.
+  Future<(Object?, Size)?> hostCreateFromFile(IncomingFile file, AttachmentStore store) async =>
+      await createFromFile(file, store);
+
+  /// Untyped [aspectRatio], for the canvas.
+  double? hostAspectRatio(Object? data) => data is D ? aspectRatio(data) : null;
+
+  /// Untyped [convertAttachments], for the canvas.
+  Future<Object?> hostConvertAttachments(
+    Object? data,
+    AttachmentStorage to,
+    AttachmentStore store,
+    List<String> overLimit,
+  ) async => data is D ? await convertAttachments(data, to, store, overLimit) : null;
+
   /// Called by the box host. Keeps [D] typed across the untyped host.
   Widget hostBuild(BuildContext context, BoxBinding binding) {
     final box = _TypedBoxContext<D>(binding);
@@ -109,6 +158,8 @@ final class BoxBinding {
     required this.commit,
     required this.requestBounds,
     this.find,
+    this.attachments,
+    this.insertFilesBeside,
   });
 
   final String boxId;
@@ -122,6 +173,12 @@ final class BoxBinding {
 
   /// Find on page, or null where there is none (a conflict dialog preview).
   final ValueListenable<BoxFind?>? find;
+
+  /// The page's images and files, or null.
+  final AttachmentStore? attachments;
+
+  /// Creates boxes beside this one, or null where boxes can't be added.
+  final void Function(List<IncomingFile> files)? insertFilesBeside;
 }
 
 final class _TypedBoxContext<D> implements BoxContext<D> {
@@ -147,6 +204,10 @@ final class _TypedBoxContext<D> implements BoxContext<D> {
   void requestBounds(Rect bounds) => _b.requestBounds(bounds);
   @override
   ValueListenable<BoxFind?> get find => _b.find ?? _noFind;
+  @override
+  AttachmentStore? get attachments => _b.attachments;
+  @override
+  void insertFilesBeside(List<IncomingFile> files) => _b.insertFilesBeside?.call(files);
 
   static final ValueNotifier<BoxFind?> _noFind = ValueNotifier<BoxFind?>(null);
 }

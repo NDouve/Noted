@@ -145,6 +145,12 @@ class _FakeBox implements BoxContext<NoteData> {
 
   @override
   void requestBounds(Rect bounds) => requestedHeight = bounds.height;
+
+  @override
+  AttachmentStore? get attachments => null;
+
+  @override
+  void insertFilesBeside(List<IncomingFile> files) {}
 }
 
 ThemeData _theme(Brightness b) => ThemeData(
