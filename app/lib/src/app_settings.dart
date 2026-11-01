@@ -89,6 +89,27 @@ class AppSettings extends ChangeNotifier {
 
   set defaultBinderFolder(String? value) => _setFolder('defaultBinderFolder', value);
 
+  /// Whether the one-time note about pages that lost AI access (the "page"
+  /// value of older versions) has been shown on this device
+  /// (`"aiAccessNoteShown"`).
+  bool get aiAccessNoteShown => _raw['aiAccessNoteShown'] == true;
+
+  /// The file existed but couldn't be read, so what is in memory is only the
+  /// defaults. Nothing the app does by itself may save over it; only a
+  /// setting the user changes does.
+  bool _readFailed = false;
+
+  /// Whether a note can be remembered here without replacing a file that
+  /// couldn't be read.
+  bool get canRememberNotes => !_readFailed;
+
+  set aiAccessNoteShown(bool value) {
+    if (aiAccessNoteShown == value || _readFailed) return;
+    _raw = {..._raw, 'aiAccessNoteShown': value};
+    notifyListeners();
+    _write();
+  }
+
   String? _folder(String key) {
     final v = _raw[key];
     return v is String && v.isNotEmpty ? v : null;
@@ -119,12 +140,16 @@ class AppSettings extends ChangeNotifier {
     try {
       if (!f.existsSync()) return;
       final json = jsonDecode(f.readAsStringSync());
-      if (json is! Map<String, dynamic>) return;
+      if (json is! Map<String, dynamic>) {
+        _readFailed = true;
+        return;
+      }
       _raw = Map<String, Object?>.of(json);
       _theme = ThemeSetting.parse(json['theme']) ?? ThemeSetting.system;
       _toolbar = ToolbarStyle.parse(json['toolbar']) ?? ToolbarStyle.tabs;
     } on Object {
       // Damaged: use the defaults; the file stays as it is.
+      _readFailed = true;
       _raw = {};
       _theme = ThemeSetting.system;
       _toolbar = ToolbarStyle.tabs;
@@ -132,7 +157,8 @@ class AppSettings extends ChangeNotifier {
   }
 
   // Returns false if the file couldn't be written. Fields this build doesn't
-  // use (such as the old "aiConnections") are written back as they were read.
+  // use are written back as they were read, except the old "aiConnections",
+  // which nothing reads any more and which is dropped on a save.
   bool _write() {
     final f = file;
     if (f == null) return true;
@@ -141,7 +167,7 @@ class AppSettings extends ChangeNotifier {
       ..._raw,
       'format': format is int ? format : settingsFormatVersion,
       'theme': _theme.value,
-    };
+    }..remove('aiConnections');
     try {
       f.parent.createSync(recursive: true);
       final tmp = File('${f.path}.tmp');

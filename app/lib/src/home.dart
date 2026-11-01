@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 
+import 'ai_access_note.dart';
 import 'app_commands.dart';
 import 'app_settings.dart';
 import 'binder_cover.dart';
@@ -63,6 +64,19 @@ class _HomeState extends State<Home> {
     super.initState();
     _search.addListener(_searchChanged);
     _notices = notebook.attachmentNotices.listen(_showNotice);
+    final settings = widget.settings;
+    if (settings != null) {
+      unawaited(
+        notebook.loaded.then((_) {
+          if (!mounted) return;
+          // After the next frame, with the loaded notebook on screen.
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) unawaited(showAiAccessNoteIfNeeded(context, notebook, settings));
+          });
+          WidgetsBinding.instance.ensureVisualUpdate();
+        }),
+      );
+    }
   }
 
   // A one-line notice about attachments (a file too large to embed).

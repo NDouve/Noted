@@ -8,6 +8,7 @@ import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 import 'package:noted_core/noted_core.dart';
 
 import 'ai_box_access.dart';
+import 'ai_focus_ring.dart';
 
 /// Box header → Connect a chat: choose Writer or Reader, name the connection
 /// (and optionally let it expire), then show its code once.
@@ -142,16 +143,19 @@ class _AiConnectDialogState extends State<AiConnectDialog> {
   }) {
     final m = NotedMetrics.of(context);
     final scheme = Theme.of(context).colorScheme;
-    return ListTile(
-      key: key,
-      shape: RoundedRectangleBorder(
-        borderRadius: m.borderMd,
-        side: BorderSide(color: scheme.outlineVariant),
+    return FocusVisibleRing(
+      radius: m.radiusMd,
+      child: ListTile(
+        key: key,
+        shape: RoundedRectangleBorder(
+          borderRadius: m.borderMd,
+          side: BorderSide(color: scheme.outlineVariant),
+        ),
+        leading: Icon(icon, size: m.icon, color: scheme.onSurfaceVariant),
+        title: Text(title),
+        subtitle: Text(body),
+        onTap: () => _choose(role),
       ),
-      leading: Icon(icon, size: m.icon, color: scheme.onSurfaceVariant),
-      title: Text(title),
-      subtitle: Text(body),
-      onTap: () => _choose(role),
     );
   }
 

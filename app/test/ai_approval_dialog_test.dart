@@ -5,6 +5,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/ai/ai_approval_dialog.dart';
 import 'package:noted/src/ai/ai_link_authority.dart';
@@ -70,5 +71,26 @@ void main() {
     expired.complete();
     await t.pump(const Duration(milliseconds: 100));
     expect(find.byType(AiApprovalDialog), findsNothing);
+  });
+
+  testWidgets('Deny is the focused default and Allow is not the heavier button', (t) async {
+    final key = GlobalKey<NavigatorState>();
+    await t.pumpWidget(
+      MaterialApp(navigatorKey: key, theme: buildNotedTheme(Brightness.light, touch: false), home: const SizedBox()),
+    );
+    final expired = Completer<void>();
+    final answer = showAiApprovalDialog(
+      key,
+      AiApprovalRequest(app: 'A', write: true, label: 'L', perWrite: false, expired: expired.future),
+    );
+    await t.pump(const Duration(milliseconds: 400));
+    expect(find.byType(FilledButton), findsNothing, reason: 'neither answer is the filled one');
+    expect(t.widget<OutlinedButton>(find.byKey(const ValueKey('ai-approval-allow'))), isNotNull);
+    expect(t.widget<OutlinedButton>(find.byKey(const ValueKey('ai-approval-deny'))).autofocus, isTrue);
+    // A stray Enter denies.
+    await t.sendKeyEvent(LogicalKeyboardKey.enter);
+    await t.pump(const Duration(milliseconds: 400));
+    expect(await answer, isFalse);
+    expired.complete();
   });
 }

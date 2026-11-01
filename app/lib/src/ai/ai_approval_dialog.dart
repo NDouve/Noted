@@ -72,14 +72,15 @@ class _AiApprovalDialogState extends State<AiApprovalDialog> {
         ],
       ),
       actions: [
-        TextButton(
+        // Both are secondary buttons: Allow is not the heavier choice.
+        OutlinedButton(
           key: const ValueKey('ai-approval-deny'),
           // A stray Enter must not allow a request nobody expected.
           autofocus: true,
           onPressed: () => Navigator.of(context).pop(false),
           child: const Text('Deny'),
         ),
-        FilledButton(
+        OutlinedButton(
           key: const ValueKey('ai-approval-allow'),
           onPressed: () => Navigator.of(context).pop(true),
           child: const Text('Allow'),

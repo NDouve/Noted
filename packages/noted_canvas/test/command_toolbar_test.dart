@@ -516,6 +516,11 @@ void main() {
         await t.pumpAndSettle();
         expect(find.byKey(const ValueKey('menu-test.extra')), findsOneWidget);
         expect(find.byKey(const ValueKey('menu-canvas.select')), findsNothing);
+        // The menu opens below the button, not over the strip.
+        expect(
+          t.getTopLeft(find.byKey(const ValueKey('menu-test.extra'))).dy,
+          greaterThanOrEqualTo(t.getBottomLeft(more).dy),
+        );
         await t.tap(find.byKey(const ValueKey('menu-test.extra')));
         await t.pumpAndSettle();
         expect(module.extraRuns, 1);

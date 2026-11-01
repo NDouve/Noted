@@ -103,8 +103,22 @@ void main() {
       await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: page));
 
       expect(find.byKey(const ValueKey('settings-ai-open')), findsNothing, reason: 'looser: not offered');
-      expect(find.byKey(const ValueKey('settings-ai-privileged')), findsOneWidget);
+      // The value equal to the inherited one is the pin, labelled as such.
+      expect(find.text('Same as binder (Privileged)'), findsOneWidget);
+      expect(find.text('Privileged (keep even if the binder changes)'), findsOneWidget);
+      expect(find.text('Privileged'), findsNothing, reason: 'not listed twice under one name');
       expect(find.byKey(const ValueKey('settings-ai-guarded')), findsOneWidget);
+
+      // Pinning: own == inherited is stored, selected, and survives the binder changing.
+      await tap(t, 'settings-ai-privileged');
+      expect(nb.ownAiAccess(page), AiAccess.privileged);
+      expect(selected(t, 'settings-ai-privileged'), isTrue);
+      expect(selected(t, 'settings-ai-inherit'), isFalse);
+      await io(t, () => nb.setBinderAiAccess(b.path, AiAccess.guarded));
+      expect(nb.aiAccessFor(page).value, AiAccess.guarded, reason: 'tightening only: stricter binder wins');
+      await io(t, () => nb.setBinderAiAccess(b.path, AiAccess.open));
+      expect(nb.aiAccessFor(page).value, AiAccess.privileged, reason: 'the pin holds when the binder loosens');
+      await io(t, () => nb.setBinderAiAccess(b.path, AiAccess.privileged));
 
       await tap(t, 'settings-ai-guarded');
       expect(nb.ownAiAccess(page), AiAccess.guarded);
@@ -120,6 +134,8 @@ void main() {
         expect(find.byKey(ValueKey('settings-ai-${s.value}')), findsOneWidget);
       }
       expect(find.text('App default (Guarded)'), findsOneWidget);
+      expect(find.text('Guarded (keep even if the app default changes)'), findsOneWidget);
+      expect(find.text('Guarded'), findsNothing);
     });
 
     testWidgets('a binder offers all three and the app default, and saves its choice', (t) async {
@@ -128,6 +144,8 @@ void main() {
       expect(find.text('Binder settings'), findsOneWidget);
       expect(find.text('Background'), findsNothing, reason: 'a background is a page setting');
       expect(find.text('App default (Guarded)'), findsOneWidget);
+      expect(find.text('Guarded (keep even if the app default changes)'), findsOneWidget);
+      expect(find.text('Guarded'), findsNothing, reason: 'no plain duplicate next to the app default');
       for (final s in AiAccess.values) {
         expect(find.byKey(ValueKey('settings-ai-${s.value}')), findsOneWidget);
       }
@@ -428,6 +446,40 @@ void main() {
       }
       for (final s in settingsWords) {
         expect(find.text(s), findsNothing, reason: s);
+      }
+    });
+  });
+
+  group('panel polish', () {
+    double opacity(WidgetTester t) => t.widget<AnimatedOpacity>(find.byKey(const ValueKey('settings-scroll-cue'))).opacity;
+
+    testWidgets('a cue shows at the bottom edge while the panel continues below, and goes at the end', (t) async {
+      t.view.physicalSize = const Size(1000, 500);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      await t.pumpWidget(MaterialApp(home: Scaffold(body: SettingsPanel.page(notebook: nb, pageId: a))));
+      await t.pumpAndSettle();
+      expect(opacity(t), 1);
+      await t.drag(find.byType(SingleChildScrollView).first, const Offset(0, -3000));
+      await t.pumpAndSettle();
+      expect(opacity(t), 0, reason: 'nothing more below');
+    });
+
+    testWidgets('no cue when everything fits', (t) async {
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: a));
+      await t.pumpAndSettle();
+      expect(opacity(t), 0);
+    });
+
+    testWidgets('the Codes and Activity sub-headings are lighter than the section headings', (t) async {
+      await io(t, () => nb.setAiAccess(a, AiAccess.privileged));
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: a));
+      TextStyle style(Finder f) => t.widget<Text>(f).style!;
+      final section = style(find.text('AI access'));
+      for (final key in ['settings-codes-heading', 'settings-activity-heading']) {
+        final sub = style(find.byKey(ValueKey(key)));
+        expect(sub.fontSize, lessThan(section.fontSize!), reason: key);
+        expect(sub.color, isNot(section.color), reason: '$key is muted');
       }
     });
   });

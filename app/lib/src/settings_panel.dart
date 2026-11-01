@@ -126,7 +126,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
         width: 560,
         child: ListenableBuilder(
           listenable: Listenable.merge([nb, ?ai]),
-          builder: (context, _) => SingleChildScrollView(child: _body(context)),
+          builder: (context, _) => _ScrollCue(child: _body(context)),
         ),
       ),
       actions: [
@@ -225,6 +225,14 @@ class _SettingsPanelState extends State<SettingsPanel> {
     ConfigSourceKind.page => 'Same as parent ($value)',
     ConfigSourceKind.binder => 'Same as binder ($value)',
     ConfigSourceKind.appDefault || ConfigSourceKind.own => 'App default ($value)',
+  };
+
+  // "Privileged (keep even if the binder changes)": an own choice equal to
+  // what is inherited, so it is not mistaken for "Same as ...".
+  String _pinLabel(ConfigSource s, String value) => switch (s.kind) {
+    ConfigSourceKind.page => '$value (keep even if the parent changes)',
+    ConfigSourceKind.binder => '$value (keep even if the binder changes)',
+    ConfigSourceKind.appDefault || ConfigSourceKind.own => '$value (keep even if the app default changes)',
   };
 
   // Background -----------------------------------------------------------------
@@ -362,10 +370,12 @@ class _SettingsPanelState extends State<SettingsPanel> {
           selected: own == null,
           onTap: _readOnly ? null : () => _run(() => nb.setAiAccess(id, null)),
         ),
+        // The value equal to the inherited one is a pin: it stays when the
+        // parent, binder or default changes, so it is labelled as that.
         for (final s in nb.allowedOwnAiAccessFor(id))
           _chip(
             'settings-ai-${s.value}',
-            s.label,
+            s == inherited.value ? _pinLabel(inherited.source, s.label) : s.label,
             selected: own == s,
             onTap: _readOnly ? null : () => _run(() => nb.setAiAccess(id, s)),
           ),
@@ -384,7 +394,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
         for (final s in AiAccess.values)
           _chip(
             'settings-ai-${s.value}',
-            s.label,
+            s == defaultAiAccess ? _pinLabel(ConfigSource.appDefault, s.label) : s.label,
             selected: own == s,
             onTap: _readOnly ? null : () => _run(() => nb.setBinderAiAccess(_path!, s)),
           ),
@@ -513,6 +523,72 @@ class _SettingsPanelState extends State<SettingsPanel> {
   }
 }
 
+/// A scrolling [child] that shows a rule and a soft shade along its bottom
+/// edge while more content continues below, so a long panel does not look cut
+/// off.
+class _ScrollCue extends StatefulWidget {
+  const _ScrollCue({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_ScrollCue> createState() => _ScrollCueState();
+}
+
+class _ScrollCueState extends State<_ScrollCue> {
+  bool _more = false;
+
+  bool _update(ScrollMetrics metrics) {
+    final more = metrics.extentAfter > 0.5;
+    if (more != _more) {
+      // Notifications can arrive during layout.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && more != _more) setState(() => _more = more);
+      });
+    }
+    return false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return NotificationListener<ScrollMetricsNotification>(
+      onNotification: (n) => _update(n.metrics),
+      child: NotificationListener<ScrollNotification>(
+        onNotification: (n) => _update(n.metrics),
+        child: Stack(
+          children: [
+            SingleChildScrollView(child: widget.child),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: IgnorePointer(
+                child: AnimatedOpacity(
+                  key: const ValueKey('settings-scroll-cue'),
+                  opacity: _more ? 1 : 0,
+                  duration: const Duration(milliseconds: 120),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      border: Border(bottom: BorderSide(color: scheme.outlineVariant)),
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [scheme.surface.withValues(alpha: 0), scheme.shadow.withValues(alpha: 0.12)],
+                      ),
+                    ),
+                    child: const SizedBox(height: 16),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// The codes of a page or binder (Privileged access): the list with its
 /// sessions, Connect a chat, and the activity.
 class _CodesSection extends StatelessWidget {
@@ -556,6 +632,8 @@ class _CodesSection extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
     final muted = text.bodySmall?.copyWith(color: scheme.onSurfaceVariant);
+    // Lighter than the section headings (titleSmall): smaller, muted.
+    final sub = text.labelMedium?.copyWith(color: scheme.onSurfaceVariant);
     final kind = target.kind!;
     final now = DateTime.now();
     final codes = service.codesFor(kind, target.id);
@@ -566,7 +644,7 @@ class _CodesSection extends StatelessWidget {
       children: [
         Row(
           children: [
-            Expanded(child: Text('Codes', style: text.titleSmall)),
+            Expanded(child: Text('Codes', key: const ValueKey('settings-codes-heading'), style: sub)),
             TextButton.icon(
               key: const ValueKey('settings-connect'),
               icon: Icon(Icons.add_link_rounded, size: m.icon, color: scheme.onSurfaceVariant),
@@ -591,7 +669,7 @@ class _CodesSection extends StatelessWidget {
         else
           for (final c in codes) _codeRow(context, c, now),
         SizedBox(height: m.space2),
-        Text('Activity', style: text.titleSmall),
+        Text('Activity', key: const ValueKey('settings-activity-heading'), style: sub),
         SizedBox(height: m.space1),
         if (activity.isEmpty)
           Text('Nothing yet.', key: const ValueKey('settings-no-activity'), style: muted)

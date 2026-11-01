@@ -8,6 +8,7 @@ import 'package:noted_canvas/noted_canvas.dart'
 import 'package:noted_core/noted_core.dart';
 
 import 'ai_box_access.dart';
+import 'ai_focus_ring.dart';
 
 /// Box header → connections: the box's codes with their approved sessions,
 /// the Ask before each write switch and the activity list.
@@ -172,16 +173,18 @@ class _AiConnectionsDialogState extends State<AiConnectionsDialog> {
         else
           for (final c in codes) _codeRow(context, c, now),
         SizedBox(height: m.space2),
-        SwitchListTile(
-          key: const ValueKey('ai-ask-switch'),
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Ask before each write'),
-          subtitle: Text(
-            'Noted asks you to allow every write to this box.',
-            style: muted,
+        FocusVisibleRing(
+          child: SwitchListTile(
+            key: const ValueKey('ai-ask-switch'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Ask before each write'),
+            subtitle: Text(
+              'Noted asks you to allow every write to this box.',
+              style: muted,
+            ),
+            value: access.askBeforeWrite(boxId),
+            onChanged: (v) => _run(() => access.setAskBeforeWrite(boxId, v)),
           ),
-          value: access.askBeforeWrite(boxId),
-          onChanged: (v) => _run(() => access.setAskBeforeWrite(boxId, v)),
         ),
         SizedBox(height: m.space2),
         Text('Activity', style: text.titleSmall),

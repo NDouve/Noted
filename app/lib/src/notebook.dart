@@ -740,6 +740,31 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
   /// page down to this one, else the app default (Guarded).
   EffectiveAiAccess aiAccessFor(String id) => effectiveAiAccess(_metaChain(id), binder: _binderOf(id));
 
+  /// The pages whose own stored AI value is the legacy `page` (as written)
+  /// and that are no longer Open because of what they inherit: they lost
+  /// access when it was replaced by Open, Privileged and Guarded.
+  ///
+  /// Pages in a location that is not readable and writable are left out.
+  List<String> pagesThatLostAiAccess() => [
+    for (final e in _metas.entries)
+      if (e.value.rawAiAccess?.decode() == 'page' &&
+          !isReadOnlyPage(e.key) &&
+          aiAccessFor(e.key).value != AiAccess.open)
+        e.key,
+  ];
+
+  /// Whether every binder and standalone folder was read in full: none is
+  /// away or has a damaged binder file, and no page file is unreadable. What
+  /// depends on the whole notebook (the access-loss note) waits for this.
+  bool get everythingReadable =>
+      !_defaultGone &&
+      _unreadable.isEmpty &&
+      _folders.values.every((f) => f.available && f.unreadable.isEmpty) &&
+      _binders.values.every((b) => b.available && b.unreadable.isEmpty);
+
+  /// Completes when the first load is over.
+  Future<void> get loaded => _loaded.future;
+
   /// What page [id] would have without its own choice: its parents', its
   /// binder's or the app default. A top-level page in no binder inherits
   /// nothing, so the app default is shown.

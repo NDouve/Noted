@@ -108,6 +108,8 @@ class _ToolbarOverflowRowState extends State<ToolbarOverflowRow> {
         tooltip: 'More',
         iconSize: m.icon,
         icon: const Icon(Icons.more_horiz_rounded),
+        // Below the button, so the menu never covers the strip it belongs to.
+        position: PopupMenuPosition.under,
         // The menu must not take focus: the note commands are enabled only
         // while a note editor has it (0097).
         requestFocus: false,
