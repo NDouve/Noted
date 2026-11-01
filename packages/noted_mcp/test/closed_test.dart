@@ -496,10 +496,10 @@ void main() {
         writeStore(data, [writer()], boxes);
         final out = await toolbox().writeBox(boxId: 'aiA', code: token(idWriter), mode: 'append', content: 'x');
         expect(out.isError, isTrue);
-        expect(out.text, startsWith('This needs Noted running'));
+        expect(out.text, equals(closedWritesOffText));
       }
       await expectNothingChanged(path, before);
-      expect(readLog(data).map((e) => e.result), everyElement('not_running'));
+      expect(readLog(data).map((e) => e.result), everyElement('not_writable'));
     });
 
     test('ask before each write turns closed writes off, whatever the switch says', () async {
@@ -510,7 +510,7 @@ void main() {
       final before = File(path).readAsStringSync();
       final out = await toolbox().writeBox(boxId: 'aiA', code: token(idWriter), mode: 'append', content: 'x');
       expect(out.isError, isTrue);
-      expect(out.text, startsWith('This needs Noted running'));
+      expect(out.text, equals(closedWritesOffText));
       await expectNothingChanged(path, before);
     });
 

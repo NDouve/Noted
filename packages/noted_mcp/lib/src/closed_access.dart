@@ -15,6 +15,12 @@ import 'tools.dart';
 /// What the AI is told for a code that the user has not approved yet.
 const String approveInNotedFirst = 'Approve this code in Noted first. Open Noted: it will ask you.';
 
+/// What the AI is told when Noted is closed and the box doesn't allow writes
+/// while Noted is closed.
+const String closedWritesOffText =
+    "This box doesn't take writes while Noted is closed. Open Noted and try again, "
+    'or ask the user to allow it in the box.';
+
 /// What the AI is told when `ai-access.json` exists but can't be read.
 const String storeUnreadableText = "Noted can't read its codes. Open Noted to fix it.";
 
@@ -271,9 +277,9 @@ final class ClosedAccess {
     final code = r.code!;
     final view = r.view!;
     final writer0 = ClosedWriter(dataDir: dataDir, folders: const []);
-    Future<AiLinkResponse> done(AiLinkCode c, [LibraryPage? page]) async {
+    Future<AiLinkResponse> done(AiLinkCode c, [LibraryPage? page, String? message]) async {
       await _log(writer0, code, AiCodeTarget.box(boxId, page: page?.id ?? code.target.page), op, c.wire);
-      return _error(c);
+      return message == null ? _error(c) : AiLinkError(c, message);
     }
 
     if (!code.canWriteBox) return done(AiLinkCode.wrongRole);
@@ -282,7 +288,7 @@ final class ClosedAccess {
     final page = _pageOfBox(library, boxId, code.target.page);
     if (page == null || page.path == null) return done(AiLinkCode.noBox);
     // Only a box that allows it: off by default, and never with ask-first.
-    if (!view.closedWrites(boxId)) return done(AiLinkCode.notRunning, page);
+    if (!view.closedWrites(boxId)) return done(AiLinkCode.notWritable, page, closedWritesOffText);
     if (!view.writerPermission(boxId).allows(mode)) return done(AiLinkCode.notPermitted, page);
     final box = page.page.node(boxId);
     if (box is! BoxRecord || box.typeId != aiBoxTypeId || isEncrypted(box)) return done(AiLinkCode.notWritable, page);

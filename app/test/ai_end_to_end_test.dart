@@ -219,12 +219,48 @@ void main() {
     expect(revokedError, isTrue);
     expect(shown(), beforeRevoke);
 
-    // The app stops: code-based calls fail cleanly, Open reads still work.
+    // Noted closes (its link stops, and this test holds no running lock):
+    // noted_mcp checks approved codes itself against the saved store.
+    await nb.flush();
     await link.dispose();
     linkStopped = true;
-    final (downError, down) = await mcp.call('read_box', {'box_id': 'aibox', 'code': reader});
-    expect(downError, isTrue);
-    expect(down, contains('needs Noted running'));
+    // A Reader read from the saved page.
+    final (closedReadError, closedRead) = await mcp.call('read_box', {'box_id': 'aibox', 'code': reader});
+    expect(closedReadError, isFalse, reason: closedRead);
+    expect(closedRead, contains('Ship the **AI box**.'));
+    // A new Writer, approved in Noted beforehand; the box doesn't allow
+    // writes while Noted is closed yet, so the write is refused.
+    final writer2 = await service.connect('aibox', role: AiCodeRole.writer, label: 'Feedback chat 2');
+    service.store.approveCode(parseAiToken(writer2)!.id);
+    final pageFile = File('${data.path}/pages/$pageId.canvas');
+    final beforeClosed = pageFile.readAsStringSync();
+    final (offError, off) = await mcp.call('write_box', {
+      'box_id': 'aibox',
+      'code': writer2,
+      'content': 'Written while Noted was closed.',
+      'mode': 'append',
+    });
+    expect(offError, isTrue, reason: off);
+    expect(pageFile.readAsStringSync(), beforeClosed, reason: 'nothing written');
+    // With the switch on, an Append-only write lands in the page file.
+    await service.setWriterPermission('aibox', AiWriterPermission.append);
+    await service.setClosedWrites('aibox', true);
+    final (onError, on) = await mcp.call('write_box', {
+      'box_id': 'aibox',
+      'code': writer2,
+      'content': 'Written while Noted was closed.',
+      'mode': 'append',
+    });
+    expect(onError, isFalse, reason: on);
+    expect(pageFile.readAsStringSync(), contains('Written while Noted was closed.'));
+    // Append only: replacing is refused.
+    final (replaceError, replaced) = await mcp.call('write_box', {
+      'box_id': 'aibox',
+      'code': writer2,
+      'content': 'x',
+      'mode': 'replace',
+    });
+    expect(replaceError, isTrue, reason: replaced);
     final (listError, _) = await mcp.call('list_pages');
     expect(listError, isFalse);
   }, timeout: const Timeout(Duration(minutes: 2)));
