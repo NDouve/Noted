@@ -12,7 +12,8 @@ A run is one batch of work on Noted, led by the build team in `.claude/agents/` 
    - `flutter analyze` and all tests, and the integration suite when the app changed;
    - push, and confirm CI is green;
    - rebuild the release exe and zip;
-   - curate `docs/decisions.md`.
+   - curate `docs/decisions.md`;
+   - the independent Codex review of the run's changes (and any area audit `next.md` names), with `app/scripts/codex-review.ps1`. Reports go to `docs/reviews/`, unchanged.
 6. **Report.** The PM writes `docs/runs/YYYY-MM-DD-NN.md` (`NN` counts that day's runs from 01) and **deletes `next.md` in the same commit**, then pushes. An empty queue means the run is done.
 
 ## Report format
@@ -33,6 +34,9 @@ Analyze, tests per package (counts), the integration suite, CI run, release buil
 
 ## Reviews
 Findings from `reviewer` and `reviewer-ui`: each blocking finding and how it was resolved; non-blocking findings fixed or left (and why).
+
+## Independent review
+For each Codex report: its path, the count of findings by severity, and each P0 and P1 finding (R-number, title, one line). P0 findings are also listed first under "Needs the maintainer". Findings are reported as written, not triaged. If the review didn't run, why.
 
 ## Decisions the PM made
 Each delegated decision (Box API addition, Dart/Flutter-team dependency at its exact version, new box package) and each routine judgement call, with the reason.
