@@ -5,6 +5,7 @@
 import '../box_api/codec_registry.dart';
 import '../model/ids.dart';
 import '../model/page.dart';
+import 'page_issues.dart';
 import 'page_merge.dart';
 
 /// The file names a sync client may have renamed [fileName] from, when it
@@ -87,9 +88,12 @@ PageMerge mergeConflictCopy(
   }
 
   // Nodes only the copy has, placed after the node that precedes them there.
+  // A box that overlaps a box already on the page is marked landed.
+  final existing = List<CanvasNode>.of(out);
   for (var i = 0; i < copy.nodes.length; i++) {
-    final c = copy.nodes[i];
+    var c = copy.nodes[i];
     if (originalIds.contains(c.id)) continue;
+    if (c is BoxRecord) c = markLandedIfOverlapping(c, existing, mergeTime: copyTime);
     var at = 0;
     for (var j = i - 1; j >= 0; j--) {
       final k = out.indexWhere((n) => n.id == copy.nodes[j].id);

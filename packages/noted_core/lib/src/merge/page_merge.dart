@@ -7,6 +7,7 @@ import '../box_api/codec_registry.dart';
 import '../json/raw_json.dart';
 import '../model/ids.dart';
 import '../model/page.dart';
+import 'page_issues.dart';
 
 /// The outcome of [mergePage].
 final class PageMerge {
@@ -94,12 +95,17 @@ PageMerge mergePage(
     }
   }
 
-  // Nodes only theirs has: new there, or removed here.
+  // Nodes only theirs has: new there, or removed here. A box new there that
+  // overlaps a box already on this page is marked landed.
+  final existing = List<CanvasNode>.of(out);
   for (var i = 0; i < theirs.nodes.length; i++) {
     final t = theirs.nodes[i];
     if (mineIds.contains(t.id)) continue;
     final b = baseById[t.id];
     CanvasNode add = t;
+    if (b == null && t is BoxRecord) {
+      add = markLandedIfOverlapping(t, existing, mergeTime: theirsTime);
+    }
     if (b != null) {
       if (_same(b, t)) continue; // removed here, unchanged there
       if (t is BoxRecord) {
@@ -187,6 +193,15 @@ bool _same(CanvasNode a, CanvasNode b) => a.toRaw() == b.toRaw();
     ];
   }
   if (!_sameList(want, r.conflicts)) r = r.withConflicts(want);
+
+  // The landed marker is core-owned too: theirs if mine is unchanged.
+  final ml = m.noted['landed'];
+  final tl = t.noted['landed'];
+  final bl = b?.noted['landed'];
+  if (ml?.text != tl?.text && ml?.text == bl?.text) {
+    final l = tl == null ? null : BoxLanded.tryRead(tl);
+    r = l == null ? r.withoutLanded() : r.withLanded(l);
+  }
 
   if (isConflict) {
     final other = BoxConflict.other(node: t.toRaw(), at: theirsTime, device: t.device);

@@ -220,6 +220,24 @@ final class BoxRecord extends CanvasNode {
   BoxRecord withoutConflicts() =>
       noted.containsKey('conflicts') ? _withNoted(noted.remove('conflicts')) : this;
 
+  /// The marker a merge left on a box that arrived from another device and
+  /// landed on top of another box, or null (`"landed"` in the `noted` header).
+  BoxLanded? get landed {
+    final raw = noted['landed'];
+    return raw == null ? null : BoxLanded.tryRead(raw);
+  }
+
+  /// Returns a copy marked as landed on top of another box.
+  BoxRecord withLanded(BoxLanded value) {
+    if (noted['landed']?.text == value.raw.text) return this;
+    return _withNoted(noted.set('landed', value.raw));
+  }
+
+  /// Returns a copy without the `landed` marker. Only that field is removed;
+  /// every other byte of the box is kept.
+  BoxRecord withoutLanded() =>
+      noted.containsKey('landed') ? _withNoted(noted.remove('landed')) : this;
+
   /// Returns a copy with another id; nothing else changes.
   BoxRecord withId(String value) {
     if (value == id) return this;
@@ -380,6 +398,49 @@ final class BoxConflict {
 
   @override
   bool operator ==(Object other) => other is BoxConflict && other.raw == raw;
+
+  @override
+  int get hashCode => raw.hashCode;
+}
+
+/// Where and when a box arrived from another device during a merge and
+/// landed on top of another box, recorded in the box's `noted` header as
+/// `"landed":{"at":<ms since epoch>,"device":"<computer name>"}` (`device`
+/// only when the arriving version says which computer wrote it). The box
+/// keeps the marker until the user places it.
+final class BoxLanded {
+  const BoxLanded._(this.raw, this.at, this.device);
+
+  factory BoxLanded({required int at, String? device}) => BoxLanded._(
+    RawJson.trusted(
+      '{"at":$at${device == null ? '' : ',"device":${RawJson.encode(device).text}'}}',
+    ),
+    at,
+    device,
+  );
+
+  /// Reads a `landed` value, or returns null if malformed.
+  static BoxLanded? tryRead(RawJson raw) {
+    if (!raw.isObject) return null;
+    try {
+      final o = RawObject.parse(raw.text);
+      return BoxLanded._(raw, o.integer('at') ?? 0, o.string('device'));
+    } on FormatException {
+      return null;
+    }
+  }
+
+  /// The marker exactly as stored.
+  final RawJson raw;
+
+  /// When the box arrived, in ms since the epoch.
+  final int at;
+
+  /// The computer that wrote the arriving version, if known.
+  final String? device;
+
+  @override
+  bool operator ==(Object other) => other is BoxLanded && other.raw == raw;
 
   @override
   int get hashCode => raw.hashCode;

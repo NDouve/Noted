@@ -29,6 +29,7 @@ export 'src/format/page_format.dart';
 export 'src/format/page_splice.dart';
 export 'src/json/raw_json.dart';
 export 'src/merge/conflict_copy.dart';
+export 'src/merge/page_issues.dart';
 export 'src/merge/page_merge.dart';
 export 'src/model/bounds.dart';
 export 'src/model/box_types.dart';
