@@ -8,9 +8,15 @@ import 'dart:math';
 
 import 'package:noted_core/noted_core_read.dart';
 
+import 'closed_access.dart';
 import 'library.dart';
 import 'link_client.dart';
+import 'running_probe.dart';
 import 'tools.dart';
+
+/// What the AI is told when Noted is running (it holds its lock) but its link
+/// gave no answer. Nothing was changed.
+const String notedBusyText = "Noted is running but didn't answer; try again.";
 
 /// A new random session id: 32 random bytes in base64url, without padding.
 /// Each server process makes one at start; the app asks the user to allow a
@@ -42,7 +48,9 @@ ToolOutput linkErrorOutput(AiLinkError e) {
     AiLinkCode.badCode =>
       'The code is not valid: it may be mistyped, or the user may have revoked it. Ask the user for the code again.',
     AiLinkCode.expired => 'The code has expired. Ask the user for a new one.',
-    AiLinkCode.notApproved => "The user hasn't allowed this connection in Noted.",
+    AiLinkCode.notApproved =>
+      e.message == approveInNotedFirst ? approveInNotedFirst : "The user hasn't allowed this connection in Noted.",
+    AiLinkCode.notPermitted => AiLinkCode.notPermitted.defaultMessage,
     AiLinkCode.wrongRole =>
       'This code does not allow that. A Reader code cannot write, and a box code reads only its own box '
           '(with read_box), not pages.',
@@ -51,6 +59,8 @@ ToolOutput linkErrorOutput(AiLinkError e) {
     AiLinkCode.locked => 'The page cannot be edited right now (its binder is locked, or it is read-only). Nothing was changed.',
     AiLinkCode.notWritable => 'This box does not take writes from an AI right now. Nothing was changed.',
     AiLinkCode.saveFailed => 'Noted could not save the change. Nothing was changed.',
+    AiLinkCode.busy when e.message == notedBusyText => notedBusyText,
+    AiLinkCode.busy when e.message == storeUnreadableText => storeUnreadableText,
     AiLinkCode.busy =>
       'Noted is busy (it may still be starting, or cannot read its codes for a moment). Nothing was changed. Try again in a moment.',
     AiLinkCode.badRequest => e.message,
@@ -81,7 +91,11 @@ final class NotedToolbox {
     this.connectTimeout,
     this.greetingTimeout,
     this.responseTimeout,
+    this.beforeClosedReplace,
   }) : session = session ?? newSessionId();
+
+  /// Test hook: see [ClosedAccess.beforeReplace].
+  final Future<void> Function(int attempt)? beforeClosedReplace;
 
   final Directory dataDir;
 
@@ -103,6 +117,19 @@ final class NotedToolbox {
     greetingTimeout: greetingTimeout ?? const Duration(seconds: 2),
     responseTimeout: responseTimeout ?? const Duration(seconds: 55),
   );
+
+  /// Whether Noted is running: it holds its lock, or (defence in depth) the
+  /// lock says closed but its link file is there and greets with the nonce.
+  /// Only then is the link used; otherwise the server works closed.
+  Future<bool> _running() async => await isNotedRunning(dataDir) || await _client.greets();
+
+  ClosedAccess get _closed => ClosedAccess(dataDir, app: app, beforeReplace: beforeClosedReplace);
+
+  /// While Noted holds its lock it is running: if its link doesn't answer
+  /// (a busy listener, a slow greeting), the answer is "busy", and the server
+  /// never falls back to reading codes or writing files itself.
+  static AiLinkResponse _ifNoAnswer(AiLinkResponse r) =>
+      r is AiLinkError && r.code == AiLinkCode.notRunning ? AiLinkError(AiLinkCode.busy, notedBusyText) : r;
 
   static ToolOutput _error(String text) => (text: text, isError: true);
 
@@ -175,9 +202,11 @@ final class NotedToolbox {
   /// return (a malformed code never reaches the app).
   Future<Object> _grant(String code, AiLinkAction action, String? target) async {
     if (parseAiToken(code) == null) return _badCode;
-    final response = await _client.send(
-      AiLinkAccess(code: code, session: session, app: app, action: action, target: target),
-    );
+    final response = await _running()
+        ? _ifNoAnswer(
+            await _client.send(AiLinkAccess(code: code, session: session, app: app, action: action, target: target)),
+          )
+        : await _closed.grant(code, action, target: target);
     return switch (response) {
       AiLinkGranted(:final grant) => grant,
       AiLinkError() => linkErrorOutput(response),
@@ -203,12 +232,16 @@ final class NotedToolbox {
       );
     }
     if (parseAiToken(c) == null) return _badCode;
-    final m = AiLinkMode.values.where((e) => e.name == mode);
-    if (m.isEmpty) return _error('mode must be "replace" or "append".');
+    final m = AiLinkMode.fromWire(mode);
+    if (m == null) return _error('mode must be "append", "replace_ai" or "replace".');
     if (boxId.isEmpty) return _error('box_id is required.');
-    final response = await _client.send(
-      AiLinkWriteBox(code: c, session: session, app: app, box: boxId, mode: m.first, content: content),
-    );
+    final response = await _running()
+        ? _ifNoAnswer(
+            await _client.send(
+              AiLinkWriteBox(code: c, session: session, app: app, box: boxId, mode: m, content: content),
+            ),
+          )
+        : await _closed.write(token: c, boxId: boxId, mode: m, content: content);
     return switch (response) {
       AiLinkWritten(:final box) => (text: 'Written to box $box.', isError: false),
       AiLinkError() => linkErrorOutput(response),
@@ -221,7 +254,8 @@ final class NotedToolbox {
   Future<ToolOutput> describeCode(String? code) async {
     final c = _clean(code);
     if (c == null || parseAiToken(c) == null) return _badCode;
-    final response = await _client.send(AiLinkDescribeCode(code: c, session: session, app: app));
+    if (!await _running()) return linkErrorOutput(AiLinkClient.notRunning);
+    final response = _ifNoAnswer(await _client.send(AiLinkDescribeCode(code: c, session: session, app: app)));
     return switch (response) {
       AiLinkDescribed() => (
         text: const JsonEncoder.withIndent(

@@ -11,6 +11,7 @@ import 'package:noted_core/noted_core_read.dart';
 import 'package:noted_mcp/noted_mcp.dart';
 
 import 'fixture.dart';
+import 'running_lock.dart';
 
 const _key = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ'; // 43 characters
 const codeW = 'noted_1111111111111111_$_key';
@@ -31,7 +32,13 @@ final class FakeNoted {
   /// The requests received, parsed.
   List<AiLinkRequest> get requests => [for (final l in lines) AiLinkRequest.parse(l)!];
 
-  static Future<FakeNoted> start(Directory dir, {String nonce = 'N0NCE', String? greetNonce, bool greet = true}) async {
+  static Future<FakeNoted> start(
+    Directory dir, {
+    String nonce = 'N0NCE',
+    String? greetNonce,
+    bool greet = true,
+    bool holdLock = true,
+  }) async {
     final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     final fake = FakeNoted._(dir, server, nonce);
     server.listen((s) {
@@ -57,10 +64,20 @@ final class FakeNoted {
     File('${dir.path}/$aiLinkFileName').writeAsStringSync(
       jsonEncode({'format': 1, 'port': server.port, 'pid': 1, 'nonce': nonce}),
     );
+    if (holdLock) fake._lock = await RunningLock.hold(dir);
     return fake;
   }
 
-  Future<void> close() => _server.close();
+  /// Like the running app: a separate process holds the exclusive lock on the
+  /// running-lock file.
+  RunningLock? _lock;
+
+  Future<void> close() async {
+    final l = _lock;
+    _lock = null;
+    await l?.release();
+    await _server.close();
+  }
 }
 
 void main() {
@@ -302,6 +319,7 @@ void main() {
       AiLinkCode.conflict: 'sync conflict',
       AiLinkCode.locked: 'cannot be edited',
       AiLinkCode.notWritable: 'does not take writes',
+      AiLinkCode.notPermitted: "Writer permission doesn't allow that",
       AiLinkCode.saveFailed: 'could not save',
       AiLinkCode.busy: 'busy',
       AiLinkCode.badRequest: 'bad thing',
@@ -330,21 +348,21 @@ void main() {
       expect(out.text, contains('quota'));
     });
 
-    test('Noted not running: code calls fail with the message, Open reads still work', () async {
-      // No ai-link.json in this folder.
+    test('Noted not running: describe_code says so; other code calls are checked against the saved store', () async {
+      // No ai-link.json and no ai-access.json in this folder: no code is known.
       final dir = Directory.systemTemp.createTempSync('noted_mcp_nolink');
       addTearDown(() => dir.deleteSync(recursive: true));
       final t = NotedToolbox(dir, session: 's');
+      expect((await t.describeCode(codeR)).text, notRunningText);
       for (final out in [
         await t.listPages(code: codeR),
         await t.readPage(Ids.public, code: codeR),
         await t.readBox('aiG', code: codeR),
         await t.search('x', code: codeR),
         await t.writeBox(boxId: 'aiA', code: codeW, mode: 'append', content: 'x'),
-        await t.describeCode(codeR),
       ]) {
         expect(out.isError, isTrue);
-        expect(out.text, notRunningText);
+        expect(out.text, 'Approve this code in Noted first. Open Noted: it will ask you.');
       }
       expect((await toolbox().readPage(Ids.public)).isError, isFalse);
     });
@@ -362,15 +380,18 @@ void main() {
     test('a nonce mismatch is not running and the fake received no code', () async {
       final f = await fake(greetNonce: 'OTHER');
       f.answer = (_) => pagesGrant([]);
-      final out = await toolbox().listPages(code: codeR);
-      expect(out.text, notRunningText);
+      expect((await toolbox().describeCode(codeR)).text, notedBusyText);
+      // Noted holds its lock, so it is running: no fallback to the closed way,
+      // and no code is sent to a peer that failed the nonce check.
+      expect((await toolbox().listPages(code: codeR)).text, notedBusyText);
+      expect((await toolbox().writeBox(boxId: 'aiA', code: codeW, mode: 'append', content: 'x')).text, notedBusyText);
       await Future<void>.delayed(const Duration(milliseconds: 200));
       expect(f.lines, isEmpty);
     });
 
     test('a peer that never greets is not running, nothing sent', () async {
       final f = await fake(greet: false);
-      expect((await toolbox().describeCode(codeR)).text, notRunningText);
+      expect((await toolbox().describeCode(codeR)).text, notedBusyText);
       expect(f.lines, isEmpty);
     });
 

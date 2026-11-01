@@ -11,7 +11,7 @@
   Builds the release (unless -SkipBuild), copies it into
   app\build\package\Noted, adds the Visual C++ runtime DLLs the exe and
   plugins import (msvcp140.dll, vcruntime140.dll, vcruntime140_1.dll,
-  app-local deployment from this machine's System32), the read-only MCP
+  app-local deployment from this machine's System32), the MCP
   server (noted_mcp.exe, compiled from packages\noted_mcp), the shortcut
   and MCP registration scripts and a README, and writes
   app\build\Noted-windows-x64.zip.
@@ -43,7 +43,7 @@ if (-not (Test-Path (Join-Path $release 'noted.exe'))) {
   throw "No release build at $release"
 }
 
-# The read-only MCP server (invariant 4): a separate executable next to
+# The MCP server (invariant 4): a separate executable next to
 # noted.exe, so a registration made from the release folder keeps working.
 $mcpSource = Join-Path $app '..\packages\noted_mcp\bin\noted_mcp.dart'
 dart compile exe $mcpSource -o (Join-Path $release 'noted_mcp.exe')
@@ -86,12 +86,17 @@ AI (MCP server)
   noted_mcp.exe lets an AI app read your pages. A page whose AI access is
   Open (page settings) can be read by any AI using this server, with no
   code. Privileged pages need a code for the page or its binder; Guarded
-  pages (the default) are closed to every AI. It never writes a file: an AI
-  writes only into an AI box it holds the Writer code for, through Noted
-  while Noted is running. Codes are made in Noted (in the AI box, "Connect
-  a chat", or in the page or binder settings); give the code to the chat,
-  which passes it on each call. Noted asks you to allow a new connection
-  the first time a code is used. There is no token: add the server to
+  pages (the default) are closed to every AI. An AI writes only into an AI
+  box it holds the Writer code for, within the box's Writer permission
+  (Append only, Edit or Full): through Noted while Noted is running, and,
+  only if you turned on "Allow writes while Noted is closed" for that box,
+  straight into the page file while it is closed. The server's only other
+  file is its own access log (ai-mcp-log.jsonl) beside the code store.
+  Codes are made in Noted (in the AI box, "Connect a chat", or in the page
+  or binder settings); give the code to the chat, which passes it on each
+  call. You approve each code once, the first time it is used; if that is
+  while Noted is closed, the chat is told to open Noted and Noted asks you
+  then. There is no token: add the server to
   Claude Code and print the Claude desktop configuration from PowerShell:
     powershell -ExecutionPolicy Bypass -File register-mcp.ps1
   See docs/mcp.md in the source.

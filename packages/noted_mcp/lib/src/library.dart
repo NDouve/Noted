@@ -22,9 +22,12 @@ Directory defaultDataDirectory() {
 /// One saved page as read from its file, with where it is and the AI
 /// access that applies to it.
 final class LibraryPage {
-  LibraryPage(this.page, this.location, this.access, {this.locked = false});
+  LibraryPage(this.page, this.location, this.access, {this.locked = false, this.path});
 
   final NotedPage page;
+
+  /// The page file this was read from.
+  final String? path;
 
   /// The folder (standalone) or binder it is in.
   final LibraryLocation location;
@@ -58,7 +61,11 @@ final class LibraryLocation {
 ///
 /// Reading never writes: no folder is created, no file is changed.
 final class NotedLibrary {
-  NotedLibrary._(this.pages);
+  NotedLibrary._(this.pages, this.folders);
+
+  /// The folders the library listed (standalone folders and binders). The
+  /// closed-app writer may replace page files in these folders only.
+  final List<String> folders;
 
   /// All readable pages, Privileged, Guarded and locked ones included; the
   /// tools filter them.
@@ -85,11 +92,11 @@ final class NotedLibrary {
     };
     final pages = <LibraryPage>[];
     // Standalone folders share one tree, as in the app.
-    final loose = <(NotedPage, LibraryLocation)>[];
+    final loose = <(NotedPage, LibraryLocation, String)>[];
     for (final path in standalone) {
       final loc = LibraryLocation(path);
-      for (final p in await _readPages(Directory(path))) {
-        loose.add((p, loc));
+      for (final (p, file) in await _readPages(Directory(path))) {
+        loose.add((p, loc, file));
       }
     }
     pages.addAll(_withAccess(loose, binder: null, locked: false));
@@ -100,27 +107,27 @@ final class NotedLibrary {
       // by their codes.
       if (binder == null) continue;
       final loc = LibraryLocation(path, binder: binder);
-      final own = [for (final p in await _readPages(Directory(path))) (p, loc)];
+      final own = [for (final (p, file) in await _readPages(Directory(path))) (p, loc, file)];
       pages.addAll(_withAccess(own, binder: binder, locked: isLockedBinder(binder)));
     }
-    return NotedLibrary._(pages);
+    return NotedLibrary._(pages, [...standalone, ..._strings(binders['binders'])]);
   }
 
   static List<LibraryPage> _withAccess(
-    List<(NotedPage, LibraryLocation)> pages, {
+    List<(NotedPage, LibraryLocation, String)> pages, {
     required Binder? binder,
     required bool locked,
   }) {
     // One entry per page id (the first copy is kept). If copies of an id
     // disagree, the strictest access of any copy applies.
     final metas = <String, PageMeta>{};
-    final first = <String, (NotedPage, LibraryLocation)>{};
+    final first = <String, (NotedPage, LibraryLocation, String)>{};
     for (final e in pages) {
       metas.putIfAbsent(e.$1.id, () => e.$1.meta);
       first.putIfAbsent(e.$1.id, () => e);
     }
     final access = <String, AiAccess>{};
-    for (final (p, _) in pages) {
+    for (final (p, _, _) in pages) {
       // Each copy starts its chain from its own header. A parent that is
       // missing, unreadable or looping ends the chain, and the core then
       // starts from the app default (the page is not the top).
@@ -138,7 +145,7 @@ final class NotedLibrary {
       access[p.id] = before == null ? a : AiAccess.strictest(before, a);
     }
     return [
-      for (final (p, loc) in first.values) LibraryPage(p, loc, access[p.id]!, locked: locked),
+      for (final (p, loc, file) in first.values) LibraryPage(p, loc, access[p.id]!, locked: locked, path: file),
     ];
   }
 
@@ -168,8 +175,8 @@ final class NotedLibrary {
   /// The pages in [dir]: each `*.canvas` file that reads as a page. A
   /// conflict copy (another file with the same page id) is skipped in
   /// favour of `<id>.canvas`.
-  static Future<List<NotedPage>> _readPages(Directory dir) async {
-    final byId = <String, (NotedPage, bool)>{};
+  static Future<List<(NotedPage, String)>> _readPages(Directory dir) async {
+    final byId = <String, (NotedPage, bool, String)>{};
     try {
       if (!await dir.exists()) return const [];
       await for (final e in dir.list()) {
@@ -179,7 +186,7 @@ final class NotedLibrary {
           final name = e.path.split(RegExp(r'[\\/]')).last;
           final exact = name == '${page.id}.canvas';
           final seen = byId[page.id];
-          if (seen == null || (exact && !seen.$2)) byId[page.id] = (page, exact);
+          if (seen == null || (exact && !seen.$2)) byId[page.id] = (page, exact, e.path);
         } on Object {
           // Unreadable: not given out.
         }
@@ -187,7 +194,7 @@ final class NotedLibrary {
     } on FileSystemException {
       return const [];
     }
-    return [for (final (p, _) in byId.values) p];
+    return [for (final (p, _, path) in byId.values) (p, path)];
   }
 }
 

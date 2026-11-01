@@ -50,15 +50,17 @@ void main() {
     expect(graph, contains('package:dart_mcp/server.dart'));
   });
 
-  test('no encryption, key, crypto, FFI or Flutter library is reachable', () {
-    final forbiddenPackages = RegExp(r'^package:(flutter|flutter_\w+|crypto|cryptography\w*|pointycastle|encrypt\w*|\w*sodium\w*|\w*secure_storage\w*)/');
+  test('no encryption, key, FFI or Flutter library is reachable (package:crypto is allowed, SHA-256 only: see below)', () {
+    final forbiddenPackages = RegExp(r'^package:(flutter|flutter_\w+|cryptography\w*|pointycastle|encrypt\w*|\w*sodium\w*|\w*secure_storage\w*)/');
     final forbiddenWords = RegExp(r'crypt|cipher|keystore|key_store|keychain|secret|password', caseSensitive: false);
     final bad = [
       for (final lib in graph)
-        if (forbiddenPackages.hasMatch(lib) ||
+        // package:crypto is allowed (its use is checked in the SHA-256 test).
+        if (!lib.startsWith('package:crypto/') &&
+            (forbiddenPackages.hasMatch(lib) ||
             lib == 'dart:ffi' ||
             lib == 'dart:ui' ||
-            forbiddenWords.hasMatch(lib.split('/').skip(1).join('/')))
+            forbiddenWords.hasMatch(lib.split('/').skip(1).join('/'))))
           lib,
     ];
     expect(bad, isEmpty);
@@ -94,6 +96,47 @@ void main() {
   }
 
   const linkClient = 'package:noted_mcp/src/link_client.dart';
+  const closedWriter = 'package:noted_mcp/src/closed_writer.dart';
+  const runningProbe = 'package:noted_mcp/src/running_probe.dart';
+
+  test('crypto is SHA-256 only: one import, `show sha256`, in the core\'s code format, and nothing else hashes', () {
+    final sources = notedSources();
+    final imports = RegExp(r'''^\s*(?:import|export)\s+['"]package:crypto/[^'"]*['"][^;]*;''', multiLine: true);
+    final found = {
+      for (final e in sources.entries)
+        for (final m in imports.allMatches(e.value)) '${e.key}: ${m.group(0)!.trim()}',
+    };
+    expect(found, {'package:noted_core/src/ai/ai_code_format.dart: import \'package:crypto/crypto.dart\' show sha256;'});
+    // No other digest, MAC or crypto API is named by any Noted library in the graph.
+    final other = RegExp(r'\b(md5|sha1|sha224|sha384|sha512|Hmac|Digest|Hash|AccumulatorSink|ByteConversionSink)\b');
+    final bad = [
+      for (final e in sources.entries)
+        if (other.hasMatch(e.value)) e.key,
+    ];
+    expect(bad, isEmpty);
+    // sha256 is used in that one library only.
+    expect([for (final e in sources.entries) if (RegExp(r'\bsha256\b').hasMatch(e.value)) e.key], [
+      'package:noted_core/src/ai/ai_code_format.dart',
+    ]);
+  });
+
+  test('randomness: only Random.secure, in the id and session-id helpers', () {
+    final bad = [
+      for (final e in notedSources().entries)
+        if (RegExp(r'\bRandom\s*\(|\bRandom\.(?!secure\b)').hasMatch(e.value)) e.key,
+    ];
+    expect(bad, isEmpty, reason: 'only Random.secure()');
+    final users = [
+      for (final e in notedSources().entries)
+        if (RegExp(r'\bRandom\b').hasMatch(e.value)) e.key,
+    ]..sort();
+    expect(users, [
+      'package:noted_core/src/model/ids.dart',
+      'package:noted_mcp/src/closed_access.dart',
+      'package:noted_mcp/src/closed_writer.dart',
+      'package:noted_mcp/src/toolbox.dart',
+    ]);
+  });
 
   test('the source scan covers the server, the link client and the core', () {
     final names = notedSources().keys;
@@ -105,8 +148,10 @@ void main() {
     expect(names.where((n) => n.startsWith('file:')), isNotEmpty, reason: 'the executable\'s entry');
   });
 
-  test('the server never writes a file: no file-writing API in any Noted library it reaches', () {
+  test('file-writing APIs appear only in the narrow writer: no Noted library it reaches writes a file', () {
     final writes = {
+      'open': RegExp(r'\.open(Sync)?\s*\('),
+      'RandomAccessFile write': RegExp(r'\.(writeString|writeFrom|writeByte|truncate(Sync)?)\s*\('),
       'writeAsString': RegExp(r'\bwriteAsString(Sync)?\s*\('),
       'writeAsBytes': RegExp(r'\bwriteAsBytes(Sync)?\s*\('),
       'openWrite': RegExp(r'\bopenWrite\s*\('),
@@ -119,6 +164,9 @@ void main() {
       ),
       'File/Directory create': RegExp(r'\b(File|Directory|Link)\s*\([^)]*\)\s*\.create'),
       'createSync': RegExp(r'\.createSync\s*\('),
+      // On any receiver, with a dot or a cascade.
+      'createTemp/copy/cascade': RegExp(r'\.\.?(?:createTemp|copy)(?:Sync)?\s*\(|\.\.create(?:Sync)?\s*\('),
+      'Isolate': RegExp(r'\bIsolate\.(spawn|spawnUri|run)\b'),
       'rename': RegExp(r'\.rename(Sync)?\s*\('),
       'delete': RegExp(r'\.delete(Sync)?\s*\('),
       'Link': RegExp(r'(?<![A-Za-z0-9_])Link\s*\('),
@@ -127,10 +175,63 @@ void main() {
     final sources = notedSources();
     final bad = [
       for (final e in sources.entries)
-        for (final w in writes.entries)
-          if (w.value.hasMatch(e.value)) '${e.key}: ${w.key}',
+        if (e.key != closedWriter)
+          for (final w in writes.entries)
+            // The running probe opens one file, read-only (checked below).
+            if (!(e.key == runningProbe && w.key == 'open') && w.value.hasMatch(e.value)) '${e.key}: ${w.key}',
     ];
     expect(bad, isEmpty);
+    // `.create(` / `.createSync(` on any receiver: only these model
+    // constructors (`PageMeta.create(`, ...) are allowed, by name.
+    const modelConstructors = {'Binder', 'BoxRecord', 'PageMeta', 'NotedPage'};
+    final create = RegExp(r'([A-Za-z_][A-Za-z0-9_]*|[)\]])\s*\.create(?:Sync)?\s*\(');
+    final badCreate = [
+      for (final e in sources.entries)
+        if (e.key != closedWriter)
+          for (final m in create.allMatches(e.value))
+            if (!modelConstructors.contains(m.group(1))) '${e.key}: ${m.group(0)}',
+    ];
+    expect(badCreate, isEmpty);
+    final probe = sources[runningProbe]!;
+    expect(writes['open']!.allMatches(probe).length, 1);
+    expect(probe, contains('FileMode.read'));
+    expect(RegExp(r'FileMode\.(?!read\b)').hasMatch(probe), isFalse, reason: 'read-only');
+    expect(probe, contains('FileLock.shared'));
+    expect(probe, isNot(contains('FileLock.exclusive')));
+    // The narrow writer itself: exactly its two jobs and nothing wider.
+    final src = sources[closedWriter]!;
+    int count(RegExp r) => r.allMatches(src).length;
+    final allowedHere = {
+      'open',
+      'RandomAccessFile write',
+      'writeAsBytes',
+      'FileMode.write/append',
+      'rename',
+      'delete',
+      'create/copy',
+    };
+    expect(count(writes['create/copy']!), 1, reason: 'the exclusive temporary file');
+    expect(src, contains('create(exclusive: true)'));
+    expect([for (final w in writes.entries) if (!allowedHere.contains(w.key) && w.value.hasMatch(src)) w.key], isEmpty);
+    expect(count(writes['open']!), 1, reason: 'one open: the log, for appending');
+    expect(count(RegExp(r'\bFileMode\.append\b')), 1);
+    expect(count(RegExp(r'\bFileMode\.(write|writeOnly|writeOnlyAppend)\b')), 0);
+    expect(count(writes['RandomAccessFile write']!), 1, reason: 'the log line');
+    expect(count(writes['writeAsBytes']!), 1, reason: 'the temporary file');
+    expect(count(writes['rename']!), 1, reason: 'the temporary file over the page file');
+    expect(count(writes['delete']!), 2, reason: 'only its own temporary file');
+    expect(src, contains('endsWith(pageExtension)'), reason: 'only page files');
+    expect(src, contains('followLinks: false'), reason: 'never through a link');
+    expect(src, contains('resolveSymbolicLinks'), reason: 'inside a listed folder, by real path');
+    expect(src, isNot(contains('Socket')));
+    // Nothing else in the package reaches the writer's methods except the
+    // closed-app access (and its tests).
+    for (final e in sources.entries) {
+      if (!e.key.startsWith('package:noted_mcp/') || e.key == closedWriter) continue;
+      if (e.value.contains('replacePage(') || e.value.contains('appendLog(')) {
+        expect(e.key, 'package:noted_mcp/src/closed_access.dart');
+      }
+    }
     // The binder file writer lives in the full core only.
     expect(sources.keys, isNot(contains('package:noted_core/src/binder/binder_store.dart')));
     expect(sources.keys, contains('package:noted_core/src/binder/binder.dart'));

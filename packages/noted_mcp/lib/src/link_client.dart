@@ -11,8 +11,8 @@ import 'package:noted_core/noted_core_read.dart';
 /// The one way the server asks the app for anything (invariant 4): a request
 /// over the local link (`ai_link.dart` in the core, protocol `ai-link/2`).
 /// Every request that carries a code goes this way, so the app checks the
-/// code, its expiry and the session's approval and logs the use; the server
-/// never decides, and never writes a file.
+/// code, its expiry and its approval and logs the use; while Noted runs the
+/// server never decides, and never writes a file.
 ///
 /// This is the only file in the server that opens a socket, and it connects
 /// to `127.0.0.1` only; the invariant tests check both.
@@ -69,12 +69,8 @@ final class AiLinkClient {
     final link = await _readLink();
     if (link == null) return notRunning;
 
-    Socket? socket;
-    try {
-      socket = await Socket.connect(InternetAddress.loopbackIPv4, link.port, timeout: connectTimeout);
-    } on Object {
-      return notRunning;
-    }
+    final socket = await _connect(link.port);
+    if (socket == null) return notRunning;
     final lines = _Lines(StreamIterator(socket));
     try {
       final greeting = await lines.next(4096).timeout(greetingTimeout, onTimeout: () => null);
@@ -93,6 +89,35 @@ final class AiLinkClient {
     } finally {
       await lines.close();
       socket.destroy();
+    }
+  }
+
+  /// Whether the link file is there and its port answers with the greeting
+  /// that carries the file's nonce. Nothing is sent. A missing or stale file,
+  /// or no greeting, is false.
+  Future<bool> greets() async {
+    final link = await _readLink();
+    if (link == null) return false;
+    final socket = await _connect(link.port);
+    if (socket == null) return false;
+    final lines = _Lines(StreamIterator(socket));
+    try {
+      final greeting = await lines.next(4096).timeout(greetingTimeout, onTimeout: () => null);
+      return greeting != null && readAiLinkGreeting(greeting) == link.nonce;
+    } on Object {
+      return false;
+    } finally {
+      await lines.close();
+      socket.destroy();
+    }
+  }
+
+  // The one connection this client makes: loopback only.
+  Future<Socket?> _connect(int port) async {
+    try {
+      return await Socket.connect(InternetAddress.loopbackIPv4, port, timeout: connectTimeout);
+    } on Object {
+      return null;
     }
   }
 

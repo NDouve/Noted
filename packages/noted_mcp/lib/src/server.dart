@@ -12,9 +12,11 @@ import 'tools.dart';
 
 /// Noted's MCP server (invariant 4): six tools. It reads the saved page
 /// files in [dataDir] afresh on every call, so it never answers from
-/// anything a running app has on screen or in memory. It writes no file. A
-/// call with a code is checked by the running Noted app ([NotedToolbox]),
-/// and a write is a request to that app, which decides.
+/// anything a running app has on screen or in memory. While Noted runs, a
+/// call with a code is checked by the app ([NotedToolbox]) and a write is a
+/// request to that app, which decides. While Noted is closed the server
+/// checks the code against the saved store itself, and writes only its access
+/// log and an AI box that allows closed-app writes.
 ///
 /// Each process makes a random session id at start and sends it, with the
 /// MCP client's name, on every request to the app: the app asks the user to
@@ -35,7 +37,7 @@ base class NotedMcpServer extends MCPServer with ToolsSupport {
          responseTimeout: responseTimeout,
        ),
        super.fromStreamChannel(
-         implementation: Implementation(name: 'noted', version: '0.3.0'),
+         implementation: Implementation(name: 'noted', version: '0.4.0'),
          instructions:
              'Access to the user\'s Noted pages. Without a code you see only '
              'pages the user set to Open, and boxes only by their id. If the '
@@ -43,9 +45,11 @@ base class NotedMcpServer extends MCPServer with ToolsSupport {
              'on every call: a page or binder code also lets you read the '
              'Privileged pages it covers, and a box code lets you read (and, '
              'for a Writer code, write) one AI box. Start with list_pages or '
-             'search, then read_page. Codes are checked by Noted, so they '
-             'need Noted running; reading Open pages without a code works '
-             'without it.',
+             'search, then read_page. While Noted runs it checks codes; while '
+             'it is closed the server checks them against the saved codes, '
+             'and the user must have approved the code in Noted once '
+             '(otherwise it asks you to have them open Noted). Writes while '
+             'Noted is closed work only for a box the user allowed that for.',
        ) {
     registerTool(listPagesTool, (r) => _run(() => toolbox.listPages(code: _opt(r, 'code'))));
     registerTool(readPageTool, (r) => _run(() => toolbox.readPage(_arg(r, 'page_id'), code: _opt(r, 'code'))));
@@ -164,17 +168,28 @@ base class NotedMcpServer extends MCPServer with ToolsSupport {
     name: 'write_box',
     description:
         'Writes markdown to an AI box with the Writer code the user gave you '
-        'for it. Noted decides and must be running; the user may have to '
-        'allow this connection or each write. "replace" replaces what you '
-        'wrote earlier in the box; "append" adds to the end. Text the user '
-        'wrote in the box is kept. Fenced code blocks and raw HTML become '
-        'plain paragraphs.',
+        'for it. While Noted runs it decides (the user may have to allow this '
+        'code or each write); while Noted is closed the write goes through '
+        'only if the user allowed closed-app writes for the box. The user '
+        'sets what a Writer code may do per box (its Writer permission): '
+        '"append" adds to the end and is always allowed; "replace_ai" '
+        'replaces only the text you wrote earlier and needs Edit or Full '
+        'permission; "replace" replaces the whole box (empty content empties '
+        'it) and needs Full permission. A mode the box does not allow fails '
+        'with not_permitted; do not retry it, ask the user to change the '
+        'permission. Text the user wrote in the box is kept except with '
+        '"replace". Fenced code blocks and raw HTML become plain paragraphs.',
     inputSchema: Schema.object(
       properties: {
         'box_id': Schema.string(description: 'The id of the AI box.'),
         'code': Schema.string(description: 'The Writer code the user gave you for this box.'),
         'content': Schema.string(description: 'The markdown to write.'),
-        'mode': Schema.string(description: '"replace" or "append".', enumValues: ['replace', 'append']),
+        'mode': Schema.string(
+          description:
+              '"append" (add to the end), "replace_ai" (replace only your own earlier text; needs Edit or '
+              'Full permission) or "replace" (replace the whole box; needs Full permission).',
+          enumValues: ['append', 'replace_ai', 'replace'],
+        ),
       },
       required: ['box_id', 'code', 'content', 'mode'],
     ),

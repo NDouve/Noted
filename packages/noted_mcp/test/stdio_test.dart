@@ -34,7 +34,7 @@ void main() {
         )
         .timeout(const Duration(seconds: 90));
     expect(init.serverInfo.name, 'noted');
-    expect(init.serverInfo.version, '0.3.0');
+    expect(init.serverInfo.version, '0.4.0');
     expect(init.capabilities.tools, isNotNull);
     server.notifyInitialized();
     return server;
