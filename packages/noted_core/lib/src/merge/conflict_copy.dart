@@ -48,7 +48,9 @@ List<String> conflictCopyOriginalNames(String fileName, {String extension = '.ca
 ///
 /// A box only one side has is kept (without a base there is no telling it
 /// was deleted). Recorded conflicts of both sides are combined. Geometry
-/// follows the content choice. The page header and other top-level fields are
+/// follows the content choice. A box only the copy has that overlaps a box
+/// the copy doesn't have in that place is marked landed; a landed marker on
+/// either side's version is kept. The page header and other top-level fields are
 /// the original's. [codecs] is unused for now and kept so the signature can
 /// grow a codec-level merge.
 PageMerge mergeConflictCopy(
@@ -89,7 +91,9 @@ PageMerge mergeConflictCopy(
 
   // Nodes only the copy has, placed after the node that precedes them there.
   // A box that overlaps a box already on the page is marked landed.
-  final existing = List<CanvasNode>.of(out);
+  // (the original's boxes the copy doesn't have, or has elsewhere: ones the
+  // copy could see in the same place don't count).
+  final existing = nodesUnseenBy(out, copy);
   for (var i = 0; i < copy.nodes.length; i++) {
     var c = copy.nodes[i];
     if (originalIds.contains(c.id)) continue;
@@ -135,6 +139,12 @@ PageMerge mergeConflictCopy(
     if (!want.any((x) => x.node == other.node)) want.add(other);
   }
   if (want.length != r.conflicts.length) r = r.withConflicts(want);
+
+  // The landed marker has no base either: kept when either side has it.
+  if (r.landed == null) {
+    final l = (identical(r, o) ? c : o).landed;
+    if (l != null) r = r.withLanded(l);
+  }
   return (r, isConflict);
 }
 

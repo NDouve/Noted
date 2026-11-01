@@ -2703,7 +2703,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
     }
     final merged = theirs == null
         ? mine
-        : mergePage(base, mine, theirs, modules.codecs, theirsTime: time).page;
+        : mergePage(base, mine, theirs, modules.codecs, theirsTime: time, markLanded: false).page;
     final out = writePage(merged);
     if (out != theirsText) await _write(loc, merged);
     final back = await st.readText(id);

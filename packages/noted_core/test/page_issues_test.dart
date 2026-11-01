@@ -74,8 +74,11 @@ void main() {
   final far = const Bounds(500, 500, 100, 50);
 
   group('landed marking', () {
+    // Mine has `a`; the base and theirs don't, so theirs never saw it.
+    final mineA = pageOf([a]);
+
     test('three-way: an arriving box that overlaps is marked, with its device and time', () {
-      final base = pageOf([a]);
+      final base = pageOf([]);
       final arriving = box(
         'n',
         'new',
@@ -83,7 +86,7 @@ void main() {
         device: 'LAPTOP',
         time: 123,
       );
-      final merged = threeWay(base, base, base.insertNode(arriving));
+      final merged = threeWay(base, mineA, base.insertNode(arriving));
       expect(boxOf(merged, 'n').landed, BoxLanded(at: 123, device: 'LAPTOP'));
       expect(boxOf(merged, 'a').landed, isNull);
     });
@@ -91,22 +94,22 @@ void main() {
     test(
       'three-way: no device or time on the box: the merge time, no device',
       () {
-        final base = pageOf([a]);
+        final base = pageOf([]);
         final theirs = base.insertNode(
           box('n', 'new', at: const Bounds(10, 10, 20, 20)),
         );
-        final l = boxOf(threeWay(base, base, theirs), 'n').landed!;
+        final l = boxOf(threeWay(base, mineA, theirs), 'n').landed!;
         expect(l.at, 5000);
         expect(l.device, isNull);
       },
     );
 
     test('three-way: not marked when it does not overlap or only touches', () {
-      final base = pageOf([a]);
+      final base = pageOf([]);
       final theirs = base
           .insertNode(box('n', 'x', at: far))
           .insertNode(box('t', 'y', at: const Bounds(100, 0, 50, 50)));
-      final merged = threeWay(base, base, theirs);
+      final merged = threeWay(base, mineA, theirs);
       expect(boxOf(merged, 'n').landed, isNull);
       expect(boxOf(merged, 't').landed, isNull);
       expect(writePage(merged), contains('"n"'));
@@ -114,7 +117,7 @@ void main() {
     });
 
     test('three-way: overlap with a box added here counts; boxes only mine removed do not', () {
-      final base = pageOf([a]);
+      final base = pageOf([]);
       final mine = base.insertNode(box('m', 'mine', at: far));
       final theirs = base.insertNode(
         box('n', 'new', at: const Bounds(520, 510, 10, 10)),
@@ -133,7 +136,7 @@ void main() {
     });
 
     test('three-way: an existing marker passes through', () {
-      final base = pageOf([a]);
+      final base = pageOf([]);
       final marked = box(
         'n',
         'new',
@@ -150,9 +153,159 @@ void main() {
       expect(boxOf(threeWay(base, base, theirs), 'n').landed, isNull);
     });
 
+    test('three-way: a box mine removed is not overlapped', () {
+      final gone = box('g', 'gone', at: far);
+      final base = pageOf([a, gone]);
+      final mine = base.removeNode('g');
+      final theirs = base.insertNode(
+        box('n', 'new', at: const Bounds(520, 510, 10, 10)),
+      );
+      expect(boxOf(threeWay(base, mine, theirs), 'n').landed, isNull);
+    });
+
+    test('three-way: two arrivals overlapping each other are not marked', () {
+      final base = pageOf([a]);
+      final theirs = base
+          .insertNode(box('n', 'x', at: far))
+          .insertNode(box('o', 'y', at: const Bounds(520, 510, 10, 10)));
+      final merged = threeWay(base, base, theirs);
+      expect(boxOf(merged, 'n').landed, isNull);
+      expect(boxOf(merged, 'o').landed, isNull);
+    });
+
+    test('three-way: an overlap the other device made itself is not an issue', () {
+      final base = pageOf([a]);
+      final over = box('n', 'x', at: const Bounds(10, 10, 20, 20));
+      // Both have a in the same place: n over it was the other device's doing.
+      expect(
+        boxOf(threeWay(base, base, base.insertNode(over)), 'n').landed,
+        isNull,
+      );
+      // Mine moved a to a place theirs never saw it, under n: marked.
+      final mineMoved = base.replaceNode(
+        a.withBounds(const Bounds(5, 5, 100, 50)),
+      );
+      expect(
+        boxOf(threeWay(base, mineMoved, base.insertNode(over)), 'n').landed,
+        isNotNull,
+      );
+      // Mine added w over where theirs' n lands; theirs doesn't have w: marked.
+      final mineW = base.insertNode(box('w', 'w', at: far));
+      final theirsN = base.insertNode(
+        box('n', 'x', at: const Bounds(510, 510, 10, 10)),
+      );
+      expect(boxOf(threeWay(base, mineW, theirsN), 'n').landed, isNotNull);
+      // Both sides share w and n overlaps it there: theirs placed it on purpose.
+      final w = box('w', 'w', at: far);
+      final shared = pageOf([a, w]);
+      final theirsShared = shared.insertNode(
+        box('n', 'x', at: const Bounds(510, 510, 10, 10)),
+      );
+      expect(boxOf(threeWay(shared, shared, theirsShared), 'n').landed, isNull);
+    });
+
+    test(
+      'three-way: mine clears the marker while content comes from theirs',
+      () {
+        final marked = box('n', 'v1').withLanded(BoxLanded(at: 9));
+        final base = pageOf([marked]);
+        final mine = base.replaceNode(marked.withoutLanded());
+        final theirs = base.replaceNode(commitBox(marked, _plain, 'v2'));
+        final r = boxOf(threeWay(base, mine, theirs), 'n');
+        expect(r.data!.decode(), 'v2');
+        expect(r.landed, isNull);
+      },
+    );
+
+    test('three-way: mine marks while content comes from theirs', () {
+      final plain = box('n', 'v1');
+      final base = pageOf([plain]);
+      final mine = base.replaceNode(plain.withLanded(BoxLanded(at: 9)));
+      final theirs = base.replaceNode(commitBox(plain, _plain, 'v2'));
+      final r = boxOf(threeWay(base, mine, theirs), 'n');
+      expect(r.data!.decode(), 'v2');
+      expect(r.landed, BoxLanded(at: 9));
+    });
+
+    test('three-way: different markers on both sides: mine is kept', () {
+      final plain = box('n', 'v1');
+      final base = pageOf([plain]);
+      final mine = base.replaceNode(plain.withLanded(BoxLanded(at: 1)));
+      final theirs = base.replaceNode(plain.withLanded(BoxLanded(at: 2)));
+      expect(boxOf(threeWay(base, mine, theirs), 'n').landed, BoxLanded(at: 1));
+    });
+
+    test('three-way: markLanded false marks nothing', () {
+      final base = pageOf([a]);
+      final theirs = base.insertNode(
+        box('n', 'x', at: const Bounds(10, 10, 20, 20)),
+      );
+      final r = mergePage(
+        base,
+        base,
+        theirs,
+        registry(),
+        theirsTime: 1,
+        markLanded: false,
+      );
+      expect(boxOf(r.page, 'n').landed, isNull);
+    });
+
+    test('conflict copy: a marker on either side is kept', () {
+      final plain = box('n', 'v');
+      final marked = plain.withLanded(BoxLanded(at: 5, device: 'PC'));
+      final withMarker = pageOf([marked]);
+      final without = pageOf([plain]);
+      expect(
+        boxOf(
+          mergeConflictCopy(withMarker, without, registry(), copyTime: 1).page,
+          'n',
+        ).landed,
+        BoxLanded(at: 5, device: 'PC'),
+      );
+      expect(
+        boxOf(
+          mergeConflictCopy(without, withMarker, registry(), copyTime: 1).page,
+          'n',
+        ).landed,
+        BoxLanded(at: 5, device: 'PC'),
+      );
+    });
+
+    test('conflict copy: overlap only counts against boxes the copy could not see there', () {
+      final original = pageOf([a, box('w', 'w', at: far)]);
+      final copy = pageOf([
+        a,
+        box('w', 'w', at: far),
+        box('n', 'x', at: const Bounds(510, 510, 10, 10)),
+        box('m', 'y', at: const Bounds(10, 10, 20, 20)),
+      ]);
+      final merged = mergeConflictCopy(
+        original,
+        copy,
+        registry(),
+        copyTime: 1,
+      ).page;
+      expect(boxOf(merged, 'n').landed, isNull);
+      expect(boxOf(merged, 'm').landed, isNull);
+      // An original-only box under the arrival does count.
+      final orig2 = pageOf([a, box('o', 'o', at: far)]);
+      final copy2 = pageOf([
+        a,
+        box('n', 'x', at: const Bounds(510, 510, 10, 10)),
+      ]);
+      expect(
+        boxOf(
+          mergeConflictCopy(orig2, copy2, registry(), copyTime: 1).page,
+          'n',
+        ).landed,
+        isNotNull,
+      );
+    });
+
     test('conflict copy: marked only on overlap', () {
       final original = pageOf([a]);
-      final copy = original
+      final copy = pageOf([])
           .insertNode(
             box(
               'n',
@@ -176,7 +329,7 @@ void main() {
 
     test('conflict copy: the copy time when the box has no time', () {
       final original = pageOf([a]);
-      final copy = original.insertNode(
+      final copy = pageOf([]).insertNode(
         box('n', 'new', at: const Bounds(10, 10, 20, 20)),
       );
       final merged = mergeConflictCopy(
@@ -189,7 +342,7 @@ void main() {
     });
 
     test('the marker survives save and load verbatim', () {
-      final base = pageOf([a]);
+      final base = pageOf([]);
       final theirs = base.insertNode(
         box(
           'n',
@@ -199,7 +352,7 @@ void main() {
           time: 1,
         ),
       );
-      final merged = threeWay(base, base, theirs);
+      final merged = threeWay(base, mineA, theirs);
       final text = writePage(merged);
       expect(text, contains('"landed":{"at":1,"device":"PC"}'));
       final again = viaFile(merged);
@@ -322,10 +475,46 @@ void main() {
       expect(pageIssues(r, canOpen: (_) => true), isEmpty);
     });
 
-    test('keepOther replaces the box verbatim, in place', () {
-      final r = keepOther(page, 'a');
-      expect(r.node('a')!.toRaw().text, other.toRaw().text);
+    test('keepOther takes the other content, in place, keeping bounds and fixed height', () {
+      final p = pageOf([
+        box('z', 'under'),
+        conflicted.withFixedHeight(true),
+        box('y', 'over', at: far),
+      ]);
+      final r = keepOther(p, 'a');
+      final k = boxOf(r, 'a');
+      expect(k.data!.text, other.data!.text);
+      expect(k.rev, other.rev);
+      expect(k.device, 'PC');
+      expect(k.bounds, a.bounds);
+      expect(k.fixedHeight, isTrue);
+      expect(k.isConflicted, isFalse);
       expect([for (final n in r.nodes) n.id], ['z', 'a', 'y']);
+      // With the same bounds and no fixed height the node is the other's, byte for byte.
+      final same = box('a', 'theirs', device: 'PC', time: 8);
+      final q = pageOf([
+        a.withConflict(BoxConflict.other(node: same.toRaw(), at: 8)),
+      ]);
+      expect(keepOther(q, 'a').node('a')!.toRaw().text, same.toRaw().text);
+    });
+
+    test('otherPlaceable: true for a recorded box, false for a deletion or a foreign node', () {
+      final foreign = BoxConflict.other(
+        node: const RawJson.trusted('{"id":"a","type":"text"}'),
+        at: 1,
+      );
+      final p = pageOf([
+        a.withConflict(conflict),
+        box(
+          'b',
+          'x',
+          at: const Bounds(0, 100, 10, 10),
+        ).withConflict(BoxConflict.deleted(at: 1)),
+        box('c', 'x', at: const Bounds(0, 200, 10, 10)).withConflict(foreign),
+      ]);
+      final issues = pageIssues(p, canOpen: (_) => true);
+      expect([for (final i in issues) i.otherPlaceable], [true, false, false]);
+      expect(keepOther(p, 'c'), same(p));
     });
 
     test('placeBoth adds the other version beside, with a fresh id', () {

@@ -20,6 +20,17 @@ bool boundsOverlap(Bounds a, Bounds b) =>
     b.width > 0 &&
     b.height > 0;
 
+/// The nodes of [nodes] that [side] couldn't see in their place: those it
+/// doesn't have, or has with other bounds. A box arriving from [side] that
+/// overlaps one of these landed by surprise; overlapping a box [side] has in
+/// the same place was the other device's own doing.
+List<CanvasNode> nodesUnseenBy(Iterable<CanvasNode> nodes, NotedPage side) {
+  return [
+    for (final n in nodes)
+      if (side.node(n.id)?.bounds != n.bounds) n,
+  ];
+}
+
 /// Marks [arriving], a box that came from the other side of a merge, as
 /// landed if its bounds overlap any of [existing] (the nodes already on the
 /// page). The marker takes the arriving version's device and time when it
@@ -69,7 +80,13 @@ final class PageIssue {
     required this.kind,
     this.conflict,
     this.landed,
+    this.otherPlaceable = false,
   });
+
+  /// Whether the recorded other version is a Noted box that [keepOther] and
+  /// [placeBoth] can use. False for a deletion, for landed, and when the
+  /// recorded node isn't a Noted box (offer only keep mine then).
+  final bool otherPlaceable;
 
   final String boxId;
   final PageIssueKind kind;
@@ -87,10 +104,12 @@ final class PageIssue {
       other.boxId == boxId &&
       other.kind == kind &&
       other.conflict == conflict &&
-      other.landed == landed;
+      other.landed == landed &&
+      other.otherPlaceable == otherPlaceable;
 
   @override
-  int get hashCode => Object.hash(boxId, kind, conflict, landed);
+  int get hashCode =>
+      Object.hash(boxId, kind, conflict, landed, otherPlaceable);
 }
 
 /// The issues on [page], in reading order: top to bottom, then left to right
@@ -129,6 +148,9 @@ List<PageIssue> pageIssues(
               ? PageIssueKind.conflict
               : PageIssueKind.unreadableConflict,
           conflict: c,
+          otherPlaceable:
+              c.node != null &&
+              readNode(c.node!, fallbackId: box.id) is BoxRecord,
         ),
       );
     }
@@ -178,8 +200,9 @@ NotedPage keepMine(NotedPage page, String boxId, {BoxConflict? conflict}) {
   return page.replaceNode(box.withConflicts(_without(box, c)));
 }
 
-/// Keep the other version: the recorded other node replaces this box
-/// verbatim, in the same place in the z-order. Conflicts recorded on the
+/// Keep the other version: the recorded other node's content replaces this
+/// box's, in the same place in the z-order, keeping this box's bounds and
+/// fixed height (the rest of the node is the other's as recorded). Conflicts recorded on the
 /// replaced box (apart from the resolved one) stay; a `landed` marker on this
 /// box stays. Returns [page] if the record is a deletion or the other node is
 /// not a Noted box.
@@ -192,6 +215,9 @@ NotedPage keepOther(NotedPage page, String boxId, {BoxConflict? conflict}) {
   final other = readNode(raw, fallbackId: boxId);
   if (other is! BoxRecord) return page;
   var r = other.id == boxId ? other : other.withId(boxId);
+  // Only the content comes from the other node; where the box is and its
+  // fixed height stay as this device has them.
+  r = r.withBounds(box.bounds).withFixedHeight(box.fixedHeight);
   r = r.withConflicts(_without(box, c));
   final landed = box.landed;
   if (landed != null && r.landed == null) r = r.withLanded(landed);

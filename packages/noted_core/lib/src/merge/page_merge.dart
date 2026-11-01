@@ -39,6 +39,10 @@ final class PageMerge {
 /// - Page header and other top-level fields: per field, theirs if mine is
 ///   unchanged, else mine.
 ///
+/// A box added only on the [theirs] side that overlaps a box the other side
+/// couldn't see there is marked landed (see [markLandedIfOverlapping]); pass
+/// [markLanded] false to skip that (the recovery merge).
+///
 /// Nodes this device can't run, and nodes Noted doesn't own, are never
 /// decoded. Anything that ends up unchanged is the original node, so it is
 /// written back verbatim.
@@ -48,6 +52,7 @@ PageMerge mergePage(
   NotedPage theirs,
   CodecRegistry codecs, {
   required int theirsTime,
+  bool markLanded = true,
 }) {
   final baseById = {for (final n in base.nodes) n.id: n};
   final theirsById = {for (final n in theirs.nodes) n.id: n};
@@ -96,8 +101,9 @@ PageMerge mergePage(
   }
 
   // Nodes only theirs has: new there, or removed here. A box new there that
-  // overlaps a box already on this page is marked landed.
-  final existing = List<CanvasNode>.of(out);
+  // overlaps a box the other side couldn't see in that place (one theirs
+  // doesn't have, or has elsewhere) is marked landed.
+  final existing = markLanded ? nodesUnseenBy(out, theirs) : const <CanvasNode>[];
   for (var i = 0; i < theirs.nodes.length; i++) {
     final t = theirs.nodes[i];
     if (mineIds.contains(t.id)) continue;
@@ -194,12 +200,14 @@ bool _same(CanvasNode a, CanvasNode b) => a.toRaw() == b.toRaw();
   }
   if (!_sameList(want, r.conflicts)) r = r.withConflicts(want);
 
-  // The landed marker is core-owned too: theirs if mine is unchanged.
+  // The landed marker is core-owned too, a three-way choice: theirs if mine
+  // is unchanged from base, else mine (a clear or a new marker made here).
   final ml = m.noted['landed'];
   final tl = t.noted['landed'];
   final bl = b?.noted['landed'];
-  if (ml?.text != tl?.text && ml?.text == bl?.text) {
-    final l = tl == null ? null : BoxLanded.tryRead(tl);
+  final wantL = ml?.text == bl?.text ? tl : ml;
+  if (wantL?.text != r.noted['landed']?.text) {
+    final l = wantL == null ? null : BoxLanded.tryRead(wantL);
     r = l == null ? r.withoutLanded() : r.withLanded(l);
   }
 
