@@ -94,6 +94,13 @@ void main() {
       expect(find.byKey(ValueKey('ai-access-note-$stillOpen')), findsNothing);
       expect(settings.aiAccessNoteShown, isTrue);
 
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is OutlinedButton && w.key == ValueKey('ai-access-note-open-$lost'),
+        ),
+        findsOneWidget,
+        reason: 'Page settings is a recognisable button',
+      );
       await t.tap(find.byKey(ValueKey('ai-access-note-open-$lost')));
       await t.pumpAndSettle();
       expect(find.byKey(const ValueKey('settings-panel')), findsOneWidget);

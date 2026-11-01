@@ -521,6 +521,11 @@ void main() {
           t.getTopLeft(find.byKey(const ValueKey('menu-test.extra'))).dy,
           greaterThanOrEqualTo(t.getBottomLeft(more).dy),
         );
+        // And below the whole bar, not over its lower part.
+        expect(
+          t.getTopLeft(find.ancestor(of: find.byKey(const ValueKey('menu-test.extra')), matching: find.byType(Material)).first).dy,
+          greaterThanOrEqualTo(t.getBottomLeft(find.byType(CommandToolbar)).dy),
+        );
         await t.tap(find.byKey(const ValueKey('menu-test.extra')));
         await t.pumpAndSettle();
         expect(module.extraRuns, 1);

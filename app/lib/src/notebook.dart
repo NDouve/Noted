@@ -1144,6 +1144,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
     _rebuildTree();
   }
 
+  /// The background of page [id] (the open page's live one), or null for an
+  /// unknown page.
+  PageBackground? backgroundOf(String id) =>
+      ((id == currentId ? _current?.page.meta : null) ?? _metas[id])?.background;
+
   /// Chooses the background of page [id]. The open page changes through its
   /// controller (one undo step, autosaved); another page is loaded, changed
   /// in its header only, and saved.

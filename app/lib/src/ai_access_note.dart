@@ -77,7 +77,7 @@ class _AiAccessNote extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        TextButton(
+                        OutlinedButton(
                           key: ValueKey('ai-access-note-open-$id'),
                           onPressed: () =>
                               showPageSettings(context, notebook, id),

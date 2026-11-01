@@ -239,7 +239,8 @@ class _SettingsPanelState extends State<SettingsPanel> {
 
   Widget _background(BuildContext context) {
     final id = _pid!;
-    final current = nb.currentId == id ? nb.current?.page.meta.background : null;
+    final isOpen = nb.currentId == id && nb.current != null;
+    final current = nb.backgroundOf(id);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -247,13 +248,29 @@ class _SettingsPanelState extends State<SettingsPanel> {
         SizedBox(height: NotedMetrics.of(context).space1),
         _muted(context, 'Drawn behind this page only; it is not inherited.'),
         SizedBox(height: NotedMetrics.of(context).space2),
+        if (!isOpen) ...[
+          // Only the open page's background can be changed here: say so, and
+          // offer to open it, rather than leave faded chips unexplained.
+          Row(
+            key: const ValueKey('settings-bg-closed'),
+            children: [
+              Expanded(child: _muted(context, 'Open the page to change its background.')),
+              TextButton(
+                key: const ValueKey('settings-bg-open'),
+                onPressed: () => _run(() => nb.open(id)),
+                child: const Text('Open page'),
+              ),
+            ],
+          ),
+          SizedBox(height: NotedMetrics.of(context).space1),
+        ],
         _chips(context, [
           for (final b in PageBackground.values)
             _chip(
               'settings-bg-${b.name}',
               pageBackgroundLabel(b),
               selected: current == b,
-              onTap: _readOnly || current == null ? null : () => _run(() => nb.setBackground(id, b)),
+              onTap: _readOnly || !isOpen ? null : () => _run(() => nb.setBackground(id, b)),
             ),
         ]),
       ],

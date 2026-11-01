@@ -496,5 +496,33 @@ void main() {
       }
     });
   });
+
+  group('Background', () {
+    testWidgets('on a page that is not open it says why, offers to open it, and then works', (t) async {
+      final other = await io(t, () => nb.createPage());
+      await io(t, () => nb.open(a));
+      expect(nb.currentId, a);
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: other));
+      expect(find.byKey(const ValueKey('settings-bg-closed')), findsOneWidget);
+      expect(find.text('Open the page to change its background.'), findsOneWidget);
+      for (final b in PageBackground.values) {
+        final chip = t.widget<ChoiceChip>(find.byKey(ValueKey('settings-bg-${b.name}')));
+        expect(chip.onSelected, isNull);
+        expect(chip.selected, b == nb.backgroundOf(other), reason: 'the current one shows selected');
+      }
+      expect(selected(t, 'settings-bg-${PageBackground.plain.name}'), isTrue);
+
+      await tap(t, 'settings-bg-open');
+      expect(nb.currentId, other);
+      expect(find.byKey(const ValueKey('settings-bg-closed')), findsNothing);
+      await tap(t, 'settings-bg-${PageBackground.graph.name}');
+      expect(selected(t, 'settings-bg-${PageBackground.graph.name}'), isTrue);
+    });
+
+    testWidgets('on the open page there is no reason line and the chips work', (t) async {
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: a));
+      expect(find.byKey(const ValueKey('settings-bg-closed')), findsNothing);
+    });
+  });
 }
 

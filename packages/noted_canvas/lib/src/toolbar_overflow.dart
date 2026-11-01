@@ -60,6 +60,39 @@ class _ToolbarOverflowRowState extends State<ToolbarOverflowRow> {
   /// How many units the last layout showed (the rest are in the menu).
   int _shown = 1 << 30;
 
+  final GlobalKey _moreKey = GlobalKey();
+
+  /// How far below the More button the bar ends, so the menu opens under the
+  /// bar and not over its lower part (the Contextual strip is shorter than
+  /// the bar it sits in).
+  double _drop = 0;
+
+  static const _buttonPadding = EdgeInsets.all(8);
+
+  /// Measures [_drop]: the bar is the nearest ancestor at least as tall as
+  /// the toolbar height.
+  void _measureDrop() {
+    if (!mounted) return;
+    final button = _moreKey.currentContext?.findRenderObject();
+    if (button is! RenderBox || !button.attached || !button.hasSize) return;
+    final barHeight = NotedMetrics.of(context).toolbarHeight;
+    RenderBox? bar;
+    context.visitAncestorElements((e) {
+      final r = e.renderObject;
+      if (r is RenderBox && r.hasSize && r.size.height >= barHeight - 0.5) {
+        bar = r;
+        return false;
+      }
+      return true;
+    });
+    final b = bar;
+    if (b == null) return;
+    final barBottom = b.localToGlobal(Offset(0, b.size.height)).dy;
+    final buttonBottom = button.localToGlobal(Offset(0, button.size.height)).dy;
+    final drop = math.max(0.0, barBottom - buttonBottom);
+    if ((drop - _drop).abs() > 0.5) setState(() => _drop = drop);
+  }
+
   List<PopupMenuEntry<String>> _items() {
     final units = widget.units;
     final r = widget.registry;
@@ -101,25 +134,32 @@ class _ToolbarOverflowRowState extends State<ToolbarOverflowRow> {
   @override
   Widget build(BuildContext context) {
     final m = NotedMetrics.of(context);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _measureDrop());
     return _OverflowLayout(
       onShown: (n) => _shown = n,
-      more: PopupMenuButton<String>(
-        key: toolbarMoreKey,
-        tooltip: 'More',
-        iconSize: m.icon,
-        icon: const Icon(Icons.more_horiz_rounded),
-        // Below the button, so the menu never covers the strip it belongs to.
-        position: PopupMenuPosition.under,
-        // The menu must not take focus: the note commands are enabled only
-        // while a note editor has it (0097).
-        requestFocus: false,
-        onOpened: widget.onOpened,
-        onCanceled: widget.onClosed,
-        onSelected: (id) async {
-          await widget.registry.invoke(id);
-          widget.onClosed?.call();
-        },
-        itemBuilder: (_) => _items(),
+      more: KeyedSubtree(
+        key: _moreKey,
+        child: PopupMenuButton<String>(
+          key: toolbarMoreKey,
+          tooltip: 'More',
+          iconSize: m.icon,
+          icon: const Icon(Icons.more_horiz_rounded),
+          // Below the bar, so the menu never covers the strip it belongs to.
+          position: PopupMenuPosition.under,
+          padding: _buttonPadding,
+          // PopupMenuButton takes half its vertical padding off the offset.
+          offset: Offset(0, _drop + _buttonPadding.vertical / 2),
+          // The menu must not take focus: the note commands are enabled only
+          // while a note editor has it (0097).
+          requestFocus: false,
+          onOpened: widget.onOpened,
+          onCanceled: widget.onClosed,
+          onSelected: (id) async {
+            await widget.registry.invoke(id);
+            widget.onClosed?.call();
+          },
+          itemBuilder: (_) => _items(),
+        ),
       ),
       children: [for (final u in widget.units) u.widget],
     );
