@@ -8,6 +8,12 @@ version.
 
 Versions are listed newest first.
 
+## 0.9 — 2026-10-31
+- `AiWriteMode` (`replace`, `append`) and `AiWrite` (`connectionId`, `content` as markdown, `mode`) in noted_core.
+- `BoxCodec.aiOwner(data)` (default null): the id of the AI connection that owns the box, never a token or secret.
+- `BoxCodec.aiWrite(data, write)` (default null): the box's data after an AI's write, or null if the type takes no AI writes. The host checks ownership and the page's AI setting before calling it.
+- Additive: a module that overrides neither is unaffected. Decided by the PM under delegated authority; the AI box, run 2026-10-31-02.
+
 ## 0.8 — 2026-11-01
 - `BoxModule.aspectRatioExtraHeight` (default 0): a fixed height below the part that keeps `aspectRatio`, such as the image box's alt-text strip. While resizing, the canvas keeps `height - extra = width / aspectRatio`.
 - Not part of the API but visible to modules: a click on a box's content that doesn't move the focus into it (an image, a file, a drawing) now selects the box, as a click on its grip does, so Delete and Backspace remove it.

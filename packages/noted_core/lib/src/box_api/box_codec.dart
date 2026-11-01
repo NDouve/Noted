@@ -34,8 +34,11 @@ final class BoxApiVersion {
 ///
 /// 0.2 added canvas tools (on the Flutter side) and [BoxEdit]; 0.3 added
 /// the theme to `ToolContext`; 0.4 added commands; 0.5 added a module's
-/// frame style; 0.6 added Find on page (`BoxFind`). See `BOX_API_CHANGELOG.md` in this package.
-const BoxApiVersion boxApiVersion = BoxApiVersion(0, 8);
+/// frame style; 0.6 added Find on page (`BoxFind`); 0.7 added images and files;
+/// 0.8 added `aspectRatioExtraHeight`; 0.9 added AI writes (`AiWrite`,
+/// `BoxCodec.aiOwner` and `BoxCodec.aiWrite`). See `BOX_API_CHANGELOG.md` in
+/// this package.
+const BoxApiVersion boxApiVersion = BoxApiVersion(0, 9);
 
 /// How a box's size relates to its content.
 enum BoxSizing {
@@ -84,6 +87,26 @@ final class AiPlaceholder extends AiExposure {
 /// The AI doesn't see the box at all.
 final class AiHidden extends AiExposure {
   const AiHidden();
+}
+
+/// How an AI's write changes a box's content.
+enum AiWriteMode { replace, append }
+
+/// A write an AI asks for, passed to [BoxCodec.aiWrite] after the host has
+/// checked ownership and the page's AI setting (run 2026-10-31-02).
+final class AiWrite {
+  const AiWrite({
+    required this.connectionId,
+    required this.content,
+    required this.mode,
+  });
+
+  /// The id of the AI connection that writes (never a token or secret).
+  final String connectionId;
+
+  /// What to write, as markdown.
+  final String content;
+  final AiWriteMode mode;
 }
 
 /// A permission a box type needs, for example network access (0034).
@@ -144,6 +167,15 @@ abstract class BoxCodec<D> {
   /// What an AI may see of this box. There is no default: every box type
   /// decides for itself.
   AiExposure aiExposure(D data);
+
+  /// The id of the AI connection that owns this box (never a token or
+  /// secret), or null. Only box types that take AI writes return one.
+  String? aiOwner(D data) => null;
+
+  /// The box's data after an AI's [write], or null if this type doesn't take
+  /// AI writes. The host checks ownership and the page's rules before calling
+  /// it.
+  D? aiWrite(D data, AiWrite write) => null;
 
   /// Merges concurrent edits (0020). The default marks the box conflicted.
   MergeResult<D> merge(D base, D mine, D theirs) => Conflicted<D>();

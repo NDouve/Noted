@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import '../ai/ai_box.dart';
+
 /// Writes a note box's saved document (appflowy_editor's JSON, as the note
 /// module stores it) as markdown: headings, paragraphs, bulleted, numbered
 /// and check lists (nested by indenting), quotes, dividers, equations
@@ -9,11 +11,19 @@
 ///
 /// [linkTarget] decides what a link becomes: the address to write, or null
 /// to keep only its text (a link to a page AI can't see).
-String noteToMarkdown(Object? data, {String? Function(String href)? linkTarget}) {
+///
+/// With [markAi], each run of consecutive top-level blocks an AI wrote
+/// ([isAiWritten]) is wrapped in a line `<ai-written>` before it and a line
+/// `</ai-written>` after it.
+String noteToMarkdown(
+  Object? data, {
+  String? Function(String href)? linkTarget,
+  bool markAi = false,
+}) {
   if (data is! Map) return '';
   final doc = data['document'];
   if (doc is! Map) return '';
-  final out = _Writer(linkTarget ?? (h) => h);
+  final out = _Writer(linkTarget ?? (h) => h, markAi);
   out.blocks(_children(doc), 0);
   return out.result();
 }
@@ -33,9 +43,10 @@ Map<Object?, Object?> _data(Map<Object?, Object?> node) {
 }
 
 final class _Writer {
-  _Writer(this.linkTarget);
+  _Writer(this.linkTarget, this.markAi);
 
   final String? Function(String href) linkTarget;
+  final bool markAi;
   final List<String> _lines = [];
 
   // Whether the last block was a list item, so the next item follows it
@@ -57,11 +68,30 @@ final class _Writer {
 
   void blocks(List<Map<Object?, Object?>> nodes, int depth) {
     var number = 0;
+    var inAiRun = false;
     for (final node in nodes) {
+      if (markAi && depth == 0) {
+        final ai = isAiWritten(node);
+        if (ai != inAiRun) {
+          _tag(inAiRun ? '</ai-written>' : '<ai-written>');
+          inAiRun = ai;
+        }
+      }
       final type = node['type'];
       number = type == 'numbered_list' ? number + 1 : 0;
       block(node, depth, number);
     }
+    if (inAiRun) _tag('</ai-written>');
+  }
+
+  // With markAi, `<` in written text becomes `&lt;`, so no content line can
+  // equal an <ai-written> marker line.
+  String _esc(String s) => markAi ? s.replaceAll('<', '&lt;') : s;
+
+  void _tag(String tag) {
+    _gap(listItem: false);
+    _lines.add(tag);
+    _inList = false;
   }
 
   void block(Map<Object?, Object?> node, int depth, int number) {
@@ -93,7 +123,7 @@ final class _Writer {
         _lines.add('---');
       case 'math_equation':
         _gap(listItem: false);
-        _lines.addAll(['\$\$', '${data['formula'] ?? ''}', '\$\$']);
+        _lines.addAll(['\$\$', _esc('${data['formula'] ?? ''}'), '\$\$']);
       case 'table':
         _gap(listItem: false);
         _lines.addAll(table(node));
@@ -109,7 +139,7 @@ final class _Writer {
       default:
         final text = inline(data['delta']);
         _gap(listItem: false);
-        _lines.add(text.isEmpty ? '[$type]' : '$indent$text');
+        _lines.add(text.isEmpty ? _esc('[$type]') : '$indent$text');
     }
     _inList = false;
     // Children of a block that isn't a list item (rare) follow it indented.
@@ -128,10 +158,10 @@ final class _Writer {
       final a = op['attributes'];
       final attrs = a is Map ? a : const {};
       if (text == _inlineMath && attrs['formula'] is String) {
-        b.write('\$${attrs['formula']}\$');
+        b.write('\$${_esc('${attrs['formula']}')}\$');
         continue;
       }
-      var t = text;
+      var t = _esc(text);
       if (attrs['code'] == true) {
         t = '`$t`';
       } else {
@@ -142,7 +172,7 @@ final class _Writer {
       final href = attrs['href'];
       if (href is String) {
         final target = linkTarget(href);
-        if (target != null) t = '[$t]($target)';
+        if (target != null) t = '[$t](${_esc(target)})';
       }
       b.write(t);
     }
@@ -165,7 +195,7 @@ final class _Writer {
       final parts = [
         for (final p in _children(cell))
           // A formula cell shows its value, as the note does.
-          if (_data(p)['formulaValue'] case final String v) v else inline(_data(p)['delta']),
+          if (_data(p)['formulaValue'] case final String v) _esc(v) else inline(_data(p)['delta']),
       ];
       cells[(r, c)] = parts.where((s) => s.isNotEmpty).join('<br>').replaceAll('|', r'\|').replaceAll('\n', ' ');
     }

@@ -7,6 +7,5 @@
 library;
 
 export 'src/library.dart';
-export 'src/markdown.dart';
 export 'src/server.dart';
 export 'src/tools.dart';

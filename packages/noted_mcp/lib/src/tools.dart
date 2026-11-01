@@ -7,7 +7,6 @@ import 'dart:convert';
 import 'package:noted_core/noted_core_read.dart';
 
 import 'library.dart';
-import 'markdown.dart';
 
 /// What a tool returns: text for the AI, and whether it is an error.
 typedef ToolOutput = ({String text, bool isError});
