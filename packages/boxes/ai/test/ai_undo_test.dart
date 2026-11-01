@@ -16,11 +16,11 @@ void main() {
     t.view.physicalSize = const Size(1200, 800);
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
-    final connections = ValueNotifier<List<AiConnectionInfo>>(const []);
-    addTearDown(connections.dispose);
+    final access = NoAiBoxAccess();
+    addTearDown(access.dispose);
     final modules = ModuleRegistry()
       ..register(const NoteModule(), alwaysOn: true, isDefault: true)
-      ..register(AiModule(connections: connections));
+      ..register(AiModule(access: access));
     const codec = AiCodec();
     final record = commitBox(
       createBox(codec, const Bounds(100, 100, 360, 96)),
