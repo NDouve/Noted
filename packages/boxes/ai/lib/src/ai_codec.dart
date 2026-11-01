@@ -86,42 +86,15 @@ final class AiCodec extends BoxCodec<AiBoxData> {
   @override
   String? aiOwner(AiBoxData data) => data.owner;
 
-  /// Writes [write]'s markdown as note blocks, each marked as AI-written. The
+  /// Writes [write]'s markdown as note blocks, each marked as AI-written
+  /// ([applyAiWrite], shared with the MCP server's closed-app write). The
   /// owner and every other key stay as they were.
   @override
-  AiBoxData? aiWrite(AiBoxData data, AiWrite write) {
-    final written = [
-      for (final b in markdownToNoteBlocks(write.content)) markAiWritten(b),
-    ];
-    final doc = data.json['document'];
-    final root = doc is Map<String, Object?> ? doc : _note.create().document['document']! as Map<String, Object?>;
-    final existing = root['children'];
-    final kept = <Object?>[
-      if (write.mode == AiWriteMode.append && existing is List) ...existing,
-    ];
-    if (kept.isNotEmpty && _emptyParagraph(kept.last)) kept.removeLast();
-    final children = [...kept, ...written];
-    if (children.isEmpty) children.add(_emptyBlock());
-    return AiBoxData({
-      ...data.json,
-      'document': {...root, 'children': children},
-    });
-  }
+  AiBoxData? aiWrite(AiBoxData data, AiWrite write) => AiBoxData(applyAiWrite(data.json, write));
 
   // No merge: the default marks concurrent edits conflicted, as the note box
   // does (the note codec has none).
 }
-
-Map<String, Object?> _emptyBlock() => {
-  'type': 'paragraph',
-  'data': {'delta': <Object?>[]},
-};
-
-bool _emptyParagraph(Object? block) =>
-    block is Map &&
-    block['type'] == 'paragraph' &&
-    aiBlockText(block).isEmpty &&
-    (block['children'] is! List || (block['children'] as List).isEmpty);
 
 /// [document] (`{"document": {...}}`) without the AI-written marks that no
 /// longer match their block: the user changed the text or the block type. A

@@ -4,6 +4,8 @@
 
 import 'dart:convert';
 
+import '../format/note_markdown_import.dart';
+
 /// The type id of the AI box module (run 2026-11-01-01).
 const String aiBoxTypeId = 'noted.ai';
 
@@ -134,3 +136,102 @@ String? aiBoxOwner(Object? data) {
   final o = data[aiOwnerKey];
   return o is String && o.isNotEmpty ? o : null;
 }
+
+/// How an AI's write changes a box's content.
+enum AiWriteMode {
+  /// Replace the whole content.
+  replace,
+
+  /// Add to the end.
+  append,
+
+  /// Replace only the box's AI-written blocks and keep every user-written
+  /// block in place (Box API 0.10).
+  replaceAiText,
+}
+
+/// A write an AI asks for, passed to `BoxCodec.aiWrite` after the host has
+/// checked ownership and the page's AI setting (run 2026-11-01-01).
+final class AiWrite {
+  const AiWrite({
+    required this.connectionId,
+    required this.content,
+    required this.mode,
+  });
+
+  /// The id of the AI connection that writes (never a token or secret).
+  final String connectionId;
+
+  /// What to write, as markdown.
+  final String content;
+  final AiWriteMode mode;
+}
+
+/// An AI box's stored data after [write]: [boxJson] (`{"document": {...}}`
+/// plus the owner and any other key) with [write]'s markdown added as note
+/// blocks, each marked as AI-written (see [markAiWritten]). Neither [boxJson]
+/// nor its blocks are changed. The owner and every other top-level key stay as
+/// they were.
+///
+/// - [AiWriteMode.append]: the blocks go after the existing ones (a trailing
+///   empty paragraph, the box's blank starting line, is dropped).
+/// - [AiWriteMode.replace]: they replace everything.
+/// - [AiWriteMode.replaceAiText]: every run of consecutive AI-written
+///   blocks ([isAiWritten]) is removed and the blocks go where the first run
+///   was, or at the end if there was none (as for append). User blocks keep
+///   their order and their content untouched.
+///
+/// A box left with no block gets one empty paragraph. Used by the AI box's
+/// codec and by the MCP server's closed-app write, so both write the same.
+Map<String, Object?> applyAiWrite(Map<String, Object?> boxJson, AiWrite write) {
+  final written = [
+    for (final b in markdownToNoteBlocks(write.content)) markAiWritten(b),
+  ];
+  final doc = boxJson['document'];
+  final root = doc is Map
+      ? <String, Object?>{for (final e in doc.entries) e.key.toString(): e.value}
+      : <String, Object?>{'type': 'page'};
+  final kids = root['children'];
+  final existing = kids is List ? kids.cast<Object?>() : const <Object?>[];
+  final children = <Object?>[];
+  switch (write.mode) {
+    case AiWriteMode.replace:
+      children.addAll(written);
+    case AiWriteMode.append:
+      children.addAll(existing);
+      if (children.isNotEmpty && _isEmptyParagraph(children.last)) children.removeLast();
+      children.addAll(written);
+    case AiWriteMode.replaceAiText:
+      var inserted = false;
+      for (final b in existing) {
+        if (b is Map && isAiWritten(b)) {
+          if (!inserted) {
+            children.addAll(written);
+            inserted = true;
+          }
+        } else {
+          children.add(b);
+        }
+      }
+      if (!inserted) {
+        if (children.isNotEmpty && _isEmptyParagraph(children.last)) children.removeLast();
+        children.addAll(written);
+      }
+  }
+  if (children.isEmpty) {
+    children.add({
+      'type': 'paragraph',
+      'data': {'delta': <Object?>[]},
+    });
+  }
+  return {
+    ...boxJson,
+    'document': {...root, 'children': children},
+  };
+}
+
+bool _isEmptyParagraph(Object? block) =>
+    block is Map &&
+    block['type'] == 'paragraph' &&
+    aiBlockText(block).isEmpty &&
+    (block['children'] is! List || (block['children'] as List).isEmpty);

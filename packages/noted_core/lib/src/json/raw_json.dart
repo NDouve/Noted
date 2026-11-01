@@ -166,6 +166,63 @@ final class JsonSpanReader {
     return items;
   }
 
+  /// The top-level entries of the JSON object [source] as `(key, start, end)`:
+  /// the range of each value in [source], end exclusive. Throws
+  /// [FormatException] if [source] isn't one JSON object.
+  static List<(String, int, int)> objectEntrySpans(String source) {
+    final r = JsonSpanReader._(source);
+    r._ws();
+    if (r._peek() != 0x7B) r._fail('Expected an object');
+    r._i++;
+    final spans = <(String, int, int)>[];
+    r._ws();
+    if (!r._take(0x7D)) {
+      while (true) {
+        r._ws();
+        if (r._peek() != 0x22) r._fail('Expected a string key');
+        final key = r._string();
+        r._ws();
+        if (!r._take(0x3A)) r._fail("Expected ':'");
+        r._ws();
+        final start = r._i;
+        r._skipValue(1);
+        spans.add((key, start, r._i));
+        r._ws();
+        if (r._take(0x2C)) continue;
+        if (r._take(0x7D)) break;
+        r._fail("Expected ',' or '}'");
+      }
+    }
+    r._end();
+    return spans;
+  }
+
+  /// The items of the JSON array [source] as `(start, end)` ranges in
+  /// [source], end exclusive. Throws [FormatException] if [source] isn't one
+  /// JSON array.
+  static List<(int, int)> arrayItemSpans(String source) {
+    final r = JsonSpanReader._(source);
+    r._ws();
+    if (r._peek() != 0x5B) r._fail('Expected an array');
+    r._i++;
+    final spans = <(int, int)>[];
+    r._ws();
+    if (!r._take(0x5D)) {
+      while (true) {
+        r._ws();
+        final start = r._i;
+        r._skipValue(1);
+        spans.add((start, r._i));
+        r._ws();
+        if (r._take(0x2C)) continue;
+        if (r._take(0x5D)) break;
+        r._fail("Expected ',' or ']'");
+      }
+    }
+    r._end();
+    return spans;
+  }
+
   static void _validate(String source) {
     final r = JsonSpanReader._(source);
     r._ws();

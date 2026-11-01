@@ -2,6 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import '../ai/ai_box.dart' show AiWrite;
+
+// AiWrite and AiWriteMode are declared in ai_box.dart (the read export needs
+// them there); they are part of the Box API all the same.
+export '../ai/ai_box.dart' show AiWrite, AiWriteMode;
+
 /// A Box API version.
 ///
 /// While the major version is 0 the API is unstable, and a module must target
@@ -36,9 +42,9 @@ final class BoxApiVersion {
 /// the theme to `ToolContext`; 0.4 added commands; 0.5 added a module's
 /// frame style; 0.6 added Find on page (`BoxFind`); 0.7 added images and files;
 /// 0.8 added `aspectRatioExtraHeight`; 0.9 added AI writes (`AiWrite`,
-/// `BoxCodec.aiOwner` and `BoxCodec.aiWrite`). See `BOX_API_CHANGELOG.md` in
-/// this package.
-const BoxApiVersion boxApiVersion = BoxApiVersion(0, 9);
+/// `BoxCodec.aiOwner` and `BoxCodec.aiWrite`); 0.10 added
+/// `AiWriteMode.replaceAiText`. See `BOX_API_CHANGELOG.md` in this package.
+const BoxApiVersion boxApiVersion = BoxApiVersion(0, 10);
 
 /// How a box's size relates to its content.
 enum BoxSizing {
@@ -87,26 +93,6 @@ final class AiPlaceholder extends AiExposure {
 /// The AI doesn't see the box at all.
 final class AiHidden extends AiExposure {
   const AiHidden();
-}
-
-/// How an AI's write changes a box's content.
-enum AiWriteMode { replace, append }
-
-/// A write an AI asks for, passed to [BoxCodec.aiWrite] after the host has
-/// checked ownership and the page's AI setting (run 2026-11-01-01).
-final class AiWrite {
-  const AiWrite({
-    required this.connectionId,
-    required this.content,
-    required this.mode,
-  });
-
-  /// The id of the AI connection that writes (never a token or secret).
-  final String connectionId;
-
-  /// What to write, as markdown.
-  final String content;
-  final AiWriteMode mode;
 }
 
 /// A permission a box type needs, for example network access (0034).

@@ -26,12 +26,14 @@
 /// - Every request has `"noted":"ai-link/2"`, `"op"`, `"code"` (the whole
 ///   code, `noted_<id>_<key>`), `"session"` (the server process's random id)
 ///   and optionally `"app"` (the MCP client's name). Ops ([AiLinkRequest]):
-///   - `write_box`: `box`, `mode` (`replace`|`append`), `content` (markdown).
+///   - `write_box`: `box`, `mode` (`append`|`replace_ai`|`replace`; the box's
+///     Writer permission decides which are allowed, else `not_permitted`),
+///     `content` (markdown).
 ///     Answer: `{"ok":true,"box":BOX_ID}`; the answer gives no page id or
 ///     title (an AI sees boxes by id only).
 ///   - `access`: `action` (`read_box`|`read_page`|`list_pages`|`search`) and
-///     optionally `target`. The app checks the code, its expiry and the
-///     session's approval, logs the action, and answers with a grant: either
+///     optionally `target`. The app checks the code, its expiry and its
+///     approval (once per code, 0108 as amended), logs the action, and answers with a grant: either
 ///     `{"ok":true,"grant":{"kind":"box","box":ID,"page":ID}}` or
 ///     `{"ok":true,"grant":{"kind":"pages","pages":[PAGE_ID,...]}}`. The
 ///     server then reads the saved files itself; content is never taken from
@@ -115,9 +117,27 @@ String? readAiLinkGreeting(String line) {
   }
 }
 
-/// How a write changes the box. It mirrors `AiWriteMode` by name; this one
-/// lives here so the read-only library needs nothing from the Box API.
-enum AiLinkMode { replace, append }
+/// How a write changes the box, as `write_box`'s `mode` says it: `append`,
+/// `replace_ai` (replace the box's AI-written text, keep the user's) or
+/// `replace` (the whole box; empty content empties it). It mirrors
+/// `AiWriteMode` ([replaceAi] is `AiWriteMode.replaceAiText`).
+enum AiLinkMode {
+  append('append'),
+  replaceAi('replace_ai'),
+  replace('replace');
+
+  const AiLinkMode(this.wire);
+
+  /// The value on the wire.
+  final String wire;
+
+  static AiLinkMode? fromWire(Object? wire) {
+    for (final m in values) {
+      if (m.wire == wire) return m;
+    }
+    return null;
+  }
+}
 
 /// What an `access` request asks to do.
 enum AiLinkAction {
@@ -201,17 +221,16 @@ sealed class AiLinkRequest {
       case 'write_box':
         final box = json['box'];
         final content = json['content'];
-        final wireMode = json['mode'];
-        final mode = AiLinkMode.values.where((m) => m.name == wireMode);
-        if (box is! String || content is! String || mode.isEmpty) {
-          return const AiLinkMalformed('write_box needs box, mode (replace or append) and content.');
+        final mode = AiLinkMode.fromWire(json['mode']);
+        if (box is! String || content is! String || mode == null) {
+          return const AiLinkMalformed('write_box needs box, mode (append, replace_ai or replace) and content.');
         }
         return AiLinkWriteBox(
           code: code,
           session: session,
           app: app,
           box: box,
-          mode: mode.first,
+          mode: mode,
           content: content,
         );
       case 'access':
@@ -259,7 +278,7 @@ final class AiLinkWriteBox extends AiLinkRequest {
   String get op => 'write_box';
 
   @override
-  Map<String, Object?> _fields() => {'box': box, 'mode': mode.name, 'content': content};
+  Map<String, Object?> _fields() => {'box': box, 'mode': mode.wire, 'content': content};
 }
 
 /// A request for permission to read: the app answers with a grant.
@@ -338,6 +357,12 @@ enum AiLinkCode {
   /// The page can't be edited: a locked binder or a read-only page.
   locked('locked', 'The page cannot be edited right now.'),
   notWritable('not_writable', 'This box does not take writes from an AI.'),
+
+  /// The mode is outside the box's Writer permission (append, edit or full).
+  notPermitted(
+    'not_permitted',
+    "This box's Writer permission doesn't allow that. Ask the user to change it in the box.",
+  ),
   saveFailed('save_failed', 'The app could not save the change.'),
 
   /// The app can't take a request yet (it is still opening the notebook, or

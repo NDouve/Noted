@@ -59,6 +59,30 @@ void main() {
     expect(back.content, 'line 1\nline 2 é 😀');
   });
 
+  test('write_box modes are append, replace_ai and replace on the wire', () {
+    expect(AiLinkMode.values.map((m) => m.wire), ['append', 'replace_ai', 'replace']);
+    for (final mode in AiLinkMode.values) {
+      final r = AiLinkWriteBox(code: 'c', session: 's', box: 'b', mode: mode, content: 'x');
+      expect(r.encode(), contains('"mode":"${mode.wire}"'));
+      expect((AiLinkRequest.parse(r.encode()) as AiLinkWriteBox).mode, mode);
+    }
+    final line = jsonEncode({
+      'noted': 'ai-link/2', 'op': 'write_box', 'code': 'c', 'session': 's', 'box': 'b', 'content': 'x',
+      'mode': 'replaceAi',
+    });
+    expect(AiLinkRequest.parse(line), isA<AiLinkMalformed>());
+  });
+
+  test('not_permitted is an error code with its message', () {
+    expect(AiLinkCode.fromWire('not_permitted'), AiLinkCode.notPermitted);
+    final e = AiLinkResponse.decode(AiLinkResponse.error(AiLinkCode.notPermitted).encode()) as AiLinkError;
+    expect(e.code, AiLinkCode.notPermitted);
+    expect(
+      e.message,
+      "This box's Writer permission doesn't allow that. Ask the user to change it in the box.",
+    );
+  });
+
   test('app is optional', () {
     const r = AiLinkDescribeCode(code: 'c', session: 's');
     expect(r.encode(), isNot(contains('"app"')));
@@ -148,6 +172,7 @@ void main() {
       'conflict',
       'locked',
       'not_writable',
+      'not_permitted',
       'save_failed',
       'busy',
       'not_running',

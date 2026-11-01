@@ -10,6 +10,12 @@ Versions are listed newest first.
 
 Host-only (not the Box API), run 2026-11-01-02: `PageCanvas.disallowedTypes`, `ModuleRegistry.isSwitchable` and `moduleForFile(exclude:)`, `convertPageAttachments(skipTypes:)` and `showConflictDialog(disallowedTypes:)` let a page treat a box type as switched off (module availability per page). No module-facing member changed; no version bump.
 
+## 0.10 — 2026-11-01
+- `AiWriteMode.replaceAiText`: replace only the box's AI-written blocks (those whose AI mark still matches their text) and keep every user-written block in place. Every run of consecutive AI-written blocks is removed and the new blocks go where the first run was, or at the end if there was none.
+- `applyAiWrite(boxJson, AiWrite)` in noted_core: the AI box's write on its stored JSON (append, replace, replaceAiText), shared by the AI codec and the MCP server's closed-app write. `AiWrite` and `AiWriteMode` now live in `ai/ai_box.dart` (still exported from `noted_core.dart` and `box_codec.dart`).
+- Not part of the API: `markdownToNoteBlocks` moved from the note package into noted_core (pure Dart on `package:markdown`, same output), and the code store, link protocol and page-file splice grew (`AiCode.approved`, Writer permission, closed-app writes, `write_box` modes `append|replace_ai|replace`, `not_permitted`).
+- Additive: a codec that doesn't switch exhaustively over `AiWriteMode` is unaffected. Approved by the maintainer; run 2026-11-01-03.
+
 ## 0.9 — 2026-10-31
 - `AiWriteMode` (`replace`, `append`) and `AiWrite` (`connectionId`, `content` as markdown, `mode`) in noted_core.
 - `BoxCodec.aiOwner(data)` (default null): the id of the AI connection that owns the box, never a token or secret.

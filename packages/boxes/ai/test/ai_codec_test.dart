@@ -141,6 +141,21 @@ void main() {
       expect(codec.snapshotText(n), isNot(contains('user text')));
     });
 
+    test('replaceAiText: the AI blocks are replaced, the user blocks stay in place', () {
+      final ai1 = markAiWritten(para('old ai'));
+      final d = boxOf([para('before'), ai1, para('after')], owner: owner);
+      final n = codec.aiWrite(
+        d,
+        AiWrite(connectionId: owner, content: 'fresh', mode: AiWriteMode.replaceAiText),
+      )!;
+      final b = blocksOf(n);
+      expect(b.map(aiBlockText), ['before', 'fresh', 'after']);
+      expect(b.map(isAiWritten), [false, true, false]);
+      expect(b[0], blocksOf(d)[0]);
+      expect(b[2], blocksOf(d)[2]);
+      expect(n.owner, owner);
+    });
+
     test('append: existing blocks stay, a trailing empty paragraph goes', () {
       final d = boxOf([para('user text'), para('')], owner: owner);
       final n = codec.aiWrite(

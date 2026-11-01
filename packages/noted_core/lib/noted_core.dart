@@ -7,6 +7,8 @@
 library;
 
 export 'src/ai/ai_access.dart';
+export 'src/ai/ai_access_read.dart';
+export 'src/ai/ai_mcp_log.dart';
 export 'src/ai/ai_access_store.dart';
 export 'src/ai/ai_activity_log.dart';
 export 'src/ai/ai_box.dart';
@@ -22,7 +24,9 @@ export 'src/box_api/box_find.dart';
 export 'src/box_api/codec_registry.dart';
 export 'src/edit/page_history.dart';
 export 'src/format/note_markdown.dart';
+export 'src/format/note_markdown_import.dart';
 export 'src/format/page_format.dart';
+export 'src/format/page_splice.dart';
 export 'src/json/raw_json.dart';
 export 'src/merge/conflict_copy.dart';
 export 'src/merge/page_merge.dart';

@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'ai_code_format.dart';
-import 'ai_token.dart';
 
 /// What a code points at.
 enum AiCodeTargetKind {
@@ -160,6 +159,7 @@ final class AiCode {
     required this.created,
     this.lastUsed,
     this.expires,
+    this.approved,
     this.sessions = const [],
     this.extra = const {},
     this.rawTimes = const {},
@@ -180,14 +180,20 @@ final class AiCode {
 
   /// After this the code is rejected (`expired`); null: never.
   final DateTime? expires;
+
+  /// When the user allowed this code (0108, amended: once per code, not per
+  /// session); null: not approved yet. It stays approved until the code is
+  /// revoked or expires. An unparseable stored value counts as not approved.
+  final DateTime? approved;
   final List<AiCodeSession> sessions;
 
   /// Fields this build doesn't know, kept when the code is written back.
   final Map<String, Object?> extra;
 
-  /// Present `created`, `lastUsed` or `expires` values that are not valid
-  /// times, as stored; they are written back unchanged. An unparseable
-  /// `expires` counts as expired (the safe side).
+  /// Present `created`, `lastUsed`, `expires` or `approved` values that are
+  /// not valid times, as stored; they are written back unchanged. An
+  /// unparseable `expires` counts as expired (the safe side), an unparseable
+  /// `approved` as not approved.
   final Map<String, Object?> rawTimes;
 
   AiCodeRole? get role => AiCodeRole.fromWire(roleName);
@@ -203,7 +209,12 @@ final class AiCode {
   bool isExpired(DateTime now) =>
       rawTimes.containsKey('expires') || (expires != null && !now.isBefore(expires!));
 
-  /// The session [sessionId], if the user allowed it.
+  /// Whether the user has approved this code ([approved] is set).
+  bool get isApproved => approved != null;
+
+  /// The session [sessionId], if the user allowed it. Sessions are no longer
+  /// used to decide anything (approval is per code); an old file's list is
+  /// kept as written.
   AiCodeSession? session(String sessionId) {
     for (final s in sessions) {
       if (s.id == sessionId) return s;
@@ -214,6 +225,7 @@ final class AiCode {
   AiCode copyWith({
     String? label,
     DateTime? lastUsed,
+    DateTime? approved,
     List<AiCodeSession>? sessions,
   }) => AiCode(
     id: id,
@@ -224,9 +236,12 @@ final class AiCode {
     created: created,
     lastUsed: lastUsed ?? this.lastUsed,
     expires: expires,
+    approved: approved ?? this.approved,
     sessions: sessions ?? this.sessions,
     extra: extra,
-    rawTimes: lastUsed == null ? rawTimes : ({...rawTimes}..remove('lastUsed')),
+    rawTimes: {
+      ...rawTimes,
+    }..removeWhere((k, _) => (k == 'lastUsed' && lastUsed != null) || (k == 'approved' && approved != null)),
   );
 
   /// A copy with [expires] changed (null: never expires).
@@ -239,6 +254,7 @@ final class AiCode {
     created: created,
     lastUsed: lastUsed,
     expires: expires,
+    approved: approved,
     sessions: sessions,
     extra: extra,
     rawTimes: {...rawTimes}..remove('expires'),
@@ -263,8 +279,9 @@ final class AiCode {
       created: _time(json['created']) ?? DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
       lastUsed: _time(json['lastUsed']),
       expires: _time(json['expires']),
+      approved: _time(json['approved']),
       rawTimes: {
-        for (final k in const ['created', 'lastUsed', 'expires'])
+        for (final k in const ['created', 'lastUsed', 'expires', 'approved'])
           if (json[k] != null && _time(json[k]) == null) k: json[k],
       },
       sessions: [
@@ -272,7 +289,7 @@ final class AiCode {
           for (final s in sessions) ?AiCodeSession.fromJson(s),
       ],
       extra: _extras(json, const {
-        'id', 'target', 'role', 'label', 'hash', 'created', 'lastUsed', 'expires', 'sessions',
+        'id', 'target', 'role', 'label', 'hash', 'created', 'lastUsed', 'expires', 'approved', 'sessions',
       }),
     );
   }
@@ -290,6 +307,9 @@ final class AiCode {
     'expires': rawTimes.containsKey('expires')
         ? rawTimes['expires']
         : (expires == null ? null : _iso(expires!)),
+    'approved': rawTimes.containsKey('approved')
+        ? rawTimes['approved']
+        : (approved == null ? null : _iso(approved!)),
     'sessions': [for (final s in sessions) s.toJson()],
     ...extra,
   };
@@ -331,51 +351,4 @@ AiCodeVerdict verifyAiCode(String code, Iterable<AiCode> codes, DateTime now) {
     return AiCodeVerdict.accepted(c);
   }
   return const AiCodeVerdict.rejected(AiCodeFailure.badCode);
-}
-
-/// A freshly issued code: [code] is the text to show the user once, and
-/// [record] is what the app keeps. [retired] lists the ids of the Writer
-/// codes it replaced.
-typedef AiIssuedCode = ({String code, AiCode record, List<String> retired});
-
-/// Makes a new code for [target] and adds it to [codes] (a mutable list of
-/// the stored codes).
-///
-/// A Writer is for a box target only ([ArgumentError] otherwise). Issuing a
-/// Writer retires (removes from [codes]) the box's old Writer code; a box has
-/// one Writer at a time. Any number of Readers can exist.
-AiIssuedCode issueAiCode(
-  List<AiCode> codes, {
-  required AiCodeTarget target,
-  required AiCodeRole role,
-  required String label,
-  DateTime? expires,
-  DateTime? now,
-}) {
-  if (target.kind == null) {
-    throw ArgumentError.value(target.kindName, 'target', 'unknown target kind');
-  }
-  if (role == AiCodeRole.writer && target.kind != AiCodeTargetKind.box) {
-    throw ArgumentError.value(role, 'role', 'a Writer code is for a box');
-  }
-  final retired = <String>[];
-  if (role == AiCodeRole.writer) {
-    codes.removeWhere((c) {
-      final old = c.role == AiCodeRole.writer && c.target.kind == AiCodeTargetKind.box && c.target.id == target.id;
-      if (old) retired.add(c.id);
-      return old;
-    });
-  }
-  final token = newAiToken();
-  final record = AiCode(
-    id: token.id,
-    target: target,
-    roleName: role.wire,
-    label: label,
-    hash: token.hash,
-    created: (now ?? DateTime.now()).toUtc(),
-    expires: expires?.toUtc(),
-  );
-  codes.add(record);
-  return (code: token.token, record: record, retired: retired);
 }

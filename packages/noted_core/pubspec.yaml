@@ -13,6 +13,8 @@ environment:
 dependencies:
   # SHA-256 content hashes of attachments (BSD-3-Clause, the Dart team).
   crypto: ^3.0.7
+  # Markdown parsing for the note importer (BSD-3-Clause, the Dart team).
+  markdown: 7.3.1
 
 dev_dependencies:
   flutter_test:

@@ -2,17 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import 'dart:convert';
 import 'dart:math';
 
-import 'package:crypto/crypto.dart';
+import 'ai_code.dart';
+import 'ai_code_format.dart';
 
 /// A new AI code (0105): `noted_<id>_<key>`, with a random 16-hex
 /// id and a 32-byte random key in base64url without padding. The app shows
 /// `token` once; it keeps only `id` and `hash` (the SHA-256 of the key).
 ///
-/// Exported from `noted_core.dart` only: the MCP server's library has no
-/// hashing code in its import graph.
+/// Exported from `noted_core.dart` only: the MCP server's library makes no
+/// codes and has no random key generation in its import graph.
 ({String token, String id, String hash}) newAiToken() {
   final random = Random.secure();
   final idBytes = List<int>.generate(8, (_) => random.nextInt(256));
@@ -20,20 +20,6 @@ import 'package:crypto/crypto.dart';
   final id = idBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   final key = _base64Url(keyBytes);
   return (token: 'noted_${id}_$key', id: id, hash: aiKeyHash(key));
-}
-
-/// The SHA-256 of [key] (the secret part of a token), as lowercase hex.
-String aiKeyHash(String key) => sha256.convert(utf8.encode(key)).toString();
-
-/// Whether [key] hashes to [hash], compared in constant time.
-bool aiKeyMatches(String key, String hash) {
-  final a = aiKeyHash(key).codeUnits;
-  final b = hash.toLowerCase().codeUnits;
-  var diff = a.length ^ b.length;
-  for (var i = 0; i < a.length; i++) {
-    diff |= a[i] ^ (i < b.length ? b[i] : 0);
-  }
-  return diff == 0;
 }
 
 const String _alphabet =
@@ -53,4 +39,51 @@ String _base64Url(List<int> bytes) {
     if (i + 2 < bytes.length) b.write(_alphabet[n & 63]);
   }
   return b.toString();
+}
+
+/// A freshly issued code: [code] is the text to show the user once, and
+/// [record] is what the app keeps. [retired] lists the ids of the Writer
+/// codes it replaced.
+typedef AiIssuedCode = ({String code, AiCode record, List<String> retired});
+
+/// Makes a new code for [target] and adds it to [codes] (a mutable list of
+/// the stored codes).
+///
+/// A Writer is for a box target only ([ArgumentError] otherwise). Issuing a
+/// Writer retires (removes from [codes]) the box's old Writer code; a box has
+/// one Writer at a time. Any number of Readers can exist.
+AiIssuedCode issueAiCode(
+  List<AiCode> codes, {
+  required AiCodeTarget target,
+  required AiCodeRole role,
+  required String label,
+  DateTime? expires,
+  DateTime? now,
+}) {
+  if (target.kind == null) {
+    throw ArgumentError.value(target.kindName, 'target', 'unknown target kind');
+  }
+  if (role == AiCodeRole.writer && target.kind != AiCodeTargetKind.box) {
+    throw ArgumentError.value(role, 'role', 'a Writer code is for a box');
+  }
+  final retired = <String>[];
+  if (role == AiCodeRole.writer) {
+    codes.removeWhere((c) {
+      final old = c.role == AiCodeRole.writer && c.target.kind == AiCodeTargetKind.box && c.target.id == target.id;
+      if (old) retired.add(c.id);
+      return old;
+    });
+  }
+  final token = newAiToken();
+  final record = AiCode(
+    id: token.id,
+    target: target,
+    roleName: role.wire,
+    label: label,
+    hash: token.hash,
+    created: (now ?? DateTime.now()).toUtc(),
+    expires: expires?.toUtc(),
+  );
+  codes.add(record);
+  return (code: token.token, record: record, retired: retired);
 }

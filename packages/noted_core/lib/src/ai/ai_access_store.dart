@@ -5,30 +5,13 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'ai_access_read.dart';
 import 'ai_code.dart';
+import 'ai_token.dart';
 import 'locked_file.dart';
 
+export 'ai_access_read.dart' show AiAccessUnreadable, aiAccessFileName, aiAccessFormat;
 export 'locked_file.dart' show FileLockTimeout;
-
-/// The name of the codes file in the app's data folder (next to
-/// settings.json). It is local to the device: never synced, never in a page
-/// file.
-const String aiAccessFileName = 'ai-access.json';
-
-/// The `format` of [aiAccessFileName] this build reads and writes.
-const int aiAccessFormat = 1;
-
-/// `ai-access.json` exists but can't be read as a format-1 file (damaged, or
-/// written by a newer app). No code is accepted and the file is not
-/// overwritten.
-final class AiAccessUnreadable implements Exception {
-  const AiAccessUnreadable(this.message);
-
-  final String message;
-
-  @override
-  String toString() => 'AiAccessUnreadable: $message';
-}
 
 /// The contents of `ai-access.json`, edited in place.
 ///
@@ -36,9 +19,10 @@ final class AiAccessUnreadable implements Exception {
 /// {"format":1,
 ///  "codes":[{"id":"…","target":{"kind":"box","id":"…","page":"…"},
 ///            "role":"writer","label":"…","hash":"…","created":"ISO",
-///            "lastUsed":"ISO|null","expires":"ISO|null",
-///            "sessions":[{"id":"…","app":"…","approved":"ISO"}]}],
-///  "boxes":{"<boxId>":{"askBeforeWrite":true}}}
+///            "lastUsed":"ISO|null","expires":"ISO|null","approved":"ISO|null",
+///            "sessions":[…kept as written, no longer used…]}],
+///  "boxes":{"<boxId>":{"askBeforeWrite":true,"writerPermission":"edit",
+///                      "closedWrites":true}}}
 /// ```
 ///
 /// Fields this build doesn't know, at any of these levels, are kept when the
@@ -51,25 +35,7 @@ final class AiAccessDoc {
 
   /// Parses file text. Throws [AiAccessUnreadable] if it isn't a JSON object
   /// with `format` 1.
-  factory AiAccessDoc.parse(String text) {
-    if (text.isNotEmpty && text.codeUnitAt(0) == 0xFEFF) text = text.substring(1);
-    final Object? json;
-    try {
-      json = jsonDecode(text);
-    } on FormatException catch (e) {
-      throw AiAccessUnreadable('not valid JSON: ${e.message}');
-    }
-    if (json is! Map) throw const AiAccessUnreadable('not a JSON object');
-    if (json['format'] != aiAccessFormat) {
-      throw AiAccessUnreadable('format ${json['format']} is not $aiAccessFormat');
-    }
-    final copy = <String, Object?>{for (final e in json.entries) e.key as String: e.value};
-    final codes = copy['codes'];
-    if (codes != null && codes is! List) throw const AiAccessUnreadable('"codes" is not a list');
-    final boxes = copy['boxes'];
-    if (boxes != null && boxes is! Map) throw const AiAccessUnreadable('"boxes" is not an object');
-    return AiAccessDoc._(copy);
-  }
+  factory AiAccessDoc.parse(String text) => AiAccessDoc._(parseAiAccessJson(text));
 
   final Map<String, Object?> _json;
 
@@ -135,6 +101,8 @@ final class AiAccessDoc {
   /// Checks a code against this document.
   AiCodeVerdict verify(String code, DateTime now) => verifyAiCode(code, codes, now);
 
+  AiAccessView get _view => AiAccessView.of(_json);
+
   Map<String, Object?>? _box(String boxId) {
     final boxes = _json['boxes'];
     if (boxes is! Map) return null;
@@ -143,19 +111,42 @@ final class AiAccessDoc {
   }
 
   /// Whether every write to [boxId] asks the user first.
-  bool askBeforeWrite(String boxId) => _box(boxId)?['askBeforeWrite'] == true;
+  bool askBeforeWrite(String boxId) => _view.askBeforeWrite(boxId);
+
+  /// The Writer permission of [boxId] (append unless set).
+  AiWriterPermission writerPermission(String boxId) => _view.writerPermission(boxId);
+
+  /// Whether [boxId] takes writes while Noted is closed (see
+  /// [AiAccessView.closedWrites]: false whenever it asks before each write).
+  bool closedWrites(String boxId) => _view.closedWrites(boxId);
 
   /// Sets [askBeforeWrite] for [boxId]. Other settings of the box are kept;
   /// turning it off removes the entry if nothing else is in it.
-  void setAskBeforeWrite(String boxId, bool value) {
+  void setAskBeforeWrite(String boxId, bool value) =>
+      _setBoxKey(boxId, 'askBeforeWrite', value ? true : null);
+
+  /// Sets the Writer permission of [boxId]. [AiWriterPermission.append], the
+  /// default, removes the key.
+  void setWriterPermission(String boxId, AiWriterPermission value) =>
+      _setBoxKey(boxId, 'writerPermission', value == AiWriterPermission.append ? null : value.wire);
+
+  /// Sets whether [boxId] takes writes while Noted is closed. The stored
+  /// switch is kept even while [askBeforeWrite] is on (it has no effect
+  /// then).
+  void setClosedWrites(String boxId, bool value) =>
+      _setBoxKey(boxId, 'closedWrites', value ? true : null);
+
+  // Sets [key] of the box entry, or removes it for a null [value]; the entry
+  // goes when nothing else is in it. Other keys are kept.
+  void _setBoxKey(String boxId, String key, Object? value) {
     final boxes = <String, Object?>{
       if (_json['boxes'] is Map) for (final e in (_json['boxes']! as Map).entries) e.key as String: e.value,
     };
     final entry = <String, Object?>{...?_box(boxId)};
-    if (value) {
-      entry['askBeforeWrite'] = true;
+    if (value != null) {
+      entry[key] = value;
     } else {
-      entry.remove('askBeforeWrite');
+      entry.remove(key);
     }
     if (entry.isEmpty) {
       boxes.remove(boxId);
@@ -248,7 +239,16 @@ final class AiAccessStore {
     if (c != null) d.put(c.copyWith(lastUsed: (now ?? DateTime.now()).toUtc()));
   });
 
-  /// Allows [session] to use the code [id].
+  /// Approves the code [id] (the user allowed it) at [now]. Approval is per
+  /// code: it holds until the code is revoked or expires. An already
+  /// approved code keeps its time.
+  void approveCode(String id, {DateTime? now}) => update((d) {
+    final c = d.code(id);
+    if (c != null && !c.isApproved) d.put(c.copyWith(approved: (now ?? DateTime.now()).toUtc()));
+  });
+
+  /// Allows [session] to use the code [id]. Sessions no longer decide
+  /// anything (approval is per code); kept for old callers.
   void addSession(String id, AiCodeSession session) => update((d) {
     final c = d.code(id);
     if (c == null) return;
@@ -274,4 +274,30 @@ final class AiAccessStore {
 
   void setAskBeforeWrite(String boxId, bool value) =>
       update((d) => d.setAskBeforeWrite(boxId, value));
+
+  /// The Writer permission of [boxId]. An unreadable file reads as append
+  /// (the narrowest).
+  AiWriterPermission writerPermission(String boxId) {
+    try {
+      return read().writerPermission(boxId);
+    } on AiAccessUnreadable {
+      return AiWriterPermission.append;
+    }
+  }
+
+  void setWriterPermission(String boxId, AiWriterPermission value) =>
+      update((d) => d.setWriterPermission(boxId, value));
+
+  /// Whether [boxId] takes writes while Noted is closed. An unreadable file
+  /// reads as false.
+  bool closedWrites(String boxId) {
+    try {
+      return read().closedWrites(boxId);
+    } on AiAccessUnreadable {
+      return false;
+    }
+  }
+
+  void setClosedWrites(String boxId, bool value) =>
+      update((d) => d.setClosedWrites(boxId, value));
 }
