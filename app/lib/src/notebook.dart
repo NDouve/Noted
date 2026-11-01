@@ -2094,16 +2094,21 @@ class Notebook extends ChangeNotifier {
     return run;
   }
 
+  // Why a token was just refused: bad, or the settings couldn't be read (a
+  // moment's sharing violation, say), which shouldn't send the user off to
+  // replace a working token.
+  AiLinkCode get _tokenRefusal => settings?.aiSettingsUnreadable ?? false ? AiLinkCode.busy : AiLinkCode.badToken;
+
   Future<AiLinkResponse> _aiWrite(AiLinkRequest req) async {
-    if (settings?.verifyAiToken(req.token) == null) return AiLinkResponse.error(AiLinkCode.badToken);
+    if (settings?.verifyAiToken(req.token) == null) return AiLinkResponse.error(_tokenRefusal);
     try {
       await _loaded.future.timeout(aiLinkReadTimeout);
     } on TimeoutException {
-      return AiLinkResponse.error(AiLinkCode.saveFailed, 'Noted is still starting. Try again in a moment.');
+      return AiLinkResponse.error(AiLinkCode.busy);
     }
     // The token is checked again by every apply step, just before it writes.
     final conn = settings?.verifyAiToken(req.token);
-    if (conn == null) return AiLinkResponse.error(AiLinkCode.badToken);
+    if (conn == null) return AiLinkResponse.error(_tokenRefusal);
     final pageId = await _pageOfBox(req.box);
     if (pageId == null) return AiLinkResponse.error(AiLinkCode.noBox);
     for (var attempt = 0; attempt < 2; attempt++) {
@@ -2156,7 +2161,7 @@ class Notebook extends ChangeNotifier {
         (error: AiLinkResponse.error(code), codec: null, data: null);
     // Revoked while this waited: refuse. Nothing awaits between here and the
     // change itself.
-    if (settings?.verifyAiToken(req.token)?.id != conn.id) return no(AiLinkCode.badToken);
+    if (settings?.verifyAiToken(req.token)?.id != conn.id) return no(_tokenRefusal);
     final box = page.node(req.box);
     if (box is! BoxRecord || _aiSettingOf(page) == AiSetting.off) return no(AiLinkCode.noBox);
     final r = modules.codecs.resolve(box);

@@ -58,6 +58,21 @@ void main() {
       expect(again.aiConnections.value.map((c) => c.name), ['A', 'B']);
     });
 
+    test('a missing or damaged settings file accepts no token', () async {
+      final s = AppSettings(file);
+      final token = await s.addAiConnection('A');
+      expect(s.verifyAiToken(token), isNotNull);
+
+      final good = file.readAsStringSync();
+      file.writeAsStringSync('{ not json');
+      expect(s.verifyAiToken(token), isNull);
+      file.deleteSync();
+      expect(s.verifyAiToken(token), isNull);
+
+      file.writeAsStringSync(good);
+      expect(s.verifyAiToken(token)!.name, 'A');
+    });
+
     test('rename and revoke; revoking takes effect on the next check', () async {
       final s = AppSettings(file);
       final token = await s.addAiConnection('A');

@@ -152,6 +152,28 @@ void main() {
     return (nb: nb, a: a);
   }
 
+  group('busy', () {
+    test('a notebook that is still loading answers busy and changes nothing', () async {
+      final nb = make();
+      // load() is never called.
+      final r = await nb.aiWrite(req('ba'));
+      expect(r.code, AiLinkCode.busy);
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('unreadable settings answer busy, not bad_token, until they can be read', () async {
+      final t = await withBox();
+      final file = File('${root.path}/settings.json');
+      final good = file.readAsStringSync();
+      file.writeAsStringSync('{ damaged');
+      expect(await codeOf(t.nb, req('ba')), AiLinkCode.busy);
+      expect(dataOf(t.nb, 'ba')['text'], 'old');
+      expect(await codeOf(t.nb, req('ba', tok: 'nonsense')), AiLinkCode.badToken, reason: 'no stale flag');
+      file.writeAsStringSync(good);
+      expect(await codeOf(t.nb, req('ba', tok: 'noted_${connId}_${'A' * 43}')), AiLinkCode.badToken);
+      expect((await t.nb.aiWrite(req('ba'))).ok, isTrue);
+    });
+  });
+
   test('AiLinkMode and AiWriteMode have the same names', () {
     expect(AiLinkMode.values.map((m) => m.name), AiWriteMode.values.map((m) => m.name));
   });

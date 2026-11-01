@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /// The local link between the MCP server and the running Noted app (run
-/// 2026-10-31-02).
+/// 2026-11-01-01).
 ///
 /// The server never writes a file. To change a box it asks the app, which
 /// decides (invariant 4).
@@ -166,6 +166,10 @@ enum AiLinkCode {
   notWritable('not_writable', 'This box does not take writes from an AI.'),
   saveFailed('save_failed', 'The app could not save the change.'),
 
+  /// The app can't take a write yet (it is still opening the notebook, or
+  /// can't read its settings for a moment): nothing was changed.
+  busy('busy', 'Noted is busy (it may still be starting), so nothing was changed. Try again in a moment.'),
+
   /// Used by the client only, when the app can't be reached.
   notRunning(
     'not_running',
@@ -225,9 +229,13 @@ final class AiLinkResponse {
       return AiLinkResponse.ok(page: page, box: box);
     }
     if (json['ok'] != false) return null;
+    // A code from a newer app is a failure this build doesn't know: keep the
+    // app's message, which still says what happened.
     final code = AiLinkCode.fromWire(json['code']);
-    if (code == null) return null;
     final message = json['message'];
+    if (code == null) {
+      return json['code'] is String && message is String ? AiLinkResponse.error(AiLinkCode.saveFailed, message) : null;
+    }
     return AiLinkResponse.error(code, message is String ? message : null);
   }
 }

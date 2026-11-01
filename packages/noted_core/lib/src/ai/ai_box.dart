@@ -4,7 +4,7 @@
 
 import 'dart:convert';
 
-/// The type id of the AI box module (run 2026-10-31-02).
+/// The type id of the AI box module (run 2026-11-01-01).
 const String aiBoxTypeId = 'noted.ai';
 
 /// The key in a block's `data` that marks it as written by an AI. Its value
@@ -69,9 +69,37 @@ String aiTextFingerprint(String text) {
 /// The mark for [node]: the [aiTextFingerprint] of its type, a newline and its
 /// [aiBlockText]. Covering the type means turning an AI paragraph into a
 /// heading or a list ends the mark. Styles, a to-do tick and other `data`
-/// are deliberately not covered: bolding text or ticking a box keeps it.
-String aiBlockFingerprint(Map<Object?, Object?> node) =>
-    aiTextFingerprint('${node['type']}\n${aiBlockText(node)}');
+/// are deliberately not covered: bolding text or ticking a box keeps it. The
+/// formula of an inline equation and the target of a link are content, so
+/// changing either ends the mark too.
+String aiBlockFingerprint(Map<Object?, Object?> node) {
+  final inline = <String>[];
+  _inlineContent(node, inline);
+  final extra = inline.isEmpty ? '' : '\n\u0000${inline.join('\u0000')}';
+  return aiTextFingerprint('${node['type']}\n${aiBlockText(node)}$extra');
+}
+
+// The inline formulas and link targets in [node] and its children, in order.
+void _inlineContent(Map<Object?, Object?> node, List<String> out) {
+  final data = node['data'];
+  final delta = data is Map ? data['delta'] : null;
+  if (delta is List) {
+    for (final op in delta) {
+      final attrs = op is Map ? op['attributes'] : null;
+      if (attrs is! Map) continue;
+      for (final key in const ['formula', 'href']) {
+        final v = attrs[key];
+        if (v is String) out.add('$key:$v');
+      }
+    }
+  }
+  final children = node['children'];
+  if (children is List) {
+    for (final c in children) {
+      if (c is Map) _inlineContent(c, out);
+    }
+  }
+}
 
 /// Whether [node] (a block) is AI-written: it has the mark, its text isn't
 /// empty, and the mark equals its current [aiBlockFingerprint].

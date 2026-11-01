@@ -119,6 +119,43 @@ void main() {
     };
     expect(isAiWritten(edited), isFalse);
 
+    // An inline formula or a link target is content too.
+    Map<String, Object?> withAttrs(Map<String, Object?> attrs) => para('x', data: {
+          'delta': [
+            {'insert': 'x', 'attributes': attrs},
+          ],
+        });
+    final formula = markAiWritten(withAttrs({'formula': 'a+b'}));
+    expect(isAiWritten(formula), isTrue);
+    final formulaEdited = {
+      ...formula,
+      'data': {
+        ...(formula['data']! as Map),
+        'delta': [
+          {
+            'insert': 'x',
+            'attributes': {'formula': 'a-b'},
+          },
+        ],
+      },
+    };
+    expect(isAiWritten(formulaEdited), isFalse);
+    final link = markAiWritten(withAttrs({'href': 'https://a.example'}));
+    expect(isAiWritten(link), isTrue);
+    final relinked = {
+      ...link,
+      'data': {
+        ...(link['data']! as Map),
+        'delta': [
+          {
+            'insert': 'x',
+            'attributes': {'href': 'https://b.example'},
+          },
+        ],
+      },
+    };
+    expect(isAiWritten(relinked), isFalse);
+
     // An empty block is never AI-written, even with a matching mark.
     expect(isAiWritten(markAiWritten(para(''))), isFalse);
     expect(isAiWritten(para('x', data: {'noted_ai': 7})), isFalse);

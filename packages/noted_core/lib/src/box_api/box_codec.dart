@@ -93,7 +93,7 @@ final class AiHidden extends AiExposure {
 enum AiWriteMode { replace, append }
 
 /// A write an AI asks for, passed to [BoxCodec.aiWrite] after the host has
-/// checked ownership and the page's AI setting (run 2026-10-31-02).
+/// checked ownership and the page's AI setting (run 2026-11-01-01).
 final class AiWrite {
   const AiWrite({
     required this.connectionId,

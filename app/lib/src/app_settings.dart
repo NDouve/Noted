@@ -91,15 +91,16 @@ class AppSettings extends ChangeNotifier {
 
   // Another Noted on this computer may have changed the connections in the
   // file: take them from there, so this one neither brings back a revoked
-  // token nor drops a new connection when it writes. Keeps what is in memory
-  // if the file is missing or can't be read.
-  void _refreshConnections() {
+  // token nor drops a new connection when it writes. A missing file has no
+  // connections. Keeps what is in memory if the file can't be read, and then
+  // returns false, so a token check fails safe instead of trusting a list
+  // that may be stale.
+  bool _refreshConnections() {
     final f = file;
-    if (f == null) return;
+    if (f == null) return true;
     try {
-      if (!f.existsSync()) return;
-      final json = jsonDecode(f.readAsStringSync());
-      if (json is! Map) return;
+      final json = f.existsSync() ? jsonDecode(f.readAsStringSync()) : const <String, Object?>{};
+      if (json is! Map) return false;
       final disk = json[aiConnectionsSettingKey];
       _raw = {..._raw};
       if (disk == null) {
@@ -109,14 +110,18 @@ class AppSettings extends ChangeNotifier {
       }
       final next = readAiConnections(_raw);
       if (!listEquals(next, _aiConnections.value)) _aiConnections.value = next;
+      return true;
     } on Object {
       // Keep what we have.
+      return false;
     }
   }
 
   /// Reads the connections from the settings file again, in case another
   /// Noted changed them (the dialog does this when it opens).
-  void refreshAiConnections() => _refreshConnections();
+  void refreshAiConnections() {
+    _refreshConnections();
+  }
 
   // Applies [list] as the connections, or throws and leaves everything as it
   // was if the file can't be written.
@@ -171,12 +176,22 @@ class AppSettings extends ChangeNotifier {
     if (next.length != list.length) _setConnections(next);
   }
 
+  bool _settingsUnreadable = false;
+
+  /// Whether the last [verifyAiToken] refused because the settings file
+  /// couldn't be read, rather than because the token was bad.
+  bool get aiSettingsUnreadable => _settingsUnreadable;
+
   /// The connection [token] belongs to, or null if it is malformed, unknown
-  /// or revoked. Looks at the current settings every time.
+  /// or revoked. Looks at the current settings every time, and accepts
+  /// nothing while the settings file can't be read (and a missing file has
+  /// no connections).
   AiConnectionInfo? verifyAiToken(String token) {
+    _settingsUnreadable = false;
     final parsed = parseAiToken(token);
     if (parsed == null || !isAiConnectionId(parsed.id)) return null;
-    _refreshConnections();
+    _settingsUnreadable = !_refreshConnections();
+    if (_settingsUnreadable) return null;
     for (final e in _storedConnections()) {
       if (e['id'] != parsed.id) continue;
       final hash = e['hash'];

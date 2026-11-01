@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-/// What the app and the MCP server both know of an AI connection (run 2026-10-31-02): its
+/// What the app and the MCP server both know of an AI connection (run 2026-11-01-01): its
 /// id and name. The secret half of its token is never stored; only a hash of
 /// it is, in settings.json (see `ai_token.dart`).
 final class AiConnectionInfo {

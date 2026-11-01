@@ -122,24 +122,16 @@ void main() {
       'Link': RegExp(r'(?<![A-Za-z0-9_])Link\s*\('),
       'Process': RegExp(r'\bProcess\.(run|start|runSync)\b'),
     };
-    // Known: noted_core's binder.dart holds BinderStore, which writes
-    // binder.noted. It is in the import graph but the server never uses it
-    // (checked below). Move it out of the read-only part of the core, then
-    // delete this exception.
-    const knownCoreWriter = 'package:noted_core/src/binder/binder.dart';
     final sources = notedSources();
     final bad = [
       for (final e in sources.entries)
-        if (e.key != knownCoreWriter)
-          for (final w in writes.entries)
-            if (w.value.hasMatch(e.value)) '${e.key}: ${w.key}',
+        for (final w in writes.entries)
+          if (w.value.hasMatch(e.value)) '${e.key}: ${w.key}',
     ];
     expect(bad, isEmpty);
-    final users = [
-      for (final e in sources.entries)
-        if (e.key != knownCoreWriter && e.value.contains('BinderStore')) e.key,
-    ];
-    expect(users, isEmpty, reason: 'nothing the server runs may use BinderStore');
+    // The binder file writer lives in the full core only.
+    expect(sources.keys, isNot(contains('package:noted_core/src/binder/binder_store.dart')));
+    expect(sources.keys, contains('package:noted_core/src/binder/binder.dart'));
   });
 
   test('only the link client touches a socket, HTTP or WebSocket API', () {

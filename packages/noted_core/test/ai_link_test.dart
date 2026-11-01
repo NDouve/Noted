@@ -93,6 +93,7 @@ void main() {
       'locked',
       'not_writable',
       'save_failed',
+      'busy',
       'not_running',
     ]);
     for (final code in AiLinkCode.values) {
@@ -117,10 +118,17 @@ void main() {
       '{"ok":true}',
       '{"ok":true,"page":"p"}',
       '{"ok":false}',
-      '{"ok":false,"code":"mystery","message":"m"}',
+      '{"ok":false,"code":"mystery"}',
       '{"ok":"yes"}',
     ]) {
       expect(AiLinkResponse.decode(bad), isNull, reason: bad);
     }
+  });
+
+  test('a code from a newer app keeps its message', () {
+    final r = AiLinkResponse.decode('{"ok":false,"code":"mystery","message":"Try later."}')!;
+    expect(r.ok, isFalse);
+    expect(r.code, AiLinkCode.saveFailed);
+    expect(r.message, 'Try later.');
   });
 }
