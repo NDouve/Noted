@@ -23,10 +23,16 @@ env:
 
 jobs:
   checks:
-    name: Analyze and test
-    # Windows, the only platform the tests have been run on. Switch to
-    # ubuntu-latest if they prove platform independent (it is cheaper).
-    runs-on: windows-latest
+    name: Analyze and test (${{ matrix.os }})
+    # Windows blocks a push. Linux runs too but doesn't block yet
+    # (continue-on-error), so Linux-only failures, such as per-process file
+    # locks, show up without stopping anyone.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -73,7 +79,7 @@ jobs:
               if [ "$code" -ne 0 ]; then
                 failed="$failed $dir"
                 if [ "$code" -eq 124 ]; then
-                  taskkill //F //IM flutter_tester.exe > /dev/null 2>&1 || true
+                  taskkill //F //IM flutter_tester.exe > /dev/null 2>&1 || pkill -f flutter_tester > /dev/null 2>&1 || true
                   last=$(grep -E '^[0-9]+:[0-9]+ \+' "$log" | tail -n 3 | tr '\n' ' ' || true)
                   echo "::error title=Timed out in $dir::Still running after 15 minutes. Last tests: $last"
                 fi
