@@ -180,7 +180,7 @@ void main() {
         // The issue chip is red (error); the frame uses the conflict color.
         final badge = t.widget<DecoratedBox>(find.byKey(const ValueKey('issue-chip')));
         expect((badge.decoration as BoxDecoration).color, scheme.error);
-        final badgeText = t.widget<Text>(find.text('Conflict'));
+        final badgeText = t.widget<Text>(find.text('! Conflict'));
         expect(badgeText.style?.color, scheme.onError);
         final frame = t.widget<DecoratedBox>(
           find.byKey(const ValueKey('conflict-frame')),

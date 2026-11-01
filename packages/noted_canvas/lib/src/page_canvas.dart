@@ -1121,8 +1121,21 @@ class _IssuesIcon extends StatelessWidget {
               children: [
                 DecoratedBox(
                   decoration: BoxDecoration(color: scheme.error, shape: BoxShape.circle),
+                  // A bold "!" in the app's own font: it can't go missing the
+                  // way an icon-font glyph did in a release build.
                   child: SizedBox.expand(
-                    child: Icon(Icons.warning_amber_rounded, color: scheme.onError, size: 20),
+                    child: Center(
+                      child: Text(
+                        '!',
+                        key: const ValueKey('issues-icon-glyph'),
+                        style: type.body.copyWith(
+                          fontSize: 20,
+                          height: 1,
+                          fontWeight: FontWeight.w800,
+                          color: scheme.onError,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
                 if (count > 1)
@@ -1137,13 +1150,13 @@ class _IssuesIcon extends StatelessWidget {
                         border: Border.all(color: scheme.error),
                       ),
                       child: SizedBox(
-                        width: 16,
-                        height: 16,
+                        width: 20,
+                        height: 20,
                         child: Center(
                           child: Text(
                             '$count',
                             style: type.small.copyWith(
-                              fontSize: 10,
+                              fontSize: 12,
                               height: 1,
                               fontWeight: FontWeight.w700,
                               color: scheme.error,

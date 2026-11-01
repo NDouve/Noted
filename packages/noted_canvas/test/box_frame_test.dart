@@ -247,7 +247,7 @@ void main() {
         final badge = decorationOf(t, 'issue-chip');
         expect(badge.color, scheme.error);
         expect(badge.borderRadius, metrics.borderFull);
-        final text = t.widget<Text>(find.text('Conflict'));
+        final text = t.widget<Text>(find.text('! Conflict'));
         expect(text.style!.color, scheme.onError);
         expect(text.style!.fontSize, type.small.fontSize);
         expect(text.style!.fontWeight, FontWeight.w600);

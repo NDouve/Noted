@@ -423,10 +423,10 @@ class _BoxHostState extends State<BoxHost> {
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.warning_amber_rounded, size: 14, color: scheme.onError),
-                              SizedBox(width: metrics.space1),
+                              // Text, not an icon-font glyph (which went
+                              // missing in a release build).
                               Text(
-                                conflicted ? 'Conflict' : 'Landed',
+                                conflicted ? '! Conflict' : '! Landed',
                                 style: type.small.copyWith(
                                   height: 1,
                                   fontWeight: FontWeight.w600,
