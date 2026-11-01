@@ -2282,30 +2282,37 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   @override
-  Future<String?> aiPageOfBox(String boxId, {String? hint}) async {
+  Future<String?> aiPageOfBox(String boxId, {String? hint}) async => (await _findBox(boxId, hint))?.pageId;
+
+  // The page that holds box [boxId] and the box as that one read saw it (the
+  // open page's, or the page loaded once from its store).
+  Future<({String pageId, BoxRecord box})?> _findBox(String boxId, String? hint) async {
     final c = _current;
+    final open = c?.page.node(boxId);
     if (hint != null && _loc.containsKey(hint)) {
       if (c != null && c.page.id == hint) {
-        if (c.page.node(boxId) is BoxRecord) return hint;
-      } else if (await _pageHasBox(hint, boxId)) {
-        return hint;
+        if (open is BoxRecord) return (pageId: hint, box: open);
+      } else if (await _pageBox(hint, boxId) case final b?) {
+        return (pageId: hint, box: b);
       }
     }
-    if (c != null && c.page.node(boxId) is BoxRecord) return c.page.id;
+    final now = c?.page.node(boxId);
+    if (c != null && now is BoxRecord) return (pageId: c.page.id, box: now);
     for (final e in _loc.entries.toList()) {
       if (e.key == currentId || e.key == hint) continue;
-      if (await _pageHasBox(e.key, boxId)) return e.key;
+      if (await _pageBox(e.key, boxId) case final b?) return (pageId: e.key, box: b);
     }
     return null;
   }
 
-  Future<bool> _pageHasBox(String pageId, String boxId) async {
+  Future<BoxRecord?> _pageBox(String pageId, String boxId) async {
     final loc = _loc[pageId];
-    if (loc == null) return false;
+    if (loc == null) return null;
     try {
-      return (await _storeOf(loc).load(pageId)).node(boxId) is BoxRecord;
+      final n = (await _storeOf(loc).load(pageId)).node(boxId);
+      return n is BoxRecord ? n : null;
     } on Object {
-      return false; // not readable: not found
+      return null; // not readable: not found
     }
   }
 
@@ -2317,23 +2324,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       case AiCodeTargetKind.binder:
         return _binders.values.where((b) => b.binder?.id == target.id).firstOrNull?.title;
       case AiCodeTargetKind.box:
-        final pageId = await aiPageOfBox(target.id, hint: target.page);
-        if (pageId == null) return null;
-        final Object? node;
-        final c = _current;
-        if (c != null && c.page.id == pageId) {
-          node = c.page.node(target.id);
-        } else {
-          final loc = _loc[pageId];
-          if (loc == null) return null;
-          try {
-            node = (await _storeOf(loc).load(pageId)).node(target.id);
-          } on Object {
-            return null;
-          }
-        }
+        // One read: the lookup hands back the box it found.
+        final found = await _findBox(target.id, target.page);
+        if (found == null) return null;
         // The box's saved plain-text snapshot: what a reader of the page sees.
-        for (final line in node is BoxRecord ? node.snapshotText.split(RegExp(r'\r?\n')) : const <String>[]) {
+        for (final line in found.box.snapshotText.split(RegExp(r'\r?\n'))) {
           if (line.trim().isNotEmpty) return line;
         }
         return '';

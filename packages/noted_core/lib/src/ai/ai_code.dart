@@ -243,7 +243,9 @@ final class AiCode {
     target: target,
     roleName: roleName,
     label: label ?? this.label,
-    hash: hash,
+    // Revoking also blanks the hash, so a build that doesn't know `revoked`
+    // (an older noted_mcp, a downgraded app) can't match the key either.
+    hash: revoked != null ? '' : hash,
     created: created,
     lastUsed: lastUsed ?? this.lastUsed,
     expires: expires,

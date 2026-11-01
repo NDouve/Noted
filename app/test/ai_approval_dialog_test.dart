@@ -86,15 +86,22 @@ void main() {
         write: false,
         label: 'Research reader',
         perWrite: false,
-        reach: 'the AI box "Research notes"',
+        reach: 'the AI box',
+        reachName: 'Research notes',
         expired: expired.future,
       ),
     );
     await t.pump(const Duration(milliseconds: 400));
     expect(
       t.widget<Text>(find.byKey(const ValueKey('ai-approval-message'))).data,
-      'Claude Code wants to read the AI box "Research notes" (code "Research reader"). Allow?',
+      'Claude Code wants to read the AI box (code "Research reader"). Allow?',
     );
+    // The name is apart from the sentence: muted, one line, cut with an ellipsis.
+    final name = t.widget<Text>(find.byKey(const ValueKey('ai-approval-reach')));
+    expect(name.data, 'Research notes');
+    expect(name.maxLines, 1);
+    expect(name.overflow, TextOverflow.ellipsis);
+    expect(name.style?.color, Theme.of(t.element(find.byType(AiApprovalDialog))).colorScheme.onSurfaceVariant);
     await t.tap(find.byKey(const ValueKey('ai-approval-deny')));
     await t.pump(const Duration(milliseconds: 400));
     expect(await answer, isFalse);

@@ -59,6 +59,20 @@ class _AiApprovalDialogState extends State<AiApprovalDialog> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(r.message, key: const ValueKey('ai-approval-message')),
+          if (r.reachName != null && r.reachName!.isNotEmpty) ...[
+            SizedBox(height: space / 2),
+            // The name on its own line, apart from the sentence, so a long or
+            // odd one can't read as part of it.
+            Text(
+              r.reachName!,
+              key: const ValueKey('ai-approval-reach'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
           if (r.preview != null) ...[
             SizedBox(height: space),
             Text(

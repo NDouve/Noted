@@ -348,7 +348,7 @@ void main() {
       expect(stored(t.code).approved, isNull);
       expect((await t.nb.handleAiLink(req('ba', t.code, content: 'one'))).ok, isTrue);
       expect(asked, hasLength(1));
-      expect(asked.single.message, 'Claude Code wants to read and write the AI box "old" (code "Work chat"). Allow?');
+      expect(asked.single.message, 'Claude Code wants to read and write the AI box (code "Work chat"). Allow?');
       expect(asked.single.perWrite, isFalse);
       expect(asked.single.closedApp, isFalse);
       expect((await t.nb.handleAiLink(req('ba', t.code, content: 'two'))).ok, isTrue);
@@ -400,10 +400,47 @@ void main() {
       await nb.flush();
       final code = await issue('bl', label: 'Chat');
       await nb.handleAiLink(req('bl', code));
-      final message = asked.single.message;
-      expect(message, startsWith('Claude Code wants to read and write the AI box "\'Quoted\' title xxx'));
-      expect(message, contains('…" (code "Chat"). Allow?'));
-      expect(message, isNot(contains('second')));
+      expect(asked.single.message, 'Claude Code wants to read and write the AI box (code "Chat"). Allow?');
+      final name = asked.single.reachName!;
+      expect(name, startsWith('"Quoted" title xxx'));
+      expect(name, endsWith('…'));
+      expect(name.characters.length, 61, reason: '60 characters and the ellipsis');
+      expect(name, isNot(contains('second')));
+    });
+
+    test('combining-mark runs are dropped and the cut is by grapheme, not by code unit', () async {
+      final nb = make();
+      await nb.load();
+      const flag = '\u{1F1EB}\u{1F1F7}'; // one grapheme of two code points
+      final zalgo = 'Z${'́' * 40}ok ${flag * 70}';
+      nb.current!.insertBox(box('bz', text: zalgo));
+      await nb.flush();
+      final code = await issue('bz', label: 'Chat');
+      await nb.handleAiLink(req('bz', code));
+      final name = asked.single.reachName!;
+      expect(name, startsWith('Zok '));
+      expect(name.characters.length, 61);
+      expect(name, endsWith('…'));
+      expect(name.characters.skip(4).take(60).every((c) => c == flag || c == '…'), isTrue, reason: 'no flag cut in half');
+    });
+
+    test('a slow lookup of what the code reaches does not hold the question: the old wording is used', () async {
+      final code = await issue('ba');
+      final authority = AiLinkAuthority(
+        service: service,
+        host: _NeverNamesHost(),
+        approver: (r) async {
+          asked.add(r);
+          return true;
+        },
+        timings: const AiLinkTimings(reachLookup: Duration(milliseconds: 50)),
+      );
+      final sw = Stopwatch()..start();
+      await authority.handle(AiLinkDescribeCode(code: code, session: 's', app: 'Claude Code'));
+      expect(sw.elapsed, lessThan(const Duration(seconds: 5)));
+      expect(asked.single.reach, isNull);
+      expect(asked.single.reachName, isNull);
+      expect(asked.single.message, 'Claude Code wants to read and write Work chat. Allow?');
     });
 
     test('old sessions in the file are ignored: an unapproved code with a session still asks', () async {
@@ -420,19 +457,19 @@ void main() {
       final t = await withBox();
       final reader = await issue('ba', role: AiCodeRole.reader, label: 'Review chat');
       await t.nb.handleAiLink(AiLinkAccess(code: reader, session: 's9', app: 'Cursor', action: AiLinkAction.readBox, target: 'ba'));
-      expect(asked.single.message, 'Cursor wants to read the AI box "old" (code "Review chat"). Allow?');
+      expect(asked.single.message, 'Cursor wants to read the AI box (code "Review chat"). Allow?');
     });
 
     test('a request without an app name still reads well', () async {
       final t = await withBox();
       await t.nb.handleAiLink(req('ba', t.code, app: null));
-      expect(asked.single.message, 'An AI app wants to read and write the AI box "old" (code "Work chat"). Allow?');
+      expect(asked.single.message, 'An AI app wants to read and write the AI box (code "Work chat"). Allow?');
     });
 
     test('control characters in the app name become spaces', () async {
       final t = await withBox();
       await t.nb.handleAiLink(req('ba', t.code, app: 'Evil\n\u0007App x'));
-      expect(asked.single.message, 'Evil  App x wants to read and write the AI box "old" (code "Work chat"). Allow?');
+      expect(asked.single.message, 'Evil  App x wants to read and write the AI box (code "Work chat"). Allow?');
     });
 
     test('deny: not_approved, nothing written, nothing remembered', () async {
@@ -609,7 +646,7 @@ void main() {
     test('format characters in an app name are dropped', () async {
       final t = await withBox();
       await t.nb.handleAiLink(req('ba', t.code, app: 'Cla\u202Eude​ \u2066Code\u2069'));
-      expect(asked.single.message, 'Claude Code wants to read and write the AI box "old" (code "Work chat"). Allow?');
+      expect(asked.single.message, 'Claude Code wants to read and write the AI box (code "Work chat"). Allow?');
     });
 
     test('no answer in time: not_approved, and the question is told to close', () async {
@@ -674,7 +711,7 @@ void main() {
       expect(asked, hasLength(2), reason: 'the session, then the write');
       final write = asked.last;
       expect(write.perWrite, isTrue);
-      expect(write.message, 'Claude Code wants to write to the AI box "old" (code "Work chat"). Allow?');
+      expect(write.message, 'Claude Code wants to write to the AI box (code "Work chat"). Allow?');
       expect(write.preview, 'Replace with: first');
 
       answer = (r) async => !r.perWrite;
@@ -872,8 +909,8 @@ void main() {
       await nb.createPage();
       // The folder disappears after the write has read the page (the lookup
       // loads it once, the write once; naming the box for the approval question
-      // takes two more).
-      store.vanishOnLoad = store.loads + 4;
+      // takes one more).
+      store.vanishOnLoad = store.loads + 3;
 
       final r = await nb.handleAiLink(req('ba', code, content: 'new'));
       expect((r as AiLinkError).code, AiLinkCode.saveFailed);
@@ -1207,7 +1244,7 @@ void main() {
       final code = await service.issue(AiCodeTarget.page(t.a), role: AiCodeRole.reader, label: 'Pages');
       await access(t.nb, code, AiLinkAction.listPages);
       await access(t.nb, code, AiLinkAction.search, target: 'budget');
-      expect(asked.single.message, 'A wants to read the page "Untitled page" and its subpages (code "Pages"). Allow?');
+      expect(asked.single.message, 'A wants to read the page and its subpages (code "Pages"). Allow?');
       final entries = service.activityFor(AiCodeTargetKind.page, t.a);
       expect(entries.map((e) => (e.op, e.result)), [('list_pages', 'ok'), ('search', 'ok')]);
     });
@@ -1414,7 +1451,7 @@ void main() {
       expect(asked.single.closedApp, isTrue);
       expect(
         asked.single.message,
-        'Claude Code wants to read and write the AI box "old" (code "Work chat"). It asked while Noted was closed. Allow?',
+        'Claude Code wants to read and write the AI box (code "Work chat"). It asked while Noted was closed. Allow?',
       );
       expect(stored(t.code).approved, isNotNull);
       // Approved: a request needs no further question.
@@ -1576,6 +1613,15 @@ void main() {
       expect(stored(t.code).approved, isNotNull);
     });
   });
+}
+
+/// A host whose naming lookup never finishes (an offline or slow page load).
+class _NeverNamesHost implements AiLinkHost {
+  @override
+  Future<String?> aiTargetName(AiCodeTarget target) => Completer<String?>().future;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError('${invocation.memberName}');
 }
 
 ModuleRegistry _modules() => buildModules()

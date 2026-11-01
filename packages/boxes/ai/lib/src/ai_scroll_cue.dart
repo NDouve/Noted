@@ -19,7 +19,9 @@ class AiScrollCue extends StatefulWidget {
 class _AiScrollCueState extends State<AiScrollCue> {
   bool _more = false;
 
-  bool _update(ScrollMetrics metrics) {
+  bool _update(ScrollMetrics metrics, int depth) {
+    // Only this panel's own scroll view, not a nested scrollable's.
+    if (depth != 0) return false;
     final more = metrics.extentAfter > 0.5;
     if (more != _more) {
       // Notifications can arrive during layout.
@@ -34,9 +36,9 @@ class _AiScrollCueState extends State<AiScrollCue> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return NotificationListener<ScrollMetricsNotification>(
-      onNotification: (n) => _update(n.metrics),
+      onNotification: (n) => _update(n.metrics, n.depth),
       child: NotificationListener<ScrollNotification>(
-        onNotification: (n) => _update(n.metrics),
+        onNotification: (n) => _update(n.metrics, n.depth),
         child: Stack(
           children: [
             SingleChildScrollView(child: widget.child),

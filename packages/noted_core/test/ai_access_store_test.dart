@@ -64,6 +64,7 @@ void main() {
     expect(store.revoke('0000000000000000'), isFalse);
     expect(store.verify(issued.code).failure, AiCodeFailure.badCode);
     expect((onDisk()['codes'] as List).single['revoked'], isA<String>());
+    expect((onDisk()['codes'] as List).single['hash'], '', reason: 'older builds cannot match the key');
   });
 
   test('a new Writer retires the old one in the file', () {

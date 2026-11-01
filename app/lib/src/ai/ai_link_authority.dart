@@ -4,6 +4,7 @@
 
 import 'dart:async';
 
+import 'package:flutter/widgets.dart' show StringCharacters;
 import 'package:noted_core/noted_core.dart';
 
 import 'ai_access_service.dart';
@@ -20,12 +21,17 @@ class AiApprovalRequest {
     this.preview,
     this.closedApp = false,
     this.reach,
+    this.reachName,
   });
 
-  /// What the code reaches, as a phrase (`the AI box "Research"`, `the page
-  /// "Plans" and its subpages`, `the binder "Work"`); null when it can't be
-  /// named, and the question then names only the code's label.
+  /// What kind of thing the code reaches, as a phrase (`the AI box`, `the page
+  /// and its subpages`, `the binder`); null when it can't be named, and the
+  /// question then names only the code's label.
   final String? reach;
+
+  /// The box's first line or the page's or binder's title, cleaned and cut
+  /// short. Shown apart from the sentence, on its own line; null or empty: none.
+  final String? reachName;
 
   /// The MCP client's name.
   final String app;
@@ -54,7 +60,8 @@ class AiApprovalRequest {
   /// The question: "APP wants to read|read and write LABEL. Allow?" (the verb
   /// follows the code's role), or for a single write "APP wants to write to
   /// LABEL. Allow?". With a [reach] it names what is reached and the code:
-  /// `APP wants to read the AI box "Research" (code "Research reader"). Allow?`.
+  /// `APP wants to read the AI box (code "Research reader"). Allow?`; the name
+  /// ([reachName]) is shown beneath.
   /// A question about a request made while Noted was closed says so.
   String get message {
     final r = reach;
@@ -76,7 +83,12 @@ class AiLinkTimings {
     this.approval = aiLinkApprovalTimeout,
     this.deadline = const Duration(seconds: 50),
     this.denyCooldown = const Duration(seconds: 30),
+    this.reachLookup = const Duration(seconds: 2),
   });
+
+  /// The most time naming what a code reaches may take before a question is
+  /// asked; past it the question names only the code.
+  final Duration reachLookup;
 
   /// How long one question may stay open.
   final Duration approval;
@@ -459,29 +471,32 @@ class AiLinkAuthority {
 
   String _cleanName(String? name) => cleanAiAppName(name);
 
-  // What the code reaches, in words for the question: the AI box by its first
-  // line, the page or binder by its title (cut short, one line, no control
-  // characters). Null when it can't be named.
-  Future<String?> _reach(AiCodeTarget target) async {
-    final String? name;
+  // What the code reaches, for the question: the kind in words and the name
+  // apart (the AI box's first line, or the page's or binder's title: one line,
+  // no control or format characters, runs of combining marks dropped, cut to 60
+  // characters by grapheme). The lookup gets at most [limit], so a slow page
+  // load can't hold the question; after that the old wording is used.
+  Future<({String? reach, String? name})> _reach(AiCodeTarget target, Duration limit) async {
+    const none = (reach: null, name: null);
+    final kind = switch (target.kind) {
+      AiCodeTargetKind.box => 'the AI box',
+      AiCodeTargetKind.page => 'the page and its subpages',
+      AiCodeTargetKind.binder => 'the binder',
+      null => null,
+    };
+    if (kind == null) return none;
+    final String? raw;
     try {
-      name = await host.aiTargetName(target);
+      raw = await host.aiTargetName(target).timeout(limit);
     } on Object {
-      return null;
+      return none;
     }
-    if (name == null) return null;
-    var n = cleanAiAppName(name, fallback: '').replaceAll(RegExp(r'\s+'), ' ').replaceAll('"', "'");
-    if (n.length > 60) n = '${n.substring(0, 60).trimRight()}…';
-    switch (target.kind) {
-      case AiCodeTargetKind.box:
-        return n.isEmpty ? 'the AI box' : 'the AI box "$n"';
-      case AiCodeTargetKind.page:
-        return n.isEmpty ? 'the page and its subpages' : 'the page "$n" and its subpages';
-      case AiCodeTargetKind.binder:
-        return n.isEmpty ? 'the binder' : 'the binder "$n"';
-      case null:
-        return null;
-    }
+    if (raw == null) return none;
+    var n = cleanAiAppName(raw, fallback: '').replaceAll(RegExp(r'\p{Mn}{3,}', unicode: true), '');
+    n = n.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final chars = n.characters;
+    if (chars.length > 60) n = '${chars.take(60).toString().trimRight()}…';
+    return (reach: kind, name: n);
   }
 
   // Shows one question, when it is its turn and while the request has time.
@@ -507,12 +522,14 @@ class AiLinkAuthority {
       unawaited(prev.then((_) => gate.complete()));
       return _Answer.none;
     }
+    // Name what is reached first (bounded), then work out how long is left.
+    final left = _remaining(deadline);
+    final reach = await _reach(target, left < timings.reachLookup ? left : timings.reachLookup);
     final time = _remaining(deadline) < timings.approval ? _remaining(deadline) : timings.approval;
     if (time == Duration.zero) {
       gate.complete();
       return _Answer.none;
     }
-    final reach = await _reach(target);
     final expired = Completer<void>();
     final timer = Timer(time, () {
       if (!expired.isCompleted) expired.complete();
@@ -527,7 +544,8 @@ class AiLinkAuthority {
             perWrite: perWrite,
             preview: preview,
             closedApp: closedApp,
-            reach: reach,
+            reach: reach.reach,
+            reachName: reach.name,
             expired: expired.future,
           ),
         ),

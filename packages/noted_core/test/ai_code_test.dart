@@ -212,6 +212,13 @@ void main() {
     expect(c.revoked, at);
     expect(c.toJson()['revoked'], at.toIso8601String());
     expect(c.copyWith(lastUsed: now).revoked, at);
+    // Revoking blanks the hash: even a build that ignores `revoked` can't match the key.
+    final blanked = live.copyWith(revoked: at);
+    expect(blanked.hash, '');
+    expect(blanked.toJson()['hash'], '');
+    expect(aiKeyMatches(key, blanked.hash), isFalse);
+    expect(AiCode.fromJson(blanked.toJson())!.hash, '');
+    expect(verifyAiCode('noted_${id}_$key', [AiCode.fromJson({...blanked.toJson()}..remove('revoked'))!], now).ok, isFalse);
     expect(c.withExpires(null).revoked, at);
     expect(verifyAiCode('noted_${id}_$key', [c], now).failure, AiCodeFailure.badCode);
     expect(verifyAiCode('noted_${id}_$key', [live], now).ok, isTrue);
