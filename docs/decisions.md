@@ -1457,7 +1457,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0103 — Invariant 4: the MCP server writes only through the running app
 - **Date:** 2026-10-31
-- **Status:** Active (approved by the maintainer; supersedes the earlier wording of architecture invariant 4, "a separate executable with no key access and no decryption code" with reading only; amends 0101)
+- **Status:** Superseded by 0114 (the server may verify codes, keep its own log and write opted-in AI boxes while Noted is closed); was active (approved by the maintainer; supersedes the earlier wording of architecture invariant 4, "a separate executable with no key access and no decryption code" with reading only; amends 0101)
 - **Decision:** Architecture invariant 4 reads:
   - The MCP server is a separate executable with no key access and no decryption code.
   - It reads saved page files only. AI-facing output is never built from the live screen.
@@ -1471,7 +1471,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0104 — The AI box
 - **Date:** 2026-10-31
-- **Status:** Active, amended: the owner and the *Connected AI* menu are superseded by 0108 (per-box codes); markdown import amended by 0113 (code and raw HTML kept as text). Implements AI writing for 0008 and the AI-authored tag of 0028; new package under delegated authority
+- **Status:** Active, amended by 0117 (Writer permissions, `replace_ai`) and 0118 (markdown import moved to the core); earlier, amended: the owner and the *Connected AI* menu are superseded by 0108 (per-box codes); markdown import amended by 0113 (code and raw HTML kept as text). Implements AI writing for 0008 and the AI-authored tag of 0028; new package under delegated authority
 - **Decision:**
   - **Module:** `packages/boxes/ai` (`noted_box_ai`), type `noted.ai`, a box type through the Box API like any other. Insert → *AI box* (in both toolbars) adds one at the middle of the view, selected and ready to type in. It is never removed as empty. It can be inserted on a page of any AI setting, but on an Off page no AI can read or write it.
   - **Content:** a note document, stored in the note box's shape (`{"document": …}`), edited with the note box's editor. The user can type in it too.
@@ -1530,7 +1530,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0108 — Per-box AI codes and their safeguards
 - **Date:** 2026-11-01
-- **Status:** Active (approved by the maintainer; supersedes 0105 and the owner and *Connected AI* parts of 0104)
+- **Status:** Active, amended by 0115 (approval per code, not per session) and 0117 (Writer permissions, closed-app writes) (approved by the maintainer; supersedes 0105 and the owner and *Connected AI* parts of 0104)
 - **Decision:**
   - **Rules live in the AI box.** Page and binder settings never govern what happens inside an AI box. An AI box is reachable through its own codes whatever its page's AI access (0109).
   - **Connecting:** in an AI box, *Connect a chat* → *Writer* or *Reader* → a label the user types (for example "Feedback – work chat") and an optional expiry (none, 1, 7 or 30 days). Noted shows the code once, titled "Code for <label>", with *Copy*; the dialog can't be dismissed by accident while the code shows, nor while it is being issued.
@@ -1553,7 +1553,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0109 — Page and binder AI access: Open, Privileged, Guarded
 - **Date:** 2026-11-01
-- **Status:** Active (approved by the maintainer; supersedes 0100)
+- **Status:** Active, amended by 0119 (the access-loss note, the pin option) (approved by the maintainer; supersedes 0100)
 - **Decision:**
   - **Values**, from loosest to strictest:
     - **Open:** any AI using this Noted's MCP server can read the page. No code needed.
@@ -1570,7 +1570,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0110 — How code checks work: ai-link/2 and MCP server 0.3.0
 - **Date:** 2026-11-01
-- **Status:** Active (approved by the maintainer; amends 0101 and 0106; implements invariant 4 for codes)
+- **Status:** Active, amended by 0116 (closed-app reads, the running lock, the server log) and 0117 (closed-app writes) (approved by the maintainer; amends 0101 and 0106; implements invariant 4 for codes)
 - **Decision:**
   - **Open pages** are read by `noted_mcp` from saved files, as before; this works with Noted closed.
   - **Anything that needs a code** (box reads and writes, Privileged pages) goes through the running app over the link, so the app checks the code, its expiry, its role and target, and the session's approval, and logs the request. With Noted closed, code-based access fails with "This needs Noted running: codes are checked by the app. Open Noted and try again."
@@ -1596,7 +1596,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0112 — The Page and Binder settings panel
 - **Date:** 2026-11-01
-- **Status:** Active (approved by the maintainer; moves the settings of 0098 and 0109 and page backgrounds out of the right-click menus)
+- **Status:** Active, amended by 0119 (scroll cue, pin option) (approved by the maintainer; moves the settings of 0098 and 0109 and page backgrounds out of the right-click menus)
 - **Decision:**
   - A **Page settings** button beside the page title and a **Binder settings** button on the binder cover and in the sidebar binder header open one shared panel (a dialog with *Close*).
   - **Sections:**
@@ -1611,7 +1611,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0113 — Follow-ups to run 2026-11-01-01
 - **Date:** 2026-11-01
-- **Status:** Active (approved by the maintainer; amends 0097 and 0104)
+- **Status:** Active, amended by 0118 (import limits) (approved by the maintainer; amends 0097 and 0104)
 - **Decision:**
   - **The link** drops anything that isn't the Noted protocol (0110).
   - **Undo in a box:** Ctrl+Z (Cmd+Z) in an open note or AI box with nothing left in the editor's own history runs the page undo; Ctrl+Y and Ctrl+Shift+Z likewise for redo. A page undo that removes the box being edited also ends its editing.
@@ -1622,13 +1622,80 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Rationale:** These close the items the maintainer approved from the last report.
 - **Alternatives considered:** sideways-scrolling toolbar groups instead of *More* (hidden commands with no cue); dropping code and HTML (the AI's text was lost); a single-instance guard per Windows session (it blocked test runs and scratch-data instances while the user's Noted was open).
 
+## 0114 — Invariant 4: code checks, an access log and closed-app writes in the MCP server
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; supersedes 0103)
+- **Decision:** Architecture invariant 4 reads:
+  - The MCP server is a separate executable with no key access and no decryption code.
+  - AI-facing output is built from saved data only, never the live screen. Encrypted content is never readable.
+  - It may verify AI codes by hash (no keys, no decryption).
+  - It writes only two things: (1) its own access log, append only; (2) an AI box's own data in a page file, and only when Noted isn't running and that box allows writes while Noted is closed, within the Writer permission the box grants. It never writes anything else.
+  - While Noted is running, every write goes to the app over the local link, and the app decides and saves through its normal path.
+- **Rationale:** With checks only in the app (0110), an AI could do nothing with Noted closed. Verifying a hash needs no key and decrypts nothing, and the two narrow writes keep the server from touching anything but its log and one opted-in box.
+- **Alternatives considered:** keeping every code check in the app (no AI access with Noted closed); letting the server write any file it reads (no boundary left); queuing closed-app writes for the app to apply later (the AI gets no answer, and the queue is another file the server writes).
+
+## 0115 — Approval per code
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; amends 0108, replacing approval per MCP session)
+- **Decision:**
+  - A code is approved the first time it is used: Noted asks "<app> wants to read and write <label>. Allow?" (*read* for a Reader). The answer is stored on the code (`"approved"` in `ai-access.json`); after that the code needs no question until it is revoked or expires. Per-session approval is gone; an old `"sessions"` value is kept in the file as written and unused.
+  - One question per code at a time, with the queue, limits, 30 s pause after a Deny and 50 s request deadline of 0108 and 0110.
+  - A code first used while Noted is closed is refused with "Approve this code in Noted first. Open Noted: it will ask you." and the server logs `pending_approval` (0116). When Noted next opens it asks about each such code ("… It asked while Noted was closed."), once per pending use: the time of the user's answer is kept with the code, so a Deny isn't asked again until the code is used again. A live request joining that question waits no longer than its own deadline.
+  - The AI box and the settings panel show "Approved <date>" or "Not approved yet" per code.
+- **Rationale:** Each `noted_mcp` process is a new session, so approval per session asked again on every restart of the AI app and made approval impossible with Noted closed. A code is the user's own grant, so approving it once is enough.
+- **Alternatives considered:** approval per session (asks at every restart; can't work with Noted closed); no approval (a leaked code would be usable at once).
+
+## 0116 — Reading while Noted is closed, and the server's access log
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; amends 0110)
+- **Decision:**
+  - **Is Noted running?** The app holds an exclusive OS lock on `noted-running.lock` in its data folder for its whole life (opened without truncating; a few quick retries at start, then every 3 s, with a banner "Noted can't tell AI tools it's running…" while it isn't held). `noted_mcp` treats Noted as running if that lock is held, or if `ai-link.json`'s port answers the nonce greeting. Only when neither holds is Noted closed. When Noted is running but its link doesn't answer, the server answers "Noted is running but didn't answer; try again." and never falls back to the closed path.
+  - **Closed-app reads:** `noted_mcp` verifies Reader and Writer codes itself against the saved `ai-access.json`: SHA-256 of the key in constant time, expiry, approval, role and target. It computes the same grants as the app (0110) from saved files: Privileged pages a page or binder code covers (one tree over all standalone folders, one per binder), minus Guarded and tightened pages and locked or unreadable binders; a box code reads that box only, with no page information. A missing store answers the "Open Noted" message; a damaged one "Noted can't read its codes. Open Noted to fix it."
+  - **The access log:** `ai-mcp-log.jsonl` beside `ai-access.json`, one JSON line per code-based read or write the server handles while Noted is closed: time, code id (never the key), target, operation, app (cleaned), label and result (`ok`, an error code or `pending_approval`). The server only appends, under a short non-blocking lock with a few retries on a lock violation; it never edits or deletes a line. Noted merges entries whose code belongs to that box, page or binder into its activity lists, marked "while Noted was closed", with the code's current label, and keeps the file to its last 1000 lines under a lock on the same file.
+  - **Code:** `src/ai/ai_access_read.dart`, `src/ai/ai_mcp_log.dart` and the hash helpers are in noted_core's read export; only `crypto`'s `sha256` is used. `noted_mcp`'s invariant test allows exactly that.
+- **Rationale:** An OS lock is released by the system when the app exits or crashes, so "closed" is decided from a positive signal and can't be produced by a busy or full link. Keeping the server's log in its own append-only file means the server never writes the app's files.
+- **Alternatives considered:** deciding "closed" from an unanswered link (an AI's parallel calls or a slow start could make the server write under a running app); the server writing the app's activity log (another file the server would rewrite).
+
+## 0117 — Writer permissions and writes while Noted is closed
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; amends 0104 and 0108; Box API 0.10 approved by the maintainer)
+- **Decision:**
+  - **Writer permission** per AI box, chosen in its connections panel: **Append only** (default), **Edit** (append, and change its own AI-written text), **Full** (also replace the whole box, and replacing with nothing empties it). Stored locally as `"writerPermission"` per box in `ai-access.json`; absent or unknown reads as Append only. The app enforces it on link writes, before any question and again just before applying; `noted_mcp` enforces it on closed-app writes. A mode it doesn't allow answers `not_permitted`.
+  - **Modes** on the wire and in `write_box`: `append`, `replace_ai`, `replace`. **Box API 0.10:** `AiWriteMode.replaceAiText` removes every block whose AI mark still matches it (0104) and puts the new blocks where the first such run was (or at the end), keeping every user-written block in place byte for byte. Because the mark survives bold, a to-do tick or a level change, Edit can replace such a block; once the user changes a block's words or type it is theirs. The panel says so.
+  - **Allow writes while Noted is closed (no approval)**, per AI box, off by default (`"closedWrites"`). Turning *Ask before each write* on turns it off, and while Ask is on it can't be turned on. When it is on and Noted isn't running (0116), `noted_mcp` writes that box's own data into the page file itself, if: the Writer code is valid, approved and unexpired for that box; the mode is within the Writer permission; the box is an AI box, not encrypted, of a type allowed on its page (0111), not in a sync conflict, and not in a locked binder. Otherwise nothing changes; with the switch off the AI is told "This box doesn't take writes while Noted is closed. Open Noted and try again, or ask the user to allow it in the box."
+  - **How it writes:** the same `applyAiWrite` the app uses, spliced into the page file so that every byte outside that box's record is kept (invariant 2); a new `rev` with the old one as `baseRev` and the computer's name and time, as `commitBox` does, so per-box conflicts (0020, 0053) still work; a temporary file with a random name in the same folder, created exclusively, then a rename. If the page changed between reading and renaming, the server re-reads, re-runs every check, and retries once, then answers `busy`. Writes in one server process are serialized; two separate server processes writing the same page at the same instant can still lose one write. Only page files directly inside a folder the server lists, and not links, can be replaced. If Noted opens meanwhile, its file watching picks the change up, and an unsaved edit to the same box becomes a per-box conflict.
+  - **The narrow writer:** one library in `noted_mcp` (`closed_writer.dart`) holds the only file-writing code: appending to the log and replacing a page file. The invariant test fails on any other file, process, isolate or socket API in the server or the core libraries it imports.
+- **Rationale:** A user who wants an AI to keep notes while Noted is closed can allow exactly that for one box, with the least power that does the job; everything else about a page stays byte-identical.
+- **Alternatives considered:** Edit allowed only on boxes with no user text (no Box API change, but an AI couldn't revise its own text once the user had typed anything); closed-app writes queued for the app (no immediate answer, and another file the server writes); writes allowed on any page box (beyond what the user opted into).
+
+## 0118 — Pure-Dart markdown import
+- **Date:** 2026-11-01
+- **Status:** Active (dependency approved by the maintainer; amends 0104 and 0113)
+- **Decision:**
+  - `markdownToNoteBlocks` lives in noted_core (`src/format/note_markdown_import.dart`), built on the Dart team's `markdown` package (BSD-3-Clause), pinned exactly to 7.3.1. The note and AI boxes and `noted_mcp` all use it, so app and server writes give the same blocks. It keeps the rules of 0104 and 0113: text blocks only, code and raw HTML as plain paragraphs, links only for `http`, `https` and `mailto` (after entity decoding), images dropped.
+  - **Bounded cost:** blocks over a length, delimiter or nesting limit, and everything after a whole-import budget of about 20,000 markup delimiters, become plain paragraphs holding their literal text; any error from the parser does the same. About 1 MiB of hostile markdown imports in well under a second, and nothing is lost, but past the budget a very large import keeps its markup as literal text.
+- **Rationale:** `noted_mcp` can't load Flutter, and appflowy_editor's decoder is Flutter-only. One importer in the core keeps the two writers identical; the limits keep a single write from freezing the app or the server.
+- **Alternatives considered:** a hand-written parser (no dependency, more code, and the app would drift from the server unless it switched too); importing on a background isolate only (still unbounded work).
+
+## 0119 — Follow-ups to run 2026-11-01-02
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; amends 0109 and 0112)
+- **Decision:**
+  - **Pages that lost AI access:** after the 0109 migration, a one-time note "Some pages are no longer open to AI" lists the pages whose own stored value is still the legacy `page` and that are now Guarded or Privileged through inheritance, each with a *Page settings* button. It is shown once (`"aiAccessNoteShown"` in `settings.json`), only when the list isn't empty, only when every binder and folder could be read, and never when `settings.json` couldn't be read (so the app never writes over it by itself).
+  - **`aiConnections`** (0105) is removed from `settings.json` on the next settings save; other unknown fields are kept.
+  - **Settings panel:** a cue at the bottom edge while content continues; *Codes* and *Activity* sub-headings lighter than section headings; the value equal to the inherited one is offered as a pin, e.g. "Privileged (keep even if the binder changes)", instead of a second identical choice.
+  - **Dialogs and toolbars:** focus outlines show only with keyboard focus; in the approval question both buttons have the same weight and *Deny* stays the default; the *More* menu opens below the bar in both layouts.
+  - **Not changed:** conflict handling for boxes a device can't run (the maintainer is still deciding); the single-instance guard on macOS and Linux (with the Apple build path).
+- **Rationale:** These close the items the maintainer approved from the last report.
+- **Alternatives considered:** migrating such pages' Open up to their binder (would widen access the user didn't set there); showing the note at every launch (noise).
+
 ---
 
 ## Open items
 - **Apple build path:** iOS/iPadOS and macOS releases have to be compiled with current Xcode on Apple-silicon-era macOS. The planned approach is cloud macOS build runners.
 - **Equation block sourcing:** resolved (0048).
 - **File format:** whether JSON Canvas extra fields are sufficient, and how faithfully appflowy_editor round-trips Markdown.
-- **MCP:** the full tool and resource list. Linking an AI to a box: resolved (0108). Letting `noted_mcp` verify codes itself, so code-based reads work with Noted closed: open.
+- **MCP:** the full tool and resource list. Linking an AI to a box: resolved (0108). Code checks and opted-in writes with Noted closed: resolved (0114–0117).
 - **Cloud conflict copies:** OneDrive copies are merged (0053); other providers name their conflict-copy files differently and are not handled yet.
 - **Per-AI overrides:** different rules for different AIs on the same page (deferred).
 - **Drawing box image snapshots:** where a drawing box's image snapshot (0035) is stored in the page format (0041).
