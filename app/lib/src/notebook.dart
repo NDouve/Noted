@@ -587,6 +587,17 @@ class Notebook extends ChangeNotifier {
   /// Reads the folders and opens the first standalone page, creating one if
   /// there is none.
   Future<void> load() async {
+    try {
+      await _load();
+    } finally {
+      if (!_loaded.isCompleted) _loaded.complete();
+    }
+  }
+
+  // Completes when the first load is over; AI writes wait for it.
+  final Completer<void> _loaded = Completer<void>();
+
+  Future<void> _load() async {
     final entries = await store.scan();
     _metas.clear();
     _loc.clear();
@@ -653,21 +664,27 @@ class Notebook extends ChangeNotifier {
     }
     await _closeCurrent();
     final st = _storeOf(_loc[id] ?? _standalone);
-    final text = await st.readText(id);
-    final page = readPage(text);
-    _known[_key(st.pathFor(id))] = text;
-    _base = page;
-    _metas[id] = page.meta;
-    _setConflict(id, hasConflicts(page));
-    _current = CanvasController(
-      page,
-      modules,
-      onChanged: _pageChanged,
-      deviceName: deviceName,
-    );
-    _attachments = _makeAttachments(id, _loc[id] ?? _standalone);
-    _syncReadOnly();
-    _rebuildTree();
+    // Read and set up inside the save queue, so a write to this page from an
+    // AI (which goes through the same queue while the page is closed) lands
+    // either before the read or, once the page is open, through its
+    // controller.
+    await _afterSaves(() async {
+      final text = await st.readText(id);
+      final page = readPage(text);
+      _known[_key(st.pathFor(id))] = text;
+      _base = page;
+      _metas[id] = page.meta;
+      _setConflict(id, hasConflicts(page));
+      _current = CanvasController(
+        page,
+        modules,
+        onChanged: _pageChanged,
+        deviceName: deviceName,
+      );
+      _attachments = _makeAttachments(id, _loc[id] ?? _standalone);
+      _syncReadOnly();
+      _rebuildTree();
+    });
   }
 
   PageAttachments _makeAttachments(String id, String loc) => PageAttachments(
@@ -2055,6 +2072,179 @@ class Notebook extends ChangeNotifier {
     await job;
   }
 
+  // AI writes (invariant 4) ----------------------------------------------------
+
+  Future<void> _aiQueue = Future.value();
+
+  // Saves that didn't land, counted for each page, so a write can tell that
+  // its own page's save failed.
+  final Map<String, int> _saveFailures = {};
+
+  void _countSaveFailure(String pageId) => _saveFailures[pageId] = (_saveFailures[pageId] ?? 0) + 1;
+
+  static const String _keptMessage = "Noted kept the change on screen but couldn't save it; don't retry an append.";
+
+  /// Applies a write an AI asked for, if every rule holds, and answers it.
+  /// Requests are handled one at a time, and only after the notebook has
+  /// loaded. The token is checked before any box is looked up, and a page
+  /// that is Off gives the same answer as a box that doesn't exist.
+  Future<AiLinkResponse> aiWrite(AiLinkRequest request) {
+    final run = _aiQueue.then((_) => _aiWrite(request));
+    _aiQueue = run.then((_) {}, onError: (_) {});
+    return run;
+  }
+
+  Future<AiLinkResponse> _aiWrite(AiLinkRequest req) async {
+    if (settings?.verifyAiToken(req.token) == null) return AiLinkResponse.error(AiLinkCode.badToken);
+    try {
+      await _loaded.future.timeout(aiLinkReadTimeout);
+    } on TimeoutException {
+      return AiLinkResponse.error(AiLinkCode.saveFailed, 'Noted is still starting. Try again in a moment.');
+    }
+    // The token is checked again by every apply step, just before it writes.
+    final conn = settings?.verifyAiToken(req.token);
+    if (conn == null) return AiLinkResponse.error(AiLinkCode.badToken);
+    final pageId = await _pageOfBox(req.box);
+    if (pageId == null) return AiLinkResponse.error(AiLinkCode.noBox);
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final c = _current;
+      if (c != null && c.page.id == pageId) return _aiWriteOpen(c, conn, req);
+      final r = await _afterSaves(() => _aiWriteClosed(pageId, conn, req));
+      if (r != null) return r;
+      // The page was opened while this waited its turn: apply it there.
+    }
+    return AiLinkResponse.error(AiLinkCode.saveFailed);
+  }
+
+  // The page that holds box [boxId] and whose AI setting isn't Off, looking
+  // at the open page first, then every page the notebook knows.
+  Future<String?> _pageOfBox(String boxId) async {
+    final c = _current;
+    if (c != null && c.page.node(boxId) is BoxRecord && aiSettingFor(c.page.id) != AiSetting.off) {
+      return c.page.id;
+    }
+    for (final e in _loc.entries.toList()) {
+      if (e.key == currentId || aiSettingFor(e.key) == AiSetting.off) continue;
+      try {
+        final page = await _storeOf(e.value).load(e.key);
+        if (page.node(boxId) is BoxRecord) return e.key;
+      } on Object {
+        continue; // not readable: not found
+      }
+    }
+    return null;
+  }
+
+  // The AI setting of [page] as it is now: its own header (for a closed page,
+  // the one just read from its file), then its parents', binder's and the
+  // default.
+  AiSetting _aiSettingOf(NotedPage page) => effectiveAiSetting(
+    [page.meta, ..._metaChain(page.id).skip(1)],
+    binder: _binders[_loc[page.id] ?? _standalone]?.binder,
+  );
+
+  // Every rule after the lookup, in order, on the box as it is now. Returns
+  // an answer to refuse with, or the codec and the data to write.
+  ({AiLinkResponse? error, BoxCodec<Object?>? codec, Object? data}) _aiPrepare(
+    NotedPage page,
+    String loc,
+    bool readOnly,
+    AiConnectionInfo conn,
+    AiLinkRequest req,
+  ) {
+    ({AiLinkResponse? error, BoxCodec<Object?>? codec, Object? data}) no(AiLinkCode code) =>
+        (error: AiLinkResponse.error(code), codec: null, data: null);
+    // Revoked while this waited: refuse. Nothing awaits between here and the
+    // change itself.
+    if (settings?.verifyAiToken(req.token)?.id != conn.id) return no(AiLinkCode.badToken);
+    final box = page.node(req.box);
+    if (box is! BoxRecord || _aiSettingOf(page) == AiSetting.off) return no(AiLinkCode.noBox);
+    final r = modules.codecs.resolve(box);
+    if (r is! LiveBox) return no(AiLinkCode.notWritable);
+    if (r.codec.aiOwner(r.data) != conn.id) return no(AiLinkCode.notOwner);
+    if (box.isConflicted) return no(AiLinkCode.conflict);
+    if (readOnly || _isLocked(loc)) return no(AiLinkCode.locked);
+    final next = r.codec.aiWrite(
+      r.data,
+      AiWrite(
+        connectionId: conn.id,
+        content: req.content,
+        mode: AiWriteMode.values.byName(req.mode.name),
+      ),
+    );
+    if (next == null) return no(AiLinkCode.notWritable);
+    return (error: null, codec: r.codec, data: next);
+  }
+
+  // The page is open: change it through its controller, as one undo step the
+  // user sees at once, and let the normal save write it.
+  Future<AiLinkResponse> _aiWriteOpen(CanvasController c, AiConnectionInfo conn, AiLinkRequest req) async {
+    final pageId = c.page.id;
+    final loc = _loc[pageId];
+    if (loc == null) return AiLinkResponse.error(AiLinkCode.noBox);
+    final p = _aiPrepare(c.page, loc, c.readOnly, conn, req);
+    if (p.error != null) return p.error!;
+    if (c.replaceBoxData({req.box: p.data}) == 0) {
+      return AiLinkResponse.error(AiLinkCode.notWritable);
+    }
+    final failures = _saveFailures[pageId] ?? 0;
+    await flush();
+    if ((_saveFailures[pageId] ?? 0) != failures) {
+      return AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage);
+    }
+    return AiLinkResponse.ok(page: pageId, box: req.box);
+  }
+
+  // The page is closed: load it, commit the box as an edit does, and save it
+  // through the page's store. Null: the page is open now.
+  Future<AiLinkResponse?> _aiWriteClosed(String pageId, AiConnectionInfo conn, AiLinkRequest req) async {
+    if (_current?.page.id == pageId) return null;
+    final loc = _loc[pageId];
+    if (loc == null) return AiLinkResponse.error(AiLinkCode.noBox);
+    final PageStore st;
+    final NotedPage page;
+    try {
+      st = _storeOf(loc);
+      page = await st.load(pageId);
+    } on Object {
+      return AiLinkResponse.error(AiLinkCode.noBox);
+    }
+    final p = _aiPrepare(page, loc, false, conn, req);
+    if (p.error != null) return p.error!;
+    final box = page.node(req.box)! as BoxRecord;
+    final next = page.replaceNode(
+      commitBox(
+        box,
+        p.codec!,
+        p.data,
+        device: deviceName,
+        at: deviceName == null ? null : DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    try {
+      await _write(loc, next);
+    } on FolderUnavailableException {
+      await _keepForRecovery(loc, st, next);
+      return AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage);
+    } on NotebookException {
+      return AiLinkResponse.error(AiLinkCode.locked);
+    } on FileSystemException {
+      if (await st.directory.exists()) return AiLinkResponse.error(AiLinkCode.saveFailed);
+      await _keepForRecovery(loc, st, next);
+      return AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage);
+    }
+    _metas[pageId] = next.meta;
+    _touch(loc);
+    return AiLinkResponse.ok(page: pageId, box: req.box);
+  }
+
+  // Runs [job] after the saves queued so far, and before any later one.
+  Future<T> _afterSaves<T>(Future<T> Function() job) {
+    final r = _saving.then((_) => job());
+    _saving = r.then((_) {}, onError: (_) {});
+    return r;
+  }
+
   // Autosave ------------------------------------------------------------------
 
   /// Writes any unsaved change now.
@@ -2098,17 +2288,20 @@ class Notebook extends ChangeNotifier {
       try {
         await _write(loc, toSave);
       } on FolderUnavailableException {
+        _countSaveFailure(page.id);
         await _keepForRecovery(loc, st, toSave);
         return;
       } on FileSystemException {
         // The folder may have vanished during the write.
         if (await st.directory.exists()) rethrow;
+        _countSaveFailure(page.id);
         await _keepForRecovery(loc, st, toSave);
         return;
       }
       if (_current?.page.id == toSave.id) _base = toSave;
       _touch(loc);
     }).catchError((Object e) {
+      _countSaveFailure(page.id);
       debugPrint('Saving page ${page.id} failed: $e');
     });
   }
