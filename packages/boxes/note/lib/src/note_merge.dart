@@ -350,7 +350,8 @@ void _joinAt(List<Object?> runs, int i) {
 }
 
 bool _plain(Map<Object?, Object?> op) =>
-    op.keys.every((k) => k == 'insert' || k == 'attributes');
+    op.keys.every((k) => k == 'insert' || k == 'attributes') &&
+    (op['attributes'] == null || op['attributes'] is Map);
 
 /// Deep equality of JSON values (maps by key, whatever their order).
 bool _eq(Object? a, Object? b) {
