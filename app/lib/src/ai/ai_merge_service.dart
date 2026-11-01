@@ -390,10 +390,16 @@ class AiMergeService implements PageAiMerge {
     // so the block counts as new rather than silently taking one of them.
     final known = <String, Map<String, Object?>?>{};
     final encoded = <String, String>{};
+    // For an ambiguous text: whether some block it could be is the user's
+    // (not AI-written). Then the block is never marked AI-written: the user's
+    // own text must not become the AI's (0117's Edit could then replace it).
+    final userCandidate = <String, bool>{};
     for (final v in [r.mine, r.theirs]) {
       for (final b in _blocksOf(v.json)) {
         final json = jsonEncode(b);
+        final user = !isAiWritten(b);
         for (final text in _echoes(b)) {
+          userCandidate[text] = (userCandidate[text] ?? false) || user;
           if (!known.containsKey(text)) {
             known[text] = b;
             encoded[text] = json;
@@ -405,9 +411,13 @@ class AiMergeService implements PageAiMerge {
     }
     final blocks = <Map<String, Object?>>[];
     for (final b in markdownToNoteBlocks(markdown)) {
-      final same = known[_blockText(b)];
+      final text = _blockText(b);
+      final same = known[text];
       if (same != null) {
         blocks.add(same);
+      } else if (known.containsKey(text) && userCandidate[text] == true) {
+        // Ambiguous, and possibly the user's: kept as plain text.
+        blocks.add(b);
       } else {
         blocks.add(r.typeId == aiBoxTypeId ? markAiWritten(b) : b);
       }

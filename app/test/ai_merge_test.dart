@@ -530,6 +530,28 @@ void main() {
     }
 
     for (final type in ['noted.note', aiBoxTypeId]) {
+      test('a text both versions have as user blocks differing only in data markdown can\'t show stays the user\'s, in $type', () async {
+        final mine = {
+          ..._para('Hello'),
+          'data': {...(_para('Hello')['data']! as Map), 'align': 'center'},
+        };
+        final m = _box('f2', _doc([mine]), type: type);
+        final o = _box('f2', _doc([_para('Hello')]), type: type, at: 2000, device: 'PC-B');
+        nb.current!.insertBox(m.withConflict(BoxConflict.other(node: o.toRaw(), at: 2000, device: 'PC-B')));
+        await nb.flush();
+        final pending = nb.aiMerge!.ask(pageId, 'f2');
+        unawaited(pending.then((_) {}, onError: (_) {}));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        final item = await theItem(pageCode);
+        await link(propose(pageCode, item.id, 'Hello'));
+        final p = await pending;
+        final children = p.data is AiBoxData
+            ? ((p.data! as AiBoxData).json['document']! as Map)['children']
+            : ((p.data! as NoteData).document['document']! as Map)['children'];
+        final block = (children as List).single as Map<Object?, Object?>;
+        expect(isAiWritten(block), isFalse, reason: 'the user\'s text never becomes the AI\'s');
+      });
+
       test('a text one version has marked as AI-written and the other plain matches neither, in $type', () async {
         final marked = markAiWritten(_para('Same words'));
         final m = _box('f1', _doc([marked]), type: type);
@@ -547,9 +569,9 @@ void main() {
             : ((p.data! as NoteData).document['document']! as Map)['children'];
         final block = (children as List).single as Map<Object?, Object?>;
         // The versions disagree about who wrote this text: not silently mine's
-        // block but a new one (the AI's in an AI box, plain in a note box).
-        if (type != aiBoxTypeId) expect(block, isNot(marked));
-        expect(isAiWritten(block), type == aiBoxTypeId);
+        // block, and never marked AI-written, since it may be the user's.
+        expect(block, isNot(marked));
+        expect(isAiWritten(block), isFalse);
       });
     }
   });
