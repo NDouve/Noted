@@ -72,7 +72,13 @@ final class RunningLock {
     await _process.exitCode.timeout(
       const Duration(seconds: 5),
       onTimeout: () {
-        _process.kill();
+        // Started through the shell: on Windows kill() would end only
+        // cmd.exe, so end the whole tree there.
+        if (Platform.isWindows) {
+          Process.runSync('taskkill', ['/PID', '${_process.pid}', '/T', '/F']);
+        } else {
+          _process.kill();
+        }
         return -1;
       },
     );

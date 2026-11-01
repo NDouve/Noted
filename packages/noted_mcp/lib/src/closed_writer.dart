@@ -89,8 +89,13 @@ final class ClosedWriter {
   }
 
   // Windows: 32 sharing violation, 33 lock violation. POSIX: EAGAIN (11 Linux,
-  // 35 macOS), EACCES (13), as fcntl reports a lock held by another process.
-  static bool _isLockViolation(FileSystemException e) => const {32, 33, 11, 35, 13}.contains(e.osError?.errorCode);
+  // 35 macOS), as fcntl reports a lock held by another process. EACCES (13) is
+  // left out: on POSIX it usually means the file really can't be written, and
+  // retrying would only slow every logged request down.
+  static bool _isLockViolation(FileSystemException e) {
+    final code = e.osError?.errorCode;
+    return Platform.isWindows ? (code == 32 || code == 33) : (code == 11 || code == 35);
+  }
 
   /// Replaces the page file [path] with [text] if its bytes are still
   /// [expected] (what the caller read), atomically. Returns [PageReplace.done],
