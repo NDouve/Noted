@@ -2411,7 +2411,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
       AiWrite(
         connectionId: code.id,
         content: req.content,
-        mode: AiWriteMode.values.byName(req.mode.name),
+        mode: switch (req.mode) {
+          AiLinkMode.append => AiWriteMode.append,
+          AiLinkMode.replaceAi => AiWriteMode.replaceAiText,
+          AiLinkMode.replace => AiWriteMode.replace,
+        },
       ),
     );
     if (next == null) return no(AiLinkCode.notWritable);

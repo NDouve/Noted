@@ -142,6 +142,18 @@ void main() {
       expect(store.closedWrites('b'), isTrue);
     });
 
+    test('a stored closedWrites true with askBeforeWrite true reads as false, through the view and the store', () {
+      file.writeAsStringSync(jsonEncode({
+        'format': 1,
+        'boxes': {
+          'b': {'closedWrites': true, 'askBeforeWrite': true},
+        },
+      }));
+      expect(AiAccessView.parse(file.readAsStringSync()).closedWrites('b'), isFalse);
+      expect(store.closedWrites('b'), isFalse);
+      expect(store.read().closedWrites('b'), isFalse);
+    });
+
     test('only a true value counts; an unreadable file reads as false', () {
       file.writeAsStringSync(jsonEncode({
         'format': 1,

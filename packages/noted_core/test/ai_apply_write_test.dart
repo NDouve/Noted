@@ -73,6 +73,19 @@ void main() {
     expect(jsonEncode(kids(out)[4]), jsonEncode(mine3));
   });
 
+  test('repeating the same replaceAiText write is idempotent, dividers included', () {
+    final write = w(AiWriteMode.replaceAiText, 'one\n\n---\n\ntwo\n\n---');
+    final first = applyAiWrite(box([para('mine')]), write);
+    expect(kids(first).map((b) => (b! as Map)['type']), ['paragraph', 'paragraph', 'divider', 'paragraph', 'divider']);
+    final second = applyAiWrite(first, write);
+    final third = applyAiWrite(second, write);
+    expect(jsonEncode(second), jsonEncode(first));
+    expect(jsonEncode(third), jsonEncode(first));
+    // A divider the AI wrote is gone when the AI text is replaced with nothing.
+    final cleared = applyAiWrite(first, w(AiWriteMode.replaceAiText, ''));
+    expect(kids(cleared).map(text), ['mine']);
+  });
+
   test('replaceAiText with no AI block appends, like append', () {
     final out = applyAiWrite(box([para('mine'), emptyPara()]), w(AiWriteMode.replaceAiText, 'x'));
     expect(kids(out).map(text), ['mine', 'x']);

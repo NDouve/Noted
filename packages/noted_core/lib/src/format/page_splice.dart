@@ -47,8 +47,12 @@ String? spliceBoxContent(
     for (final (start, end) in JsonSpanReader.arrayItemSpans(array)) {
       final raw = RawJson.trusted(array.substring(start, end));
       if (!raw.isObject) continue;
-      final box = BoxRecord.tryRead(RawObject.parse(raw.text), raw);
-      if (box == null || box.id != boxId) continue;
+      final fields = RawObject.parse(raw.text);
+      // The first node with this id is the box, as the page model sees it; if
+      // that one isn't a readable box record there is nothing to change.
+      if (fields.string('id') != boxId) continue;
+      final box = BoxRecord.tryRead(fields, raw);
+      if (box == null) return null;
       final next = box.withContent(
         data: data,
         dataVersion: dataVersion,

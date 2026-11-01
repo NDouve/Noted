@@ -41,8 +41,191 @@ List<Map<String, Object?>> markdownToNoteBlocks(String markdown) {
   ];
 }
 
+// ---- Bounds ---------------------------------------------------------------
+//
+// package:markdown is not linear: an unmatched run of `*`, `_`, `<u>`, `[`,
+// `![`, `~~`, or many link reference definitions, takes time that grows with
+// the square of the input, and deep nesting (`>`, `- ` or `*` repeated)
+// overflows the stack. The markdown the decoder gets is therefore cut at
+// blank lines into chunks, and chunks are decoded in groups that stay under
+// these limits. A chunk that is over a limit by itself is kept as one plain
+// paragraph (its text as written, never interpreted), and so is a chunk the
+// decoder fails on.
+
+/// The most characters in a group (and in a chunk the decoder may see).
+const int _maxGroupChars = 30000;
+
+/// The most inline delimiter characters ([_delimiter]) in a group.
+const int _maxGroupDelimiters = 600;
+
+/// The most link reference definition lines in a group.
+const int _maxGroupDefinitions = 100;
+
+/// The most block markers (`>`, bullets, numbers) one line may start with.
+const int _maxLineMarkers = 16;
+
+/// The widest indent a line may have.
+const int _maxIndent = 80;
+
+bool _delimiter(int c) =>
+    c == 0x2A || // *
+    c == 0x5F || // _
+    c == 0x7E || // ~
+    c == 0x5B || // [
+    c == 0x5D || // ]
+    c == 0x3C || // <
+    c == 0x21 || // !
+    c == 0x24 || // $
+    c == 0x26 || // &
+    c == 0x60; // `
+
+/// What a chunk costs the decoder.
+class _Cost {
+  _Cost(this.chars, this.delimiters, this.definitions, this.deep);
+  final int chars;
+  final int delimiters;
+  final int definitions;
+
+  /// Some line nests deeper than the limits allow.
+  final bool deep;
+}
+
+final RegExp _definition = RegExp(r'^ {0,3}\[[^\]]*\]:');
+
+_Cost _cost(List<String> lines) {
+  var chars = 0;
+  var delimiters = 0;
+  var definitions = 0;
+  var deep = false;
+  for (final line in lines) {
+    chars += line.length + 1;
+    for (var i = 0; i < line.length; i++) {
+      if (_delimiter(line.codeUnitAt(i))) delimiters++;
+    }
+    if (line.isNotEmpty && line.codeUnitAt(0) != 0x20 && line.codeUnitAt(0) != 0x5B) {
+      // fast path: nothing below can match
+    } else if (_definition.hasMatch(line)) {
+      definitions++;
+    }
+    if (!deep && _tooDeep(line)) deep = true;
+  }
+  return _Cost(chars, delimiters, definitions, deep);
+}
+
+/// Whether [line] starts with too many block markers or is indented too far.
+bool _tooDeep(String line) {
+  var i = 0;
+  var indent = 0;
+  var markers = 0;
+  while (i < line.length) {
+    final c = line.codeUnitAt(i);
+    if (c == 0x20) {
+      indent++;
+      i++;
+    } else if (c == 0x09) {
+      indent += 4;
+      i++;
+    } else if (c == 0x3E) {
+      markers++;
+      i++;
+    } else if ((c == 0x2D || c == 0x2A || c == 0x2B) &&
+        (i + 1 >= line.length || line.codeUnitAt(i + 1) == 0x20 || line.codeUnitAt(i + 1) == 0x09)) {
+      markers++;
+      i++;
+    } else if (c >= 0x30 && c <= 0x39) {
+      var j = i;
+      while (j < line.length && line.codeUnitAt(j) >= 0x30 && line.codeUnitAt(j) <= 0x39) {
+        j++;
+      }
+      if (j < line.length &&
+          (line.codeUnitAt(j) == 0x2E || line.codeUnitAt(j) == 0x29) &&
+          (j + 1 >= line.length || line.codeUnitAt(j + 1) == 0x20)) {
+        markers++;
+        i = j + 1;
+      } else {
+        break;
+      }
+    } else {
+      break;
+    }
+    if (markers > _maxLineMarkers || indent > _maxIndent) return true;
+  }
+  return false;
+}
+
+bool _fits(int chars, int delimiters, int definitions) =>
+    chars <= _maxGroupChars &&
+    delimiters <= _maxGroupDelimiters &&
+    definitions <= _maxGroupDefinitions;
+
+/// Decodes [markdown] within the bounds above.
 List<Map<String, Object?>> _decode(String markdown) {
   if (markdown.trim().isEmpty) return const [];
+  // Chunks: runs of non-blank lines.
+  final chunks = <List<String>>[];
+  var current = <String>[];
+  for (final line in markdown.split('\n')) {
+    if (line.isEmpty) {
+      if (current.isNotEmpty) chunks.add(current);
+      current = [];
+    } else {
+      current.add(line);
+    }
+  }
+  if (current.isNotEmpty) chunks.add(current);
+
+  final out = <Map<String, Object?>>[];
+  var group = <List<String>>[];
+  var chars = 0, delimiters = 0, definitions = 0;
+  void flush() {
+    if (group.isEmpty) return;
+    out.addAll(_decodeGroup(group));
+    group = [];
+    chars = delimiters = definitions = 0;
+  }
+
+  for (final chunk in chunks) {
+    final c = _cost(chunk);
+    if (c.deep || !_fits(c.chars, c.delimiters, c.definitions)) {
+      flush();
+      out.add(_plain(chunk.join('\n')));
+      continue;
+    }
+    if (!_fits(chars + c.chars, delimiters + c.delimiters, definitions + c.definitions)) {
+      flush();
+    }
+    group.add(chunk);
+    chars += c.chars;
+    delimiters += c.delimiters;
+    definitions += c.definitions;
+  }
+  flush();
+  return out;
+}
+
+/// Decodes a group of chunks together (so a list or a reference link may span
+/// a blank line). If the decoder fails, each chunk is tried alone, and one
+/// that fails again is kept as plain text.
+List<Map<String, Object?>> _decodeGroup(List<List<String>> group) {
+  try {
+    return _decodeText([for (final c in group) c.join('\n')].join('\n\n'));
+  } on Object {
+    // fall through
+  }
+  return [
+    for (final c in group) ..._decodeOne(c),
+  ];
+}
+
+List<Map<String, Object?>> _decodeOne(List<String> chunk) {
+  try {
+    return _decodeText(chunk.join('\n'));
+  } on Object {
+    return [_plain(chunk.join('\n'))];
+  }
+}
+
+List<Map<String, Object?>> _decodeText(String markdown) {
   final nodes = md.Document(
     extensionSet: md.ExtensionSet.gitHubFlavored,
     inlineSyntaxes: [_FormulaSyntax(), _UnderlineSyntax()],

@@ -141,6 +141,19 @@ void main() {
     expect(splice(page().replaceFirst(']', ''), 'b1'), isNull);
   });
 
+  test('the first node with the id decides: a foreign node first means null, not the later box', () {
+    const dup = '{"id":"b1","type":"file","file":"a.png","x":0,"y":0,"width":5,"height":5}';
+    final text = '{"nodes":[$dup,$box1],"noted":{"format":1,"pageId":"p1","title":"T","order":0}}';
+    String? splice(String t) =>
+        spliceBoxContent(t, 'b1', data: data, dataVersion: 1, snapshotText: 's', newRev: 'r');
+    expect(splice(text), isNull);
+    // A readable box first wins; the duplicate after it is left alone.
+    final other = '{"nodes":[$box1,$dup],"noted":{"format":1,"pageId":"p1","title":"T","order":0}}';
+    final out = splice(other)!;
+    expect(out, endsWith(',$dup],"noted":{"format":1,"pageId":"p1","title":"T","order":0}}'));
+    expect((readPage(out).nodes.first as BoxRecord).rev, 'r');
+  });
+
   test('the span readers give exact ranges', () {
     const s = '{ "a" : [1, {"b":2}] , "c":"x" }';
     final spans = JsonSpanReader.objectEntrySpans(s);

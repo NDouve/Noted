@@ -204,7 +204,7 @@ Map<String, Object?> applyAiWrite(Map<String, Object?> boxJson, AiWrite write) {
     case AiWriteMode.replaceAiText:
       var inserted = false;
       for (final b in existing) {
-        if (b is Map && isAiWritten(b)) {
+        if (b is Map && _hasCurrentAiMark(b)) {
           if (!inserted) {
             children.addAll(written);
             inserted = true;
@@ -228,6 +228,17 @@ Map<String, Object?> applyAiWrite(Map<String, Object?> boxJson, AiWrite write) {
     ...boxJson,
     'document': {...root, 'children': children},
   };
+}
+
+/// Whether [node] carries an AI mark that still matches it. Unlike
+/// [isAiWritten] this holds for a block with no text (a divider the AI
+/// wrote), so replacing the AI's text removes those too and repeating a write
+/// doesn't pile them up.
+bool _hasCurrentAiMark(Map<Object?, Object?> node) {
+  final data = node['data'];
+  if (data is! Map) return false;
+  final tag = data[aiWrittenKey];
+  return tag is String && tag == aiBlockFingerprint(node);
 }
 
 bool _isEmptyParagraph(Object? block) =>
