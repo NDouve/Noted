@@ -34,8 +34,10 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
     this.pageOfBox,
     Duration? pollInterval,
   }) : store = AiAccessStore(_file(dataFolder, aiAccessFileName)),
-       log = AiActivityLog(_file(dataFolder, aiActivityFileName)) {
+       log = AiActivityLog(_file(dataFolder, aiActivityFileName)),
+       mcpLog = _file(dataFolder, aiMcpLogFileName) {
     if (pollInterval != null) {
+      trimMcpLog();
       _stamp = _stampOf();
       _poll = Timer.periodic(pollInterval, (_) => _check());
     }
@@ -45,6 +47,10 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
 
   final AiAccessStore store;
   final AiActivityLog log;
+
+  /// The MCP server's access log (`ai-mcp-log.jsonl`): what it did while Noted
+  /// wasn't running. The server appends; this service reads it and trims it.
+  final File mcpLog;
 
   /// The page a box is on now, to note it on a new box code (informative).
   /// Null: not recorded.
@@ -56,7 +62,7 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
 
   String _stampOf() {
     final b = StringBuffer();
-    for (final f in [store.file, log.file]) {
+    for (final f in [store.file, log.file, mcpLog]) {
       try {
         final s = f.statSync();
         b.write('${s.modified.microsecondsSinceEpoch}/${s.size};');
@@ -70,7 +76,8 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
   void _check() {
     final now = _stampOf();
     if (now == _stamp) return;
-    _stamp = now;
+    trimMcpLog();
+    _stamp = _stampOf();
     changed();
   }
 
@@ -155,8 +162,88 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
     }
   }
 
-  /// The log entries about a target, oldest first.
-  List<AiActivityEntry> activityFor(AiCodeTargetKind kind, String id) => log.entriesFor(kind, id);
+  /// The activity about a target, oldest first: Noted's own log plus what the
+  /// MCP server did while Noted was closed (those entries carry
+  /// `extra['closed'] == true`).
+  List<AiActivityEntry> activityFor(AiCodeTargetKind kind, String id) {
+    final own = log.entriesFor(kind, id);
+    final closed = [
+      for (final e in mcpLogEntries())
+        if (e.target.kind == kind && e.target.id == id)
+          AiActivityEntry(
+            time: e.time,
+            code: e.code,
+            target: e.target,
+            op: e.op,
+            app: e.app,
+            label: e.label,
+            result: e.result,
+            extra: const {'closed': true},
+          ),
+    ];
+    if (closed.isEmpty) return own;
+    // A stable merge by time: on a tie Noted's own entry comes first.
+    final all = [...own, ...closed];
+    final order = {for (var i = 0; i < all.length; i++) all[i]: i};
+    return all..sort((a, b) {
+      final c = a.time.compareTo(b.time);
+      return c != 0 ? c : order[a]!.compareTo(order[b]!);
+    });
+  }
+
+  /// The entries of the MCP server's log, in file order. Empty if the file is
+  /// missing or can't be read.
+  List<AiMcpLogEntry> mcpLogEntries() {
+    try {
+      return parseAiMcpLog(mcpLog.readAsStringSync());
+    } on Object {
+      return const [];
+    }
+  }
+
+  /// Keeps the last [keep] lines of the MCP server's log once it holds more.
+  /// The file is rewritten in place under a lock on the file itself, so a
+  /// server appending at the same moment waits instead of being lost; a line
+  /// it was in the middle of writing is kept. A file that can't be opened or
+  /// read is not touched. Returns whether it trimmed.
+  bool trimMcpLog({int keep = aiActivityMaxEntries}) {
+    RandomAccessFile? raf;
+    try {
+      if (!mcpLog.existsSync()) return false;
+      raf = mcpLog.openSync(mode: FileMode.append);
+      raf.lockSync(FileLock.blockingExclusive);
+      try {
+        final length = raf.lengthSync();
+        raf.setPositionSync(0);
+        final bytes = raf.readSync(length);
+        if (bytes.length != length) return false;
+        // Line ends; a last line without one is a line being written.
+        final ends = <int>[
+          for (var i = 0; i < bytes.length; i++)
+            if (bytes[i] == 0x0A) i,
+        ];
+        final lines = ends.length + (bytes.isNotEmpty && bytes.last != 0x0A ? 1 : 0);
+        if (lines <= keep) return false;
+        final from = ends[lines - keep - 1] + 1;
+        final tail = bytes.sublist(from);
+        raf.truncateSync(0);
+        raf.setPositionSync(0);
+        raf.writeFromSync(tail);
+        raf.flushSync();
+        return true;
+      } finally {
+        raf.unlockSync();
+      }
+    } on Object {
+      return false;
+    } finally {
+      try {
+        raf?.closeSync();
+      } on Object {
+        // Nothing to do.
+      }
+    }
+  }
 
   AiAccessException _failure(Object e) {
     if (e is AiAccessUnreadable) {

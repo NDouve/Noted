@@ -589,8 +589,8 @@ class _ScrollCueState extends State<_ScrollCue> {
   }
 }
 
-/// The codes of a page or binder (Privileged access): the list with its
-/// sessions, Connect a chat, and the activity.
+/// The codes of a page or binder (Privileged access): the list with each
+/// code's approval, Connect a chat, and the activity.
 class _CodesSection extends StatelessWidget {
   const _CodesSection({
     super.key,
@@ -730,30 +730,14 @@ class _CodesSection extends StatelessWidget {
             padding: EdgeInsets.only(left: m.icon + m.space2),
             child: Text(facts, key: ValueKey('settings-facts-${c.id}'), style: muted),
           ),
-          for (final s in c.sessions)
-            Padding(
-              padding: EdgeInsets.only(left: m.icon + m.space2),
-              child: Row(
-                key: ValueKey('settings-session-${s.id}'),
-                children: [
-                  Expanded(
-                    child: Text(
-                      '${s.app.isEmpty ? 'Unknown app' : s.app}'
-                      '${s.approved == null ? '' : ' · approved ${_dateTime(s.approved!)}'}',
-                      overflow: TextOverflow.ellipsis,
-                      style: muted,
-                    ),
-                  ),
-                  IconButton(
-                    key: ValueKey('settings-session-revoke-${s.id}'),
-                    tooltip: 'Revoke approval',
-                    visualDensity: VisualDensity.compact,
-                    icon: Icon(Icons.close_rounded, size: m.icon, color: scheme.onSurfaceVariant),
-                    onPressed: () => run(() => service.revokeSession(c.id, s.id)),
-                  ),
-                ],
-              ),
+          Padding(
+            padding: EdgeInsets.only(left: m.icon + m.space2),
+            child: Text(
+              c.approved == null ? 'Not approved yet' : 'Approved ${_date(c.approved!)}',
+              key: ValueKey('settings-approval-${c.id}'),
+              style: muted,
             ),
+          ),
         ],
       ),
     );

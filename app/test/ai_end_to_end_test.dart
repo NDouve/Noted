@@ -117,6 +117,7 @@ void main() {
     );
     await nb.flush();
     final writer = await service.connect('aibox', role: AiCodeRole.writer, label: 'Feedback chat');
+    await service.setWriterPermission('aibox', AiWriterPermission.full); // the writes below replace the box
     final reader = await service.connect('aibox', role: AiCodeRole.reader, label: 'Review chat');
 
     final link = (await startAiLink(nb, data))!;

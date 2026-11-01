@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async' show unawaited;
 import 'dart:io' show Directory, File, Platform;
 import 'dart:ui';
 
@@ -21,6 +22,7 @@ import 'package:noted_core/noted_core.dart';
 import 'src/ai/ai_access_service.dart';
 import 'src/ai/ai_approval_dialog.dart';
 import 'src/ai/ai_link_server.dart';
+import 'src/ai/ai_running_lock.dart';
 import 'src/app_settings.dart';
 import 'src/attachment_platform.dart';
 import 'src/app_theme.dart';
@@ -91,9 +93,13 @@ Future<void> main() async {
     attachmentOpener: openWithDefaultApp,
   );
   FileClipboard.read = readClipboardFiles;
+  // Held until the app exits: it tells noted_mcp that Noted is running.
+  final runningLock = AiRunningLock.acquire(dataFolder);
   final aiLink = await startAiLink(notebook, dataFolder);
-  runApp(NotedApp(notebook: notebook, settings: settings, aiLink: aiLink));
+  runApp(NotedApp(notebook: notebook, settings: settings, aiLink: aiLink, runningLock: runningLock));
   await notebook.load();
+  // After the first frame, so the window can show the questions.
+  WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(notebook.askPendingAiApprovals()));
 }
 
 /// Starts the local link the MCP server writes through (invariant 4), with
@@ -114,13 +120,16 @@ Future<AiLinkServer?> startAiLink(Notebook notebook, Directory dataFolder) async
 }
 
 class NotedApp extends StatefulWidget {
-  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink});
+  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock});
 
   final Notebook notebook;
 
   /// The local link for AI writes; stopped (and its file removed) when the
   /// app exits cleanly. Null: none is running.
   final AiLinkServer? aiLink;
+
+  /// The lock that says Noted is running; let go of when the app exits.
+  final AiRunningLock? runningLock;
 
   /// This device's settings (the theme). Null: the defaults, not saved.
   final AppSettings? settings;
@@ -137,7 +146,7 @@ class _NotedAppState extends State<NotedApp> {
   @override
   void initState() {
     super.initState();
-    // New AI sessions and per-write questions are asked in this window.
+    // AI code approvals and per-write questions are asked in this window.
     widget.notebook.aiApprover = (request) => showAiApprovalDialog(_navigatorKey, request);
     _lifecycle = AppLifecycleListener(
       // Write unsaved edits before the window closes.
@@ -148,6 +157,7 @@ class _NotedAppState extends State<NotedApp> {
         await widget.notebook.flush();
         await showRecoveryNoticeOnExit(widget.notebook, _navigatorKey);
         await widget.aiLink?.dispose();
+        widget.runningLock?.release();
         return AppExitResponse.exit;
       },
       onHide: widget.notebook.flush,

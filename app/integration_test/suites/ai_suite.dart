@@ -85,7 +85,7 @@ String _editorText(WidgetTester t) => [
 /// real link.
 void aiSuite() {
   group('ai', () {
-    testWidgets('AI1-AI6: insert an AI box, issue a code, approve a session, write through the link, undo, ask before a write, revoke', (t) async {
+    testWidgets('AI1-AI6: insert an AI box, issue a code, approve the code, write through the link, undo, ask before a write, revoke', (t) async {
       await withSession(t, 'ai', (s) async {
         final link = await startAiLink(s.nb, s.env.appDir);
         expect(link, isNotNull, reason: 'the app link starts');
@@ -112,6 +112,8 @@ void aiSuite() {
           // AI2: a Writer code for the box (what "Connect a chat" does).
           final code = await s.aiAccess.connect(box.id, role: AiCodeRole.writer, label: 'Feedback chat');
           expect(parseAiToken(code), isNotNull);
+          // The first write below replaces the box, which needs Full.
+          await s.aiAccess.setWriterPermission(box.id, AiWriterPermission.full);
           final codeId = parseAiToken(code)!.id;
           expect(s.aiAccess.connections(box.id).single.label, 'Feedback chat');
           expect(s.aiAccess.connections(box.id).single.target.page, pageId, reason: 'the page is noted');
@@ -127,7 +129,7 @@ void aiSuite() {
           await s.tapKey('settings-close');
           await s.flush();
 
-          // AI4: the first write of a new session asks; Allow; the write shows
+          // AI4: the first use of the code asks (once per code); Allow; the write shows
           // at once, marked, and is one undo step.
           final dataBeforeWrite = jsonEncode(codec.encode(data()));
           final first = _Sent(s, _write(code, box.id, 'Written by the AI'));
@@ -142,7 +144,7 @@ void aiSuite() {
           expect(snapshotOf(s, box.id), contains('Written by the AI'));
           expect(blocks().where(isAiWritten), isNotEmpty, reason: 'the AI text is marked');
           expect(_editorText(t), contains('Written by the AI'), reason: 'the open editor shows it at once');
-          expect(s.aiAccess.connections(box.id).single.sessions.single.app, 'Integration test');
+          expect(s.aiAccess.connections(box.id).single.approved, isNotNull, reason: 'the code is approved now');
           await s.key(LogicalKeyboardKey.escape);
           expect(s.nb.current!.editingId, isNull);
           await s.pump(500);
@@ -154,7 +156,7 @@ void aiSuite() {
           await s.ctrl(LogicalKeyboardKey.keyZ, shift: true);
           expect(snapshotOf(s, box.id), contains('Written by the AI'));
 
-          // The same session is not asked again.
+          // An approved code is not asked again.
           final second = _Sent(s, _write(code, box.id, ' More.', mode: AiLinkMode.append));
           expect((await second.answer()).ok, isTrue);
           expect(find.byKey(const ValueKey('ai-approval-dialog')), findsNothing);

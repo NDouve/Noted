@@ -271,7 +271,7 @@ void main() {
       session: 'session-1',
       app: 'Test client',
       box: 'no-such-box',
-      mode: AiLinkMode.replace,
+      mode: AiLinkMode.append,
       content: '',
     );
     final out2 = await exchange(s, good.encode());

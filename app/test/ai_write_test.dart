@@ -46,6 +46,7 @@ class _Codec extends BoxCodec<Map<String, Object?>> {
     return {
       ...data,
       'by': write.connectionId,
+      'mode': write.mode.name,
       'text': write.mode == AiWriteMode.replace ? write.content : '$old${write.content}',
     };
   }
@@ -151,7 +152,12 @@ void main() {
     String boxId, {
     AiCodeRole role = AiCodeRole.writer,
     String label = 'Work chat',
-  }) => service.issue(AiCodeTarget.box(boxId), role: role, label: label);
+  }) async {
+    final code = await service.issue(AiCodeTarget.box(boxId), role: role, label: label);
+    // Most tests are about something else than the Writer permission.
+    if (role == AiCodeRole.writer) await service.setWriterPermission(boxId, AiWriterPermission.full);
+    return code;
+  }
 
   AiLinkWriteBox req(
     String boxId,
@@ -216,8 +222,18 @@ void main() {
     }, skip: !Platform.isWindows ? 'file locks are per process on POSIX' : false);
   });
 
-  test('AiLinkMode and AiWriteMode have the same names', () {
-    expect(AiLinkMode.values.map((m) => m.name), AiWriteMode.values.map((m) => m.name));
+  test('each wire mode reaches the codec as its own AiWriteMode (replace_ai is replaceAiText)', () async {
+    final t = await withBox();
+    final expected = {
+      AiLinkMode.append: AiWriteMode.append,
+      AiLinkMode.replaceAi: AiWriteMode.replaceAiText,
+      AiLinkMode.replace: AiWriteMode.replace,
+    };
+    expect(expected.keys, AiLinkMode.values);
+    for (final e in expected.entries) {
+      expect((await t.nb.handleAiLink(req('ba', t.code, content: 'x', mode: e.key))).ok, isTrue, reason: e.key.name);
+      expect(dataOf(t.nb, 'ba')['mode'], e.value.name);
+    }
   });
 
   test('a request that is this protocol but malformed answers bad_request', () async {
@@ -319,6 +335,7 @@ void main() {
         role: AiCodeRole.writer,
         label: 'Binder chat',
       );
+      await service.setWriterPermission('bb', AiWriterPermission.full);
       final r = await nb.handleAiLink(req('bb', code, content: 'in binder'));
       expect(r.ok, isTrue);
       expect(File('${folder.path}/$p.canvas').readAsStringSync(), contains('in binder'));
@@ -326,25 +343,41 @@ void main() {
   });
 
   group('approval', () {
-    test('the first use from a session asks, once; the session is then remembered', () async {
+    test('the first use of a code asks, once; the code is then approved for every session', () async {
       final t = await withBox();
+      expect(stored(t.code).approved, isNull);
       expect((await t.nb.handleAiLink(req('ba', t.code, content: 'one'))).ok, isTrue);
       expect(asked, hasLength(1));
       expect(asked.single.message, 'Claude Code wants to read and write Work chat. Allow?');
       expect(asked.single.perWrite, isFalse);
+      expect(asked.single.closedApp, isFalse);
       expect((await t.nb.handleAiLink(req('ba', t.code, content: 'two'))).ok, isTrue);
-      expect(asked, hasLength(1), reason: 'same session: not asked again');
-      final sessions = stored(t.code).sessions;
-      expect(sessions.single.id, 's1');
-      expect(sessions.single.app, 'Claude Code');
-      expect(sessions.single.approved, isNotNull);
+      expect(asked, hasLength(1), reason: 'same code: not asked again');
+      expect(stored(t.code).approved, isNotNull);
 
-      // Another session asks again; a revoked session asks again.
-      expect((await t.nb.handleAiLink(req('ba', t.code, session: 's2'))).ok, isTrue);
+      // Another session, another app: the code is approved, so no question.
+      expect((await t.nb.handleAiLink(req('ba', t.code, session: 's2', app: 'Cursor'))).ok, isTrue);
+      expect(asked, hasLength(1));
+    });
+
+    test('a revoked code is gone, and a new code of the box asks again', () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code));
+      await service.revoke(stored(t.code).id);
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.badCode);
+      final fresh = await issue('ba');
+      expect((await t.nb.handleAiLink(req('ba', fresh))).ok, isTrue);
       expect(asked, hasLength(2));
-      await service.revokeSession(stored(t.code).id, 's1');
-      expect((await t.nb.handleAiLink(req('ba', t.code, session: 's1'))).ok, isTrue);
-      expect(asked, hasLength(3));
+    });
+
+    test('old sessions in the file are ignored: an unapproved code with a session still asks', () async {
+      final t = await withBox();
+      service.store.addSession(
+        stored(t.code).id,
+        AiCodeSession(id: 's1', app: 'Claude Code', approved: DateTime.now().toUtc()),
+      );
+      expect((await t.nb.handleAiLink(req('ba', t.code))).ok, isTrue);
+      expect(asked, hasLength(1));
     });
 
     test('a read asks "read"', () async {
@@ -364,7 +397,6 @@ void main() {
       final t = await withBox();
       await t.nb.handleAiLink(req('ba', t.code, app: 'Evil\n\u0007App x'));
       expect(asked.single.message, 'Evil  App x wants to read and write Work chat. Allow?');
-      expect(stored(t.code).sessions.single.app, 'Evil  App x');
     });
 
     test('deny: not_approved, nothing written, nothing remembered', () async {
@@ -373,14 +405,14 @@ void main() {
       answer = (_) async => false;
       expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notApproved);
       expect(dataOf(t.nb, 'ba')['text'], 'old');
-      expect(stored(t.code).sessions, isEmpty);
+      expect(stored(t.code).approved, isNull);
       expect(stored(t.code).lastUsed, isNull);
       answer = (_) async => true;
       expect((await t.nb.handleAiLink(req('ba', t.code))).ok, isTrue);
       expect(asked, hasLength(2), reason: 'no pause configured: asked again');
     });
 
-    test('after a Deny, new sessions of that code are refused without a question for a while', () async {
+    test('after a Deny, further requests of that code are refused without a question for a while', () async {
       timings = const AiLinkTimings(denyCooldown: Duration(milliseconds: 500));
       final t = await withBox();
       answer = (_) async => false;
@@ -424,17 +456,19 @@ void main() {
       expect(most, 1);
     });
 
-    test('too many waiting requests get busy, and approved sessions are still answered', () async {
+    test('too many waiting questions get busy, and an approved code is still answered', () async {
       final t = await withBox();
-      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up')); // s1 is allowed
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up')); // approved
       final gate = Completer<bool>();
       answer = (_) => gate.future;
+      Future<AiLinkResponse> ask(String code, String session) => t.nb.handleAiLink(
+        AiLinkAccess(code: code, session: session, app: 'B', action: AiLinkAction.readBox, target: 'ba'),
+      );
       final waiting = [
-        t.nb.handleAiLink(req('ba', t.code, session: 'n1')),
-        t.nb.handleAiLink(req('ba', t.code, session: 'n2')),
+        for (var i = 0; i < aiMaxPendingPrompts; i++) ask(await issue('ba', role: AiCodeRole.reader, label: 'R$i'), 'n$i'),
       ];
       await Future<void>.delayed(const Duration(milliseconds: 50));
-      expect(await codeOf(t.nb, req('ba', t.code, session: 'n3')), AiLinkCode.busy);
+      expect(await codeOf(t.nb, AiLinkAccess(code: await issue('ba', role: AiCodeRole.reader, label: 'late'), session: 'n9', action: AiLinkAction.readBox, target: 'ba')), AiLinkCode.busy);
       expect((await t.nb.handleAiLink(AiLinkDescribeCode(code: t.code, session: 's1'))).ok, isTrue);
       expect((await t.nb.handleAiLink(req('ba', t.code, content: 'still works'))).ok, isTrue);
       gate.complete(false);
@@ -443,15 +477,15 @@ void main() {
       }
     });
 
-    test('a code waiting for a question doesn\'t keep other codes\' questions out', () async {
+    test('a code waiting for a question does not hold up other codes', () async {
       final t = await withBox();
       final other = await issue('ba', role: AiCodeRole.reader, label: 'Other');
       final gate = Completer<bool>();
       answer = (_) => gate.future;
-      // The first code fills its own place; more of its new sessions are busy.
+      // The first code's question is open; its next request joins it.
       final first = t.nb.handleAiLink(req('ba', t.code, session: 'h1'));
       await Future<void>.delayed(const Duration(milliseconds: 50));
-      expect(await codeOf(t.nb, req('ba', t.code, session: 'h2')), AiLinkCode.busy);
+      final joined = t.nb.handleAiLink(req('ba', t.code, session: 'h2'));
       // Another code still gets its question (queued behind the first).
       final second = t.nb.handleAiLink(
         AiLinkAccess(code: other, session: 'o1', app: 'B', action: AiLinkAction.readBox, target: 'ba'),
@@ -459,6 +493,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 50));
       gate.complete(true);
       expect((await first).ok, isTrue);
+      expect((await joined).ok, isTrue);
       expect((await second).ok, isTrue);
       expect(asked, hasLength(2));
     });
@@ -483,12 +518,12 @@ void main() {
 
     test('a per-write question with no room to ask answers busy, not a refusal', () async {
       final t = await withBox();
-      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up')); // s1 is allowed
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up')); // approves the code
       await service.setAskBeforeWrite('ba', true);
       final gate = Completer<bool>();
       answer = (_) => gate.future;
-      // This code's own place is taken by a new session's question.
-      final pending = t.nb.handleAiLink(req('ba', t.code, session: 'n1'));
+      // This code's own place is taken by the first write's question.
+      final pending = t.nb.handleAiLink(req('ba', t.code, content: 'first'));
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(await codeOf(t.nb, req('ba', t.code, content: 'later')), AiLinkCode.busy);
       gate.complete(false);
@@ -659,7 +694,10 @@ void main() {
       final t = await withBox();
       await t.nb.handleAiLink(req('ba', t.code, content: 'a secret sentence'));
       answer = (_) async => false;
-      await t.nb.handleAiLink(req('ba', t.code, session: 'other', app: 'Other app'));
+      final unasked = await issue('ba', role: AiCodeRole.reader, label: 'Other chat');
+      await t.nb.handleAiLink(
+        AiLinkAccess(code: unasked, session: 'other', app: 'Other app', action: AiLinkAction.readBox, target: 'ba'),
+      );
       final reader = await issue('ba', role: AiCodeRole.reader, label: 'Reader');
       answer = (_) async => true;
       await t.nb.handleAiLink(req('ba', reader)); // wrong role
@@ -671,7 +709,7 @@ void main() {
       final entries = service.activity('ba');
       expect(entries.map((e) => (e.op, e.result, e.app, e.label)), [
         ('write_box', 'ok', 'Claude Code', 'Work chat'),
-        ('write_box', 'not_approved', 'Other app', 'Work chat'),
+        ('read_box', 'not_approved', 'Other app', 'Other chat'),
         ('write_box', 'wrong_role', 'Claude Code', 'Reader'),
         ('read_box', 'ok', 'Claude Code', 'Work chat'),
         ('describe_code', 'ok', 'Claude Code', 'Work chat'),
@@ -1246,6 +1284,165 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 400));
       expect(told, greaterThan(0));
       expect(polled.connections('b'), hasLength(1));
+    });
+  });
+
+  group('Writer permission', () {
+    test('append allows only append; edit adds replace_ai; full adds replace', () async {
+      final t = await withBox();
+      await service.setWriterPermission('ba', AiWriterPermission.append);
+      await t.nb.handleAiLink(req('ba', t.code, mode: AiLinkMode.append)); // approves
+      final asks = asked.length;
+      expect(await codeOf(t.nb, req('ba', t.code, mode: AiLinkMode.replaceAi)), AiLinkCode.notPermitted);
+      expect(await codeOf(t.nb, req('ba', t.code, mode: AiLinkMode.replace)), AiLinkCode.notPermitted);
+      expect(await codeOf(t.nb, req('ba', t.code, content: '', mode: AiLinkMode.replace)), AiLinkCode.notPermitted);
+      expect(dataOf(t.nb, 'ba')['text'], 'oldhello');
+
+      await service.setWriterPermission('ba', AiWriterPermission.edit);
+      expect(await codeOf(t.nb, req('ba', t.code, mode: AiLinkMode.replaceAi)), isNull);
+      expect(dataOf(t.nb, 'ba')['mode'], 'replaceAiText');
+      expect(await codeOf(t.nb, req('ba', t.code, mode: AiLinkMode.replace)), AiLinkCode.notPermitted);
+
+      await service.setWriterPermission('ba', AiWriterPermission.full);
+      expect(await codeOf(t.nb, req('ba', t.code, content: 'new', mode: AiLinkMode.replace)), isNull);
+      expect(dataOf(t.nb, 'ba')['text'], 'new');
+      expect(await codeOf(t.nb, req('ba', t.code, content: '', mode: AiLinkMode.replace)), isNull);
+      expect(dataOf(t.nb, 'ba')['text'], '');
+      expect(asked, hasLength(asks), reason: 'no question for a write that is not permitted');
+    });
+
+    test('not_permitted is logged, says what to do, and is refused before anyone is asked', () async {
+      final t = await withBox();
+      await service.setWriterPermission('ba', AiWriterPermission.append);
+      final r = await t.nb.handleAiLink(req('ba', t.code, mode: AiLinkMode.replace));
+      expect((r as AiLinkError).code, AiLinkCode.notPermitted);
+      expect(r.message, contains('Writer permission'));
+      expect(asked, isEmpty);
+      expect(service.activity('ba').single.result, 'not_permitted');
+      expect(stored(t.code).approved, isNull);
+    });
+
+    test('a permission lowered while the question is open is respected', () async {
+      final t = await withBox();
+      final gate = Completer<bool>();
+      answer = (_) => gate.future;
+      final pending = t.nb.handleAiLink(req('ba', t.code, mode: AiLinkMode.replace));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await service.setWriterPermission('ba', AiWriterPermission.append);
+      gate.complete(true);
+      expect(((await pending) as AiLinkError).code, AiLinkCode.notPermitted);
+      expect(dataOf(t.nb, 'ba')['text'], 'old');
+    });
+  });
+
+  group('approvals asked while Noted was closed', () {
+    void log(
+      String code, {
+      String result = 'pending_approval',
+      DateTime? at,
+      String app = 'Claude Code',
+      String box = 'ba',
+    }) {
+      final entry = AiMcpLogEntry(
+        time: at ?? DateTime.now().toUtc().add(const Duration(seconds: 1)),
+        code: code,
+        target: AiCodeTarget.box(box),
+        op: 'write_box',
+        app: app,
+        label: 'Work chat',
+        result: result,
+      );
+      service.mcpLog.writeAsStringSync('${entry.encode()}\n', mode: FileMode.append);
+    }
+
+    Future<void> run(Notebook nb) => nb.askPendingAiApprovals();
+
+    test('asks once about an unapproved code with a pending entry; Allow approves it', () async {
+      final t = await withBox();
+      log(stored(t.code).id);
+      log(stored(t.code).id); // a second entry is not a second question
+      await run(t.nb);
+      expect(asked, hasLength(1));
+      expect(asked.single.closedApp, isTrue);
+      expect(
+        asked.single.message,
+        'Claude Code wants to read and write Work chat. It asked while Noted was closed. Allow?',
+      );
+      expect(stored(t.code).approved, isNotNull);
+      // Approved: a request needs no further question.
+      expect((await t.nb.handleAiLink(req('ba', t.code))).ok, isTrue);
+      expect(asked, hasLength(1));
+      await run(t.nb);
+      expect(asked, hasLength(1));
+    });
+
+    test('Deny leaves the code unapproved and is not asked again in this run', () async {
+      final t = await withBox();
+      log(stored(t.code).id);
+      answer = (_) async => false;
+      await run(t.nb);
+      await run(t.nb);
+      expect(asked, hasLength(1));
+      expect(stored(t.code).approved, isNull);
+    });
+
+    test('ignores other results, unknown, expired and approved codes and entries older than the code', () async {
+      final t = await withBox();
+      final id = stored(t.code).id;
+      log(id, at: DateTime.now().toUtc().subtract(const Duration(days: 1)));
+      log(id, result: 'ok');
+      log(id, result: 'expired');
+      log('0123456789abcdef');
+      await run(t.nb);
+      expect(asked, isEmpty);
+
+      log(id);
+      service.store.update((d) => d.put(d.code(id)!.withExpires(DateTime.now().subtract(const Duration(hours: 1)))));
+      await run(t.nb);
+      expect(asked, isEmpty, reason: 'expired');
+      service.store.update((d) => d.put(d.code(id)!.withExpires(null)));
+
+      service.store.approveCode(id);
+      await run(t.nb);
+      expect(asked, isEmpty, reason: 'approved');
+    });
+
+    test('a code revoked while the question is open is not approved', () async {
+      final t = await withBox();
+      final id = stored(t.code).id;
+      log(id);
+      final gate = Completer<bool>();
+      answer = (_) => gate.future;
+      final done = run(t.nb);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await service.revoke(id);
+      gate.complete(true);
+      await done;
+      expect(service.store.codes(), isEmpty);
+    });
+
+    test('with no log, or a log of bad lines, nothing is asked', () async {
+      final t = await withBox();
+      await run(t.nb);
+      service.mcpLog.writeAsStringSync('not json\n{"time":1}\n');
+      await run(t.nb);
+      expect(asked, isEmpty);
+    });
+
+    test('a live request and a pending entry of one code share one question', () async {
+      final t = await withBox();
+      log(stored(t.code).id);
+      final gate = Completer<bool>();
+      answer = (_) => gate.future;
+      final live = t.nb.handleAiLink(req('ba', t.code));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final startup = run(t.nb);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      gate.complete(true);
+      expect((await live).ok, isTrue);
+      await startup;
+      expect(asked, hasLength(1));
+      expect(stored(t.code).approved, isNotNull);
     });
   });
 }

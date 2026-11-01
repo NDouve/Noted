@@ -2227,13 +2227,28 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
   Future<AiLinkResponse> handleAiLink(AiLinkRequest request, [bool Function()? clientOpen]) {
     final service = aiAccess;
     if (service == null) return Future.value(AiLinkResponse.error(AiLinkCode.badCode));
+    return _aiAuthority(service).handle(request, clientOpen: clientOpen);
+  }
+
+  AiLinkAuthority _aiAuthority(AiAccessService service) {
     final authority = _authority ??= AiLinkAuthority(
       service: service,
       host: this,
       timings: aiTimings,
     );
     authority.approver = aiApprover;
-    return authority.handle(request, clientOpen: clientOpen);
+    return authority;
+  }
+
+  /// Asks the user about the AI codes that were used while Noted was closed
+  /// and are not approved yet (from the MCP server's log), once each. Call it
+  /// after [load], when the window can show the question.
+  Future<void> askPendingAiApprovals() async {
+    final service = aiAccess;
+    if (service == null) return;
+    await _loaded.future;
+    if (_disposed) return;
+    await _aiAuthority(service).askPendingApprovals();
   }
 
   AiLinkAuthority? _authority;
@@ -2395,6 +2410,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
     // change itself.
     final gone = recheck();
     if (gone != null) return no(gone);
+    // The Writer permission may have changed while this waited.
+    final permission = aiAccess?.writerPermission(req.box) ?? AiWriterPermission.append;
+    if (!permission.allows(req.mode)) return no(AiLinkCode.notPermitted);
     final box = page.node(req.box);
     if (box is! BoxRecord) return no(AiLinkCode.noBox);
     final r = modules.codecs.resolve(box);

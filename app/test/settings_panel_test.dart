@@ -224,7 +224,7 @@ void main() {
       expect(find.byKey(const ValueKey('settings-no-codes')), findsOneWidget);
     });
 
-    testWidgets('a binder has its own codes; sessions can be revoked; activity shows', (t) async {
+    testWidgets('a binder has its own codes; each shows its approval; activity shows, closed-app entries too', (t) async {
       final b = await binder(t, 'Work');
       await io(t, () => nb.setBinderAiAccess(b.path, AiAccess.privileged));
       final binderId = b.binder!.id;
@@ -235,12 +235,24 @@ void main() {
       );
       expect(code, startsWith('noted_'));
       final issued = service.codesFor(AiCodeTargetKind.binder, binderId).single;
+      // Old session data in the file is ignored.
       service.store.update(
         (d) => d.put(
           issued.copyWith(
             sessions: [AiCodeSession(id: 's1', app: 'Claude Code', approved: DateTime.utc(2026, 11, 1))],
           ),
         ),
+      );
+      service.mcpLog.writeAsStringSync(
+        '${AiMcpLogEntry(
+          time: DateTime.utc(2026, 11, 1, 11),
+          code: issued.id,
+          target: AiCodeTarget.binder(binderId),
+          op: 'search',
+          app: 'Cursor',
+          label: 'Binder chat',
+          result: 'pending_approval',
+        ).encode()}\n',
       );
       service.log.append(
         AiActivityEntry(
@@ -259,16 +271,17 @@ void main() {
       await pumpPanel(t, SettingsPanel.binder(notebook: nb, binderPath: b.path));
       expect(find.text('Binder chat'), findsOneWidget);
       expect(find.text('Other'), findsNothing);
-      expect(find.textContaining('Claude Code · approved'), findsOneWidget);
       expect(find.textContaining('Read page · Claude Code · Binder chat'), findsOneWidget);
+      expect(find.textContaining('Search · Cursor · Binder chat'), findsOneWidget, reason: 'logged while Noted was closed');
+      expect(find.byKey(ValueKey('settings-approval-${issued.id}')), findsOneWidget);
+      expect(find.text('Not approved yet'), findsOneWidget);
+      expect(find.byKey(const ValueKey('settings-session-s1')), findsNothing, reason: 'no session list any more');
 
-      await t.runAsync(() async {
-        await t.tap(find.byKey(const ValueKey('settings-session-revoke-s1')));
-        await realIoPause(50);
-      });
+      await io(t, () async => service.store.approveCode(issued.id, now: DateTime.utc(2026, 11, 2)));
+      service.changed();
       await t.pump();
-      expect(service.codesFor(AiCodeTargetKind.binder, binderId).single.sessions, isEmpty);
-      expect(find.byKey(const ValueKey('settings-session-s1')), findsNothing);
+      expect(find.text('Not approved yet'), findsNothing);
+      expect(find.textContaining('Approved '), findsOneWidget);
     });
 
     testWidgets('no Codes section unless Privileged, or codes exist to revoke', (t) async {
