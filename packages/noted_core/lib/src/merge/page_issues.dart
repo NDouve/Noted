@@ -219,8 +219,10 @@ NotedPage keepOther(NotedPage page, String boxId, {BoxConflict? conflict}) {
   // fixed height stay as this device has them.
   r = r.withBounds(box.bounds).withFixedHeight(box.fixedHeight);
   r = r.withConflicts(_without(box, c));
+  // The landed state is this box's too: a marker the recorded other version
+  // carried doesn't come back once this box's was cleared.
   final landed = box.landed;
-  if (landed != null && r.landed == null) r = r.withLanded(landed);
+  r = landed == null ? r.withoutLanded() : r.withLanded(landed);
   return page.replaceNode(r);
 }
 

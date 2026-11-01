@@ -604,6 +604,12 @@ void main() {
       expect(boxOf(keepOther(p, 'a'), 'a').landed, BoxLanded(at: 4));
     });
 
+    test('keepOther doesn\'t bring back a marker the recorded version carried', () {
+      final marked = other.withLanded(BoxLanded(at: 3));
+      final p = pageOf([a.withConflict(BoxConflict.other(node: marked.toRaw(), at: 8))]);
+      expect(boxOf(keepOther(p, 'a'), 'a').landed, isNull);
+    });
+
     test('clearLanded', () {
       final p = pageOf([a.withLanded(BoxLanded(at: 4))]);
       expect(boxOf(clearLanded(p, 'a'), 'a').toRaw().text, a.toRaw().text);
