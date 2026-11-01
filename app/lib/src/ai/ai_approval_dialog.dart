@@ -63,8 +63,10 @@ class _AiApprovalDialogState extends State<AiApprovalDialog> {
             SizedBox(height: space / 2),
             // The name on its own line, apart from the sentence, so a long or
             // odd one can't read as part of it.
+            // Labelled and quoted: the name may be text an AI wrote, so it must
+            // not read as the dialog's own words.
             Text(
-              r.reachName!,
+              'Shown in Noted as: "${r.reachName!}"',
               key: const ValueKey('ai-approval-reach'),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,

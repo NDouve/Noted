@@ -98,7 +98,7 @@ void main() {
     );
     // The name is apart from the sentence: muted, one line, cut with an ellipsis.
     final name = t.widget<Text>(find.byKey(const ValueKey('ai-approval-reach')));
-    expect(name.data, 'Research notes');
+    expect(name.data, 'Shown in Noted as: "Research notes"', reason: 'labelled and quoted, so it never reads as the dialog\'s words');
     expect(name.maxLines, 1);
     expect(name.overflow, TextOverflow.ellipsis);
     expect(name.style?.color, Theme.of(t.element(find.byType(AiApprovalDialog))).colorScheme.onSurfaceVariant);
