@@ -113,7 +113,10 @@ class FakeAccess extends ChangeNotifier implements AiBoxAccess {
   Future<void> revoke(String codeId) async {
     if (changeError != null) throw changeError!;
     revoked.add(codeId);
-    codes.removeWhere((c) => c.id == codeId);
+    // Like the app: the code stays, marked revoked.
+    for (var i = 0; i < codes.length; i++) {
+      if (codes[i].id == codeId && !codes[i].isRevoked) codes[i] = codes[i].copyWith(revoked: DateTime.now().toUtc());
+    }
     notifyListeners();
   }
 
@@ -169,7 +172,9 @@ AiCode codeOf(
   DateTime? lastUsed,
   DateTime? expires,
   DateTime? approved,
+  DateTime? revoked,
 }) => AiCode(
+  revoked: revoked,
   id: id,
   target: AiCodeTarget.box(boxId),
   roleName: role,
@@ -696,8 +701,74 @@ void main() {
       await t.tap(k('ai-revoke-confirm'));
       await t.pumpAndSettle();
       expect(access.revoked, ['a000000000000001']);
-      // The list refreshed from the access notification.
-      expect(k('ai-no-codes'), findsOneWidget);
+      // The list refreshed from the access notification: the row stays, as
+      // Revoked, without Revoke.
+      expect(k('ai-no-codes'), findsNothing);
+      expect(k('ai-revoke-a000000000000001'), findsNothing);
+      expect(t.widget<Text>(k('ai-revoked-a000000000000001')).data, startsWith('Revoked 20'));
+      expect(find.text('No chats'), findsOneWidget, reason: 'a revoked code is not a live chat');
+    });
+
+    testWidgets('a revoked code shows Revoked with its date, no Revoke and no approval, and its activity is marked', (t) async {
+      access.codes.add(
+        codeOf(
+          'a000000000000001',
+          'a',
+          approved: DateTime.utc(2026, 11, 1, 10),
+          expires: DateTime.utc(2030),
+          revoked: DateTime.utc(2026, 11, 2, 8),
+        ),
+      );
+      access.log.add(
+        AiActivityEntry(
+          time: DateTime.utc(2026, 11, 1, 11),
+          code: 'a000000000000001',
+          target: const AiCodeTarget.box('a'),
+          op: 'write_box',
+          app: 'Claude Code',
+          label: 'Feedback',
+          result: 'ok',
+          extra: const {'revoked': true},
+        ),
+      );
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      expect(t.widget<Text>(k('ai-revoked-a000000000000001')).data, 'Revoked 2026-11-02');
+      expect(k('ai-approval-a000000000000001'), findsNothing);
+      expect(k('ai-revoke-a000000000000001'), findsNothing);
+      expect(k('ai-expired-a000000000000001'), findsNothing);
+      expect(t.widget<Text>(k('ai-facts-a000000000000001')).data, isNot(contains('Expires')));
+      expect(find.textContaining('Write box · Claude Code · Feedback · code revoked'), findsOneWidget);
+    });
+
+    testWidgets('a revoked code is not the current Writer: Connect does not warn about it', (t) async {
+      access.codes.add(codeOf('a000000000000001', 'a', revoked: DateTime.utc(2026, 11, 2)));
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await t.tap(k('ai-box-connect'));
+      await t.pumpAndSettle();
+      await t.tap(k('ai-role-writer'));
+      await t.pumpAndSettle();
+      expect(k('ai-writer-warning'), findsNothing);
+    });
+
+    testWidgets('a long panel shows a scroll cue at the bottom while content continues, and not at the end', (t) async {
+      for (var i = 0; i < 6; i++) {
+        access.codes.add(codeOf('a00000000000010$i', 'a', label: 'Chat $i'));
+      }
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      double cue() => t.widget<AnimatedOpacity>(k('ai-scroll-cue')).opacity;
+      expect(cue(), 1, reason: 'more below');
+      await t.drag(find.descendant(of: find.byType(AlertDialog), matching: find.byType(SingleChildScrollView)), const Offset(0, -3000));
+      await t.pumpAndSettle();
+      expect(cue(), 0, reason: 'the end is in view');
+    });
+
+    testWidgets('a short panel shows no scroll cue', (t) async {
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      t.view.physicalSize = const Size(1200, 2400);
+      await open(t);
+      expect(t.widget<AnimatedOpacity>(k('ai-scroll-cue')).opacity, 0);
     });
 
     testWidgets('shows approval per code and no session rows', (t) async {

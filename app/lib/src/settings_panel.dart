@@ -686,7 +686,8 @@ class _CodesSection extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
     final muted = text.bodySmall?.copyWith(color: scheme.onSurfaceVariant);
-    final expired = c.isExpired(now);
+    final revoked = c.isRevoked;
+    final expired = !revoked && c.isExpired(now);
     final facts = [
       switch (c.role) {
         AiCodeRole.reader => 'Reader',
@@ -695,7 +696,7 @@ class _CodesSection extends StatelessWidget {
       },
       'Created ${_date(c.created)}',
       c.lastUsed == null ? 'Never used' : 'Last used ${_dateTime(c.lastUsed!)}',
-      if (c.expires != null && !expired) 'Expires ${_date(c.expires!)}',
+      if (c.expires != null && !expired && !revoked) 'Expires ${_date(c.expires!)}',
     ].join(' · ');
     return Padding(
       padding: EdgeInsets.only(top: m.space2),
@@ -719,13 +720,14 @@ class _CodesSection extends StatelessWidget {
                   padding: EdgeInsets.only(right: m.space2),
                   child: Text('Expired', key: ValueKey('settings-expired-${c.id}'), style: muted),
                 ),
-              IconButton(
-                key: ValueKey('settings-revoke-${c.id}'),
-                tooltip: 'Revoke',
-                visualDensity: VisualDensity.compact,
-                icon: Icon(Icons.block_rounded, size: m.icon, color: scheme.onSurfaceVariant),
-                onPressed: () => _revoke(context, c),
-              ),
+              if (!revoked)
+                IconButton(
+                  key: ValueKey('settings-revoke-${c.id}'),
+                  tooltip: 'Revoke',
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(Icons.block_rounded, size: m.icon, color: scheme.onSurfaceVariant),
+                  onPressed: () => _revoke(context, c),
+                ),
             ],
           ),
           Padding(
@@ -735,8 +737,12 @@ class _CodesSection extends StatelessWidget {
           Padding(
             padding: EdgeInsets.only(left: m.icon + m.space2),
             child: Text(
-              c.approved == null ? 'Not approved yet' : 'Approved ${_date(c.approved!)}',
-              key: ValueKey('settings-approval-${c.id}'),
+              revoked
+                  ? (c.revoked == null ? 'Revoked' : 'Revoked ${_date(c.revoked!)}')
+                  : c.approved == null
+                  ? 'Not approved yet'
+                  : 'Approved ${_date(c.approved!)}',
+              key: ValueKey(revoked ? 'settings-revoked-${c.id}' : 'settings-approval-${c.id}'),
               style: muted,
             ),
           ),
@@ -753,6 +759,7 @@ class _CodesSection extends StatelessWidget {
       if (e.app.isNotEmpty) e.app,
       if (e.label.isNotEmpty) e.label,
       if (e.extra['closed'] == true) 'while Noted was closed',
+      if (e.extra['revoked'] == true) 'code revoked',
     ].join(' · ');
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),

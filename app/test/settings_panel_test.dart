@@ -220,8 +220,65 @@ void main() {
         await realIoPause(50);
       });
       await t.pumpAndSettle();
-      expect(service.codesFor(AiCodeTargetKind.page, a), isEmpty);
-      expect(find.byKey(const ValueKey('settings-no-codes')), findsOneWidget);
+      // Revoked, not deleted: the row stays with its date and no Revoke button.
+      expect(service.codesFor(AiCodeTargetKind.page, a).single.isRevoked, isTrue);
+      expect(find.byKey(const ValueKey('settings-no-codes')), findsNothing);
+      expect(find.byKey(ValueKey('settings-revoke-$id')), findsNothing);
+      expect(t.widget<Text>(find.byKey(ValueKey('settings-revoked-$id'))).data, startsWith('Revoked 20'));
+      expect(find.byKey(ValueKey('settings-approval-$id')), findsNothing);
+      expect(
+        t.widget<Text>(find.byKey(ValueKey('settings-facts-$id'))).data,
+        isNot(contains('Expires')),
+      );
+    });
+
+    testWidgets('the activity of a revoked code stays, marked, in app and closed-app entries', (t) async {
+      final code = await io(t, () => service.issue(AiCodeTarget.page(a), role: AiCodeRole.reader, label: 'Gone chat'));
+      expect(code, startsWith('noted_'));
+      final id = service.codesFor(AiCodeTargetKind.page, a).single.id;
+      service.log.append(
+        AiActivityEntry(
+          time: DateTime.utc(2026, 11, 1, 10),
+          code: id,
+          target: AiCodeTarget.page(a),
+          op: 'read_page',
+          app: 'Claude Code',
+          label: 'Gone chat',
+          result: 'ok',
+        ),
+      );
+      service.mcpLog.writeAsStringSync(
+        '${AiMcpLogEntry(
+          time: DateTime.utc(2026, 11, 1, 11),
+          code: id,
+          target: AiCodeTarget.page(a),
+          op: 'search',
+          app: 'Cursor',
+          label: 'Gone chat',
+          result: 'ok',
+        ).encode()}\n',
+      );
+      // A line of a code that was never issued is still dropped.
+      service.mcpLog.writeAsStringSync(
+        '${AiMcpLogEntry(
+          time: DateTime.utc(2026, 11, 1, 12),
+          code: '0123456789abcdef',
+          target: AiCodeTarget.page(a),
+          op: 'search',
+          app: 'Stranger',
+          label: 'X',
+          result: 'ok',
+        ).encode()}\n',
+        mode: FileMode.append,
+      );
+      await io(t, () => service.revoke(id));
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: a));
+      expect(find.textContaining('Read page · Claude Code · Gone chat · code revoked'), findsOneWidget);
+      expect(
+        find.textContaining('Search · Cursor · Gone chat · while Noted was closed · code revoked'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Stranger'), findsNothing);
     });
 
     testWidgets('a binder has its own codes; each shows its approval; activity shows, closed-app entries too', (t) async {

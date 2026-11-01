@@ -165,7 +165,7 @@ void main() {
     });
     expect(writeError, isFalse, reason: written);
     expect(written, isNot(contains(writer)));
-    expect(approvals, ['noted end-to-end test 0 wants to read and write Feedback chat. Allow?']);
+    expect(approvals, ['noted end-to-end test 0 wants to read and write the AI box (code "Feedback chat"). Allow?']);
     String shown() => (nb.current!.page.node('aibox')! as BoxRecord).snapshotText;
     expect(shown(), contains('Ship the **AI box**.'));
     final open = codec.decode((nb.current!.page.node('aibox')! as BoxRecord).data!.decode(), 1);

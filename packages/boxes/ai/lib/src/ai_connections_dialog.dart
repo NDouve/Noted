@@ -9,6 +9,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'ai_box_access.dart';
 import 'ai_focus_ring.dart';
+import 'ai_scroll_cue.dart';
 
 /// Box header → connections: the box's codes (approved or not), the Writer
 /// permission, the Ask before each write and closed-app write switches, and
@@ -63,6 +64,9 @@ String _sentence(String s) {
 /// The wording of a code's approval.
 String aiApprovalLabel(AiCode c) =>
     c.approved == null ? 'Not approved yet' : 'Approved ${_date(c.approved!)}';
+
+/// The wording of a revoked code.
+String aiRevokedLabel(AiCode c) => c.revoked == null ? 'Revoked' : 'Revoked ${_date(c.revoked!)}';
 
 /// The wording of a code's role.
 String aiRoleLabel(AiCode c) => switch (c.role) {
@@ -133,7 +137,7 @@ class _AiConnectionsDialogState extends State<AiConnectionsDialog> {
         width: 520,
         child: ListenableBuilder(
           listenable: access,
-          builder: (context, _) => SingleChildScrollView(child: _body(context)),
+          builder: (context, _) => AiScrollCue(child: _body(context)),
         ),
       ),
       actions: [
@@ -296,13 +300,14 @@ class _AiConnectionsDialogState extends State<AiConnectionsDialog> {
     final m = NotedMetrics.of(context);
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
-    final expired = c.isExpired(now);
+    final revoked = c.isRevoked;
+    final expired = !revoked && c.isExpired(now);
     final muted = text.bodySmall?.copyWith(color: scheme.onSurfaceVariant);
     final facts = [
       aiRoleLabel(c),
       'Created ${_date(c.created)}',
       c.lastUsed == null ? 'Never used' : 'Last used ${_dateTime(c.lastUsed!)}',
-      if (c.expires != null && !expired) 'Expires ${_date(c.expires!)}',
+      if (c.expires != null && !expired && !revoked) 'Expires ${_date(c.expires!)}',
     ].join(' · ');
     return Padding(
       padding: EdgeInsets.only(bottom: m.space3),
@@ -326,20 +331,26 @@ class _AiConnectionsDialogState extends State<AiConnectionsDialog> {
                   padding: EdgeInsets.only(right: m.space2),
                   child: Text('Expired', key: ValueKey('ai-expired-${c.id}'), style: muted),
                 ),
-              IconButton(
-                key: ValueKey('ai-revoke-${c.id}'),
-                tooltip: 'Revoke',
-                visualDensity: VisualDensity.compact,
-                icon: Icon(Icons.block_rounded, size: m.icon, color: scheme.onSurfaceVariant),
-                onPressed: () => _revoke(context, c),
-              ),
+              if (!revoked)
+                IconButton(
+                  key: ValueKey('ai-revoke-${c.id}'),
+                  tooltip: 'Revoke',
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(Icons.block_rounded, size: m.icon, color: scheme.onSurfaceVariant),
+                  onPressed: () => _revoke(context, c),
+                ),
             ],
           ),
           Padding(
             padding: EdgeInsets.only(left: m.icon + m.space2),
             child: Text(facts, key: ValueKey('ai-facts-${c.id}'), style: muted),
           ),
-          if (!expired)
+          if (revoked)
+            Padding(
+              padding: EdgeInsets.only(left: m.icon + m.space2),
+              child: Text(aiRevokedLabel(c), key: ValueKey('ai-revoked-${c.id}'), style: muted),
+            )
+          else if (!expired)
             Padding(
               padding: EdgeInsets.only(left: m.icon + m.space2),
               child: Text(
@@ -362,6 +373,7 @@ class _AiConnectionsDialogState extends State<AiConnectionsDialog> {
       if (e.app.isNotEmpty) e.app,
       if (e.label.isNotEmpty) e.label,
       if (e.extra['closed'] == true) 'while Noted was closed',
+      if (e.extra['revoked'] == true) 'code revoked',
     ].join(' · ');
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),

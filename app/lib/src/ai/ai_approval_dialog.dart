@@ -73,12 +73,15 @@ class _AiApprovalDialogState extends State<AiApprovalDialog> {
       ),
       actions: [
         // Both are secondary buttons: Allow is not the heavier choice.
-        OutlinedButton(
-          key: const ValueKey('ai-approval-deny'),
-          // A stray Enter must not allow a request nobody expected.
-          autofocus: true,
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Deny'),
+        _FocusOutline(
+          key: const ValueKey('ai-approval-deny-focus'),
+          child: OutlinedButton(
+            key: const ValueKey('ai-approval-deny'),
+            // A stray Enter must not allow a request nobody expected.
+            autofocus: true,
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Deny'),
+          ),
         ),
         OutlinedButton(
           key: const ValueKey('ai-approval-allow'),
@@ -86,6 +89,41 @@ class _AiApprovalDialogState extends State<AiApprovalDialog> {
           child: const Text('Allow'),
         ),
       ],
+    );
+  }
+}
+
+/// A 2px accent outline around [child] while it (or a descendant) has focus,
+/// shown whatever drove the focus. The default Material focus fill is too
+/// faint on a light surface to tell which answer a stray Enter gives, and the
+/// dialog puts focus on Deny itself, so the outline is not left to the
+/// keyboard-only focus highlight.
+class _FocusOutline extends StatefulWidget {
+  const _FocusOutline({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  State<_FocusOutline> createState() => _FocusOutlineState();
+}
+
+class _FocusOutlineState extends State<_FocusOutline> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onFocusChange: (f) => setState(() => _focused = f),
+      child: DecoratedBox(
+        position: DecorationPosition.foreground,
+        decoration: BoxDecoration(
+          borderRadius: NotedMetrics.of(context).borderSm,
+          border: _focused ? Border.all(color: Theme.of(context).colorScheme.primary, width: 2) : null,
+        ),
+        child: widget.child,
+      ),
     );
   }
 }

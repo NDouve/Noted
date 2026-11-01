@@ -18,7 +18,13 @@ class AiApprovalRequest {
     required this.expired,
     this.preview,
     this.closedApp = false,
+    this.reach,
   });
+
+  /// What the code reaches, as a phrase (`the AI box "Research"`, `the page
+  /// "Plans" and its subpages`, `the binder "Work"`); null when it can't be
+  /// named, and the question then names only the code's label.
+  final String? reach;
 
   /// The MCP client's name.
   final String app;
@@ -46,11 +52,16 @@ class AiApprovalRequest {
 
   /// The question: "APP wants to read|read and write LABEL. Allow?" (the verb
   /// follows the code's role), or for a single write "APP wants to write to
-  /// LABEL. Allow?". A question about a request made while Noted was closed
-  /// says so.
+  /// LABEL. Allow?". With a [reach] it names what is reached and the code:
+  /// `APP wants to read the AI box "Research" (code "Research reader"). Allow?`.
+  /// A question about a request made while Noted was closed says so.
   String get message {
-    if (perWrite) return '$app wants to write to $label. Allow?';
-    final what = '$app wants to ${write ? 'read and write' : 'read'} $label.';
+    final r = reach;
+    if (perWrite) {
+      return r == null ? '$app wants to write to $label. Allow?' : '$app wants to write to $r (code "$label"). Allow?';
+    }
+    final verb = write ? 'read and write' : 'read';
+    final what = r == null ? '$app wants to $verb $label.' : '$app wants to $verb $r (code "$label").';
     return closedApp ? '$what It asked while Noted was closed. Allow?' : '$what Allow?';
   }
 }
@@ -97,6 +108,12 @@ abstract interface class AiLinkHost {
   /// The page that holds box [boxId], looking at [hint] first; null if none.
   /// The page's AI access is not looked at: a box is reached by its own code.
   Future<String?> aiPageOfBox(String boxId, {String? hint});
+
+  /// What [target] is called on screen, for the question put to the user: a
+  /// page's or binder's title, or the first line of a box's saved text (empty
+  /// for an empty box). Null if it can't be found. Never more than the user
+  /// already sees.
+  Future<String?> aiTargetName(AiCodeTarget target);
 
   /// The ids of the pages the code target covers that an AI with the code may
   /// read: Open or Privileged by effective access, never Guarded, never a page
@@ -335,6 +352,7 @@ class AiLinkAuthority {
         app: app,
         write: code.canWriteBox,
         label: code.label,
+        target: code.target,
         perWrite: false,
         closedApp: closedApp,
         deadline: deadline,
@@ -377,7 +395,7 @@ class AiLinkAuthority {
       } on AiAccessUnreadable {
         return;
       }
-      if (code == null || code.isApproved || code.isExpired(DateTime.now()) || _closedAsked.contains(id)) continue;
+      if (code == null || code.isRevoked || code.isApproved || code.isExpired(DateTime.now()) || _closedAsked.contains(id)) continue;
       final since = AiAccessService.pendingAnswered(code);
       AiMcpLogEntry? latest;
       for (final e in entries) {
@@ -406,7 +424,7 @@ class AiLinkAuthority {
       try {
         // Revoked or expired while the question was open: nothing to approve.
         final still = service.store.codes().where((c) => c.id == id).firstOrNull;
-        if (still == null || still.isExpired(DateTime.now())) continue;
+        if (still == null || still.isRevoked || still.isExpired(DateTime.now())) continue;
         service.store.approveCode(id);
         service.changed();
       } on Object {
@@ -422,6 +440,31 @@ class AiLinkAuthority {
 
   String _cleanName(String? name) => cleanAiAppName(name);
 
+  // What the code reaches, in words for the question: the AI box by its first
+  // line, the page or binder by its title (cut short, one line, no control
+  // characters). Null when it can't be named.
+  Future<String?> _reach(AiCodeTarget target) async {
+    final String? name;
+    try {
+      name = await host.aiTargetName(target);
+    } on Object {
+      return null;
+    }
+    if (name == null) return null;
+    var n = cleanAiAppName(name, fallback: '').replaceAll(RegExp(r'\s+'), ' ').replaceAll('"', "'");
+    if (n.length > 60) n = '${n.substring(0, 60).trimRight()}…';
+    switch (target.kind) {
+      case AiCodeTargetKind.box:
+        return n.isEmpty ? 'the AI box' : 'the AI box "$n"';
+      case AiCodeTargetKind.page:
+        return n.isEmpty ? 'the page and its subpages' : 'the page "$n" and its subpages';
+      case AiCodeTargetKind.binder:
+        return n.isEmpty ? 'the binder' : 'the binder "$n"';
+      case null:
+        return null;
+    }
+  }
+
   // Shows one question, when it is its turn and while the request has time.
   Future<_Answer> _ask({
     required String app,
@@ -429,6 +472,7 @@ class AiLinkAuthority {
     required String label,
     required bool perWrite,
     required DateTime deadline,
+    required AiCodeTarget target,
     String? preview,
     bool closedApp = false,
   }) async {
@@ -449,6 +493,7 @@ class AiLinkAuthority {
       gate.complete();
       return _Answer.none;
     }
+    final reach = await _reach(target);
     final expired = Completer<void>();
     final timer = Timer(time, () {
       if (!expired.isCompleted) expired.complete();
@@ -463,6 +508,7 @@ class AiLinkAuthority {
             perWrite: perWrite,
             preview: preview,
             closedApp: closedApp,
+            reach: reach,
             expired: expired.future,
           ),
         ),
@@ -496,6 +542,7 @@ class AiLinkAuthority {
                   app: _appName(req),
                   write: true,
                   label: code.label,
+                  target: code.target,
                   perWrite: true,
                   preview: _preview(req),
                   deadline: deadline,

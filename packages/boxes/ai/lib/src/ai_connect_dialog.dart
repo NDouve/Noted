@@ -115,7 +115,7 @@ class _AiConnectDialogState extends State<AiConnectDialog> {
 
   AiCode? _currentWriter() {
     for (final c in widget.access.connections(widget.boxId)) {
-      if (c.role == AiCodeRole.writer) return c;
+      if (c.role == AiCodeRole.writer && !c.isRevoked) return c;
     }
     return null;
   }

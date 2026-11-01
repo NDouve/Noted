@@ -160,6 +160,7 @@ final class AiCode {
     this.lastUsed,
     this.expires,
     this.approved,
+    this.revoked,
     this.sessions = const [],
     this.extra = const {},
     this.rawTimes = const {},
@@ -185,12 +186,18 @@ final class AiCode {
   /// session); null: not approved yet. It stays approved until the code is
   /// revoked or expires. An unparseable stored value counts as not approved.
   final DateTime? approved;
+
+  /// When the user revoked this code; null: not revoked. A revoked code stays
+  /// in the file so its history stays visible, but it is rejected like an
+  /// unknown one (`bad_code`). A stored `revoked` that isn't a valid time still
+  /// counts as revoked (the safe side).
+  final DateTime? revoked;
   final List<AiCodeSession> sessions;
 
   /// Fields this build doesn't know, kept when the code is written back.
   final Map<String, Object?> extra;
 
-  /// Present `created`, `lastUsed`, `expires` or `approved` values that are
+  /// Present `created`, `lastUsed`, `expires`, `approved` or `revoked` values that are
   /// not valid times, as stored; they are written back unchanged. An
   /// unparseable `expires` counts as expired (the safe side), an unparseable
   /// `approved` as not approved.
@@ -205,6 +212,9 @@ final class AiCode {
   /// Whether the code may read what it points at: a Reader or a Writer, on a
   /// known kind of target. Unknown roles and kinds grant nothing.
   bool get canRead => (role == AiCodeRole.reader || role == AiCodeRole.writer) && target.kind != null;
+
+  /// Whether the code was revoked ([revoked] is set, or stored unparseable).
+  bool get isRevoked => revoked != null || rawTimes.containsKey('revoked');
 
   bool isExpired(DateTime now) =>
       rawTimes.containsKey('expires') || (expires != null && !now.isBefore(expires!));
@@ -226,6 +236,7 @@ final class AiCode {
     String? label,
     DateTime? lastUsed,
     DateTime? approved,
+    DateTime? revoked,
     List<AiCodeSession>? sessions,
   }) => AiCode(
     id: id,
@@ -237,11 +248,17 @@ final class AiCode {
     lastUsed: lastUsed ?? this.lastUsed,
     expires: expires,
     approved: approved ?? this.approved,
+    revoked: revoked ?? this.revoked,
     sessions: sessions ?? this.sessions,
     extra: extra,
     rawTimes: {
       ...rawTimes,
-    }..removeWhere((k, _) => (k == 'lastUsed' && lastUsed != null) || (k == 'approved' && approved != null)),
+    }..removeWhere(
+      (k, _) =>
+          (k == 'lastUsed' && lastUsed != null) ||
+          (k == 'approved' && approved != null) ||
+          (k == 'revoked' && revoked != null),
+    ),
   );
 
   /// A copy with [expires] changed (null: never expires).
@@ -255,6 +272,7 @@ final class AiCode {
     lastUsed: lastUsed,
     expires: expires,
     approved: approved,
+    revoked: revoked,
     sessions: sessions,
     extra: extra,
     rawTimes: {...rawTimes}..remove('expires'),
@@ -280,8 +298,9 @@ final class AiCode {
       lastUsed: _time(json['lastUsed']),
       expires: _time(json['expires']),
       approved: _time(json['approved']),
+      revoked: _time(json['revoked']),
       rawTimes: {
-        for (final k in const ['created', 'lastUsed', 'expires', 'approved'])
+        for (final k in const ['created', 'lastUsed', 'expires', 'approved', 'revoked'])
           if (json[k] != null && _time(json[k]) == null) k: json[k],
       },
       sessions: [
@@ -289,7 +308,8 @@ final class AiCode {
           for (final s in sessions) ?AiCodeSession.fromJson(s),
       ],
       extra: _extras(json, const {
-        'id', 'target', 'role', 'label', 'hash', 'created', 'lastUsed', 'expires', 'approved', 'sessions',
+        'id', 'target', 'role', 'label', 'hash', 'created', 'lastUsed', 'expires', 'approved', 'revoked',
+        'sessions',
       }),
     );
   }
@@ -310,6 +330,7 @@ final class AiCode {
     'approved': rawTimes.containsKey('approved')
         ? rawTimes['approved']
         : (approved == null ? null : _iso(approved!)),
+    if (isRevoked) 'revoked': rawTimes.containsKey('revoked') ? rawTimes['revoked'] : _iso(revoked!),
     'sessions': [for (final s in sessions) s.toJson()],
     ...extra,
   };
@@ -317,7 +338,7 @@ final class AiCode {
 
 /// Why a code was not accepted.
 enum AiCodeFailure {
-  /// Malformed, unknown or revoked.
+  /// Malformed, unknown or revoked (a revoked code is still in the file).
   badCode,
 
   /// Past its expiry.
@@ -339,7 +360,7 @@ final class AiCodeVerdict {
 }
 
 /// Checks [code] (`noted_<id>_<key>`) against the stored [codes]: the shape,
-/// then the hash of the key in constant time, then the expiry (so an expired
+/// then the hash of the key in constant time, then revoked, then the expiry (so an expired
 /// code is only reported to a holder who has the key).
 AiCodeVerdict verifyAiCode(String code, Iterable<AiCode> codes, DateTime now) {
   final parsed = parseAiToken(code);
@@ -347,6 +368,7 @@ AiCodeVerdict verifyAiCode(String code, Iterable<AiCode> codes, DateTime now) {
   for (final c in codes) {
     if (c.id != parsed.id) continue;
     if (!aiKeyMatches(parsed.key, c.hash)) break;
+    if (c.isRevoked) break;
     if (c.isExpired(now)) return const AiCodeVerdict.rejected(AiCodeFailure.expired);
     return AiCodeVerdict.accepted(c);
   }

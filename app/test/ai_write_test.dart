@@ -348,7 +348,7 @@ void main() {
       expect(stored(t.code).approved, isNull);
       expect((await t.nb.handleAiLink(req('ba', t.code, content: 'one'))).ok, isTrue);
       expect(asked, hasLength(1));
-      expect(asked.single.message, 'Claude Code wants to read and write Work chat. Allow?');
+      expect(asked.single.message, 'Claude Code wants to read and write the AI box "old" (code "Work chat"). Allow?');
       expect(asked.single.perWrite, isFalse);
       expect(asked.single.closedApp, isFalse);
       expect((await t.nb.handleAiLink(req('ba', t.code, content: 'two'))).ok, isTrue);
@@ -370,6 +370,42 @@ void main() {
       expect(asked, hasLength(2));
     });
 
+    test('a revoked code stays in the file marked, is bad_code, and its use is not logged', () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code));
+      final id = stored(t.code).id;
+      final before = service.activityFor(AiCodeTargetKind.box, 'ba').length;
+      await service.revoke(id);
+      expect(stored(t.code).isRevoked, isTrue);
+      expect(stored(t.code).revoked, isNotNull);
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.badCode);
+      expect(asked, hasLength(1), reason: 'no question for a revoked code');
+      final activity = service.activityFor(AiCodeTargetKind.box, 'ba');
+      expect(activity, hasLength(before), reason: 'an unknown/revoked code is not logged');
+      expect(activity.every((e) => e.extra['revoked'] == true), isTrue, reason: 'its history is marked');
+    });
+
+    test('a new Writer retires the old one by marking it revoked', () async {
+      final t = await withBox();
+      final fresh = await issue('ba');
+      expect(stored(t.code).isRevoked, isTrue);
+      expect(stored(fresh).isRevoked, isFalse);
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.badCode);
+    });
+
+    test('the question names what it reaches: the box by its first line, cut short and on one line', () async {
+      final nb = make();
+      await nb.load();
+      nb.current!.insertBox(box('bl', text: '  \n"Quoted"   title ${'x' * 80}\nsecond'));
+      await nb.flush();
+      final code = await issue('bl', label: 'Chat');
+      await nb.handleAiLink(req('bl', code));
+      final message = asked.single.message;
+      expect(message, startsWith('Claude Code wants to read and write the AI box "\'Quoted\' title xxx'));
+      expect(message, contains('…" (code "Chat"). Allow?'));
+      expect(message, isNot(contains('second')));
+    });
+
     test('old sessions in the file are ignored: an unapproved code with a session still asks', () async {
       final t = await withBox();
       service.store.addSession(
@@ -384,19 +420,19 @@ void main() {
       final t = await withBox();
       final reader = await issue('ba', role: AiCodeRole.reader, label: 'Review chat');
       await t.nb.handleAiLink(AiLinkAccess(code: reader, session: 's9', app: 'Cursor', action: AiLinkAction.readBox, target: 'ba'));
-      expect(asked.single.message, 'Cursor wants to read Review chat. Allow?');
+      expect(asked.single.message, 'Cursor wants to read the AI box "old" (code "Review chat"). Allow?');
     });
 
     test('a request without an app name still reads well', () async {
       final t = await withBox();
       await t.nb.handleAiLink(req('ba', t.code, app: null));
-      expect(asked.single.message, 'An AI app wants to read and write Work chat. Allow?');
+      expect(asked.single.message, 'An AI app wants to read and write the AI box "old" (code "Work chat"). Allow?');
     });
 
     test('control characters in the app name become spaces', () async {
       final t = await withBox();
       await t.nb.handleAiLink(req('ba', t.code, app: 'Evil\n\u0007App x'));
-      expect(asked.single.message, 'Evil  App x wants to read and write Work chat. Allow?');
+      expect(asked.single.message, 'Evil  App x wants to read and write the AI box "old" (code "Work chat"). Allow?');
     });
 
     test('deny: not_approved, nothing written, nothing remembered', () async {
@@ -573,7 +609,7 @@ void main() {
     test('format characters in an app name are dropped', () async {
       final t = await withBox();
       await t.nb.handleAiLink(req('ba', t.code, app: 'Cla\u202Eude​ \u2066Code\u2069'));
-      expect(asked.single.message, 'Claude Code wants to read and write Work chat. Allow?');
+      expect(asked.single.message, 'Claude Code wants to read and write the AI box "old" (code "Work chat"). Allow?');
     });
 
     test('no answer in time: not_approved, and the question is told to close', () async {
@@ -601,7 +637,8 @@ void main() {
       };
       expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.badCode);
       expect(dataOf(t.nb, 'ba')['text'], 'old');
-      expect(service.store.codes(), isEmpty);
+      expect(service.store.codes().single.isRevoked, isTrue, reason: 'kept, marked revoked');
+      expect(service.store.codes().single.approved, isNull, reason: 'a revoked code is not approved');
     });
 
     test('expired while the question is open: refused', () async {
@@ -637,7 +674,7 @@ void main() {
       expect(asked, hasLength(2), reason: 'the session, then the write');
       final write = asked.last;
       expect(write.perWrite, isTrue);
-      expect(write.message, 'Claude Code wants to write to Work chat. Allow?');
+      expect(write.message, 'Claude Code wants to write to the AI box "old" (code "Work chat"). Allow?');
       expect(write.preview, 'Replace with: first');
 
       answer = (r) async => !r.perWrite;
@@ -834,8 +871,9 @@ void main() {
       final code = await issue('ba');
       await nb.createPage();
       // The folder disappears after the write has read the page (the lookup
-      // loads it once, the write once).
-      store.vanishOnLoad = store.loads + 2;
+      // loads it once, the write once; naming the box for the approval question
+      // takes two more).
+      store.vanishOnLoad = store.loads + 4;
 
       final r = await nb.handleAiLink(req('ba', code, content: 'new'));
       expect((r as AiLinkError).code, AiLinkCode.saveFailed);
@@ -1169,7 +1207,7 @@ void main() {
       final code = await service.issue(AiCodeTarget.page(t.a), role: AiCodeRole.reader, label: 'Pages');
       await access(t.nb, code, AiLinkAction.listPages);
       await access(t.nb, code, AiLinkAction.search, target: 'budget');
-      expect(asked.single.message, 'A wants to read Pages. Allow?');
+      expect(asked.single.message, 'A wants to read the page "Untitled page" and its subpages (code "Pages"). Allow?');
       final entries = service.activityFor(AiCodeTargetKind.page, t.a);
       expect(entries.map((e) => (e.op, e.result)), [('list_pages', 'ok'), ('search', 'ok')]);
     });
@@ -1219,10 +1257,19 @@ void main() {
       final reader = await issue('ba', role: AiCodeRole.reader, label: 'Reader');
       expect(service.connections('ba').map((c) => c.label), ['Work chat', 'Reader']);
       final writer2 = await issue('ba', label: 'Second');
-      expect(service.connections('ba').map((c) => c.label), ['Reader', 'Second']);
+      // The old Writer stays in the list, marked revoked.
+      expect(service.connections('ba').map((c) => (c.label, c.isRevoked)), [
+        ('Work chat', true),
+        ('Reader', false),
+        ('Second', false),
+      ]);
       expect(service.connections('other'), isEmpty);
       await service.revoke(stored(reader).id);
-      expect(service.connections('ba').map((c) => c.label), ['Second']);
+      expect(service.connections('ba').map((c) => (c.label, c.isRevoked)), [
+        ('Work chat', true),
+        ('Reader', true),
+        ('Second', false),
+      ]);
       expect(parseAiToken(writer2), isNotNull);
       expect(t.code, isNot(writer2));
     });
@@ -1265,7 +1312,7 @@ void main() {
       expect(service.codesFor(AiCodeTargetKind.page, 'p1').single.sessions, isEmpty);
       expect(service.activityFor(AiCodeTargetKind.page, 'p1'), isEmpty);
       await service.revoke(listed.id);
-      expect(service.codesFor(AiCodeTargetKind.page, 'p1'), isEmpty);
+      expect(service.codesFor(AiCodeTargetKind.page, 'p1').single.isRevoked, isTrue);
       expect(parseAiToken(code), isNotNull);
       await expectLater(
         service.issue(AiCodeTarget.page('p1'), role: AiCodeRole.writer, label: 'x'),
@@ -1367,7 +1414,7 @@ void main() {
       expect(asked.single.closedApp, isTrue);
       expect(
         asked.single.message,
-        'Claude Code wants to read and write Work chat. It asked while Noted was closed. Allow?',
+        'Claude Code wants to read and write the AI box "old" (code "Work chat"). It asked while Noted was closed. Allow?',
       );
       expect(stored(t.code).approved, isNotNull);
       // Approved: a request needs no further question.
@@ -1491,7 +1538,18 @@ void main() {
       await service.revoke(id);
       gate.complete(true);
       await done;
-      expect(service.store.codes(), isEmpty);
+      expect(service.store.codes().single.isRevoked, isTrue);
+      expect(service.store.codes().single.approved, isNull);
+    });
+
+    test('a revoked code that is still in the file is not asked about at startup', () async {
+      final t = await withBox();
+      final id = stored(t.code).id;
+      log(id);
+      await service.revoke(id);
+      await run(t.nb);
+      expect(asked, isEmpty);
+      expect(service.store.codes().single.approved, isNull);
     });
 
     test('with no log, or a log of bad lines, nothing is asked', () async {

@@ -99,9 +99,12 @@ void main() {
       final shown = service.activity('b1');
       expect(shown.map((e) => e.time.second), [1, 2]);
       expect(shown.last.app, 'Evil  App x');
-      // A revoked code's old entries are not shown either.
+      // A revoked code's old entries stay, marked revoked.
       service.store.revoke(codes['b1']!);
-      expect(service.activity('b1'), isEmpty);
+      final after = service.activity('b1');
+      expect(after.map((e) => e.time.second), [1, 2]);
+      expect(after.every((e) => e.extra['revoked'] == true), isTrue);
+      expect(after.where((e) => e.extra['closed'] == true), isNotEmpty);
     });
 
     test('a page or binder gets the entries about it, a refusal and a pending approval included', () {

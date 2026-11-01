@@ -197,6 +197,16 @@ void main() {
       expect(view.codes, hasLength(1));
     });
 
+    test('the read view rejects a revoked code but still lists it', () {
+      final c = store.issue(target: const AiCodeTarget.box('b'), role: AiCodeRole.reader, label: 'x', now: now);
+      store.approveCode(c.record.id, now: now);
+      store.revoke(c.record.id, now: now);
+      final view = AiAccessView.parse(file.readAsStringSync());
+      expect(view.verify(c.code, now).failure, AiCodeFailure.badCode);
+      expect(view.code(c.record.id)!.isRevoked, isTrue);
+      expect(view.codes, hasLength(1));
+    });
+
     test('an empty view has no codes; bad text is unreadable', () {
       final view = AiAccessView.empty();
       expect(view.codes, isEmpty);

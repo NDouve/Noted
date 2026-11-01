@@ -2307,6 +2307,39 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
   }
 
   @override
+  Future<String?> aiTargetName(AiCodeTarget target) async {
+    switch (target.kind) {
+      case AiCodeTargetKind.page:
+        return pageTitleOf(target.id);
+      case AiCodeTargetKind.binder:
+        return _binders.values.where((b) => b.binder?.id == target.id).firstOrNull?.title;
+      case AiCodeTargetKind.box:
+        final pageId = await aiPageOfBox(target.id, hint: target.page);
+        if (pageId == null) return null;
+        final Object? node;
+        final c = _current;
+        if (c != null && c.page.id == pageId) {
+          node = c.page.node(target.id);
+        } else {
+          final loc = _loc[pageId];
+          if (loc == null) return null;
+          try {
+            node = (await _storeOf(loc).load(pageId)).node(target.id);
+          } on Object {
+            return null;
+          }
+        }
+        // The box's saved plain-text snapshot: what a reader of the page sees.
+        for (final line in node is BoxRecord ? node.snapshotText.split(RegExp(r'\r?\n')) : const <String>[]) {
+          if (line.trim().isNotEmpty) return line;
+        }
+        return '';
+      case null:
+        return null;
+    }
+  }
+
+  @override
   List<String> aiReadablePages(AiCodeTarget target) {
     final Iterable<String> covered;
     switch (target.kind) {

@@ -35,7 +35,9 @@ AiCode codeOf(
   bool approved = true,
   DateTime? expires,
   String label = 'Test chat',
+  DateTime? revoked,
 }) => AiCode(
+  revoked: revoked,
   id: id,
   target: target,
   roleName: role,
@@ -232,6 +234,25 @@ void main() {
         expect(out.text, isNot(contains(c)));
       }
       expect(File('${data.path}/$aiMcpLogFileName').readAsStringSync(), before);
+    });
+
+    test('a revoked code that is still in the file is bad_code for reads and writes, and not logged', () async {
+      writeStore(
+        data,
+        [
+          codeOf(idReader, const AiCodeTarget.box('aiA', page: Ids.aiOpen), revoked: DateTime.utc(2026, 2, 1)),
+          codeOf(idPageCode, const AiCodeTarget.page(Ids.priv), revoked: DateTime.utc(2026, 2, 1)),
+        ],
+        allowClosed(),
+      );
+      final t = toolbox();
+      final box = await t.readBox('aiA', code: token(idReader));
+      expect(box.isError, isTrue);
+      expect(box.text, startsWith('The code is not valid'));
+      final page = await t.readPage(Ids.priv, code: token(idPageCode));
+      expect(page.isError, isTrue);
+      expect(page.text, startsWith('The code is not valid'));
+      expect(File('${data.path}/$aiMcpLogFileName').existsSync(), isFalse);
     });
 
     test('a store that cannot be read accepts no code and says so', () async {

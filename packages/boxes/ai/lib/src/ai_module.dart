@@ -322,7 +322,7 @@ class _AiHeader extends StatelessWidget {
                       final now = DateTime.now();
                       final live = access
                           .connections(boxId)
-                          .where((c) => !c.isExpired(now))
+                          .where((c) => !c.isRevoked && !c.isExpired(now))
                           .length;
                       final problem = access.problem != null;
                       final text = problem

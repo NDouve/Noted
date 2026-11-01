@@ -73,6 +73,71 @@ void main() {
     expect(find.byType(AiApprovalDialog), findsNothing);
   });
 
+  testWidgets('the question names what the code reaches, in the dialog', (t) async {
+    final key = GlobalKey<NavigatorState>();
+    await t.pumpWidget(
+      MaterialApp(navigatorKey: key, theme: buildNotedTheme(Brightness.light, touch: false), home: const SizedBox()),
+    );
+    final expired = Completer<void>();
+    final answer = showAiApprovalDialog(
+      key,
+      AiApprovalRequest(
+        app: 'Claude Code',
+        write: false,
+        label: 'Research reader',
+        perWrite: false,
+        reach: 'the AI box "Research notes"',
+        expired: expired.future,
+      ),
+    );
+    await t.pump(const Duration(milliseconds: 400));
+    expect(
+      t.widget<Text>(find.byKey(const ValueKey('ai-approval-message'))).data,
+      'Claude Code wants to read the AI box "Research notes" (code "Research reader"). Allow?',
+    );
+    await t.tap(find.byKey(const ValueKey('ai-approval-deny')));
+    await t.pump(const Duration(milliseconds: 400));
+    expect(await answer, isFalse);
+    expired.complete();
+  });
+
+  testWidgets('Deny shows a clear accent outline while focused, in the light theme too', (t) async {
+    final key = GlobalKey<NavigatorState>();
+    final theme = buildNotedTheme(Brightness.light, touch: false);
+    await t.pumpWidget(MaterialApp(navigatorKey: key, theme: theme, home: const SizedBox()));
+    final expired = Completer<void>();
+    final answer = showAiApprovalDialog(
+      key,
+      AiApprovalRequest(app: 'A', write: false, label: 'L', perWrite: false, expired: expired.future),
+    );
+    await t.pump(const Duration(milliseconds: 400));
+    // The outline is drawn even though the mouse, not the keyboard, last drove
+    // focus: Deny has focus by default and the cue says so.
+    FocusManager.instance.highlightStrategy = FocusHighlightStrategy.alwaysTouch;
+    await t.pump();
+    BoxDecoration outline() => t
+        .widget<DecoratedBox>(
+          find.descendant(
+            of: find.byKey(const ValueKey('ai-approval-deny-focus')),
+            matching: find.byType(DecoratedBox),
+          ).first,
+        )
+        .decoration as BoxDecoration;
+    final border = outline().border! as Border;
+    expect(border.top.width, 2);
+    expect(border.top.color, theme.colorScheme.primary);
+    // Not on Allow.
+    t.widget<OutlinedButton>(find.byKey(const ValueKey('ai-approval-allow')));
+    await t.sendKeyEvent(LogicalKeyboardKey.tab);
+    await t.pump();
+    expect(outline().border, isNull, reason: 'focus moved to Allow');
+    FocusManager.instance.highlightStrategy = FocusHighlightStrategy.automatic;
+    await t.tap(find.byKey(const ValueKey('ai-approval-deny')));
+    await t.pump(const Duration(milliseconds: 400));
+    expect(await answer, isFalse);
+    expired.complete();
+  });
+
   testWidgets('Deny is the focused default and Allow is not the heavier button', (t) async {
     final key = GlobalKey<NavigatorState>();
     await t.pumpWidget(

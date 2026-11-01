@@ -50,8 +50,9 @@ typedef AiIssuedCode = ({String code, AiCode record, List<String> retired});
 /// the stored codes).
 ///
 /// A Writer is for a box target only ([ArgumentError] otherwise). Issuing a
-/// Writer retires (removes from [codes]) the box's old Writer code; a box has
-/// one Writer at a time. Any number of Readers can exist.
+/// Writer retires the box's old live Writer code, marking it revoked at [now]
+/// in [codes] (its history stays); a box has one live Writer at a time. Any
+/// number of Readers can exist.
 AiIssuedCode issueAiCode(
   List<AiCode> codes, {
   required AiCodeTarget target,
@@ -68,11 +69,17 @@ AiIssuedCode issueAiCode(
   }
   final retired = <String>[];
   if (role == AiCodeRole.writer) {
-    codes.removeWhere((c) {
-      final old = c.role == AiCodeRole.writer && c.target.kind == AiCodeTargetKind.box && c.target.id == target.id;
-      if (old) retired.add(c.id);
-      return old;
-    });
+    for (var i = 0; i < codes.length; i++) {
+      final c = codes[i];
+      final old =
+          !c.isRevoked &&
+          c.role == AiCodeRole.writer &&
+          c.target.kind == AiCodeTargetKind.box &&
+          c.target.id == target.id;
+      if (!old) continue;
+      retired.add(c.id);
+      codes[i] = c.copyWith(revoked: (now ?? DateTime.now()).toUtc());
+    }
   }
   final token = newAiToken();
   final record = AiCode(

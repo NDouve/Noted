@@ -98,10 +98,17 @@ void main() {
     expect(w1.retired, isEmpty);
     final w2 = issueAiCode(codes, target: box, role: AiCodeRole.writer, label: 'two');
     expect(w2.retired, [w1.record.id]);
-    expect(codes.map((c) => c.id), [reader.record.id, other.record.id, w2.record.id]);
+    // The old one stays, marked revoked, so its history is kept.
+    expect(codes.map((c) => c.id), [w1.record.id, reader.record.id, other.record.id, w2.record.id]);
+    expect(codes.first.isRevoked, isTrue);
+    expect(codes.where((c) => c.isRevoked), hasLength(1));
     // The old code no longer verifies.
     expect(verifyAiCode(w1.code, codes, now).failure, AiCodeFailure.badCode);
     expect(verifyAiCode(w2.code, codes, now).ok, isTrue);
+    // A third Writer retires only the live one.
+    final w3 = issueAiCode(codes, target: box, role: AiCodeRole.writer, label: 'three');
+    expect(w3.retired, [w2.record.id]);
+    expect(codes.where((c) => c.isRevoked), hasLength(2));
   });
 
   test('verification: shape, unknown id, wrong key, expiry', () {
@@ -185,6 +192,37 @@ void main() {
     })!;
     expect(plain.isExpired(now), isFalse);
     expect(plain.toJson()['expires'], isNull);
+  });
+
+  test('a revoked code is kept, rewritten as written and rejected as bad_code', () {
+    Map<String, Object?> stored(Object? revoked) => {
+      'id': id,
+      'target': {'kind': 'box', 'id': 'b'},
+      'role': 'reader',
+      'hash': aiKeyHash(key),
+      'created': now.toIso8601String(),
+      'revoked': ?revoked,
+    };
+    final live = AiCode.fromJson(stored(null))!;
+    expect(live.isRevoked, isFalse);
+    expect(live.toJson().containsKey('revoked'), isFalse);
+    final at = DateTime.utc(2026, 3, 4, 5);
+    final c = AiCode.fromJson(stored(at.toIso8601String()))!;
+    expect(c.isRevoked, isTrue);
+    expect(c.revoked, at);
+    expect(c.toJson()['revoked'], at.toIso8601String());
+    expect(c.copyWith(lastUsed: now).revoked, at);
+    expect(c.withExpires(null).revoked, at);
+    expect(verifyAiCode('noted_${id}_$key', [c], now).failure, AiCodeFailure.badCode);
+    expect(verifyAiCode('noted_${id}_$key', [live], now).ok, isTrue);
+    // A revoked code with a time that does not parse is still revoked, as written.
+    final odd = AiCode.fromJson(stored('last tuesday'))!;
+    expect(odd.isRevoked, isTrue);
+    expect(odd.toJson()['revoked'], 'last tuesday');
+    expect(verifyAiCode('noted_${id}_$key', [odd], now).failure, AiCodeFailure.badCode);
+    // Revoked beats expired: the holder learns nothing beyond bad_code.
+    final both = AiCode.fromJson({...stored(at.toIso8601String()), 'expires': '2000-01-01T00:00:00Z'})!;
+    expect(verifyAiCode('noted_${id}_$key', [both], now).failure, AiCodeFailure.badCode);
   });
 
   test('a code with an unknown target kind grants nothing', () {

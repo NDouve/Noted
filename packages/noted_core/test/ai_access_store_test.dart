@@ -56,15 +56,22 @@ void main() {
     expect(store.codes().single.sessions.map((s) => s.id), ['s1']);
 
     expect(store.revoke(issued.record.id), isTrue);
-    expect(store.revoke(issued.record.id), isFalse);
+    // Revoking keeps the code, marked, so its history stays.
+    final revokedAt = store.codes().single.revoked;
+    expect(revokedAt, isNotNull);
+    expect(store.revoke(issued.record.id), isFalse, reason: 'already revoked');
+    expect(store.codes().single.revoked, revokedAt, reason: 'the first time is kept');
+    expect(store.revoke('0000000000000000'), isFalse);
     expect(store.verify(issued.code).failure, AiCodeFailure.badCode);
+    expect((onDisk()['codes'] as List).single['revoked'], isA<String>());
   });
 
   test('a new Writer retires the old one in the file', () {
     final a = store.issue(target: const AiCodeTarget.box('b'), role: AiCodeRole.writer, label: 'a');
     final r = store.issue(target: const AiCodeTarget.box('b'), role: AiCodeRole.reader, label: 'r');
     final b = store.issue(target: const AiCodeTarget.box('b'), role: AiCodeRole.writer, label: 'b');
-    expect(store.codes().map((c) => c.id), [r.record.id, b.record.id]);
+    expect(store.codes().map((c) => c.id), [a.record.id, r.record.id, b.record.id]);
+    expect(store.codes().first.isRevoked, isTrue);
     expect(store.verify(a.code).ok, isFalse);
     expect(store.verify(b.code).ok, isTrue);
     expect(store.verify(r.code).ok, isTrue);

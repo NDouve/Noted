@@ -177,8 +177,21 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
   /// MCP server did while Noted was closed (those entries carry
   /// `extra['closed'] == true`).
   List<AiActivityEntry> activityFor(AiCodeTargetKind kind, String id) {
-    final own = log.entriesFor(kind, id);
     final known = {for (final c in codesFor(kind, id)) c.id: c};
+    // An entry of a revoked code stays, marked (`extra['revoked']`).
+    AiActivityEntry mark(AiActivityEntry e) => known[e.code]?.isRevoked ?? false
+        ? AiActivityEntry(
+            time: e.time,
+            code: e.code,
+            target: e.target,
+            op: e.op,
+            app: e.app,
+            label: e.label,
+            result: e.result,
+            extra: {...e.extra, 'revoked': true},
+          )
+        : e;
+    final own = [for (final e in log.entriesFor(kind, id)) mark(e)];
     final closed = [
       for (final e in mcpLogEntries())
         // Only entries of a code that exists for this target: the file is
@@ -193,7 +206,7 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
             // The code's name now, not the one the server saw.
             label: known[e.code]!.label,
             result: e.result,
-            extra: const {'closed': true},
+            extra: {'closed': true, if (known[e.code]!.isRevoked) 'revoked': true},
           ),
     ];
     if (closed.isEmpty) return own;
@@ -230,6 +243,7 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
         lastUsed: c.lastUsed,
         expires: c.expires,
         approved: c.approved,
+        revoked: c.revoked,
         sessions: c.sessions,
         extra: {...c.extra, 'pendingAnswered': at.toUtc().toIso8601String()},
         rawTimes: c.rawTimes,

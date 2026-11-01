@@ -20,6 +20,7 @@ export 'locked_file.dart' show FileLockTimeout;
 ///  "codes":[{"id":"…","target":{"kind":"box","id":"…","page":"…"},
 ///            "role":"writer","label":"…","hash":"…","created":"ISO",
 ///            "lastUsed":"ISO|null","expires":"ISO|null","approved":"ISO|null",
+///            "revoked":"ISO (only once revoked)",
 ///            "sessions":[…kept as written, no longer used…]}],
 ///  "boxes":{"<boxId>":{"askBeforeWrite":true,"writerPermission":"edit",
 ///                      "closedWrites":true}}}
@@ -79,6 +80,15 @@ final class AiAccessDoc {
     return _codeList.length != before;
   }
 
+  /// Marks the code [id] revoked at [now]. Returns whether there was a live
+  /// one.
+  bool revoke(String id, DateTime now) {
+    final c = code(id);
+    if (c == null || c.isRevoked) return false;
+    put(c.copyWith(revoked: now.toUtc()));
+    return true;
+  }
+
   /// Issues a code (see [issueAiCode]), adding it to the document and
   /// retiring the box's old Writer. Returns the one-time code string and the
   /// record.
@@ -91,8 +101,9 @@ final class AiAccessDoc {
   }) {
     final list = codes;
     final result = issueAiCode(list, target: target, role: role, label: label, expires: expires, now: now);
-    for (final id in result.retired) {
-      remove(id);
+    // The retired Writers come back from the list marked revoked.
+    for (final c in list) {
+      if (result.retired.contains(c.id)) put(c);
     }
     put(result.record);
     return result;
@@ -230,8 +241,10 @@ final class AiAccessStore {
     }
   }
 
-  /// Revokes (deletes) the code [id]. Returns whether there was one.
-  bool revoke(String id) => update((d) => d.remove(id));
+  /// Revokes the code [id]: it stays in the file marked `revoked` (so its
+  /// history stays) and is rejected from then on. Returns whether there was a
+  /// live one; revoking a revoked code keeps its first time.
+  bool revoke(String id, {DateTime? now}) => update((d) => d.revoke(id, now ?? DateTime.now()));
 
   /// Notes that the code [id] was used at [now].
   void recordUse(String id, {DateTime? now}) => update((d) {
