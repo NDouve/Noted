@@ -226,6 +226,32 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
   }
 
   @override
+  AiWriterPermission writerPermission(String boxId) => store.writerPermission(boxId);
+
+  @override
+  Future<void> setWriterPermission(String boxId, AiWriterPermission value) async {
+    try {
+      store.setWriterPermission(boxId, value);
+      changed();
+    } on Object catch (e) {
+      throw _failure(e);
+    }
+  }
+
+  @override
+  bool closedWrites(String boxId) => store.closedWrites(boxId);
+
+  @override
+  Future<void> setClosedWrites(String boxId, bool value) async {
+    try {
+      store.setClosedWrites(boxId, value);
+      changed();
+    } on Object catch (e) {
+      throw _failure(e);
+    }
+  }
+
+  @override
   List<AiActivityEntry> activity(String boxId) => activityFor(AiCodeTargetKind.box, boxId);
 
   @override

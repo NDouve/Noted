@@ -41,7 +41,19 @@ abstract class AiBoxAccess implements Listenable {
 
   Future<void> setAskBeforeWrite(String boxId, bool value);
 
-  /// The box's activity log, newest last.
+  /// What the box's Writer code may do (default [AiWriterPermission.append]).
+  AiWriterPermission writerPermission(String boxId);
+
+  Future<void> setWriterPermission(String boxId, AiWriterPermission value);
+
+  /// Whether `noted_mcp` may write this box itself while Noted is closed,
+  /// without a question. Always false while [askBeforeWrite] is on.
+  bool closedWrites(String boxId);
+
+  Future<void> setClosedWrites(String boxId, bool value);
+
+  /// The box's activity log, newest last, including what `noted_mcp` did
+  /// while Noted was closed ([AiActivityEntry.extra] `"closed": true`).
   List<AiActivityEntry> activity(String boxId);
 
   /// A short message when the store can't be read right now, else null.
@@ -73,6 +85,18 @@ final class NoAiBoxAccess extends ChangeNotifier implements AiBoxAccess {
 
   @override
   Future<void> setAskBeforeWrite(String boxId, bool value) async {}
+
+  @override
+  AiWriterPermission writerPermission(String boxId) => AiWriterPermission.append;
+
+  @override
+  Future<void> setWriterPermission(String boxId, AiWriterPermission value) async {}
+
+  @override
+  bool closedWrites(String boxId) => false;
+
+  @override
+  Future<void> setClosedWrites(String boxId, bool value) async {}
 
   @override
   List<AiActivityEntry> activity(String boxId) => const [];

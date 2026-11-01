@@ -132,6 +132,29 @@ class FakeAccess extends ChangeNotifier implements AiBoxAccess {
     notifyListeners();
   }
 
+  final Map<String, AiWriterPermission> permission = {};
+  final Map<String, bool> closed = {};
+
+  @override
+  AiWriterPermission writerPermission(String boxId) => permission[boxId] ?? AiWriterPermission.append;
+
+  @override
+  Future<void> setWriterPermission(String boxId, AiWriterPermission value) async {
+    if (changeError != null) throw changeError!;
+    permission[boxId] = value;
+    notifyListeners();
+  }
+
+  @override
+  bool closedWrites(String boxId) => !(ask[boxId] ?? false) && (closed[boxId] ?? false);
+
+  @override
+  Future<void> setClosedWrites(String boxId, bool value) async {
+    if (changeError != null) throw changeError!;
+    closed[boxId] = value;
+    notifyListeners();
+  }
+
   @override
   List<AiActivityEntry> activity(String boxId) => log;
 }
