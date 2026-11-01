@@ -2,6 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
+import 'dart:io' show FileSystemException;
+
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -13,7 +16,6 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 const ownerId = '0123456789abcdef';
-const otherId = 'fedcba9876543210';
 
 Map<String, Object?> para(String text) => {
   'type': 'paragraph',
@@ -52,21 +54,121 @@ List<Map<String, Object?>> storedBlocks(CanvasController c, String id) =>
     (((storedOf(c, id)['document']! as Map)['children']!) as List)
         .cast<Map<String, Object?>>();
 
+/// An in-memory [AiBoxAccess] that records what the box asks of it.
+class FakeAccess extends ChangeNotifier implements AiBoxAccess {
+  final List<AiCode> codes = [];
+  final Map<String, bool> ask = {};
+  final List<AiActivityEntry> log = [];
+  final List<({String box, AiCodeRole role, String label, DateTime? expires})> connects = [];
+  final List<String> revoked = [];
+  final List<(String, String)> sessionsRevoked = [];
+  Object? connectError;
+
+  /// Thrown by revoke, revokeSession and setAskBeforeWrite.
+  Object? changeError;
+
+  /// When set, connect waits for it.
+  Completer<void>? gate;
+  String nextCode = 'noted_0123456789abcdef_secretkey';
+
+  @override
+  String? problem;
+
+  void change() => notifyListeners();
+
+  @override
+  List<AiCode> connections(String boxId) => [
+    for (final c in codes)
+      if (c.target.id == boxId) c,
+  ];
+
+  @override
+  Future<String> connect(
+    String boxId, {
+    required AiCodeRole role,
+    required String label,
+    DateTime? expires,
+  }) async {
+    await gate?.future;
+    final error = connectError;
+    if (error != null) throw error;
+    connects.add((box: boxId, role: role, label: label, expires: expires));
+    codes.add(
+      AiCode(
+        id: 'c${codes.length}'.padRight(16, '0'),
+        target: AiCodeTarget.box(boxId),
+        roleName: role.wire,
+        label: label,
+        hash: 'h',
+        created: DateTime.now(),
+        expires: expires,
+      ),
+    );
+    notifyListeners();
+    return nextCode;
+  }
+
+  @override
+  Future<void> revoke(String codeId) async {
+    if (changeError != null) throw changeError!;
+    revoked.add(codeId);
+    codes.removeWhere((c) => c.id == codeId);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> revokeSession(String codeId, String sessionId) async {
+    if (changeError != null) throw changeError!;
+    sessionsRevoked.add((codeId, sessionId));
+  }
+
+  @override
+  bool askBeforeWrite(String boxId) => ask[boxId] ?? false;
+
+  @override
+  Future<void> setAskBeforeWrite(String boxId, bool value) async {
+    if (changeError != null) throw changeError!;
+    ask[boxId] = value;
+    notifyListeners();
+  }
+
+  @override
+  List<AiActivityEntry> activity(String boxId) => log;
+}
+
+AiCode codeOf(
+  String id,
+  String boxId, {
+  String role = 'writer',
+  String label = 'Feedback – work chat',
+  DateTime? created,
+  DateTime? lastUsed,
+  DateTime? expires,
+  List<AiCodeSession> sessions = const [],
+}) => AiCode(
+  id: id,
+  target: AiCodeTarget.box(boxId),
+  roleName: role,
+  label: label,
+  hash: 'h',
+  created: created ?? DateTime.utc(2026, 11, 1, 9, 30),
+  lastUsed: lastUsed,
+  expires: expires,
+  sessions: sessions,
+);
+
 void main() {
-  late ValueNotifier<List<AiConnectionInfo>> connections;
+  late FakeAccess access;
   late ModuleRegistry modules;
 
-  const mine = AiConnectionInfo(id: ownerId, name: 'Claude Code', createdAt: 1);
-  const other = AiConnectionInfo(id: otherId, name: 'Notes helper', createdAt: 2);
-
   setUp(() {
-    connections = ValueNotifier(const [mine, other]);
+    access = FakeAccess();
     modules = ModuleRegistry()
       ..register(const NoteModule(), alwaysOn: true, isDefault: true)
-      ..register(AiModule(connections: connections));
+      ..register(AiModule(access: access));
   });
 
-  tearDown(() => connections.dispose());
+  tearDown(() => access.dispose());
 
   Future<(CanvasController, GlobalKey<PageCanvasState>)> pump(
     WidgetTester t,
@@ -99,8 +201,12 @@ void main() {
   }
 
   Finder marks() => find.byKey(const ValueKey('note-block-mark'));
-  Text ownerText(WidgetTester t) =>
-      t.widget<Text>(find.byKey(const ValueKey('ai-box-owner')));
+  Finder k(String key) => find.byKey(ValueKey(key));
+  Future<void> typeLabel(WidgetTester t, String text) async {
+    await t.enterText(k('ai-label'), text);
+    // The Create button follows the text.
+    await t.pump();
+  }
 
   group('the box', () {
     testWidgets('has an AI label and shows its content', (t) async {
@@ -157,97 +263,519 @@ void main() {
         c.page.node('marked')!.bounds!.height,
       );
     });
-  });
 
-  group('Connected AI', () {
-    testWidgets('shows the owner by name', (t) async {
-      await pump(t, pageOf([aiRecord('a', [para('x')], owner: ownerId)]));
-      expect(ownerText(t).data, 'Claude Code');
-    });
-
-    testWidgets('no owner, or an owner that is not listed: No connected AI', (
-      t,
-    ) async {
-      await pump(t, pageOf([aiRecord('a', [para('x')])]));
-      expect(ownerText(t).data, 'No connected AI');
+    testWidgets('consecutive marked blocks draw one unbroken 2 px bar', (t) async {
       await pump(
         t,
-        pageOf([aiRecord('a', [para('x')], owner: 'aaaaaaaaaaaaaaaa')]),
+        pageOf([
+          aiRecord('a', [
+            markAiWritten(para('first')),
+            markAiWritten(para('second')),
+            markAiWritten(para('third')),
+          ]),
+        ]),
       );
-      expect(ownerText(t).data, 'No connected AI');
+      expect(marks(), findsNWidgets(3));
+      final rects = [for (var i = 0; i < 3; i++) t.getRect(marks().at(i))];
+      for (final r in rects) {
+        expect(r.width, 2);
+        expect(r.left, rects.first.left);
+      }
+      rects.sort((x, y) => x.top.compareTo(y.top));
+      expect(rects[0].bottom, closeTo(rects[1].top, 0.5));
+      expect(rects[1].bottom, closeTo(rects[2].top, 0.5));
     });
 
-    testWidgets('a revoked connection leaves the box user-owned, content kept', (
-      t,
-    ) async {
+    testWidgets('the bar stays left of the text, inside the box', (t) async {
+      await pump(
+        t,
+        pageOf([
+          aiRecord('a', [
+            markAiWritten({
+              'type': 'bulleted_list',
+              'data': {
+                'delta': [
+                  {'insert': 'a bullet'},
+                ],
+              },
+            }),
+          ]),
+        ]),
+      );
+      final bar = t.getRect(marks());
+      final glyph = t.getRect(find.text('●'));
+      final box = t.getRect(find.byKey(const ValueKey('ai-box-label')));
+      expect(bar.right, lessThanOrEqualTo(glyph.left));
+      expect(bar.left, greaterThanOrEqualTo(box.left - 8));
+    });
+  });
+
+  group('connecting a chat', () {
+    Future<void> openConnect(WidgetTester t) async {
+      await t.tap(k('ai-box-connect'));
+      await t.pumpAndSettle();
+    }
+
+    testWidgets('the header has Connect a chat and the connections indicator', (t) async {
+      access.codes.add(codeOf('a000000000000001', 'a'));
+      access.codes.add(codeOf('a000000000000002', 'a', role: 'reader'));
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      expect(find.text('Connect a chat'), findsOneWidget);
+      expect(find.text('2 chats'), findsOneWidget);
+      access.codes.clear();
+      access.change();
+      await t.pump();
+      expect(find.text('No chats'), findsOneWidget);
+    });
+
+    testWidgets('an expired code is not counted in the indicator', (t) async {
+      access.codes.add(codeOf('a000000000000001', 'a', expires: DateTime.utc(2000)));
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      expect(find.text('No chats'), findsOneWidget);
+    });
+
+    for (final role in AiCodeRole.values) {
+      testWidgets('a ${role.name} is issued with its label and no expiry', (t) async {
+        await pump(t, pageOf([aiRecord('a', [para('x')])]));
+        await openConnect(t);
+        await t.tap(k('ai-role-${role.name}'));
+        await t.pumpAndSettle();
+        await typeLabel(t, '  Feedback – work chat ');
+        await t.tap(k('ai-connect-create'));
+        await t.pumpAndSettle();
+        expect(access.connects, hasLength(1));
+        final c = access.connects.single;
+        expect(c.box, 'a');
+        expect(c.role, role);
+        expect(c.label, 'Feedback – work chat');
+        expect(c.expires, isNull);
+        // The code is shown once, under a title naming the connection.
+        expect(find.text('Code for Feedback – work chat'), findsOneWidget);
+        expect(find.text(access.nextCode), findsOneWidget);
+        expect(find.textContaining('only once'), findsOneWidget);
+        expect(find.textContaining('only on this computer'), findsOneWidget);
+      });
+    }
+
+    testWidgets('Enter in the label field submits', (t) async {
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await openConnect(t);
+      await t.tap(k('ai-role-reader'));
+      await t.pumpAndSettle();
+      await typeLabel(t, 'Reading group');
+      await t.testTextInput.receiveAction(TextInputAction.done);
+      await t.pumpAndSettle();
+      expect(access.connects.single.label, 'Reading group');
+      expect(k('ai-code'), findsOneWidget);
+    });
+
+    testWidgets('an empty label is not submitted', (t) async {
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await openConnect(t);
+      await t.tap(k('ai-role-writer'));
+      await t.pumpAndSettle();
+      await typeLabel(t, '   ');
+      await t.testTextInput.receiveAction(TextInputAction.done);
+      await t.pumpAndSettle();
+      expect(access.connects, isEmpty);
+      expect(t.widget<FilledButton>(k('ai-connect-create')).onPressed, isNull);
+    });
+
+    for (final days in [1, 7, 30]) {
+      testWidgets('an expiry of $days days is passed on', (t) async {
+        await pump(t, pageOf([aiRecord('a', [para('x')])]));
+        await openConnect(t);
+        await t.tap(k('ai-role-reader'));
+        await t.pumpAndSettle();
+        await typeLabel(t, 'Temp');
+        await t.tap(k('ai-expiry-$days'));
+        await t.pump();
+        final before = DateTime.now();
+        await t.tap(k('ai-connect-create'));
+        await t.pumpAndSettle();
+        final e = access.connects.single.expires!;
+        final span = e.difference(before);
+        expect(span, greaterThan(Duration(days: days) - const Duration(minutes: 1)));
+        expect(span, lessThan(Duration(days: days) + const Duration(minutes: 1)));
+      });
+    }
+
+    testWidgets('the code stays until Done: Escape and a click outside keep it', (t) async {
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await openConnect(t);
+      await t.tap(k('ai-role-writer'));
+      await t.pumpAndSettle();
+      await typeLabel(t, 'Chat');
+      await t.tap(k('ai-connect-create'));
+      await t.pumpAndSettle();
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await t.pumpAndSettle();
+      expect(k('ai-code'), findsOneWidget);
+      await t.tapAt(const Offset(4, 4));
+      await t.pumpAndSettle();
+      expect(k('ai-code'), findsOneWidget);
+      String? copied;
+      t.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied = (call.arguments as Map)['text'] as String?;
+        }
+        return null;
+      });
+      addTearDown(
+        () => t.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+      await t.tap(k('ai-copy'));
+      await t.pumpAndSettle();
+      expect(copied, access.nextCode);
+      expect(find.text('Copied'), findsOneWidget);
+      await t.tap(k('ai-code-done'));
+      await t.pumpAndSettle();
+      expect(k('ai-code'), findsNothing);
+      expect(find.text(access.nextCode), findsNothing);
+    });
+
+    testWidgets('issuing a Writer when one exists warns', (t) async {
+      access.codes.add(codeOf('a000000000000001', 'a', label: 'Old chat'));
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await openConnect(t);
+      await t.tap(k('ai-role-writer'));
+      await t.pumpAndSettle();
+      expect(k('ai-writer-warning'), findsOneWidget);
+      expect(find.textContaining('Old chat'), findsOneWidget);
+      expect(find.textContaining('stops working'), findsOneWidget);
+      // A Reader needs no warning.
+      await t.tap(k('ai-connect-back'));
+      await t.pumpAndSettle();
+      await t.tap(k('ai-role-reader'));
+      await t.pumpAndSettle();
+      expect(k('ai-writer-warning'), findsNothing);
+    });
+
+    testWidgets('a Reader-only box gives no Writer warning', (t) async {
+      access.codes.add(codeOf('a000000000000001', 'a', role: 'reader'));
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await openConnect(t);
+      await t.tap(k('ai-role-writer'));
+      await t.pumpAndSettle();
+      expect(k('ai-writer-warning'), findsNothing);
+    });
+
+    testWidgets('a failure to issue shows its message and no code', (t) async {
+      access.connectError = StateError('Could not save the code.');
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await openConnect(t);
+      await t.tap(k('ai-role-writer'));
+      await t.pumpAndSettle();
+      await typeLabel(t, 'Chat');
+      await t.tap(k('ai-connect-create'));
+      await t.pumpAndSettle();
+      expect(find.text('Could not save the code.'), findsOneWidget);
+      expect(k('ai-code'), findsNothing);
+    });
+
+    testWidgets('without AI access Connect is off and says why', (t) async {
+      modules = ModuleRegistry()
+        ..register(const NoteModule(), alwaysOn: true, isDefault: true)
+        ..register(AiModule());
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      expect(t.widget<TextButton>(k('ai-box-connect')).onPressed, isNull);
+      expect(k('ai-box-connections'), findsNothing);
+      await t.longPress(k('ai-box-connect'));
+      await t.pumpAndSettle();
+      expect(find.text('AI connections are not available here'), findsOneWidget);
+    });
+
+    testWidgets('a read-only page has no Connect control but shows connections', (t) async {
+      access.codes.add(codeOf('a000000000000001', 'a'));
+      await pump(
+        t,
+        pageOf([aiRecord('a', [para('x')])]),
+        readOnly: true,
+      );
+      expect(k('ai-box-connect'), findsNothing);
+      expect(find.text('1 chat'), findsOneWidget);
+    });
+
+    testWidgets('works in dark mode', (t) async {
+      await pump(
+        t,
+        pageOf([aiRecord('a', [para('x')])]),
+        brightness: Brightness.dark,
+      );
+      await openConnect(t);
+      expect(k('ai-role-writer'), findsOneWidget);
+    });
+
+    testWidgets('a legacy owner stays in the box, untouched', (t) async {
       final (c, _) = await pump(
         t,
         pageOf([aiRecord('a', [markAiWritten(para('kept'))], owner: ownerId)]),
       );
-      expect(ownerText(t).data, 'Claude Code');
-      connections.value = const [other];
-      await t.pump();
-      expect(ownerText(t).data, 'No connected AI');
       expect(find.textContaining('kept', findRichText: true), findsOneWidget);
       expect(marks(), findsOneWidget);
-      expect(storedBlocks(c, 'a'), hasLength(1));
+      expect(storedOf(c, 'a')['owner'], ownerId);
     });
+  });
 
-    testWidgets('the menu lists the connections and None', (t) async {
-      await pump(t, pageOf([aiRecord('a', [para('x')], owner: ownerId)]));
-      await t.tap(find.byKey(const ValueKey('ai-box-picker')));
+  group('failures and waiting', () {
+    Future<void> toDetails(WidgetTester t, String key) async {
+      await t.tap(k('ai-box-connect'));
       await t.pumpAndSettle();
-      expect(find.text('Claude Code'), findsWidgets);
-      expect(find.byKey(const ValueKey('ai-owner-$ownerId')), findsOneWidget);
-      expect(find.byKey(const ValueKey('ai-owner-$otherId')), findsOneWidget);
-      expect(find.byKey(const ValueKey('ai-owner-none')), findsOneWidget);
-      expect(find.text('None'), findsOneWidget);
-    });
+      await t.tap(k(key));
+      await t.pumpAndSettle();
+    }
 
-    testWidgets('with no connections the menu offers None only', (t) async {
-      connections.value = const [];
+    testWidgets('a code being issued cannot be dismissed or backed out of', (t) async {
+      access.gate = Completer<void>();
       await pump(t, pageOf([aiRecord('a', [para('x')])]));
-      await t.tap(find.byKey(const ValueKey('ai-box-picker')));
+      await toDetails(t, 'ai-role-writer');
+      await typeLabel(t, 'Chat');
+      await t.tap(k('ai-connect-create'));
+      await t.pump();
+      expect(t.widget<TextButton>(k('ai-connect-back')).onPressed, isNull);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await t.pump();
+      expect(k('ai-label'), findsOneWidget);
+      await t.tapAt(const Offset(4, 4));
+      await t.pump();
+      expect(k('ai-label'), findsOneWidget);
+      access.gate!.complete();
       await t.pumpAndSettle();
-      expect(find.byKey(const ValueKey('ai-owner-none')), findsOneWidget);
-      expect(find.byKey(const ValueKey('ai-owner-$ownerId')), findsNothing);
+      expect(k('ai-code'), findsOneWidget);
     });
 
-    testWidgets('choosing one commits its id, content untouched', (t) async {
-      final (c, _) = await pump(t, pageOf([aiRecord('a', [para('x')])]));
-      await t.tap(find.byKey(const ValueKey('ai-box-picker')));
-      await t.pumpAndSettle();
-      await t.tap(find.byKey(const ValueKey('ai-owner-$otherId')));
-      await t.pumpAndSettle();
-      final stored = storedOf(c, 'a');
-      expect(stored['owner'], otherId);
-      expect(storedBlocks(c, 'a'), hasLength(1));
-      expect(ownerText(t).data, 'Notes helper');
-      // Never a secret: the stored data holds nothing but the id.
-      expect(stored.keys.toSet(), {'document', 'owner'});
+    testWidgets('a problem with the store is shown and Create is off', (t) async {
+      access.problem = 'ai-access.json could not be read.';
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await toDetails(t, 'ai-role-reader');
+      await typeLabel(t, 'Chat');
+      expect(find.text('ai-access.json could not be read.'), findsWidgets);
+      expect(t.widget<FilledButton>(k('ai-connect-create')).onPressed, isNull);
     });
 
-    testWidgets('None removes the owner', (t) async {
-      final (c, _) = await pump(
-        t,
-        pageOf([aiRecord('a', [para('x')], owner: ownerId)]),
+    testWidgets('an error that is not a StateError shows a generic message', (t) async {
+      access.connectError = const FileSystemException('denied', r'C:\secret\ai-access.json');
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await toDetails(t, 'ai-role-reader');
+      await typeLabel(t, 'Chat');
+      await t.tap(k('ai-connect-create'));
+      await t.pumpAndSettle();
+      expect(find.text('Could not create the code.'), findsOneWidget);
+      expect(find.textContaining('secret'), findsNothing);
+    });
+
+    for (final error in <Object>[
+      StateError('Could not write ai-access.json.'),
+      const FileSystemException('denied', r'C:\secret\ai-access.json'),
+    ]) {
+      testWidgets('a failed change shows in the panel (${error.runtimeType})', (t) async {
+        access.codes.add(
+          codeOf(
+            'a000000000000001',
+            'a',
+            sessions: [AiCodeSession(id: 's1', app: 'App')],
+          ),
+        );
+        await pump(t, pageOf([aiRecord('a', [para('x')])]));
+        await t.tap(k('ai-box-connections'));
+        await t.pumpAndSettle();
+        access.changeError = error;
+        final expected = error is StateError ? error.message : 'Could not save the change.';
+
+        await t.tap(k('ai-session-revoke-s1'));
+        await t.pumpAndSettle();
+        expect(find.text(expected), findsOneWidget);
+        expect(find.textContaining('secret'), findsNothing);
+
+        await t.tap(k('ai-ask-switch'));
+        await t.pumpAndSettle();
+        expect(access.ask['a'], isNull);
+        expect(find.text(expected), findsOneWidget);
+
+        await t.tap(k('ai-revoke-a000000000000001'));
+        await t.pumpAndSettle();
+        await t.tap(k('ai-revoke-confirm'));
+        await t.pumpAndSettle();
+        expect(find.text(expected), findsOneWidget);
+        expect(access.revoked, isEmpty);
+        expect(find.text('Feedback \u2013 work chat'), findsOneWidget);
+      });
+    }
+  });
+
+  group('the connections panel', () {
+    Future<void> open(WidgetTester t) async {
+      await t.tap(k('ai-box-connections'));
+      await t.pumpAndSettle();
+    }
+
+    testWidgets('lists each code with its facts and sessions', (t) async {
+      access.codes.add(
+        codeOf(
+          'a000000000000001',
+          'a',
+          lastUsed: DateTime.utc(2026, 11, 2, 12, 5),
+          sessions: [
+            AiCodeSession(
+              id: 's1',
+              app: 'Claude Code',
+              approved: DateTime.utc(2026, 11, 1, 10),
+            ),
+          ],
+        ),
       );
-      await t.tap(find.byKey(const ValueKey('ai-box-picker')));
-      await t.pumpAndSettle();
-      await t.tap(find.byKey(const ValueKey('ai-owner-none')));
-      await t.pumpAndSettle();
-      expect(storedOf(c, 'a').containsKey('owner'), isFalse);
-      expect(ownerText(t).data, 'No connected AI');
+      access.codes.add(
+        codeOf(
+          'a000000000000002',
+          'a',
+          role: 'reader',
+          label: 'Reading group',
+          expires: DateTime.utc(2000),
+        ),
+      );
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      expect(find.text('Feedback – work chat'), findsOneWidget);
+      expect(find.text('Reading group'), findsOneWidget);
+      final facts = t.widget<Text>(k('ai-facts-a000000000000001')).data!;
+      expect(facts, contains('Writer'));
+      expect(facts, contains('Created'));
+      expect(facts, contains('Last used'));
+      final readerFacts = t.widget<Text>(k('ai-facts-a000000000000002')).data!;
+      expect(readerFacts, contains('Reader'));
+      expect(readerFacts, contains('Never used'));
+      expect(k('ai-expired-a000000000000002'), findsOneWidget);
+      expect(k('ai-expired-a000000000000001'), findsNothing);
+      expect(find.textContaining('Claude Code'), findsOneWidget);
+      expect(k('ai-session-s1'), findsOneWidget);
     });
 
-    testWidgets('a read-only page shows the owner but no menu', (t) async {
-      await pump(
-        t,
-        pageOf([aiRecord('a', [para('x')], owner: ownerId)]),
-        readOnly: true,
+    testWidgets('icons are muted, not text colour', (t) async {
+      access.codes.add(
+        codeOf(
+          'a000000000000001',
+          'a',
+          sessions: [AiCodeSession(id: 's1', app: 'App')],
+        ),
       );
-      expect(ownerText(t).data, 'Claude Code');
-      expect(find.byKey(const ValueKey('ai-box-picker')), findsNothing);
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      final muted = notedThemeData(Brightness.light).colorScheme.onSurfaceVariant;
+      for (final key in ['ai-revoke-a000000000000001', 'ai-session-revoke-s1']) {
+        final icon = t.widget<Icon>(
+          find.descendant(of: k(key), matching: find.byType(Icon)),
+        );
+        expect(icon.color, muted);
+      }
+    });
+
+    testWidgets('revoking a code asks first, then calls through', (t) async {
+      access.codes.add(codeOf('a000000000000001', 'a'));
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      await t.tap(k('ai-revoke-a000000000000001'));
+      await t.pumpAndSettle();
+      expect(find.textContaining('Revoke Feedback'), findsOneWidget);
+      // Cancel changes nothing.
+      await t.tap(find.text('Cancel'));
+      await t.pumpAndSettle();
+      expect(access.revoked, isEmpty);
+      await t.tap(k('ai-revoke-a000000000000001'));
+      await t.pumpAndSettle();
+      await t.tap(k('ai-revoke-confirm'));
+      await t.pumpAndSettle();
+      expect(access.revoked, ['a000000000000001']);
+      // The list refreshed from the access notification.
+      expect(k('ai-no-codes'), findsOneWidget);
+    });
+
+    testWidgets('revoking a session calls through', (t) async {
+      access.codes.add(
+        codeOf(
+          'a000000000000001',
+          'a',
+          sessions: [AiCodeSession(id: 's1', app: 'Claude Code')],
+        ),
+      );
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      await t.tap(k('ai-session-revoke-s1'));
+      await t.pumpAndSettle();
+      expect(access.sessionsRevoked, [('a000000000000001', 's1')]);
+    });
+
+    testWidgets('Ask before each write toggles through', (t) async {
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      expect(t.widget<SwitchListTile>(k('ai-ask-switch')).value, isFalse);
+      await t.tap(k('ai-ask-switch'));
+      await t.pumpAndSettle();
+      expect(access.ask['a'], isTrue);
+      expect(t.widget<SwitchListTile>(k('ai-ask-switch')).value, isTrue);
+      await t.tap(k('ai-ask-switch'));
+      await t.pumpAndSettle();
+      expect(access.ask['a'], isFalse);
+    });
+
+    testWidgets('activity is listed newest first', (t) async {
+      AiActivityEntry entry(int minute, String op, String result) => AiActivityEntry(
+        time: DateTime.utc(2026, 11, 1, 12, minute),
+        code: 'a000000000000001',
+        target: const AiCodeTarget.box('a'),
+        op: op,
+        app: 'Claude Code',
+        label: 'Feedback – work chat',
+        result: result,
+      );
+      access.log.addAll([
+        entry(1, 'read_box', 'ok'),
+        entry(2, 'write_box', 'not_approved'),
+      ]);
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      final first = t.getTopLeft(k('ai-activity-0')).dy;
+      final second = t.getTopLeft(k('ai-activity-1')).dy;
+      expect(first, lessThan(second));
+      expect(
+        find.descendant(of: k('ai-activity-0'), matching: find.text('Not approved')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: k('ai-activity-0'), matching: find.textContaining('Write box')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: k('ai-activity-1'), matching: find.text('OK')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: k('ai-activity-1'), matching: find.textContaining('Claude Code')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('no activity says so', (t) async {
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      expect(k('ai-no-activity'), findsOneWidget);
+    });
+
+    testWidgets('shows the problem when the store cannot be read', (t) async {
+      access.problem = 'ai-access.json could not be read.';
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      expect(find.text('Connections unavailable'), findsOneWidget);
+      await open(t);
+      expect(find.text('ai-access.json could not be read.'), findsOneWidget);
+    });
+
+    testWidgets('refreshes when the access changes', (t) async {
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      expect(k('ai-no-codes'), findsOneWidget);
+      access.codes.add(codeOf('a000000000000001', 'a', label: 'Fresh chat'));
+      access.change();
+      await t.pump();
+      expect(find.text('Fresh chat'), findsOneWidget);
     });
   });
 
@@ -294,6 +822,58 @@ void main() {
       expect(marks(), findsOneWidget);
       // The owner survives editing.
       expect(storedOf(c, 'a')['owner'], ownerId);
+    });
+
+    testWidgets('a real commit keeps a legacy owner and the other blocks', (t) async {
+      final (c, _) = await pump(
+        t,
+        pageOf([
+          aiRecord('a', [markAiWritten(para('ai one')), para('mine')], owner: ownerId),
+        ]),
+      );
+      final editor = await edit(t, path: 0);
+      await editor.insertTextAtCurrentSelection('!');
+      await t.pump(const Duration(milliseconds: 50));
+      await t.pump(const Duration(milliseconds: 50));
+      expect(aiBlockText(storedBlocks(c, 'a').first), 'ai one!');
+      expect(aiBlockText(storedBlocks(c, 'a').last), 'mine');
+      final stored = storedOf(c, 'a');
+      expect(stored['owner'], ownerId);
+      expect(stored.keys.toSet(), {'document', 'owner'});
+    });
+
+    testWidgets('the bar stops at the block\'s own row, not across nested children', (t) async {
+      await pump(
+        t,
+        pageOf([
+          aiRecord('a', [
+            markAiWritten({
+              'type': 'bulleted_list',
+              'data': {
+                'delta': [
+                  {'insert': 'ai one'},
+                ],
+              },
+              'children': [
+                {
+                  'type': 'bulleted_list',
+                  'data': {
+                    'delta': [
+                      {'insert': 'nested by the user'},
+                    ],
+                  },
+                },
+              ],
+            }),
+          ]),
+        ]),
+      );
+      await edit(t);
+      await t.pump(const Duration(milliseconds: 100));
+      final bar = t.getRect(marks());
+      final nested = t.getRect(find.textContaining('nested by the user', findRichText: true));
+      expect(bar.bottom, lessThanOrEqualTo(nested.top + 1));
+      expect(bar.height, greaterThan(10));
     });
 
     testWidgets('a block the user adds never carries a valid mark', (t) async {
@@ -350,14 +930,10 @@ void main() {
       await first.insertTextAtCurrentSelection('1');
       await t.pump(const Duration(milliseconds: 100));
 
-      // Choosing another owner rebuilds the box.
-      await t.tap(find.byKey(const ValueKey('ai-box-picker')));
+      // A change of the access state rebuilds the header, not the editor.
+      access.change();
       await t.pump(const Duration(milliseconds: 500));
       await t.pump(const Duration(milliseconds: 500));
-      await t.tap(find.byKey(const ValueKey('ai-owner-$otherId')));
-      await t.pump(const Duration(milliseconds: 500));
-      await t.pump(const Duration(milliseconds: 500));
-      expect(storedOf(c, 'a')['owner'], otherId);
 
       final second = editorOf(t);
       expect(identical(second, first), isTrue);
@@ -534,20 +1110,21 @@ void main() {
       expect(c.editingId, added.id);
     });
 
-    testWidgets('an owner can be picked right after inserting', (t) async {
+    testWidgets('a chat can be connected right after inserting', (t) async {
       final (c, key) = await pump(t, pageOf([]));
       await key.currentState!.commands[AiCommands.insert]!.run();
       for (var i = 0; i < 5; i++) {
         await t.pump(const Duration(milliseconds: 50));
       }
-      await t.tap(find.byKey(const ValueKey('ai-box-picker')));
-      await t.pump(const Duration(milliseconds: 500));
-      await t.pump(const Duration(milliseconds: 500));
-      await t.tap(find.byKey(const ValueKey('ai-owner-$ownerId')));
-      await t.pump(const Duration(milliseconds: 500));
-      await t.pump(const Duration(milliseconds: 500));
-      expect(c.page.nodes, hasLength(1));
-      expect(storedOf(c, c.page.nodes.single.id)['owner'], ownerId);
+      await t.tap(k('ai-box-connect'));
+      await t.pumpAndSettle();
+      await t.tap(k('ai-role-writer'));
+      await t.pumpAndSettle();
+      await typeLabel(t, 'Chat');
+      await t.tap(k('ai-connect-create'));
+      await t.pumpAndSettle();
+      expect(access.connects.single.box, c.page.nodes.single.id);
+      expect(k('ai-code'), findsOneWidget);
     });
 
     for (final layout in [tabbedToolbarLayout, contextualToolbarLayout]) {

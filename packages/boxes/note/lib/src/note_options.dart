@@ -88,6 +88,34 @@ class _MarkedBlockState extends State<MarkedBlock> {
     if (mounted) setState(() {});
   }
 
+  /// The height of the block's own row, without nested children the user
+  /// wrote under it; null while unmeasured or when the children can't be
+  /// measured (the bar then spans the whole block).
+  double? _ownHeight;
+
+  void _measure() {
+    if (!mounted) return;
+    double? own;
+    if (widget.node.children.isNotEmpty) {
+      final size = context.size;
+      var children = 0.0;
+      var known = size != null;
+      for (final c in widget.node.children) {
+        final h = c.key.currentContext?.size?.height;
+        if (h == null) {
+          known = false;
+          break;
+        }
+        children += h;
+      }
+      if (known) own = (size!.height - children).clamp(0.0, size.height);
+    }
+    final old = _ownHeight;
+    if ((own == null) != (old == null) || (own != null && (own - old!).abs() > 0.5)) {
+      setState(() => _ownHeight = own);
+    }
+  }
+
   /// A copy of [n] as JSON, without touching it (`Node.toJson` hands out
   /// the live attributes).
   Map<String, Object?> _json(Node n) => {
@@ -103,6 +131,11 @@ class _MarkedBlockState extends State<MarkedBlock> {
         !mark.isMarked(_json(widget.node))) {
       return widget.child;
     }
+    if (widget.node.children.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _measure());
+    } else if (_ownHeight != null) {
+      _ownHeight = null;
+    }
     return Stack(
       clipBehavior: Clip.none,
       // The block gets the constraints it would get without the mark.
@@ -111,15 +144,17 @@ class _MarkedBlockState extends State<MarkedBlock> {
         widget.child,
         Positioned(
           left: -DesignMetrics.space1 - 2,
-          top: 2,
-          bottom: 2,
+          // Full height, so the bars of consecutive marked blocks meet.
+          top: 0,
+          // Down to the end of the block's own row, not across children.
+          bottom: _ownHeight == null ? 0 : null,
+          height: _ownHeight,
           width: 2,
           child: IgnorePointer(
             child: DecoratedBox(
               key: const ValueKey('note-block-mark'),
               decoration: BoxDecoration(
                 color: mark.color(context),
-                borderRadius: BorderRadius.circular(1),
               ),
             ),
           ),

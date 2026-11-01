@@ -10,7 +10,10 @@ import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'ai_box_access.dart';
 import 'ai_codec.dart';
+import 'ai_connect_dialog.dart';
+import 'ai_connections_dialog.dart';
 
 /// Command ids of the AI box module.
 abstract final class AiCommands {
@@ -20,33 +23,30 @@ abstract final class AiCommands {
 }
 
 /// Height of the strip above the note that holds the "AI" label and the
-/// "Connected AI" control, in page units.
+/// connection controls, in page units.
 const double aiHeaderHeight = 28;
 
-/// The AI box module: a note-like document that one AI connection owns and
-/// writes to. Text an AI wrote is marked; text the user types is not.
+/// The AI box module: a note-like document that AI chats connect to with
+/// per-box codes. A Writer's text is marked; text the user types is not.
 ///
-/// [connections] is the app's list of AI connections; the module only shows
-/// their names and stores the id of the one that owns a box.
+/// [access] is the app's store of this box's codes, sessions, settings and
+/// activity; without one (tests, a host with no AI access) the box can't
+/// connect a chat.
 final class AiModule extends BoxModule<AiBoxData> {
-  AiModule({ValueListenable<List<AiConnectionInfo>>? connections})
-    : connections = connections ?? _noConnections;
+  AiModule({AiBoxAccess? access}) : access = access ?? NoAiBoxAccess();
 
-  static final ValueNotifier<List<AiConnectionInfo>> _noConnections =
-      ValueNotifier(const []);
-
-  final ValueListenable<List<AiConnectionInfo>> connections;
+  final AiBoxAccess access;
 
   @override
   BoxCodec<AiBoxData> get codec => const AiCodec();
 
   @override
   Widget buildEditor(BuildContext context, BoxContext<AiBoxData> box) =>
-      _AiBox(box: box, editable: true, connections: connections);
+      _AiBox(box: box, editable: true, access: access);
 
   @override
   Widget buildView(BuildContext context, BoxContext<AiBoxData> box) =>
-      _AiBox(box: box, editable: false, connections: connections);
+      _AiBox(box: box, editable: false, access: access);
 
   @override
   List<Command> commands(CommandHost host) => [
@@ -114,9 +114,10 @@ void insertAiBox(CanvasController c, Offset? centre) {
   c.select(box.id);
 }
 
-/// The mark on AI-written blocks: a thin bar at the block's left, in the
-/// muted text color (the design keeps chrome neutral; accent means
-/// selection), which reads in light and dark.
+/// The mark on AI-written blocks: a 2 px bar in the margin left of the text
+/// column, in the muted text color (the design keeps chrome neutral; accent
+/// means selection), which reads in light and dark. Consecutive marked
+/// blocks draw one unbroken bar. See docs/design/ai-box.md.
 final NoteEditorOptions aiNoteOptions = NoteEditorOptions(
   blockMark: NoteBlockMark(
     dataKey: aiWrittenKey,
@@ -131,12 +132,12 @@ class _AiBox extends StatefulWidget {
   const _AiBox({
     required this.box,
     required this.editable,
-    required this.connections,
+    required this.access,
   });
 
   final BoxContext<AiBoxData> box;
   final bool editable;
-  final ValueListenable<List<AiConnectionInfo>> connections;
+  final AiBoxAccess access;
 
   @override
   State<_AiBox> createState() => _AiBoxState();
@@ -203,13 +204,6 @@ class _AiBoxState extends State<_AiBox> {
     widget.box.commit(_current);
   }
 
-  void _setOwner(String? id) {
-    if (id == _current.owner) return;
-    _current = _current.withOwner(id);
-    widget.box.commit(_current);
-    setState(() {});
-  }
-
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -217,10 +211,9 @@ class _AiBoxState extends State<_AiBox> {
         SizedBox(
           height: aiHeaderHeight,
           child: _AiHeader(
-            connections: widget.connections,
-            owner: _current.owner,
-            enabled: widget.editable && !widget.box.readOnly,
-            onOwner: _setOwner,
+            access: widget.access,
+            boxId: widget.box.boxId,
+            showConnect: widget.editable,
           ),
         ),
         Expanded(
@@ -280,22 +273,21 @@ final class _NoteBox implements BoxContext<NoteData> {
   void insertFilesBeside(List<IncomingFile> files) => _b.insertFilesBeside(files);
 }
 
-/// The value of the "None" item (a menu item with a null value would not
-/// report a choice).
-const String _none = '';
+/// Below this width the header drops its words and keeps the icons.
+const double _narrowHeader = 260;
 
 class _AiHeader extends StatelessWidget {
   const _AiHeader({
-    required this.connections,
-    required this.owner,
-    required this.enabled,
-    required this.onOwner,
+    required this.access,
+    required this.boxId,
+    required this.showConnect,
   });
 
-  final ValueListenable<List<AiConnectionInfo>> connections;
-  final String? owner;
-  final bool enabled;
-  final void Function(String? id) onOwner;
+  final AiBoxAccess access;
+  final String boxId;
+
+  /// False in a view that can't edit: no Connect control at all.
+  final bool showConnect;
 
   @override
   Widget build(BuildContext context) {
@@ -303,79 +295,103 @@ class _AiHeader extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final type = NotedTypography.of(context);
     final m = NotedMetrics.of(context);
+    final muted = scheme.onSurfaceVariant;
+    final available = access is! NoAiBoxAccess;
     return Padding(
       padding: EdgeInsets.symmetric(horizontal: m.space2),
-      child: Row(
-        children: [
-          Container(
-            key: const ValueKey('ai-box-label'),
-            padding: EdgeInsets.symmetric(horizontal: m.space2, vertical: 1),
-            decoration: BoxDecoration(
-              color: colors.surfaceHover,
-              borderRadius: m.borderSm,
-            ),
-            child: Text(
-              'AI',
-              style: type.label.copyWith(color: scheme.onSurfaceVariant),
-            ),
-          ),
-          const Spacer(),
-          ValueListenableBuilder<List<AiConnectionInfo>>(
-            valueListenable: connections,
-            builder: (context, list, _) {
-              AiConnectionInfo? current;
-              for (final c in list) {
-                if (c.id == owner) current = c;
-              }
-              final name = current == null
-                  ? 'No connected AI'
-                  : (current.name.isEmpty ? 'Unnamed' : current.name);
-              final text = Text(
-                name,
-                key: const ValueKey('ai-box-owner'),
-                overflow: TextOverflow.ellipsis,
-                style: type.small.copyWith(color: scheme.onSurfaceVariant),
-              );
-              if (!enabled) return Flexible(child: text);
-              return Flexible(
-                child: PopupMenuButton<String>(
-                  key: const ValueKey('ai-box-picker'),
-                  tooltip: 'Connected AI',
-                  padding: EdgeInsets.zero,
-                  onSelected: (id) => onOwner(id == _none ? null : id),
-                  itemBuilder: (_) => [
-                    const NotedMenuHeading('Connected AI'),
-                    for (final c in list)
-                      NotedMenuItem<String>(
-                        key: ValueKey('ai-owner-${c.id}'),
-                        value: c.id,
-                        label: c.name.isEmpty ? 'Unnamed' : c.name,
-                        leading: MenuCheckMark(checked: c.id == owner),
-                      ),
-                    if (list.isNotEmpty) const NotedMenuDivider(),
-                    NotedMenuItem<String>(
-                      key: const ValueKey('ai-owner-none'),
-                      value: _none,
-                      label: 'None',
-                      leading: MenuCheckMark(checked: current == null),
-                    ),
-                  ],
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Flexible(child: text),
-                      Icon(
-                        Icons.arrow_drop_down_rounded,
-                        size: m.icon,
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final narrow = constraints.maxWidth < _narrowHeader;
+          return Row(
+            children: [
+              Container(
+                key: const ValueKey('ai-box-label'),
+                padding: EdgeInsets.symmetric(horizontal: m.space2, vertical: 1),
+                decoration: BoxDecoration(
+                  color: colors.surfaceHover,
+                  borderRadius: m.borderSm,
+                ),
+                child: Text('AI', style: type.label.copyWith(color: muted)),
+              ),
+              const Spacer(),
+              if (available)
+                Flexible(
+                  child: ListenableBuilder(
+                    listenable: access,
+                    builder: (context, _) {
+                      final now = DateTime.now();
+                      final live = access
+                          .connections(boxId)
+                          .where((c) => !c.isExpired(now))
+                          .length;
+                      final problem = access.problem != null;
+                      final text = problem
+                          ? 'Connections unavailable'
+                          : live == 0
+                          ? 'No chats'
+                          : live == 1
+                          ? '1 chat'
+                          : '$live chats';
+                      return Tooltip(
+                        message: 'Connections, approvals and activity',
+                        child: InkWell(
+                          key: const ValueKey('ai-box-connections'),
+                          borderRadius: m.borderSm,
+                          onTap: () => showAiConnectionsDialog(context, access, boxId),
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(horizontal: m.space1, vertical: 2),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  problem ? Icons.error_outline_rounded : Icons.link_rounded,
+                                  size: m.icon - 2,
+                                  color: muted,
+                                ),
+                                if (!narrow) ...[
+                                  SizedBox(width: m.space1),
+                                  Flexible(
+                                    child: Text(
+                                      text,
+                                      key: const ValueKey('ai-box-connections-text'),
+                                      overflow: TextOverflow.ellipsis,
+                                      style: type.small.copyWith(color: muted),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
                   ),
                 ),
-              );
-            },
-          ),
-        ],
+              if (showConnect) ...[
+                SizedBox(width: m.space1),
+                Tooltip(
+                  message: available
+                      ? 'Connect a chat'
+                      : 'AI connections are not available here',
+                  child: TextButton.icon(
+                    key: const ValueKey('ai-box-connect'),
+                    style: TextButton.styleFrom(
+                      minimumSize: const Size(0, 24),
+                      padding: EdgeInsets.symmetric(horizontal: m.space2),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    onPressed: available
+                        ? () => showAiConnectDialog(context, access, boxId)
+                        : null,
+                    icon: Icon(Icons.add_link_rounded, size: m.icon - 2),
+                    label: narrow ? const SizedBox.shrink() : const Text('Connect a chat'),
+                  ),
+                ),
+              ],
+            ],
+          );
+        },
       ),
     );
   }
