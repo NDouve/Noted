@@ -532,8 +532,8 @@ void main() {
       page: 'pg',
       box: 'bx',
       type: 'noted.note',
-      mine: AiLinkMergeVersion(markdown: 'mine text', at: 1000, device: 'PC-A'),
-      theirs: AiLinkMergeVersion(markdown: 'theirs text', at: 2000, device: 'PC-B'),
+      mine: AiLinkMergeVersion(at: 1000, device: 'PC-A'),
+      theirs: AiLinkMergeVersion(at: 2000, device: 'PC-B'),
     );
 
     test('merge_requests sends the code with the session and app and lists both versions', () async {
@@ -548,8 +548,6 @@ void main() {
       final listed = (jsonDecode(out.text)['requests'] as List).single as Map;
       expect(listed['id'], 'req1');
       expect(listed['box'], 'bx');
-      expect((listed['mine'] as Map)['markdown'], 'mine text');
-      expect((listed['theirs'] as Map)['device'], 'PC-B');
       expect(out.text, isNot(contains(codeR)));
     });
 
@@ -609,21 +607,142 @@ void main() {
       expect(f.lines, isEmpty);
     });
 
-    test('a long answer (two big versions) is read in full', () async {
-      final f = await fake();
-      final big = 'word ' * 40000; // 200 KB each
-      final long = AiLinkMergeItem(
-        id: 'r',
-        page: 'p',
-        box: 'b',
-        type: 'noted.ai',
-        mine: AiLinkMergeVersion(markdown: big, at: 1),
-        theirs: AiLinkMergeVersion(markdown: big, at: 2),
+    // A saved page with a conflicted note box: mine links to a Guarded page and
+    // to an Open one; theirs is [other].
+    Future<void> withConflictPage(String pageId, {String? ai = 'privileged', Object? other}) async {
+      final mine = box(
+        'cn',
+        'noted.note',
+        richNote(linkedOff: Ids.hidden, linkedOn: Ids.publicChild),
+        const Bounds(0, 0, 100, 40),
       );
-      f.answer = (_) => AiLinkResponse.merges([long]).encode();
+      final theirsBox = box('cn', 'noted.note', other ?? simpleNote('Theirs only line'), const Bounds(0, 0, 100, 40));
+      final conflicted = mine.withConflict(BoxConflict.other(node: theirsBox.toRaw(), at: 2000, device: 'PC-B'));
+      final file = File('${data.path}/pages/$pageId.canvas');
+      file.writeAsStringSync(writePage(page(pageId, 'Conflict page', ai: ai, nodes: [conflicted])));
+      addTearDown(() {
+        if (file.existsSync()) file.deleteSync();
+      });
+    }
+
+    AiLinkMergeItem itemFor(String pageId) => AiLinkMergeItem(
+      id: 'req2',
+      page: pageId,
+      box: 'cn',
+      type: 'noted.note',
+      mine: const AiLinkMergeVersion(at: 1000, device: 'PC-A'),
+      theirs: const AiLinkMergeVersion(at: 2000, device: 'PC-B'),
+    );
+
+    test('the versions are rendered here from the saved conflict record, with page links filtered', () async {
+      const pageId = 'c0000000000000f1';
+      await withConflictPage(pageId);
+      final f = await fake();
+      f.answer = (_) => AiLinkResponse.merges([itemFor(pageId)]).encode();
       final out = await toolbox().mergeRequests(codeR);
       expect(out.isError, isFalse);
-      expect(((jsonDecode(out.text)['requests'] as List).single['mine'] as Map)['markdown'], big);
+      final listed = (jsonDecode(out.text)['requests'] as List).single as Map;
+      final mine = (listed['mine'] as Map)['markdown'] as String;
+      final theirs = (listed['theirs'] as Map)['markdown'] as String;
+      expect(mine, contains('Trip plan'));
+      // The link to a Guarded page is only its text; the visible page's link stays.
+      expect(mine, contains('hidden notes'));
+      expect(mine, isNot(contains(Ids.hidden)));
+      expect(mine, contains(Ids.publicChild));
+      expect(theirs, 'Theirs only line');
+      expect((listed['mine'] as Map)['device'], 'PC-A');
+      expect((listed['theirs'] as Map)['at'], 2000);
+      expect(out.text, isNot(contains(secret)));
+    });
+
+    test('an AI box version keeps its <ai-written> lines', () async {
+      const pageId = 'c0000000000000f2';
+      final mine = box('cn', aiBoxTypeId, aiBoxData('From the AI'), const Bounds(0, 0, 100, 40));
+      final theirs = box('cn', aiBoxTypeId, aiBoxData('Other AI text'), const Bounds(0, 0, 100, 40));
+      final file = File('${data.path}/pages/$pageId.canvas');
+      file.writeAsStringSync(
+        writePage(
+          page(
+            pageId,
+            'AI conflict',
+            ai: 'privileged',
+            nodes: [mine.withConflict(BoxConflict.other(node: theirs.toRaw(), at: 5, device: 'PC-B'))],
+          ),
+        ),
+      );
+      addTearDown(() => file.deleteSync());
+      final f = await fake();
+      f.answer = (_) => AiLinkResponse.merges([
+        AiLinkMergeItem(
+          id: 'r',
+          page: pageId,
+          box: 'cn',
+          type: aiBoxTypeId,
+          mine: const AiLinkMergeVersion(at: 1),
+          theirs: const AiLinkMergeVersion(at: 5),
+        ),
+      ]).encode();
+      final out = await toolbox().mergeRequests(codeR);
+      final listed = (jsonDecode(out.text)['requests'] as List).single as Map;
+      expect((listed['mine'] as Map)['markdown'], contains('<ai-written>'));
+      expect((listed['theirs'] as Map)['markdown'], contains('Other AI text'));
+    });
+
+    test('a Guarded page, a settled conflict or a missing page is listed as unavailable with no content', () async {
+      const guarded = 'c0000000000000f3';
+      await withConflictPage(guarded, ai: 'guarded');
+      const settled = 'c0000000000000f4';
+      final file = File('${data.path}/pages/$settled.canvas');
+      file.writeAsStringSync(
+        writePage(
+          page(
+            settled,
+            'Settled',
+            ai: 'privileged',
+            nodes: [box('cn', 'noted.note', simpleNote('SETTLED-TEXT'), const Bounds(0, 0, 100, 40))],
+          ),
+        ),
+      );
+      addTearDown(() => file.deleteSync());
+      final f = await fake();
+      f.answer = (_) => AiLinkResponse.merges([itemFor(guarded), itemFor(settled), itemFor('c0000000000000f5')]).encode();
+      final out = await toolbox().mergeRequests(codeR);
+      expect(out.isError, isFalse);
+      final list = (jsonDecode(out.text)['requests'] as List).cast<Map<String, Object?>>();
+      expect(list, hasLength(3), reason: 'nothing is silently dropped');
+      for (final l in list) {
+        expect(l['unavailable'], isA<String>());
+        expect(l.containsKey('mine'), isFalse);
+      }
+      expect(out.text, isNot(contains('Theirs only')));
+      expect(out.text, isNot(contains('SETTLED-TEXT')));
+    });
+
+    test('an encrypted box is refused', () async {
+      const pageId = 'c0000000000000f6';
+      final mine = box('cn', 'noted.encrypted', {'ciphertext': secret}, const Bounds(0, 0, 100, 40), snapshot: secret);
+      final theirs = box('cn', 'noted.encrypted', {'ciphertext': secret}, const Bounds(0, 0, 100, 40), snapshot: secret);
+      final file = File('${data.path}/pages/$pageId.canvas');
+      file.writeAsStringSync(
+        writePage(
+          page(pageId, 'Enc', ai: 'privileged', nodes: [mine.withConflict(BoxConflict.other(node: theirs.toRaw(), at: 5))]),
+        ),
+      );
+      addTearDown(() => file.deleteSync());
+      final f = await fake();
+      f.answer = (_) => AiLinkResponse.merges([itemFor(pageId)]).encode();
+      final out = await toolbox().mergeRequests(codeR);
+      expect(out.text, contains('unavailable'));
+      expect(out.text, isNot(contains(secret)));
+    });
+
+    test('a version over the size limit is unavailable', () async {
+      const pageId = 'c0000000000000f7';
+      await withConflictPage(pageId, other: simpleNote('word ' * 30000));
+      final f = await fake();
+      f.answer = (_) => AiLinkResponse.merges([itemFor(pageId)]).encode();
+      final out = await toolbox().mergeRequests(codeR);
+      expect(out.text, contains('unavailable'));
     });
   });
 }

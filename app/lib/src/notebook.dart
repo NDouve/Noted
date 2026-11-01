@@ -2389,12 +2389,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   @override
-  String? aiOpenBoxType(String pageId, String boxId) {
+  BoxRecord? aiOpenBox(String pageId, String boxId) {
     final c = _current;
     if (c == null || c.page.id != pageId) return null;
     final box = c.page.node(boxId);
-    return box is BoxRecord ? box.typeId : null;
+    return box is BoxRecord ? box : null;
   }
+
+  @override
+  bool aiMergeTypeAllowed(String pageId, String typeId) => boxTypeAvailabilityFor(pageId, typeId).allowed;
 
   @override
   BoxCodec<Object?>? aiMergeCodec(String typeId) => modules.codecs.codecFor(typeId);

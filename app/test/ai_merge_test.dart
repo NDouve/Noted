@@ -223,11 +223,12 @@ void main() {
       expect(item.page, pageId);
       expect(item.box, 'n1');
       expect(item.type, 'noted.note');
-      expect(item.mine.markdown, 'Shared line\n\nMine only');
       expect(item.mine.device, 'PC-A');
       expect(item.mine.at, 1000);
-      expect(item.theirs.markdown, 'Shared line\n\nTheirs only');
       expect(item.theirs.device, 'PC-B');
+      // A grant only: the content is read from the saved file by noted_mcp.
+      expect(jsonOfItem(item), isNot(contains('Mine only')));
+      expect(jsonOfItem(item), isNot(contains('Theirs only')));
       expect(item.theirs.at, 2000);
 
       final r = await link(propose(pageCode, item.id, 'Shared line\n\nMine only\n\nTheirs only'));
@@ -235,6 +236,7 @@ void main() {
       await done;
       final p = await pending;
       expect(p.markdown, 'Shared line\n\nMine only\n\nTheirs only');
+      expect(p.by, 'Review chat');
       expect(p.dataVersion, 1);
       expect(p.data, isA<NoteData>());
       final doc = (p.data! as NoteData).document['document']! as Map;
@@ -248,7 +250,7 @@ void main() {
       expect(await refused(propose(pageCode, item.id, 'again')), AiLinkCode.noRequest);
     });
 
-    test('an AI box keeps its <ai-written> parts marked and the user parts unmarked, and its owner', () async {
+    test('marks come from the two versions, not from the AI\'s own <ai-written> lines, and the owner stays', () async {
       final aiBlock = markAiWritten(_para('From the AI'));
       final m = _box('a1', _doc([_para('User line'), aiBlock], owner: 'conn1'), type: aiBoxTypeId);
       final o = _box('a1', _doc([_para('User line'), markAiWritten(_para('Other AI text'))], owner: 'conn1'),
@@ -261,28 +263,74 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 50));
       final item = await theItem(pageCode);
       expect(item.type, aiBoxTypeId);
-      expect(item.mine.markdown, 'User line\n\n<ai-written>\n\nFrom the AI\n\n</ai-written>');
-      expect(item.theirs.markdown, contains('<ai-written>'));
+      expect(item.mine.at, 1000);
 
-      final merged = 'User line\n\n<ai-written>\nFrom the AI\n\nOther AI text\n</ai-written>\n\nA user note';
+      // The AI forges markers around the user's line, and leaves the AI's own
+      // lines bare. Neither changes who wrote what.
+      final merged =
+          '<ai-written>\nUser line\n</ai-written>\n\nFrom the AI\n\nOther AI text\n\n<ai-written>\nA new line\n</ai-written>';
       expect(await link(propose(pageCode, item.id, merged)), isA<AiLinkProposed>());
       final p = await pending;
+      expect(p.markdown, isNot(contains('ai-written')), reason: 'the markers are stripped');
       final box = p.data! as AiBoxData;
       expect(box.owner, 'conn1');
       final blocks = [for (final b in (box.json['document']! as Map)['children'] as List) b as Map<Object?, Object?>];
-      expect([for (final b in blocks) aiBlockText(b)], ['User line', 'From the AI', 'Other AI text', 'A user note']);
-      expect([for (final b in blocks) isAiWritten(b)], [false, true, true, false]);
+      expect([for (final b in blocks) aiBlockText(b)], ['User line', 'From the AI', 'Other AI text', 'A new line']);
+      // The user's line stays the user's; the AI's lines stay the AI's; a block in neither version is new, so
+      // it is the AI's in an AI box.
+      expect([for (final b in blocks) isAiWritten(b)], [false, true, true, true]);
     });
 
-    test('an AI box merge without markers is the AI\'s whole text (replace semantics)', () async {
-      await conflicted('a1', type: aiBoxTypeId);
+    test('a plain proposal on an AI box that holds only the user\'s text leaves it the user\'s', () async {
+      await conflicted('a1', type: aiBoxTypeId, mine: ['One', 'Two'], theirs: ['One', 'Three']);
       final pending = nb.aiMerge!.ask(pageId, 'a1');
       unawaited(pending.then((_) {}, onError: (_) {}));
       await Future<void>.delayed(const Duration(milliseconds: 50));
       final item = await theItem(pageCode);
-      await link(propose(pageCode, item.id, 'All merged'));
-      final blocks = [for (final b in (((await pending).data! as AiBoxData).json['document']! as Map)['children'] as List) b as Map];
-      expect([for (final b in blocks) isAiWritten(b)], [true]);
+      await link(propose(pageCode, item.id, 'One\n\nTwo\n\nThree\n\nAnd more'));
+      final blocks = [
+        for (final b in (((await pending).data! as AiBoxData).json['document']! as Map)['children'] as List) b as Map,
+      ];
+      expect([for (final b in blocks) aiBlockText(b)], ['One', 'Two', 'Three', 'And more']);
+      expect([for (final b in blocks) isAiWritten(b)], [false, false, false, true]);
+    });
+
+    test('a note box proposal keeps every block plain, and a shared formula table survives as it was', () async {
+      Map<String, Object?> cell(int r, int c, String t, {String? value}) => {
+        'type': 'table/cell',
+        'data': {'rowPosition': r, 'colPosition': c},
+        'children': [
+          {
+            'type': 'paragraph',
+            'data': {
+              'delta': [
+                {'insert': t},
+              ],
+              'formulaValue': ?value,
+            },
+          },
+        ],
+      };
+      final table = {
+        'type': 'table',
+        'data': {'rowsLen': 2, 'colsLen': 2},
+        'children': [cell(0, 0, 'Item'), cell(0, 1, 'Cost'), cell(1, 0, 'Total'), cell(1, 1, '=SUM(B1:B1)', value: '5')],
+      };
+      final m = _box('t1', _doc([_para('Mine only'), table]));
+      final o = _box('t1', _doc([_para('Theirs only'), table]), at: 2000, device: 'PC-B');
+      nb.current!.insertBox(m.withConflict(BoxConflict.other(node: o.toRaw(), at: 2000, device: 'PC-B')));
+      await nb.flush();
+      final pending = nb.aiMerge!.ask(pageId, 't1');
+      unawaited(pending.then((_) {}, onError: (_) {}));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final item = await theItem(pageCode);
+      final tableMd = noteToMarkdown(_doc([table]));
+      await link(propose(pageCode, item.id, 'Mine only\n\nTheirs only\n\n$tableMd\n\nNew'));
+      final p = await pending;
+      final blocks = [for (final b in ((p.data! as NoteData).document['document']! as Map)['children'] as List) b as Map];
+      expect([for (final b in blocks) b['type']], ['paragraph', 'paragraph', 'table', 'paragraph']);
+      expect(blocks[2], table, reason: 'the formula table is the saved block, formulas and all');
+      expect([for (final b in blocks) isAiWritten(b)], [false, false, false, false]);
     });
 
     test('one request per box: asking again joins the first', () async {
@@ -434,6 +482,94 @@ void main() {
     });
   });
 
+  group('more availability and lifecycle rules', () {
+    test('the module must be on, the type allowed on the page, and a non-deleted conflict recorded', () async {
+      await conflicted('n1');
+      await conflicted('a1', type: aiBoxTypeId);
+      expect(nb.aiMerge!.available(pageId, 'a1'), isTrue);
+
+      // The AI box module switched off.
+      nb.modules.setEnabled(aiBoxTypeId, false);
+      expect(nb.aiMerge!.available(pageId, 'a1'), isFalse);
+      expect(nb.aiMerge!.available(pageId, 'n1'), isTrue);
+      nb.modules.setEnabled(aiBoxTypeId, true);
+      expect(nb.aiMerge!.available(pageId, 'a1'), isTrue);
+
+      // The page doesn't allow the type (0111).
+      await nb.setBoxType(pageId, aiBoxTypeId, false);
+      expect(nb.aiMerge!.available(pageId, 'a1'), isFalse);
+      await nb.setBoxType(pageId, aiBoxTypeId, null);
+      expect(nb.aiMerge!.available(pageId, 'a1'), isTrue);
+
+      // A delete conflict, or no conflict at all, has nothing to merge.
+      nb.current!.insertBox(_box('n2', _doc([_para('x')])).withConflict(BoxConflict.deleted(at: 5)));
+      nb.current!.insertBox(_box('n3', _doc([_para('x')])));
+      expect(nb.aiMerge!.available(pageId, 'n2'), isFalse);
+      expect(nb.aiMerge!.available(pageId, 'n3'), isFalse);
+    });
+
+    test('a cancel while the saved page is being read wins: nothing is registered', () async {
+      await conflicted('n1');
+      final spy = _Spy(nb, () {})..gate = Completer<void>();
+      final s = AiMergeService(access: service, host: spy);
+      final pending = s.ask(pageId, 'n1');
+      final failed = expectLater(pending, throwsA(isA<AiMergeException>()));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      s.cancel(pageId, 'n1');
+      spy.gate!.complete();
+      await failed;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(s.pendingFor(service.store.codes().single), isEmpty);
+      // The box can be asked about again.
+      spy.gate = null;
+      final again = s.ask(pageId, 'n1');
+      unawaited(again.then((_) {}, onError: (_) {}));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(s.pendingFor(service.store.codes().single), hasLength(1));
+      s.cancel(pageId, 'n1');
+    });
+
+    test('closing the service while the page is being read ends the ask too', () async {
+      await conflicted('n1');
+      final spy = _Spy(nb, () {})..gate = Completer<void>();
+      final s = AiMergeService(access: service, host: spy);
+      final pending = s.ask(pageId, 'n1');
+      final failed = expectLater(pending, throwsA(isA<AiMergeException>()));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      s.dispose();
+      spy.gate!.complete();
+      await failed;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(s.pendingFor(service.store.codes().single), isEmpty);
+    });
+
+    test('a proposal over twice the version limit is refused and the request stays', () async {
+      await conflicted('n1');
+      final pending = nb.aiMerge!.ask(pageId, 'n1');
+      unawaited(pending.then((_) {}, onError: (_) {}));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final item = await theItem(pageCode);
+      final huge = 'word ' * (aiMergeMaxVersionBytes ~/ 2);
+      expect(await refused(propose(pageCode, item.id, huge)), AiLinkCode.badRequest);
+      expect((await link(list(pageCode)) as AiLinkMerges).items, hasLength(1));
+      nb.aiMerge!.cancel(pageId, 'n1');
+    });
+
+    test('every pending request is listed, however many', () async {
+      for (var i = 0; i < 30; i++) {
+        await conflicted('x$i');
+      }
+      for (var i = 0; i < 30; i++) {
+        unawaited(nb.aiMerge!.ask(pageId, 'x$i').then((_) {}, onError: (_) {}));
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect((await link(list(pageCode)) as AiLinkMerges).items, hasLength(30));
+      for (var i = 0; i < 30; i++) {
+        nb.aiMerge!.cancel(pageId, 'x$i');
+      }
+    });
+  });
+
   group('saved data only', () {
     test('the versions are the saved ones: a later edit on screen is not what the AI gets', () async {
       await conflicted('n1');
@@ -450,9 +586,8 @@ void main() {
         }),
       });
       final item = await theItem(pageCode);
-      expect(item.mine.markdown, isNot(contains('LIVE')));
-      expect(item.mine.markdown, contains('Mine only'));
       expect(jsonOfItem(item), isNot(contains('LIVE')));
+      expect(item.mine.at, 1000, reason: 'the saved version\'s label');
       nb.aiMerge!.cancel(pageId, 'n1');
     });
 
@@ -465,7 +600,7 @@ void main() {
       unawaited(pending.then((_) {}, onError: (_) {}));
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(reads, 1);
-      expect(s.pendingFor(service.store.codes().single).single.mine.markdown, contains('Mine only'));
+      expect(s.pendingFor(service.store.codes().single).single.mine.device, 'PC-A');
       s.cancel(pageId, 'n1');
     });
   });
@@ -483,14 +618,21 @@ class _Spy implements AiMergeHost {
   @override
   List<String> aiReadablePages(AiCodeTarget target) => inner.aiReadablePages(target);
 
+  /// Holds the read open until completed, when set.
+  Completer<void>? gate;
+
   @override
-  Future<NotedPage?> aiSavedPage(String pageId) {
+  Future<NotedPage?> aiSavedPage(String pageId) async {
     onRead();
+    await gate?.future;
     return inner.aiSavedPage(pageId);
   }
 
   @override
-  String? aiOpenBoxType(String pageId, String boxId) => inner.aiOpenBoxType(pageId, boxId);
+  BoxRecord? aiOpenBox(String pageId, String boxId) => inner.aiOpenBox(pageId, boxId);
+
+  @override
+  bool aiMergeTypeAllowed(String pageId, String typeId) => inner.aiMergeTypeAllowed(pageId, typeId);
 
   @override
   BoxCodec<Object?>? aiMergeCodec(String typeId) => inner.aiMergeCodec(typeId);

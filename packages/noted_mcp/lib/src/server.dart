@@ -240,8 +240,8 @@ base class NotedMcpServer extends MCPServer with ToolsSupport {
         'Sends the merged markdown for a request from merge_requests. It is '
         'only a proposal: the user sees it next to both versions in Noted and '
         'chooses whether to use it, so nothing changes until they accept. '
-        'Write the whole merged box (not a diff). For an AI box keep the '
-        '<ai-written> and </ai-written> lines around the parts an AI wrote. '
+        'Write the whole merged box (not a diff); text that is the same in a '
+        'version is kept as it was. <ai-written> lines are ignored: Noted decides what counts as AI-written. '
         'Needs Noted running and the same code as merge_requests (a Reader '
         'code is enough). One proposal answers a request; a request that has '
         'expired or was withdrawn fails with no_request.',

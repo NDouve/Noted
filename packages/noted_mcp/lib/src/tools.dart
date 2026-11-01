@@ -162,6 +162,41 @@ final class NotedTools {
     return (text: _boxBlock(node), isError: false);
   }
 
+  /// The two versions of the note or AI box [boxId] on page [pageId], from the
+  /// saved page file's conflict record (the box's first recorded other
+  /// version), rendered exactly as [readBox] would show a box: the same
+  /// renderer, with a link to a page the AI can't see reduced to its text. An
+  /// AI box keeps its `<ai-written>` lines. Null when the page isn't readable
+  /// by this tools instance (Guarded, locked, not granted), the box isn't a
+  /// note or AI box, is encrypted, has no non-deleted conflict record, the
+  /// other version isn't a box of the same type, or a version is larger than
+  /// [maxBytes] of text.
+  ({String mine, String theirs})? conflictVersions(String pageId, String boxId, {int maxBytes = 100000}) {
+    final p = _visiblePage(pageId);
+    if (p == null) return null;
+    CanvasNode? node;
+    for (final n in p.page.nodes) {
+      if (n.id == boxId) node = n;
+    }
+    if (node is! BoxRecord || (node.typeId != 'noted.note' && node.typeId != aiBoxTypeId) || isEncrypted(node)) {
+      return null;
+    }
+    BoxConflict? conflict;
+    for (final c in node.conflicts) {
+      if (!c.deleted && c.node != null) {
+        conflict = c;
+        break;
+      }
+    }
+    if (conflict == null) return null;
+    final other = readNode(conflict.node!, fallbackId: boxId);
+    if (other is! BoxRecord || other.typeId != node.typeId || isEncrypted(other)) return null;
+    final mine = boxText(node);
+    final theirs = boxText(other);
+    if (utf8.encode(mine).length > maxBytes || utf8.encode(theirs).length > maxBytes) return null;
+    return (mine: mine, theirs: theirs);
+  }
+
   String _boxBlock(CanvasNode n) => '**${boxType(n)}** · box `${n.id}`\n\n${boxText(n)}';
 
   /// The kind of box [n] is: note, drawing, image, file, ai, encrypted or

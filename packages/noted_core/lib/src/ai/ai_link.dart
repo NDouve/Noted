@@ -44,9 +44,11 @@
 ///     user asked the page AI for that this code reaches. A page or binder
 ///     code only; a Reader is enough. Answer `{"ok":true,"merges":[{"id":ID,
 ///     "page":PAGE_ID,"box":BOX_ID,"type":TYPE,"mine":VERSION,"theirs":
-///     VERSION}]}` ([AiLinkMergeItem]); a VERSION is `{"markdown":TEXT,
-///     "device":NAME|null,"at":MS}`. The app builds the versions from the
-///     saved page file's conflict record, never from the live editor.
+///     VERSION}]}` ([AiLinkMergeItem]); a VERSION is only a label,
+///     `{"device":NAME|null,"at":MS}`. It is a grant, like `access`: the app
+///     gives no content. The server reads the saved page file's conflict
+///     record itself and renders both versions with its own checks
+///     (invariant 4).
 ///   - `propose_merge`: `request` (an id from `merge_requests`), `content`
 ///     (the merged markdown). Answer `{"ok":true,"proposed":ID}`. It only
 ///     proposes: the user decides in Noted, and nothing changes until they
@@ -634,14 +636,10 @@ final class AiLinkDescribed extends AiLinkResponse {
   String encode() => jsonEncode({'ok': true, 'kind': kind, 'id': id, 'role': role, 'expires': expires});
 }
 
-/// One side of a merge request: the box's content as markdown, and who wrote
-/// it and when.
+/// The label of one side of a merge request: who wrote it and when. The
+/// content is not here: the server reads it from the saved page file.
 final class AiLinkMergeVersion {
-  const AiLinkMergeVersion({required this.markdown, required this.at, this.device});
-
-  /// The version's content as markdown (an AI box keeps its `<ai-written>`
-  /// lines).
-  final String markdown;
+  const AiLinkMergeVersion({required this.at, this.device});
 
   /// When it was saved, in ms since the epoch.
   final int at;
@@ -649,15 +647,14 @@ final class AiLinkMergeVersion {
   /// The computer that wrote it, if known.
   final String? device;
 
-  Map<String, Object?> toJson() => {'markdown': markdown, 'device': device, 'at': at};
+  Map<String, Object?> toJson() => {'device': device, 'at': at};
 
   static AiLinkMergeVersion? fromJson(Object? json) {
     if (json is! Map) return null;
-    final markdown = json['markdown'];
     final at = json['at'];
     final device = json['device'];
-    if (markdown is! String || at is! int || (device != null && device is! String)) return null;
-    return AiLinkMergeVersion(markdown: markdown, at: at, device: device as String?);
+    if (at is! int || (device != null && device is! String)) return null;
+    return AiLinkMergeVersion(at: at, device: device as String?);
   }
 }
 

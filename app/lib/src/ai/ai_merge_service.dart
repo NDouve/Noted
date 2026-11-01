@@ -17,8 +17,8 @@ const Duration aiMergeExpiry = Duration(minutes: 10);
 const Duration aiMergeConnectedWithin = Duration(minutes: 15);
 
 /// The most UTF-8 bytes of markdown one version of a merge may have; larger
-/// boxes aren't offered to the page AI (the link carries one line of at most
-/// [aiLinkMaxRequestBytes]).
+/// boxes aren't offered to the page AI. `noted_mcp` applies the same limit
+/// when it renders the versions.
 const int aiMergeMaxVersionBytes = 100000;
 
 /// The plain note box's type (the other mergeable type is the AI box).
@@ -42,12 +42,15 @@ abstract interface class AiMergeHost {
   List<String> aiReadablePages(AiCodeTarget target);
 
   /// The page as saved in its file (after pending saves have landed); null if
-  /// it can't be read. Never the live editor (invariant 4).
+  /// it can't be read.
   Future<NotedPage?> aiSavedPage(String pageId);
 
-  /// The type of box [boxId] on the open page [pageId] (the page whose
-  /// conflict the user is looking at), or null.
-  String? aiOpenBoxType(String pageId, String boxId);
+  /// Box [boxId] on the open page [pageId] (the page whose conflict the user
+  /// is looking at), or null.
+  BoxRecord? aiOpenBox(String pageId, String boxId);
+
+  /// Whether box type [typeId] is allowed on page [pageId] (0111).
+  bool aiMergeTypeAllowed(String pageId, String typeId);
 
   /// The codec of [typeId] if its module is on.
   BoxCodec<Object?>? aiMergeCodec(String typeId);
@@ -79,25 +82,30 @@ class _Request {
   final _Version mine;
   final _Version theirs;
   final BoxCodec<Object?> codec;
+}
+
+// One ask, from the click to its end. It exists while the saved page is still
+// being read ([request] null), so a cancel in that time wins.
+class _Ask {
+  _Ask(this.key);
+
+  final String key;
   final Completer<AiMergeProposal> done = Completer<AiMergeProposal>();
   Timer? timer;
-
-  String get key => '$pageId/$boxId';
+  _Request? request;
 }
 
 /// Asking the page AI to merge a sync conflict (run 2026-11-01-04).
 ///
 /// The user asks from the conflict dialog ([ask]). The request lives in
 /// memory only: one per box, gone after [expiry], when the user withdraws it
-/// ([cancel]) or when the app quits. The MCP server lists the requests its
-/// code covers and answers one with a proposal through the link
-/// ([pendingFor], [propose]); the app checks the code first
-/// (`AiLinkAuthority`).
-///
-/// What the AI receives is built from the saved page file's conflict record,
-/// never from the live editor (invariant 4): [ask] reads the page with
-/// [AiMergeHost.aiSavedPage]. A proposal is only handed back to the dialog;
-/// nothing changes until the user accepts it.
+/// ([cancel]) or when the app quits. The app gives the MCP server a grant,
+/// not content: [pendingFor] lists request ids, pages, boxes and the versions'
+/// device and time. The server reads the saved page file's conflict record and
+/// renders both versions itself, with its own checks (invariant 4). The AI
+/// answers with [propose]; the app checks the code first (`AiLinkAuthority`).
+/// A proposal is only handed back to the dialog; nothing changes until the
+/// user accepts it.
 class AiMergeService implements PageAiMerge {
   AiMergeService({
     required this.access,
@@ -111,28 +119,25 @@ class AiMergeService implements PageAiMerge {
   final Duration expiry;
   final DateTime Function() _now;
 
-  final Map<String, _Request> _byKey = {};
+  final Map<String, _Ask> _asks = {};
   int _nextId = 0;
 
   /// Withdraws every request (the app is closing).
   void dispose() {
-    for (final r in _byKey.values.toList()) {
-      _end(r, const AiMergeException('Noted was closed.'));
+    for (final a in _asks.values.toList()) {
+      _end(a, const AiMergeException('Noted was closed.'));
     }
   }
 
   // Availability --------------------------------------------------------------
 
   /// Whether [code] is a page or binder Reader code that is approved, not
-  /// expired or revoked.
+  /// expired and not revoked.
   bool _usable(AiCode code, DateTime now) {
     final kind = code.target.kind;
     if (kind != AiCodeTargetKind.page && kind != AiCodeTargetKind.binder) return false;
     if (code.role != AiCodeRole.reader) return false;
-    if (!code.isApproved || code.isExpired(now)) return false;
-    // A revoked code keeps its record.
-    if (code.isRevoked) return false;
-    return true;
+    return code.isApproved && !code.isExpired(now) && !code.isRevoked;
   }
 
   /// A page or binder Reader code that covers [pageId], is usable and was used
@@ -154,10 +159,22 @@ class AiMergeService implements PageAiMerge {
     return null;
   }
 
+  // The first recorded other version that is a box, not a deletion.
+  static BoxConflict? _conflictOf(BoxRecord box) {
+    for (final c in box.conflicts) {
+      if (!c.deleted && c.node != null) return c;
+    }
+    return null;
+  }
+
   @override
   bool available(String pageId, String boxId) {
-    final type = host.aiOpenBoxType(pageId, boxId);
-    if (type != _noteTypeId && type != aiBoxTypeId) return false;
+    final box = host.aiOpenBox(pageId, boxId);
+    if (box == null || (box.typeId != _noteTypeId && box.typeId != aiBoxTypeId)) return false;
+    // The module is on, the page allows the type (0111), and there is
+    // something to merge.
+    if (host.aiMergeCodec(box.typeId) == null || !host.aiMergeTypeAllowed(pageId, box.typeId)) return false;
+    if (_conflictOf(box) == null) return false;
     return _connectedCode(pageId) != null;
   }
 
@@ -166,38 +183,45 @@ class AiMergeService implements PageAiMerge {
   @override
   Future<AiMergeProposal> ask(String pageId, String boxId) async {
     final key = '$pageId/$boxId';
-    final already = _byKey[key];
+    final already = _asks[key];
     if (already != null) return already.done.future;
     if (!available(pageId, boxId)) {
       throw const AiMergeException('No page AI is connected to this page right now.');
     }
-    final page = await host.aiSavedPage(pageId);
-    final request = page == null ? null : _build(page, pageId, boxId);
-    final again = _byKey[key];
-    if (again != null) return again.done.future; // asked twice at once
-    if (request == null) {
-      throw const AiMergeException("The page AI can't be asked about this box.");
-    }
-    _byKey[key] = request;
+    final a = _Ask(key);
+    _asks[key] = a;
     // Nobody may be listening when it ends (the dialog closed): that is not
     // an unhandled error.
-    request.done.future.ignore();
-    request.timer = Timer(expiry, () {
-      _end(request, const AiMergeException('The page AI did not answer in time.'));
-    });
-    return request.done.future;
+    a.done.future.ignore();
+    a.timer = Timer(expiry, () => _end(a, const AiMergeException('The page AI did not answer in time.')));
+    final NotedPage? page;
+    try {
+      page = await host.aiSavedPage(pageId);
+    } on Object {
+      _end(a, const AiMergeException("The page couldn't be read."));
+      return a.done.future;
+    }
+    // Cancelled, closed or expired while the file was read: that stands.
+    if (!identical(_asks[key], a) || a.done.isCompleted) return a.done.future;
+    final request = page == null ? null : _build(page, pageId, boxId);
+    if (request == null) {
+      _end(a, const AiMergeException("The page AI can't be asked about this box."));
+      return a.done.future;
+    }
+    a.request = request;
+    return a.done.future;
   }
 
   @override
   void cancel(String pageId, String boxId) {
-    final r = _byKey['$pageId/$boxId'];
-    if (r != null) _end(r, const AiMergeException('The request was withdrawn.'));
+    final a = _asks['$pageId/$boxId'];
+    if (a != null) _end(a, const AiMergeException('The request was withdrawn.'));
   }
 
-  void _end(_Request r, AiMergeException error) {
-    r.timer?.cancel();
-    if (identical(_byKey[r.key], r)) _byKey.remove(r.key);
-    if (!r.done.isCompleted) r.done.completeError(error);
+  void _end(_Ask a, AiMergeException error) {
+    a.timer?.cancel();
+    if (identical(_asks[a.key], a)) _asks.remove(a.key);
+    if (!a.done.isCompleted) a.done.completeError(error);
   }
 
   // Building a request from the saved page ------------------------------------
@@ -210,7 +234,7 @@ class AiMergeService implements PageAiMerge {
     if (_isEncrypted(box)) return null;
     final codec = host.aiMergeCodec(typeId);
     if (codec == null || box.dataVersion > codec.dataVersion) return null;
-    final conflict = box.conflicts.where((c) => !c.deleted && c.node != null).firstOrNull;
+    final conflict = _conflictOf(box);
     if (conflict == null) return null;
     final other = readNode(conflict.node!, fallbackId: boxId);
     if (other is! BoxRecord || other.typeId != typeId || other.dataVersion > codec.dataVersion) return null;
@@ -229,7 +253,7 @@ class AiMergeService implements PageAiMerge {
     );
   }
 
-  // A saved box's data as markdown; null if it can't be read or is too big.
+  // A saved box's data; null if it can't be read or is too big to offer.
   _Version? _version(BoxRecord box, int at, String? device) {
     final Object? json;
     try {
@@ -240,7 +264,7 @@ class AiMergeService implements PageAiMerge {
     if (json is! Map<String, Object?> || json['document'] is! Map) return null;
     final markdown = noteToMarkdown(json, markAi: box.typeId == aiBoxTypeId);
     if (utf8.encode(markdown).length > aiMergeMaxVersionBytes) return null;
-    return _Version(json, AiLinkMergeVersion(markdown: markdown, at: at, device: device));
+    return _Version(json, AiLinkMergeVersion(at: at, device: device));
   }
 
   static bool _isEncrypted(BoxRecord box) =>
@@ -255,24 +279,23 @@ class AiMergeService implements PageAiMerge {
     return host.aiReadablePages(code.target).contains(r.pageId);
   }
 
-  /// The pending requests [code] covers, as the link lists them. Stops before
-  /// the answer would be longer than the link allows.
+  /// The pending requests [code] covers, as the link lists them: a grant with
+  /// no content. Every request is listed (they are small, and one per box).
   List<AiLinkMergeItem> pendingFor(AiCode code) {
     final out = <AiLinkMergeItem>[];
-    var size = 0;
-    for (final r in _byKey.values) {
-      if (!_reaches(code, r)) continue;
-      final item = AiLinkMergeItem(
-        id: r.id,
-        page: r.pageId,
-        box: r.boxId,
-        type: r.typeId,
-        mine: r.mine.link,
-        theirs: r.theirs.link,
+    for (final a in _asks.values) {
+      final r = a.request;
+      if (r == null || !_reaches(code, r)) continue;
+      out.add(
+        AiLinkMergeItem(
+          id: r.id,
+          page: r.pageId,
+          box: r.boxId,
+          type: r.typeId,
+          mine: r.mine.link,
+          theirs: r.theirs.link,
+        ),
       );
-      size += utf8.encode(jsonEncode(item.toJson())).length;
-      if (size > aiLinkMaxRequestBytes - 4096) break;
-      out.add(item);
     }
     return out;
   }
@@ -281,85 +304,82 @@ class AiMergeService implements PageAiMerge {
   /// attaches it to the request and wakes the dialog. `no_request` if the
   /// request is gone or [code] doesn't cover its page.
   AiLinkResponse propose(AiCode code, String requestId, String markdown) {
-    _Request? r;
-    for (final x in _byKey.values) {
-      if (x.id == requestId) r = x;
+    _Ask? ask;
+    for (final a in _asks.values) {
+      if (a.request?.id == requestId) ask = a;
     }
-    if (r == null || !_reaches(code, r)) return AiLinkResponse.error(AiLinkCode.noRequest);
-    if (markdown.trim().isEmpty) {
+    final r = ask?.request;
+    if (ask == null || r == null || !_reaches(code, r)) return AiLinkResponse.error(AiLinkCode.noRequest);
+    if (utf8.encode(markdown).length > 2 * aiMergeMaxVersionBytes) {
+      return AiLinkResponse.error(AiLinkCode.badRequest, 'The merge is too long. Send the merged box only.');
+    }
+    // The AI's own <ai-written> lines carry no meaning here: marks come from
+    // the two versions (see _proposal).
+    final text = _stripMarkers(markdown);
+    if (text.trim().isEmpty) {
       return AiLinkResponse.error(AiLinkCode.badRequest, 'The merge is empty. Send the whole merged box as markdown.');
     }
     final AiMergeProposal proposal;
     try {
-      proposal = _proposal(r, markdown);
+      proposal = _proposal(r, text, code.label.isEmpty ? null : code.label);
     } on Object {
       return AiLinkResponse.error(AiLinkCode.badRequest, "The merge couldn't be read as markdown for this box.");
     }
-    r.timer?.cancel();
-    _byKey.remove(r.key);
-    if (!r.done.isCompleted) r.done.complete(proposal);
+    ask.timer?.cancel();
+    _asks.remove(ask.key);
+    if (!ask.done.isCompleted) ask.done.complete(proposal);
     return AiLinkResponse.proposed(request: r.id);
   }
 
-  // The box's data for the proposal, built for the box type: the note's
-  // document with the markdown's blocks; for an AI box the same, with the
-  // blocks the AI wrote marked as AI-written.
-  AiMergeProposal _proposal(_Request r, String markdown) {
-    final Map<String, Object?> json;
-    if (r.typeId == aiBoxTypeId) {
-      json = _aiBoxJson(r.mine.json, markdown);
-    } else {
-      final blocks = markdownToNoteBlocks(markdown);
-      json = _withBlocks(r.mine.json, blocks);
-    }
-    final data = r.codec.decode(json, r.codec.dataVersion);
-    return AiMergeProposal(markdown: markdown, data: data, dataVersion: r.codec.dataVersion);
+  static final RegExp _marker = RegExp(r'^\s*</?ai-written>\s*$');
+
+  static String _stripMarkers(String markdown) =>
+      markdown.split(RegExp(r'\r?\n')).where((l) => !_marker.hasMatch(l)).join('\n');
+
+  // A top-level block as markdown: two blocks that say the same thing render
+  // the same.
+  static String _blockText(Object? block) => noteToMarkdown({
+    'document': {
+      'type': 'page',
+      'children': [block],
+    },
+  });
+
+  static List<Map<String, Object?>> _blocksOf(Map<String, Object?> json) {
+    final doc = json['document'];
+    final kids = doc is Map ? doc['children'] : null;
+    return [
+      if (kids is List)
+        for (final k in kids)
+          if (k is Map) {for (final e in k.entries) e.key.toString(): e.value},
+    ];
   }
 
-  static final RegExp _open = RegExp(r'^\s*<ai-written>\s*$');
-  static final RegExp _close = RegExp(r'^\s*</ai-written>\s*$');
-
-  // With `<ai-written>` lines (as the AI saw the box), the text inside them is
-  // marked AI-written and the rest is not. Without any, the whole merge is
-  // written as the AI's, as `write_box` with mode `replace` does.
-  static Map<String, Object?> _aiBoxJson(Map<String, Object?> mine, String markdown) {
-    final lines = markdown.split(RegExp(r'\r?\n'));
-    final chunks = <({String text, bool ai})>[];
-    var seen = false;
-    var inside = false;
-    var buf = <String>[];
-    void flush() {
-      if (buf.any((l) => l.trim().isNotEmpty)) chunks.add((text: buf.join('\n'), ai: inside));
-      buf = [];
-    }
-
-    for (final line in lines) {
-      if (_open.hasMatch(line)) {
-        flush();
-        inside = true;
-        seen = true;
-      } else if (_close.hasMatch(line)) {
-        flush();
-        inside = false;
-        seen = true;
-      } else {
-        buf.add(line);
+  // The box's data for the proposal. The marks come from the two versions,
+  // not from the AI: a block of the proposal that says what a block of mine
+  // or theirs says is that block, verbatim (its AI mark or its lack of one,
+  // formulas, links and styles included; mine wins when both have it). A block
+  // in neither is new: AI-written in an AI box, plain in a note box.
+  AiMergeProposal _proposal(_Request r, String markdown, String? by) {
+    final known = <String, Map<String, Object?>>{};
+    for (final v in [r.mine, r.theirs]) {
+      for (final b in _blocksOf(v.json)) {
+        final text = _blockText(b);
+        if (text.trim().isNotEmpty) known.putIfAbsent(text, () => b);
       }
-    }
-    flush();
-    if (!seen) {
-      return applyAiWrite(
-        mine,
-        AiWrite(connectionId: '', content: markdown, mode: AiWriteMode.replace),
-      );
     }
     final blocks = <Map<String, Object?>>[];
-    for (final c in chunks) {
-      for (final b in markdownToNoteBlocks(c.text)) {
-        blocks.add(c.ai ? markAiWritten(b) : b);
+    for (final b in markdownToNoteBlocks(markdown)) {
+      final same = known[_blockText(b)];
+      if (same != null) {
+        blocks.add(same);
+      } else {
+        blocks.add(r.typeId == aiBoxTypeId ? markAiWritten(b) : b);
       }
     }
-    return _withBlocks(mine, blocks);
+    final json = _withBlocks(r.mine.json, blocks);
+    final data = r.codec.decode(json, r.codec.dataVersion);
+    return AiMergeProposal(markdown: markdown, data: data, dataVersion: r.codec.dataVersion, by: by);
   }
 
   // [json] (`{"document": {...}}` and any other keys) with [blocks] as the

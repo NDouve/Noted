@@ -311,14 +311,15 @@ void main() {
         page: 'p',
         box: 'b',
         type: 'noted.note',
-        mine: AiLinkMergeVersion(markdown: 'mine\ntext', at: 5, device: 'PC'),
-        theirs: AiLinkMergeVersion(markdown: 'theirs', at: 9),
+        mine: AiLinkMergeVersion(at: 5, device: 'PC'),
+        theirs: AiLinkMergeVersion(at: 9),
       );
       final line = const AiLinkResponse.merges([item]).encode();
       expect(line, isNot(contains('\n')));
       final back = AiLinkResponse.decode(line) as AiLinkMerges;
       expect(back.items.single.id, 'r1');
-      expect(back.items.single.mine.markdown, 'mine\ntext');
+      expect(back.items.single.mine.at, 5);
+      expect(line, isNot(contains('markdown')));
       expect(back.items.single.mine.device, 'PC');
       expect(back.items.single.theirs.device, isNull);
       expect(back.items.single.theirs.at, 9);

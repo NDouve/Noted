@@ -269,15 +269,39 @@ final class NotedToolbox {
         text: 'No merge requests are waiting for this code. The user asks for one in Noted, from a sync conflict.',
         isError: false,
       ),
-      AiLinkMerges(:final items) => (
-        text: const JsonEncoder.withIndent('  ').convert({
-          'requests': [for (final i in items) i.toJson()],
-        }),
-        isError: false,
-      ),
+      AiLinkMerges(:final items) => await _mergeOutput(items),
       AiLinkError() => linkErrorOutput(response),
       _ => _error("Noted's answer wasn't understood."),
     };
+  }
+
+  // The app granted these requests (it checked the code and that the pages
+  // are readable). The content comes from here: the saved page file's
+  // conflict record, rendered by the same code as read_box, which re-checks
+  // each page's access in the saved settings. A request this server can't
+  // show is listed as unavailable, never dropped.
+  Future<ToolOutput> _mergeOutput(List<AiLinkMergeItem> items) async {
+    final tools = NotedTools(await _load(), granted: {for (final i in items) i.page});
+    Map<String, Object?> label(AiLinkMergeVersion v) => {'device': v.device, 'at': v.at};
+    final out = <Map<String, Object?>>[];
+    for (final i in items) {
+      final v = tools.conflictVersions(i.page, i.box);
+      out.add({
+        'id': i.id,
+        'page': i.page,
+        'box': i.box,
+        'type': i.type,
+        if (v == null)
+          'unavailable':
+              'These versions cannot be shown (the page is not readable by an AI, the box is encrypted, '
+              'a version is too large, or the conflict has been settled).'
+        else ...{
+          'mine': {...label(i.mine), 'markdown': v.mine},
+          'theirs': {...label(i.theirs), 'markdown': v.theirs},
+        },
+      });
+    }
+    return (text: const JsonEncoder.withIndent('  ').convert({'requests': out}), isError: false);
   }
 
   /// Sends the merged markdown for the request [requestId]. The user decides

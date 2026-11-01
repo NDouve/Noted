@@ -22,7 +22,11 @@ abstract interface class PageAiMerge {
 }
 
 final class AiMergeProposal {
-  const AiMergeProposal({required this.markdown, required this.data, required this.dataVersion});
+  const AiMergeProposal({required this.markdown, required this.data, required this.dataVersion, this.by});
+
+  /// The label of the code that answered (for the dialog: "Claude Code
+  /// suggests"); null when unknown.
+  final String? by;
 
   /// What the AI proposed, as markdown (shown beside both versions).
   final String markdown;
