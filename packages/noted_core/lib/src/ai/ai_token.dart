@@ -7,7 +7,7 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 
-/// A new AI connection token (run 2026-11-01-01): `noted_<id>_<key>`, with a random 16-hex
+/// A new AI code (0105): `noted_<id>_<key>`, with a random 16-hex
 /// id and a 32-byte random key in base64url without padding. The app shows
 /// `token` once; it keeps only `id` and `hash` (the SHA-256 of the key).
 ///

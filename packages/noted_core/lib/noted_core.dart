@@ -6,10 +6,13 @@
 /// side of the Box API. Pure Dart; nothing in this library imports Flutter.
 library;
 
+export 'src/ai/ai_access.dart';
+export 'src/ai/ai_access_store.dart';
+export 'src/ai/ai_activity_log.dart';
 export 'src/ai/ai_box.dart';
-export 'src/ai/ai_connection.dart';
+export 'src/ai/ai_code.dart';
+export 'src/ai/ai_code_format.dart';
 export 'src/ai/ai_link.dart';
-export 'src/ai/ai_setting.dart';
 export 'src/ai/ai_token.dart';
 export 'src/attachments/attachments.dart';
 export 'src/binder/binder.dart';
@@ -24,6 +27,8 @@ export 'src/json/raw_json.dart';
 export 'src/merge/conflict_copy.dart';
 export 'src/merge/page_merge.dart';
 export 'src/model/bounds.dart';
+export 'src/model/box_types.dart';
+export 'src/model/config_source.dart';
 export 'src/model/ids.dart';
 export 'src/model/page.dart';
 export 'src/search/search_index.dart';

@@ -2,10 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-/// The local link between the MCP server and the running Noted app (run
-/// 2026-11-01-01).
+/// The local link between the MCP server and the running Noted app, protocol
+/// `ai-link/2` (run 2026-11-01-02, replacing `ai-link/1`).
 ///
-/// The server never writes a file. To change a box it asks the app, which
+/// The server never writes a file and never decides who may read what. For a
+/// write, and for every request that carries a code, it asks the app, which
 /// decides (invariant 4).
 ///
 /// - The app listens on 127.0.0.1 only, on a free port, and writes
@@ -14,28 +15,45 @@
 ///   bytes in base64url, new at every launch. It deletes the file on a clean
 ///   exit. [readAiLink] reads the port and nonce from it.
 /// - Greeting: when a client connects, the app first sends one line,
-///   `{"noted":"ai-link/1","nonce":NONCE}` ([aiLinkGreeting]). The client reads
+///   `{"noted":"ai-link/2","nonce":NONCE}` ([aiLinkGreeting]). The client reads
 ///   it ([readAiLinkGreeting]) and checks the nonce against the file. Only
 ///   then does it send its request. A wrong or missing greeting means the
 ///   client sends nothing and reports `not_running`: something else is
-///   listening on that port, and the token must not be handed to it.
+///   listening on that port, and the code must not be handed to it.
 /// - One request per TCP connection: one UTF-8 JSON object on a single line
 ///   ending in `\n`, at most [aiLinkMaxRequestBytes]; the app answers with one
 ///   response line, then the connection closes.
-/// - Request: `{"noted":"ai-link/1","token":"...","op":"write_box",
-///   "box":BOX_ID,"mode":"replace"|"append","content":MARKDOWN}`
-///   ([AiLinkRequest]).
-/// - Response: `{"ok":true,"page":"<page id>","box":"<box id>"}` or
-///   `{"ok":false,"code":"<code>","message":"<text for the AI>"}`
+/// - Every request has `"noted":"ai-link/2"`, `"op"`, `"code"` (the whole
+///   code, `noted_<id>_<key>`), `"session"` (the server process's random id)
+///   and optionally `"app"` (the MCP client's name). Ops ([AiLinkRequest]):
+///   - `write_box`: `box`, `mode` (`replace`|`append`), `content` (markdown).
+///     Answer: `{"ok":true,"box":BOX_ID}`; the answer gives no page id or
+///     title (an AI sees boxes by id only).
+///   - `access`: `action` (`read_box`|`read_page`|`list_pages`|`search`) and
+///     optionally `target`. The app checks the code, its expiry and the
+///     session's approval, logs the action, and answers with a grant: either
+///     `{"ok":true,"grant":{"kind":"box","box":ID,"page":ID}}` or
+///     `{"ok":true,"grant":{"kind":"pages","pages":[PAGE_ID,...]}}`. The
+///     server then reads the saved files itself; content is never taken from
+///     the live screen.
+///   - `describe_code`: answer `{"ok":true,"kind":"box"|"page"|"binder",
+///     "id":ID,"role":ROLE,"expires":ISO|null}`.
+/// - Errors: `{"ok":false,"code":"<code>","message":"<text for the AI>"}`
 ///   ([AiLinkResponse], [AiLinkCode]).
 ///
 /// What the app's listener must do:
 /// - bind 127.0.0.1 only;
 /// - enforce [aiLinkMaxRequestBytes] while reading, not after;
-/// - drop a connection whose first byte isn't `{`;
-/// - time out a read after [aiLinkReadTimeout] (5 s);
+/// - drop a connection whose first byte isn't `{`, and one whose line
+///   [AiLinkRequest.parse] returns null for (not this protocol, such as an
+///   HTTP request): close at once, with no answer;
+/// - answer `bad_request` to an [AiLinkMalformed] request;
+/// - time out a read after [aiLinkReadTimeout] (5 s), except while it waits
+///   for the user to approve a session ([aiLinkApprovalTimeout]);
 /// - hold at most [aiLinkMaxConnections] (8) connections at once;
-/// - check the token before it looks up the box;
+/// - check the code before it looks up anything it points at;
+/// - after an approval prompt returns (a session, or a write), check the code
+///   again before it acts: it may have been revoked or expired meanwhile;
 /// - make the nonce random per launch (the pure helpers here don't make one).
 library;
 
@@ -50,11 +68,20 @@ const int aiLinkMaxRequestBytes = 1 << 20;
 /// How long the app waits for a request before it drops the connection.
 const Duration aiLinkReadTimeout = Duration(seconds: 5);
 
+/// How long a request may wait for the user to allow a session or a write
+/// before the app answers `not_approved`.
+const Duration aiLinkApprovalTimeout = Duration(minutes: 2);
+
 /// The most connections the app serves at the same time.
 const int aiLinkMaxConnections = 8;
 
+/// The longest `session` and `app` a request may carry (they are shown to the
+/// user and stored); longer ones parse as [AiLinkMalformed].
+const int aiLinkMaxSessionLength = 128;
+const int aiLinkMaxAppLength = 200;
+
 /// The value of `"noted"` in a request and in the greeting.
-const String aiLinkProtocol = 'ai-link/1';
+const String aiLinkProtocol = 'ai-link/2';
 
 /// The port and nonce in the text of [aiLinkFileName], or null if it is
 /// unreadable or has no nonce.
@@ -92,37 +119,61 @@ String? readAiLinkGreeting(String line) {
 /// lives here so the read-only library needs nothing from the Box API.
 enum AiLinkMode { replace, append }
 
-/// A request to write to an AI box.
-final class AiLinkRequest {
-  const AiLinkRequest({
-    required this.token,
-    required this.box,
-    required this.mode,
-    required this.content,
-  });
+/// What an `access` request asks to do.
+enum AiLinkAction {
+  readBox('read_box'),
+  readPage('read_page'),
+  listPages('list_pages'),
+  search('search');
 
-  /// The whole token, `noted_<id>_<key>`.
-  final String token;
-  final String box;
-  final AiLinkMode mode;
+  const AiLinkAction(this.wire);
 
-  /// Markdown.
-  final String content;
+  final String wire;
+
+  static AiLinkAction? fromWire(Object? wire) {
+    for (final a in values) {
+      if (a.wire == wire) return a;
+    }
+    return null;
+  }
+}
+
+/// A request from the MCP server to the app.
+sealed class AiLinkRequest {
+  const AiLinkRequest({required this.code, required this.session, this.app});
+
+  /// The whole code, `noted_<id>_<key>`.
+  final String code;
+
+  /// The server process's random session id.
+  final String session;
+
+  /// The MCP client's name, if it said.
+  final String? app;
+
+  /// The `op` on the wire.
+  String get op;
+
+  Map<String, Object?> _fields();
 
   /// The request as one line, without the newline.
   String encode() => jsonEncode({
     'noted': aiLinkProtocol,
-    'token': token,
-    'op': 'write_box',
-    'box': box,
-    'mode': mode.name,
-    'content': content,
+    'op': op,
+    'code': code,
+    'session': session,
+    if (app != null) 'app': app,
+    ..._fields(),
   });
 
-  /// Reads a request line, or null for anything malformed: not a JSON
-  /// object, the wrong `noted` value, an unknown `op` or `mode`, or a field
-  /// of the wrong type.
-  static AiLinkRequest? decode(String line) {
+  /// Reads a request line.
+  ///
+  /// Returns null for anything that isn't a JSON object with
+  /// `"noted":"ai-link/2"`: HTTP, other protocols, garbage. The listener
+  /// drops such a connection without answering. A line that is this protocol
+  /// but has an unknown `op` or a missing or mistyped field comes back as an
+  /// [AiLinkMalformed], which the listener answers with `bad_request`.
+  static AiLinkRequest? parse(String line) {
     final Object? json;
     try {
       json = jsonDecode(line.trim());
@@ -130,33 +181,156 @@ final class AiLinkRequest {
       return null;
     }
     if (json is! Map || json['noted'] != aiLinkProtocol) return null;
-    if (json['op'] != 'write_box') return null;
-    final token = json['token'];
-    final box = json['box'];
-    final content = json['content'];
-    final wireMode = json['mode'];
-    final mode = AiLinkMode.values.where((m) => m.name == wireMode);
-    if (token is! String || box is! String || content is! String) return null;
-    if (mode.isEmpty) return null;
-    return AiLinkRequest(
-      token: token,
-      box: box,
-      mode: mode.first,
-      content: content,
-    );
+    final code = json['code'];
+    final session = json['session'];
+    final appValue = json['app'];
+    if (code is! String || session is! String || session.isEmpty) {
+      return const AiLinkMalformed('The request needs a code and a session.');
+    }
+    if (session.length > aiLinkMaxSessionLength) {
+      return const AiLinkMalformed('The session is too long.');
+    }
+    if (json.containsKey('app') && appValue is! String) {
+      return const AiLinkMalformed('The app name must be text.');
+    }
+    if (appValue is String && appValue.length > aiLinkMaxAppLength) {
+      return const AiLinkMalformed('The app name is too long.');
+    }
+    final app = appValue as String?;
+    switch (json['op']) {
+      case 'write_box':
+        final box = json['box'];
+        final content = json['content'];
+        final wireMode = json['mode'];
+        final mode = AiLinkMode.values.where((m) => m.name == wireMode);
+        if (box is! String || content is! String || mode.isEmpty) {
+          return const AiLinkMalformed('write_box needs box, mode (replace or append) and content.');
+        }
+        return AiLinkWriteBox(
+          code: code,
+          session: session,
+          app: app,
+          box: box,
+          mode: mode.first,
+          content: content,
+        );
+      case 'access':
+        final action = AiLinkAction.fromWire(json['action']);
+        final target = json['target'];
+        if (action == null || (json.containsKey('target') && target != null && target is! String)) {
+          return const AiLinkMalformed('access needs an action: read_box, read_page, list_pages or search.');
+        }
+        if ((action == AiLinkAction.readBox || action == AiLinkAction.readPage) &&
+            (target is! String || target.isEmpty)) {
+          return const AiLinkMalformed('read_box and read_page need a target.');
+        }
+        return AiLinkAccess(
+          code: code,
+          session: session,
+          app: app,
+          action: action,
+          target: target as String?,
+        );
+      case 'describe_code':
+        return AiLinkDescribeCode(code: code, session: session, app: app);
+    }
+    return const AiLinkMalformed('Unknown op.');
   }
+}
+
+/// A request to write to an AI box.
+final class AiLinkWriteBox extends AiLinkRequest {
+  const AiLinkWriteBox({
+    required super.code,
+    required super.session,
+    super.app,
+    required this.box,
+    required this.mode,
+    required this.content,
+  });
+
+  final String box;
+  final AiLinkMode mode;
+
+  /// Markdown.
+  final String content;
+
+  @override
+  String get op => 'write_box';
+
+  @override
+  Map<String, Object?> _fields() => {'box': box, 'mode': mode.name, 'content': content};
+}
+
+/// A request for permission to read: the app answers with a grant.
+final class AiLinkAccess extends AiLinkRequest {
+  const AiLinkAccess({
+    required super.code,
+    required super.session,
+    super.app,
+    required this.action,
+    this.target,
+  });
+
+  final AiLinkAction action;
+
+  /// The box id for `read_box`, the page id for `read_page`; unused (or the
+  /// query, for the activity log) for the other actions.
+  final String? target;
+
+  @override
+  String get op => 'access';
+
+  @override
+  Map<String, Object?> _fields() => {'action': action.wire, if (target != null) 'target': target};
+}
+
+/// A request for what a code points at and may do.
+final class AiLinkDescribeCode extends AiLinkRequest {
+  const AiLinkDescribeCode({required super.code, required super.session, super.app});
+
+  @override
+  String get op => 'describe_code';
+
+  @override
+  Map<String, Object?> _fields() => const {};
+}
+
+/// A line in this protocol that the app can't act on. It is not sent, only
+/// returned by [AiLinkRequest.parse]; answer it with `bad_request`.
+final class AiLinkMalformed extends AiLinkRequest {
+  const AiLinkMalformed(this.message) : super(code: '', session: '');
+
+  /// What was wrong, for the answer.
+  final String message;
+
+  @override
+  String get op => '';
+
+  @override
+  Map<String, Object?> _fields() => const {};
 }
 
 /// Why a request failed.
 enum AiLinkCode {
   badRequest('bad_request', 'The request was not understood.'),
 
-  /// Malformed, unknown or revoked.
-  badToken('bad_token', 'The token is not valid. It may have been revoked.'),
+  /// Unknown, revoked or malformed.
+  badCode('bad_code', 'The code is not valid. It may have been revoked.'),
 
-  /// No such box, or its page's AI setting is Off: the same answer either way.
+  /// Past its expiry.
+  expired('expired', 'The code has expired.'),
+
+  /// The user did not allow it: denied, or no answer in time.
+  notApproved('not_approved', 'The user did not allow this.'),
+
+  /// A Reader tried to write, or a code was used for what it doesn't cover
+  /// (a box code for pages).
+  wrongRole('wrong_role', 'This code does not allow that.'),
+
+  /// No such box, or its page is not one the code reaches: the same answer
+  /// either way.
   noBox('no_box', 'No such box.'),
-  notOwner('not_owner', 'This box belongs to another AI connection.'),
 
   /// The box is conflicted (0020).
   conflict('conflict', 'The box has a sync conflict and cannot be written to.'),
@@ -166,15 +340,19 @@ enum AiLinkCode {
   notWritable('not_writable', 'This box does not take writes from an AI.'),
   saveFailed('save_failed', 'The app could not save the change.'),
 
-  /// The app can't take a write yet (it is still opening the notebook, or
-  /// can't read its settings for a moment): nothing was changed.
+  /// The app can't take a request yet (it is still opening the notebook, or
+  /// can't read its codes for a moment): nothing was changed.
   busy('busy', 'Noted is busy (it may still be starting), so nothing was changed. Try again in a moment.'),
 
   /// Used by the client only, when the app can't be reached.
   notRunning(
     'not_running',
-    'Noted is not running, so nothing can be written. Ask the user to open Noted.',
-  );
+    'This needs Noted running: codes are checked by the app. Open Noted and try again.',
+  ),
+
+  /// A code from a newer app that this build doesn't know (see
+  /// [AiLinkError.wireCode]). Never sent by this build.
+  unknown('unknown', 'The request failed.');
 
   const AiLinkCode(this.wire, this.defaultMessage);
 
@@ -182,36 +360,83 @@ enum AiLinkCode {
   final String wire;
   final String defaultMessage;
 
+  /// The known code named [wire], or null (including for `unknown`).
   static AiLinkCode? fromWire(Object? wire) {
     for (final c in values) {
-      if (c.wire == wire) return c;
+      if (c != unknown && c.wire == wire) return c;
     }
     return null;
   }
 }
 
+/// What an `access` request is granted: how the server reads saved files.
+sealed class AiLinkGrant {
+  const AiLinkGrant();
+
+  Map<String, Object?> toJson();
+
+  static AiLinkGrant? fromJson(Object? json) {
+    if (json is! Map) return null;
+    switch (json['kind']) {
+      case 'box':
+        final box = json['box'];
+        final page = json['page'];
+        return box is String && page is String ? AiLinkBoxGrant(box: box, page: page) : null;
+      case 'pages':
+        final pages = json['pages'];
+        if (pages is! List || pages.any((p) => p is! String)) return null;
+        return AiLinkPagesGrant(pages: List<String>.unmodifiable(pages.cast<String>()));
+    }
+    return null;
+  }
+}
+
+/// One box, and the page it is on (for the server to find the saved file).
+final class AiLinkBoxGrant extends AiLinkGrant {
+  const AiLinkBoxGrant({required this.box, required this.page});
+
+  final String box;
+  final String page;
+
+  @override
+  Map<String, Object?> toJson() => {'kind': 'box', 'box': box, 'page': page};
+}
+
+/// The ids of the pages the code lets the AI read, besides the Open ones.
+final class AiLinkPagesGrant extends AiLinkGrant {
+  const AiLinkPagesGrant({required this.pages});
+
+  final List<String> pages;
+
+  @override
+  Map<String, Object?> toJson() => {'kind': 'pages', 'pages': pages};
+}
+
 /// The app's answer to an [AiLinkRequest].
-final class AiLinkResponse {
-  const AiLinkResponse.ok({required String this.page, required String this.box})
-    : code = null,
-      message = null;
+sealed class AiLinkResponse {
+  const AiLinkResponse();
 
-  AiLinkResponse.error(AiLinkCode this.code, [String? message])
-    : message = message ?? code.defaultMessage,
-      page = null,
-      box = null;
+  /// The answer to a `write_box`.
+  const factory AiLinkResponse.written({required String box}) = AiLinkWritten;
 
-  final String? page;
-  final String? box;
-  final AiLinkCode? code;
-  final String? message;
+  /// The answer to an `access`.
+  const factory AiLinkResponse.granted(AiLinkGrant grant) = AiLinkGranted;
 
-  bool get ok => code == null;
+  /// The answer to a `describe_code`.
+  const factory AiLinkResponse.described({
+    required String kind,
+    required String id,
+    required String role,
+    String? expires,
+  }) = AiLinkDescribed;
+
+  /// A failure.
+  factory AiLinkResponse.error(AiLinkCode code, [String? message]) = AiLinkError;
+
+  bool get ok => this is! AiLinkError;
 
   /// The response as one line, without the newline.
-  String encode() => ok
-      ? jsonEncode({'ok': true, 'page': page, 'box': box})
-      : jsonEncode({'ok': false, 'code': code!.wire, 'message': message});
+  String encode();
 
   /// Reads a response line, or null if it is malformed.
   static AiLinkResponse? decode(String line) {
@@ -223,19 +448,95 @@ final class AiLinkResponse {
     }
     if (json is! Map) return null;
     if (json['ok'] == true) {
-      final page = json['page'];
+      if (json.containsKey('grant')) {
+        final grant = AiLinkGrant.fromJson(json['grant']);
+        return grant == null ? null : AiLinkGranted(grant);
+      }
+      if (json.containsKey('kind')) {
+        final kind = json['kind'];
+        final id = json['id'];
+        final role = json['role'];
+        final expires = json['expires'];
+        if (kind is! String || id is! String || role is! String) return null;
+        if (expires != null && expires is! String) return null;
+        return AiLinkDescribed(kind: kind, id: id, role: role, expires: expires as String?);
+      }
       final box = json['box'];
-      if (page is! String || box is! String) return null;
-      return AiLinkResponse.ok(page: page, box: box);
+      return box is String ? AiLinkWritten(box: box) : null;
     }
     if (json['ok'] != false) return null;
-    // A code from a newer app is a failure this build doesn't know: keep the
-    // app's message, which still says what happened.
+    // A code from a newer app is a failure this build doesn't know: keep its
+    // wire code and the app's message, which still says what happened.
     final code = AiLinkCode.fromWire(json['code']);
     final message = json['message'];
     if (code == null) {
-      return json['code'] is String && message is String ? AiLinkResponse.error(AiLinkCode.saveFailed, message) : null;
+      final wire = json['code'];
+      return wire is String && message is String ? AiLinkError(AiLinkCode.unknown, message, wire) : null;
     }
-    return AiLinkResponse.error(code, message is String ? message : null);
+    return AiLinkError(code, message is String ? message : null);
   }
+}
+
+/// A write went through.
+final class AiLinkWritten extends AiLinkResponse {
+  const AiLinkWritten({required this.box});
+
+  final String box;
+
+  @override
+  String encode() => jsonEncode({'ok': true, 'box': box});
+}
+
+/// What an `access` is granted.
+final class AiLinkGranted extends AiLinkResponse {
+  const AiLinkGranted(this.grant);
+
+  final AiLinkGrant grant;
+
+  @override
+  String encode() => jsonEncode({'ok': true, 'grant': grant.toJson()});
+}
+
+/// What a code is.
+final class AiLinkDescribed extends AiLinkResponse {
+  const AiLinkDescribed({
+    required this.kind,
+    required this.id,
+    required this.role,
+    this.expires,
+  });
+
+  /// `box`, `page` or `binder`.
+  final String kind;
+
+  /// The box id, the page id, or a stable binder id (no title).
+  final String id;
+
+  /// The role as stored (`writer`, `reader`, or one this build doesn't know).
+  final String role;
+
+  /// ISO 8601, or null for a code that doesn't expire.
+  final String? expires;
+
+  @override
+  String encode() => jsonEncode({'ok': true, 'kind': kind, 'id': id, 'role': role, 'expires': expires});
+}
+
+/// A request that failed.
+final class AiLinkError extends AiLinkResponse {
+  /// [wireCode] is only for [AiLinkCode.unknown]: the code as the app wrote
+  /// it.
+  AiLinkError(this.code, [String? message, String? wireCode])
+    : message = message ?? code.defaultMessage,
+      wireCode = code == AiLinkCode.unknown ? (wireCode ?? code.wire) : code.wire;
+
+  final AiLinkCode code;
+  final String message;
+
+  /// The code as it is on the wire: [AiLinkCode.wire], or for an unknown code
+  /// from a newer app, the text it sent.
+  final String wireCode;
+
+  @override
+  String encode() => jsonEncode({'ok': false, 'code': wireCode, 'message': message});
 }
