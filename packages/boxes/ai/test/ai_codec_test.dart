@@ -94,9 +94,13 @@ void main() {
       expect(codec.isEmpty(boxOf([para('x')])), isFalse);
     });
 
-    test('concurrent edits are a conflict (the default)', () {
+    test('concurrent edits of a block are a conflict', () {
       final d = boxOf([para('a')]);
-      expect(codec.merge(d, d, d), isA<Conflicted<AiBoxData>>());
+      expect(
+        codec.merge(d, boxOf([para('b')]), boxOf([para('c')])),
+        isA<Conflicted<AiBoxData>>(),
+      );
+      // The additions-only merge has its own tests: ai_merge_test.dart.
     });
   });
 

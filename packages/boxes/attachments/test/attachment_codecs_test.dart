@@ -135,6 +135,54 @@ void main() {
     });
   });
 
+  group('merge: the same part changed on both sides is a conflict', () {
+    AttachmentRef ref(String name) =>
+        AttachmentRef(name: name, size: 1, hash: hash, file: 'f');
+
+    test('image: both replaced the picture, or one removed its data', () {
+      const codec = ImageCodec();
+      final base = ImageData(ref: ref('a.png'), width: 1, height: 1);
+      expect(
+        codec.merge(
+          base,
+          base.copyWith(ref: ref('m.png')),
+          base.copyWith(ref: ref('t.png')),
+        ),
+        isA<Conflicted<ImageData?>>(),
+      );
+      expect(
+        codec.merge(base, null, base.copyWith(alt: 'x')),
+        isA<Conflicted<ImageData?>>(),
+      );
+    });
+
+    test('image: different parts (picture one side, alt text the other) '
+        'merge, as before', () {
+      const codec = ImageCodec();
+      final base = ImageData(ref: ref('a.png'), width: 1, height: 1);
+      final r = codec.merge(
+        base,
+        base.copyWith(ref: ref('m.png')),
+        base.copyWith(alt: 'text'),
+      );
+      final d = (r as Merged<ImageData?>).data!;
+      expect((d.ref.name, d.alt), ('m.png', 'text'));
+    });
+
+    test('file: both replaced the file', () {
+      const codec = FileCodec();
+      final base = FileData(ref: ref('a.pdf'));
+      expect(
+        codec.merge(
+          base,
+          FileData(ref: ref('m.pdf')),
+          FileData(ref: ref('t.pdf')),
+        ),
+        isA<Conflicted<FileData?>>(),
+      );
+    });
+  });
+
   group('storing and converting', () {
     test(
       'folder mode writes the file under its hash; the box keeps name and hash',

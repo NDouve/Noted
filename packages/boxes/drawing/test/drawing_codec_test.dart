@@ -123,6 +123,27 @@ void main() {
     expect(merged.erased, {'a', 'x'});
   });
 
+  test('merge: strokes added on both sides are all kept (no conflict)', () {
+    final base = DrawingData(strokes: [stroke('a')]);
+    final mine = DrawingData(strokes: [stroke('a'), stroke('m')]);
+    final theirs = DrawingData(strokes: [stroke('a'), stroke('t')]);
+    final merged =
+        (codec.merge(base, mine, theirs) as Merged<DrawingData>).data;
+    expect(merged.strokes.map((s) => s.id).toSet(), {'a', 'm', 't'});
+    expect(merged.erased, isEmpty);
+  });
+
+  test('merge: an erase on one side is not a conflict and is not undone by '
+      'the other side adding', () {
+    final base = DrawingData(strokes: [stroke('a'), stroke('b')]);
+    final mine = DrawingData(strokes: [stroke('b')], erased: {'a'});
+    final theirs = DrawingData(strokes: [stroke('a'), stroke('b'), stroke('t')]);
+    final merged =
+        (codec.merge(base, mine, theirs) as Merged<DrawingData>).data;
+    expect(merged.strokes.map((s) => s.id).toSet(), {'b', 't'});
+    expect(merged.erased, {'a'});
+  });
+
   test('empty, no text, and only a placeholder for AI', () {
     expect(codec.isEmpty(codec.create()), isTrue);
     expect(codec.isEmpty(DrawingData(strokes: [stroke('a')])), isFalse);

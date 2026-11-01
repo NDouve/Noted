@@ -92,8 +92,16 @@ final class AiCodec extends BoxCodec<AiBoxData> {
   @override
   AiBoxData? aiWrite(AiBoxData data, AiWrite write) => AiBoxData(applyAiWrite(data.json, write));
 
-  // No merge: the default marks concurrent edits conflicted, as the note box
-  // does (the note codec has none).
+  /// The note box's "only added on both sides" merge ([mergeNoteJson]) on the
+  /// whole stored data, so the owner and every other key are three-way merged
+  /// (a key both sides changed differently is a conflict). Blocks are never
+  /// rewritten, so the AI-written marks of blocks either side added (a
+  /// closed-app append included) stay on them.
+  @override
+  MergeResult<AiBoxData> merge(AiBoxData base, AiBoxData mine, AiBoxData theirs) {
+    final merged = mergeNoteJson(base.json, mine.json, theirs.json);
+    return merged == null ? const Conflicted() : Merged(AiBoxData(merged));
+  }
 }
 
 /// [document] (`{"document": {...}}`) without the AI-written marks that no

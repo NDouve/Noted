@@ -7,6 +7,8 @@
 
 import 'package:noted_core/noted_core.dart';
 
+import 'note_merge.dart';
+
 /// A plain note box's content: an appflowy_editor document in its native
 /// JSON form (`{"document": {...}}`), as `Document.toJson()` produces it.
 final class NoteData {
@@ -84,6 +86,16 @@ final class NoteCodec extends BoxCodec<NoteData> {
 
   @override
   AiExposure aiExposure(NoteData data) => AiText(snapshotText(data));
+
+  /// Both sides only added (0020, 0051): blocks inserted, or text appended
+  /// to the last block or prepended to the first. Anything else is a
+  /// conflict. The exact rules are on [mergeNoteJson]. [mine]'s other
+  /// top-level keys are kept.
+  @override
+  MergeResult<NoteData> merge(NoteData base, NoteData mine, NoteData theirs) {
+    final merged = mergeNoteJson(base.document, mine.document, theirs.document);
+    return merged == null ? const Conflicted() : Merged(NoteData(merged));
+  }
 }
 
 /// Names in the appflowy document JSON that the note module relies on beyond

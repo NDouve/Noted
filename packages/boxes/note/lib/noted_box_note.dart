@@ -7,6 +7,7 @@ library;
 
 export 'src/note_codec.dart';
 export 'src/note_commands.dart' show NoteCommands, formatDateTime;
+export 'src/note_merge.dart' show mergeNoteJson;
 export 'src/note_link.dart' show linkAt, linkOpener, normalizeLink;
 export 'package:noted_core/noted_core.dart' show markdownToNoteBlocks;
 export 'src/note_module.dart';
