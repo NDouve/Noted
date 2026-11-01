@@ -150,9 +150,14 @@ class _PageIssuesDialogState extends State<PageIssuesDialog> {
   void _closeFromOutside() {
     if (_closing) return;
     _closing = true;
-    // Not in the middle of a build or an unmount.
+    // Not in the middle of a build, an unmount or a focus change, and only
+    // while this dialog is still the route on top (a resolution may already
+    // have closed it).
     scheduleMicrotask(() {
-      if (mounted) Navigator.of(context).pop(IssueDialogEnd.finished);
+      if (!mounted) return;
+      final route = ModalRoute.of(context);
+      if (route == null || !route.isCurrent) return;
+      Navigator.of(context).pop(IssueDialogEnd.finished);
     });
   }
 
@@ -170,8 +175,10 @@ class _PageIssuesDialogState extends State<PageIssuesDialog> {
     }
     final issues = _issues();
     if (issues.isEmpty) {
+      // Notifications can arrive mid focus change (the navigator is locked
+      // then): close the same safe way as from outside.
       _cancelAi();
-      Navigator.of(context).pop(IssueDialogEnd.finished);
+      _closeFromOutside();
       return;
     }
     setState(() => _index = _index.clamp(0, issues.length - 1));
