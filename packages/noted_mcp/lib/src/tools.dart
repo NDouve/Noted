@@ -22,6 +22,7 @@ const Map<String, String> boxTypeNames = {
   'noted.drawing': 'drawing',
   'noted.image': 'image',
   'noted.file': 'file',
+  aiBoxTypeId: 'ai',
 };
 
 /// The tools of the read-only MCP server, over [library].
@@ -29,15 +30,46 @@ const Map<String, String> boxTypeNames = {
 /// Enforced on every call, from the page AI setting (0028):
 /// - Off pages are invisible: not listed, not found, not searched, and a
 ///   link to one keeps only its text.
-/// - Box only pages are listed and their titles searched, but no box
-///   content is given out (AI boxes come later).
+/// - Box only pages are listed and their titles searched; the only box
+///   content given out is the AI's own boxes (AI boxes whose owner is the
+///   connection of [token]).
 /// - Whole page pages can be read in full.
 /// - Encrypted and unsupported boxes are always a placeholder, never their
 ///   data. Pages of locked binders are not in [library] at all.
+///
+/// The AI's identity is the connection id in [token] (`NOTED_TOKEN`), and it
+/// counts only while that id is listed in `settings.json`, read afresh with
+/// [library]. This process cannot check the token's secret half (no hashing
+/// is allowed here, invariant 4), so reads are scoped by the id alone; the
+/// app verifies the whole token on every write.
 final class NotedTools {
-  NotedTools(this.library);
+  NotedTools(this.library, {String? token}) : connectionId = _listedId(library, token);
 
   final NotedLibrary library;
+
+  /// The id of the connection this server acts as, or null: no token, a
+  /// malformed one, or one whose connection is no longer listed (revoked).
+  /// With null the server behaves as if it had no token.
+  final String? connectionId;
+
+  static String? _listedId(NotedLibrary library, String? token) {
+    final id = token == null ? null : parseAiToken(token)?.id;
+    if (id == null) return null;
+    return library.connections.any((c) => c.id == id) ? id : null;
+  }
+
+  bool _isOwn(CanvasNode n) =>
+      connectionId != null &&
+      n is BoxRecord &&
+      n.typeId == aiBoxTypeId &&
+      !isEncrypted(n) &&
+      aiBoxOwner(_decode(n)) == connectionId;
+
+  /// The AI's own boxes on [p], in reading order.
+  List<CanvasNode> _ownBoxes(LibraryPage p) => [
+    for (final n in readingOrder(p.page.nodes))
+      if (_isOwn(n)) n,
+  ];
 
   /// The pages AI may know about.
   List<LibraryPage> get visible => [
@@ -96,7 +128,11 @@ final class NotedTools {
     if (p == null) return (text: noSuchPage(id), isError: true);
     final b = StringBuffer('# ${p.title}\n');
     if (p.ai == AiSetting.boxOnly) {
-      b.write('\n${_boxOnlyNote(p)}\n');
+      final own = _ownBoxes(p);
+      if (own.isEmpty) b.write('\n${_boxOnlyNote(p)}\n');
+      for (final n in own) {
+        b.write('\n${_boxBlock(n)}\n');
+      }
       return (text: b.toString(), isError: false);
     }
     final nodes = readingOrder(p.page.nodes);
@@ -116,17 +152,42 @@ final class NotedTools {
       if (n.id == boxId) node = n;
     }
     if (node == null) return (text: 'No box with id "$boxId" on page "$pageId".', isError: true);
-    if (p.ai == AiSetting.boxOnly) return (text: _boxOnlyNote(p), isError: false);
+    // On a Box only page another box answers as a missing one does.
+    if (p.ai == AiSetting.boxOnly && !_isOwn(node)) {
+      return (text: 'No box with id "$boxId" on page "$pageId".', isError: true);
+    }
     return (text: _boxBlock(node), isError: false);
   }
 
-  String _boxOnlyNote(LibraryPage p) {
-    final n = p.page.nodes.length;
-    return 'This page\'s AI setting is Box only: an AI reads only its own boxes '
-        'there, and there are none yet, so the page\'s $n ${n == 1 ? 'box is' : 'boxes are'} not shared.';
-  }
+  String _boxOnlyNote(LibraryPage p) =>
+      'This page\'s AI setting is Box only: you read only your own AI boxes '
+      'there, and you have none on it, so the rest of the page is not shared.';
 
-  String _boxBlock(CanvasNode n) => '**${boxType(n)}** · box `${n.id}`\n\n${boxText(n)}';
+  String _boxBlock(CanvasNode n) =>
+      '**${boxType(n)}** · box `${n.id}`${_isOwn(n) ? ' · your box' : ''}\n\n${boxText(n)}';
+
+  // ---------------------------------------------------------------------------
+  // list_my_boxes
+
+  /// The AI's own boxes on pages that aren't Off, as JSON. Without a listed
+  /// token this is an error that says how to get one.
+  ToolOutput listMyBoxes() {
+    if (connectionId == null) {
+      return (
+        text:
+            'No valid AI connection token. Create a connection in Noted (gear '
+            'menu > AI connections) and give its token to this server as the '
+            'NOTED_TOKEN environment variable. A revoked token no longer works.',
+        isError: true,
+      );
+    }
+    final boxes = [
+      for (final p in visible)
+        for (final n in _ownBoxes(p))
+          {'page_id': p.id, 'page_title': p.title, 'box_id': n.id, 'ai': p.ai.value},
+    ];
+    return (text: const JsonEncoder.withIndent('  ').convert({'boxes': boxes}), isError: false);
+  }
 
   /// The kind of box [n] is: note, drawing, image, file, encrypted or
   /// unsupported.
@@ -153,6 +214,8 @@ final class NotedTools {
     switch (box.typeId) {
       case 'noted.note':
         return noteToMarkdown(data, linkTarget: _linkTarget);
+      case aiBoxTypeId:
+        return noteToMarkdown(data, markAi: true, linkTarget: _linkTarget);
       case 'noted.image':
         final alt = data is Map && data['alt'] is String ? (data['alt']! as String).trim() : '';
         return '[image: $alt]';
@@ -193,8 +256,10 @@ final class NotedTools {
     for (final p in visible) {
       final matches = <String>[];
       if (q.rangesIn(p.title) != null) matches.add('title: ${p.title}');
-      if (p.ai == AiSetting.wholePage) {
-        for (final n in readingOrder(p.page.nodes)) {
+      // Whole page: every box; Box only: the AI's own boxes.
+      {
+        final nodes = p.ai == AiSetting.wholePage ? readingOrder(p.page.nodes) : _ownBoxes(p);
+        for (final n in nodes) {
           final text = boxText(n);
           final ranges = q.rangesIn(text);
           if (ranges != null) matches.add('box ${n.id}: ${snippetOf(text, ranges).text}');

@@ -53,10 +53,13 @@ final class LibraryLocation {
 ///
 /// Reading never writes: no folder is created, no file is changed.
 final class NotedLibrary {
-  NotedLibrary._(this.pages);
+  NotedLibrary._(this.pages, this.connections);
 
   /// All readable pages, Off ones included; the tools filter them.
   final List<LibraryPage> pages;
+
+  /// The AI connections listed in `settings.json` as of this read.
+  final List<AiConnectionInfo> connections;
 
   LibraryPage? page(String id) {
     for (final p in pages) {
@@ -95,7 +98,7 @@ final class NotedLibrary {
       final own = [for (final p in await _readPages(Directory(path))) (p, loc)];
       pages.addAll(_withSettings(own, binder: binder));
     }
-    return NotedLibrary._(pages);
+    return NotedLibrary._(pages, readAiConnections(settings));
   }
 
   static List<LibraryPage> _withSettings(List<(NotedPage, LibraryLocation)> pages, {required Binder? binder}) {

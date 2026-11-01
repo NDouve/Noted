@@ -27,13 +27,23 @@
 .PARAMETER PrintOnly
   Only print the Claude desktop configuration; don't touch Claude Code.
 
+.PARAMETER Token
+  An AI connection token made in Noted (gear menu > AI connections). When
+  given, the registration passes it to the server as NOTED_TOKEN, which
+  lets the AI have its own AI boxes. It is a secret: Claude's configuration
+  will hold it. Without it the server reads only (no AI boxes of its own).
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File register-mcp.ps1
+
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File register-mcp.ps1 -Token noted_...
 #>
 param(
   [string]$Exe,
-  [string]$Name = 'noted',
+  [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$Name = 'noted',
   [ValidateSet('user', 'local', 'project')][string]$Scope = 'user',
+  [ValidatePattern('^noted_[0-9a-f]{16}_[A-Za-z0-9_-]{43}$')][string]$Token,
   [switch]$PrintOnly
 )
 
@@ -62,19 +72,28 @@ if (-not $PrintOnly) {
       # Nothing to remove.
     }
     $ErrorActionPreference = $previous
-    & claude mcp add $Name -s $Scope -- $Exe
+    if ($Token) {
+      & claude mcp add $Name -s $Scope -e "NOTED_TOKEN=$Token" -- $Exe
+    } else {
+      & claude mcp add $Name -s $Scope -- $Exe
+    }
     if ($LASTEXITCODE -ne 0) { throw "claude mcp add failed ($LASTEXITCODE)" }
-    Write-Host "Registered '$Name' with Claude Code ($Scope scope): $Exe"
+    Write-Host "Registered '$Name' with Claude Code ($Scope scope): $Exe$(if ($Token) { ' (with the AI connection token)' })"
   } else {
     Write-Host "Claude Code (the 'claude' command) was not found; skipped. Install it, or add the server by hand:"
-    Write-Host "  claude mcp add $Name -s $Scope -- `"$Exe`""
+    $tokenArg = if ($Token) { ' -e NOTED_TOKEN=<your token>' } else { '' }
+    Write-Host "  claude mcp add $Name -s $Scope$tokenArg -- `"$Exe`""
   }
 }
 
-$json = [ordered]@{ mcpServers = [ordered]@{ $Name = [ordered]@{ command = $Exe; args = @() } } } | ConvertTo-Json -Depth 4
+$entry = [ordered]@{ command = $Exe; args = @() }
+# The token is a secret: print it only when it was passed in.
+$entry['env'] = [ordered]@{ NOTED_TOKEN = $(if ($Token) { $Token } else { 'PASTE_YOUR_AI_CONNECTION_TOKEN_HERE' }) }
+$json = [ordered]@{ mcpServers = [ordered]@{ $Name = $entry } } | ConvertTo-Json -Depth 4
 Write-Host ''
 Write-Host 'Claude desktop: add this to claude_desktop_config.json'
 Write-Host '(Settings > Developer > Edit Config; %APPDATA%\Claude\claude_desktop_config.json),'
 Write-Host 'merging "mcpServers" with any servers already there, then restart Claude:'
+Write-Host 'WARNING: once it holds your AI connection token, that file holds a secret. Keep it private.'
 Write-Host ''
 Write-Output $json

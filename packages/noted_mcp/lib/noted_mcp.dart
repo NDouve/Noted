@@ -7,5 +7,6 @@
 library;
 
 export 'src/library.dart';
+export 'src/link_client.dart';
 export 'src/server.dart';
 export 'src/tools.dart';
