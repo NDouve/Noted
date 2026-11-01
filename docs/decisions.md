@@ -273,7 +273,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0028 — AI read scope per page
 - **Date:** 2026-10-24
-- **Status:** Active; the setting implemented by 0100, reading by the MCP server by 0101, writing and the AI-authored tag by 0104–0106
+- **Status:** Active; the setting implemented by 0100 (now 0109), reading by the MCP server by 0101 and 0110, writing and the AI-authored tag by 0104, 0106 and 0108
 - **Decision:**
   - Each page's AI setting is one of:
     - **Off:** no AI boxes, and the page is invisible to MCP.
@@ -1396,7 +1396,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0100 — The page AI setting
 - **Date:** 2026-10-31
-- **Status:** Active (first entry of the AI phase; implements the setting of 0028)
+- **Status:** Superseded by 0109 (Open, Privileged, Guarded); first entry of the AI phase; implemented the setting of 0028
 - **Decision:**
   - **Values:** each page has an AI setting:
     - **Off:** invisible to AI.
@@ -1411,7 +1411,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0101 — Read-only MCP server
 - **Date:** 2026-10-31
-- **Status:** Active (AI phase; implements reading for 0028 and invariant 4; amended by 0103 and 0106: writes go through the running app)
+- **Status:** Active (AI phase; implements reading for 0028 and invariant 4; amended by 0103 and 0106: writes go through the running app; amended by 0109 and 0110: Open/Privileged/Guarded and code-based reads)
 - **Decision:**
   - **Program:** `packages/noted_mcp`, a separate pure-Dart executable (`noted_mcp.exe`) speaking MCP over stdio with the Dart team's `dart_mcp` (BSD-3-Clause, approved by the maintainer).
   - **Reads:** saved page and binder files only, from the folders the app lists in `%APPDATA%\Noted`:
@@ -1471,7 +1471,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0104 — The AI box
 - **Date:** 2026-10-31
-- **Status:** Active (implements AI writing for 0008 and the AI-authored tag of 0028; new package under delegated authority)
+- **Status:** Active, amended: the owner and the *Connected AI* menu are superseded by 0108 (per-box codes); markdown import amended by 0113 (code and raw HTML kept as text). Implements AI writing for 0008 and the AI-authored tag of 0028; new package under delegated authority
 - **Decision:**
   - **Module:** `packages/boxes/ai` (`noted_box_ai`), type `noted.ai`, a box type through the Box API like any other. Insert → *AI box* (in both toolbars) adds one at the middle of the view, selected and ready to type in. It is never removed as empty. It can be inserted on a page of any AI setting, but on an Off page no AI can read or write it.
   - **Content:** a note document, stored in the note box's shape (`{"document": …}`), edited with the note box's editor. The user can type in it too.
@@ -1484,7 +1484,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0105 — AI connections and tokens
 - **Date:** 2026-10-31
-- **Status:** Active (implements the revocable identity tokens of 0028)
+- **Status:** Superseded by 0108 (per-box codes); implemented the revocable identity tokens of 0028
 - **Decision:**
   - **Where:** gear menu → *AI connections*: list, add, rename and revoke.
   - **Token:** adding a connection makes `noted_<id>_<key>`: a random 16-hex-digit id and a random 256-bit key in base64url. It is shown once, with *Copy*, and the dialog can't be dismissed by accident while it shows.
@@ -1497,7 +1497,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0106 — The AI write path
 - **Date:** 2026-10-31
-- **Status:** Active (implements invariant 4 as worded in 0103; extends 0101)
+- **Status:** Active, amended by 0110 (ai-link/2, codes instead of tokens, MCP tools 0.3.0); implements invariant 4 as worded in 0103; extends 0101
 - **Decision:**
   - **Local link:** while it runs, the app listens on loopback TCP (`127.0.0.1`, a port chosen by the system) and writes `ai-link.json` (`{"format":1,"port","pid","nonce"}`) in its data folder (`%APPDATA%\Noted`), removed on a clean exit. A client connects to loopback only and reads the greeting line `{"noted":"ai-link/1","nonce":…}`; it sends nothing unless the nonce matches the file. One request per connection, as one JSON line of at most 1 MiB: `{"noted":"ai-link/1","op":"write_box","token":…,"box":…,"mode":"replace"|"append","content":…}`. The app answers with one line, `{"ok":true,"page":…,"box":…}` or `{"ok":false,"code":…,"message":…}`, and closes the connection. Reads time out after 5 s, and at most 8 connections are open at once.
   - **Acceptance:** a write is accepted only if all of these hold, otherwise it gets the code in brackets:
@@ -1528,13 +1528,107 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Rationale:** The host must ask a box type, not parse its data, to learn who owns it and to apply a write (invariant 2).
 - **Alternatives considered:** the app reading the AI box's `"owner"` key directly (the core would parse a module's data); a separate AI-box-only interface outside the Box API (invariant 1).
 
+## 0108 — Per-box AI codes and their safeguards
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; supersedes 0105 and the owner and *Connected AI* parts of 0104)
+- **Decision:**
+  - **Rules live in the AI box.** Page and binder settings never govern what happens inside an AI box. An AI box is reachable through its own codes whatever its page's AI access (0109).
+  - **Connecting:** in an AI box, *Connect a chat* → *Writer* or *Reader* → a label the user types (for example "Feedback – work chat") and an optional expiry (none, 1, 7 or 30 days). Noted shows the code once, titled "Code for <label>", with *Copy*; the dialog can't be dismissed by accident while the code shows, nor while it is being issued.
+  - **Codes:** `noted_<16 hex id>_<256-bit key in base64url>`. Only the SHA-256 of the key is stored; keys are compared in constant time. Each code is scoped to one target and one role. A box has at most one Writer: issuing a new Writer retires the old one, after a warning. Any number of Readers. A role or target kind the app doesn't know grants nothing.
+  - **Storage:** local and never synced: `ai-access.json` in the app's data folder (`%APPDATA%\Noted`), holding each code's id, target (kind, id, and for a box the page id at issue), role, label, hash, created, last used, expiry and approved sessions, plus each box's *Ask before each write*. Unknown fields and unparseable times are kept as written; an unparseable expiry counts as expired. A missing file has no codes; an unreadable or newer-format file accepts no code and is never overwritten. Writes go through a lock file and an atomic rename. The file is re-read on every check, so a revoke takes effect on the next request.
+  - **Safeguards:**
+    - Codes work only on this computer: the link listens on loopback only (0106).
+    - **Approve new connections:** each `noted_mcp` process makes a random session id (32 bytes). The first time a code is used from a new session, Noted asks "<app> wants to read and write <label>. Allow?" (*read* for a Reader code). *Deny* is the default button. Nothing reaches the box until allowed. Approved sessions are listed under the code and can be revoked; a revoked session is asked again.
+    - The app name comes from the MCP client's `clientInfo`; control characters become spaces and Unicode format characters are removed before it is shown, stored or logged.
+    - One question is on screen at a time; the others wait. Each code may have one question waiting and all codes together four; more get `busy`. After a *Deny*, new sessions of that code are refused without a question for 30 s. An unanswered question is refused after 45 s.
+    - **Ask before each write** (per box, optional): every write shows a question with a short preview of the content.
+    - **Activity log:** `ai-activity.json` beside the codes, the last 1000 reads and writes with time, app, connection label, operation and result. Shown in the box's connections panel. An unreadable or newer log is left alone.
+    - **Expiry** per code; an expired code is shown as expired and refused.
+  - **The box's connections panel** (from the indicator in the box header): each code with label, role, created, last used and expiry; its sessions, each revocable; *Revoke* with a confirmation; the *Ask before each write* switch; the activity list. These work on a read-only page too, since they change only the local store.
+  - **The AI sees boxes only by id:** a box code reads and writes that box only, with no page title, page id or page list; links in it become plain text.
+  - **Migration:** the app-wide AI connections of 0105 and `NOTED_TOKEN` are removed. An `"aiConnections"` value already in `settings.json` is kept in the file as written but no longer used. An AI box that has an `"owner"` keeps it and its text untouched (invariant 2) and has no writer until a code is issued.
+  - **Box API:** unchanged. The host no longer calls `BoxCodec.aiOwner`; `AiWrite.connectionId` carries the id of the Writer code. The app reaches the AI box through `AiModule(access: AiBoxAccess)`, the module's own constructor.
+- **Rationale:** Each AI box decides who may read or write it, and the user can see and cut off each chat separately. Keeping codes local and hashed means a synced page file or a copied settings file can't be used to reach a box, and approval per session stops a leaked code from being used silently by another program.
+- **Alternatives considered:** keeping app-wide connections that own boxes (one identity could reach every box it owns, and ownership synced in page files); codes stored in the box data (they would sync to every device and every reader of the page); a per-write question always on (too disruptive for routine writes, so it is optional per box).
+
+## 0109 — Page and binder AI access: Open, Privileged, Guarded
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; supersedes 0100)
+- **Decision:**
+  - **Values**, from loosest to strictest:
+    - **Open:** any AI using this Noted's MCP server can read the page. No code needed.
+    - **Privileged:** only a chat holding a Reader code for the page or a binder above it can read it. Page and binder codes work like box codes (0108): label, hash only, revoke, new-connection approval, activity log, expiry. A code on a binder or page covers everything under it that isn't tightened further. An *Organize* role is planned and not built.
+    - **Guarded:** no AI access. The app default, so new pages and binders are Guarded unless set.
+  - **Storage:** `"ai":"open"|"privileged"|"guarded"` in the page header's `noted` object and in the binder file, as in 0100.
+  - **Migration:** a stored `page` reads as Open; `off` and `box` read as Guarded. Any other value is kept as written and treated as Guarded. Nothing is rewritten until the user picks a value.
+  - **Inheritance and tightening:** the effective value starts at the binder's value (any of the three; none means the app default, Guarded). A top-level page outside any binder whose header records no parent may choose any value. Every other page can only tighten: its effective value is the stricter of its own and the inherited one, and looser choices are not offered. A page whose recorded parent can't be read (missing, unreadable or looping) starts from Guarded. Binders have no exemptions above them.
+  - **What a page AI reads:** every box of a readable page except encrypted boxes and boxes of unknown types, which stay placeholders. That includes other AIs' boxes, whose `<ai-written>` markers show what an AI wrote (0104). Search covers only what that AI can see. A page AI never writes page content; an AI writes only in its own box. Organizing pages is for a later entry.
+  - **Locked binders:** a plain in-app binder lock hides that binder's pages from page AI; AI boxes in them stay reachable by their own codes. Encrypted content is never readable (`noted_mcp` has no keys).
+  - **Code:** `AiAccess`, `effectiveAiAccess` (value and source), `inheritedAiAccess` and `allowedOwnAiAccess` in noted_core (`src/ai/ai_access.dart`); `ConfigSource` names where a value comes from.
+- **Rationale:** Readable without a code, readable with one, or not at all covers the cases users asked for, and Guarded by default means nothing is exposed without a choice. Tightening only means a parent's choice can't be undone by a page below it.
+- **Alternatives considered:** keeping Off, Box only and Whole page (Box only no longer means anything once boxes carry their own codes); letting pages loosen their parent's value, as 0100 did (a single page could escape a Guarded binder); rewriting legacy values on load (it would change files the user hasn't edited, against invariant 2's spirit).
+
+## 0110 — How code checks work: ai-link/2 and MCP server 0.3.0
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; amends 0101 and 0106; implements invariant 4 for codes)
+- **Decision:**
+  - **Open pages** are read by `noted_mcp` from saved files, as before; this works with Noted closed.
+  - **Anything that needs a code** (box reads and writes, Privileged pages) goes through the running app over the link, so the app checks the code, its expiry, its role and target, and the session's approval, and logs the request. With Noted closed, code-based access fails with "This needs Noted running: codes are checked by the app. Open Noted and try again."
+  - **Content comes from saved data only.** For a read, the app returns a grant and `noted_mcp` reads the saved files itself: a box grant `{kind:"box", box, page}` or a pages grant `{kind:"pages", pages:[…]}` with the page ids the code covers (Privileged or Open by effective access, minus Guarded and tightened pages and pages of locked binders). `noted_mcp` also checks each granted page's access in the saved files, so a grant can't widen access.
+  - **Link protocol `ai-link/2`:** the transport of 0106 (loopback TCP, `ai-link.json`, nonce greeting, one JSON line of at most 1 MiB per connection, at most 8 connections, 5 s to send the request). Every request carries `code`, `session` and `app` (at most 128 and 200 characters). Operations: `write_box {box, mode, content}` → `{ok:true, box}` (no page id or title); `access {action, target}` → a grant; `describe_code` → kind, id, role and expiry. `read_box` and `read_page` access need a target. Error codes: `bad_request`, `busy`, `bad_code`, `expired`, `not_approved`, `wrong_role`, `no_box`, `not_writable`, `conflict`, `locked`, `save_failed`; a code from a newer app keeps its wire name and message. Anything that isn't an `ai-link/2` JSON object, such as an HTTP request, is closed at once with no answer.
+  - **Order of checks in the app:** the code (an unreadable store or a busy lock answers `busy`), expiry, role and target, the session's approval, then the operation. The code is checked again after any question, so a revoke or expiry during a question refuses. Each request has one deadline of 50 s for its questions, the wait for the notebook to load and the per-write question, below the MCP client's 55 s; a client that has gone away gets nothing applied.
+  - **Writes:** the 0106 rules without ownership and the page setting: the box exists, takes AI writes and its type is allowed on its page (0111) (`not_writable`), isn't in a sync conflict, and its page can be edited. A write is one undo step and is saved through the normal path.
+  - **MCP tools (server 0.3.0):** `list_pages(code?)`, `read_page(page_id, code?)`, `read_box(box_id, page_id?, code?)`, `search(query, code?)`, `write_box(box_id, code, content, mode)` and `describe_code(code)`. `list_my_boxes` and `NOTED_TOKEN` are removed. Box ids are unique per page; `page_id` narrows a read without a box code. A box code on a page tool answers `wrong_role`. Privileged and Guarded pages answer like missing pages to a chat without a covering code.
+  - **Registering:** `app/scripts/register-mcp.ps1` registers `noted_mcp.exe` with Claude Code without a token; `docs/mcp.md` documents the tools, codes and the Claude desktop entry.
+- **Rationale:** Only the app holds the code store, so only the app can check codes, ask the user and keep the log. Returning grants instead of content keeps one renderer, in the server, reading saved files only, so nothing from the live screen reaches an AI (invariant 4).
+- **Alternatives considered:** the app returning rendered content (a second renderer, and a path from the app's state to the AI); `noted_mcp` verifying codes itself (would let code-based reads work with Noted closed; it needs hashing in the server and is listed for the maintainer, not built).
+
+## 0111 — Box types allowed per page and binder
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; extends 0035)
+- **Decision:**
+  - **Setting:** `"boxTypes":{"<type id>": true|false}` in the page header's `noted` object and in the binder file; `false` means not allowed here. An absent type inherits. Unknown keys and non-boolean values are kept as written; a non-boolean value is read as absent.
+  - **Inheritance:** like AI access (0109): a binder, or a top-level page outside any binder, may allow or disallow; every other page can only disallow. A type is allowed on a page unless the page or a level above disallows it. The always-on note type can't be disallowed.
+  - **Disallowed behaves like a switched-off module (0035)** on that page: its boxes show their saved snapshot, read-only, marked "Not allowed on this page"; its Insert and tool commands are disabled with "(not allowed on this page)" in the tooltip; pasted or dropped files don't create boxes of that type; *Embed* and *Move to folder* (0098) skip them; the conflict dialog for one shows only the two snapshots and offers no manual edit, as for a module the device can't run (choosing a whole version or keeping both still works); AI writes to such a box answer `not_writable`. Nothing is deleted or rewritten, and allowing the type again restores the boxes. The MCP server still reads such boxes; they can't be written.
+  - **Code:** `src/model/box_types.dart` in noted_core; the app passes the page's disallowed type ids to `PageCanvas.disallowedTypes`, and `ModuleRegistry` gains `isSwitchable` and an `exclude` set on `moduleForFile` (host-side, not the Box API).
+- **Rationale:** Some pages or binders shouldn't hold certain box types (for example AI boxes in a private binder) without the user losing what is already there.
+- **Alternatives considered:** deleting or hiding disallowed boxes (data loss, against invariant 2); an app-wide switch only (already exists in 0035 and is too coarse); hiding disallowed boxes from the MCP server too (the setting controls inserting and editing, not confidentiality).
+
+## 0112 — The Page and Binder settings panel
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; moves the settings of 0098 and 0109 and page backgrounds out of the right-click menus)
+- **Decision:**
+  - A **Page settings** button beside the page title and a **Binder settings** button on the binder cover and in the sidebar binder header open one shared panel (a dialog with *Close*).
+  - **Sections:**
+    - **Background** (pages only).
+    - **Images and files:** the inherited storage and its source; for a page, *Embed* or *Move to folder* with the result shown inline.
+    - **AI access:** *Same as …* with the inherited value and its source (for example "Same as binder (Privileged)"), then only the values that tighten it; a binder shows *App default (Guarded)* and all three. When Privileged, or when codes exist, a **Codes** list: *Connect a chat* (Reader) → label and expiry → the code once with *Copy*; each code with label, created, last used and expiry, its sessions (revocable) and *Revoke* with a confirmation; the latest activity.
+    - **Box types allowed:** each switchable module with *Allowed* / *Not allowed here*, its inherited value and source; on a page, a type disallowed above shows "Not allowed (set by …)" and offers nothing.
+  - Each setting shows its inherited value and source. Pages can set a tightening exemption per setting; binders can't.
+  - **Right-click menus** keep only page and binder actions (new subpage, rename, move, template, delete); the settings entries are removed.
+- **Rationale:** One place for every page and binder setting, showing where each value comes from, replaces settings scattered across context menus.
+- **Alternatives considered:** a side sheet (more room, but the panel is short enough for a dialog and matches the AI box dialogs); keeping settings in the context menus (no room to show inherited values, sources or codes).
+
+## 0113 — Follow-ups to run 2026-11-01-01
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; amends 0097 and 0104)
+- **Decision:**
+  - **The link** drops anything that isn't the Noted protocol (0110).
+  - **Undo in a box:** Ctrl+Z (Cmd+Z) in an open note or AI box with nothing left in the editor's own history runs the page undo; Ctrl+Y and Ctrl+Shift+Z likewise for redo. A page undo that removes the box being edited also ends its editing.
+  - **Code and HTML in AI writes:** fenced and indented code blocks and raw HTML blocks become plain paragraphs holding their literal text (one paragraph per block, lines kept); HTML is never interpreted, images stay dropped and the link-scheme allowlist is unchanged. Inline HTML stays text. This amends 0104's markdown import; a code block type is for later.
+  - **Single instance (Windows):** a named mutex per data folder (a hash of the resolved `%APPDATA%\Noted`) in the runner. A second launch on the same data finds the first window by a property the first instance sets on it, restores and focuses it, and exits; if the first instance is shutting down, it waits up to 10 s and then starts. Launches on other data folders (tests, scratch data) are unaffected.
+  - **Toolbars at narrow widths:** in both layouts the middle of the bar shows the commands that fit, in order, and a trailing **More** menu holds the rest, grouped as in the layout, with live enabled and checked state; choosing one runs it without taking focus from the note. Shortcuts of hidden commands still work. Amends 0097.
+  - **AI box polish:** the code stage names the connection and Enter submits; marker bars are 2 px, muted, continuous across consecutive AI-written blocks and stop at each block's own row; icons in the AI dialogs are muted. `docs/design/ai-box.md` records the marker, the header and the dialogs.
+- **Rationale:** These close the items the maintainer approved from the last report.
+- **Alternatives considered:** sideways-scrolling toolbar groups instead of *More* (hidden commands with no cue); dropping code and HTML (the AI's text was lost); a single-instance guard per Windows session (it blocked test runs and scratch-data instances while the user's Noted was open).
+
 ---
 
 ## Open items
 - **Apple build path:** iOS/iPadOS and macOS releases have to be compiled with current Xcode on Apple-silicon-era macOS. The planned approach is cloud macOS build runners.
 - **Equation block sourcing:** resolved (0048).
 - **File format:** whether JSON Canvas extra fields are sufficient, and how faithfully appflowy_editor round-trips Markdown.
-- **MCP:** the full tool and resource list. Linking an AI to a box: resolved (0104, 0105).
+- **MCP:** the full tool and resource list. Linking an AI to a box: resolved (0108). Letting `noted_mcp` verify codes itself, so code-based reads work with Noted closed: open.
 - **Cloud conflict copies:** OneDrive copies are merged (0053); other providers name their conflict-copy files differently and are not handled yet.
 - **Per-AI overrides:** different rules for different AIs on the same page (deferred).
 - **Drawing box image snapshots:** where a drawing box's image snapshot (0035) is stored in the page format (0041).
