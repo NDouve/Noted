@@ -49,3 +49,6 @@ app.*.map.json
 
 # Claude Code worktrees made by the build team (docs/runs/README.md)
 .claude/worktrees/
+
+# Local Codex config (never committed)
+.codex/
