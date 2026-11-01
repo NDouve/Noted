@@ -137,7 +137,7 @@ class Session {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     settings = AppSettings(env.settingsFile);
-    aiAccess = AiAccessService(dataFolder: env.appDir);
+    aiAccess = AiAccessService(dataFolder: env.appDir, pageOfBox: (id) => nb.aiPageOfBox(id));
     nb = Notebook(
       PageStore(env.pages),
       buildModules(aiAccess: aiAccess),

@@ -119,10 +119,12 @@ void aiSuite() {
           // AI3: the page is Guarded (the default), which does not matter to
           // its AI box; the page menu offers the three values.
           expect(s.nb.aiAccessFor(pageId).value, AiAccess.guarded);
-          await s.pageMenu(pageId, 'Privileged');
+          await s.tapKey('page-settings');
+          await s.tapKey('settings-ai-privileged');
           expect(s.nb.ownAiAccess(pageId), AiAccess.privileged);
-          await s.pageMenu(pageId, 'Guarded');
+          await s.tapKey('settings-ai-guarded');
           expect(s.nb.ownAiAccess(pageId), AiAccess.guarded);
+          await s.tapKey('settings-close');
           await s.flush();
 
           // AI4: the first write of a new session asks; Allow; the write shows
