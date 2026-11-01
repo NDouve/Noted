@@ -384,7 +384,12 @@ class _BoxHostState extends State<BoxHost> {
                   child: GestureDetector(
                     key: ValueKey('conflict-badge-${node.id}'),
                     behavior: HitTestBehavior.opaque,
-                    onTap: () => showConflictDialog(context, c, node.id),
+                    onTap: () => showConflictDialog(
+                      context,
+                      c,
+                      node.id,
+                      disallowedTypes: widget.disallowedTypes,
+                    ),
                     child: DecoratedBox(
                       key: const ValueKey('conflict-badge'),
                       decoration: BoxDecoration(

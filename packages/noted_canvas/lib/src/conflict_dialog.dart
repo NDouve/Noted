@@ -25,11 +25,13 @@ String formatConflictTime(int ms) {
 Future<void> showConflictDialog(
   BuildContext context,
   CanvasController controller,
-  String boxId,
-) {
+  String boxId, {
+  Set<String> disallowedTypes = const {},
+}) {
   return showDialog<void>(
     context: context,
-    builder: (context) => _ConflictDialog(controller: controller, boxId: boxId),
+    builder: (context) =>
+        _ConflictDialog(controller: controller, boxId: boxId, disallowedTypes: disallowedTypes),
   );
 }
 
@@ -43,10 +45,18 @@ class _Held {
 }
 
 class _ConflictDialog extends StatefulWidget {
-  const _ConflictDialog({required this.controller, required this.boxId});
+  const _ConflictDialog({
+    required this.controller,
+    required this.boxId,
+    this.disallowedTypes = const {},
+  });
 
   final CanvasController controller;
   final String boxId;
+
+  /// Types the page disallows: their boxes are snapshot-only here, as for a
+  /// module the device can't run (0035), so there is no manual editing.
+  final Set<String> disallowedTypes;
 
   @override
   State<_ConflictDialog> createState() => _ConflictDialogState();
@@ -66,7 +76,7 @@ class _ConflictDialogState extends State<_ConflictDialog> {
     final otherNode = readNode(other.node!, fallbackId: boxId);
     if (otherNode is! BoxRecord || otherNode.typeId != box.typeId) return null;
     final module = controller.modules.moduleFor(box.typeId);
-    if (module == null) return null;
+    if (module == null || widget.disallowedTypes.contains(box.typeId)) return null;
     final codecs = controller.modules.codecs;
     final a = codecs.resolve(box);
     final b = codecs.resolve(otherNode);

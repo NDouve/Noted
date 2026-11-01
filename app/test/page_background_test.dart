@@ -195,6 +195,9 @@ void main() {
         bindersFile: File('${root.path}/app/binders.json'),
       );
       await ro.load();
+      // Open, so the chips are off because of the read-only guard, not because
+      // the page is not the open one.
+      await ro.open(page);
     });
     expect(ro.isReadOnlyPage(page), isTrue);
     await tester.pumpWidget(

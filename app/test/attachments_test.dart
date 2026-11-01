@@ -167,6 +167,20 @@ void main() {
       expect(back.changed, 1);
       expect(asset(pages, a).readAsBytesSync(), bytes);
     });
+
+    test('a file box of a type the page disallows is not converted', () async {
+      final nb = make();
+      await nb.load();
+      final a = nb.currentId!;
+      await attach(nb);
+      await nb.setBoxType(a, 'noted.file', false);
+      final before = writePage(nb.current!.page);
+      final r = await nb.convertAttachments(a, AttachmentStorage.embedded);
+      expect(r.changed, 0);
+      expect(writePage(nb.current!.page), before);
+      await nb.setBoxType(a, 'noted.file', null);
+      expect((await nb.convertAttachments(a, AttachmentStorage.embedded)).changed, 1);
+    });
   });
 
   group('the assets folder follows its page', () {

@@ -40,7 +40,8 @@ final class ModuleRegistry {
   }
 
   /// Whether [typeId] is a registered module that can be switched off (and so
-  /// disallowed on a page): not the always-on note module.
+  /// disallowed on a page): not the always-on note module. Host-side, for the
+  /// canvas and the app; not for box modules (not part of the Box API).
   bool isSwitchable(String typeId) => _modules.containsKey(typeId) && !_alwaysOn.contains(typeId);
 
   /// The module for [typeId] if it is registered and switched on.
@@ -68,7 +69,8 @@ final class ModuleRegistry {
 
   /// The switched-on module that holds [file] best (Box API 0.7), or null
   /// if none takes it. On a tie the first registered wins. Modules whose type
-  /// is in [exclude] (types a page disallows) are not considered.
+  /// is in [exclude] (types a page disallows) are not considered. [exclude] is
+  /// host-side, for the canvas; not for box modules (not part of the Box API).
   BoxModule<Object?>? moduleForFile(IncomingFile file, {Set<String> exclude = const {}}) {
     BoxModule<Object?>? best;
     var bestScore = 0;

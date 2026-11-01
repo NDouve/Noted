@@ -986,7 +986,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
     if (c == null || store == null || c.readOnly) {
       return const AttachmentConversion(changed: 0, overLimit: []);
     }
-    return convertPageAttachments(c, store, to);
+    return convertPageAttachments(c, store, to, skipTypes: disallowedBoxTypesFor(id));
   }
 
   Directory _assetsDir(String loc, String id) =>

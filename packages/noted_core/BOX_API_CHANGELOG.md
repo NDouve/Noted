@@ -8,6 +8,8 @@ version.
 
 Versions are listed newest first.
 
+Host-only (not the Box API), run 2026-11-01-02: `PageCanvas.disallowedTypes`, `ModuleRegistry.isSwitchable` and `moduleForFile(exclude:)`, `convertPageAttachments(skipTypes:)` and `showConflictDialog(disallowedTypes:)` let a page treat a box type as switched off (module availability per page). No module-facing member changed; no version bump.
+
 ## 0.9 — 2026-10-31
 - `AiWriteMode` (`replace`, `append`) and `AiWrite` (`connectionId`, `content` as markdown, `mode`) in noted_core.
 - `BoxCodec.aiOwner(data)` (default null): the id of the AI connection that owns the box, never a token or secret.

@@ -23,16 +23,20 @@ final class AttachmentConversion {
 /// attachments", "Move attachments to folder"), as one undo step. Each box
 /// is converted by its own module (`BoxModule.convertAttachments`); files
 /// over [embedLimitBytes] and files that haven't arrived yet stay in the
-/// folder.
+/// folder. Boxes whose type is in [skipTypes] (types the page disallows) are
+/// left as they are.
 Future<AttachmentConversion> convertPageAttachments(
   CanvasController controller,
   AttachmentStore store,
-  AttachmentStorage to,
-) async {
+  AttachmentStorage to, {
+  Set<String> skipTypes = const {},
+}) async {
   final overLimit = <String>[];
   final next = <String, Object?>{};
   for (final node in controller.page.nodes) {
     if (node is! BoxRecord) continue;
+    // A type the page disallows is shown read-only: its data isn't touched.
+    if (skipTypes.contains(node.typeId)) continue;
     final module = controller.modules.moduleFor(node.typeId);
     if (module == null) continue;
     final r = controller.modules.codecs.resolve(node);
