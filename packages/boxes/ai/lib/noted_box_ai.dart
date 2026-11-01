@@ -5,5 +5,6 @@
 /// The AI box module for Noted.
 library;
 
+export 'src/ai_box_access.dart';
 export 'src/ai_codec.dart';
 export 'src/ai_module.dart' show AiCommands, AiModule, aiHeaderHeight, aiNoteOptions;
