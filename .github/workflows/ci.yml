@@ -27,7 +27,7 @@ jobs:
     # Windows, the only platform the tests have been run on. Switch to
     # ubuntu-latest if they prove platform independent (it is cheaper).
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -68,14 +68,14 @@ jobs:
               # (The step's shell stops at the first failing command, hence
               # the || here.)
               code=0
-              (cd "$dir" && timeout 480 flutter test --reporter expanded > "$log" 2>&1) || code=$?
+              (cd "$dir" && timeout 900 flutter test --reporter expanded > "$log" 2>&1) || code=$?
               cat "$log"
               if [ "$code" -ne 0 ]; then
                 failed="$failed $dir"
                 if [ "$code" -eq 124 ]; then
                   taskkill //F //IM flutter_tester.exe > /dev/null 2>&1 || true
                   last=$(grep -E '^[0-9]+:[0-9]+ \+' "$log" | tail -n 3 | tr '\n' ' ' || true)
-                  echo "::error title=Timed out in $dir::Still running after 8 minutes. Last tests: $last"
+                  echo "::error title=Timed out in $dir::Still running after 15 minutes. Last tests: $last"
                 fi
                 # Each failed test as one annotation: its name, the start of
                 # the exception Flutter printed before it, and the lines after

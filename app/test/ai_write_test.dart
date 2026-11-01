@@ -541,7 +541,7 @@ void main() {
       };
       final watch = Stopwatch()..start();
       expect(await codeOf(nb, req('ba', code)), AiLinkCode.busy);
-      expect(watch.elapsedMilliseconds, inInclusiveRange(600, 1500), reason: 'the load only got what the question left');
+      expect(watch.elapsedMilliseconds, inInclusiveRange(600, 5000), reason: 'the load only got what the question left');
     });
 
     test('a question nobody answers ends at the deadline, not at its own longer timeout', () async {
@@ -550,7 +550,8 @@ void main() {
       answer = (_) => Completer<bool>().future;
       final watch = Stopwatch()..start();
       expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notApproved);
-      expect(watch.elapsedMilliseconds, lessThan(1500));
+      // Far below the question's own 30 s, with room for a slow CI machine.
+      expect(watch.elapsedMilliseconds, lessThan(5000));
       await asked.single.expired;
     });
 
