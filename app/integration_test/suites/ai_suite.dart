@@ -132,7 +132,7 @@ void aiSuite() {
           await s.until(() => find.byKey(const ValueKey('ai-approval-dialog')).evaluate().isNotEmpty, what: 'the approval question');
           expect(
             (t.widget(find.byKey(const ValueKey('ai-approval-message'))) as Text).data,
-            'Integration test wants to write Feedback chat. Allow?',
+            'Integration test wants to read and write Feedback chat. Allow?',
           );
           await s.tapKey('ai-approval-allow', settle: 600);
           final response = await first.answer();

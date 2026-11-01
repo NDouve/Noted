@@ -39,7 +39,10 @@ class _AiApprovalDialogState extends State<AiApprovalDialog> {
     super.initState();
     unawaited(
       widget.request.expired.then((_) {
-        if (mounted) Navigator.of(context).pop(false);
+        // Only this dialog's own route, never whatever is on top of it.
+        if (!mounted) return;
+        final route = ModalRoute.of(context);
+        if (route != null) Navigator.of(context).removeRoute(route, false);
       }),
     );
   }

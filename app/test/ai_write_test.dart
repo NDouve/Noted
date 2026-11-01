@@ -90,7 +90,7 @@ void main() {
   late List<AiApprovalRequest> asked;
   // How the user answers a question; null: the question stays open.
   late Future<bool> Function(AiApprovalRequest) answer;
-  var approvalTimeout = const Duration(seconds: 5);
+  var timings = const AiLinkTimings(approval: Duration(seconds: 5));
 
   setUp(() async {
     root = await Directory.systemTemp.createTemp('noted_aiwrite');
@@ -100,7 +100,7 @@ void main() {
     opened = [];
     asked = [];
     answer = (_) async => true;
-    approvalTimeout = const Duration(seconds: 5);
+    timings = const AiLinkTimings(approval: Duration(seconds: 5));
     service = AiAccessService(dataFolder: data);
     modules = _modules();
   });
@@ -122,7 +122,7 @@ void main() {
       bindersFile: File('${root.path}/app/binders.json'),
       deviceName: 'TestPC',
       aiAccess: service,
-      aiApprovalTimeout: approvalTimeout,
+      aiTimings: timings,
       recoveryDirectory: recovery,
     );
     nb.aiApprover = (r) {
@@ -182,6 +182,7 @@ void main() {
 
   group('busy', () {
     test('a notebook that is still loading answers busy and changes nothing', () async {
+      timings = const AiLinkTimings(deadline: Duration(milliseconds: 800));
       final nb = make();
       final code = await issue('ba');
       // load() is never called.
@@ -329,7 +330,7 @@ void main() {
       final t = await withBox();
       expect((await t.nb.handleAiLink(req('ba', t.code, content: 'one'))).ok, isTrue);
       expect(asked, hasLength(1));
-      expect(asked.single.message, 'Claude Code wants to write Work chat. Allow?');
+      expect(asked.single.message, 'Claude Code wants to read and write Work chat. Allow?');
       expect(asked.single.perWrite, isFalse);
       expect((await t.nb.handleAiLink(req('ba', t.code, content: 'two'))).ok, isTrue);
       expect(asked, hasLength(1), reason: 'same session: not asked again');
@@ -356,17 +357,18 @@ void main() {
     test('a request without an app name still reads well', () async {
       final t = await withBox();
       await t.nb.handleAiLink(req('ba', t.code, app: null));
-      expect(asked.single.message, 'An AI app wants to write Work chat. Allow?');
+      expect(asked.single.message, 'An AI app wants to read and write Work chat. Allow?');
     });
 
     test('control characters in the app name become spaces', () async {
       final t = await withBox();
       await t.nb.handleAiLink(req('ba', t.code, app: 'Evil\n\u0007App x'));
-      expect(asked.single.message, 'Evil  App x wants to write Work chat. Allow?');
+      expect(asked.single.message, 'Evil  App x wants to read and write Work chat. Allow?');
       expect(stored(t.code).sessions.single.app, 'Evil  App x');
     });
 
-    test('deny: not_approved, nothing written, nothing remembered, asked again next time', () async {
+    test('deny: not_approved, nothing written, nothing remembered', () async {
+      timings = const AiLinkTimings(denyCooldown: Duration.zero);
       final t = await withBox();
       answer = (_) async => false;
       expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notApproved);
@@ -375,11 +377,119 @@ void main() {
       expect(stored(t.code).lastUsed, isNull);
       answer = (_) async => true;
       expect((await t.nb.handleAiLink(req('ba', t.code))).ok, isTrue);
+      expect(asked, hasLength(2), reason: 'no pause configured: asked again');
+    });
+
+    test('after a Deny, new sessions of that code are refused without a question for a while', () async {
+      timings = const AiLinkTimings(denyCooldown: Duration(milliseconds: 500));
+      final t = await withBox();
+      answer = (_) async => false;
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notApproved);
+      answer = (_) async => true;
+      expect(await codeOf(t.nb, req('ba', t.code, session: 'other')), AiLinkCode.notApproved);
+      expect(asked, hasLength(1), reason: 'not asked during the pause');
+      expect(dataOf(t.nb, 'ba')['text'], 'old');
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      expect((await t.nb.handleAiLink(req('ba', t.code, session: 'other'))).ok, isTrue);
       expect(asked, hasLength(2));
     });
 
+    test('no answer is not a Deny: no pause', () async {
+      timings = const AiLinkTimings(approval: Duration(milliseconds: 100));
+      final t = await withBox();
+      answer = (_) => Completer<bool>().future;
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notApproved);
+      answer = (_) async => true;
+      expect((await t.nb.handleAiLink(req('ba', t.code))).ok, isTrue);
+    });
+
+    test('only one question is on screen at a time; the rest wait their turn', () async {
+      final t = await withBox();
+      final second = await issue('ba', role: AiCodeRole.reader, label: 'Second');
+      var open = 0;
+      var most = 0;
+      answer = (_) async {
+        open++;
+        if (open > most) most = open;
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        open--;
+        return true;
+      };
+      final a = t.nb.handleAiLink(req('ba', t.code));
+      final b = t.nb.handleAiLink(
+        AiLinkAccess(code: second, session: 's2', app: 'B', action: AiLinkAction.readBox, target: 'ba'),
+      );
+      expect((await a).ok && (await b).ok, isTrue);
+      expect(asked, hasLength(2));
+      expect(most, 1);
+    });
+
+    test('too many waiting requests get busy, and approved sessions are still answered', () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up')); // s1 is allowed
+      final gate = Completer<bool>();
+      answer = (_) => gate.future;
+      final waiting = [
+        t.nb.handleAiLink(req('ba', t.code, session: 'n1')),
+        t.nb.handleAiLink(req('ba', t.code, session: 'n2')),
+      ];
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(await codeOf(t.nb, req('ba', t.code, session: 'n3')), AiLinkCode.busy);
+      expect((await t.nb.handleAiLink(AiLinkDescribeCode(code: t.code, session: 's1'))).ok, isTrue);
+      expect((await t.nb.handleAiLink(req('ba', t.code, content: 'still works'))).ok, isTrue);
+      gate.complete(false);
+      for (final w in waiting) {
+        await w;
+      }
+    });
+
+    test('one deadline covers the question and the load, below the client\'s', () async {
+      timings = const AiLinkTimings(deadline: Duration(milliseconds: 700));
+      expect(const AiLinkTimings().deadline, lessThan(const Duration(seconds: 55)));
+      final nb = make(); // never loaded
+      final code = await issue('ba');
+      answer = (_) async {
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        return true;
+      };
+      final watch = Stopwatch()..start();
+      expect(await codeOf(nb, req('ba', code)), AiLinkCode.busy);
+      expect(watch.elapsedMilliseconds, inInclusiveRange(600, 1500), reason: 'the load only got what the question left');
+    });
+
+    test('a question nobody answers ends at the deadline, not at its own longer timeout', () async {
+      timings = const AiLinkTimings(approval: Duration(seconds: 30), deadline: Duration(milliseconds: 400));
+      final t = await withBox();
+      answer = (_) => Completer<bool>().future;
+      final watch = Stopwatch()..start();
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notApproved);
+      expect(watch.elapsedMilliseconds, lessThan(1500));
+      await asked.single.expired;
+    });
+
+    test('a write is not applied once the client has gone', () async {
+      final t = await withBox();
+      await service.setAskBeforeWrite('ba', true);
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up')); // asks session and write
+      var open = true;
+      answer = (r) async {
+        if (r.perWrite) open = false; // the client drops while the question is open
+        return true;
+      };
+      final before = dataOf(t.nb, 'ba')['text'];
+      final r = await t.nb.handleAiLink(req('ba', t.code, content: 'too late'), () => open);
+      expect((r as AiLinkError).code, AiLinkCode.busy);
+      expect(dataOf(t.nb, 'ba')['text'], before);
+    });
+
+    test('format characters in an app name are dropped', () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, app: 'Cla\u202Eude​ \u2066Code\u2069'));
+      expect(asked.single.message, 'Claude Code wants to read and write Work chat. Allow?');
+    });
+
     test('no answer in time: not_approved, and the question is told to close', () async {
-      approvalTimeout = const Duration(milliseconds: 200);
+      timings = const AiLinkTimings(approval: Duration(milliseconds: 200));
       final t = await withBox();
       answer = (_) => Completer<bool>().future;
       expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notApproved);
@@ -483,7 +593,7 @@ void main() {
     });
 
     test('no answer in time: not_approved', () async {
-      approvalTimeout = const Duration(milliseconds: 200);
+      timings = const AiLinkTimings(approval: Duration(milliseconds: 200));
       final t = await withBox();
       await service.setAskBeforeWrite('ba', true);
       answer = (r) => r.perWrite ? Completer<bool>().future : Future.value(true);

@@ -22,7 +22,7 @@ class AiApprovalRequest {
   /// The MCP client's name.
   final String app;
 
-  /// Whether it wants to write (else read).
+  /// Whether the code may write (a Writer code); else it only reads.
   final bool write;
 
   /// The code's label.
@@ -39,19 +39,47 @@ class AiApprovalRequest {
   /// close itself.
   final Future<void> expired;
 
-  /// The question: "APP wants to read|write LABEL. Allow?"
+  /// The question: "APP wants to read|read and write LABEL. Allow?" (the verb
+  /// follows the code's role), or for a single write "APP wants to write to
+  /// LABEL. Allow?".
   String get message => perWrite
       ? '$app wants to write to $label. Allow?'
-      : '$app wants to ${write ? 'write' : 'read'} $label. Allow?';
+      : '$app wants to ${write ? 'read and write' : 'read'} $label. Allow?';
 }
 
 /// Asks the user; true if they allowed it.
 typedef AiApprover = Future<bool> Function(AiApprovalRequest request);
 
+/// The time limits of the link, replaceable in tests.
+class AiLinkTimings {
+  const AiLinkTimings({
+    this.approval = aiLinkApprovalTimeout,
+    this.deadline = const Duration(seconds: 50),
+    this.denyCooldown = const Duration(seconds: 30),
+  });
+
+  /// How long one question may stay open.
+  final Duration approval;
+
+  /// The whole time a request may take, shared by the session question, the
+  /// wait for the notebook to load and the per-write question. It is below
+  /// the MCP client's 55 s, so the app answers before the client gives up.
+  final Duration deadline;
+
+  /// After the user denies a new session, further new sessions of that code
+  /// are refused without a question for this long.
+  final Duration denyCooldown;
+}
+
+/// How many requests may wait for a question at once (one on screen, one
+/// queued); more get `busy`, so questions can't use up the link's connections.
+const int aiMaxPendingPrompts = 2;
+
 /// What the authority needs from the notebook.
 abstract interface class AiLinkHost {
-  /// Waits for the notebook to finish loading; false if it didn't in time.
-  Future<bool> aiWaitLoaded();
+  /// Waits up to [timeout] for the notebook to finish loading; false if it
+  /// didn't.
+  Future<bool> aiWaitLoaded(Duration timeout);
 
   /// The page that holds box [boxId], looking at [hint] first; null if none.
   /// The page's AI access is not looked at: a box is reached by its own code.
@@ -63,16 +91,20 @@ abstract interface class AiLinkHost {
   List<String> aiReadablePages(AiCodeTarget target);
 
   /// Applies a write (the 0106 rules without ownership and the page setting).
-  /// [recheck] says whether the code still holds (null) or why not; call it
-  /// right before the change. [confirm], when not null, asks the user about
-  /// this write once the write is known to be valid.
+  /// [recheck] says whether the code still holds and the client is still
+  /// there (null) or why not; call it right before the change. [confirm],
+  /// when not null, asks the user about this write once the write is known to
+  /// be valid. Waiting for the load ends at [deadline].
   Future<AiLinkResponse> aiWriteBox(
     AiLinkWriteBox request,
     AiCode code, {
+    required DateTime deadline,
     required AiLinkCode? Function() recheck,
     Future<bool> Function()? confirm,
   });
 }
+
+enum _Answer { allowed, denied, none }
 
 /// Decides every `ai-link/2` request (invariant 4): the code, its expiry, its
 /// role and target, the session's approval, the per-write question; then it
@@ -85,7 +117,7 @@ class AiLinkAuthority {
     required this.service,
     required this.host,
     this.approver,
-    this.approvalTimeout = aiLinkApprovalTimeout,
+    this.timings = const AiLinkTimings(),
   });
 
   final AiAccessService service;
@@ -95,16 +127,33 @@ class AiLinkAuthority {
   /// that needs approval is refused.
   AiApprover? approver;
 
-  final Duration approvalTimeout;
+  final AiLinkTimings timings;
 
   // Session approvals being asked now, so one new session asks once.
-  final Map<String, Future<bool>> _pending = {};
+  final Map<String, Future<_Answer>> _pending = {};
 
-  /// Answers [request].
-  Future<AiLinkResponse> handle(AiLinkRequest request) async {
+  // Requests waiting for a question (on screen or queued).
+  int _waiting = 0;
+
+  // One question on screen at a time: each waits for the one before.
+  Future<void> _promptTail = Future.value();
+
+  // Codes whose last new-session question was denied, until when.
+  final Map<String, DateTime> _denied = {};
+
+  Duration _remaining(DateTime deadline) {
+    final d = deadline.difference(DateTime.now());
+    return d.isNegative ? Duration.zero : d;
+  }
+
+  /// Answers [request]. [clientOpen] says whether the client is still
+  /// connected; a write is not applied once it isn't.
+  Future<AiLinkResponse> handle(AiLinkRequest request, {bool Function()? clientOpen}) async {
     if (request is AiLinkMalformed) {
       return AiLinkResponse.error(AiLinkCode.badRequest, request.message);
     }
+    final deadline = DateTime.now().add(timings.deadline);
+    final open = clientOpen ?? () => true;
     final first = _verify(request.code);
     if (first.error != null) {
       final known = first.known;
@@ -122,7 +171,7 @@ class AiLinkAuthority {
     if (misfit != null) return done(AiLinkResponse.error(misfit));
 
     if (code.session(request.session) == null) {
-      final allowed = await _approveSession(request, code);
+      final refusal = await _approveSession(request, code, deadline);
       // Revoked or expired while the question was open: refuse.
       final again = _verify(request.code);
       if (again.error != null) {
@@ -131,7 +180,7 @@ class AiLinkAuthority {
         return AiLinkResponse.error(again.error!);
       }
       code = again.code!;
-      if (!allowed) return done(AiLinkResponse.error(AiLinkCode.notApproved));
+      if (refusal != null) return done(AiLinkResponse.error(refusal));
       try {
         service.store.addSession(
           code.id,
@@ -150,9 +199,9 @@ class AiLinkAuthority {
     final AiLinkResponse response;
     switch (request) {
       case AiLinkWriteBox():
-        response = await _write(request, code);
+        response = await _write(request, code, deadline, open);
       case AiLinkAccess():
-        response = await _access(request, code);
+        response = await _access(request, code, deadline, open);
       case AiLinkDescribeCode():
         response = AiLinkResponse.described(
           kind: code.target.kindName,
@@ -189,8 +238,9 @@ class AiLinkAuthority {
     }
   }
 
-  // Whether the code still holds, as a refusal code.
-  AiLinkCode? _recheck(String codeText, String codeId) {
+  // Whether the code still holds and the client is still there, as a refusal.
+  AiLinkCode? _recheck(String codeText, String codeId, bool Function() open) {
+    if (!open()) return AiLinkCode.busy; // nobody is waiting for the answer
     final v = _verify(codeText);
     if (v.error != null) return v.error;
     return v.code!.id == codeId ? null : AiLinkCode.badCode;
@@ -217,39 +267,78 @@ class AiLinkAuthority {
     }
   }
 
-  Future<bool> _approveSession(AiLinkRequest req, AiCode code) {
-    final key = '${code.id}/${req.session}';
-    return _pending[key] ??= _ask(
-      app: _appName(req),
-      write: req is AiLinkWriteBox,
-      label: code.label,
-      perWrite: false,
-    ).whenComplete(() {
-      _pending.remove(key);
-    });
+  // Asks about a new session: null if the user allowed it, else the refusal.
+  Future<AiLinkCode?> _approveSession(AiLinkRequest req, AiCode code, DateTime deadline) async {
+    final cooling = _denied[code.id];
+    if (cooling != null) {
+      if (DateTime.now().isBefore(cooling)) return AiLinkCode.notApproved;
+      _denied.remove(code.id);
+    }
+    if (_waiting >= aiMaxPendingPrompts) return AiLinkCode.busy;
+    _waiting++;
+    try {
+      final key = '${code.id}/${req.session}';
+      final answer = await (_pending[key] ??= _ask(
+        app: _appName(req),
+        write: code.canWriteBox,
+        label: code.label,
+        perWrite: false,
+        deadline: deadline,
+      ).whenComplete(() {
+        _pending.remove(key);
+      }));
+      if (answer == _Answer.denied) {
+        _denied[code.id] = DateTime.now().add(timings.denyCooldown);
+      }
+      return answer == _Answer.allowed ? null : AiLinkCode.notApproved;
+    } finally {
+      _waiting--;
+    }
   }
 
+  // The name comes from the client, and is shown to the user: control
+  // characters become spaces, and format characters (bidi overrides,
+  // zero-width) are dropped.
   String _appName(AiLinkRequest req) {
-    // The name comes from the client: control characters become spaces.
-    final a = req.app?.replaceAll(RegExp(r'[\u0000-\u001f\u007f-\u009f  ]'), ' ').trim();
+    final a = req.app
+        ?.replaceAll(RegExp(r'[\p{Cc}  ]', unicode: true), ' ')
+        .replaceAll(RegExp(r'\p{Cf}', unicode: true), '')
+        .trim();
     return a == null || a.isEmpty ? 'An AI app' : a;
   }
 
-  Future<bool> _ask({
+  // Shows one question, when it is its turn and while the request has time.
+  Future<_Answer> _ask({
     required String app,
     required bool write,
     required String label,
     required bool perWrite,
+    required DateTime deadline,
     String? preview,
   }) async {
     final ask = approver;
-    if (ask == null) return false;
+    if (ask == null) return _Answer.none;
+    final prev = _promptTail;
+    final gate = Completer<void>();
+    _promptTail = gate.future;
+    try {
+      await prev.timeout(_remaining(deadline));
+    } on TimeoutException {
+      // Never got its turn: the next one still waits for the one on screen.
+      unawaited(prev.then((_) => gate.complete()));
+      return _Answer.none;
+    }
+    final time = _remaining(deadline) < timings.approval ? _remaining(deadline) : timings.approval;
+    if (time == Duration.zero) {
+      gate.complete();
+      return _Answer.none;
+    }
     final expired = Completer<void>();
-    final timer = Timer(approvalTimeout, () {
+    final timer = Timer(time, () {
       if (!expired.isCompleted) expired.complete();
     });
     try {
-      return await Future.any<bool>([
+      final answer = await Future.any<bool?>([
         ask(
           AiApprovalRequest(
             app: app,
@@ -260,31 +349,44 @@ class AiLinkAuthority {
             expired: expired.future,
           ),
         ),
-        expired.future.then((_) => false),
+        expired.future.then((_) => null),
       ]);
+      return answer == null ? _Answer.none : (answer ? _Answer.allowed : _Answer.denied);
     } on Object {
-      return false;
+      return _Answer.none;
     } finally {
       timer.cancel();
       if (!expired.isCompleted) expired.complete();
+      gate.complete();
     }
   }
 
-  Future<AiLinkResponse> _write(AiLinkWriteBox req, AiCode code) {
+  Future<AiLinkResponse> _write(AiLinkWriteBox req, AiCode code, DateTime deadline, bool Function() open) {
     final ask = service.store.askBeforeWrite(req.box);
     return host.aiWriteBox(
       req,
       code,
-      recheck: () => _recheck(req.code, code.id),
+      deadline: deadline,
+      recheck: () => _recheck(req.code, code.id, open),
       confirm: !ask
           ? null
-          : () => _ask(
-              app: _appName(req),
-              write: true,
-              label: code.label,
-              perWrite: true,
-              preview: _preview(req),
-            ),
+          : () async {
+              if (_waiting >= aiMaxPendingPrompts) return false;
+              _waiting++;
+              try {
+                return await _ask(
+                      app: _appName(req),
+                      write: true,
+                      label: code.label,
+                      perWrite: true,
+                      preview: _preview(req),
+                      deadline: deadline,
+                    ) ==
+                    _Answer.allowed;
+              } finally {
+                _waiting--;
+              }
+            },
     );
   }
 
@@ -294,16 +396,16 @@ class AiLinkAuthority {
     return '${req.mode == AiLinkMode.append ? 'Add: ' : 'Replace with: '}$short';
   }
 
-  Future<AiLinkResponse> _access(AiLinkAccess req, AiCode code) async {
-    if (!await host.aiWaitLoaded()) return AiLinkResponse.error(AiLinkCode.busy);
+  Future<AiLinkResponse> _access(AiLinkAccess req, AiCode code, DateTime deadline, bool Function() open) async {
+    if (!await host.aiWaitLoaded(_remaining(deadline))) return AiLinkResponse.error(AiLinkCode.busy);
     if (code.target.kind == AiCodeTargetKind.box) {
       final page = await host.aiPageOfBox(code.target.id, hint: code.target.page);
       if (page == null) return AiLinkResponse.error(AiLinkCode.noBox);
-      final refusal = _recheck(req.code, code.id);
+      final refusal = _recheck(req.code, code.id, open);
       if (refusal != null) return AiLinkResponse.error(refusal);
       return AiLinkResponse.granted(AiLinkBoxGrant(box: code.target.id, page: page));
     }
-    final refusal = _recheck(req.code, code.id);
+    final refusal = _recheck(req.code, code.id, open);
     if (refusal != null) return AiLinkResponse.error(refusal);
     return AiLinkResponse.granted(AiLinkPagesGrant(pages: host.aiReadablePages(code.target)));
   }

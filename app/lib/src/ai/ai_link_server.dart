@@ -11,8 +11,10 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:noted_core/noted_core.dart';
 
-/// Answers an [AiLinkRequest]; the notebook's `handleAiLink`.
-typedef AiLinkHandler = Future<AiLinkResponse> Function(AiLinkRequest request);
+/// Answers an [AiLinkRequest]; the notebook's `handleAiLink`. `clientOpen`
+/// says whether the client is still connected (a write is not applied once it
+/// has gone).
+typedef AiLinkHandler = Future<AiLinkResponse> Function(AiLinkRequest request, bool Function() clientOpen);
 
 /// The app's end of the local link to the MCP server (invariant 4; the
 /// protocol and the rules this follows are in `ai_link.dart`).
@@ -128,6 +130,7 @@ class AiLinkServer {
     var length = 0;
     var finished = false;
     var gotRequest = false;
+    var clientGone = false;
     Timer? timer;
     StreamSubscription<Uint8List>? sub;
 
@@ -181,14 +184,17 @@ class AiLinkServer {
         if (newline >= 0) {
           gotRequest = true;
           timer?.cancel(); // reading is over; the answer may take a while
-          unawaited(_handle(buffer.takeBytes(), reply));
+          unawaited(_handle(buffer.takeBytes(), reply, () => !clientGone));
         }
       },
-      // A client that half-closes after its request still gets the answer.
+      // The client closing or dropping the connection after its request is
+      // told to the handler: it must not act for a client that has gone.
       onError: (Object _) {
+        clientGone = true;
         if (!gotRequest) unawaited(reply(null));
       },
       onDone: () {
+        clientGone = true;
         if (!gotRequest) unawaited(reply(null));
       },
       cancelOnError: false,
@@ -198,7 +204,11 @@ class AiLinkServer {
     _open.remove(socket);
   }
 
-  Future<void> _handle(Uint8List bytes, Future<void> Function(AiLinkResponse?) reply) async {
+  Future<void> _handle(
+    Uint8List bytes,
+    Future<void> Function(AiLinkResponse?) reply,
+    bool Function() clientOpen,
+  ) async {
     final AiLinkRequest? request;
     try {
       request = AiLinkRequest.parse(utf8.decode(bytes));
@@ -213,7 +223,7 @@ class AiLinkServer {
     }
     AiLinkResponse response;
     try {
-      response = await handler(request);
+      response = await handler(request, clientOpen);
     } on Object catch (e) {
       // Only the type: an exception's text could hold request content.
       debugPrint('Noted: an AI request failed: ${e.runtimeType}');

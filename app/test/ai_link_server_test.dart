@@ -48,7 +48,7 @@ void main() {
       file: linkFile,
       handler:
           handler ??
-          (r) async {
+          (r, _) async {
             seen.add(r);
             return AiLinkResponse.written(box: (r as AiLinkWriteBox).box);
           },
@@ -224,7 +224,7 @@ void main() {
   });
 
   test('a handler that throws gives save_failed and the app runs on', () async {
-    final s = await start(handler: (_) async => throw StateError('secret content'));
+    final s = await start(handler: (_, _) async => throw StateError('secret content'));
     final out = await exchange(s, request().encode());
     final r = AiLinkResponse.decode(out[1])!;
     expect(r.code, AiLinkCode.saveFailed);
@@ -276,13 +276,13 @@ void main() {
     );
     final out2 = await exchange(s, good.encode());
     expect(AiLinkResponse.decode(out2[1])!.code, AiLinkCode.noBox);
-    expect(questions, ['Test client wants to write x. Allow?']);
+    expect(questions, ['Test client wants to read and write x. Allow?']);
   });
 
   test('ai-link.json is written again if it goes missing, but another file is never replaced', () async {
     final s = AiLinkServer(
       file: linkFile,
-      handler: (r) async => AiLinkResponse.written(box: 'b'),
+      handler: (r, _) async => AiLinkResponse.written(box: 'b'),
       recheckInterval: const Duration(milliseconds: 50),
     );
     servers.add(s);

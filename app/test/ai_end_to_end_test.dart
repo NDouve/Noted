@@ -65,11 +65,6 @@ class _Mcp {
   }
 }
 
-/// noted_mcp 0.3.0 (codes, `ai-link/2`) is rewritten by a parallel task. Until
-/// it is merged the server does not speak the new protocol, so this test is
-/// skipped; remove the flag and run it once it is merged.
-const _skipUntilMcpRewritten = 'needs noted_mcp 0.3.0 (run 2026-11-01-02): re-run after merging';
-
 void main() {
   test('the real app link and the real noted_mcp over stdio: codes, approval, a write, reads', () async {
     final root = await Directory.systemTemp.createTemp('noted_ai_e2e');
@@ -155,7 +150,7 @@ void main() {
     });
     expect(writeError, isFalse, reason: written);
     expect(written, isNot(contains(writer)));
-    expect(approvals, ['noted end-to-end test wants to write Feedback chat. Allow?']);
+    expect(approvals, ['noted end-to-end test 0 wants to read and write Feedback chat. Allow?']);
     String shown() => (nb.current!.page.node('aibox')! as BoxRecord).snapshotText;
     expect(shown(), contains('Ship the **AI box**.'));
     final open = codec.decode((nb.current!.page.node('aibox')! as BoxRecord).data!.decode(), 1);
@@ -217,5 +212,5 @@ void main() {
     expect(down, contains('needs Noted running'));
     final (listError, _) = await mcp.call('list_pages');
     expect(listError, isFalse);
-  }, timeout: const Timeout(Duration(minutes: 2)), skip: _skipUntilMcpRewritten);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }

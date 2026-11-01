@@ -249,7 +249,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
     this.recoveryDirectory,
     this.settings,
     this.aiAccess,
-    this.aiApprovalTimeout = aiLinkApprovalTimeout,
+    this.aiTimings = const AiLinkTimings(),
     this.cacheDirectory,
     this.attachmentPicker,
     this.attachmentOpener,
@@ -263,8 +263,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
   /// dialog). Null: nobody can be asked, so those requests are refused.
   AiApprover? aiApprover;
 
-  /// How long a question to the user may wait.
-  final Duration aiApprovalTimeout;
+  /// The time limits of AI requests (questions, the whole request, the pause
+  /// after a Deny).
+  final AiLinkTimings aiTimings;
 
   /// Where derived files (image display copies) are cached; never in a page
   /// folder, so never synced. Null: `cache` next to [bindersFile], or a
@@ -2101,16 +2102,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
 
   /// Decides a request from the MCP server (see [AiLinkAuthority]) and, for a
   /// write, applies it. Null [aiAccess]: no code is accepted.
-  Future<AiLinkResponse> handleAiLink(AiLinkRequest request) {
+  Future<AiLinkResponse> handleAiLink(AiLinkRequest request, [bool Function()? clientOpen]) {
     final service = aiAccess;
     if (service == null) return Future.value(AiLinkResponse.error(AiLinkCode.badCode));
     final authority = _authority ??= AiLinkAuthority(
       service: service,
       host: this,
-      approvalTimeout: aiApprovalTimeout,
+      timings: aiTimings,
     );
     authority.approver = aiApprover;
-    return authority.handle(request);
+    return authority.handle(request, clientOpen: clientOpen);
   }
 
   AiLinkAuthority? _authority;
@@ -2126,9 +2127,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
   static const String _keptMessage = "Noted kept the change on screen but couldn't save it; don't retry an append.";
 
   @override
-  Future<bool> aiWaitLoaded() async {
+  Future<bool> aiWaitLoaded(Duration timeout) async {
     try {
-      await _loaded.future.timeout(aiLinkReadTimeout);
+      await _loaded.future.timeout(timeout);
       return true;
     } on TimeoutException {
       return false;
@@ -2192,10 +2193,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
   Future<AiLinkResponse> aiWriteBox(
     AiLinkWriteBox request,
     AiCode code, {
+    required DateTime deadline,
     required AiLinkCode? Function() recheck,
     Future<bool> Function()? confirm,
   }) async {
-    if (!await aiWaitLoaded()) return AiLinkResponse.error(AiLinkCode.busy);
+    final left = deadline.difference(DateTime.now());
+    if (!await aiWaitLoaded(left.isNegative ? Duration.zero : left)) return AiLinkResponse.error(AiLinkCode.busy);
     final refusal = recheck();
     if (refusal != null) return AiLinkResponse.error(refusal);
     final pageId = await aiPageOfBox(request.box, hint: code.target.page);
