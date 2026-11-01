@@ -179,7 +179,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0020 — Sync conflict handling, per box
 - **Date:** 2026-10-24
-- **Status:** Active; implemented by 0051–0053
+- **Status:** Active; implemented by 0051–0053; refined by 0120 (how issues are shown and settled) and 0121 (additions on both sides merge)
 - **Decision:**
   - Each box records its revision and the revision it was edited from. When two devices edit the same box from the same revision, the box is marked conflicted.
   - A conflicted box is highlighted, and so is its page tab. Opening it shows both versions side by side, labeled with device and time.
@@ -347,7 +347,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0035 — Box snapshots and untouched pass-through
 - **Date:** 2026-10-24
-- **Status:** Active
+- **Status:** Active; its rule that a conflict on a box the device can't run waits for a supporting device is superseded by 0120 (keep one version or place both, from snapshots)
 - **Decision:**
   - Each box stores a read-only snapshot (text, an image, or both) alongside its data. The snapshot is updated whenever the box is edited on a device that supports it.
   - A device that cannot run a box type shows the snapshot read-only, marked as editable on other devices. This applies to a module that is switched off, a platform without the plugin host, or a box type that isn't installed or comes from a newer app version.
@@ -572,7 +572,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0051 — External file changes and per-box merging
 - **Date:** 2026-10-25
-- **Status:** Active (implements 0020)
+- **Status:** Active (implements 0020); refined by 0120 (the manual-edit merge view is removed; the issue sequence replaces the badge) and 0121
 - **Decision:**
   - **Watching:** every storage folder is watched. A changed page file is checked after 300 ms.
     - The app recognises its own writes by their exact text and ignores them.
@@ -602,7 +602,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0053 — Cloud conflict-copy files (OneDrive)
 - **Date:** 2026-10-25
-- **Status:** Active
+- **Status:** Active; extended by 0120 (landed boxes)
 - **Decision:**
   - **Detection:** a file `<stem>-<suffix>.canvas` is a conflict copy when `<stem>.canvas` exists in the same folder and both have the same page id. OneDrive appends `-<COMPUTERNAME>`, then `-<COMPUTERNAME>-<n>`. This naming is *unverified*, so a broader suffix pattern is accepted.
   - **Merge**, box by box into the original. There is no common base, so revisions decide:
@@ -1233,7 +1233,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0093 — Continuous integration (GitHub Actions)
 - **Date:** 2026-10-27
-- **Status:** Active
+- **Status:** Active; amended by 0123 (a Linux test job, not blocking yet)
 - **Decision:**
   - **Workflow:** `.github/workflows/ci.yml` runs on every push, every pull request, and by hand. It has read-only repository permissions, and a newer run on the same branch cancels the one still in progress.
   - **Flutter version:** pinned to 3.47.8 stable, the version used for development, through `subosito/flutter-action@v2` with caching. Actions are pinned to major versions.
@@ -1530,7 +1530,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0108 — Per-box AI codes and their safeguards
 - **Date:** 2026-11-01
-- **Status:** Active, amended by 0115 (approval per code, not per session) and 0117 (Writer permissions, closed-app writes) (approved by the maintainer; supersedes 0105 and the owner and *Connected AI* parts of 0104)
+- **Status:** Active, amended by 0115 (approval per code, not per session) and 0117 (Writer permissions, closed-app writes) and 0123 (revoked codes keep their history) (approved by the maintainer; supersedes 0105 and the owner and *Connected AI* parts of 0104)
 - **Decision:**
   - **Rules live in the AI box.** Page and binder settings never govern what happens inside an AI box. An AI box is reachable through its own codes whatever its page's AI access (0109).
   - **Connecting:** in an AI box, *Connect a chat* → *Writer* or *Reader* → a label the user types (for example "Feedback – work chat") and an optional expiry (none, 1, 7 or 30 days). Noted shows the code once, titled "Code for <label>", with *Copy*; the dialog can't be dismissed by accident while the code shows, nor while it is being issued.
@@ -1570,7 +1570,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0110 — How code checks work: ai-link/2 and MCP server 0.3.0
 - **Date:** 2026-11-01
-- **Status:** Active, amended by 0116 (closed-app reads, the running lock, the server log) and 0117 (closed-app writes) (approved by the maintainer; amends 0101 and 0106; implements invariant 4 for codes)
+- **Status:** Active, amended by 0116 (closed-app reads, the running lock, the server log) and 0117 (closed-app writes) and 0122 (merge_requests and propose_merge) (approved by the maintainer; amends 0101 and 0106; implements invariant 4 for codes)
 - **Decision:**
   - **Open pages** are read by `noted_mcp` from saved files, as before; this works with Noted closed.
   - **Anything that needs a code** (box reads and writes, Privileged pages) goes through the running app over the link, so the app checks the code, its expiry, its role and target, and the session's approval, and logs the request. With Noted closed, code-based access fails with "This needs Noted running: codes are checked by the app. Open Noted and try again."
@@ -1688,6 +1688,61 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Not changed:** conflict handling for boxes a device can't run (the maintainer is still deciding); the single-instance guard on macOS and Linux (with the Apple build path).
 - **Rationale:** These close the items the maintainer approved from the last report.
 - **Alternatives considered:** migrating such pages' Open up to their binder (would widen access the user didn't set there); showing the note at every launch (noise).
+
+## 0120 — Sync issues: how they are shown and settled
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; refines 0020 and 0051, extends 0053, supersedes 0035's rule that a conflict on a box the device can't run waits for a supporting device)
+- **Decision:**
+  - **Kinds of issue**, each belonging to one box and kept in the page file until resolved, so it survives restarts and reaches other devices:
+    - **Landed:** a box that arrived from another device in a merge (0051's three-way merge or 0053's conflict-copy merge) and overlaps a box the other device couldn't see there (one it didn't have, or had elsewhere). Stored as `"landed":{"at":<ms>,"device":"<name>"}` in the box's `noted` header. A deliberate overlap made on the other device is not an issue. In the three-way merge the marker follows the rule of `conflicts` (the side that changed it wins); a conflict-copy merge keeps it if either side has it. The recovery merge never marks.
+    - **Conflict:** both sides changed the box's content, or one deleted it while the other edited it (0051's `conflicts` record, unchanged).
+    - **Unreadable conflict:** a conflict on a box this device can't open (module off, type disallowed on the page, 0111, or not installed).
+  - **Presentation:** when a page with issues opens, a dialog shows them one after another (reading order, "n of m", Previous and Next). *Silence* (or Esc) folds them into a red circular icon with a count in the page's corner; each affected box then shows a red warning chip in its place (a landed box also a red outline). The icon reopens the sequence; a chip opens that box's issue only; F8 (*Show page issues*) does the same from the keyboard. Silence lasts for the app run. Issues that arrive while the page is open don't interrupt typing: they show the chip and the icon. Read-only pages show none of it. The sidebar marks pages with any issue.
+  - **Settling:**
+    - Landed: *Place it* selects the box, highlighted red, ready to move; the first move or resize, or *Leave it here*, clears the marker. Undo restores the marker and the position only, keeping content typed since.
+    - Conflict: *Keep this version*, *Keep the other version*, *Place both* (the other becomes a new box beside the first, with a new id), or *Ask the page AI to merge* (0122) when available. Keeping the other version takes only its content; position, size and the landed state stay this box's. Delete conflicts: *Keep the box* or *Delete it*.
+    - Unreadable conflict: *Keep this version*, *Keep the other version* or *Place both*, shown from the saved snapshots; the box data is never decoded (0035). When the recorded other version isn't a Noted box, only *Keep this version* is offered.
+    - Each choice is one undo step and settles one conflict record at a time; a box with several shows the next.
+  - The manual-edit merge view of 0051 is removed; asking the page AI, keeping one version and placing both replace it.
+  - **Code:** `src/merge/page_issues.dart` in noted_core (`pageIssues`, the landed rules and the resolution helpers), and `page_issues_dialog.dart` in noted_canvas.
+- **Rationale:** Issues were easy to miss as a badge and hard to settle one by one. Showing them when the page opens, letting the user put them off without losing them, and offering choices that never read inside data the device can't open keeps nothing hidden and nothing lost.
+- **Alternatives considered:** a blocking dialog until everything is settled (stops note-taking); per-device markers that don't sync (the issue would vanish on other devices); keeping the manual-edit merge view (duplicated what keep, place both and the AI merge cover, and needed a working module for both versions).
+
+## 0121 — Additions on both sides merge automatically
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; refines 0020 and 0051)
+- **Decision:**
+  - When both sides changed a box's content, the box type's `merge` (Box API, unchanged) decides; only when it can't is the box conflicted.
+  - **Note and AI boxes:** merged when each side is the base's blocks unchanged and in order with blocks only inserted, or with text only appended to the base's last block or prepended to its first (as new runs; base runs and attributes unchanged). Additions at the same place keep mine first; identical additions on both sides are kept once. Anything else is a conflict: any edit, deletion, reorder, attribute or data change of a base block, a sub-item added under a base block, both sides extending the same end of a block with different text, or a base that is only an empty line typed into on both sides. Runs are joined only where an addition meets base text and both are plain. Other top-level keys merge three-way. AI marks stay with the blocks the AI wrote.
+  - **Drawings:** the union of 0041, unchanged. **Image and file boxes:** merged only when both sides ended up identical, otherwise a conflict. Sticky labels: per field, unchanged.
+  - **Conflict copies (0053)** have no common base, so nothing merges automatically there.
+  - Writes an AI made while Noted was closed (0117) bump `rev` like any edit and merge or conflict the same way.
+- **Rationale:** Two people adding notes to the same box is the common case and loses nothing when both additions are kept; anything less clear is left to the user.
+- **Alternatives considered:** merging text edits at the character level (could produce text neither side wrote, such as "Total: 507"); merging image picture and alt text separately (could pair a picture with another picture's description).
+
+## 0122 — Asking the page AI to merge a conflict
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; amends 0110)
+- **Decision:**
+  - **Available** for a conflict (not a delete conflict) on a note or AI box whose module is on and whose type is allowed on the page, when the page's AI access is Open or Privileged and a page or binder Reader code covering it is approved, unexpired, not revoked and was used over the link in the last 15 minutes. Otherwise the option isn't shown.
+  - **Request:** in the app's memory, one per box, withdrawn when the user chooses anything else, moves on or closes, and expiring after 10 minutes.
+  - **Link and tools (noted_mcp 0.5.0):** `merge_requests(code)` returns the pending requests the code covers as grants (request id, page, box, type, and each version's device and time); `noted_mcp` reads the saved page's conflict record itself and renders both versions with the same renderer and checks as `read_box` (links to pages the code can't read become text; encrypted boxes refused). `propose_merge(code, request_id, content)` sends the merged markdown to the app (at most 200 KB). Both need Noted running; `no_request` answers a request the code doesn't cover or that is gone. A Reader code is enough, since it only proposes.
+  - **Proposal:** shown beside both versions, with the code's label ("Proposed by …"); nothing changes until the user picks *Use the AI's merge*, which applies it as one undo step and settles that conflict record. The AI's own `<ai-written>` lines are ignored: a proposed block that matches a block of either version (as saved, with links reduced as the AI saw them, or after a markdown round trip) is that block verbatim, mark and links included; a block in neither is new, AI-written in an AI box and plain in a note box; a text the versions have in different forms is never marked AI-written if either could be the user's.
+- **Rationale:** An AI reading the page can often reconcile two edits better than "keep one". Building what it sees in the server from saved data (invariant 4) and deriving AI marks from the versions keeps the user's text the user's.
+- **Alternatives considered:** the app rendering the versions for the AI (a second renderer, and it leaked a link to a Guarded page in review); trusting the AI's markers (it could mark the user's text as its own, and Edit permission could then replace it); offering the merge for any box type (only note and AI boxes have a markdown form).
+
+## 0123 — Revoked codes keep their history; CI on Linux; follow-ups
+- **Date:** 2026-11-01
+- **Status:** Active (approved by the maintainer; amends 0108, 0115 and 0093)
+- **Decision:**
+  - **Revoked codes:** revoking a code, or retiring a box's old Writer when a new one is issued, marks it `"revoked": <ISO time>` and blanks its stored hash, instead of deleting it, so no build (including older ones) can verify it. It is listed as "Revoked <date>" without controls, and its activity, in-app and from `ai-mcp-log.jsonl`, stays visible marked revoked. Log lines of codes that were never issued are still dropped.
+  - **Approval questions** name what the code reaches, on their own line, labelled and quoted ("Shown in Noted as: "…""): the AI box's first line, or the page or binder title. The name is cleaned like app names, cut at 60 characters by grapheme, and looked up within 2 seconds or left out.
+  - **CI:** the test job runs on Windows and on Linux; the Linux job doesn't block yet (`continue-on-error`).
+  - **Two server processes** writing the same page at the same instant: left as documented in 0117.
+  - **Polish:** a scroll cue in the AI box's connections panel; Deny's focus outline visible in both themes; the access-loss note's *Page settings* as a button; a page that isn't open has its background shown and can be changed from its settings without opening it (0074); the *More* menu opens fully below the bar.
+  - **Repository:** `.codex/` (local Codex config) is ignored.
+- **Rationale:** A revoked code's history is part of what the user needs to see what an AI did; blanking the hash keeps old builds from accepting it.
+- **Alternatives considered:** deleting revoked codes (history lost); keeping the hash with a format bump (older builds would refuse every code, not just revoked ones).
 
 ---
 
