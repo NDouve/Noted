@@ -7,70 +7,103 @@ import 'dart:io';
 
 import 'package:dart_mcp/server.dart';
 
-import 'library.dart';
-import 'link_client.dart';
+import 'toolbox.dart';
 import 'tools.dart';
 
 /// Noted's MCP server (invariant 4): six tools. It reads the saved page
 /// files in [dataDir] afresh on every call, so it never answers from
-/// anything a running app has on screen or in memory. It writes no file; its
-/// only way to change a box is a write request to the running Noted app
-/// ([AiLinkClient]), which decides.
+/// anything a running app has on screen or in memory. It writes no file. A
+/// call with a code is checked by the running Noted app ([NotedToolbox]),
+/// and a write is a request to that app, which decides.
 ///
-/// [token] is the AI connection token (`NOTED_TOKEN`). It is never put in any
-/// output or error.
+/// Each process makes a random session id at start and sends it, with the
+/// MCP client's name, on every request to the app: the app asks the user to
+/// allow a code the first time it is used from a session.
 base class NotedMcpServer extends MCPServer with ToolsSupport {
-  NotedMcpServer(super.channel, {required this.dataDir, this.token})
-    : super.fromStreamChannel(
-        implementation: Implementation(name: 'noted', version: '0.2.0'),
-        instructions:
-            'Access to the user\'s Noted pages. Only pages whose AI setting '
-            'allows it are visible. Start with list_pages or search, then '
-            'read_page. With an AI connection token you also have your own AI '
-            'boxes: list_my_boxes lists them and write_box changes one (it '
-            'works only while Noted is running). Reads work without Noted '
-            'running.',
-      ) {
-    registerTool(listPagesTool, (_) => _run((t) => t.listPages()));
-    registerTool(readPageTool, (r) => _run((t) => t.readPage(_arg(r, 'page_id'))));
-    registerTool(readBoxTool, (r) => _run((t) => t.readBox(_arg(r, 'page_id'), _arg(r, 'box_id'))));
-    registerTool(searchTool, (r) => _run((t) => t.search(_arg(r, 'query'))));
-    registerTool(listMyBoxesTool, (_) => _run((t) => t.listMyBoxes()));
+  NotedMcpServer(
+    super.channel, {
+    required Directory dataDir,
+    String? session,
+    Duration? connectTimeout,
+    Duration? greetingTimeout,
+    Duration? responseTimeout,
+  }) : toolbox = NotedToolbox(
+         dataDir,
+         session: session,
+         connectTimeout: connectTimeout,
+         greetingTimeout: greetingTimeout,
+         responseTimeout: responseTimeout,
+       ),
+       super.fromStreamChannel(
+         implementation: Implementation(name: 'noted', version: '0.3.0'),
+         instructions:
+             'Access to the user\'s Noted pages. Without a code you see only '
+             'pages the user set to Open, and boxes only by their id. If the '
+             'user gave you a code (it starts with noted_), pass it as "code" '
+             'on every call: a page or binder code also lets you read the '
+             'Privileged pages it covers, and a box code lets you read (and, '
+             'for a Writer code, write) one AI box. Start with list_pages or '
+             'search, then read_page. Codes are checked by Noted, so they '
+             'need Noted running; reading Open pages without a code works '
+             'without it.',
+       ) {
+    registerTool(listPagesTool, (r) => _run(() => toolbox.listPages(code: _opt(r, 'code'))));
+    registerTool(readPageTool, (r) => _run(() => toolbox.readPage(_arg(r, 'page_id'), code: _opt(r, 'code'))));
+    registerTool(readBoxTool, (r) => _run(() => toolbox.readBox(_arg(r, 'box_id'), code: _opt(r, 'code'), pageId: _opt(r, 'page_id'))));
+    registerTool(searchTool, (r) => _run(() => toolbox.search(_arg(r, 'query'), code: _opt(r, 'code'))));
     registerTool(writeBoxTool, _writeBox);
+    registerTool(describeCodeTool, (r) => _run(() => toolbox.describeCode(_opt(r, 'code'))));
   }
 
-  /// The folder with `settings.json`, `binders.json` and `pages`.
-  final Directory dataDir;
+  /// The tools' implementation, with this process's session id.
+  final NotedToolbox toolbox;
 
-  /// The AI connection token, if the server was given one.
-  final String? token;
+  @override
+  FutureOr<InitializeResult> initialize(InitializeRequest request) {
+    toolbox.app = appLabel(request.clientInfo.name, request.clientInfo.version);
+    return super.initialize(request);
+  }
 
   static String _arg(CallToolRequest r, String name) => '${r.arguments?[name] ?? ''}';
 
-  Future<CallToolResult> _run(ToolOutput Function(NotedTools tools) tool) async {
-    final out = tool(NotedTools(await NotedLibrary.load(dataDir), token: token));
+  static String? _opt(CallToolRequest r, String name) {
+    final v = r.arguments?[name];
+    return v is String ? v : null;
+  }
+
+  Future<CallToolResult> _run(Future<ToolOutput> Function() tool) async {
+    final out = await tool();
     return CallToolResult(content: [TextContent(text: out.text)], isError: out.isError);
   }
 
-  Future<CallToolResult> _writeBox(CallToolRequest r) async {
+  Future<CallToolResult> _writeBox(CallToolRequest r) {
     final content = r.arguments?['content'];
-    final out = content is! String
-        ? (text: 'content is required (markdown).', isError: true)
-        : await AiLinkClient(dataDir).writeBox(
-            token: token,
-            boxId: _arg(r, 'box_id'),
-            mode: _arg(r, 'mode'),
-            content: content,
-          );
-    return CallToolResult(content: [TextContent(text: out.text)], isError: out.isError);
+    return _run(
+      () async => content is! String
+          ? (text: 'content is required (markdown).', isError: true)
+          : toolbox.writeBox(
+              boxId: _arg(r, 'box_id'),
+              code: _opt(r, 'code'),
+              mode: _arg(r, 'mode'),
+              content: content,
+            ),
+    );
   }
+
+  static final Schema _codeProperty = Schema.string(
+    description:
+        'The code the user gave you (starts with noted_). Pass it on every call '
+        'you were given one for.',
+  );
 
   static final listPagesTool = Tool(
     name: 'list_pages',
     description:
-        'Lists the Noted pages AI may see, as JSON: id, title, parent page id, '
-        'AI setting ("box" or "page") and folder or binder.',
-    inputSchema: Schema.object(),
+        'Lists the Noted pages you may see, as JSON: id, title, parent page id, '
+        'access (open or privileged) and folder or binder. Without a code that '
+        'is the Open pages; with the code the user gave you for a page or '
+        'binder, also the pages it covers. A box code does not list pages.',
+    inputSchema: Schema.object(properties: {'code': _codeProperty}),
     annotations: ToolAnnotations(readOnlyHint: true),
   );
 
@@ -78,12 +111,16 @@ base class NotedMcpServer extends MCPServer with ToolsSupport {
     name: 'read_page',
     description:
         'Reads a page as markdown: its title, then each box top to bottom and '
-        'left to right with its type. Notes are markdown; drawings, images and '
-        'files are [drawing], [image: alt text], [file: name]. AI boxes are '
-        'markdown too; yours says "your box". On a Box only page you get only '
-        'your own boxes.',
+        'left to right, each with its type and box id. Notes are markdown; '
+        'drawings, images and files are [drawing], [image: alt text], [file: '
+        'name]. AI boxes are markdown too, and what an AI wrote is marked '
+        '<ai-written>. Pass the code the user gave you for a Privileged page '
+        'or its binder. You see boxes only by their id.',
     inputSchema: Schema.object(
-      properties: {'page_id': Schema.string(description: 'The page id from list_pages or search.')},
+      properties: {
+        'page_id': Schema.string(description: 'The page id from list_pages or search.'),
+        'code': _codeProperty,
+      },
       required: ['page_id'],
     ),
     annotations: ToolAnnotations(readOnlyHint: true),
@@ -91,13 +128,20 @@ base class NotedMcpServer extends MCPServer with ToolsSupport {
 
   static final readBoxTool = Tool(
     name: 'read_box',
-    description: 'Reads one box of a page, as read_page shows it. On a Box only page only your own boxes can be read.',
+    description:
+        'Reads one box by its id, as read_page shows it. With a box code the '
+        'user gave you (a Reader or Writer code) this reads that AI box and '
+        'tells you nothing about its page. Without a code it reads a box on '
+        'an Open page.',
     inputSchema: Schema.object(
       properties: {
-        'page_id': Schema.string(description: 'The page id.'),
-        'box_id': Schema.string(description: 'The box id from read_page.'),
+        'box_id': Schema.string(description: 'The box id.'),
+        'page_id': Schema.string(
+          description: 'The page the box is on (box ids are only unique per page). Optional; a box code ignores it.',
+        ),
+        'code': _codeProperty,
       },
-      required: ['page_id', 'box_id'],
+      required: ['box_id'],
     ),
     annotations: ToolAnnotations(readOnlyHint: true),
   );
@@ -106,40 +150,47 @@ base class NotedMcpServer extends MCPServer with ToolsSupport {
     name: 'search',
     description:
         'Finds pages whose title or text holds every word (put a phrase in '
-        'quotes). Returns JSON with page ids and a snippet of each match. On '
-        'Box only pages it looks at the title and your own boxes.',
+        'quotes). Returns JSON with page ids and a snippet of each match. It '
+        'looks only at the pages you can read: the Open ones, and with a page '
+        'or binder code the pages it covers.',
     inputSchema: Schema.object(
-      properties: {'query': Schema.string(description: 'Words to find.')},
+      properties: {'query': Schema.string(description: 'Words to find.'), 'code': _codeProperty},
       required: ['query'],
     ),
-    annotations: ToolAnnotations(readOnlyHint: true),
-  );
-
-  static final listMyBoxesTool = Tool(
-    name: 'list_my_boxes',
-    description:
-        'Lists your own AI boxes on pages that aren\'t Off, as JSON: page id, '
-        'page title, box id and the page\'s AI setting. Needs the AI '
-        'connection token (NOTED_TOKEN).',
-    inputSchema: Schema.object(),
     annotations: ToolAnnotations(readOnlyHint: true),
   );
 
   static final writeBoxTool = Tool(
     name: 'write_box',
     description:
-        'Writes markdown to one of your own AI boxes. Noted decides and must '
-        'be running; if it is not, the write fails (reads still work). '
-        '"replace" replaces what you wrote earlier in the box; "append" adds '
-        'to the end. Text the user wrote in the box is kept.',
+        'Writes markdown to an AI box with the Writer code the user gave you '
+        'for it. Noted decides and must be running; the user may have to '
+        'allow this connection or each write. "replace" replaces what you '
+        'wrote earlier in the box; "append" adds to the end. Text the user '
+        'wrote in the box is kept. Fenced code blocks and raw HTML become '
+        'plain paragraphs.',
     inputSchema: Schema.object(
       properties: {
-        'box_id': Schema.string(description: 'The box id from list_my_boxes.'),
+        'box_id': Schema.string(description: 'The id of the AI box.'),
+        'code': Schema.string(description: 'The Writer code the user gave you for this box.'),
         'content': Schema.string(description: 'The markdown to write.'),
         'mode': Schema.string(description: '"replace" or "append".', enumValues: ['replace', 'append']),
       },
-      required: ['box_id', 'content', 'mode'],
+      required: ['box_id', 'code', 'content', 'mode'],
     ),
     annotations: ToolAnnotations(readOnlyHint: false, destructiveHint: false),
+  );
+
+  static final describeCodeTool = Tool(
+    name: 'describe_code',
+    description:
+        'Asks Noted what a code the user gave you covers: a box, a page or a '
+        'binder (by id), your role (reader or writer) and when it expires. '
+        'Needs Noted running.',
+    inputSchema: Schema.object(
+      properties: {'code': Schema.string(description: 'The code the user gave you.')},
+      required: ['code'],
+    ),
+    annotations: ToolAnnotations(readOnlyHint: true),
   );
 }

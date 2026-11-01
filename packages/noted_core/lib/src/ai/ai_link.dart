@@ -70,7 +70,7 @@ const Duration aiLinkReadTimeout = Duration(seconds: 5);
 
 /// How long a request may wait for the user to allow a session or a write
 /// before the app answers `not_approved`.
-const Duration aiLinkApprovalTimeout = Duration(minutes: 2);
+const Duration aiLinkApprovalTimeout = Duration(seconds: 45);
 
 /// The most connections the app serves at the same time.
 const int aiLinkMaxConnections = 8;

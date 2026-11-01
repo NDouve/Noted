@@ -148,6 +148,15 @@ void main() {
     );
   });
 
+  test('a page whose recorded parent cannot be found is not the top: it starts from the default', () {
+    final orphan = PageMeta.create(id: 'orphan', title: 'o', order: 0, parentId: 'gone').withAiAccess(AiAccess.open);
+    expect(effectiveAiAccess([orphan]), const EffectiveAiAccess(AiAccess.guarded, ConfigSource.appDefault));
+    final tight = PageMeta.create(id: 'orphan', title: 'o', order: 0, parentId: 'gone').withAiAccess(AiAccess.guarded);
+    expect(effectiveAiAccess([tight]).value, AiAccess.guarded);
+    expect(inheritedAiAccess([orphan]), const EffectiveAiAccess(AiAccess.guarded, ConfigSource.appDefault));
+    expect(allowedOwnAiAccess(inheritedAiAccess([orphan])?.value), [AiAccess.guarded]);
+  });
+
   test('legacy values count through inheritance', () {
     expect(effectiveAiAccess([withRaw('"page"')]).value, AiAccess.open);
     expect(effectiveAiAccess([withRaw('"off"')]).value, AiAccess.guarded);

@@ -99,6 +99,8 @@ void main() {
     final names = notedSources().keys;
     expect(names, contains(linkClient));
     expect(names, contains('package:noted_mcp/src/library.dart'));
+    expect(names, contains('package:noted_mcp/src/toolbox.dart'));
+    expect(names, contains('package:noted_core/src/ai/ai_access.dart'));
     expect(names, contains('package:noted_core/src/ai/ai_link.dart'));
     expect(names.where((n) => n.startsWith('file:')), isNotEmpty, reason: 'the executable\'s entry');
   });

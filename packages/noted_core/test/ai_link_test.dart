@@ -32,7 +32,7 @@ void main() {
       expect(readAiLinkGreeting(bad), isNull, reason: bad);
     }
     expect(aiLinkReadTimeout, const Duration(seconds: 5));
-    expect(aiLinkApprovalTimeout, const Duration(minutes: 2));
+    expect(aiLinkApprovalTimeout, const Duration(seconds: 45));
     expect(aiLinkMaxConnections, 8);
     expect(aiLinkMaxRequestBytes, 1048576);
   });

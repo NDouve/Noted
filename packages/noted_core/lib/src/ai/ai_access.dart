@@ -135,7 +135,7 @@ EffectiveAiAccess effectiveAiAccess(Iterable<PageMeta> chain, {Binder? binder}) 
 /// a top-level page in no binder. The UI offers [allowedOwnAiAccess] of this.
 EffectiveAiAccess? inheritedAiAccess(Iterable<PageMeta> chain, {Binder? binder}) {
   final list = chain.toList();
-  if (list.length <= 1 && binder == null) return null;
+  if (binder == null && list.isNotEmpty && list.length == 1 && list.first.parentId == null) return null;
   return _resolveAiAccess(list.skip(1).toList(), binder, firstIsSelf: false);
 }
 
@@ -162,7 +162,9 @@ EffectiveAiAccess _resolveAiAccess(
   for (var i = chain.length - 1; i >= 0; i--) {
     final own = chain[i].aiAccess;
     if (own == null) continue;
-    final isTop = binder == null && i == chain.length - 1;
+    // Only a page that records no parent is the top: one whose recorded parent
+    // is missing or unreadable starts from the app default and can only tighten.
+    final isTop = binder == null && i == chain.length - 1 && chain[i].parentId == null;
     if (isTop || own.strictness > value.strictness) {
       value = own;
       source = i == 0 && firstIsSelf ? ConfigSource.own : ConfigSource.page(chain[i].id);

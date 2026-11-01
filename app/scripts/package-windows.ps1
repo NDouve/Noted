@@ -83,14 +83,18 @@ Shortcuts
   it with -ResetIconCache (Explorer restarts and rebuilds its icon cache).
 
 AI (MCP server)
-  noted_mcp.exe lets an AI app read the pages whose AI setting allows it
-  (right-click a page > AI access). It never writes a file: an AI writes
-  only into its own AI boxes, through Noted while Noted is running.
-  To give an AI its own boxes, make a token in Noted (gear menu >
-  AI connections > Add), then add the server to Claude Code and print the
-  Claude desktop configuration from PowerShell, with the token copied:
-    powershell -ExecutionPolicy Bypass -File register-mcp.ps1 -Token (Get-Clipboard)
-  Without -Token the AI can only read. See docs/mcp.md in the source.
+  noted_mcp.exe lets an AI app read your pages. A page whose AI access is
+  Open (page settings) can be read by any AI using this server, with no
+  code. Privileged pages need a code for the page or its binder; Guarded
+  pages (the default) are closed to every AI. It never writes a file: an AI
+  writes only into an AI box it holds the Writer code for, through Noted
+  while Noted is running. Codes are made in Noted (in the AI box, "Connect
+  a chat", or in the page or binder settings); give the code to the chat,
+  which passes it on each call. Noted asks you to allow a new connection
+  the first time a code is used. There is no token: add the server to
+  Claude Code and print the Claude desktop configuration from PowerShell:
+    powershell -ExecutionPolicy Bypass -File register-mcp.ps1
+  See docs/mcp.md in the source.
 
 Runtime
   The Visual C++ runtime DLLs the app needs (msvcp140.dll,

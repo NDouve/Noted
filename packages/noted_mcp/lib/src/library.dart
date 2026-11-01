@@ -20,17 +20,22 @@ Directory defaultDataDirectory() {
 }
 
 /// One saved page as read from its file, with where it is and the AI
-/// setting that applies to it.
+/// access that applies to it.
 final class LibraryPage {
-  LibraryPage(this.page, this.location, this.ai);
+  LibraryPage(this.page, this.location, this.access, {this.locked = false});
 
   final NotedPage page;
 
   /// The folder (standalone) or binder it is in.
   final LibraryLocation location;
 
-  /// The AI setting that applies (own, inherited or the default).
-  final AiSetting ai;
+  /// The AI access that applies (own, inherited or the default), by the
+  /// same rules as the app (`effectiveAiAccess`).
+  final AiAccess access;
+
+  /// Whether the page is in a locked binder: hidden from page AI whatever its
+  /// access. (An AI box on it can still be reached by its box code.)
+  final bool locked;
 
   String get id => page.id;
   String get title => page.meta.title.trim().isEmpty ? 'Untitled page' : page.meta.title.trim();
@@ -49,17 +54,15 @@ final class LibraryLocation {
 }
 
 /// Every saved page this device can reach, read from the page files only
-/// (never from a running app's screen), with the AI setting of each.
+/// (never from a running app's screen), with the AI access of each.
 ///
 /// Reading never writes: no folder is created, no file is changed.
 final class NotedLibrary {
-  NotedLibrary._(this.pages, this.connections);
+  NotedLibrary._(this.pages);
 
-  /// All readable pages, Off ones included; the tools filter them.
+  /// All readable pages, Privileged, Guarded and locked ones included; the
+  /// tools filter them.
   final List<LibraryPage> pages;
-
-  /// The AI connections listed in `settings.json` as of this read.
-  final List<AiConnectionInfo> connections;
 
   LibraryPage? page(String id) {
     for (final p in pages) {
@@ -89,38 +92,54 @@ final class NotedLibrary {
         loose.add((p, loc));
       }
     }
-    pages.addAll(_withSettings(loose, binder: null));
+    pages.addAll(_withAccess(loose, binder: null, locked: false));
     for (final path in _strings(binders['binders'])) {
       final binder = await _readBinder(Directory(path));
-      // A binder that can't be read, or that is locked, is left out whole.
-      if (binder == null || isLockedBinder(binder)) continue;
+      // A binder that can't be read is left out whole. A locked one is kept,
+      // marked: page AI never sees its pages, but its AI boxes stay reachable
+      // by their codes.
+      if (binder == null) continue;
       final loc = LibraryLocation(path, binder: binder);
       final own = [for (final p in await _readPages(Directory(path))) (p, loc)];
-      pages.addAll(_withSettings(own, binder: binder));
+      pages.addAll(_withAccess(own, binder: binder, locked: isLockedBinder(binder)));
     }
-    return NotedLibrary._(pages, readAiConnections(settings));
+    return NotedLibrary._(pages);
   }
 
-  static List<LibraryPage> _withSettings(List<(NotedPage, LibraryLocation)> pages, {required Binder? binder}) {
-    final tree = PageTree.build([for (final (p, _) in pages) p.meta]);
-    final metas = {for (final (p, _) in pages) p.id: p.meta};
+  static List<LibraryPage> _withAccess(
+    List<(NotedPage, LibraryLocation)> pages, {
+    required Binder? binder,
+    required bool locked,
+  }) {
+    // One entry per page id (the first copy is kept). If copies of an id
+    // disagree, the strictest access of any copy applies.
+    final metas = <String, PageMeta>{};
+    final first = <String, (NotedPage, LibraryLocation)>{};
+    for (final e in pages) {
+      metas.putIfAbsent(e.$1.id, () => e.$1.meta);
+      first.putIfAbsent(e.$1.id, () => e);
+    }
+    final access = <String, AiAccess>{};
+    for (final (p, _) in pages) {
+      // Each copy starts its chain from its own header. A parent that is
+      // missing, unreadable or looping ends the chain, and the core then
+      // starts from the app default (the page is not the top).
+      final chain = <PageMeta>[p.meta];
+      final seen = <String>{p.id};
+      var at = p.meta.parentId;
+      while (at != null && seen.add(at)) {
+        final m = metas[at];
+        if (m == null) break;
+        chain.add(m);
+        at = m.parentId;
+      }
+      final a = effectiveAiAccess(chain, binder: binder).value;
+      final before = access[p.id];
+      access[p.id] = before == null ? a : AiAccess.strictest(before, a);
+    }
     return [
-      for (final (p, loc) in pages)
-        LibraryPage(p, loc, effectiveAiSetting(_chain(p.id, tree, metas), binder: binder)),
+      for (final (p, loc) in first.values) LibraryPage(p, loc, access[p.id]!, locked: locked),
     ];
-  }
-
-  static List<PageMeta> _chain(String id, PageTree tree, Map<String, PageMeta> metas) {
-    final chain = <PageMeta>[];
-    final seen = <String>{};
-    String? at = id;
-    while (at != null && seen.add(at)) {
-      final m = metas[at];
-      if (m == null) break;
-      chain.add(m);
-      at = tree.parentIdOf(at);
-    }
-    return chain;
   }
 
   static Iterable<String> _strings(Object? list) =>
@@ -173,8 +192,8 @@ final class NotedLibrary {
 }
 
 /// Whether [binder] is locked (binder passwords, a later phase): a binder
-/// file that says it is locked or encrypted is left out whole, so its pages
-/// are invisible to AI.
+/// file that says it is locked or encrypted. Its pages are invisible to page
+/// AI.
 bool isLockedBinder(Binder binder) {
   final f = binder.fields;
   return f['locked']?.text == 'true' || f.containsKey('encryption') || f.containsKey('password');

@@ -1,7 +1,7 @@
 name: noted_mcp
 description: "Noted's read-only MCP server: a separate executable that reads saved page files only (invariant 4). Pure Dart, no Flutter."
 publish_to: none
-version: 0.1.0
+version: 0.3.0
 resolution: workspace
 
 environment:

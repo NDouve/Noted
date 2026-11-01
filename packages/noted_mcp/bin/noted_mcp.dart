@@ -6,7 +6,8 @@
 //
 //   noted_mcp [--data-dir <folder with settings.json and binders.json>]
 //
-// The AI connection token comes from the NOTED_TOKEN environment variable.
+// Codes are passed by the AI on each call; there is no token or other secret
+// in the environment or the command line.
 
 import 'dart:io';
 
@@ -16,10 +17,5 @@ import 'package:noted_mcp/noted_mcp.dart';
 void main(List<String> args) {
   final i = args.indexOf('--data-dir');
   final dataDir = i >= 0 && i + 1 < args.length ? Directory(args[i + 1]) : defaultDataDirectory();
-  final token = Platform.environment['NOTED_TOKEN'];
-  NotedMcpServer(
-    stdioChannel(input: stdin, output: stdout),
-    dataDir: dataDir,
-    token: token == null || token.trim().isEmpty ? null : token,
-  );
+  NotedMcpServer(stdioChannel(input: stdin, output: stdout), dataDir: dataDir);
 }

@@ -4,7 +4,7 @@
 
 <#
 .SYNOPSIS
-  Registers Noted's read-only MCP server with Claude Code and prints the
+  Registers Noted's MCP server with Claude Code and prints the
   configuration for the Claude desktop app.
 
 .DESCRIPTION
@@ -14,6 +14,10 @@
   registration with the same name is replaced), and prints the
   "mcpServers" entry to paste into Claude desktop's
   claude_desktop_config.json. See docs/mcp.md.
+
+  The registration holds no secret. To let a chat read a Privileged page or
+  use an AI box, give it a code made in Noted (in the AI box, or in the page
+  or binder settings); the chat passes the code on each call.
 
 .PARAMETER Exe
   The path of noted_mcp.exe, if not found automatically.
@@ -27,23 +31,13 @@
 .PARAMETER PrintOnly
   Only print the Claude desktop configuration; don't touch Claude Code.
 
-.PARAMETER Token
-  An AI connection token made in Noted (gear menu > AI connections). When
-  given, the registration passes it to the server as NOTED_TOKEN, which
-  lets the AI have its own AI boxes. It is a secret: Claude's configuration
-  will hold it. Without it the server reads only (no AI boxes of its own).
-
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File register-mcp.ps1
-
-.EXAMPLE
-  powershell -ExecutionPolicy Bypass -File register-mcp.ps1 -Token noted_...
 #>
 param(
   [string]$Exe,
   [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$Name = 'noted',
   [ValidateSet('user', 'local', 'project')][string]$Scope = 'user',
-  [ValidatePattern('^noted_[0-9a-f]{16}_[A-Za-z0-9_-]{43}$')][string]$Token,
   [switch]$PrintOnly
 )
 
@@ -62,8 +56,9 @@ $Exe = (Resolve-Path $Exe).Path
 if (-not $PrintOnly) {
   $claude = Get-Command claude -ErrorAction SilentlyContinue
   if ($claude) {
-    # Replace an earlier registration with the same name. ("No MCP server
-    # named ..." on stderr when there is none: not an error here.)
+    # Replace an earlier registration with the same name (this also drops a
+    # token an older registration held). ("No MCP server named ..." on stderr
+    # when there is none: not an error here.)
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -72,28 +67,20 @@ if (-not $PrintOnly) {
       # Nothing to remove.
     }
     $ErrorActionPreference = $previous
-    if ($Token) {
-      & claude mcp add $Name -s $Scope -e "NOTED_TOKEN=$Token" -- $Exe
-    } else {
-      & claude mcp add $Name -s $Scope -- $Exe
-    }
+    & claude mcp add $Name -s $Scope -- $Exe
     if ($LASTEXITCODE -ne 0) { throw "claude mcp add failed ($LASTEXITCODE)" }
-    Write-Host "Registered '$Name' with Claude Code ($Scope scope): $Exe$(if ($Token) { ' (with the AI connection token)' })"
+    Write-Host "Registered '$Name' with Claude Code ($Scope scope): $Exe"
   } else {
     Write-Host "Claude Code (the 'claude' command) was not found; skipped. Install it, or add the server by hand:"
-    $tokenArg = if ($Token) { ' -e NOTED_TOKEN=<your token>' } else { '' }
-    Write-Host "  claude mcp add $Name -s $Scope$tokenArg -- `"$Exe`""
+    Write-Host "  claude mcp add $Name -s $Scope -- `"$Exe`""
   }
 }
 
 $entry = [ordered]@{ command = $Exe; args = @() }
-# The token is a secret: print it only when it was passed in.
-$entry['env'] = [ordered]@{ NOTED_TOKEN = $(if ($Token) { $Token } else { 'PASTE_YOUR_AI_CONNECTION_TOKEN_HERE' }) }
 $json = [ordered]@{ mcpServers = [ordered]@{ $Name = $entry } } | ConvertTo-Json -Depth 4
 Write-Host ''
 Write-Host 'Claude desktop: add this to claude_desktop_config.json'
 Write-Host '(Settings > Developer > Edit Config; %APPDATA%\Claude\claude_desktop_config.json),'
 Write-Host 'merging "mcpServers" with any servers already there, then restart Claude:'
-Write-Host 'WARNING: once it holds your AI connection token, that file holds a secret. Keep it private.'
 Write-Host ''
 Write-Output $json

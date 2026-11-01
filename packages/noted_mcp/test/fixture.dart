@@ -9,18 +9,30 @@ import 'package:noted_core/noted_core_read.dart';
 
 /// Page ids of the fixture, by name.
 abstract final class Ids {
-  static const public = 'a000000000000001'; // Whole page (own)
-  static const publicChild = 'a000000000000002'; // inherits Whole page
-  static const hidden = 'a000000000000003'; // Off (own), under public
-  static const hiddenChild = 'a000000000000004'; // inherits Off
-  static const boxUnderHidden = 'a000000000000005'; // Box only (own), under hidden
-  static const plain = 'b000000000000001'; // nothing set: Off (default)
-  static const plainChild = 'b000000000000002'; // Whole page (own), under plain
-  static const boxy = 'c000000000000001'; // Box only (own)
-  static const unknown = 'c000000000000002'; // unknown value: follows parent (none): Off
-  static const binderPage = 'd000000000000001'; // inherits the binder's Whole page
-  static const binderOff = 'd000000000000002'; // Off (own) in the binder
-  static const locked = 'e000000000000001'; // Whole page, but its binder is locked
+  static const public = 'a000000000000001'; // Open (own), top-level
+  static const publicChild = 'a000000000000002'; // inherits Open
+  static const hidden = 'a000000000000003'; // Guarded (own), tightens public
+  static const hiddenChild = 'a000000000000004'; // inherits Guarded
+  static const looser = 'a000000000000005'; // Open (own) under hidden: ignored, stays Guarded
+  static const plain = 'b000000000000001'; // nothing set: Guarded (default)
+  static const plainChild = 'b000000000000002'; // Open (own) under plain: ignored, stays Guarded
+  static const priv = 'c000000000000001'; // Privileged (own), top-level
+  static const privChild = 'c000000000000002'; // inherits Privileged
+  static const privLoose = 'c000000000000003'; // Open (own) under priv: ignored, stays Privileged
+  static const privTight = 'c000000000000004'; // Guarded (own) under priv
+  static const unknown = 'c000000000000005'; // unknown value: Guarded
+  static const legacyPage = 'c000000000000006'; // legacy "page": Open
+  static const legacyBox = 'c000000000000007'; // legacy "box": Guarded
+  static const legacyOff = 'c000000000000008'; // legacy "off": Guarded
+  static const binderPage = 'd000000000000001'; // inherits the binder's Open
+  static const binderPriv = 'd000000000000002'; // Privileged (own) in the Open binder: tightens
+  static const binderGuarded = 'd000000000000003'; // Guarded (own) in the binder
+  static const privBinderPage = 'd100000000000001'; // inherits a Privileged binder
+  static const guardedBinderPage = 'd200000000000001'; // binder with nothing set: Guarded
+  static const locked = 'e000000000000001'; // Open, but its binder is locked
+  static const aiOpen = 'f000000000000001'; // Open: a note, two AI boxes
+  static const aiGuarded = 'f000000000000002'; // Guarded: an AI box
+  static const aiLocked = 'f000000000000003'; // in the locked binder: an AI box
 }
 
 /// Text that must never reach AI.
@@ -48,7 +60,7 @@ Map<String, Object?> _cell(int row, int col, String text, {String? value}) => {
 };
 
 /// A note document with a heading, styled text, lists, a link to [linkedOff]
-/// (an Off page) and to [linkedOn], an equation and a table.
+/// (a page AI can't see) and to [linkedOn], an equation and a table.
 Map<String, Object?> richNote({required String linkedOff, required String linkedOn}) => {
   'document': {
     'type': 'page',
@@ -132,6 +144,25 @@ Map<String, Object?> simpleNote(String text) => {
   },
 };
 
+/// The data of an AI box whose text is [text], marked as written by an AI.
+Map<String, Object?> aiBoxData(String text, {String? owner}) {
+  final para = markAiWritten({
+    'type': 'paragraph',
+    'data': {
+      'delta': [
+        {'insert': text},
+      ],
+    },
+  });
+  return {
+    'owner': ?owner,
+    'document': {
+      'type': 'page',
+      'children': [para],
+    },
+  };
+}
+
 BoxRecord box(String id, String type, Object? data, Bounds at, {String snapshot = ''}) =>
     BoxRecord.create(
       id: id,
@@ -143,9 +174,11 @@ BoxRecord box(String id, String type, Object? data, Bounds at, {String snapshot 
       rev: 'r',
     );
 
+/// A page; [ai] is the stored `ai` value exactly as written (legacy and
+/// unknown values included).
 NotedPage page(String id, String title, {String? parent, String? ai, List<CanvasNode> nodes = const []}) {
   var meta = PageMeta.create(id: id, title: title, order: 0, parentId: parent);
-  if (ai != null) meta = PageMeta.tryRead(meta.fields.set(aiSettingKey, RawJson.encode(ai)))!;
+  if (ai != null) meta = PageMeta.tryRead(meta.fields.set(aiAccessKey, RawJson.encode(ai)))!;
   var p = NotedPage.create(meta);
   for (final n in nodes) {
     p = p.insertNode(n);
@@ -154,21 +187,24 @@ NotedPage page(String id, String title, {String? parent, String? ai, List<Canvas
 }
 
 /// Writes the fixture's data folder: `settings.json`, `binders.json`, the
-/// default `pages` folder, a binder whose AI setting is Whole page, and a
-/// locked binder. Returns the data folder.
+/// default `pages` folder, a binder that is Open, one that is Privileged, one
+/// with nothing set, and a locked binder. Returns the data folder.
 Directory writeFixture(Directory root) {
   final data = Directory('${root.path}/data')..createSync(recursive: true);
   final pages = Directory('${data.path}/pages')..createSync();
   final binder = Directory('${root.path}/Trips')..createSync();
+  final privBinder = Directory('${root.path}/Taxes')..createSync();
+  final bareBinder = Directory('${root.path}/Bare')..createSync();
   final locked = Directory('${root.path}/Vault')..createSync();
   void save(Directory d, NotedPage p) => File('${d.path}/${p.id}.canvas').writeAsStringSync(writePage(p));
+  const small = Bounds(0, 0, 100, 40);
 
   save(
     pages,
     page(
       Ids.public,
       'Public plans',
-      ai: 'page',
+      ai: 'open',
       nodes: [
         // Out of file order on purpose: reading order is by position.
         box('img', 'noted.image', {
@@ -187,38 +223,134 @@ Directory writeFixture(Directory root) {
       ],
     ),
   );
-  save(pages, page(Ids.publicChild, 'Packing list', parent: Ids.public, nodes: [box('n2', 'noted.note', simpleNote('zebra socks'), const Bounds(0, 0, 100, 40))]));
-  save(pages, page(Ids.hidden, 'Hidden diary', parent: Ids.public, ai: 'off', nodes: [box('n3', 'noted.note', simpleNote('zebra $secret'), const Bounds(0, 0, 100, 40))]));
-  save(pages, page(Ids.hiddenChild, 'Hidden child', parent: Ids.hidden, nodes: [box('n4', 'noted.note', simpleNote('zebra hidden child'), const Bounds(0, 0, 100, 40))]));
-  save(pages, page(Ids.boxUnderHidden, 'Shared outline', parent: Ids.hidden, ai: 'box', nodes: [box('n5', 'noted.note', simpleNote('zebra kestrel $secret'), const Bounds(0, 0, 100, 40))]));
-  save(pages, page(Ids.plain, 'Plain page', nodes: [box('n6', 'noted.note', simpleNote('zebra plain'), const Bounds(0, 0, 100, 40))]));
-  save(pages, page(Ids.plainChild, 'Opened up', parent: Ids.plain, ai: 'page', nodes: [box('n7', 'noted.note', simpleNote('zebra opened'), const Bounds(0, 0, 100, 40))]));
-  save(pages, page(Ids.boxy, 'Zebra boxes', ai: 'box', nodes: [box('n8', 'noted.note', simpleNote('giraffe $secret'), const Bounds(0, 0, 100, 40))]));
-  save(pages, page(Ids.unknown, 'Future setting', ai: 'cloud', nodes: [box('n9', 'noted.note', simpleNote('zebra future'), const Bounds(0, 0, 100, 40))]));
+  save(pages, page(Ids.publicChild, 'Packing list', parent: Ids.public, nodes: [box('n2', 'noted.note', simpleNote('zebra socks'), small)]));
+  save(pages, page(Ids.hidden, 'Hidden diary', parent: Ids.public, ai: 'guarded', nodes: [box('n3', 'noted.note', simpleNote('zebra $secret'), small)]));
+  save(pages, page(Ids.hiddenChild, 'Hidden child', parent: Ids.hidden, nodes: [box('n4', 'noted.note', simpleNote('zebra hidden child'), small)]));
+  save(pages, page(Ids.looser, 'Looser outline', parent: Ids.hidden, ai: 'open', nodes: [box('n5', 'noted.note', simpleNote('zebra kestrel $secret'), small)]));
+  save(pages, page(Ids.plain, 'Plain page', nodes: [box('n6', 'noted.note', simpleNote('zebra plain'), small)]));
+  save(pages, page(Ids.plainChild, 'Opened up', parent: Ids.plain, ai: 'open', nodes: [box('n7', 'noted.note', simpleNote('zebra opened'), small)]));
+  save(pages, page(Ids.priv, 'Zebra privileged', ai: 'privileged', nodes: [box('n8', 'noted.note', simpleNote('giraffe privileged text'), small)]));
+  save(pages, page(Ids.privChild, 'Privileged child', parent: Ids.priv, nodes: [box('n13', 'noted.note', simpleNote('zebra privileged child'), small)]));
+  save(pages, page(Ids.privLoose, 'Loosened child', parent: Ids.priv, ai: 'open', nodes: [box('n14', 'noted.note', simpleNote('zebra loosened child'), small)]));
+  save(pages, page(Ids.privTight, 'Tightened child', parent: Ids.priv, ai: 'guarded', nodes: [box('n15', 'noted.note', simpleNote('zebra tightened child'), small)]));
+  save(pages, page(Ids.unknown, 'Future setting', ai: 'cloud', nodes: [box('n9', 'noted.note', simpleNote('zebra future'), small)]));
+  save(pages, page(Ids.legacyPage, 'Legacy page', ai: 'page', nodes: [box('n16', 'noted.note', simpleNote('zebra legacy page'), small)]));
+  save(pages, page(Ids.legacyBox, 'Legacy box', ai: 'box', nodes: [box('n17', 'noted.note', simpleNote('zebra legacy box'), small)]));
+  save(pages, page(Ids.legacyOff, 'Legacy off', ai: 'off', nodes: [box('n18', 'noted.note', simpleNote('zebra legacy off'), small)]));
+  save(
+    pages,
+    page(
+      Ids.aiOpen,
+      'Open AI',
+      ai: 'open',
+      nodes: [
+        box('note1', 'noted.note', simpleNote('okapi note'), small),
+        box('aiA', aiBoxTypeId, aiBoxData('okapi from A'), const Bounds(0, 100, 100, 40)),
+        box('aiB', aiBoxTypeId, aiBoxData('okapi from B', owner: '9999999999999999'), const Bounds(0, 200, 100, 40)),
+      ],
+    ),
+  );
+  save(
+    pages,
+    page(
+      Ids.aiGuarded,
+      'Guarded AI',
+      ai: 'guarded',
+      nodes: [
+        box('note2', 'noted.note', simpleNote('okapi private $secret'), small),
+        box(
+          'aiG',
+          aiBoxTypeId,
+          aiBoxData('okapi guarded box see the other page'),
+          const Bounds(0, 100, 100, 40),
+        ),
+      ],
+    ),
+  );
 
   File('${binder.path}/$binderFileName').writeAsStringSync(
-    Binder.create(title: 'Trips', color: binderPalette.first).withAiSetting(AiSetting.wholePage).write(),
+    Binder.create(title: 'Trips', color: binderPalette.first).withAiAccess(AiAccess.open).write(),
   );
-  save(binder, page(Ids.binderPage, 'Binder page', nodes: [box('n10', 'noted.note', simpleNote('zebra binder'), const Bounds(0, 0, 100, 40))]));
-  save(binder, page(Ids.binderOff, 'Binder secret', ai: 'off', nodes: [box('n11', 'noted.note', simpleNote('zebra binder off'), const Bounds(0, 0, 100, 40))]));
+  save(binder, page(Ids.binderPage, 'Binder page', nodes: [box('n10', 'noted.note', simpleNote('zebra binder'), small)]));
+  save(binder, page(Ids.binderPriv, 'Binder looser', ai: 'privileged', nodes: [box('n11', 'noted.note', simpleNote('zebra binder privileged'), small)]));
+  save(binder, page(Ids.binderGuarded, 'Binder secret', ai: 'guarded', nodes: [box('n19', 'noted.note', simpleNote('zebra binder guarded'), small)]));
+
+  File('${privBinder.path}/$binderFileName').writeAsStringSync(
+    Binder.create(title: 'Taxes', color: binderPalette.first).withAiAccess(AiAccess.privileged).write(),
+  );
+  save(privBinder, page(Ids.privBinderPage, 'Tax page', nodes: [box('n20', 'noted.note', simpleNote('zebra taxes'), small)]));
+
+  File('${bareBinder.path}/$binderFileName').writeAsStringSync(
+    Binder.create(title: 'Bare', color: binderPalette.first).write(),
+  );
+  save(bareBinder, page(Ids.guardedBinderPage, 'Bare page', nodes: [box('n21', 'noted.note', simpleNote('zebra bare'), small)]));
 
   final vault = jsonDecode(Binder.create(title: 'Vault', color: binderPalette.first).write()) as Map<String, Object?>;
   vault['encryption'] = {'scheme': 'later'};
+  vault['ai'] = 'open';
   File('${locked.path}/$binderFileName').writeAsStringSync(jsonEncode(vault));
-  save(locked, page(Ids.locked, 'Vault page', ai: 'page', nodes: [box('n12', 'noted.note', simpleNote('zebra vault'), const Bounds(0, 0, 100, 40))]));
+  save(locked, page(Ids.locked, 'Vault page', ai: 'open', nodes: [box('n12', 'noted.note', simpleNote('zebra vault'), small)]));
+  save(
+    locked,
+    page(Ids.aiLocked, 'Vault AI', ai: 'open', nodes: [box('aiV', aiBoxTypeId, aiBoxData('okapi vault box'), small)]),
+  );
 
   File('${data.path}/settings.json').writeAsStringSync(jsonEncode({'format': 1, 'theme': 'system'}));
   File('${data.path}/binders.json').writeAsStringSync(
     jsonEncode({
       'format': 1,
-      'binders': [binder.path, locked.path],
+      'binders': [binder.path, privBinder.path, bareBinder.path, locked.path],
     }),
   );
   return data;
 }
 
-/// Ids of the pages AI must never see.
-const Set<String> offIds = {Ids.hidden, Ids.hiddenChild, Ids.plain, Ids.unknown, Ids.binderOff, Ids.locked};
+/// The pages any AI reads without a code.
+const Set<String> openIds = {
+  Ids.public,
+  Ids.publicChild,
+  Ids.legacyPage,
+  Ids.binderPage,
+  Ids.aiOpen,
+};
 
-/// Titles of those pages.
-const Set<String> offTitles = {'Hidden diary', 'Hidden child', 'Plain page', 'Future setting', 'Binder secret', 'Vault page'};
+/// Ids of the pages AI must never see, whatever it holds (a code can't open
+/// them): Guarded ones (own, inherited, legacy, unknown or default), pages
+/// in a locked binder.
+const Set<String> guardedIds = {
+  Ids.hidden,
+  Ids.hiddenChild,
+  Ids.looser,
+  Ids.plain,
+  Ids.plainChild,
+  Ids.privTight,
+  Ids.unknown,
+  Ids.legacyBox,
+  Ids.legacyOff,
+  Ids.binderGuarded,
+  Ids.guardedBinderPage,
+  Ids.aiGuarded,
+  Ids.locked,
+  Ids.aiLocked,
+};
+
+/// The Privileged pages: visible only with a grant.
+const Set<String> privilegedIds = {Ids.priv, Ids.privChild, Ids.privLoose, Ids.binderPriv, Ids.privBinderPage};
+
+/// Titles of the Guarded pages.
+const Set<String> guardedTitles = {
+  'Hidden diary',
+  'Hidden child',
+  'Looser outline',
+  'Plain page',
+  'Opened up',
+  'Tightened child',
+  'Future setting',
+  'Legacy box',
+  'Legacy off',
+  'Binder secret',
+  'Bare page',
+  'Guarded AI',
+  'Vault page',
+  'Vault AI',
+};

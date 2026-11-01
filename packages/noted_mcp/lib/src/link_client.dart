@@ -8,86 +8,88 @@ import 'dart:io';
 
 import 'package:noted_core/noted_core_read.dart';
 
-import 'tools.dart' show ToolOutput;
-
-/// The one way the server changes anything (invariant 4): a write request to
-/// the running Noted app, over the local link (`ai_link.dart` in the core).
+/// The one way the server asks the app for anything (invariant 4): a request
+/// over the local link (`ai_link.dart` in the core, protocol `ai-link/2`).
+/// Every request that carries a code goes this way, so the app checks the
+/// code, its expiry and the session's approval and logs the use; the server
+/// never decides, and never writes a file.
 ///
 /// This is the only file in the server that opens a socket, and it connects
-/// to `127.0.0.1` only; the invariant tests check both. The server writes no
-/// file: the app decides whether the write happens.
+/// to `127.0.0.1` only; the invariant tests check both.
 ///
-/// The token is sent only after the peer has shown it can read
+/// The code is sent only after the peer has shown it can read
 /// `ai-link.json` (its greeting carries the file's nonce), so it isn't a
-/// stranger on a stale port. The token never appears in anything this
-/// returns.
+/// stranger on a stale port. The code never appears in anything this returns.
 final class AiLinkClient {
   AiLinkClient(
     this.dataDir, {
+    required this.session,
+    this.app,
     this.connectTimeout = const Duration(seconds: 2),
     this.greetingTimeout = const Duration(seconds: 2),
-    this.responseTimeout = const Duration(seconds: 20),
+    // The app may wait for the user to allow a new session (up to
+    // [aiLinkApprovalTimeout]) before it answers.
+    this.responseTimeout = const Duration(seconds: 55),
   });
 
   /// The app's data folder, where `ai-link.json` is.
   final Directory dataDir;
+
+  /// This server process's random session id, sent with every request.
+  final String session;
+
+  /// The MCP client's name, sent with every request if known.
+  final String? app;
+
   final Duration connectTimeout;
   final Duration greetingTimeout;
   final Duration responseTimeout;
 
-  /// What the AI is told when the app can't be reached.
-  static const String notRunning = "Noted isn't running. Open Noted and try again; reads still work.";
+  /// The failure for an app that can't be reached.
+  static AiLinkError get notRunning => AiLinkError(AiLinkCode.notRunning);
 
-  static const String noToken =
-      'write_box needs a Noted AI connection token. Create one in Noted '
-      '(gear menu > AI connections) and give it to this server as the '
-      'NOTED_TOKEN environment variable.';
+  /// The failure for an app that was reached but gave no usable answer.
+  static AiLinkError get noAnswer => AiLinkError(
+    AiLinkCode.unknown,
+    "Noted didn't answer. If you were writing, the write may not have happened.",
+    'no_answer',
+  );
 
-  static ToolOutput _error(String text) => (text: text, isError: true);
-
-  /// Asks the app to write [content] (markdown) to the AI box [boxId].
-  Future<ToolOutput> writeBox({
-    required String? token,
-    required String boxId,
-    required String mode,
-    required String content,
-  }) async {
-    if (token == null || parseAiToken(token) == null) return _error(noToken);
-    final m = AiLinkMode.values.where((e) => e.name == mode);
-    if (m.isEmpty) return _error('mode must be "replace" or "append".');
-    if (boxId.isEmpty) return _error('box_id is required.');
-    final line = AiLinkRequest(token: token.trim(), box: boxId, mode: m.first, content: content).encode();
+  /// Sends [request] and returns the app's answer, or an [AiLinkError] with
+  /// [AiLinkCode.notRunning] if the app can't be reached (nothing is then
+  /// sent), or [noAnswer].
+  Future<AiLinkResponse> send(AiLinkRequest request) async {
+    final line = request.encode();
     if (utf8.encode(line).length + 1 > aiLinkMaxRequestBytes) {
-      return _error('The content is too long to send in one write. Send it in smaller parts with mode "append".');
+      return AiLinkError(
+        AiLinkCode.badRequest,
+        'The request is too long to send in one piece. For a write, send it in smaller parts with mode "append".',
+      );
     }
-
     final link = await _readLink();
-    if (link == null) return _error(notRunning);
+    if (link == null) return notRunning;
 
     Socket? socket;
     try {
       socket = await Socket.connect(InternetAddress.loopbackIPv4, link.port, timeout: connectTimeout);
     } on Object {
-      return _error(notRunning);
+      return notRunning;
     }
     final lines = _Lines(StreamIterator(socket));
     try {
       final greeting = await lines.next(4096).timeout(greetingTimeout, onTimeout: () => null);
       // The nonce shows the peer could read ai-link.json, so it isn't a
       // stranger on a stale port. Anything else gets nothing, least of all
-      // the token.
-      if (greeting == null || readAiLinkGreeting(greeting) != link.nonce) return _error(notRunning);
+      // the code.
+      if (greeting == null || readAiLinkGreeting(greeting) != link.nonce) return notRunning;
 
       socket.write('$line\n');
       await socket.flush().timeout(responseTimeout);
       final answer = await lines.next(65536).timeout(responseTimeout, onTimeout: () => null);
-      if (answer == null) return _error("Noted didn't answer. The write may not have happened; read the box to check.");
-      final response = AiLinkResponse.decode(answer);
-      if (response == null) return _error("Noted's answer wasn't understood.");
-      if (!response.ok) return _error(response.message ?? response.code!.defaultMessage);
-      return (text: 'Written to box ${response.box} on page ${response.page}.', isError: false);
+      if (answer == null) return noAnswer;
+      return AiLinkResponse.decode(answer) ?? noAnswer;
     } on Object {
-      return _error("Noted didn't answer. The write may not have happened; read the box to check.");
+      return noAnswer;
     } finally {
       await lines.close();
       socket.destroy();

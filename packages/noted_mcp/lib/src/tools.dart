@@ -12,8 +12,12 @@ import 'library.dart';
 typedef ToolOutput = ({String text, bool isError});
 
 /// The text a tool gives for a page that doesn't exist or that AI can't
-/// see: the same either way, so an Off page can't be told from no page.
+/// see: the same either way, so a Privileged or Guarded page can't be told
+/// from no page.
 String noSuchPage(String id) => 'No page with id "$id".';
+
+/// The text for a box that isn't there, or that the AI may not read.
+String noSuchBox(String id) => 'No box with id "$id".';
 
 /// The box types the server can render, by type id. Any other box
 /// (unsupported, or from a newer module) is a placeholder.
@@ -25,73 +29,64 @@ const Map<String, String> boxTypeNames = {
   aiBoxTypeId: 'ai',
 };
 
-/// The tools of the read-only MCP server, over [library].
+/// The page-reading tools of the MCP server, over [library].
 ///
-/// Enforced on every call, from the page AI setting (0028):
-/// - Off pages are invisible: not listed, not found, not searched, and a
-///   link to one keeps only its text.
-/// - Box only pages are listed and their titles searched; the only box
-///   content given out is the AI's own boxes (AI boxes whose owner is the
-///   connection of [token]).
-/// - Whole page pages can be read in full.
-/// - Encrypted and unsupported boxes are always a placeholder, never their
-///   data. Pages of locked binders are not in [library] at all.
+/// Enforced on every call, from the page AI access (0100):
+/// - Without a code only Open pages exist. Privileged and Guarded pages are
+///   invisible: not listed, not found, not searched, and a link to one keeps
+///   only its text.
+/// - With a page or binder code the app answers with the pages the code
+///   covers ([granted]); those Privileged pages are visible too. A Guarded
+///   page is never visible, whatever [granted] holds (the app doesn't list
+///   one; this is a second check).
+/// - On a visible page every box can be read, AI boxes included (what an AI
+///   wrote carries its marker). Encrypted and unsupported boxes are always a
+///   placeholder, never their data.
+/// - Pages in locked binders are never visible.
 ///
-/// The AI's identity is the connection id in [token] (`NOTED_TOKEN`), and it
-/// counts only while that id is listed in `settings.json`, read afresh with
-/// [library]. This process cannot check the token's secret half (no hashing
-/// is allowed here, invariant 4), so reads are scoped by the id alone; the
-/// app verifies the whole token on every write.
+/// The server doesn't check codes: the app does, then gives a grant, and
+/// [granted] and [readGrantedBox] only read saved files for what it granted.
 final class NotedTools {
-  NotedTools(this.library, {String? token}) : connectionId = _listedId(library, token);
+  /// [granted] are the ids of the Privileged pages the app said the code
+  /// may read. With [openPages] false no page is visible at all (a box code:
+  /// the AI sees that box and nothing else).
+  NotedTools(this.library, {Set<String> granted = const {}, this.openPages = true})
+    : granted = Set.unmodifiable(granted);
 
   final NotedLibrary library;
+  final Set<String> granted;
+  final bool openPages;
 
-  /// The id of the connection this server acts as, or null: no token, a
-  /// malformed one, or one whose connection is no longer listed (revoked).
-  /// With null the server behaves as if it had no token.
-  final String? connectionId;
-
-  static String? _listedId(NotedLibrary library, String? token) {
-    final id = token == null ? null : parseAiToken(token)?.id;
-    if (id == null) return null;
-    return library.connections.any((c) => c.id == id) ? id : null;
+  bool _canRead(LibraryPage p) {
+    if (p.locked) return false;
+    return switch (p.access) {
+      AiAccess.open => openPages,
+      AiAccess.privileged => granted.contains(p.id),
+      AiAccess.guarded => false,
+    };
   }
 
-  bool _isOwn(CanvasNode n) =>
-      connectionId != null &&
-      n is BoxRecord &&
-      n.typeId == aiBoxTypeId &&
-      !isEncrypted(n) &&
-      aiBoxOwner(_decode(n)) == connectionId;
-
-  /// The AI's own boxes on [p], in reading order.
-  List<CanvasNode> _ownBoxes(LibraryPage p) => [
-    for (final n in readingOrder(p.page.nodes))
-      if (_isOwn(n)) n,
-  ];
-
-  /// The pages AI may know about.
+  /// The pages AI may know about, in a stable order.
   List<LibraryPage> get visible => [
     for (final p in library.pages)
-      if (p.ai != AiSetting.off) p,
-  ];
+      if (_canRead(p)) p,
+  ]..sort((a, b) => a.id.compareTo(b.id));
 
   LibraryPage? _visiblePage(String id) {
     final p = library.page(id);
-    return p == null || p.ai == AiSetting.off ? null : p;
+    return p == null || !_canRead(p) ? null : p;
   }
 
   // ---------------------------------------------------------------------------
   // list_pages
 
   /// The page tree AI can see: each page's id, title, parent (its nearest
-  /// visible ancestor, so an Off page in between is not revealed), AI
-  /// setting and folder or binder, as JSON.
+  /// visible ancestor, so a hidden page in between is not revealed), access
+  /// and folder or binder, as JSON.
   ToolOutput listPages() {
     final shown = {for (final p in visible) p.id: p};
+    final metas = {for (final q in library.pages) q.id: q.page.meta};
     String? parentOf(LibraryPage p) {
-      final metas = {for (final q in library.pages) q.id: q.page.meta};
       final seen = <String>{p.id};
       var at = p.page.meta.parentId;
       while (at != null && seen.add(at)) {
@@ -107,7 +102,7 @@ final class NotedTools {
           'id': p.id,
           'title': p.title,
           'parent': parentOf(p),
-          'ai': p.ai.value,
+          'access': p.access.value,
           'location': p.location.name,
         },
     ];
@@ -127,14 +122,6 @@ final class NotedTools {
     final p = _visiblePage(id);
     if (p == null) return (text: noSuchPage(id), isError: true);
     final b = StringBuffer('# ${p.title}\n');
-    if (p.ai == AiSetting.boxOnly) {
-      final own = _ownBoxes(p);
-      if (own.isEmpty) b.write('\n${_boxOnlyNote(p)}\n');
-      for (final n in own) {
-        b.write('\n${_boxBlock(n)}\n');
-      }
-      return (text: b.toString(), isError: false);
-    }
     final nodes = readingOrder(p.page.nodes);
     if (nodes.isEmpty) b.write('\n(This page has no boxes.)\n');
     for (final n in nodes) {
@@ -143,53 +130,41 @@ final class NotedTools {
     return (text: b.toString(), isError: false);
   }
 
-  /// One box of a page, as in [readPage].
-  ToolOutput readBox(String pageId, String boxId) {
-    final p = _visiblePage(pageId);
-    if (p == null) return (text: noSuchPage(pageId), isError: true);
-    CanvasNode? node;
-    for (final n in p.page.nodes) {
-      if (n.id == boxId) node = n;
+  /// The box [boxId] on a visible page, as [readPage] shows it. A box id is
+  /// only unique on its page: with [pageId] only that page is looked at;
+  /// without it, if several visible pages have the id, the first page by id
+  /// answers.
+  ToolOutput readBox(String boxId, {String? pageId}) {
+    for (final p in visible) {
+      if (pageId != null && pageId.isNotEmpty && p.id != pageId) continue;
+      for (final n in p.page.nodes) {
+        if (n.id == boxId) return (text: _boxBlock(n), isError: false);
+      }
     }
-    if (node == null) return (text: 'No box with id "$boxId" on page "$pageId".', isError: true);
-    // On a Box only page another box answers as a missing one does.
-    if (p.ai == AiSetting.boxOnly && !_isOwn(node)) {
-      return (text: 'No box with id "$boxId" on page "$pageId".', isError: true);
+    return (text: noSuchBox(boxId), isError: true);
+  }
+
+  /// The AI box a box code was granted, read from its saved page. Nothing of
+  /// the page is given, not its title or id, and a link to a page keeps only
+  /// its text. A grant for a box that isn't an AI box, or isn't on the
+  /// page, answers as a missing box.
+  ToolOutput readGrantedBox(AiLinkBoxGrant grant) {
+    final p = library.page(grant.page);
+    CanvasNode? node;
+    if (p != null) {
+      for (final n in p.page.nodes) {
+        if (n.id == grant.box) node = n;
+      }
+    }
+    if (node is! BoxRecord || node.typeId != aiBoxTypeId) {
+      return (text: noSuchBox(grant.box), isError: true);
     }
     return (text: _boxBlock(node), isError: false);
   }
 
-  String _boxOnlyNote(LibraryPage p) =>
-      'This page\'s AI setting is Box only: you read only your own AI boxes '
-      'there, and you have none on it, so the rest of the page is not shared.';
+  String _boxBlock(CanvasNode n) => '**${boxType(n)}** · box `${n.id}`\n\n${boxText(n)}';
 
-  String _boxBlock(CanvasNode n) =>
-      '**${boxType(n)}** · box `${n.id}`${_isOwn(n) ? ' · your box' : ''}\n\n${boxText(n)}';
-
-  // ---------------------------------------------------------------------------
-  // list_my_boxes
-
-  /// The AI's own boxes on pages that aren't Off, as JSON. Without a listed
-  /// token this is an error that says how to get one.
-  ToolOutput listMyBoxes() {
-    if (connectionId == null) {
-      return (
-        text:
-            'No valid AI connection token. Create a connection in Noted (gear '
-            'menu > AI connections) and give its token to this server as the '
-            'NOTED_TOKEN environment variable. A revoked token no longer works.',
-        isError: true,
-      );
-    }
-    final boxes = [
-      for (final p in visible)
-        for (final n in _ownBoxes(p))
-          {'page_id': p.id, 'page_title': p.title, 'box_id': n.id, 'ai': p.ai.value},
-    ];
-    return (text: const JsonEncoder.withIndent('  ').convert({'boxes': boxes}), isError: false);
-  }
-
-  /// The kind of box [n] is: note, drawing, image, file, encrypted or
+  /// The kind of box [n] is: note, drawing, image, file, ai, encrypted or
   /// unsupported.
   String boxType(CanvasNode n) {
     if (n is! BoxRecord) return 'unsupported';
@@ -247,8 +222,8 @@ final class NotedTools {
   // ---------------------------------------------------------------------------
   // search
 
-  /// Pages whose title, or (Whole page only) text, holds every word of
-  /// [query], as JSON with a snippet of each match.
+  /// Pages whose title or text holds every word of [query], as JSON with a
+  /// snippet of each match. Only visible pages are looked at.
   ToolOutput search(String query) {
     final q = SearchQuery.parse(query);
     if (q.isEmpty) return (text: 'Give one or more words to search for.', isError: true);
@@ -256,17 +231,13 @@ final class NotedTools {
     for (final p in visible) {
       final matches = <String>[];
       if (q.rangesIn(p.title) != null) matches.add('title: ${p.title}');
-      // Whole page: every box; Box only: the AI's own boxes.
-      {
-        final nodes = p.ai == AiSetting.wholePage ? readingOrder(p.page.nodes) : _ownBoxes(p);
-        for (final n in nodes) {
-          final text = boxText(n);
-          final ranges = q.rangesIn(text);
-          if (ranges != null) matches.add('box ${n.id}: ${snippetOf(text, ranges).text}');
-        }
+      for (final n in readingOrder(p.page.nodes)) {
+        final text = boxText(n);
+        final ranges = q.rangesIn(text);
+        if (ranges != null) matches.add('box ${n.id}: ${snippetOf(text, ranges).text}');
       }
       if (matches.isNotEmpty) {
-        results.add({'id': p.id, 'title': p.title, 'ai': p.ai.value, 'matches': matches});
+        results.add({'id': p.id, 'title': p.title, 'access': p.access.value, 'matches': matches});
       }
     }
     return (text: const JsonEncoder.withIndent('  ').convert({'query': query, 'results': results}), isError: false);

@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -11,340 +12,496 @@ import 'package:noted_mcp/noted_mcp.dart';
 
 import 'fixture.dart';
 
-const _idA = '1111111111111111';
-const _idB = '2222222222222222';
-const _idRevoked = '3333333333333333';
 const _key = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ'; // 43 characters
-const tokenA = 'noted_${_idA}_$_key';
-const tokenB = 'noted_${_idB}_$_key';
-const tokenRevoked = 'noted_${_idRevoked}_$_key';
+const codeW = 'noted_1111111111111111_$_key';
+const codeR = 'noted_2222222222222222_$_key';
 
-const wholeAi = 'f000000000000001'; // Whole page: a note, A's box, B's box
-const boxyAi = 'f000000000000002'; // Box only: a note, A's boxes, B's box
-const offAi = 'f000000000000003'; // Off: A's box
+/// A fake Noted: greets with the nonce in `ai-link.json`, records each
+/// request line it receives, and answers with what [answer] returns for the
+/// parsed request (null: no answer).
+final class FakeNoted {
+  FakeNoted._(this.dir, this._server, this.nonce);
 
-Map<String, Object?> aiBoxData(String owner, String text) {
-  final para = markAiWritten({
-    'type': 'paragraph',
-    'data': {
-      'delta': [
-        {'insert': text},
-      ],
-    },
-  });
-  return {
-    'owner': owner,
-    'document': {
-      'type': 'page',
-      'children': [para],
-    },
-  };
-}
+  final Directory dir;
+  final ServerSocket _server;
+  final String nonce;
+  final List<String> lines = [];
+  FutureOr<String?> Function(AiLinkRequest request) answer = (_) => null;
 
-/// The base fixture plus pages with AI boxes of two connections, and a
-/// settings.json that lists them.
-Directory writeAiFixture(Directory root) {
-  final data = writeFixture(root);
-  final pages = Directory('${data.path}/pages');
-  void save(NotedPage p) => File('${pages.path}/${p.id}.canvas').writeAsStringSync(writePage(p));
-  const at = Bounds(0, 0, 100, 40);
-  save(
-    page(
-      wholeAi,
-      'Whole AI',
-      ai: 'page',
-      nodes: [
-        box('note1', 'noted.note', simpleNote('okapi note'), at),
-        box('aiA', aiBoxTypeId, aiBoxData(_idA, 'okapi from A'), const Bounds(0, 100, 100, 40)),
-        box('aiB', aiBoxTypeId, aiBoxData(_idB, 'okapi from B'), const Bounds(0, 200, 100, 40)),
-      ],
-    ),
-  );
-  save(
-    page(
-      boxyAi,
-      'Boxy AI',
-      ai: 'box',
-      nodes: [
-        box('note2', 'noted.note', simpleNote('okapi private $secret'), at),
-        box('aiA2', aiBoxTypeId, aiBoxData(_idA, 'okapi from A2'), const Bounds(0, 200, 100, 40)),
-        box('aiA3', aiBoxTypeId, aiBoxData(_idA, 'okapi first A'), const Bounds(0, 100, 100, 40)),
-        box('aiB2', aiBoxTypeId, aiBoxData(_idB, 'okapi from B2 $secret'), const Bounds(0, 300, 100, 40)),
-      ],
-    ),
-  );
-  save(page(offAi, 'Off AI', nodes: [box('aiA4', aiBoxTypeId, aiBoxData(_idA, 'okapi off'), at)]));
-  File('${data.path}/settings.json').writeAsStringSync(
-    jsonEncode({
-      'format': 1,
-      'aiConnections': [
-        {'id': _idA, 'name': 'A', 'hash': 'x', 'created': 1},
-        {'id': _idB, 'name': 'B', 'hash': 'x', 'created': 2},
-      ],
-    }),
-  );
-  return data;
+  /// The requests received, parsed.
+  List<AiLinkRequest> get requests => [for (final l in lines) AiLinkRequest.parse(l)!];
+
+  static Future<FakeNoted> start(Directory dir, {String nonce = 'N0NCE', String? greetNonce, bool greet = true}) async {
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final fake = FakeNoted._(dir, server, nonce);
+    server.listen((s) {
+      if (greet) s.write('${aiLinkGreeting(greetNonce ?? nonce)}\n');
+      final buf = StringBuffer();
+      utf8.decoder
+          .bind(s)
+          .listen(
+            (chunk) async {
+              buf.write(chunk);
+              if (!chunk.endsWith('\n')) return;
+              final line = buf.toString().trim();
+              fake.lines.add(line);
+              final request = AiLinkRequest.parse(line);
+              final reply = request == null ? null : await fake.answer(request);
+              if (reply != null) s.write('$reply\n');
+              await s.close();
+            },
+            onError: (_) {},
+            cancelOnError: true,
+          );
+    });
+    File('${dir.path}/$aiLinkFileName').writeAsStringSync(
+      jsonEncode({'format': 1, 'port': server.port, 'pid': 1, 'nonce': nonce}),
+    );
+    return fake;
+  }
+
+  Future<void> close() => _server.close();
 }
 
 void main() {
   late Directory root;
   late Directory data;
-  late NotedLibrary library;
 
-  setUpAll(() async {
+  setUpAll(() {
     root = Directory.systemTemp.createTempSync('noted_mcp_ai');
-    data = writeAiFixture(root);
-    library = await NotedLibrary.load(data);
+    data = writeFixture(root);
   });
   tearDownAll(() => root.deleteSync(recursive: true));
 
-  NotedTools withToken(String? token) => NotedTools(library, token: token);
-
-  String generic(String s) => s.replaceAll(RegExp(r'"[^"]*" on page'), 'X on page');
-
-  group('AI boxes in reads', () {
-    test('a Whole page shows AI boxes as markdown, marking the AI\'s own', () {
-      final text = withToken(tokenA).readPage(wholeAi).text;
-      expect(text, contains('**ai** · box `aiA` · your box'));
-      expect(text, contains('**ai** · box `aiB`\n'));
-      expect(text, contains('okapi from A'));
-      expect(text, contains('okapi from B'));
-    });
-
-    test('without a token nothing is "your box"', () {
-      expect(withToken(null).readPage(wholeAi).text, isNot(contains('your box')));
-    });
-
-    test('Box only: the title and the AI\'s own boxes in reading order, nothing else', () {
-      final text = withToken(tokenA).readPage(boxyAi).text;
-      expect(text, startsWith('# Boxy AI'));
-      expect(text.indexOf('okapi first A'), lessThan(text.indexOf('okapi from A2')));
-      expect(text, isNot(contains('from B2')));
-      expect(text, isNot(contains('private')));
-      expect(text, isNot(contains(secret)));
-    });
-
-    test('Box only with no own box gives the explanation', () {
-      final text = withToken(null).readPage(boxyAi).text;
-      expect(text, contains('Box only'));
-      expect(text, isNot(contains('okapi')));
-      expect(withToken(tokenB).readPage(boxyAi).text, contains('from B2'));
-    });
-
-    test('read_box: an own box reads; another AI\'s or a note looks missing', () {
-      expect(withToken(tokenA).readBox(boxyAi, 'aiA2').text, contains('okapi from A2'));
-      final missing = withToken(tokenA).readBox(boxyAi, 'nothing');
-      for (final id in ['aiB2', 'note2']) {
-        final r = withToken(tokenA).readBox(boxyAi, id);
-        expect(r.isError, isTrue);
-        expect(generic(r.text), generic(missing.text));
-        expect(r.text, isNot(contains(secret)));
-      }
-    });
-
-    test('Off pages stay invisible, even for the owner', () {
-      expect(withToken(tokenA).readPage(offAi).isError, isTrue);
-      expect(withToken(tokenA).readBox(offAi, 'aiA4').isError, isTrue);
-      expect(withToken(tokenA).search('okapi').text, isNot(contains('Off AI')));
-      expect(withToken(tokenA).listMyBoxes().text, isNot(contains(offAi)));
-    });
-
-    test('search on a Box only page matches the AI\'s own boxes only', () {
-      final a = (jsonDecode(withToken(tokenA).search('okapi').text)['results'] as List).cast<Map<String, Object?>>();
-      final matches = (a.firstWhere((r) => r['id'] == boxyAi)['matches']! as List).join('\n');
-      expect(matches, contains('aiA2'));
-      expect(matches, isNot(contains('aiB2')));
-      expect(matches, isNot(contains('note2')));
-      final none = (jsonDecode(withToken(null).search('okapi').text)['results'] as List).cast<Map<String, Object?>>();
-      expect(none.where((r) => r['id'] == boxyAi), isEmpty);
-    });
-
-    test('an unlisted (revoked) or malformed token sees no own boxes', () {
-      for (final t in [tokenRevoked, 'garbage', '']) {
-        final tools = withToken(t);
-        expect(tools.connectionId, isNull);
-        expect(tools.readPage(boxyAi).text, isNot(contains('okapi')));
-        expect(tools.readPage(wholeAi).text, isNot(contains('your box')));
-        expect(tools.readBox(boxyAi, 'aiA2').isError, isTrue);
-        expect(tools.listMyBoxes().isError, isTrue);
-      }
-    });
-
-    test('the listing is read afresh: a connection removed from settings.json is gone', () async {
-      final r = Directory.systemTemp.createTempSync('noted_mcp_ai2');
-      addTearDown(() => r.deleteSync(recursive: true));
-      final d = writeAiFixture(r);
-      expect(NotedTools(await NotedLibrary.load(d), token: tokenA).connectionId, _idA);
-      File('${d.path}/settings.json').writeAsStringSync(jsonEncode({'format': 1, 'aiConnections': []}));
-      expect(NotedTools(await NotedLibrary.load(d), token: tokenA).connectionId, isNull);
-    });
-  });
-
-  group('list_my_boxes', () {
-    test('lists the own boxes on pages that aren\'t Off', () {
-      final out = withToken(tokenA).listMyBoxes();
-      expect(out.isError, isFalse);
-      final boxes = (jsonDecode(out.text)['boxes'] as List).cast<Map<String, Object?>>();
-      expect({for (final b in boxes) b['box_id']}, {'aiA', 'aiA2', 'aiA3'});
-      final one = boxes.firstWhere((b) => b['box_id'] == 'aiA2');
-      expect(one, {'page_id': boxyAi, 'page_title': 'Boxy AI', 'box_id': 'aiA2', 'ai': 'box'});
-    });
-
-    test('without a valid token it explains NOTED_TOKEN', () {
-      final out = withToken(null).listMyBoxes();
-      expect(out.isError, isTrue);
-      expect(out.text, contains('NOTED_TOKEN'));
-      expect(out.text, contains('AI connections'));
-    });
-  });
-
-  group('write_box over the link', () {
-    late Directory dir;
-    setUp(() => dir = Directory.systemTemp.createTempSync('noted_mcp_link'));
-    tearDown(() => dir.deleteSync(recursive: true));
-
-    /// A fake Noted: greets with [greetNonce] (default [nonce]), records what
-    /// it receives, and answers with [answer] when it has a request line.
-    Future<List<String>> fake({String nonce = 'N0NCE', String? greetNonce, String? answer, String? rawGreeting, bool greet = true}) async {
-      final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      addTearDown(server.close);
-      final received = <String>[];
-      server.listen((s) {
-        if (greet) s.write(rawGreeting ?? '${aiLinkGreeting(greetNonce ?? nonce)}\n');
-        utf8.decoder
-            .bind(s)
-            .listen(
-              (chunk) {
-                received.add(chunk);
-                if (chunk.endsWith('\n') && answer != null) {
-                  s.write('$answer\n');
-                  s.close();
-                }
-              },
-              onError: (_) {},
-              cancelOnError: true,
-            );
-      });
-      File('${dir.path}/$aiLinkFileName').writeAsStringSync(
-        jsonEncode({'format': 1, 'port': server.port, 'pid': 1, 'nonce': nonce}),
+  NotedToolbox toolbox({String? app = 'Test App 1.2', String session = 'SESSION-1', Duration? responseTimeout}) =>
+      NotedToolbox(
+        data,
+        session: session,
+        app: app,
+        greetingTimeout: const Duration(milliseconds: 500),
+        responseTimeout: responseTimeout ?? const Duration(seconds: 5),
       );
-      return received;
+
+  Future<FakeNoted> fake({String nonce = 'N0NCE', String? greetNonce, bool greet = true}) async {
+    final f = await FakeNoted.start(data, nonce: nonce, greetNonce: greetNonce, greet: greet);
+    addTearDown(() async {
+      await f.close();
+      final file = File('${data.path}/$aiLinkFileName');
+      if (file.existsSync()) file.deleteSync();
+    });
+    return f;
+  }
+
+  String pagesGrant(Iterable<String> ids) => AiLinkResponse.granted(AiLinkPagesGrant(pages: ids.toList())).encode();
+  String boxGrant(String box, String page) => AiLinkResponse.granted(AiLinkBoxGrant(box: box, page: page)).encode();
+  String err(AiLinkCode c, [String? message]) => AiLinkResponse.error(c, message).encode();
+
+  const notRunningText = 'This needs Noted running: codes are checked by the app. Open Noted and try again.';
+
+  group('without a code', () {
+    test('reads Open pages from saved files with Noted closed, and never contacts the app', () async {
+      final out = await toolbox().readPage(Ids.public);
+      expect(out.isError, isFalse);
+      expect(out.text, contains('Trip plan'));
+      final list = await toolbox().listPages();
+      final ids = {for (final p in (jsonDecode(list.text)['pages'] as List).cast<Map<String, Object?>>()) p['id']};
+      expect(ids, openIds);
+      expect((await toolbox().search('zebra')).isError, isFalse);
+      expect((await toolbox().readBox('note')).isError, isFalse);
+    });
+
+    test('a blank code counts as no code', () async {
+      final f = await fake();
+      final out = await toolbox().readPage(Ids.public, code: '  ');
+      expect(out.isError, isFalse);
+      expect(f.lines, isEmpty);
+    });
+
+    test('Privileged and Guarded pages answer like missing pages', () async {
+      final t = toolbox();
+      for (final id in [...privilegedIds, ...guardedIds]) {
+        expect((await t.readPage(id)).text, noSuchPage(id));
+      }
+      expect((await t.readPage('ffffffffffffffff')).text, noSuchPage('ffffffffffffffff'));
+    });
+
+    test('an AI box on an Open page reads, with its marker', () async {
+      final out = await toolbox().readBox('aiA');
+      expect(out.text, contains('okapi from A'));
+      expect(out.text, contains('<ai-written>'));
+    });
+  });
+
+  group('code-based reads', () {
+    test('a page grant adds Privileged pages to list, read, read_box and search', () async {
+      final f = await fake();
+      f.answer = (_) => pagesGrant([Ids.priv, Ids.privBinderPage]);
+      final t = toolbox();
+      final list = await t.listPages(code: codeR);
+      final ids = {for (final p in (jsonDecode(list.text)['pages'] as List).cast<Map<String, Object?>>()) p['id']};
+      expect(ids, {...openIds, Ids.priv, Ids.privBinderPage});
+      expect((await t.readPage(Ids.priv, code: codeR)).text, contains('giraffe privileged text'));
+      expect((await t.readPage(Ids.privChild, code: codeR)).text, noSuchPage(Ids.privChild));
+      expect((await t.readPage(Ids.public, code: codeR)).isError, isFalse, reason: 'Open pages stay readable');
+      expect((await t.readBox('n8', code: codeR)).text, contains('giraffe'));
+      final hits = jsonDecode((await t.search('giraffe', code: codeR)).text)['results'] as List;
+      expect(hits.map((r) => (r as Map)['id']), [Ids.priv]);
+      // What it asked for.
+      final actions = [for (final r in f.requests) (r as AiLinkAccess).action];
+      expect(actions, [
+        AiLinkAction.listPages,
+        AiLinkAction.readPage,
+        AiLinkAction.readPage,
+        AiLinkAction.readPage,
+        AiLinkAction.readBox,
+        AiLinkAction.search,
+      ]);
+      expect((f.requests[1] as AiLinkAccess).target, Ids.priv);
+      expect((f.requests[5] as AiLinkAccess).target, 'giraffe');
+    });
+
+    test('a grant never opens a Guarded page or a locked binder, even if it names one', () async {
+      final f = await fake();
+      f.answer = (_) => pagesGrant([...guardedIds, ...privilegedIds]);
+      final t = toolbox();
+      for (final id in guardedIds) {
+        expect((await t.readPage(id, code: codeR)).text, noSuchPage(id), reason: id);
+      }
+    });
+
+    test('a box grant reads only that box: no title, page id or page list in the output', () async {
+      final f = await fake();
+      f.answer = (_) => boxGrant('aiG', Ids.aiGuarded);
+      final out = await toolbox().readBox('aiG', code: codeR);
+      expect(out.isError, isFalse);
+      expect(out.text, startsWith('**ai** · box `aiG`'));
+      expect(out.text, contains('okapi guarded box'));
+      expect(out.text, contains('<ai-written>'));
+      expect(out.text, isNot(contains('Guarded AI')), reason: 'the page title');
+      expect(out.text, isNot(contains(Ids.aiGuarded)));
+      expect(out.text, isNot(contains('okapi private')), reason: 'a sibling box');
+      expect(out.text, isNot(contains(secret)));
+    });
+
+    test('a page link inside an AI box read by box code is plain text: no noted: address, no page id', () async {
+      final r = Directory.systemTemp.createTempSync('noted_mcp_boxlink');
+      addTearDown(() => r.deleteSync(recursive: true));
+      final d = writeFixture(r);
+      final linked = markAiWritten({
+        'type': 'paragraph',
+        'data': {
+          'delta': [
+            {'insert': 'see '},
+            {
+              'insert': 'the plans',
+              'attributes': {'href': 'noted:page/${Ids.public}'},
+            },
+          ],
+        },
+      });
+      final p = page(
+        'f000000000000009',
+        'Linker',
+        ai: 'guarded',
+        nodes: [
+          box('aiL', aiBoxTypeId, {
+            'document': {
+              'type': 'page',
+              'children': [linked],
+            },
+          }, const Bounds(0, 0, 100, 40)),
+        ],
+      );
+      File('${d.path}/pages/${p.id}.canvas').writeAsStringSync(writePage(p));
+      final f = await FakeNoted.start(d);
+      addTearDown(f.close);
+      f.answer = (_) => boxGrant('aiL', p.id);
+      final out = await NotedToolbox(d, session: 's', responseTimeout: const Duration(seconds: 5)).readBox('aiL', code: codeR);
+      expect(out.isError, isFalse);
+      expect(out.text, contains('the plans'));
+      expect(out.text, isNot(contains('noted:')));
+      expect(out.text, isNot(contains(Ids.public)));
+      expect(out.text, isNot(contains(p.id)));
+    });
+
+    test('a box in a locked binder is reachable by its box code', () async {
+      final f = await fake();
+      f.answer = (_) => boxGrant('aiV', Ids.aiLocked);
+      expect((await toolbox().readBox('aiV', code: codeR)).text, contains('okapi vault box'));
+    });
+
+    test('a box grant for another box than the one asked for is a missing box', () async {
+      final f = await fake();
+      f.answer = (_) => boxGrant('aiG', Ids.aiGuarded);
+      final out = await toolbox().readBox('aiA', code: codeR);
+      expect(out.isError, isTrue);
+      expect(out.text, noSuchBox('aiA'));
+    });
+
+    test('a grant for a box that is a note, or missing, is a missing box', () async {
+      final f = await fake();
+      f.answer = (_) => boxGrant('note2', Ids.aiGuarded);
+      expect((await toolbox().readBox('note2', code: codeR)).text, noSuchBox('note2'));
+      f.answer = (_) => boxGrant('gone', Ids.aiGuarded);
+      expect((await toolbox().readBox('gone', code: codeR)).text, noSuchBox('gone'));
+    });
+
+    test('a box code on list_pages, read_page and search is a clear wrong_role message, nothing of the page', () async {
+      final f = await fake();
+      f.answer = (_) => boxGrant('aiG', Ids.aiGuarded);
+      final t = toolbox();
+      for (final out in [
+        await t.listPages(code: codeR),
+        await t.readPage(Ids.public, code: codeR),
+        await t.search('okapi', code: codeR),
+      ]) {
+        expect(out.isError, isTrue);
+        expect(out.text, contains('box code'));
+        expect(out.text, contains('read_box'));
+        expect(out.text, isNot(contains('Guarded AI')));
+        expect(out.text, isNot(contains(Ids.aiGuarded)));
+      }
+    });
+
+    test('a pages grant on read_box with a box id on a granted page reads it', () async {
+      final f = await fake();
+      f.answer = (_) => pagesGrant([Ids.aiOpen]);
+      expect((await toolbox().readBox('aiB', code: codeR)).text, contains('okapi from B'));
+    });
+
+    test('the session id and app name are sent on every request', () async {
+      final f = await fake();
+      f.answer = (_) => pagesGrant([]);
+      final t = toolbox(app: 'Test App 1.2', session: 'SESSION-XYZ');
+      await t.listPages(code: codeR);
+      await t.readPage(Ids.public, code: codeR);
+      expect(f.requests, hasLength(2));
+      for (final r in f.requests) {
+        expect(r.session, 'SESSION-XYZ');
+        expect(r.app, 'Test App 1.2');
+        expect(r.code, codeR);
+      }
+    });
+
+    test('without an app name none is sent', () async {
+      final f = await fake();
+      f.answer = (_) => pagesGrant([]);
+      await toolbox(app: null).listPages(code: codeR);
+      expect(f.requests.single.app, isNull);
+    });
+  });
+
+  group('errors', () {
+    // Every code the app can answer, mapped to a clear tool error.
+    final cases = <AiLinkCode, String>{
+      AiLinkCode.badCode: 'not valid',
+      AiLinkCode.expired: 'expired',
+      AiLinkCode.notApproved: "The user hasn't allowed this connection in Noted.",
+      AiLinkCode.wrongRole: 'does not allow that',
+      AiLinkCode.noBox: 'No such box',
+      AiLinkCode.conflict: 'sync conflict',
+      AiLinkCode.locked: 'cannot be edited',
+      AiLinkCode.notWritable: 'does not take writes',
+      AiLinkCode.saveFailed: 'could not save',
+      AiLinkCode.busy: 'busy',
+      AiLinkCode.badRequest: 'bad thing',
+    };
+    for (final e in cases.entries) {
+      test('${e.key.wire} on a write and on a read is an error that says what happened', () async {
+        final f = await fake();
+        f.answer = (_) => err(e.key, 'bad thing');
+        final w = await toolbox().writeBox(boxId: 'aiA', code: codeW, mode: 'append', content: 'hello');
+        expect(w.isError, isTrue);
+        expect(w.text, contains(e.value));
+        expect(w.text, isNot(contains(codeW)));
+        final r = await toolbox().readPage(Ids.priv, code: codeR);
+        expect(r.isError, isTrue);
+        expect(r.text, contains(e.value));
+        expect(r.text, isNot(contains(codeR)));
+      });
     }
 
-    Future<ToolOutput> write({String? token = tokenA, String mode = 'append'}) =>
-        AiLinkClient(dir, responseTimeout: const Duration(seconds: 3))
-            .writeBox(token: token, boxId: 'aiA', mode: mode, content: 'hello');
-
-    test('success sends the token and request, and returns the app\'s result', () async {
-      final received = await fake(answer: AiLinkResponse.ok(page: wholeAi, box: 'aiA').encode());
-      final out = await write();
-      expect(out.isError, isFalse);
-      expect(out.text, contains('aiA'));
-      final req = AiLinkRequest.decode(received.join())!;
-      expect(req.token, tokenA);
-      expect(req.box, 'aiA');
-      expect(req.mode, AiLinkMode.append);
-      expect(req.content, 'hello');
-    });
-
-    test('an error code from the app is an error result with its message, without the token', () async {
-      await fake(answer: AiLinkResponse.error(AiLinkCode.notOwner).encode());
-      final out = await write(mode: 'replace');
+    test('an unknown code from a newer app keeps its message and wire code', () async {
+      final f = await fake();
+      f.answer = (_) => jsonEncode({'ok': false, 'code': 'quota', 'message': 'Too many writes today.'});
+      final out = await toolbox().writeBox(boxId: 'aiA', code: codeW, mode: 'append', content: 'x');
       expect(out.isError, isTrue);
-      expect(out.text, AiLinkCode.notOwner.defaultMessage);
-      expect(out.text, isNot(contains(tokenA)));
+      expect(out.text, contains('Too many writes today.'));
+      expect(out.text, contains('quota'));
     });
 
-    test('a nonce mismatch is not_running and the fake received no token', () async {
-      final received = await fake(greetNonce: 'OTHER', answer: AiLinkResponse.ok(page: 'p', box: 'b').encode());
-      final out = await write();
-      expect(out.isError, isTrue);
-      expect(out.text, AiLinkClient.notRunning);
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-      expect(received, isEmpty);
+    test('Noted not running: code calls fail with the message, Open reads still work', () async {
+      // No ai-link.json in this folder.
+      final dir = Directory.systemTemp.createTempSync('noted_mcp_nolink');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final t = NotedToolbox(dir, session: 's');
+      for (final out in [
+        await t.listPages(code: codeR),
+        await t.readPage(Ids.public, code: codeR),
+        await t.readBox('aiG', code: codeR),
+        await t.search('x', code: codeR),
+        await t.writeBox(boxId: 'aiA', code: codeW, mode: 'append', content: 'x'),
+        await t.describeCode(codeR),
+      ]) {
+        expect(out.isError, isTrue);
+        expect(out.text, notRunningText);
+      }
+      expect((await toolbox().readPage(Ids.public)).isError, isFalse);
     });
 
-    test('no ai-link.json is not_running, and reads still work', () async {
-      final out = await write();
-      expect(out.isError, isTrue);
-      expect(out.text, "Noted isn't running. Open Noted and try again; reads still work.");
-      expect(withToken(tokenA).readPage(wholeAi).isError, isFalse);
-    });
-
-    test('nothing listening on the port is not_running', () async {
+    test('nothing listening on the port is not running', () async {
       final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
       final port = s.port;
       await s.close();
-      File('${dir.path}/$aiLinkFileName').writeAsStringSync(
-        jsonEncode({'format': 1, 'port': port, 'pid': 1, 'nonce': 'n'}),
-      );
-      expect((await write()).text, AiLinkClient.notRunning);
+      final dir = Directory.systemTemp.createTempSync('noted_mcp_stale');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      File('${dir.path}/$aiLinkFileName').writeAsStringSync(jsonEncode({'format': 1, 'port': port, 'pid': 1, 'nonce': 'n'}));
+      expect((await NotedToolbox(dir, session: 's').describeCode(codeR)).text, notRunningText);
     });
 
-    test('without a token, or a bad mode, nothing is sent', () async {
-      final received = await fake(answer: AiLinkResponse.ok(page: 'p', box: 'b').encode());
-      final none = await write(token: null);
-      expect(none.isError, isTrue);
-      expect(none.text, contains('NOTED_TOKEN'));
-      expect((await write(token: 'junk')).isError, isTrue);
-      expect((await write(mode: 'delete')).isError, isTrue);
+    test('a nonce mismatch is not running and the fake received no code', () async {
+      final f = await fake(greetNonce: 'OTHER');
+      f.answer = (_) => pagesGrant([]);
+      final out = await toolbox().listPages(code: codeR);
+      expect(out.text, notRunningText);
       await Future<void>.delayed(const Duration(milliseconds: 200));
-      expect(received, isEmpty);
+      expect(f.lines, isEmpty);
     });
 
-    test('a server that accepts but never greets times out as not_running, nothing sent', () async {
-      final received = await fake(greet: false);
-      final out = await AiLinkClient(
-        dir,
-        greetingTimeout: const Duration(milliseconds: 300),
-      ).writeBox(token: tokenA, boxId: 'aiA', mode: 'append', content: 'x');
-      expect(out.text, AiLinkClient.notRunning);
-      expect(received, isEmpty);
+    test('a peer that never greets is not running, nothing sent', () async {
+      final f = await fake(greet: false);
+      expect((await toolbox().describeCode(codeR)).text, notRunningText);
+      expect(f.lines, isEmpty);
     });
 
-    test('an oversized greeting without a newline is not_running, nothing sent', () async {
-      final received = await fake(rawGreeting: 'x' * 100000);
-      expect((await write()).text, AiLinkClient.notRunning);
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-      expect(received, isEmpty);
-    });
-
-    test('an oversized greeting line is not_running, nothing sent', () async {
-      final received = await fake(rawGreeting: '${'x' * 100000}\n');
-      expect((await write()).text, AiLinkClient.notRunning);
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-      expect(received, isEmpty);
-    });
-
-    test('a malformed response is an error', () async {
-      await fake(answer: 'not json');
-      final out = await write();
+    test('a silent app times out with an error that does not hold the code', () async {
+      await fake();
+      final out = await toolbox(responseTimeout: const Duration(milliseconds: 300)).describeCode(codeR);
       expect(out.isError, isTrue);
-      expect(out.text, contains('understood'));
+      expect(out.text, isNot(contains(codeR)));
+    });
+
+    test('a malformed answer is an error', () async {
+      final f = await fake();
+      f.answer = (_) => 'not json';
+      final out = await toolbox().describeCode(codeR);
+      expect(out.isError, isTrue);
+      expect(out.text, contains("didn't answer"));
+    });
+
+    test('a malformed code never reaches the app', () async {
+      final f = await fake();
+      f.answer = (_) => pagesGrant([]);
+      final t = toolbox();
+      for (final out in [
+        await t.listPages(code: 'junk'),
+        await t.readBox('aiG', code: 'noted_short'),
+        await t.writeBox(boxId: 'aiA', code: 'junk', mode: 'append', content: 'x'),
+        await t.describeCode('junk'),
+        await t.describeCode(null),
+      ]) {
+        expect(out.isError, isTrue);
+        expect(out.text, contains('not valid'));
+      }
+      expect(f.lines, isEmpty);
+    });
+  });
+
+  group('write_box', () {
+    test('success sends the code, box, mode and content with the session and app, and says so', () async {
+      final f = await fake();
+      f.answer = (_) => const AiLinkResponse.written(box: 'aiA').encode();
+      final out = await toolbox().writeBox(boxId: 'aiA', code: codeW, mode: 'replace', content: 'hello');
+      expect(out.isError, isFalse);
+      expect(out.text, 'Written to box aiA.');
+      final req = f.requests.single as AiLinkWriteBox;
+      expect(req.code, codeW);
+      expect(req.box, 'aiA');
+      expect(req.mode, AiLinkMode.replace);
+      expect(req.content, 'hello');
+      expect(req.session, 'SESSION-1');
+      expect(req.app, 'Test App 1.2');
+    });
+
+    test('the code is required, and a bad mode or empty box sends nothing', () async {
+      final f = await fake();
+      f.answer = (_) => const AiLinkResponse.written(box: 'aiA').encode();
+      final t = toolbox();
+      final none = await t.writeBox(boxId: 'aiA', code: null, mode: 'append', content: 'x');
+      expect(none.isError, isTrue);
+      expect(none.text, contains('code'));
+      expect((await t.writeBox(boxId: 'aiA', code: codeW, mode: 'delete', content: 'x')).isError, isTrue);
+      expect((await t.writeBox(boxId: '', code: codeW, mode: 'append', content: 'x')).isError, isTrue);
+      expect(f.lines, isEmpty);
     });
 
     test('a request over the size limit is refused and nothing is sent', () async {
-      final received = await fake(answer: AiLinkResponse.ok(page: 'p', box: 'b').encode());
-      final out = await AiLinkClient(dir).writeBox(
-        token: tokenA,
+      final f = await fake();
+      f.answer = (_) => const AiLinkResponse.written(box: 'aiA').encode();
+      final out = await toolbox().writeBox(
         boxId: 'aiA',
+        code: codeW,
         mode: 'append',
         content: 'y' * (aiLinkMaxRequestBytes + 1),
       );
       expect(out.isError, isTrue);
       expect(out.text, contains('too long'));
       await Future<void>.delayed(const Duration(milliseconds: 200));
-      expect(received, isEmpty);
+      expect(f.lines, isEmpty);
+    });
+  });
+
+  group('describe_code', () {
+    test('forwards to the app and shows what the code grants', () async {
+      final f = await fake();
+      f.answer = (_) => const AiLinkResponse.described(
+        kind: 'box',
+        id: 'aiA',
+        role: 'writer',
+        expires: '2027-01-01T00:00:00.000Z',
+      ).encode();
+      final out = await toolbox().describeCode(codeW);
+      expect(out.isError, isFalse);
+      expect(jsonDecode(out.text), {'kind': 'box', 'id': 'aiA', 'role': 'writer', 'expires': '2027-01-01T00:00:00.000Z'});
+      final req = f.requests.single as AiLinkDescribeCode;
+      expect(req.code, codeW);
+      expect(req.session, 'SESSION-1');
+      expect(req.app, 'Test App 1.2');
     });
 
-    test('a silent app times out with an error', () async {
-      await fake();
-      final out = await AiLinkClient(
-        dir,
-        responseTimeout: const Duration(milliseconds: 300),
-      ).writeBox(token: tokenA, boxId: 'aiA', mode: 'append', content: 'x');
-      expect(out.isError, isTrue);
-      expect(out.text, isNot(contains(tokenA)));
+    test('a code that does not expire says null, and the app\'s refusals are errors', () async {
+      final f = await fake();
+      f.answer = (_) => const AiLinkResponse.described(kind: 'page', id: Ids.priv, role: 'reader').encode();
+      expect(jsonDecode((await toolbox().describeCode(codeR)).text)['expires'], isNull);
+      f.answer = (_) => err(AiLinkCode.expired);
+      expect((await toolbox().describeCode(codeR)).text, contains('expired'));
+    });
+  });
+
+  group('session id and app name', () {
+    test('a session id is 32 random bytes in base64url, new each time', () {
+      final a = newSessionId();
+      final b = newSessionId();
+      expect(a, isNot(b));
+      final padded = a + '=' * ((4 - a.length % 4) % 4);
+      expect(base64Url.decode(padded), hasLength(32));
+      expect(a.length, lessThanOrEqualTo(aiLinkMaxSessionLength));
+      expect(a, matches(RegExp(r'^[A-Za-z0-9_-]+$')));
+    });
+
+    test('the toolbox makes its own session id when none is given', () {
+      expect(NotedToolbox(data).session, isNot(NotedToolbox(data).session));
+    });
+
+    test('the app is the client name and version, cut to the longest allowed', () {
+      expect(appLabel('Claude Code', '2.1.0'), 'Claude Code 2.1.0');
+      expect(appLabel('Claude Code'), 'Claude Code');
+      expect(appLabel('Claude Code', ''), 'Claude Code');
+      expect(appLabel('Evil\nApp\r\u0000x', '1\t2'), 'Evil App  x 1 2');
+      expect(appLabel('\n'), isNull);
+      expect(appLabel('  '), isNull);
+      expect(appLabel(null), isNull);
+      expect(appLabel('x' * 500, '1')!.length, aiLinkMaxAppLength);
     });
   });
 }
