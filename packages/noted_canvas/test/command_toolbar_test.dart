@@ -46,11 +46,14 @@ class _Tool extends CanvasTool {
 
 /// A module with two tools and one extra command whose state the test sets.
 class _Module extends BoxModule<String> {
-  _Module(this.tools, this.extraEnabled);
+  _Module(this.tools, this.extraEnabled, this.gateFocus, this.dropEnabled);
   @override
   final List<CanvasTool> tools;
   final ValueNotifier<bool> extraEnabled;
+  final FocusNode gateFocus;
+  final ValueNotifier<bool> dropEnabled;
   int extraRuns = 0;
+  int gatedRuns = 0;
   @override
   BoxCodec<String> get codec => const _Codec();
   @override
@@ -63,6 +66,24 @@ class _Module extends BoxModule<String> {
       enabled: () => extraEnabled.value,
       listenable: extraEnabled,
       invoke: () => extraRuns++,
+    ),
+    // Like the note commands: enabled only while a target has focus.
+    Command(
+      id: 'test.gated',
+      label: 'Gated',
+      icon: Icons.lock,
+      enabled: () => gateFocus.hasPrimaryFocus,
+      listenable: gateFocus,
+      invoke: () => gatedRuns++,
+    ),
+    Command(
+      id: 'test.drop',
+      label: 'Drop',
+      icon: Icons.arrow_drop_down,
+      enabled: () => dropEnabled.value,
+      listenable: dropEnabled,
+      menu: const ['test.pen', 'test.eraser'],
+      invoke: () {},
     ),
   ];
   @override
@@ -77,6 +98,8 @@ void main() {
   late _Tool pen;
   late _Tool eraser;
   late ValueNotifier<bool> extraEnabled;
+  late FocusNode gateFocus;
+  late ValueNotifier<bool> dropEnabled;
   late _Module module;
   late CanvasController c;
   late CanvasToolSelection selection;
@@ -90,15 +113,21 @@ void main() {
     ],
     bool readOnly = false,
     ThemeData? theme,
+    ToolbarArrangement? arrangement,
+    Size size = const Size(1200, 800),
   }) async {
-    t.view.physicalSize = const Size(1200, 800);
+    t.view.physicalSize = size;
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
     pen = _Tool('test.pen', 'Pen', LogicalKeyboardKey.keyP);
     eraser = _Tool('test.eraser', 'Eraser', LogicalKeyboardKey.keyE);
     extraEnabled = ValueNotifier(false);
     addTearDown(extraEnabled.dispose);
-    module = _Module([pen, eraser], extraEnabled);
+    gateFocus = FocusNode();
+    addTearDown(gateFocus.dispose);
+    dropEnabled = ValueNotifier(true);
+    addTearDown(dropEnabled.dispose);
+    module = _Module([pen, eraser], extraEnabled, gateFocus, dropEnabled);
     final modules = ModuleRegistry()..register(module, isDefault: true);
     c = CanvasController(
       NotedPage.create(PageMeta.create(id: 'p', title: '', order: 0))
@@ -121,11 +150,18 @@ void main() {
       MaterialApp(
         theme: theme,
         home: Scaffold(
-          body: PageCanvas(
-            controller: c,
-            tools: selection,
-            toolbar: _flat(layout),
-            readOnly: readOnly,
+          body: Stack(
+            fit: StackFit.passthrough,
+            children: [
+              PageCanvas(
+                controller: c,
+                tools: selection,
+                toolbar: arrangement ?? _flat(layout),
+                readOnly: readOnly,
+              ),
+              // A focusable target the gated command needs.
+              Focus(focusNode: gateFocus, child: const SizedBox.shrink()),
+            ],
           ),
         ),
       ),
@@ -411,6 +447,205 @@ void main() {
     ]) {
       expect(r[id], isNotNull, reason: id);
     }
+  });
+
+  // One section of three groups; the section is the toolbar's middle.
+  const sectioned = ContextualToolbarLayout(
+    leading: [],
+    sections: [
+      ContextualSection(
+        id: 'all',
+        groups: [
+          ['canvas.select', 'test.pen', 'test.eraser'],
+          ['canvas.undo', 'canvas.redo', 'test.extra'],
+        ],
+      ),
+    ],
+    trailing: [],
+  );
+  const tabbed = TabbedToolbarLayout(
+    leading: [],
+    tabs: [
+      ToolbarTab(
+        id: 'home',
+        label: 'Home',
+        groups: [
+          ['canvas.select', 'test.pen', 'test.eraser'],
+          ['canvas.undo', 'canvas.redo', 'test.extra'],
+        ],
+      ),
+    ],
+    trailing: [],
+  );
+  final more = find.byKey(const ValueKey('toolbar-more'));
+
+  for (final (name, arrangement) in [
+    ('contextual', sectioned as ToolbarArrangement),
+    ('tabs', tabbed),
+  ]) {
+    for (final dark in [false, true]) {
+      testWidgets('$name ${dark ? 'dark' : 'light'}: no More button when everything fits', (t) async {
+        await pump(
+          t,
+          arrangement: arrangement,
+          theme: dark ? ThemeData.dark() : null,
+        );
+        expect(more.hitTestable(), findsNothing);
+        expect(find.byTooltip('Pen (P)'), findsOneWidget);
+        expect(find.byTooltip('Extra (Ctrl+X)').hitTestable(), findsOneWidget);
+      });
+
+      testWidgets('$name ${dark ? 'dark' : 'light'}: at a narrow width the rest moves into More and runs from it', (t) async {
+        await pump(
+          t,
+          arrangement: arrangement,
+          theme: dark ? ThemeData.dark() : null,
+          size: const Size(330, 800),
+        );
+        expect(more.hitTestable(), findsOneWidget);
+        // Order is kept: the first commands stay, the last are in the menu.
+        expect(find.byTooltip('Select and type (V)').hitTestable(), findsOneWidget);
+        expect(find.byTooltip('Extra (Ctrl+X)').hitTestable(), findsNothing);
+        // Nothing sticks out past the bar.
+        final width = t.getSize(find.byType(PageCanvas)).width;
+        expect(t.getTopRight(more).dx, lessThanOrEqualTo(width));
+
+        extraEnabled.value = true;
+        await t.pump();
+        await t.tap(more);
+        await t.pumpAndSettle();
+        expect(find.byKey(const ValueKey('menu-test.extra')), findsOneWidget);
+        expect(find.byKey(const ValueKey('menu-canvas.select')), findsNothing);
+        await t.tap(find.byKey(const ValueKey('menu-test.extra')));
+        await t.pumpAndSettle();
+        expect(module.extraRuns, 1);
+      });
+    }
+  }
+
+  testWidgets('More shows the live enabled state of its commands', (t) async {
+    await pump(t, arrangement: sectioned, size: const Size(330, 800));
+    NotedMenuItem<String> item() => t.widget<NotedMenuItem<String>>(
+      find.byKey(const ValueKey('menu-test.extra')),
+    );
+    await t.tap(more);
+    await t.pumpAndSettle();
+    expect(item().enabled, isFalse);
+    await t.tapAt(const Offset(5, 700));
+    await t.pumpAndSettle();
+    extraEnabled.value = true;
+    await t.pump();
+    await t.tap(more);
+    await t.pumpAndSettle();
+    expect(item().enabled, isTrue);
+  });
+
+  const tail = ContextualToolbarLayout(
+    leading: [],
+    sections: [
+      ContextualSection(
+        id: 'all',
+        groups: [
+          ['canvas.select', 'test.pen', 'test.eraser'],
+          ['test.drop', 'test.gated', 'test.extra'],
+        ],
+      ),
+    ],
+    trailing: [],
+  );
+
+  testWidgets('a command that needs focus runs from More while its target keeps focus', (t) async {
+    await pump(t, arrangement: tail, size: const Size(250, 800));
+    gateFocus.requestFocus();
+    await t.pump();
+    expect(gateFocus.hasPrimaryFocus, isTrue);
+    await t.tap(more);
+    await t.pumpAndSettle();
+    // The menu didn't take focus, so the command is enabled.
+    expect(gateFocus.hasPrimaryFocus, isTrue);
+    expect(
+      t.widget<NotedMenuItem<String>>(find.byKey(const ValueKey('menu-test.gated'))).enabled,
+      isTrue,
+    );
+    await t.tap(find.byKey(const ValueKey('menu-test.gated')));
+    await t.pumpAndSettle();
+    expect(module.gatedRuns, 1);
+    expect(gateFocus.hasPrimaryFocus, isTrue);
+  });
+
+  testWidgets('a dropdown command is flattened into More, disabled with the dropdown', (t) async {
+    await pump(t, arrangement: tail, size: const Size(250, 800));
+    NotedMenuItem<String> item(String id) =>
+        t.widget<NotedMenuItem<String>>(find.byKey(ValueKey('menu-$id')));
+    await t.tap(more);
+    await t.pumpAndSettle();
+    expect(item('test.pen').enabled, isTrue);
+    expect(item('test.eraser').enabled, isTrue);
+    await t.tapAt(const Offset(5, 700));
+    await t.pumpAndSettle();
+    dropEnabled.value = false;
+    await t.pump();
+    await t.tap(more);
+    await t.pumpAndSettle();
+    expect(item('test.pen').enabled, isFalse);
+    expect(item('test.eraser').enabled, isFalse);
+  });
+
+  testWidgets('resizing in place moves commands into More and back', (t) async {
+    await pump(t, arrangement: sectioned);
+    expect(more.hitTestable(), findsNothing);
+    expect(find.byTooltip('Extra (Ctrl+X)').hitTestable(), findsOneWidget);
+    t.view.physicalSize = const Size(330, 800);
+    await t.pumpAndSettle();
+    expect(more.hitTestable(), findsOneWidget);
+    expect(find.byTooltip('Extra (Ctrl+X)').hitTestable(), findsNothing);
+    t.view.physicalSize = const Size(1200, 800);
+    await t.pumpAndSettle();
+    expect(more.hitTestable(), findsNothing);
+    expect(find.byTooltip('Extra (Ctrl+X)').hitTestable(), findsOneWidget);
+  });
+
+  testWidgets('the shortcut of a command moved into More still works', (t) async {
+    await pump(t, arrangement: sectioned, size: const Size(330, 800));
+    expect(find.byTooltip('Extra (Ctrl+X)').hitTestable(), findsNothing);
+    extraEnabled.value = true;
+    await t.pump();
+    await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await t.sendKeyEvent(LogicalKeyboardKey.keyX);
+    await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    expect(module.extraRuns, 1);
+  });
+
+  testWidgets('a bar narrower than the More button shows nothing past its edge', (t) async {
+    await pump(t, arrangement: sectioned, size: const Size(40, 800));
+    expect(more.hitTestable(), findsNothing);
+    expect(find.byTooltip('Pen (P)').hitTestable(), findsNothing);
+    expect(t.takeException(), isNull);
+  });
+
+  testWidgets('More lists hidden commands grouped as in the layout', (t) async {
+    await pump(
+      t,
+      arrangement: const ContextualToolbarLayout(
+        leading: [],
+        sections: [
+          ContextualSection(
+            id: 'all',
+            groups: [
+              ['canvas.select', 'test.pen', 'test.eraser', 'canvas.undo', 'canvas.redo'],
+              ['test.extra'],
+            ],
+          ),
+        ],
+        trailing: [],
+      ),
+      size: const Size(250, 800),
+    );
+    await t.tap(more);
+    await t.pumpAndSettle();
+    expect(find.byType(NotedMenuDivider), findsOneWidget);
+    expect(find.byKey(const ValueKey('menu-canvas.redo')), findsOneWidget);
+    expect(find.byKey(const ValueKey('menu-test.extra')), findsOneWidget);
   });
 }
 

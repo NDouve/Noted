@@ -9,6 +9,7 @@ import 'design_tokens.g.dart';
 import 'noted_menu.dart';
 import 'noted_theme.dart';
 import 'toolbar_layout.dart';
+import 'toolbar_overflow.dart';
 
 /// The commands [layout] names, group by group, in the layout's order.
 ///
@@ -50,8 +51,9 @@ List<List<Command>> resolveToolbarLayout(
 /// takes keyboard focus, so pressing a button leaves the editor you were
 /// typing in focused (the note commands need that).
 ///
-/// The bar's trailing commands sit at the far right and shrink to fit; the
-/// commands before them scroll sideways, or wrap on touch input.
+/// The bar's trailing commands sit at the far right and shrink to fit. The
+/// commands before them show as many as fit and the rest go, in order and by
+/// group, into a trailing More menu; on touch input they wrap instead.
 class CommandToolbar extends StatefulWidget {
   const CommandToolbar({
     super.key,
@@ -92,6 +94,11 @@ class CommandToolbar extends StatefulWidget {
 class _CommandToolbarState extends State<CommandToolbar> {
   /// The chosen tab of a tabbed layout (null: the first shown).
   String? _tab;
+
+  /// The contextual section being shown, and the one kept while the More
+  /// menu is open (so the menu's commands don't change under the pointer).
+  String? _shownSection;
+  String? _pinned;
 
   List<List<Command>> _resolve(ToolbarLayout groups) => resolveToolbarLayout(
     widget.registry,
@@ -148,12 +155,48 @@ class _CommandToolbarState extends State<CommandToolbar> {
     ],
   ];
 
-  /// One bar: [leading] fixed at the left, [middle] scrolling after it,
-  /// [trailing] at the far right; the fixed ends shrink to fit a narrow bar.
-  /// On touch input [leading] and [middle] wrap together instead.
+  /// The units of [groups] for a row that can overflow into More: each
+  /// command with its spacing, a separator before the first of a later group.
+  List<ToolbarUnit> _units(List<List<Command>> groups) {
+    final m = NotedMetrics.of(context);
+    return [
+      for (final (gi, g) in groups.indexed)
+        for (final (i, c) in g.indexed)
+          ToolbarUnit(
+            command: c,
+            group: gi,
+            widget: () {
+              final entry = ToolbarEntry(
+                key: ValueKey(c.id),
+                command: c,
+                registry: widget.registry,
+              );
+              if (i > 0) {
+                return Padding(
+                  padding: EdgeInsets.only(left: m.space1),
+                  child: entry,
+                );
+              }
+              return gi > 0
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [const ToolbarSeparator(), entry],
+                    )
+                  : entry;
+            }(),
+          ),
+    ];
+  }
+
+  /// One bar: [leading] fixed at the left, [middle] after it, [trailing] at
+  /// the far right; the fixed ends shrink to fit a narrow bar. The middle
+  /// shows as many commands as fit, [wrapMiddle] drawing something around
+  /// them, and puts the rest in a More menu. On touch input [leading] and
+  /// [middle] wrap together instead.
   Widget _bar({
     List<Widget> leading = const [],
-    List<Widget> middle = const [],
+    List<ToolbarUnit> middle = const [],
+    Widget Function(Widget child)? wrapMiddle,
     List<Widget> trailing = const [],
   }) {
     final m = NotedMetrics.of(context);
@@ -177,7 +220,26 @@ class _CommandToolbarState extends State<CommandToolbar> {
           if (leading.isNotEmpty) fit(leading, Alignment.centerLeft),
           if (leading.isNotEmpty && middle.isNotEmpty) SizedBox(width: m.space2),
         ];
-        if (m.touch) middle = [...leading, ...middle];
+        final wrapped = <Widget>[
+          if (middle.isNotEmpty)
+            (wrapMiddle ?? (w) => w)(
+              m.touch
+                  ? Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [for (final u in middle) u.widget],
+                    )
+                  : ToolbarOverflowRow(
+                      units: middle,
+                      registry: widget.registry,
+                      onOpened: () => _pinned = _shownSection,
+                      onClosed: () {
+                        _pinned = null;
+                        if (mounted) setState(() {});
+                      },
+                    ),
+            ),
+        ];
+        final touchMiddle = [...leading, ...wrapped];
         return m.touch
             ? ConstrainedBox(
                 constraints: BoxConstraints(minHeight: m.toolbarHeight),
@@ -192,7 +254,7 @@ class _CommandToolbarState extends State<CommandToolbar> {
                         child: Wrap(
                           crossAxisAlignment: WrapCrossAlignment.center,
                           runSpacing: m.space1,
-                          children: middle,
+                          children: touchMiddle,
                         ),
                       ),
                       end,
@@ -208,9 +270,11 @@ class _CommandToolbarState extends State<CommandToolbar> {
                     children: [
                       ...start,
                       Expanded(
-                        child: SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: Row(children: middle),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: wrapped.isEmpty
+                              ? const SizedBox.shrink()
+                              : wrapped.first,
                         ),
                       ),
                       end,
@@ -229,37 +293,36 @@ class _CommandToolbarState extends State<CommandToolbar> {
     var groups = <List<Command>>[];
     for (final s in l.sections) {
       final g = _resolve(s.groups);
-      final holds =
-          s.unconditional ||
-          (s.whileChecked != null &&
-              (widget.registry[s.whileChecked!]?.checked ?? false)) ||
-          (s.whileEnabled && g.any((group) => group.any((c) => c.enabled)));
+      // While the More menu is open the section it was opened from stays.
+      final holds = _pinned != null
+          ? s.id == _pinned
+          : s.unconditional ||
+                (s.whileChecked != null &&
+                    (widget.registry[s.whileChecked!]?.checked ?? false)) ||
+                (s.whileEnabled &&
+                    g.any((group) => group.any((c) => c.enabled)));
       if (holds && g.isNotEmpty) {
         shown = s;
         groups = g;
         break;
       }
     }
+    _shownSection = shown?.id;
     return _bar(
       leading: _groups(_resolve(l.leading)),
-      middle: [
-        if (shown != null)
-          Container(
-            key: CommandToolbar.sectionKey(shown.id),
-            padding: EdgeInsets.symmetric(
-              horizontal: m.space1,
-              vertical: m.space1 / 2,
-            ),
-            decoration: BoxDecoration(
-              color: scheme.surfaceContainerHighest,
-              borderRadius: m.borderMd,
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: _groups(groups),
-            ),
-          ),
-      ],
+      middle: _units(groups),
+      wrapMiddle: (child) => Container(
+        key: CommandToolbar.sectionKey(shown!.id),
+        padding: EdgeInsets.symmetric(
+          horizontal: m.space1,
+          vertical: m.space1 / 2,
+        ),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest,
+          borderRadius: m.borderMd,
+        ),
+        child: child,
+      ),
       trailing: _groups(_resolve(l.trailing)),
     );
   }
@@ -341,7 +404,7 @@ class _CommandToolbarState extends State<CommandToolbar> {
           ),
         ),
         _bar(
-          middle: current == null ? const [] : _groups(_resolve(current.groups)),
+          middle: current == null ? const [] : _units(_resolve(current.groups)),
         ),
       ],
     );
