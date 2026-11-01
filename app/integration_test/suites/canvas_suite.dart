@@ -396,7 +396,7 @@ void canvasSuite() {
       });
     });
 
-    testWidgets('step 058-064, 104-105, 168, 185-187 (single-machine simulation): a conflicted box, the conflict view, and resolutions', (t) async {
+    testWidgets('step 058-064, 104-105, 168, 185-187 (single-machine simulation): a conflicted box, its warning chip and corner icon, the issue dialog, and resolutions', (t) async {
       await withSession(t, 'conflict', (s) async {
         final pageId = s.nb.currentId!;
         final id = addNote(s, [para('base')]);

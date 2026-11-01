@@ -446,9 +446,10 @@ final class BoxLanded {
   int get hashCode => raw.hashCode;
 }
 
-/// Whether any box on [page] has an unresolved conflict (0020).
+/// Whether any box on [page] has an unresolved issue: a conflict (0020) or a
+/// `landed` marker. This is what the page list's mark shows.
 bool hasConflicts(NotedPage page) =>
-    page.nodes.any((n) => n is BoxRecord && n.isConflicted);
+    page.nodes.any((n) => n is BoxRecord && (n.isConflicted || n.landed != null));
 
 /// Reads one node of a page: a [BoxRecord] if it is a well-formed Noted box,
 /// otherwise a [ForeignNode].

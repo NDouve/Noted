@@ -233,7 +233,7 @@ class CanvasController extends ChangeNotifier {
       if (next.landed != null) {
         // The first move or resize places a landed box: the marker goes in
         // the same undo step.
-        _history.record(PageChange.group([change, PageChange.replaced(next)]));
+        _history.record(PageChange.group([change, PageChange.landed(id, next.landed)]));
         next = next.withoutLanded();
       } else {
         _history.record(change);
@@ -498,7 +498,7 @@ class CanvasController extends ChangeNotifier {
   void leaveLanded(String id) {
     final box = _boxFor(id);
     if (_readOnly || box == null || box.landed == null) return;
-    _history.record(PageChange.replaced(box));
+    _history.record(PageChange.landed(id, box.landed));
     _set(clearLanded(_page, id));
   }
 

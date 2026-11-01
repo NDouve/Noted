@@ -183,10 +183,10 @@ void main() {
       expect(key('issues-icon'), findsOneWidget);
       expect(key('issues-icon-count'), findsOneWidget);
       expect(find.text('2'), findsOneWidget);
-      final fill = t.widget<DecoratedBox>(
-        find.descendant(of: key('issues-icon'), matching: find.byType(DecoratedBox)).first,
-      );
-      expect((fill.decoration as BoxDecoration).color, notedThemeData(Brightness.light).colorScheme.error);
+      final fills = t
+          .widgetList<DecoratedBox>(find.descendant(of: key('issues-icon'), matching: find.byType(DecoratedBox)))
+          .map((d) => (d.decoration as BoxDecoration).color);
+      expect(fills, contains(notedThemeData(Brightness.light).colorScheme.error));
       expect(t.getSize(key('issues-icon')), const Size(34, 34));
       await t.tap(key('issues-icon'));
       await t.pumpAndSettle();
@@ -551,6 +551,140 @@ void main() {
       await t.tap(key('issues-silence'));
       await t.pumpAndSettle();
       expect(merge.cancelled, ['a']);
+    });
+
+    testWidgets('a proposal for one recorded version is never usable for the next one', (t) async {
+      final merge = _FakeMerge();
+      final second = BoxConflict.other(node: _box('a', 'third').toRaw(), at: 9, device: 'Phone');
+      final c = controllerOf([_conflicted('a', 'mine', 'theirs').withConflict(second)]);
+      await pump(t, c, merge: merge);
+      await t.tap(key('conflict-ask-ai'));
+      await t.pump();
+      merge.pending!.complete(const AiMergeProposal(markdown: 'merged', data: 'merged', dataVersion: 1));
+      await t.pumpAndSettle();
+      await t.tap(key('conflict-use-ai'));
+      await t.pumpAndSettle();
+      // The first record is settled; the box's second conflict shows next,
+      // with no proposal carried over.
+      expect(dialog, findsOneWidget);
+      expect((c.page.node('a')! as BoxRecord).conflicts, [second]);
+      expect(key('conflict-ai-proposal'), findsNothing);
+      expect(key('conflict-use-ai'), findsNothing);
+      expect(key('conflict-ask-ai'), findsOneWidget);
+      expect(find.textContaining('Phone'), findsWidgets);
+    });
+
+    testWidgets('the dialog closes, withdrawing the request, when the page turns read-only', (t) async {
+      final merge = _FakeMerge();
+      final c = controllerOf([_conflicted('a', 'mine', 'theirs')]);
+      await pump(t, c, merge: merge);
+      await t.tap(key('conflict-ask-ai'));
+      await t.pump();
+      c.readOnly = true;
+      await t.pumpAndSettle(const Duration(milliseconds: 100), EnginePhase.sendSemanticsUpdate, const Duration(seconds: 2));
+      expect(dialog, findsNothing);
+      expect(merge.cancelled, ['a']);
+      expect(key('issues-icon'), findsNothing);
+    });
+
+    testWidgets('the dialog closes, withdrawing the request, when the canvas goes away', (t) async {
+      final merge = _FakeMerge();
+      final c = controllerOf([_conflicted('a', 'mine', 'theirs')]);
+      await pump(t, c, merge: merge);
+      await t.tap(key('conflict-ask-ai'));
+      await t.pump();
+      await t.pumpWidget(const MaterialApp(home: SizedBox()));
+      await t.pumpAndSettle(const Duration(milliseconds: 100), EnginePhase.sendSemanticsUpdate, const Duration(seconds: 2));
+      expect(dialog, findsNothing);
+      expect(merge.cancelled, ['a']);
+    });
+  });
+
+  group('other cases', () {
+    testWidgets('an unreadable box the other side deleted: keep or delete from the dialog', (t) async {
+      final c = controllerOf([_box('u', 'mine', type: 'future.thing').withConflict(BoxConflict.deleted(at: 5))]);
+      await pump(t, c);
+      expect(find.text('Deleted on the other side'), findsOneWidget);
+      expect(key('conflict-place-both'), findsNothing);
+      await t.tap(key('conflict-delete'));
+      await t.pumpAndSettle();
+      expect(c.page.nodes, isEmpty);
+      c.undo();
+      final back = c.page.node('u')! as BoxRecord;
+      expect(back.toRaw(), _box('u', 'mine', type: 'future.thing').withConflict(BoxConflict.deleted(at: 5)).toRaw());
+    });
+
+    testWidgets('a conflict arriving while editing shows the icon and chip, no dialog, and keeps the focus', (t) async {
+      final c = controllerOf([_box('a', 'mine')]);
+      await pump(t, c);
+      c.setEditing('a', true);
+      expect(c.editingId, 'a');
+      c.applyExternal(c.page.replaceNode(_conflicted('a', 'mine', 'theirs')));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 400));
+      expect(dialog, findsNothing);
+      expect(key('issues-icon'), findsOneWidget);
+      expect(key('issue-chip-a'), findsOneWidget);
+      expect(c.editingId, 'a');
+    });
+
+    testWidgets('F8 reopens the sequence after Silence', (t) async {
+      final c = controllerOf([_conflicted('a', 'mine', 'theirs')]);
+      await pump(t, c);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await t.pumpAndSettle();
+      expect(dialog, findsNothing);
+      await t.sendKeyEvent(LogicalKeyboardKey.f8);
+      await t.pumpAndSettle();
+      expect(dialog, findsOneWidget);
+    });
+
+    testWidgets('the icon and chips are focusable buttons that Enter activates', (t) async {
+      final c = controllerOf([_conflicted('a', 'mine', 'theirs')]);
+      await pump(t, c, silence: IssueSilence()..silence('p'));
+      final handle = t.ensureSemantics();
+      expect(
+        t.getSemantics(key('issues-icon')),
+        matchesSemantics(
+          label: '1 issue on this page. Open it.',
+          isButton: true,
+          hasTapAction: true,
+          isFocusable: true,
+        ),
+      );
+      handle.dispose();
+      // The activate action (Enter, Space) opens the sequence.
+      Actions.invoke(
+        t.element(find.descendant(of: key('issues-icon'), matching: find.byType(GestureDetector))),
+        const ActivateIntent(),
+      );
+      await t.pumpAndSettle();
+      expect(dialog, findsOneWidget);
+    });
+
+    test('moving a landed box, typing, then undo puts it back and keeps the text', () {
+      final c = controllerOf([landedBox('a')]);
+      final start = (c.page.node('a')! as BoxRecord).bounds;
+      c.beginGesture('a');
+      c.updateGesture('a', Bounds(start.x + 300, start.y + 200, start.width, start.height));
+      c.endGesture('a');
+      expect((c.page.node('a')! as BoxRecord).landed, isNull);
+      c.commit('a', 'typed after the move');
+      c.undo();
+      final back = c.page.node('a')! as BoxRecord;
+      expect(back.bounds, start);
+      expect(back.landed, isNotNull);
+      expect(back.snapshotText, 'typed after the move');
+    });
+
+    test('Leave it here, typing, then undo restores the marker and keeps the text', () {
+      final c = controllerOf([landedBox('a')]);
+      c.leaveLanded('a');
+      c.commit('a', 'typed');
+      c.undo();
+      final back = c.page.node('a')! as BoxRecord;
+      expect(back.landed, isNotNull);
+      expect(back.snapshotText, 'typed');
     });
   });
 }

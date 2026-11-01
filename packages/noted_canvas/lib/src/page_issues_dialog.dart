@@ -2,6 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:noted_core/noted_core.dart';
@@ -56,6 +59,7 @@ Future<IssueDialogEnd> showPageIssues(
   PageAiMerge? aiMerge,
   String? onlyBox,
   void Function(String boxId)? onPlace,
+  ValueListenable<bool>? closeSignal,
 }) async {
   final end = await showDialog<IssueDialogEnd>(
     context: context,
@@ -66,6 +70,7 @@ Future<IssueDialogEnd> showPageIssues(
       aiMerge: aiMerge,
       onlyBox: onlyBox,
       onPlace: onPlace,
+      closeSignal: closeSignal,
     ),
   );
   return end ?? IssueDialogEnd.silenced;
@@ -82,7 +87,11 @@ class PageIssuesDialog extends StatefulWidget {
     this.aiMerge,
     this.onlyBox,
     this.onPlace,
+    this.closeSignal,
   });
+
+  /// When it turns true the dialog closes (the canvas was disposed).
+  final ValueListenable<bool>? closeSignal;
 
   final CanvasController controller;
 
@@ -106,7 +115,8 @@ class _PageIssuesDialogState extends State<PageIssuesDialog> {
   int _index = 0;
 
   _AiPhase _ai = _AiPhase.idle;
-  String? _aiKey;
+  // The issue (box, kind and the recorded version) the AI state belongs to.
+  PageIssue? _aiFor;
   AiMergeProposal? _proposal;
   String? _aiError;
 
@@ -118,23 +128,46 @@ class _PageIssuesDialogState extends State<PageIssuesDialog> {
       if (widget.onlyBox == null || i.boxId == widget.onlyBox) i,
   ];
 
-  String _keyOf(PageIssue i) => '${i.boxId}/${i.kind.name}';
 
   @override
   void initState() {
     super.initState();
     _c.addListener(_changed);
+    widget.closeSignal?.addListener(_closeSignal);
+    if (_c.readOnly) _closeFromOutside();
   }
 
   @override
   void dispose() {
+    widget.closeSignal?.removeListener(_closeSignal);
     _c.removeListener(_changed);
     _cancelAi();
     super.dispose();
   }
 
+  /// Closes the dialog from outside (the canvas went away or turned
+  /// read-only); a pending AI request is withdrawn.
+  void _closeFromOutside() {
+    if (_closing) return;
+    _closing = true;
+    // Not in the middle of a build or an unmount.
+    scheduleMicrotask(() {
+      if (mounted) Navigator.of(context).pop(IssueDialogEnd.finished);
+    });
+  }
+
+  bool _closing = false;
+
+  void _closeSignal() {
+    if (widget.closeSignal?.value ?? false) _closeFromOutside();
+  }
+
   void _changed() {
-    if (!mounted) return;
+    if (!mounted || _closing) return;
+    if (_c.readOnly) {
+      _closeFromOutside();
+      return;
+    }
     final issues = _issues();
     if (issues.isEmpty) {
       _cancelAi();
@@ -145,13 +178,12 @@ class _PageIssuesDialogState extends State<PageIssuesDialog> {
   }
 
   void _cancelAi() {
-    final key = _aiKey;
+    final key = _aiFor;
     if (_ai == _AiPhase.waiting && key != null) {
-      final slash = key.indexOf('/');
-      widget.aiMerge?.cancel(_c.page.id, key.substring(0, slash));
+      widget.aiMerge?.cancel(_c.page.id, key.boxId);
     }
     _ai = _AiPhase.idle;
-    _aiKey = null;
+    _aiFor = null;
     _proposal = null;
     _aiError = null;
   }
@@ -174,23 +206,23 @@ class _PageIssuesDialogState extends State<PageIssuesDialog> {
   void _ask(PageIssue issue) {
     final merge = widget.aiMerge;
     if (merge == null) return;
-    final key = _keyOf(issue);
+    final key = issue;
     setState(() {
       _ai = _AiPhase.waiting;
-      _aiKey = key;
+      _aiFor = key;
       _proposal = null;
       _aiError = null;
     });
     merge.ask(_c.page.id, issue.boxId).then(
       (p) {
-        if (!mounted || _aiKey != key || _ai != _AiPhase.waiting) return;
+        if (!mounted || _aiFor != key || _ai != _AiPhase.waiting) return;
         setState(() {
           _ai = _AiPhase.proposal;
           _proposal = p;
         });
       },
       onError: (Object e) {
-        if (!mounted || _aiKey != key || _ai != _AiPhase.waiting) return;
+        if (!mounted || _aiFor != key || _ai != _AiPhase.waiting) return;
         setState(() {
           _ai = _AiPhase.failed;
           _aiError = 'The page AI did not send a merge. Choose a version instead.';
@@ -202,6 +234,9 @@ class _PageIssuesDialogState extends State<PageIssuesDialog> {
   void _useProposal(PageIssue issue) {
     final p = _proposal;
     if (p == null) return;
+    // The proposal is for this recorded version only: whatever happens, it is
+    // gone afterwards, so it can't be used for the box's next conflict.
+    setState(_cancelAi);
     final ok = _c.resolveWithData(issue.boxId, p.data, conflict: issue.conflict);
     if (!ok) {
       setState(() {
@@ -223,7 +258,7 @@ class _PageIssuesDialogState extends State<PageIssuesDialog> {
     final box = _c.page.node(issue.boxId);
     if (box is! BoxRecord) return const SizedBox.shrink();
     // A change of issue (after a resolution) drops a request made for another.
-    if (_aiKey != null && _aiKey != _keyOf(issue)) {
+    if (_aiFor != null && _aiFor != issue) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) setState(_cancelAi);
       });

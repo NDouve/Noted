@@ -26,6 +26,7 @@ import 'geometry.dart';
 import 'noted_colors.dart';
 import 'noted_theme.dart';
 import 'page_background.dart';
+import 'issue_tap_target.dart';
 import 'page_ai_merge.dart';
 import 'page_find.dart';
 import 'page_issues_dialog.dart';
@@ -321,6 +322,17 @@ class PageCanvasState extends State<PageCanvas>
     final old = _commands;
     _commands = CommandRegistry()
       ..registerAll(_forAvailability(buildCanvasCommands(this)))
+      ..registerAll([
+        Command(
+          id: 'canvas.showIssues',
+          label: 'Show page issues',
+          icon: Icons.warning_amber_rounded,
+          shortcut: const SingleActivator(LogicalKeyboardKey.f8),
+          whileEditing: true,
+          enabled: () => !_readOnly && _issues.isNotEmpty,
+          invoke: () => unawaited(openIssues()),
+        ),
+      ])
       ..registerAll(_moduleCommands())
       ..registerAll(widget.extraCommands?.call() ?? const []);
     // Last, so a real command with a placeholder's id wins.
@@ -433,6 +445,9 @@ class PageCanvasState extends State<PageCanvas>
   IssueSilence get _silence => widget.issueSilence ?? _ownSilence;
   bool _issuesOpen = false;
 
+  /// Set when the canvas goes away or turns read-only: closes an open dialog.
+  final ValueNotifier<bool> _issuesClose = ValueNotifier(false);
+
   List<PageIssue> get _issues => _c.issues(disallowedTypes: _off);
 
   /// A page with issues shows them one after another when it opens, unless
@@ -450,9 +465,11 @@ class PageCanvasState extends State<PageCanvas>
   Future<void> openIssues({String? onlyBox}) async {
     if (_issuesOpen || !mounted || _readOnly) return;
     setState(() => _issuesOpen = true);
+    _issuesClose.value = false;
     final end = await showPageIssues(
       context,
       _c,
+      closeSignal: _issuesClose,
       disallowedTypes: _off,
       aiMerge: widget.aiMerge,
       onlyBox: onlyBox,
@@ -471,6 +488,9 @@ class PageCanvasState extends State<PageCanvas>
   @override
   void didUpdateWidget(PageCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller || (widget.readOnly && !oldWidget.readOnly)) {
+      _issuesClose.value = true;
+    }
     if (oldWidget.controller != widget.controller) {
       _showIssuesOnOpen();
       _cancelSession();
@@ -508,6 +528,7 @@ class PageCanvasState extends State<PageCanvas>
 
   @override
   void dispose() {
+    _issuesClose.value = true;
     widget.findRequests?.removeListener(_takeFindRequest);
     _find.dispose();
     _findFocus.dispose();
@@ -1085,19 +1106,14 @@ class _IssuesIcon extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final type = NotedTypography.of(context);
-    return Semantics(
-      button: true,
+    return IssueTapTarget(
+      key: const ValueKey('issues-icon'),
+      circle: true,
       label: count == 1
           ? '1 issue on this page. Open it.'
           : '$count issues on this page. Open them.',
-      excludeSemantics: true,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: GestureDetector(
-          key: const ValueKey('issues-icon'),
-          behavior: HitTestBehavior.opaque,
-          onTap: onTap,
-          child: SizedBox(
+      onTap: onTap,
+      child: SizedBox(
             width: _issueIconSize,
             height: _issueIconSize,
             child: Stack(
@@ -1140,8 +1156,6 @@ class _IssuesIcon extends StatelessWidget {
               ],
             ),
           ),
-        ),
-      ),
     );
   }
 }

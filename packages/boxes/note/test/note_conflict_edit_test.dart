@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_box_note/noted_box_note.dart';
@@ -12,14 +11,12 @@ import 'package:noted_core/noted_core.dart';
 import 'note_module_test.dart' show noteBox;
 
 void main() {
-  testWidgets('Edit manually: edit the other note, use it, the box is updated', (t) async {
+  Future<CanvasController> open(WidgetTester t) async {
     final modules = ModuleRegistry()
       ..register(const NoteModule(), alwaysOn: true, isDefault: true);
-    final mine = noteBox('a', ['my text']);
-    final theirs = noteBox('a', ['their text']);
-    final conflicted = mine.withConflict(
+    final conflicted = noteBox('a', ['my text']).withConflict(
       BoxConflict.other(
-        node: theirs.toRaw(),
+        node: noteBox('a', ['their text']).toRaw(),
         at: DateTime(2026, 10, 25, 10, 30).millisecondsSinceEpoch,
         device: 'LAPTOP',
       ),
@@ -39,49 +36,47 @@ void main() {
       ),
     );
     await t.pump(const Duration(milliseconds: 100));
-    await t.tap(find.byKey(const ValueKey('conflict-badge-a')));
-    await t.pump(const Duration(milliseconds: 300));
-    await t.tap(find.byKey(const ValueKey('conflict-edit')));
-    await t.pump(const Duration(milliseconds: 300));
+    await t.pump(const Duration(milliseconds: 400));
+    return c;
+  }
 
-    Finder editorIn(String key) => find.descendant(
-      of: find.byKey(ValueKey(key)),
-      matching: find.byType(AppFlowyEditor),
-    );
-    // A pane shows its note without an editor until it is clicked.
-    expect(editorIn('conflict-edit-mine'), findsNothing);
-    expect(editorIn('conflict-edit-theirs'), findsNothing);
-    expect(find.textContaining('their text', findRichText: true), findsWidgets);
+  testWidgets('the issue dialog shows both note versions and keeps the other', (t) async {
+    final c = await open(t);
+    expect(find.byKey(const ValueKey('issues-dialog')), findsOneWidget);
     expect(find.text('LAPTOP · saved 2026-10-25 10:30'), findsOneWidget);
-    await t.tap(
-      find.descendant(
-        of: find.byKey(const ValueKey('conflict-edit-theirs')),
-        matching: find.textContaining('their text', findRichText: true),
-      ),
+    expect(
+      find.descendant(of: find.byKey(const ValueKey('conflict-mine')), matching: find.text('my text')),
+      findsOneWidget,
     );
-    await t.pump(const Duration(milliseconds: 300));
-    expect(editorIn('conflict-edit-mine'), findsNothing);
-    expect(editorIn('conflict-edit-theirs'), findsOneWidget);
-
-    // Edit the other version in its pane.
-    final editor = t.widget<AppFlowyEditor>(editorIn('conflict-edit-theirs')).editorState;
-    final node = editor.document.nodeAtPath([0])!;
-    await editor.apply(editor.transaction..insertText(node, 10, ' plus mine'));
-    await t.pump(const Duration(milliseconds: 100));
-    // The page is untouched until a version is chosen.
-    expect((c.page.node('a')! as BoxRecord).snapshotText, 'my text');
-
-    await t.tap(find.byKey(const ValueKey('conflict-use-theirs')));
-    await t.pump(const Duration(milliseconds: 300));
-    await t.pump(const Duration(milliseconds: 300));
-    expect(find.byKey(const ValueKey('conflict-edit-dialog')), findsNothing);
+    expect(
+      find.descendant(of: find.byKey(const ValueKey('conflict-theirs')), matching: find.text('their text')),
+      findsOneWidget,
+    );
+    // Nothing manual: choose a version.
+    expect(find.byKey(const ValueKey('conflict-edit')), findsNothing);
+    await t.tap(find.byKey(const ValueKey('conflict-keep-theirs')));
+    await t.pump(const Duration(milliseconds: 400));
     final n = c.page.node('a')! as BoxRecord;
-    expect(n.snapshotText, 'their text plus mine');
+    expect(n.snapshotText, 'their text');
     expect(n.isConflicted, isFalse);
-    expect(n.device, 'DESKTOP');
     expect(c.canUndo, isTrue);
     c.undo();
     expect((c.page.node('a')! as BoxRecord).snapshotText, 'my text');
+    expect((c.page.node('a')! as BoxRecord).isConflicted, isTrue);
+  });
+
+  testWidgets('place both keeps the note and adds the other as a new note', (t) async {
+    final c = await open(t);
+    await t.tap(find.byKey(const ValueKey('conflict-place-both')));
+    await t.pump(const Duration(milliseconds: 400));
+    expect(c.page.nodes, hasLength(2));
+    expect((c.page.node('a')! as BoxRecord).snapshotText, 'my text');
+    final added = c.page.nodes.firstWhere((n) => n.id != 'a') as BoxRecord;
+    expect(added.snapshotText, 'their text');
+    expect(added.typeId, NoteCodec.id);
+    expect(added.isConflicted, isFalse);
+    c.undo();
+    expect(c.page.nodes, hasLength(1));
     expect((c.page.node('a')! as BoxRecord).isConflicted, isTrue);
   });
 }

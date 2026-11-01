@@ -99,12 +99,12 @@ At the start of every test `Env.assertIsolated` checks that the resolved pages, 
 | 55 | Ctrl+Z brings it back | automated | step 053-055 | |
 | 56 | Same page on both machines | manual only | | [2M] needs a second machine |
 | 57 | Sync of a note edit | manual only | | [2M] |
-| 58 | Conflict frame, badge, page mark | partly automated | step 058-064, 104-105, 168, 185-187 | Second device simulated by writing the file; amber color is visual |
-| 59 | Badge opens the conflict view | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated second device; labels with device name not checked |
-| 60 | Keep mine | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated |
+| 58 | Warning chip on the box, red corner icon, page mark | partly automated | step 058-064, 104-105, 168, 185-187 | Second device simulated by writing the file; red color is visual |
+| 59 | The chip or the corner icon opens the issue dialog | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated second device; labels with device name not checked |
+| 60 | Keep this version | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated |
 | 61 | Keep both | manual only | | [2M]; covered by `packages/noted_canvas/test/conflict_test.dart` |
-| 62 | Edit manually: two panes | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated |
-| 63 | Use this version | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated |
+| 62 | Place both (the other version becomes a new box); Edit manually was dropped | partly automated | packages/noted_canvas/test/page_issues_test.dart | Simulated |
+| 63 | Keep the other version | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated |
 | 64 | Ctrl+Z brings the conflict back | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated |
 | 65 | Move vs edit merge | manual only | | [2M]; core merge tests cover it |
 | 66 | Delete vs edit | manual only | | [2M] |
@@ -145,8 +145,8 @@ At the start of every test `Env.assertIsolated` checks that the resolved pages, 
 | 101 | Error red readable | partly automated | step 100-103, 106-108, 156, 161-162 | Contrast |
 | 102 | Equations readable | partly automated | step 100-103, 106-108, 156, 161-162 | Contrast of text color |
 | 103 | Equation dialog readable | partly automated | step 100-103, 106-108, 156, 161-162 | Contrast |
-| 104 | Conflict frame/badge visible | partly automated | step 058-064, 104-105, 168, 185-187 | Badge present; visibility is visual |
-| 105 | Conflict panes readable | partly automated | step 058-064, 104-105, 168, 185-187 | Panes present |
+| 104 | Warning chip and corner icon visible | partly automated | step 058-064, 104-105, 168, 185-187 | Chip and icon present; visibility is visual |
+| 105 | Both versions readable in the dialog | partly automated | step 058-064, 104-105, 168, 185-187 | Versions present |
 | 106 | Binder stripe and icon readable | partly automated | step 100-103, 106-108, 156, 161-162 | Displayed stripe color unit-tested in `app/test/theme_test.dart` |
 | 107 | Cover swatches readable | partly automated | step 100-103, 106-108, 156, 161-162 | Contrast only |
 | 108 | Menus and dialogs readable | partly automated | step 100-103, 106-108, 156, 161-162 | Contrast only |
@@ -209,7 +209,7 @@ At the start of every test `Env.assertIsolated` checks that the resolved pages, 
 | 165 | Drawing box frame | manual only | | Visual |
 | 166 | Page menu look | manual only | | Visual; `menu_style_test.dart` covers metrics |
 | 167 | Dialog buttons | manual only | | Visual; `dialog_buttons_test.dart` covers it |
-| 168 | Keep mine only filled button | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated conflict |
+| 168 | Keep this version only filled button | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated conflict |
 | 169 | Page background Dots from the menu | automated | step 169, 173-174, 176-177 | |
 | 170 | Dots move with the page at 50% | manual only | | Visual pan check |
 | 171 | At 100% | manual only | | Visual |
@@ -226,9 +226,9 @@ At the start of every test `Env.assertIsolated` checks that the resolved pages, 
 | 182 | Corrupt recovery entry under "Can't open" | automated | step 182 | |
 | 183 | Inter font in the zip build | manual only | | [2M] |
 | 184 | Touch screen sizes | manual only | | Touch hardware |
-| 185 | Conflict title on a pale orange band | partly automated | step 058-064, 104-105, 168, 185-187 | Title shown; band color is visual |
+| 185 | Issue dialog title on a pale orange band | partly automated | step 058-064, 104-105, 168, 185-187 | Title shown; band color is visual |
 | 186 | Dark brown band | manual only | | Visual |
-| 187 | Edit manually same band | partly automated | step 058-064, 104-105, 168, 185-187 | Dialog shown; band is visual |
+| 187 | Edit manually same band (dropped: the dialog has no manual edit) | manual only | | The issue dialog keeps the one band |
 | 188 | `# ` heading is 16px semibold | manual only | | Visual; `note_theme_test.dart` covers the style |
 | 189 | Purple lighter in dark | partly automated | step 097-098, 189-191 | Lifted color and contrast; toolbar swatch shade equals stroke shade on the purple swatch; whether it looks readable is visual |
 | 190 | Original purple in light | automated | step 097-098, 189-191 | |

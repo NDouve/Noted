@@ -45,6 +45,11 @@ sealed class PageChange {
   /// [before] back.
   const factory PageChange.replaced(CanvasNode before) = _Replaced;
 
+  /// Records that a box's `landed` marker changed from [before] (null: it had
+  /// none), for example when the box was placed. Reverting restores only the
+  /// marker, so content typed since is kept.
+  const factory PageChange.landed(String id, BoxLanded? before) = _LandedChanged;
+
   /// Several changes made together, undone together. [changes] are in the
   /// order they were made.
   const factory PageChange.group(List<PageChange> changes) = _Group;
@@ -69,6 +74,21 @@ final class _BackgroundChanged extends PageChange {
     page.withMeta(page.meta.withRawBackground(before)),
     PageChange.background(page.meta.rawBackground),
   );
+}
+
+final class _LandedChanged extends PageChange {
+  const _LandedChanged(this.id, this.before);
+
+  final String id;
+  final BoxLanded? before;
+
+  @override
+  (NotedPage, PageChange)? revert(NotedPage page, CodecRegistry codecs) {
+    final n = page.node(id);
+    if (n is! BoxRecord) return null;
+    final next = before == null ? n.withoutLanded() : n.withLanded(before!);
+    return (page.replaceNode(next), PageChange.landed(id, n.landed));
+  }
 }
 
 final class _Replaced extends PageChange {

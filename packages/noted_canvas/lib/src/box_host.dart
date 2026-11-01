@@ -14,6 +14,7 @@ import 'attachment_store.dart';
 import 'box_module.dart';
 import 'canvas_controller.dart';
 import 'geometry.dart';
+import 'issue_tap_target.dart';
 import 'noted_colors.dart';
 import 'noted_theme.dart';
 import 'page_find.dart';
@@ -405,19 +406,13 @@ class _BoxHostState extends State<BoxHost> {
                 // Centered on the top edge of the frame.
                 top: boxGripHeight - _badgeHeight / 2,
                 height: _badgeHeight,
-                child: MouseRegion(
-                  cursor: SystemMouseCursors.click,
-                  child: Semantics(
-                    button: true,
-                    label: conflicted
-                        ? 'Conflict in this box. Open it.'
-                        : 'This box landed on another box. Open it.',
-                    excludeSemantics: true,
-                    child: GestureDetector(
-                      key: ValueKey('issue-chip-${node.id}'),
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => widget.onIssueTap!(node.id),
-                      child: DecoratedBox(
+                child: IssueTapTarget(
+                  key: ValueKey('issue-chip-${node.id}'),
+                  label: conflicted
+                      ? 'Conflict in this box. Open it.'
+                      : 'This box landed on another box. Open it.',
+                  onTap: () => widget.onIssueTap!(node.id),
+                  child: DecoratedBox(
                         key: const ValueKey('issue-chip'),
                         decoration: BoxDecoration(
                           color: scheme.error,
@@ -442,8 +437,6 @@ class _BoxHostState extends State<BoxHost> {
                           ),
                         ),
                       ),
-                    ),
-                  ),
                 ),
               ),
           ],
