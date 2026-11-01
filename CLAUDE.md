@@ -51,10 +51,15 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 1. **Every box type goes through the Box API**, including the plain note box. Box types are modules that can be switched on or off, and the API is versioned.
 2. **The core never parses, rewrites or drops data from box types it doesn't support.** That data passes through load, save, sync and encryption byte-for-byte. Unsupported boxes render from their saved read-only snapshot.
 3. **Encrypted content exists as plaintext only in the on-screen editor state of an unlocked box.** Plaintext never reaches the page model, disk, autosave, undo history that persists past lock, search indexes, logs, crash reports, thumbnails or conflict copies.
-4. **The MCP server is a separate executable with no key access and no decryption code.** It reads saved page data only. AI-facing output is never built from the live screen.
+4. **The MCP server is a separate executable with no key access and no decryption code.**
+   - It reads saved page files only. AI-facing output is never built from the live screen.
+   - It never writes any file.
+   - Its only way to change content is to send a write request to the running Noted app over a local connection.
+   - The app decides: it accepts a request only for a box owned by the requesting AI's token, on a page whose AI setting allows writing, and saves it through its normal path. It rejects everything else.
+   - If the app isn't running, every write fails.
 5. **There is no developer-run backend.** All data stays on the user's devices and in their chosen storage.
 
-## Current phase: Prototype 1, start of the AI phase
+## Current phase: Prototype 1, the AI phase
 
 **In scope:**
 - the canvas (zoom, bounded pan, Fit all, page backgrounds)
@@ -70,11 +75,12 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 - dark mode and the design system in `docs/design`
 - the command registry and two built-in toolbar layouts (Tabs and Contextual), switchable in settings
 - search (find on page and search all pages)
-- the read-only MCP server (`packages/noted_mcp`, a separate executable) and the page AI setting (Off, Box only, Whole page)
+- the MCP server (`packages/noted_mcp`, a separate executable) and the page AI setting (Off, Box only, Whole page)
+- AI boxes, AI writing through the app, and AI connections and tokens
 
 **Out of scope until the maintainer starts the next phase:**
 - binder passwords and encryption
-- AI boxes and AI writing, AI tokens, per-AI rules (the next run)
+- per-AI rules, tiers and lanes
 - integrations and Microsoft sign-in
 - conflict copies from providers other than OneDrive
 - customizable toolbars (user-arranged or scripted)
