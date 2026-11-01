@@ -71,9 +71,14 @@ class AiLinkTimings {
   final Duration denyCooldown;
 }
 
-/// How many requests may wait for a question at once (one on screen, one
-/// queued); more get `busy`, so questions can't use up the link's connections.
-const int aiMaxPendingPrompts = 2;
+/// How many questions may wait at once, over all codes (one on screen, the
+/// rest queued); more get `busy`, so questions can't use up the link's eight
+/// connections.
+const int aiMaxPendingPrompts = 4;
+
+/// How many questions one code may have waiting at once, so a code can't keep
+/// the other codes' questions out.
+const int aiMaxPendingPromptsPerCode = 1;
 
 /// What the authority needs from the notebook.
 abstract interface class AiLinkHost {
@@ -94,13 +99,15 @@ abstract interface class AiLinkHost {
   /// [recheck] says whether the code still holds and the client is still
   /// there (null) or why not; call it right before the change. [confirm],
   /// when not null, asks the user about this write once the write is known to
-  /// be valid. Waiting for the load ends at [deadline].
+  /// be valid: null if allowed, else the refusal (`not_approved`, or `busy`
+  /// when no question can be asked now). Waiting for the load ends at
+  /// [deadline].
   Future<AiLinkResponse> aiWriteBox(
     AiLinkWriteBox request,
     AiCode code, {
     required DateTime deadline,
     required AiLinkCode? Function() recheck,
-    Future<bool> Function()? confirm,
+    Future<AiLinkCode?> Function()? confirm,
   });
 }
 
@@ -132,8 +139,30 @@ class AiLinkAuthority {
   // Session approvals being asked now, so one new session asks once.
   final Map<String, Future<_Answer>> _pending = {};
 
-  // Requests waiting for a question (on screen or queued).
+  // Questions waiting (on screen or queued), by code id. Each code may have
+  // [aiMaxPendingPromptsPerCode] of its own, and all codes together
+  // [aiMaxPendingPrompts], so one code can't keep the others' questions out.
+  // A request that joins a question already asked doesn't count.
+  final Map<String, int> _waitingByCode = {};
   int _waiting = 0;
+
+  bool _canWait(String codeId) =>
+      _waiting < aiMaxPendingPrompts && (_waitingByCode[codeId] ?? 0) < aiMaxPendingPromptsPerCode;
+
+  void _enter(String codeId) {
+    _waiting++;
+    _waitingByCode[codeId] = (_waitingByCode[codeId] ?? 0) + 1;
+  }
+
+  void _leave(String codeId) {
+    _waiting--;
+    final n = (_waitingByCode[codeId] ?? 1) - 1;
+    if (n <= 0) {
+      _waitingByCode.remove(codeId);
+    } else {
+      _waitingByCode[codeId] = n;
+    }
+  }
 
   // One question on screen at a time: each waits for the one before.
   Future<void> _promptTail = Future.value();
@@ -274,11 +303,13 @@ class AiLinkAuthority {
       if (DateTime.now().isBefore(cooling)) return AiLinkCode.notApproved;
       _denied.remove(code.id);
     }
-    if (_waiting >= aiMaxPendingPrompts) return AiLinkCode.busy;
-    _waiting++;
-    try {
-      final key = '${code.id}/${req.session}';
-      final answer = await (_pending[key] ??= _ask(
+    final key = '${code.id}/${req.session}';
+    var asking = _pending[key];
+    if (asking == null) {
+      // A new question: it takes one of the waiting places until answered.
+      if (!_canWait(code.id)) return AiLinkCode.busy;
+      _enter(code.id);
+      asking = _pending[key] = _ask(
         app: _appName(req),
         write: code.canWriteBox,
         label: code.label,
@@ -286,14 +317,14 @@ class AiLinkAuthority {
         deadline: deadline,
       ).whenComplete(() {
         _pending.remove(key);
-      }));
-      if (answer == _Answer.denied) {
-        _denied[code.id] = DateTime.now().add(timings.denyCooldown);
-      }
-      return answer == _Answer.allowed ? null : AiLinkCode.notApproved;
-    } finally {
-      _waiting--;
+        _leave(code.id);
+      });
     }
+    final answer = await asking;
+    if (answer == _Answer.denied) {
+      _denied[code.id] = DateTime.now().add(timings.denyCooldown);
+    }
+    return answer == _Answer.allowed ? null : AiLinkCode.notApproved;
   }
 
   // The name comes from the client, and is shown to the user: control
@@ -371,20 +402,21 @@ class AiLinkAuthority {
       confirm: !ask
           ? null
           : () async {
-              if (_waiting >= aiMaxPendingPrompts) return false;
-              _waiting++;
+              // No room to ask now: busy (try again), not a refusal.
+              if (!_canWait(code.id)) return AiLinkCode.busy;
+              _enter(code.id);
               try {
-                return await _ask(
-                      app: _appName(req),
-                      write: true,
-                      label: code.label,
-                      perWrite: true,
-                      preview: _preview(req),
-                      deadline: deadline,
-                    ) ==
-                    _Answer.allowed;
+                final answer = await _ask(
+                  app: _appName(req),
+                  write: true,
+                  label: code.label,
+                  perWrite: true,
+                  preview: _preview(req),
+                  deadline: deadline,
+                );
+                return answer == _Answer.allowed ? null : AiLinkCode.notApproved;
               } finally {
-                _waiting--;
+                _leave(code.id);
               }
             },
     );

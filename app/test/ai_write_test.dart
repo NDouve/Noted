@@ -443,6 +443,58 @@ void main() {
       }
     });
 
+    test('a code waiting for a question doesn\'t keep other codes\' questions out', () async {
+      final t = await withBox();
+      final other = await issue('ba', role: AiCodeRole.reader, label: 'Other');
+      final gate = Completer<bool>();
+      answer = (_) => gate.future;
+      // The first code fills its own place; more of its new sessions are busy.
+      final first = t.nb.handleAiLink(req('ba', t.code, session: 'h1'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(await codeOf(t.nb, req('ba', t.code, session: 'h2')), AiLinkCode.busy);
+      // Another code still gets its question (queued behind the first).
+      final second = t.nb.handleAiLink(
+        AiLinkAccess(code: other, session: 'o1', app: 'B', action: AiLinkAction.readBox, target: 'ba'),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      gate.complete(true);
+      expect((await first).ok, isTrue);
+      expect((await second).ok, isTrue);
+      expect(asked, hasLength(2));
+    });
+
+    test('two requests from one new session share one question and one place', () async {
+      final t = await withBox();
+      final other = await issue('ba', role: AiCodeRole.reader, label: 'Other');
+      final gate = Completer<bool>();
+      answer = (_) => gate.future;
+      final a = t.nb.handleAiLink(req('ba', t.code, session: 'p1', content: 'a'));
+      final b = t.nb.handleAiLink(req('ba', t.code, session: 'p1', content: 'b'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final c = t.nb.handleAiLink(
+        AiLinkAccess(code: other, session: 'o1', app: 'B', action: AiLinkAction.readBox, target: 'ba'),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      gate.complete(true);
+      expect((await a).ok && (await b).ok, isTrue);
+      expect((await c).ok, isTrue, reason: 'the shared question took one place only');
+      expect(asked, hasLength(2));
+    });
+
+    test('a per-write question with no room to ask answers busy, not a refusal', () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up')); // s1 is allowed
+      await service.setAskBeforeWrite('ba', true);
+      final gate = Completer<bool>();
+      answer = (_) => gate.future;
+      // This code's own place is taken by a new session's question.
+      final pending = t.nb.handleAiLink(req('ba', t.code, session: 'n1'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(await codeOf(t.nb, req('ba', t.code, content: 'later')), AiLinkCode.busy);
+      gate.complete(false);
+      await pending;
+    });
+
     test('one deadline covers the question and the load, below the client\'s', () async {
       timings = const AiLinkTimings(deadline: Duration(milliseconds: 700));
       expect(const AiLinkTimings().deadline, lessThan(const Duration(seconds: 55)));

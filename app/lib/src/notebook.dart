@@ -2195,7 +2195,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
     AiCode code, {
     required DateTime deadline,
     required AiLinkCode? Function() recheck,
-    Future<bool> Function()? confirm,
+    Future<AiLinkCode?> Function()? confirm,
   }) async {
     final left = deadline.difference(DateTime.now());
     if (!await aiWaitLoaded(left.isNegative ? Duration.zero : left)) return AiLinkResponse.error(AiLinkCode.busy);
@@ -2208,7 +2208,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
       // question that waits doesn't hold up other requests.
       final no = await _aiPrecheck(pageId, request, code, recheck);
       if (no != null) return no;
-      if (!await confirm()) return AiLinkResponse.error(AiLinkCode.notApproved);
+      final refused = await confirm();
+      if (refused != null) return AiLinkResponse.error(refused);
     }
     final run = _aiQueue.then((_) => _aiApply(pageId, request, code, recheck));
     _aiQueue = run.then((_) {}, onError: (_) {});
