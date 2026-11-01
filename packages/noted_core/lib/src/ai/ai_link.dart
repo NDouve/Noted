@@ -40,6 +40,18 @@
 ///     the live screen.
 ///   - `describe_code`: answer `{"ok":true,"kind":"box"|"page"|"binder",
 ///     "id":ID,"role":ROLE,"expires":ISO|null}`.
+///   - `merge_requests` (run 2026-11-01-04): the sync-conflict merges the
+///     user asked the page AI for that this code reaches. A page or binder
+///     code only; a Reader is enough. Answer `{"ok":true,"merges":[{"id":ID,
+///     "page":PAGE_ID,"box":BOX_ID,"type":TYPE,"mine":VERSION,"theirs":
+///     VERSION}]}` ([AiLinkMergeItem]); a VERSION is `{"markdown":TEXT,
+///     "device":NAME|null,"at":MS}`. The app builds the versions from the
+///     saved page file's conflict record, never from the live editor.
+///   - `propose_merge`: `request` (an id from `merge_requests`), `content`
+///     (the merged markdown). Answer `{"ok":true,"proposed":ID}`. It only
+///     proposes: the user decides in Noted, and nothing changes until they
+///     accept. A request that is gone (expired, withdrawn, already answered)
+///     is `no_request`.
 /// - Errors: `{"ok":false,"code":"<code>","message":"<text for the AI>"}`
 ///   ([AiLinkResponse], [AiLinkCode]).
 ///
@@ -252,6 +264,21 @@ sealed class AiLinkRequest {
         );
       case 'describe_code':
         return AiLinkDescribeCode(code: code, session: session, app: app);
+      case 'merge_requests':
+        return AiLinkMergeRequests(code: code, session: session, app: app);
+      case 'propose_merge':
+        final request = json['request'];
+        final content = json['content'];
+        if (request is! String || request.isEmpty || content is! String) {
+          return const AiLinkMalformed('propose_merge needs request and content.');
+        }
+        return AiLinkProposeMerge(
+          code: code,
+          session: session,
+          app: app,
+          request: request,
+          content: content,
+        );
     }
     return const AiLinkMalformed('Unknown op.');
   }
@@ -315,6 +342,41 @@ final class AiLinkDescribeCode extends AiLinkRequest {
   Map<String, Object?> _fields() => const {};
 }
 
+/// A request for the merges the page AI was asked to do that the code
+/// reaches.
+final class AiLinkMergeRequests extends AiLinkRequest {
+  const AiLinkMergeRequests({required super.code, required super.session, super.app});
+
+  @override
+  String get op => 'merge_requests';
+
+  @override
+  Map<String, Object?> _fields() => const {};
+}
+
+/// The merged text for one merge request. It is only a proposal.
+final class AiLinkProposeMerge extends AiLinkRequest {
+  const AiLinkProposeMerge({
+    required super.code,
+    required super.session,
+    super.app,
+    required this.request,
+    required this.content,
+  });
+
+  /// The id of the request, from `merge_requests`.
+  final String request;
+
+  /// The merged box content, as markdown.
+  final String content;
+
+  @override
+  String get op => 'propose_merge';
+
+  @override
+  Map<String, Object?> _fields() => {'request': request, 'content': content};
+}
+
 /// A line in this protocol that the app can't act on. It is not sent, only
 /// returned by [AiLinkRequest.parse]; answer it with `bad_request`.
 final class AiLinkMalformed extends AiLinkRequest {
@@ -357,6 +419,10 @@ enum AiLinkCode {
   /// The page can't be edited: a locked binder or a read-only page.
   locked('locked', 'The page cannot be edited right now.'),
   notWritable('not_writable', 'This box does not take writes from an AI.'),
+
+  /// A merge request that is gone: expired, withdrawn or already answered, or
+  /// not one this code reaches (the same answer either way).
+  noRequest('no_request', 'No such merge request. It may have expired or been withdrawn.'),
 
   /// The mode is outside the box's Writer permission (append, edit or full).
   notPermitted(
@@ -455,6 +521,12 @@ sealed class AiLinkResponse {
     String? expires,
   }) = AiLinkDescribed;
 
+  /// The answer to a `merge_requests`.
+  const factory AiLinkResponse.merges(List<AiLinkMergeItem> items) = AiLinkMerges;
+
+  /// The answer to a `propose_merge`.
+  const factory AiLinkResponse.proposed({required String request}) = AiLinkProposed;
+
   /// A failure.
   factory AiLinkResponse.error(AiLinkCode code, [String? message]) = AiLinkError;
 
@@ -473,6 +545,21 @@ sealed class AiLinkResponse {
     }
     if (json is! Map) return null;
     if (json['ok'] == true) {
+      if (json.containsKey('merges')) {
+        final list = json['merges'];
+        if (list is! List) return null;
+        final items = <AiLinkMergeItem>[];
+        for (final e in list) {
+          final item = AiLinkMergeItem.fromJson(e);
+          if (item == null) return null;
+          items.add(item);
+        }
+        return AiLinkMerges(List.unmodifiable(items));
+      }
+      if (json.containsKey('proposed')) {
+        final id = json['proposed'];
+        return id is String ? AiLinkProposed(request: id) : null;
+      }
       if (json.containsKey('grant')) {
         final grant = AiLinkGrant.fromJson(json['grant']);
         return grant == null ? null : AiLinkGranted(grant);
@@ -545,6 +632,103 @@ final class AiLinkDescribed extends AiLinkResponse {
 
   @override
   String encode() => jsonEncode({'ok': true, 'kind': kind, 'id': id, 'role': role, 'expires': expires});
+}
+
+/// One side of a merge request: the box's content as markdown, and who wrote
+/// it and when.
+final class AiLinkMergeVersion {
+  const AiLinkMergeVersion({required this.markdown, required this.at, this.device});
+
+  /// The version's content as markdown (an AI box keeps its `<ai-written>`
+  /// lines).
+  final String markdown;
+
+  /// When it was saved, in ms since the epoch.
+  final int at;
+
+  /// The computer that wrote it, if known.
+  final String? device;
+
+  Map<String, Object?> toJson() => {'markdown': markdown, 'device': device, 'at': at};
+
+  static AiLinkMergeVersion? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final markdown = json['markdown'];
+    final at = json['at'];
+    final device = json['device'];
+    if (markdown is! String || at is! int || (device != null && device is! String)) return null;
+    return AiLinkMergeVersion(markdown: markdown, at: at, device: device as String?);
+  }
+}
+
+/// A merge the user asked the page AI to do: the box's two versions.
+final class AiLinkMergeItem {
+  const AiLinkMergeItem({
+    required this.id,
+    required this.page,
+    required this.box,
+    required this.type,
+    required this.mine,
+    required this.theirs,
+  });
+
+  /// The request id, for `propose_merge`.
+  final String id;
+  final String page;
+  final String box;
+
+  /// The box type (`noted.note` or `noted.ai`).
+  final String type;
+
+  /// The version on this computer, and the other one from the sync conflict.
+  final AiLinkMergeVersion mine;
+  final AiLinkMergeVersion theirs;
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'page': page,
+    'box': box,
+    'type': type,
+    'mine': mine.toJson(),
+    'theirs': theirs.toJson(),
+  };
+
+  static AiLinkMergeItem? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final id = json['id'];
+    final page = json['page'];
+    final box = json['box'];
+    final type = json['type'];
+    final mine = AiLinkMergeVersion.fromJson(json['mine']);
+    final theirs = AiLinkMergeVersion.fromJson(json['theirs']);
+    if (id is! String || page is! String || box is! String || type is! String || mine == null || theirs == null) {
+      return null;
+    }
+    return AiLinkMergeItem(id: id, page: page, box: box, type: type, mine: mine, theirs: theirs);
+  }
+}
+
+/// The merges a code reaches.
+final class AiLinkMerges extends AiLinkResponse {
+  const AiLinkMerges(this.items);
+
+  final List<AiLinkMergeItem> items;
+
+  @override
+  String encode() => jsonEncode({
+    'ok': true,
+    'merges': [for (final i in items) i.toJson()],
+  });
+}
+
+/// A proposal was taken.
+final class AiLinkProposed extends AiLinkResponse {
+  const AiLinkProposed({required this.request});
+
+  final String request;
+
+  @override
+  String encode() => jsonEncode({'ok': true, 'proposed': request});
 }
 
 /// A request that failed.

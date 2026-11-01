@@ -55,6 +55,9 @@ ToolOutput linkErrorOutput(AiLinkError e) {
       'This code does not allow that. A Reader code cannot write, and a box code reads only its own box '
           '(with read_box), not pages.',
     AiLinkCode.noBox => 'No such box, or this code does not reach it.',
+    AiLinkCode.noRequest =>
+      'No such merge request: it may have expired (they last 10 minutes), been withdrawn by the user, or '
+          'already been answered. Call merge_requests to see what is waiting.',
     AiLinkCode.conflict => 'The box has a sync conflict in Noted and cannot be written to. Nothing was changed.',
     AiLinkCode.locked => 'The page cannot be edited right now (its binder is locked, or it is read-only). Nothing was changed.',
     AiLinkCode.notWritable when e.message == closedWritesOffText => closedWritesOffText,
@@ -245,6 +248,59 @@ final class NotedToolbox {
         : await _closed.write(token: c, boxId: boxId, mode: m, content: content);
     return switch (response) {
       AiLinkWritten(:final box) => (text: 'Written to box $box.', isError: false),
+      AiLinkError() => linkErrorOutput(response),
+      _ => _error("Noted's answer wasn't understood."),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // merge_requests and propose_merge (run 2026-11-01-04)
+
+  /// The sync-conflict merges the user asked the page AI for that [code]
+  /// reaches, as JSON. Needs Noted running: the requests exist only in the
+  /// app, which builds the two versions from the saved page file.
+  Future<ToolOutput> mergeRequests(String? code) async {
+    final c = _clean(code);
+    if (c == null || parseAiToken(c) == null) return _badCode;
+    if (!await _running()) return linkErrorOutput(AiLinkClient.notRunning);
+    final response = _ifNoAnswer(await _client.send(AiLinkMergeRequests(code: c, session: session, app: app)));
+    return switch (response) {
+      AiLinkMerges(:final items) when items.isEmpty => (
+        text: 'No merge requests are waiting for this code. The user asks for one in Noted, from a sync conflict.',
+        isError: false,
+      ),
+      AiLinkMerges(:final items) => (
+        text: const JsonEncoder.withIndent('  ').convert({
+          'requests': [for (final i in items) i.toJson()],
+        }),
+        isError: false,
+      ),
+      AiLinkError() => linkErrorOutput(response),
+      _ => _error("Noted's answer wasn't understood."),
+    };
+  }
+
+  /// Sends the merged markdown for the request [requestId]. The user decides
+  /// in Noted; nothing changes until they accept.
+  Future<ToolOutput> proposeMerge({
+    required String? code,
+    required String requestId,
+    required String content,
+  }) async {
+    final c = _clean(code);
+    if (c == null || parseAiToken(c) == null) return _badCode;
+    if (requestId.trim().isEmpty) return _error('request_id is required (from merge_requests).');
+    if (!await _running()) return linkErrorOutput(AiLinkClient.notRunning);
+    final response = _ifNoAnswer(
+      await _client.send(
+        AiLinkProposeMerge(code: c, session: session, app: app, request: requestId.trim(), content: content),
+      ),
+    );
+    return switch (response) {
+      AiLinkProposed() => (
+        text: 'Proposed. The user sees your merge next to both versions in Noted and decides; nothing has changed yet.',
+        isError: false,
+      ),
       AiLinkError() => linkErrorOutput(response),
       _ => _error("Noted's answer wasn't understood."),
     };

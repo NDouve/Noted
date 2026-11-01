@@ -11,6 +11,8 @@ import 'package:noted_core/noted_core.dart';
 
 import 'ai/ai_access_service.dart';
 import 'ai/ai_link_authority.dart';
+import 'ai/ai_merge_service.dart';
+import 'ai/page_ai_merge_types.dart';
 import 'app_settings.dart';
 import 'page_attachments.dart';
 import 'recovery_store.dart';
@@ -233,7 +235,7 @@ const String _standalone = '';
 
 /// The open notebook: standalone pages and binders (0026), the page on
 /// screen, and autosave.
-class Notebook extends ChangeNotifier implements AiLinkHost {
+class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Notebook(
     this.store,
     this.modules, {
@@ -2240,6 +2242,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
       service: service,
       host: this,
       timings: aiTimings,
+      merges: _mergeService(service),
     );
     authority.approver = aiApprover;
     return authority;
@@ -2363,6 +2366,43 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
         if (_loc[id] case final loc? when !_isLocked(loc) && aiAccessFor(id).value != AiAccess.guarded) id,
     ];
   }
+
+  // Asking the page AI to merge a conflict (run 2026-11-01-04) ---------------
+
+  AiMergeService? _aiMerge;
+
+  AiMergeService? _mergeService(AiAccessService service) => _aiMerge ??= AiMergeService(access: service, host: this);
+
+  /// The page AI's help with a conflict, for the canvas; null when there are
+  /// no AI codes at all ([aiAccess] is null).
+  PageAiMerge? get aiMerge {
+    final service = aiAccess;
+    return service == null ? null : _mergeService(service);
+  }
+
+  @override
+  Future<NotedPage?> aiSavedPage(String pageId) async {
+    final loc = _loc[pageId];
+    if (loc == null) return null;
+    try {
+      // What the file holds now: let the pending save land, then read it.
+      await flush();
+      return await _afterSaves(() => _storeOf(loc).load(pageId));
+    } on Object {
+      return null;
+    }
+  }
+
+  @override
+  String? aiOpenBoxType(String pageId, String boxId) {
+    final c = _current;
+    if (c == null || c.page.id != pageId) return null;
+    final box = c.page.node(boxId);
+    return box is BoxRecord ? box.typeId : null;
+  }
+
+  @override
+  BoxCodec<Object?>? aiMergeCodec(String typeId) => modules.codecs.codecFor(typeId);
 
   @override
   Future<AiLinkResponse> aiWriteBox(
@@ -3551,6 +3591,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
   @override
   void dispose() {
     _disposed = true;
+    _aiMerge?.dispose();
     _saveTimer?.cancel();
     _folderTimer?.cancel();
     for (final t in _debounce.values) {

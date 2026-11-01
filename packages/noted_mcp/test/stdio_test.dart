@@ -34,7 +34,7 @@ void main() {
         )
         .timeout(const Duration(seconds: 90));
     expect(init.serverInfo.name, 'noted');
-    expect(init.serverInfo.version, '0.4.0');
+    expect(init.serverInfo.version, '0.5.0');
     expect(init.capabilities.tools, isNotNull);
     server.notifyInitialized();
     return server;
@@ -42,7 +42,7 @@ void main() {
 
   String textOf(CallToolResult r) => (r.content.single as TextContent).text;
 
-  test('a client initializes, lists the six tools and reads an Open page', () async {
+  test('a client initializes, lists the eight tools and reads an Open page', () async {
     final root = Directory.systemTemp.createTempSync('noted_mcp_stdio');
     addTearDown(() => root.deleteSync(recursive: true));
     final server = await connect(writeFixture(root));
@@ -55,6 +55,8 @@ void main() {
       'search',
       'write_box',
       'describe_code',
+      'merge_requests',
+      'propose_merge',
     });
 
     final read = await server.callTool(CallToolRequest(name: 'read_page', arguments: {'page_id': Ids.publicChild}));

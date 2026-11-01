@@ -81,7 +81,7 @@ final class AiLinkClient {
 
       socket.write('$line\n');
       await socket.flush().timeout(responseTimeout);
-      final answer = await lines.next(65536).timeout(responseTimeout, onTimeout: () => null);
+      final answer = await lines.next(aiLinkMaxRequestBytes).timeout(responseTimeout, onTimeout: () => null);
       if (answer == null) return noAnswer;
       return AiLinkResponse.decode(answer) ?? noAnswer;
     } on Object {

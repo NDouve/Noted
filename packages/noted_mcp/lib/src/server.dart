@@ -10,7 +10,7 @@ import 'package:dart_mcp/server.dart';
 import 'toolbox.dart';
 import 'tools.dart';
 
-/// Noted's MCP server (invariant 4): six tools. It reads the saved page
+/// Noted's MCP server (invariant 4): eight tools. It reads the saved page
 /// files in [dataDir] afresh on every call, so it never answers from
 /// anything a running app has on screen or in memory. While Noted runs, a
 /// call with a code is checked by the app ([NotedToolbox]) and a write is a
@@ -37,7 +37,7 @@ base class NotedMcpServer extends MCPServer with ToolsSupport {
          responseTimeout: responseTimeout,
        ),
        super.fromStreamChannel(
-         implementation: Implementation(name: 'noted', version: '0.4.0'),
+         implementation: Implementation(name: 'noted', version: '0.5.0'),
          instructions:
              'Access to the user\'s Noted pages. Without a code you see only '
              'pages the user set to Open, and boxes only by their id. If the '
@@ -49,7 +49,10 @@ base class NotedMcpServer extends MCPServer with ToolsSupport {
              'it is closed the server checks them against the saved codes, '
              'and the user must have approved the code in Noted once '
              '(otherwise it asks you to have them open Noted). Writes while '
-             'Noted is closed work only for a box the user allowed that for.',
+             'Noted is closed work only for a box the user allowed that for. If the '
+             'user asks you to help with a Noted sync conflict, call '
+             'merge_requests with the page or binder code, merge the two '
+             'versions, and send the result with propose_merge.',
        ) {
     registerTool(listPagesTool, (r) => _run(() => toolbox.listPages(code: _opt(r, 'code'))));
     registerTool(readPageTool, (r) => _run(() => toolbox.readPage(_arg(r, 'page_id'), code: _opt(r, 'code'))));
@@ -57,6 +60,8 @@ base class NotedMcpServer extends MCPServer with ToolsSupport {
     registerTool(searchTool, (r) => _run(() => toolbox.search(_arg(r, 'query'), code: _opt(r, 'code'))));
     registerTool(writeBoxTool, _writeBox);
     registerTool(describeCodeTool, (r) => _run(() => toolbox.describeCode(_opt(r, 'code'))));
+    registerTool(mergeRequestsTool, (r) => _run(() => toolbox.mergeRequests(_opt(r, 'code'))));
+    registerTool(proposeMergeTool, _proposeMerge);
   }
 
   /// The tools' implementation, with this process's session id.
@@ -91,6 +96,15 @@ base class NotedMcpServer extends MCPServer with ToolsSupport {
               mode: _arg(r, 'mode'),
               content: content,
             ),
+    );
+  }
+
+  Future<CallToolResult> _proposeMerge(CallToolRequest r) {
+    final content = r.arguments?['content'];
+    return _run(
+      () async => content is! String
+          ? (text: 'content is required (the merged markdown).', isError: true)
+          : toolbox.proposeMerge(code: _opt(r, 'code'), requestId: _arg(r, 'request_id'), content: content),
     );
   }
 
@@ -192,6 +206,52 @@ base class NotedMcpServer extends MCPServer with ToolsSupport {
         ),
       },
       required: ['box_id', 'code', 'content', 'mode'],
+    ),
+    annotations: ToolAnnotations(readOnlyHint: false, destructiveHint: false),
+  );
+
+  static final mergeRequestsTool = Tool(
+    name: 'merge_requests',
+    description:
+        'Call this when the user asks you to help with a Noted sync conflict '
+        '(two computers changed the same box and Noted could not combine '
+        'them). Lists the merges the user asked for that the page or binder '
+        'code covers, as JSON: request id, page id, box id, box type and the '
+        'two versions as markdown ("mine" is the version on the user\'s '
+        'computer, "theirs" the other one), each with the computer name and '
+        'time it was saved. An AI box keeps <ai-written> lines around what an '
+        'AI wrote; keep those lines in your merge. Then merge the two '
+        'versions yourself, keeping everything that either side added, and '
+        'send the result with propose_merge. A request lasts 10 minutes. '
+        'Needs Noted running and a page or binder code (a Reader code is '
+        'enough). Nothing here changes any page.',
+    inputSchema: Schema.object(
+      properties: {
+        'code': Schema.string(description: 'The page or binder code the user gave you.'),
+      },
+      required: ['code'],
+    ),
+    annotations: ToolAnnotations(readOnlyHint: true),
+  );
+
+  static final proposeMergeTool = Tool(
+    name: 'propose_merge',
+    description:
+        'Sends the merged markdown for a request from merge_requests. It is '
+        'only a proposal: the user sees it next to both versions in Noted and '
+        'chooses whether to use it, so nothing changes until they accept. '
+        'Write the whole merged box (not a diff). For an AI box keep the '
+        '<ai-written> and </ai-written> lines around the parts an AI wrote. '
+        'Needs Noted running and the same code as merge_requests (a Reader '
+        'code is enough). One proposal answers a request; a request that has '
+        'expired or was withdrawn fails with no_request.',
+    inputSchema: Schema.object(
+      properties: {
+        'code': Schema.string(description: 'The page or binder code the user gave you.'),
+        'request_id': Schema.string(description: 'The request id from merge_requests.'),
+        'content': Schema.string(description: 'The merged box content, as markdown.'),
+      },
+      required: ['code', 'request_id', 'content'],
     ),
     annotations: ToolAnnotations(readOnlyHint: false, destructiveHint: false),
   );

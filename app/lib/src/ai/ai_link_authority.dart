@@ -7,6 +7,7 @@ import 'dart:async';
 import 'package:noted_core/noted_core.dart';
 
 import 'ai_access_service.dart';
+import 'ai_merge_service.dart';
 
 /// What the user is asked to allow.
 class AiApprovalRequest {
@@ -151,10 +152,15 @@ class AiLinkAuthority {
     required this.host,
     this.approver,
     this.timings = const AiLinkTimings(),
+    this.merges,
   });
 
   final AiAccessService service;
   final AiLinkHost host;
+
+  /// The merge requests `merge_requests` and `propose_merge` work on; null:
+  /// there are none (the ops answer with an empty list / `no_request`).
+  final AiMergeService? merges;
 
   /// Shows the question to the user. Null: nobody can be asked, so anything
   /// that needs approval is refused.
@@ -266,6 +272,10 @@ class AiLinkAuthority {
           role: code.roleName,
           expires: code.expires?.toUtc().toIso8601String(),
         );
+      case AiLinkMergeRequests():
+        response = await _mergeRequests(request, code, deadline, open);
+      case AiLinkProposeMerge():
+        response = await _proposeMerge(request, code, deadline, open);
       case AiLinkMalformed():
         response = AiLinkResponse.error(AiLinkCode.badRequest);
     }
@@ -318,6 +328,15 @@ class AiLinkAuthority {
         if (code.target.kind == AiCodeTargetKind.box) {
           if (req.action != AiLinkAction.readBox) return AiLinkCode.wrongRole;
           if (req.target != code.target.id) return AiLinkCode.noBox;
+        }
+        return null;
+      case AiLinkMergeRequests():
+      case AiLinkProposeMerge():
+        // A Reader is enough (it only proposes), but the code must be for
+        // pages: a box code has no page to merge.
+        final kind = code.target.kind;
+        if (!code.canRead || (kind != AiCodeTargetKind.page && kind != AiCodeTargetKind.binder)) {
+          return AiLinkCode.wrongRole;
         }
         return null;
       case AiLinkDescribeCode():
@@ -577,6 +596,37 @@ class AiLinkAuthority {
     final refusal = _recheck(req.code, code.id, open);
     if (refusal != null) return AiLinkResponse.error(refusal);
     return AiLinkResponse.granted(AiLinkPagesGrant(pages: host.aiReadablePages(code.target)));
+  }
+
+  // The merges this code reaches. The versions were built from the saved page
+  // when the user asked; nothing here reads the live editor.
+  Future<AiLinkResponse> _mergeRequests(
+    AiLinkMergeRequests req,
+    AiCode code,
+    DateTime deadline,
+    bool Function() open,
+  ) async {
+    if (!await host.aiWaitLoaded(_remaining(deadline))) return AiLinkResponse.error(AiLinkCode.busy);
+    final refusal = _recheck(req.code, code.id, open);
+    if (refusal != null) return AiLinkResponse.error(refusal);
+    return AiLinkResponse.merges(merges?.pendingFor(code) ?? const []);
+  }
+
+  // Takes the AI's merged markdown as a proposal. The user decides.
+  Future<AiLinkResponse> _proposeMerge(
+    AiLinkProposeMerge req,
+    AiCode code,
+    DateTime deadline,
+    bool Function() open,
+  ) async {
+    if (!await host.aiWaitLoaded(_remaining(deadline))) return AiLinkResponse.error(AiLinkCode.busy);
+    // The code may have been revoked while this waited; nothing awaits between
+    // this check and the proposal.
+    final refusal = _recheck(req.code, code.id, open);
+    if (refusal != null) return AiLinkResponse.error(refusal);
+    final service = merges;
+    if (service == null) return AiLinkResponse.error(AiLinkCode.noRequest);
+    return service.propose(code, req.request, req.content);
   }
 
   // Logs the request; never throws (the log is a convenience).

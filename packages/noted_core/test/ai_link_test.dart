@@ -172,6 +172,7 @@ void main() {
       'conflict',
       'locked',
       'not_writable',
+      'no_request',
       'not_permitted',
       'save_failed',
       'busy',
@@ -275,5 +276,62 @@ void main() {
     }
     expect(AiLinkRequest.parse(line('list_pages')), isA<AiLinkAccess>());
     expect(AiLinkRequest.parse(line('search')), isA<AiLinkAccess>());
+  });
+
+  group('merge requests', () {
+    test('merge_requests and propose_merge round-trip', () {
+      const list = AiLinkMergeRequests(code: 'c', session: 's', app: 'a');
+      expect(list.op, 'merge_requests');
+      final back = AiLinkRequest.parse(list.encode()) as AiLinkMergeRequests;
+      expect(back.code, 'c');
+      expect(back.app, 'a');
+
+      const propose = AiLinkProposeMerge(code: 'c', session: 's', request: 'r1', content: '# Merged\n\n"text"');
+      expect(propose.op, 'propose_merge');
+      final p = AiLinkRequest.parse(propose.encode()) as AiLinkProposeMerge;
+      expect(p.request, 'r1');
+      expect(p.content, '# Merged\n\n"text"');
+      expect(propose.encode(), isNot(contains('\n')));
+    });
+
+    test('a propose_merge without a request or content is malformed', () {
+      String line(Map<String, Object?> extra) =>
+          jsonEncode({'noted': 'ai-link/2', 'op': 'propose_merge', 'code': 'c', 'session': 's', ...extra});
+      expect(AiLinkRequest.parse(line({'request': 'r', 'content': 'x'})), isA<AiLinkProposeMerge>());
+      expect(AiLinkRequest.parse(line({'request': 'r', 'content': ''})), isA<AiLinkProposeMerge>(), reason: 'empty is a valid string');
+      expect(AiLinkRequest.parse(line({'content': 'x'})), isA<AiLinkMalformed>());
+      expect(AiLinkRequest.parse(line({'request': '', 'content': 'x'})), isA<AiLinkMalformed>());
+      expect(AiLinkRequest.parse(line({'request': 'r'})), isA<AiLinkMalformed>());
+      expect(AiLinkRequest.parse(line({'request': 'r', 'content': 3})), isA<AiLinkMalformed>());
+    });
+
+    test('the answers round-trip', () {
+      const item = AiLinkMergeItem(
+        id: 'r1',
+        page: 'p',
+        box: 'b',
+        type: 'noted.note',
+        mine: AiLinkMergeVersion(markdown: 'mine\ntext', at: 5, device: 'PC'),
+        theirs: AiLinkMergeVersion(markdown: 'theirs', at: 9),
+      );
+      final line = const AiLinkResponse.merges([item]).encode();
+      expect(line, isNot(contains('\n')));
+      final back = AiLinkResponse.decode(line) as AiLinkMerges;
+      expect(back.items.single.id, 'r1');
+      expect(back.items.single.mine.markdown, 'mine\ntext');
+      expect(back.items.single.mine.device, 'PC');
+      expect(back.items.single.theirs.device, isNull);
+      expect(back.items.single.theirs.at, 9);
+      expect(AiLinkResponse.decode(const AiLinkResponse.merges([]).encode()), isA<AiLinkMerges>());
+      expect(AiLinkResponse.decode('{"ok":true,"merges":[{"id":"x"}]}'), isNull);
+
+      final proposed = AiLinkResponse.decode(const AiLinkResponse.proposed(request: 'r1').encode()) as AiLinkProposed;
+      expect(proposed.request, 'r1');
+      expect(proposed.ok, isTrue);
+      expect(AiLinkResponse.decode('{"ok":true,"proposed":3}'), isNull);
+
+      final gone = AiLinkResponse.decode(AiLinkResponse.error(AiLinkCode.noRequest).encode()) as AiLinkError;
+      expect(gone.code, AiLinkCode.noRequest);
+    });
   });
 }

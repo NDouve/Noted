@@ -525,4 +525,105 @@ void main() {
       expect(appLabel('x' * 500, '1')!.length, aiLinkMaxAppLength);
     });
   });
+
+  group('merge_requests and propose_merge', () {
+    const item = AiLinkMergeItem(
+      id: 'req1',
+      page: 'pg',
+      box: 'bx',
+      type: 'noted.note',
+      mine: AiLinkMergeVersion(markdown: 'mine text', at: 1000, device: 'PC-A'),
+      theirs: AiLinkMergeVersion(markdown: 'theirs text', at: 2000, device: 'PC-B'),
+    );
+
+    test('merge_requests sends the code with the session and app and lists both versions', () async {
+      final f = await fake();
+      f.answer = (_) => const AiLinkResponse.merges([item]).encode();
+      final out = await toolbox().mergeRequests(codeR);
+      expect(out.isError, isFalse);
+      final r = f.requests.single as AiLinkMergeRequests;
+      expect(r.code, codeR);
+      expect(r.session, 'SESSION-1');
+      expect(r.app, 'Test App 1.2');
+      final listed = (jsonDecode(out.text)['requests'] as List).single as Map;
+      expect(listed['id'], 'req1');
+      expect(listed['box'], 'bx');
+      expect((listed['mine'] as Map)['markdown'], 'mine text');
+      expect((listed['theirs'] as Map)['device'], 'PC-B');
+      expect(out.text, isNot(contains(codeR)));
+    });
+
+    test('an empty list says nothing is waiting', () async {
+      final f = await fake();
+      f.answer = (_) => const AiLinkResponse.merges([]).encode();
+      final out = await toolbox().mergeRequests(codeR);
+      expect(out.isError, isFalse);
+      expect(out.text, contains('No merge requests'));
+    });
+
+    test('propose_merge sends the request id and the markdown, and says the user decides', () async {
+      final f = await fake();
+      f.answer = (_) => const AiLinkResponse.proposed(request: 'req1').encode();
+      final out = await toolbox().proposeMerge(code: codeR, requestId: 'req1', content: '# Merged\n\nboth');
+      expect(out.isError, isFalse);
+      expect(out.text, contains('user'));
+      final r = f.requests.single as AiLinkProposeMerge;
+      expect(r.request, 'req1');
+      expect(r.content, '# Merged\n\nboth');
+      expect(r.code, codeR);
+    });
+
+    test('the app\'s refusals reach the AI as clear errors', () async {
+      final f = await fake();
+      for (final c in [AiLinkCode.noRequest, AiLinkCode.wrongRole, AiLinkCode.badCode, AiLinkCode.expired]) {
+        f.answer = (_) => err(c);
+        final a = await toolbox().mergeRequests(codeR);
+        final b = await toolbox().proposeMerge(code: codeR, requestId: 'req1', content: 'x');
+        for (final out in [a, b]) {
+          expect(out.isError, isTrue, reason: c.wire);
+          expect(out.text, isNotEmpty);
+          expect(out.text, isNot(contains(codeR)));
+        }
+      }
+      f.answer = (_) => err(AiLinkCode.noRequest);
+      expect((await toolbox().proposeMerge(code: codeR, requestId: 'req1', content: 'x')).text, contains('merge_requests'));
+    });
+
+    test('with Noted closed both say it needs Noted running', () async {
+      final dir = Directory.systemTemp.createTempSync('noted_mcp_merge_closed');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final t = NotedToolbox(dir, session: 's');
+      expect((await t.mergeRequests(codeR)).text, notRunningText);
+      expect((await t.proposeMerge(code: codeR, requestId: 'r', content: 'x')).text, notRunningText);
+    });
+
+    test('a malformed code or an empty request id never reaches the app', () async {
+      final f = await fake();
+      f.answer = (_) => const AiLinkResponse.proposed(request: 'r').encode();
+      final t = toolbox();
+      expect((await t.mergeRequests('junk')).text, contains('not valid'));
+      expect((await t.mergeRequests(null)).isError, isTrue);
+      expect((await t.proposeMerge(code: 'junk', requestId: 'r', content: 'x')).text, contains('not valid'));
+      expect((await t.proposeMerge(code: codeR, requestId: ' ', content: 'x')).isError, isTrue);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(f.lines, isEmpty);
+    });
+
+    test('a long answer (two big versions) is read in full', () async {
+      final f = await fake();
+      final big = 'word ' * 40000; // 200 KB each
+      final long = AiLinkMergeItem(
+        id: 'r',
+        page: 'p',
+        box: 'b',
+        type: 'noted.ai',
+        mine: AiLinkMergeVersion(markdown: big, at: 1),
+        theirs: AiLinkMergeVersion(markdown: big, at: 2),
+      );
+      f.answer = (_) => AiLinkResponse.merges([long]).encode();
+      final out = await toolbox().mergeRequests(codeR);
+      expect(out.isError, isFalse);
+      expect(((jsonDecode(out.text)['requests'] as List).single['mine'] as Map)['markdown'], big);
+    });
+  });
 }
