@@ -135,7 +135,7 @@ class Session {
     settings = AppSettings(env.settingsFile);
     nb = Notebook(
       PageStore(env.pages),
-      buildModules(),
+      buildModules(aiConnections: settings.aiConnections),
       saveDelay: saveDelay,
       bindersFile: env.binders,
       recoveryDirectory: env.recovery,

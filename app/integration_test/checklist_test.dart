@@ -11,6 +11,7 @@
 
 import 'package:integration_test/integration_test.dart';
 
+import 'suites/ai_suite.dart';
 import 'suites/canvas_suite.dart';
 import 'suites/folders_binders_suite.dart';
 import 'suites/notes_suite.dart';
@@ -30,4 +31,5 @@ void main() {
   templatesSuite();
   canvasSuite();
   searchSuite();
+  aiSuite();
 }
