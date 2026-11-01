@@ -750,6 +750,7 @@ class _CodesSection extends StatelessWidget {
       _sentence(e.op),
       if (e.app.isNotEmpty) e.app,
       if (e.label.isNotEmpty) e.label,
+      if (e.extra['closed'] == true) 'while Noted was closed',
     ].join(' · ');
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),

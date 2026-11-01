@@ -272,7 +272,7 @@ void main() {
       expect(find.text('Binder chat'), findsOneWidget);
       expect(find.text('Other'), findsNothing);
       expect(find.textContaining('Read page · Claude Code · Binder chat'), findsOneWidget);
-      expect(find.textContaining('Search · Cursor · Binder chat'), findsOneWidget, reason: 'logged while Noted was closed');
+      expect(find.textContaining('Search · Cursor · Binder chat · while Noted was closed'), findsOneWidget);
       expect(find.byKey(ValueKey('settings-approval-${issued.id}')), findsOneWidget);
       expect(find.text('Not approved yet'), findsOneWidget);
       expect(find.byKey(const ValueKey('settings-session-s1')), findsNothing, reason: 'no session list any more');

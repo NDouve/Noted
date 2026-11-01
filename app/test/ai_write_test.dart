@@ -1407,6 +1407,78 @@ void main() {
       expect(asked, isEmpty, reason: 'approved');
     });
 
+    test('a Deny is remembered on the code: the next launch does not ask again, a newer entry does', () async {
+      final t = await withBox();
+      final id = stored(t.code).id;
+      log(id, at: DateTime.now().toUtc()); // the attempt, before the answer
+      answer = (_) async => false;
+      await run(t.nb);
+      expect(AiAccessService.pendingAnswered(stored(t.code)), isNotNull);
+      // The next launch: a new notebook on the same data.
+      final next = make();
+      await next.load();
+      await run(next);
+      expect(asked, hasLength(1), reason: 'the old entry was answered');
+      log(id, at: DateTime.now().toUtc().add(const Duration(minutes: 5)));
+      final later = make();
+      await later.load();
+      await run(later);
+      expect(asked, hasLength(2), reason: 'a newer attempt is asked about');
+      // The field is kept like the other fields of the record.
+      expect(service.store.read().code(id)!.extra['pendingAnswered'], isA<String>());
+    });
+
+    test('a question nobody answers is not an answer: the next launch asks again', () async {
+      timings = const AiLinkTimings(approval: Duration(milliseconds: 150));
+      final t = await withBox();
+      log(stored(t.code).id);
+      answer = (_) => Completer<bool>().future;
+      await run(t.nb);
+      expect(AiAccessService.pendingAnswered(stored(t.code)), isNull);
+      await asked.single.expired;
+      final next = make();
+      await next.load();
+      await run(next);
+      expect(asked, hasLength(2));
+    });
+
+    test('a live request that joins a startup question waits only for its own deadline', () async {
+      timings = const AiLinkTimings(approval: Duration(seconds: 5), deadline: Duration(milliseconds: 500));
+      final t = await withBox();
+      log(stored(t.code).id);
+      answer = (_) => Completer<bool>().future; // nobody answers
+      final startup = run(t.nb);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final watch = Stopwatch()..start();
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notApproved);
+      expect(watch.elapsedMilliseconds, lessThan(1500));
+      await startup;
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('the startup question is capped at the approval time, so live questions are not starved', () async {
+      timings = const AiLinkTimings(approval: Duration(milliseconds: 300), deadline: Duration(seconds: 20));
+      final t = await withBox();
+      final other = await issue('ba', role: AiCodeRole.reader, label: 'Other');
+      log(stored(t.code).id);
+      var first = true;
+      answer = (r) {
+        if (first) {
+          first = false;
+          return Completer<bool>().future; // the startup question: never answered
+        }
+        return Future.value(true);
+      };
+      final startup = run(t.nb);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final watch = Stopwatch()..start();
+      final live = await t.nb.handleAiLink(
+        AiLinkAccess(code: other, session: 'o', app: 'B', action: AiLinkAction.readBox, target: 'ba'),
+      );
+      expect(live.ok, isTrue);
+      expect(watch.elapsedMilliseconds, lessThan(3000));
+      await startup;
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
     test('a code revoked while the question is open is not approved', () async {
       final t = await withBox();
       final id = stored(t.code).id;

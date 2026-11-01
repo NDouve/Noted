@@ -11,10 +11,20 @@ import 'package:noted_core/noted_core.dart';
 void main() {
   late Directory data;
   late AiAccessService service;
+  final codes = <String, String>{}; // target id -> code id
 
   setUp(() {
     data = Directory.systemTemp.createTempSync('noted_mcplog');
     service = AiAccessService(dataFolder: data);
+    // The codes the log entries below are about.
+    for (final t in [
+      const AiCodeTarget.box('b1', page: 'p1'),
+      const AiCodeTarget.box('other'),
+      const AiCodeTarget.page('pg'),
+      const AiCodeTarget.binder('bd'),
+    ]) {
+      codes[t.id] = service.store.issue(target: t, role: AiCodeRole.reader, label: 'Chat ${t.id}').record.id;
+    }
   });
 
   tearDown(() {
@@ -27,13 +37,14 @@ void main() {
     AiCodeTarget? target,
     String result = 'ok',
     String op = 'write_box',
+    String app = 'Claude Code',
   }) => AiMcpLogEntry(
     time: DateTime.utc(2026, 11, 1, 10, 0, second),
-    code: 'c1',
+    code: codes[(target ?? const AiCodeTarget.box('b1')).id]!,
     target: target ?? const AiCodeTarget.box('b1', page: 'p1'),
     op: op,
-    app: 'Claude Code',
-    label: 'Chat',
+    app: app,
+    label: 'Chat as the server saw it',
     result: result,
   );
 
@@ -62,7 +73,35 @@ void main() {
       expect(merged.map((e) => (e.time.second, e.op)), [(1, 'write_box'), (5, 'read_box'), (9, 'write_box')]);
       expect(merged.map((e) => e.extra['closed']), [true, null, true]);
       expect(merged.first.app, 'Claude Code');
+      expect(merged.first.label, 'Chat b1', reason: 'the code is named in the store');
       expect(merged.first.target.page, 'p1');
+    });
+
+    test('drops entries of a code that is not a code of that target, and cleans the app name', () {
+      append([
+        entry(1),
+        entry(2, app: 'Evil\n\u0007App\u202E x'),
+        AiMcpLogEntry(
+          time: DateTime.utc(2026, 11, 1, 10, 0, 3),
+          code: '0123456789abcdef', // not a code
+          target: const AiCodeTarget.box('b1'),
+          op: 'write_box',
+          result: 'ok',
+        ),
+        AiMcpLogEntry(
+          time: DateTime.utc(2026, 11, 1, 10, 0, 4),
+          code: codes['other']!, // a code of another box
+          target: const AiCodeTarget.box('b1'),
+          op: 'write_box',
+          result: 'ok',
+        ),
+      ]);
+      final shown = service.activity('b1');
+      expect(shown.map((e) => e.time.second), [1, 2]);
+      expect(shown.last.app, 'Evil  App x');
+      // A revoked code's old entries are not shown either.
+      service.store.revoke(codes['b1']!);
+      expect(service.activity('b1'), isEmpty);
     });
 
     test('a page or binder gets the entries about it, a refusal and a pending approval included', () {
@@ -119,6 +158,19 @@ void main() {
       expect(service.trimMcpLog(), isFalse);
       expect(service.mcpLog.readAsBytesSync(), before);
       expect(service.trimMcpLog(), isFalse);
+    });
+
+    test('a log another handle holds locked is not rewritten, and nothing throws', () {
+      if (!Platform.isWindows) return; // in-process locks only conflict on Windows
+      append([for (var i = 0; i < 1100; i++) entry(1, op: 'op$i')]);
+      final before = service.mcpLog.readAsBytesSync();
+      final other = service.mcpLog.openSync(mode: FileMode.append)..lockSync(FileLock.exclusive);
+      expect(service.trimMcpLog(), isFalse);
+      other
+        ..unlockSync()
+        ..closeSync();
+      expect(service.mcpLog.readAsBytesSync(), before);
+      expect(service.trimMcpLog(), isTrue, reason: 'once it is free');
     });
 
     test('a missing file is not created', () {

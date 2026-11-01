@@ -60,6 +60,10 @@ String? computerName() {
   return name == null || name.isEmpty ? null : name;
 }
 
+/// The lock that tells `noted_mcp` Noted is running, kept for the whole
+/// process (the OS lets go of it when the app exits or dies).
+AiRunningLock? appRunningLock;
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // The bundled Inter font is SIL OFL 1.1; its licence ships with it.
@@ -94,7 +98,10 @@ Future<void> main() async {
   );
   FileClipboard.read = readClipboardFiles;
   // Held until the app exits: it tells noted_mcp that Noted is running.
-  final runningLock = AiRunningLock.acquire(dataFolder);
+  final runningLock = appRunningLock = AiRunningLock(dataFolder)..acquire();
+  // If another process held it for too long, keep trying, with a warning
+  // on screen until it is ours.
+  if (!runningLock.held) runningLock.startRetrying();
   final aiLink = await startAiLink(notebook, dataFolder);
   runApp(NotedApp(notebook: notebook, settings: settings, aiLink: aiLink, runningLock: runningLock));
   await notebook.load();
@@ -186,6 +193,21 @@ class _NotedAppState extends State<NotedApp> {
     );
   }
 
+  // The warning across the top while the running lock isn't held.
+  Widget _withRunningWarning(Widget child) {
+    final lock = widget.runningLock;
+    if (lock == null) return child;
+    return Column(
+      children: [
+        ListenableBuilder(
+          listenable: lock,
+          builder: (context, _) => lock.held ? const SizedBox.shrink() : const AiRunningLockBanner(),
+        ),
+        Expanded(child: child),
+      ],
+    );
+  }
+
   Widget _materialApp(bool touch) {
     return MaterialApp(
       title: 'Noted',
@@ -194,7 +216,7 @@ class _NotedAppState extends State<NotedApp> {
       theme: buildNotedTheme(Brightness.light, touch: touch),
       darkTheme: buildNotedTheme(Brightness.dark, touch: touch),
       themeMode: _settings.themeMode,
-      builder: (context, child) => InputModeScope(child: child!),
+      builder: (context, child) => InputModeScope(child: _withRunningWarning(child!)),
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,

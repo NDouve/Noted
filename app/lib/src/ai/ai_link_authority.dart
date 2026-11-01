@@ -64,7 +64,6 @@ class AiLinkTimings {
     this.approval = aiLinkApprovalTimeout,
     this.deadline = const Duration(seconds: 50),
     this.denyCooldown = const Duration(seconds: 30),
-    this.closedApproval = const Duration(minutes: 5),
   });
 
   /// How long one question may stay open.
@@ -78,10 +77,6 @@ class AiLinkTimings {
   /// After the user denies a code, further requests of that code are refused
   /// without a question for this long.
   final Duration denyCooldown;
-
-  /// How long a question about a request made while Noted was closed stays
-  /// open (nobody is waiting for the answer, so it is longer).
-  final Duration closedApproval;
 }
 
 /// How many questions may wait at once, over all codes (one on screen, the
@@ -315,13 +310,15 @@ class AiLinkAuthority {
   }
 
   // Asks about a code that isn't approved yet: null if the user allowed it,
-  // else the refusal. One question per code, shared by every request of it.
+  // else the refusal. One question per code, shared by every request of it; a
+  // request that joins a question waits at most until its own [deadline].
+  // [onAnswer] hears the user's Allow or Deny (not a timeout).
   Future<AiLinkCode?> _approveCode(
     String app,
     AiCode code,
     DateTime deadline, {
     bool closedApp = false,
-    Duration? limit,
+    void Function(bool allowed)? onAnswer,
   }) async {
     final cooling = _denied[code.id];
     if (cooling != null) {
@@ -340,59 +337,77 @@ class AiLinkAuthority {
         label: code.label,
         perWrite: false,
         closedApp: closedApp,
-        limit: limit,
         deadline: deadline,
       ).whenComplete(() {
         _pending.remove(key);
         _leave(code.id);
       });
     }
-    final answer = await asking;
+    final answer = await asking.timeout(_remaining(deadline), onTimeout: () => _Answer.none);
     if (answer == _Answer.denied) {
       _denied[code.id] = DateTime.now().add(timings.denyCooldown);
     }
+    if (answer != _Answer.none) onAnswer?.call(answer == _Answer.allowed);
     return answer == _Answer.allowed ? null : AiLinkCode.notApproved;
   }
 
   /// Asks, once each, about the codes an AI app tried to use while Noted was
   /// closed: every code that exists, isn't expired and isn't approved, and has
-  /// a `pending_approval` entry in the server's log newer than the code. Call
-  /// it after the notebook has loaded. A code the user denies (or leaves
-  /// unanswered) is not asked about again in this run. Allow approves the
-  /// code.
+  /// a `pending_approval` entry in the server's log newer than the code and
+  /// newer than the user's last answer about it (so a Deny isn't asked again
+  /// at every start). Call it after the notebook has loaded. A code asked
+  /// about is not asked again in this run. Allow approves the code. The
+  /// question is capped at [AiLinkTimings.approval], so live questions aren't
+  /// kept waiting.
   Future<void> askPendingApprovals() async {
     if (approver == null) return;
-    final List<AiCode> codes;
+    final List<String> ids;
     try {
-      codes = service.store.codes();
+      ids = [for (final c in service.store.codes()) c.id];
     } on AiAccessUnreadable {
       return;
     }
     final entries = service.mcpLogEntries().where((e) => e.isPendingApproval).toList();
     if (entries.isEmpty) return;
-    for (final code in codes) {
-      final now = DateTime.now();
-      if (code.isApproved || code.isExpired(now) || _closedAsked.contains(code.id)) continue;
+    for (final id in ids) {
+      // The code as it is now, in case it changed while earlier questions were open.
+      final AiCode? code;
+      try {
+        code = service.store.codes().where((c) => c.id == id).firstOrNull;
+      } on AiAccessUnreadable {
+        return;
+      }
+      if (code == null || code.isApproved || code.isExpired(DateTime.now()) || _closedAsked.contains(id)) continue;
+      final since = AiAccessService.pendingAnswered(code);
       AiMcpLogEntry? latest;
       for (final e in entries) {
-        if (e.code == code.id && e.time.isAfter(code.created)) latest = e;
+        if (e.code != id || !e.time.isAfter(code.created)) continue;
+        if (since != null && !e.time.isAfter(since)) continue;
+        latest = e;
       }
       if (latest == null) continue;
-      _closedAsked.add(code.id);
-      final limit = timings.closedApproval;
+      _closedAsked.add(id);
+      var answered = false;
       final refusal = await _approveCode(
         _cleanName(latest.app),
         code,
-        DateTime.now().add(limit),
+        DateTime.now().add(timings.deadline),
         closedApp: true,
-        limit: limit,
+        onAnswer: (_) => answered = true,
       );
+      if (answered) {
+        try {
+          service.markPendingAnswered(id, DateTime.now());
+        } on Object {
+          // Asked again next start.
+        }
+      }
       if (refusal != null) continue;
       try {
         // Revoked or expired while the question was open: nothing to approve.
-        final still = service.store.codes().where((c) => c.id == code.id).firstOrNull;
+        final still = service.store.codes().where((c) => c.id == id).firstOrNull;
         if (still == null || still.isExpired(DateTime.now())) continue;
-        service.store.approveCode(code.id);
+        service.store.approveCode(id);
         service.changed();
       } on Object {
         // The store is busy or unreadable: asked again next start.
@@ -405,13 +420,7 @@ class AiLinkAuthority {
   // zero-width) are dropped.
   String _appName(AiLinkRequest req) => _cleanName(req.app);
 
-  String _cleanName(String? name) {
-    final a = name
-        ?.replaceAll(RegExp(r'[\p{Cc}  ]', unicode: true), ' ')
-        .replaceAll(RegExp(r'\p{Cf}', unicode: true), '')
-        .trim();
-    return a == null || a.isEmpty ? 'An AI app' : a;
-  }
+  String _cleanName(String? name) => cleanAiAppName(name);
 
   // Shows one question, when it is its turn and while the request has time.
   Future<_Answer> _ask({
@@ -422,7 +431,6 @@ class AiLinkAuthority {
     required DateTime deadline,
     String? preview,
     bool closedApp = false,
-    Duration? limit,
   }) async {
     final ask = approver;
     if (ask == null) return _Answer.none;
@@ -436,8 +444,7 @@ class AiLinkAuthority {
       unawaited(prev.then((_) => gate.complete()));
       return _Answer.none;
     }
-    final cap = limit ?? timings.approval;
-    final time = _remaining(deadline) < cap ? _remaining(deadline) : cap;
+    final time = _remaining(deadline) < timings.approval ? _remaining(deadline) : timings.approval;
     if (time == Duration.zero) {
       gate.complete();
       return _Answer.none;

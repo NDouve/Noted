@@ -9,6 +9,17 @@ import 'package:flutter/foundation.dart';
 import 'package:noted_box_ai/noted_box_ai.dart';
 import 'package:noted_core/noted_core.dart';
 
+/// A client's app name made fit to show the user: control characters become
+/// spaces, format characters (bidi overrides, zero-width) are dropped. An empty
+/// name becomes [fallback].
+String cleanAiAppName(String? name, {String fallback = 'An AI app'}) {
+  final a = name
+      ?.replaceAll(RegExp(r'[\p{Cc}  ]', unicode: true), ' ')
+      .replaceAll(RegExp(r'\p{Cf}', unicode: true), '')
+      .trim();
+  return a == null || a.isEmpty ? fallback : a;
+}
+
 /// A change to the codes failed; [message] is fit to show the user.
 class AiAccessException implements Exception {
   const AiAccessException(this.message);
@@ -167,16 +178,20 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
   /// `extra['closed'] == true`).
   List<AiActivityEntry> activityFor(AiCodeTargetKind kind, String id) {
     final own = log.entriesFor(kind, id);
+    final known = {for (final c in codesFor(kind, id)) c.id: c};
     final closed = [
       for (final e in mcpLogEntries())
-        if (e.target.kind == kind && e.target.id == id)
+        // Only entries of a code that exists for this target: the file is
+        // appended to by another process, so a stray line shows nothing.
+        if (e.target.kind == kind && e.target.id == id && known[e.code] != null)
           AiActivityEntry(
             time: e.time,
             code: e.code,
             target: e.target,
             op: e.op,
-            app: e.app,
-            label: e.label,
+            app: e.app.isEmpty ? '' : cleanAiAppName(e.app),
+            // The code's name now, not the one the server saw.
+            label: known[e.code]!.label,
             result: e.result,
             extra: const {'closed': true},
           ),
@@ -190,6 +205,37 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
       return c != 0 ? c : order[a]!.compareTo(order[b]!);
     });
   }
+
+  /// When the user last answered (Allow or Deny) a question about [code] that
+  /// was asked at startup for a request made while Noted was closed; null if
+  /// never. Kept on the code record as `pendingAnswered`.
+  static DateTime? pendingAnswered(AiCode code) {
+    final v = code.extra['pendingAnswered'];
+    return v is String ? DateTime.tryParse(v)?.toUtc() : null;
+  }
+
+  /// Notes that the user answered the startup question about [codeId] at
+  /// [at]. Throws what the store throws.
+  void markPendingAnswered(String codeId, DateTime at) => store.update((d) {
+    final c = d.code(codeId);
+    if (c == null) return;
+    d.put(
+      AiCode(
+        id: c.id,
+        target: c.target,
+        roleName: c.roleName,
+        label: c.label,
+        hash: c.hash,
+        created: c.created,
+        lastUsed: c.lastUsed,
+        expires: c.expires,
+        approved: c.approved,
+        sessions: c.sessions,
+        extra: {...c.extra, 'pendingAnswered': at.toUtc().toIso8601String()},
+        rawTimes: c.rawTimes,
+      ),
+    );
+  });
 
   /// The entries of the MCP server's log, in file order. Empty if the file is
   /// missing or can't be read.
@@ -211,7 +257,18 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
     try {
       if (!mcpLog.existsSync()) return false;
       raf = mcpLog.openSync(mode: FileMode.append);
-      raf.lockSync(FileLock.blockingExclusive);
+      // A short wait for the lock; if another process keeps it, leave the
+      // file as it is (the next change tries again).
+      final until = DateTime.now().add(const Duration(milliseconds: 500));
+      while (true) {
+        try {
+          raf.lockSync(FileLock.exclusive);
+          break;
+        } on FileSystemException {
+          if (DateTime.now().isAfter(until)) return false;
+          sleep(const Duration(milliseconds: 20));
+        }
+      }
       try {
         final length = raf.lengthSync();
         raf.setPositionSync(0);
@@ -226,10 +283,25 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
         if (lines <= keep) return false;
         final from = ends[lines - keep - 1] + 1;
         final tail = bytes.sublist(from);
-        raf.truncateSync(0);
-        raf.setPositionSync(0);
-        raf.writeFromSync(tail);
-        raf.flushSync();
+        // The file is opened for appending (Dart has no way to open it for
+        // writing without truncating or appending), so it is emptied and the
+        // kept lines written, all under the lock; if that fails half way, the
+        // original bytes are put back.
+        try {
+          raf.truncateSync(0);
+          raf.setPositionSync(0);
+          raf.writeFromSync(tail);
+          raf.flushSync();
+        } on Object {
+          try {
+            raf.truncateSync(0);
+            raf.writeFromSync(bytes);
+            raf.flushSync();
+          } on Object {
+            // Nothing more can be done.
+          }
+          return false;
+        }
         return true;
       } finally {
         raf.unlockSync();
