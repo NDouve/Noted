@@ -13,9 +13,9 @@ Versions are listed newest first.
 - `BoxCodec.aiOwner(data)` (default null): the id of the AI connection that owns the box, never a token or secret.
 - `BoxCodec.aiWrite(data, write)` (default null): the box's data after an AI's write, or null if the type takes no AI writes. The host checks ownership and the page's AI setting before calling it.
 - `CommandHost.viewCentre` (noted_canvas): the middle of the visible view in page coordinates, or null where there is no view. `CanvasController.insertBox` takes an optional `autofocus` to select the new box and focus its editor.
-- Additive: a module that overrides neither is unaffected. Decided by the PM under delegated authority; the AI box, run 2026-10-31-02.
+- Additive: a module that overrides none of these is unaffected. Decided by the PM under delegated authority; the AI box, run 2026-11-01-01, decision 0107.
 
-## 0.8 — 2026-11-01
+## 0.8 — 2026-10-31
 - `BoxModule.aspectRatioExtraHeight` (default 0): a fixed height below the part that keeps `aspectRatio`, such as the image box's alt-text strip. While resizing, the canvas keeps `height - extra = width / aspectRatio`.
 - Not part of the API but visible to modules: a click on a box's content that doesn't move the focus into it (an image, a file, a drawing) now selects the box, as a click on its grip does, so Delete and Backspace remove it.
 - Additive. Approved by the maintainer; decision 0102.

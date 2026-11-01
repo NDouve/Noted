@@ -221,7 +221,7 @@ void main() {
     shows(['Fit all', 'Zoom to 100% (Ctrl+0)', 'Zoom in (Ctrl+=)', 'Find on page (Ctrl+F)']);
     expect(find.text('100%'), findsOneWidget);
     await openTab('insert');
-    shows(['Insert table', 'Insert equation', 'Insert image', 'Insert file', 'AI box (coming later)']);
+    shows(['Insert table', 'Insert equation', 'Insert image', 'Insert file', 'AI box']);
 
     bool checked(String tooltip) => t
         .widget<IconButton>(
@@ -241,7 +241,7 @@ void main() {
     expect(btn('Undo (Ctrl+Z)').onPressed, isNull);
     expect(textBtn('Insert table').onPressed, isNull);
     expect(textBtn('Insert equation').onPressed, isNull);
-    expect(textBtn('AI box (coming later)').onPressed, isNull);
+    expect(textBtn('AI box').onPressed, isNotNull, reason: 'the AI box module replaces the placeholder');
     expect(textBtn('Insert image').onPressed, isNotNull, reason: 'the page has an assets folder');
 
     await openTab('draw');

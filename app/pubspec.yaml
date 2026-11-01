@@ -24,6 +24,8 @@ dependencies:
     path: ../packages/boxes/note
   noted_box_attachments:
     path: ../packages/boxes/attachments
+  noted_box_ai:
+    path: ../packages/boxes/ai
   file_selector: ^1.1.0
   # Files dropped onto the canvas (Apache-2.0). 0.9 needs cross_file 0.4,
   # which appflowy_editor (through file_picker) does not allow yet.

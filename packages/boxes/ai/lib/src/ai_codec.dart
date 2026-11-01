@@ -38,7 +38,7 @@ final class AiBoxData {
       AiBoxData({...json, 'document': note.document['document']});
 }
 
-/// The data side of the AI box (run 2026-10-31-02).
+/// The data side of the AI box (run 2026-11-01-01).
 final class AiCodec extends BoxCodec<AiBoxData> {
   const AiCodec();
 

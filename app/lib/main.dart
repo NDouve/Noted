@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:noted_box_ai/noted_box_ai.dart';
 import 'package:noted_box_attachments/noted_box_attachments.dart';
 import 'package:noted_box_drawing/noted_box_drawing.dart';
 import 'package:noted_box_note/noted_box_note.dart';
@@ -28,9 +29,8 @@ import 'src/recovery_store.dart';
 
 /// The box modules compiled into this build (0034, stage 1).
 ///
-/// TODO(ai-phase-2): after the merge, register the AI box module here:
-/// `..register(AiModule(connections: aiConnections!))` from noted_box_ai (do
-/// not import it before then). [aiConnections] is `settings.aiConnections`.
+/// [aiConnections] (`settings.aiConnections`) is what an AI box's "Connected
+/// AI" picker lists; none when null.
 ModuleRegistry buildModules({ValueListenable<List<AiConnectionInfo>>? aiConnections}) =>
     ModuleRegistry()
       ..register(const NoteModule(), alwaysOn: true, isDefault: true)
@@ -39,6 +39,7 @@ ModuleRegistry buildModules({ValueListenable<List<AiConnectionInfo>>? aiConnecti
       // file box (BoxModule.fileAffinity).
       ..register(const ImageModule())
       ..register(const FileModule())
+      ..register(AiModule(connections: aiConnections))
       // The template box module (docs/box-modules.md): compiled in, off by
       // default. Set enabled: true to try it.
       ..register(const StickyLabelModule(), enabled: false);
