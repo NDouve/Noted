@@ -13,7 +13,6 @@ import 'package:noted_core/noted_core.dart';
 import 'attachment_store.dart';
 import 'box_module.dart';
 import 'canvas_controller.dart';
-import 'conflict_dialog.dart';
 import 'geometry.dart';
 import 'noted_colors.dart';
 import 'noted_theme.dart';
@@ -43,9 +42,14 @@ class BoxHost extends StatefulWidget {
     this.attachments,
     this.insertFilesBeside,
     this.disallowedTypes = const {},
+    this.onIssueTap,
   });
 
   final CanvasNode node;
+
+  /// Opens the issue dialog for just this box. The warning chip on a box with
+  /// an issue (a conflict, or a landed marker) calls it; null shows no chip.
+  final void Function(String boxId)? onIssueTap;
 
   /// Box types this page doesn't allow: their boxes show the saved snapshot
   /// read-only, like a switched-off module (0035).
@@ -189,6 +193,7 @@ class _BoxHostState extends State<BoxHost> {
     final metrics = NotedMetrics.of(context);
     final type = NotedTypography.of(context);
     final conflicted = node is BoxRecord && node.isConflicted;
+    final landed = node is BoxRecord && node.landed != null;
     final frameless = module?.frameStyle == BoxFrameStyle.framelessUntilSelected;
     final lit = selected || editing;
     final showGrip = editable && (_hover || lit);
@@ -292,6 +297,25 @@ class _BoxHostState extends State<BoxHost> {
                   ),
                 ),
               ),
+            // A box that landed on another: a red outline until it is placed.
+            if (landed)
+              Positioned(
+                left: m,
+                top: boxGripHeight,
+                width: w,
+                height: h,
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    key: const ValueKey('landed-frame'),
+                    decoration: BoxDecoration(
+                      borderRadius: metrics.borderLg,
+                      border: Border.fromBorderSide(
+                        BorderSide(color: scheme.error, width: 3),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             // Find on page: a frame around every box with a match, stronger
             // on the one that holds the current match.
             if (widget.find != null)
@@ -373,7 +397,9 @@ class _BoxHostState extends State<BoxHost> {
               _handle(_Edge.bottomRight, b),
               if (lit) ..._handleSquares(b, scheme, metrics),
             ],
-            if (conflicted && !readOnly)
+            // The warning in the box's place: a small red chip on its top
+            // edge. It opens that box's issue only.
+            if ((conflicted || landed) && !readOnly && widget.onIssueTap != null)
               Positioned(
                 right: m + metrics.space2,
                 // Centered on the top edge of the frame.
@@ -381,34 +407,38 @@ class _BoxHostState extends State<BoxHost> {
                 height: _badgeHeight,
                 child: MouseRegion(
                   cursor: SystemMouseCursors.click,
-                  child: GestureDetector(
-                    key: ValueKey('conflict-badge-${node.id}'),
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => showConflictDialog(
-                      context,
-                      c,
-                      node.id,
-                      disallowedTypes: widget.disallowedTypes,
-                    ),
-                    child: DecoratedBox(
-                      key: const ValueKey('conflict-badge'),
-                      decoration: BoxDecoration(
-                        color: noted.conflict,
-                        borderRadius: metrics.borderFull,
-                      ),
-                      child: Padding(
-                        padding: EdgeInsets.symmetric(
-                          horizontal: metrics.space2,
+                  child: Semantics(
+                    button: true,
+                    label: conflicted
+                        ? 'Conflict in this box. Open it.'
+                        : 'This box landed on another box. Open it.',
+                    excludeSemantics: true,
+                    child: GestureDetector(
+                      key: ValueKey('issue-chip-${node.id}'),
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => widget.onIssueTap!(node.id),
+                      child: DecoratedBox(
+                        key: const ValueKey('issue-chip'),
+                        decoration: BoxDecoration(
+                          color: scheme.error,
+                          borderRadius: metrics.borderFull,
                         ),
-                        child: Center(
-                          widthFactor: 1,
-                          child: Text(
-                            'Conflict',
-                            style: type.small.copyWith(
-                              height: 1,
-                              fontWeight: FontWeight.w600,
-                              color: noted.onConflict,
-                            ),
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: metrics.space2),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.warning_amber_rounded, size: 14, color: scheme.onError),
+                              SizedBox(width: metrics.space1),
+                              Text(
+                                conflicted ? 'Conflict' : 'Landed',
+                                style: type.small.copyWith(
+                                  height: 1,
+                                  fontWeight: FontWeight.w600,
+                                  color: scheme.onError,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),

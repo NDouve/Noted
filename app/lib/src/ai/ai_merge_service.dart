@@ -5,10 +5,10 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:noted_canvas/noted_canvas.dart' show AiMergeProposal, PageAiMerge;
 import 'package:noted_core/noted_core.dart';
 
 import 'ai_access_service.dart';
-import 'page_ai_merge_types.dart';
 
 /// How long a merge request waits for the page AI.
 const Duration aiMergeExpiry = Duration(minutes: 10);

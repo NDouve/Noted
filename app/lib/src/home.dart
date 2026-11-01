@@ -49,6 +49,9 @@ class _HomeState extends State<Home> {
   /// Asks the open page's canvas to open Find on page (from a search result).
   final ValueNotifier<FindRequest?> _findRequests = ValueNotifier<FindRequest?>(null);
 
+  // Pages whose issue sequence the user silenced during this run.
+  final IssueSilence _issueSilence = IssueSilence();
+
   /// The matched range of the title to show in the title field (from a
   /// title result). Only decoration; it never touches the title text.
   final ValueNotifier<TitleHighlight?> _titleHighlight = ValueNotifier<TitleHighlight?>(null);
@@ -284,6 +287,8 @@ class _HomeState extends State<Home> {
                               tools: notebook.tools,
                               readOnly: notebook.readOnlyReason != null,
                               findRequests: _findRequests,
+                              issueSilence: _issueSilence,
+                              aiMerge: notebook.aiMerge,
                               extraCommands: () => [searchCommand(_search)],
                               toolbar: (widget.settings?.toolbar ?? ToolbarStyle.tabs).layout,
                             ),

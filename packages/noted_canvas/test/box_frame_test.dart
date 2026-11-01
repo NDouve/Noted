@@ -149,7 +149,7 @@ void main() {
         for (final h in handles()) {
           expect(find.byKey(ValueKey('box-handle-$h')), findsNothing);
         }
-        expect(find.byKey(const ValueKey('conflict-badge')), findsNothing);
+        expect(find.byKey(const ValueKey('issue-chip')), findsNothing);
       });
 
       testWidgets('selected: accent border, shadow-selected, 8px handles', (
@@ -234,7 +234,7 @@ void main() {
         }
       });
 
-      testWidgets('conflict: 2px conflict border and a Conflict badge', (
+      testWidgets('conflict: 2px conflict border and a red Conflict chip', (
         t,
       ) async {
         final box = _box('a', 'test.text').withConflict(
@@ -244,16 +244,16 @@ void main() {
         final border = decorationOf(t, 'conflict-frame');
         expect((border.border! as Border).top.color, colors.conflict);
         expect((border.border! as Border).top.width, 2);
-        final badge = decorationOf(t, 'conflict-badge');
-        expect(badge.color, colors.conflict);
+        final badge = decorationOf(t, 'issue-chip');
+        expect(badge.color, scheme.error);
         expect(badge.borderRadius, metrics.borderFull);
         final text = t.widget<Text>(find.text('Conflict'));
-        expect(text.style!.color, colors.onConflict);
+        expect(text.style!.color, scheme.onError);
         expect(text.style!.fontSize, type.small.fontSize);
         expect(text.style!.fontWeight, FontWeight.w600);
         // The badge overlaps the top edge of the frame, at the right.
         final frame = t.getRect(find.byKey(const ValueKey('conflict-frame')));
-        final b = t.getRect(find.byKey(const ValueKey('conflict-badge')));
+        final b = t.getRect(find.byKey(const ValueKey('issue-chip')));
         expect(b.top, lessThan(frame.top));
         expect(b.bottom, greaterThan(frame.top));
         expect(b.center.dx, greaterThan(frame.center.dx));

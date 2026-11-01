@@ -227,11 +227,17 @@ class CanvasController extends ChangeNotifier {
     final grows =
         modules.codecs.codecFor(box.typeId)?.sizing ==
         BoxSizing.growsWithContent;
-    final next = fixes && grows ? box.withFixedHeight(true) : box;
+    var next = fixes && grows ? box.withFixedHeight(true) : box;
     if (next.bounds != start || next.fixedHeight != startFixed) {
-      _history.record(
-        PageChange.bounds(id, start, fixedHeightBefore: startFixed),
-      );
+      final change = PageChange.bounds(id, start, fixedHeightBefore: startFixed);
+      if (next.landed != null) {
+        // The first move or resize places a landed box: the marker goes in
+        // the same undo step.
+        _history.record(PageChange.group([change, PageChange.replaced(next)]));
+        next = next.withoutLanded();
+      } else {
+        _history.record(change);
+      }
       _set(_page.replaceNode(next));
     } else {
       _notify();
@@ -393,98 +399,107 @@ class CanvasController extends ChangeNotifier {
   /// Whether any box on the page is conflicted.
   bool get hasConflicts => _page.nodes.any((n) => n is BoxRecord && n.isConflicted);
 
+  /// The page's issues in reading order (landed boxes and conflicts). A box
+  /// this device can't open (its module is off, or its type is in
+  /// [disallowedTypes]) has an unreadable conflict: it is settled from its
+  /// snapshots, never decoded (0035).
+  List<PageIssue> issues({Set<String> disallowedTypes = const {}}) => pageIssues(
+    _page,
+    canOpen: (box) =>
+        modules.moduleFor(box.typeId) != null &&
+        modules.codecs.codecFor(box.typeId) != null &&
+        !disallowedTypes.contains(box.typeId),
+  );
+
+  // Each resolution below is one undo step and uses the core helper of the
+  // same name; [conflict] picks the recorded other version it is about (the
+  // box's first if null).
+
+  BoxRecord? _boxFor(String id) {
+    final box = _page.node(id);
+    return box is BoxRecord ? box : null;
+  }
+
   /// Keeps this device's version of the conflicted box [id]; for a box the
-  /// other side deleted, keeps the box. One undo step.
-  void resolveKeepMine(String id) {
-    if (_readOnly) return;
-    final box = _page.node(id);
-    if (box is! BoxRecord || !box.isConflicted) return;
+  /// other side deleted, keeps the box.
+  void resolveKeepMine(String id, {BoxConflict? conflict}) {
+    final box = _boxFor(id);
+    if (_readOnly || box == null || !box.isConflicted) return;
+    final next = keepMine(_page, id, conflict: conflict);
+    if (identical(next, _page)) return;
     _history.record(PageChange.replaced(box));
-    _set(_page.replaceNode(box.withoutConflicts()));
+    _set(next);
   }
 
-  /// Replaces the conflicted box [id] with the other version (the latest
-  /// recorded). One undo step.
-  void resolveKeepTheirs(String id) {
-    if (_readOnly) return;
-    final box = _page.node(id);
-    if (box is! BoxRecord) return;
-    final other = box.conflicts.where((c) => c.node != null).lastOrNull;
-    if (other == null) return;
-    final node = readNode(other.node!, fallbackId: id);
-    final CanvasNode next = switch (node) {
-      BoxRecord() => node.withId(id).withoutConflicts(),
-      ForeignNode() => node.copyWithId(id) ?? node,
-    };
+  /// Replaces the conflicted box [id] with the other version, verbatim.
+  void resolveKeepTheirs(String id, {BoxConflict? conflict}) {
+    final box = _boxFor(id);
+    if (_readOnly || box == null) return;
+    final next = keepOther(_page, id, conflict: conflict);
+    if (identical(next, _page)) return;
     _history.record(PageChange.replaced(box));
-    _set(_page.replaceNode(next));
+    _set(next);
   }
 
-  /// Resolves the conflicted box [id] by saving [data] (one of the versions,
-  /// possibly edited by hand) as its content through its codec, and drops the
-  /// recorded versions. One undo step. Returns false if the box is gone, isn't
-  /// conflicted or this device can't run it.
-  bool resolveWithData(String id, Object? data) {
-    if (_readOnly) return false;
-    final box = _page.node(id);
-    if (box is! BoxRecord || !box.isConflicted) return false;
+  /// Keeps this device's version and adds the other as a new box with a new
+  /// id beside it.
+  void resolveKeepBoth(String id, {BoxConflict? conflict}) {
+    final box = _boxFor(id);
+    if (_readOnly || box == null) return;
+    final next = placeBoth(_page, id, conflict: conflict);
+    if (identical(next, _page)) return;
+    final known = {for (final n in _page.nodes) n.id};
+    _history.record(
+      PageChange.group([
+        PageChange.replaced(box),
+        for (final n in next.nodes)
+          if (!known.contains(n.id)) PageChange.added(n.id),
+      ]),
+    );
+    _set(next);
+  }
+
+  /// Resolves the conflicted box [id] by saving [data] (decoded, as the box's
+  /// codec takes it) as its content, and drops the resolved record. Returns
+  /// false if the box is gone, isn't conflicted or this device can't run it.
+  bool resolveWithData(String id, Object? data, {BoxConflict? conflict}) {
+    final box = _boxFor(id);
+    if (_readOnly || box == null || !box.isConflicted) return false;
     final codec = modules.codecs.codecFor(box.typeId);
     if (codec == null) return false;
-    final next = commitBox(
-      box,
+    final next = acceptMerged(
+      _page,
+      id,
       codec,
       data,
+      conflict: conflict,
       device: deviceName,
       at: _stampTime,
-    ).withoutConflicts();
+    );
+    if (identical(next, _page)) return false;
     _history.record(PageChange.replaced(box));
-    _set(_page.replaceNode(next));
+    _set(next);
     return true;
   }
 
-  /// Keeps this device's version and adds each other version as a new box
-  /// with a new id, just to the right of it. One undo step.
-  void resolveKeepBoth(String id) {
-    if (_readOnly) return;
-    final box = _page.node(id);
-    if (box is! BoxRecord) return;
-    final others = [
-      for (final c in box.conflicts)
-        if (c.node != null) c.node!,
-    ];
-    if (others.isEmpty) return;
-    final changes = <PageChange>[PageChange.replaced(box)];
-    var page = _page.replaceNode(box.withoutConflicts());
-    var x = box.bounds.x + box.bounds.width + 24;
-    var at = page.indexOf(id) + 1;
-    for (final raw in others) {
-      final node = readNode(raw, fallbackId: newId());
-      final CanvasNode? copy = switch (node) {
-        BoxRecord() => node.withId(newId()).withoutConflicts().withBounds(
-          Bounds(x, box.bounds.y, node.bounds.width, node.bounds.height),
-        ),
-        ForeignNode() => node.copyWithId(newId()),
-      };
-      if (copy == null) continue;
-      changes.add(PageChange.added(copy.id));
-      page = page.insertNode(copy, at++);
-      x += (copy.bounds?.width ?? box.bounds.width) + 24;
-    }
-    _history.record(PageChange.group(changes));
-    _set(page);
-  }
-
   /// Deletes the conflicted box [id], including a box the other side deleted
-  /// that this side kept. Also works for boxes this device can't run. One
-  /// undo step.
+  /// that this side kept. Also works for boxes this device can't run.
   void resolveDelete(String id) {
-    if (_readOnly) return;
-    final box = _page.node(id);
-    if (box is! BoxRecord || !box.isConflicted) return;
+    final box = _boxFor(id);
+    if (_readOnly || box == null || !box.isConflicted) return;
     _history.record(PageChange.removed(box, _page.indexOf(id)));
     if (_selectedId == id) _selectedId = null;
     if (_editingId == id) _editingId = null;
-    _set(_page.removeNode(id));
+    _set(deleteBox(_page, id));
+  }
+
+  /// "Leave it here": the landed box [id] stays where it is and its marker is
+  /// cleared.
+  void leaveLanded(String id) {
+    final box = _boxFor(id);
+    if (_readOnly || box == null || box.landed == null) return;
+    _history.record(PageChange.replaced(box));
+    _set(clearLanded(_page, id));
   }
 
   bool _isEmpty(String id) {

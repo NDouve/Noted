@@ -71,56 +71,6 @@ void main() {
     onChanged: saved.add,
   );
 
-  Future<void> pump(WidgetTester t, CanvasController c) async {
-    t.view.physicalSize = const Size(1200, 800);
-    t.view.devicePixelRatio = 1;
-    addTearDown(t.view.reset);
-    await t.pumpWidget(MaterialApp(home: Scaffold(body: PageCanvas(controller: c))));
-    await t.pump();
-  }
-
-  testWidgets('a conflicted box shows an amber frame and a Conflict badge', (t) async {
-    final c = controllerOf(conflicted);
-    await pump(t, c);
-    expect(find.byKey(const ValueKey('conflict-badge-a')), findsOneWidget);
-    expect(find.byKey(const ValueKey('conflict-frame')), findsOneWidget);
-    expect(find.text('Conflict'), findsOneWidget);
-    // A box without conflicts has neither.
-    final c2 = controllerOf(mine);
-    await pump(t, c2);
-    expect(find.byKey(const ValueKey('conflict-badge-a')), findsNothing);
-  });
-
-  testWidgets('the badge opens both versions side by side', (t) async {
-    final c = controllerOf(conflicted);
-    await pump(t, c);
-    await t.tap(find.byKey(const ValueKey('conflict-badge-a')));
-    await t.pumpAndSettle();
-    expect(find.text('This device'), findsOneWidget);
-    expect(find.text('Other device · saved 2026-10-25 09:05'), findsOneWidget);
-    expect(
-      find.descendant(of: find.byKey(const ValueKey('conflict-mine')), matching: find.text('mine')),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(of: find.byKey(const ValueKey('conflict-theirs')), matching: find.text('theirs')),
-      findsOneWidget,
-    );
-  });
-
-  testWidgets('Keep mine from the dialog drops the conflict', (t) async {
-    final c = controllerOf(conflicted);
-    await pump(t, c);
-    await t.tap(find.byKey(const ValueKey('conflict-badge-a')));
-    await t.pumpAndSettle();
-    await t.tap(find.byKey(const ValueKey('conflict-keep-mine')));
-    await t.pumpAndSettle();
-    expect(find.byKey(const ValueKey('conflict-dialog')), findsNothing);
-    expect(find.byKey(const ValueKey('conflict-badge-a')), findsNothing);
-    expect((c.page.node('a')! as BoxRecord).snapshotText, 'mine');
-    expect(saved, isNotEmpty);
-  });
-
   group('resolutions', () {
     test('keep mine, and undo', () {
       final c = controllerOf(conflicted);
@@ -181,17 +131,6 @@ void main() {
       c.undo();
       expect((c.page.node('a')! as BoxRecord).isConflicted, isTrue);
     });
-  });
-
-  testWidgets('a deleted-on-the-other-side box offers Keep and Delete', (t) async {
-    final c = controllerOf(deletedFlag);
-    await pump(t, c);
-    await t.tap(find.byKey(const ValueKey('conflict-badge-a')));
-    await t.pumpAndSettle();
-    expect(find.byKey(const ValueKey('conflict-keep-theirs')), findsNothing);
-    await t.tap(find.byKey(const ValueKey('conflict-delete')));
-    await t.pumpAndSettle();
-    expect(c.page.nodes, isEmpty);
   });
 
   test('applyExternal swaps the page and saves only when asked', () {

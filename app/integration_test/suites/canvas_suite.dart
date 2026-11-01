@@ -415,26 +415,22 @@ void canvasSuite() {
         }, 1));
         await s.nb.checkFile(other.pathFor(pageId));
         await s.pump(500);
-        // 058: conflict badge on the box and a mark on the page row.
+        // 058: a warning in the box's place, the corner icon and a mark on
+        // the page row (the conflict came while the page was open: no dialog).
         expect((s.nb.current!.page.node(id)! as BoxRecord).isConflicted, isTrue);
-        expect(find.byKey(const ValueKey('conflict-badge')), findsOneWidget);
+        expect(find.byKey(const ValueKey('issue-chip')), findsOneWidget);
+        expect(find.byKey(const ValueKey('issues-icon')), findsOneWidget);
         expect(s.nb.hasConflict(pageId), isTrue);
-        // 059: the badge opens both versions.
-        await t.tap(find.byKey(const ValueKey('conflict-badge')));
+        // 059: the warning opens both versions.
+        await t.tap(find.byKey(const ValueKey('issue-chip')));
         await s.pump(500);
-        expect(find.byKey(const ValueKey('conflict-dialog')), findsOneWidget);
+        expect(find.byKey(const ValueKey('issues-dialog')), findsOneWidget);
         expect(find.text('Conflicting changes'), findsOneWidget);
-        // 168: Keep mine is the only filled button.
-        expect(find.byType(FilledButton), findsOneWidget);
-        expect(find.descendant(of: find.byType(FilledButton), matching: find.text('Keep mine')), findsOneWidget);
-        // 105/187: Edit manually shows two editable panes.
-        await t.tap(find.byKey(const ValueKey('conflict-edit')));
-        await s.pump(700);
-        expect(find.byKey(const ValueKey('conflict-edit-dialog')), findsOneWidget);
-        expect(find.byKey(const ValueKey('conflict-edit-mine')), findsOneWidget);
-        expect(find.byKey(const ValueKey('conflict-edit-theirs')), findsOneWidget);
-        // 063: use the other version.
-        await t.tap(find.byKey(const ValueKey('conflict-use-theirs')));
+        // 168: Keep this version is the only filled button.
+        expect(find.descendant(of: find.byKey(const ValueKey('issues-dialog')), matching: find.byType(FilledButton)), findsOneWidget);
+        expect(find.descendant(of: find.byType(FilledButton), matching: find.text('Keep this version')), findsOneWidget);
+        // 063: keep the other version.
+        await t.tap(find.byKey(const ValueKey('conflict-keep-theirs')));
         await s.pump(700);
         expect((s.nb.current!.page.node(id)! as BoxRecord).isConflicted, isFalse);
         expect((s.nb.current!.page.node(id)! as BoxRecord).snapshotText, 'theirs');
@@ -442,12 +438,14 @@ void canvasSuite() {
         s.nb.current!.undo();
         await s.pump(400);
         expect((s.nb.current!.page.node(id)! as BoxRecord).isConflicted, isTrue);
-        // 060: Keep mine clears the badge and keeps our text.
-        await t.tap(find.byKey(const ValueKey('conflict-badge')));
+        // 060: the corner icon reopens it; Keep this version clears the
+        // warning and keeps our text.
+        await t.tap(find.byKey(const ValueKey('issues-icon')));
         await s.pump(500);
         await t.tap(find.byKey(const ValueKey('conflict-keep-mine')));
         await s.pump(600);
-        expect(find.byKey(const ValueKey('conflict-badge')), findsNothing);
+        expect(find.byKey(const ValueKey('issue-chip')), findsNothing);
+        expect(find.byKey(const ValueKey('issues-icon')), findsNothing);
         expect((s.nb.current!.page.node(id)! as BoxRecord).snapshotText, 'mine');
       });
     });

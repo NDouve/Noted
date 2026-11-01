@@ -188,7 +188,7 @@ void main() {
     c.dispose();
   });
 
-  testWidgets('a conflicted box of a disallowed type offers no manual edit', (t) async {
+  testWidgets('a conflicted box of a disallowed type is settled from its snapshots', (t) async {
     final mine = commitBox(
       createBox(const _Codec('test.other'), const Bounds(50, 50, 200, 60), device: 'D'),
       const _Codec('test.other'),
@@ -205,23 +205,16 @@ void main() {
       ),
       modules,
     );
-    final id = mine.id;
-    Future<void> openDialog(Set<String> off) async {
-      final key = GlobalKey<PageCanvasState>();
-      await pump(t, c, off, key);
-      await t.tap(find.byKey(ValueKey('conflict-badge-$id')));
-      await t.pumpAndSettle();
-    }
-
-    await openDialog({'test.other'});
-    expect(find.byKey(const ValueKey('conflict-keep-mine')), findsOneWidget);
-    expect(find.byKey(const ValueKey('conflict-edit')), findsNothing);
-    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await pump(t, c, {'test.other'}, GlobalKey<PageCanvasState>());
     await t.pumpAndSettle();
-
-    // Allowed on the page, the same conflict offers it.
-    await openDialog({});
-    expect(find.byKey(const ValueKey('conflict-edit')), findsOneWidget);
+    // The sequence opens at once; a box of a disallowed type is settled from
+    // its snapshots: keep this, keep the other, or place both.
+    expect(find.byKey(const ValueKey('issues-dialog')), findsOneWidget);
+    expect(find.textContaining('can’t open'), findsWidgets);
+    expect(find.byKey(const ValueKey('conflict-keep-mine')), findsOneWidget);
+    expect(find.byKey(const ValueKey('conflict-keep-theirs')), findsOneWidget);
+    expect(find.byKey(const ValueKey('conflict-place-both')), findsOneWidget);
+    expect(find.byKey(const ValueKey('conflict-ask-ai')), findsNothing);
     c.dispose();
   });
 }

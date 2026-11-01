@@ -2,12 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// TODO(PM): temporary copy of the two types the issue-UI task adds to
-// packages/noted_canvas (section F of the run's design brief). At merge,
-// delete this file and import them from `package:noted_canvas/noted_canvas.dart`
-// instead; the shapes are identical.
-
 /// The page AI's help with a conflict (run 2026-11-01-04).
+///
+/// The canvas only asks; the app decides whether a page AI is connected and
+/// how the request reaches it. A null [PageAiMerge] on the canvas means the
+/// option is never shown.
 abstract interface class PageAiMerge {
   /// Whether a page AI can be asked to merge [boxId]'s conflict on [pageId] now
   /// (only note and AI boxes; access Open/Privileged; a connected page code).
@@ -21,17 +20,24 @@ abstract interface class PageAiMerge {
   void cancel(String pageId, String boxId);
 }
 
+/// What the page AI proposed for a conflicted box. Nothing changes until the
+/// user accepts it.
 final class AiMergeProposal {
-  const AiMergeProposal({required this.markdown, required this.data, required this.dataVersion, this.by});
+  const AiMergeProposal({
+    required this.markdown,
+    required this.data,
+    required this.dataVersion,
+    this.by,
+  });
 
-  /// The label of the code that answered (for the dialog: "Claude Code
-  /// suggests"); null when unknown.
+  /// The label of the AI connection that answered, if known.
   final String? by;
 
   /// What the AI proposed, as markdown (shown beside both versions).
   final String markdown;
 
-  /// The box's new data if accepted (already encoded for the box type).
+  /// The box's new data if accepted: the typed data of the box's codec (what
+  /// `codec.decode` returns), ready to be committed through it.
   final Object? data;
   final int dataVersion;
 }

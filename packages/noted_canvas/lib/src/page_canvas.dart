@@ -26,7 +26,9 @@ import 'geometry.dart';
 import 'noted_colors.dart';
 import 'noted_theme.dart';
 import 'page_background.dart';
+import 'page_ai_merge.dart';
 import 'page_find.dart';
+import 'page_issues_dialog.dart';
 import 'toolbar_layout.dart';
 import 'toolbar_placeholders.dart';
 
@@ -64,9 +66,19 @@ class PageCanvas extends StatefulWidget {
     this.extraCommands,
     this.attachments,
     this.disallowedTypes = const {},
+    this.aiMerge,
+    this.issueSilence,
   });
 
   final CanvasController controller;
+
+  /// The page AI's help with conflicts; null never shows the option.
+  final PageAiMerge? aiMerge;
+
+  /// Which pages' issue sequences the user silenced during this app run. The
+  /// app passes one shared object; without it a page opened again shows its
+  /// sequence again.
+  final IssueSilence? issueSilence;
 
   /// Box types this page doesn't allow (module availability per page and
   /// binder). Such a type behaves as a switched-off module here (0035): its
@@ -414,12 +426,53 @@ class PageCanvasState extends State<PageCanvas>
     _dropDisallowedTool();
     widget.findRequests?.addListener(_takeFindRequest);
     _takeFindRequest();
+    _showIssuesOnOpen();
+  }
+
+  final IssueSilence _ownSilence = IssueSilence();
+  IssueSilence get _silence => widget.issueSilence ?? _ownSilence;
+  bool _issuesOpen = false;
+
+  List<PageIssue> get _issues => _c.issues(disallowedTypes: _off);
+
+  /// A page with issues shows them one after another when it opens, unless
+  /// the user silenced them during this run.
+  void _showIssuesOnOpen() {
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _readOnly || _silence.isSilenced(_c.page.id)) return;
+      if (_issues.isNotEmpty) unawaited(openIssues());
+    });
+    SchedulerBinding.instance.scheduleFrame();
+  }
+
+  /// Opens the issue sequence at the first unresolved issue, or, with
+  /// [onlyBox], just that box's issues.
+  Future<void> openIssues({String? onlyBox}) async {
+    if (_issuesOpen || !mounted || _readOnly) return;
+    setState(() => _issuesOpen = true);
+    final end = await showPageIssues(
+      context,
+      _c,
+      disallowedTypes: _off,
+      aiMerge: widget.aiMerge,
+      onlyBox: onlyBox,
+      onPlace: (id) {
+        _c.select(id);
+        _revealBox(id);
+        _focus.requestFocus();
+      },
+    );
+    if (end == IssueDialogEnd.silenced && onlyBox == null) {
+      _silence.silence(_c.page.id);
+    }
+    if (mounted) setState(() => _issuesOpen = false);
   }
 
   @override
   void didUpdateWidget(PageCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != widget.controller) {
+      _showIssuesOnOpen();
       _cancelSession();
       oldWidget.controller.removeListener(_changed);
       widget.controller.addListener(_changed);
@@ -629,6 +682,8 @@ class PageCanvasState extends State<PageCanvas>
   void _changed() {
     // The page turned read-only under a running tool: end it.
     if (_readOnly) _cancelSession();
+    // Once the page has no issues left, a later one is shown again.
+    if (_silence.isSilenced(_c.page.id) && _issues.isEmpty) _silence.clear(_c.page.id);
     _find.refresh();
     _hostsRevision++;
     setState(() {});
@@ -799,6 +854,7 @@ class PageCanvasState extends State<PageCanvas>
               attachments: widget.attachments,
               insertFilesBeside: _readOnly ? null : _insertFilesBeside,
               disallowedTypes: _off,
+              onIssueTap: (id) => unawaited(openIssues(onlyBox: id)),
             );
       kept[node.id] = (boxKey, host);
       hosts.add(host);
@@ -854,6 +910,8 @@ class PageCanvasState extends State<PageCanvas>
           if (_transform.value != matrix) _transform.value = matrix;
 
           final readOnly = _readOnly;
+          final issueCount = readOnly ? 0 : _issues.length;
+          final showIssueIcon = issueCount > 0 && !_issuesOpen;
           // A tool picked on another page does nothing on a read-only one.
           final tool = readOnly ? null : _tools.active;
           return Stack(
@@ -978,7 +1036,7 @@ class PageCanvasState extends State<PageCanvas>
               // The find bar, top right under the toolbar.
               Positioned(
                 top: NotedMetrics.of(context).space2,
-                right: NotedMetrics.of(context).space4,
+                right: NotedMetrics.of(context).space4 + (showIssueIcon ? _issueIconSize + 8 : 0),
                 child: ListenableBuilder(
                   listenable: _find,
                   builder: (context, _) => _find.isOpen
@@ -990,6 +1048,16 @@ class PageCanvasState extends State<PageCanvas>
                       : const SizedBox.shrink(),
                 ),
               ),
+              // The page's issues, folded into a red circle in the corner.
+              if (showIssueIcon)
+                Positioned(
+                  top: NotedMetrics.of(context).space2,
+                  right: NotedMetrics.of(context).space4,
+                  child: _IssuesIcon(
+                    count: issueCount,
+                    onTap: () => unawaited(openIssues()),
+                  ),
+                ),
               if (kDebugMode)
                 Positioned(
                   left: 12,
@@ -999,6 +1067,81 @@ class PageCanvasState extends State<PageCanvas>
             ],
           );
         },
+    );
+  }
+}
+
+const double _issueIconSize = 34;
+
+/// The red circular warning icon that reopens the issue sequence; a count
+/// badge shows when there is more than one issue.
+class _IssuesIcon extends StatelessWidget {
+  const _IssuesIcon({required this.count, required this.onTap});
+
+  final int count;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final type = NotedTypography.of(context);
+    return Semantics(
+      button: true,
+      label: count == 1
+          ? '1 issue on this page. Open it.'
+          : '$count issues on this page. Open them.',
+      excludeSemantics: true,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          key: const ValueKey('issues-icon'),
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: SizedBox(
+            width: _issueIconSize,
+            height: _issueIconSize,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                DecoratedBox(
+                  decoration: BoxDecoration(color: scheme.error, shape: BoxShape.circle),
+                  child: SizedBox.expand(
+                    child: Icon(Icons.warning_amber_rounded, color: scheme.onError, size: 20),
+                  ),
+                ),
+                if (count > 1)
+                  Positioned(
+                    right: -4,
+                    top: -4,
+                    child: DecoratedBox(
+                      key: const ValueKey('issues-icon-count'),
+                      decoration: BoxDecoration(
+                        color: scheme.surface,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: scheme.error),
+                      ),
+                      child: SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: Center(
+                          child: Text(
+                            '$count',
+                            style: type.small.copyWith(
+                              fontSize: 10,
+                              height: 1,
+                              fontWeight: FontWeight.w700,
+                              color: scheme.error,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

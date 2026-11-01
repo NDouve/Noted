@@ -78,8 +78,6 @@ void main() {
             home: Scaffold(body: PageCanvas(controller: c)),
           ),
         );
-        await t.pump();
-        await t.tap(find.byKey(const ValueKey('conflict-badge-a')));
         await t.pumpAndSettle();
       }
 
@@ -91,7 +89,7 @@ void main() {
       testWidgets('the conflict view has a conflict-soft header band', (t) async {
         await open(t, conflicted);
         final band = find.descendant(
-          of: find.byKey(const ValueKey('conflict-dialog')),
+          of: find.byKey(const ValueKey('issues-dialog')),
           matching: find.byKey(const ValueKey('conflict-header')),
         );
         expect(band, findsOneWidget);
@@ -113,23 +111,22 @@ void main() {
         expect(rect.top, dialog.top);
       });
 
-      testWidgets('the conflict view has one primary: Keep mine', (t) async {
+      testWidgets('the conflict view has one primary: Keep this version', (t) async {
         await open(t, conflicted);
-        final dialog = find.byKey(const ValueKey('conflict-dialog'));
+        final dialog = find.byKey(const ValueKey('issues-dialog'));
         final primaries = find.descendant(
           of: dialog,
           matching: find.byType(FilledButton),
         );
         expect(primaries, findsOneWidget);
         expect(
-          find.descendant(of: primaries, matching: find.text('Keep mine')),
+          find.descendant(of: primaries, matching: find.text('Keep this version')),
           findsOneWidget,
         );
-        // The other resolutions are secondary, Cancel is a ghost button.
+        // The other resolutions are secondary, Silence is a ghost button.
         for (final key in [
           'conflict-keep-theirs',
-          'conflict-keep-both',
-          'conflict-edit',
+          'conflict-place-both',
         ]) {
           expect(
             find.descendant(
@@ -140,7 +137,7 @@ void main() {
           );
           expect(t.widget(find.byKey(ValueKey(key))), isA<OutlinedButton>());
         }
-        expect(find.widgetWithText(TextButton, 'Cancel'), findsOneWidget);
+        expect(find.widgetWithText(TextButton, 'Silence'), findsOneWidget);
         // The primary fill is the accent.
         expect(
           theme.filledButtonTheme.style!.backgroundColor!.resolve({}),
@@ -148,11 +145,11 @@ void main() {
         );
       });
 
-      testWidgets('a deleted conflict: Keep box primary, Delete box destructive', (
+      testWidgets('a deleted conflict: Keep the box primary, Delete it destructive', (
         t,
       ) async {
         await open(t, deleted);
-        final dialog = find.byKey(const ValueKey('conflict-dialog'));
+        final dialog = find.byKey(const ValueKey('issues-dialog'));
         expect(
           find.descendant(of: dialog, matching: find.byType(FilledButton)),
           findsOneWidget,
@@ -161,33 +158,12 @@ void main() {
         expect(t.widget(del), isA<OutlinedButton>());
         expect(
           DefaultTextStyle.of(
-            t.element(find.descendant(of: del, matching: find.text('Delete box'))),
+            t.element(find.descendant(of: del, matching: find.text('Delete it'))),
           ).style.color,
           scheme.error,
         );
       });
 
-      testWidgets('Edit manually: Use this version is primary for this device', (
-        t,
-      ) async {
-        await open(t, conflicted);
-        await t.tap(find.byKey(const ValueKey('conflict-edit')));
-        await t.pumpAndSettle();
-        final dialog = find.byKey(const ValueKey('conflict-edit-dialog'));
-        final primaries = find.descendant(
-          of: dialog,
-          matching: find.byType(FilledButton),
-        );
-        expect(primaries, findsOneWidget);
-        expect(
-          t.widget(find.byKey(const ValueKey('conflict-use-mine'))),
-          isA<FilledButton>(),
-        );
-        expect(
-          t.widget(find.byKey(const ValueKey('conflict-use-theirs'))),
-          isA<OutlinedButton>(),
-        );
-      });
     });
   }
 }
