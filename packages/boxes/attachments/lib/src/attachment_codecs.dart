@@ -116,24 +116,17 @@ final class ImageCodec extends BoxCodec<ImageData?> {
           ? const Merged(null)
           : const Conflicted();
     }
-    final ref = pickMerged(base?.ref, mine.ref, theirs.ref);
-    final alt = pickMerged(base?.alt, mine.alt, theirs.alt);
-    final extra = pickMerged(
-      jsonEncode(base?.extra ?? const {}),
-      jsonEncode(mine.extra),
-      jsonEncode(theirs.extra),
-    );
-    if (ref == null || alt == null || extra == null) return const Conflicted();
-    final from = ref == mine.ref ? mine : theirs;
-    return Merged(
-      ImageData(
-        ref: ref,
-        width: from.width,
-        height: from.height,
-        alt: alt,
-        extra: extra == jsonEncode(mine.extra) ? mine.extra : theirs.extra,
-      ),
-    );
+    // Both sides changed the box, so unless they ended up identical the user
+    // chooses: merging the picture of one side with the alt text of the
+    // other would pair a text with the wrong picture (search and AI read
+    // the alt text).
+    final same =
+        mine.ref == theirs.ref &&
+        mine.width == theirs.width &&
+        mine.height == theirs.height &&
+        mine.alt == theirs.alt &&
+        jsonEncode(mine.extra) == jsonEncode(theirs.extra);
+    return same ? Merged(mine) : const Conflicted();
   }
 
   /// Reads and writes the page's assets folder.
@@ -207,9 +200,11 @@ final class FileCodec extends BoxCodec<FileData?> {
           ? const Merged(null)
           : const Conflicted();
     }
-    final ref = pickMerged(base?.ref, mine.ref, theirs.ref);
-    if (ref == null) return const Conflicted();
-    return Merged(ref == mine.ref ? mine : theirs);
+    // Both sides changed it: only identical results merge.
+    final same =
+        mine.ref == theirs.ref &&
+        jsonEncode(mine.extra) == jsonEncode(theirs.extra);
+    return same ? Merged(mine) : const Conflicted();
   }
 
   @override

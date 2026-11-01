@@ -77,6 +77,29 @@ void main() {
       expect(texts(merge(base, t, m)), ['a', 'm', 'b', 'c', 't']);
     });
 
+    test('an insert between duplicate identical base blocks', () {
+      final base = [para('a'), para('a'), para('a')];
+      final m = [para('a'), para('x'), para('a'), para('a')];
+      final t = [para('a'), para('a'), para('y'), para('a')];
+      expect(texts(merge(base, m, t)), ['a', 'x', 'a', 'y', 'a']);
+      final both = [para('a'), para('x'), para('a'), para('y'), para('a')];
+      expect(texts(merge(base, m, both)), ['a', 'x', 'a', 'y', 'a']);
+    });
+
+    test('a large document merges within a generous bound', () {
+      final base = [for (var i = 0; i < 3000; i++) para('line $i')];
+      final m = [...base, para('mine')];
+      final t = [para('first'), ...base];
+      final sw = Stopwatch()..start();
+      final r = merge(base, m, t);
+      expect(texts(r), hasLength(3002));
+      expect(sw.elapsed, lessThan(const Duration(seconds: 5)));
+      // An edit deep inside is found as a conflict in the same time.
+      final edited = [...base]..[2999] = para('changed');
+      conflicts(base, edited, t);
+      expect(sw.elapsed, lessThan(const Duration(seconds: 10)));
+    });
+
     test('insert at the same position: mine first', () {
       final base = [para('a'), para('b')];
       final m = [para('a'), para('m'), para('b')];
@@ -141,23 +164,80 @@ void main() {
 
   group('text added to the end of the last block, or the start of the first',
       () {
-    test('both append to the last block', () {
-      final r = merge(
-        [para('a'), para('hi')],
-        [para('a'), para('hi there')],
-        [para('a'), para('hi you')],
+    test('both append different text to the last block: conflict', () {
+      conflicts(
+        [para('a'), para('Total: ')],
+        [para('a'), para('Total: 5')],
+        [para('a'), para('Total: 07')],
       );
-      // The runs join (same attributes): "hi" + " there" + " you".
-      expect(texts(r), ['a', 'hi there you']);
     });
 
-    test('both prepend to the first block', () {
-      final r = merge(
+    test('both prepend different text to the first block: conflict', () {
+      conflicts(
         [para('hi'), para('z')],
         [para('one hi'), para('z')],
         [para('two hi'), para('z')],
       );
-      expect(texts(r), ['one two hi', 'z']);
+    });
+
+    test('one appends text to the last block, the other prepends to the '
+        'first (a single block)', () {
+      final r = merge([para('hi')], [para('hi there')], [para('Oh hi')]);
+      expect(texts(r), ['Oh hi there']);
+    });
+
+    test('an appended run joins the base run only at the seam', () {
+      final r = merge(
+        [para('a'), para('hi')],
+        [para('a'), para('hi there')],
+        [para('a'), para('hi'), para('new')],
+      );
+      expect(texts(r), ['a', 'hi there', 'new']);
+      final delta = ((blocks(r)[1] as Map)['data'] as Map)['delta'];
+      expect(delta, [
+        {'insert': 'hi there'},
+      ]);
+    });
+
+    test('runs with other keys are never joined or dropped', () {
+      final odd = {
+        'insert': 'x',
+        'attributes': {'bold': true},
+        'future': 1,
+      };
+      final base = [
+        runs([odd]),
+      ];
+      final m = [
+        runs([
+          odd,
+          {'insert': 'y'},
+        ]),
+      ];
+      final r = merge(base, m, [...base, para('t')]);
+      expect(((blocks(r).first as Map)['data'] as Map)['delta'], [
+        odd,
+        {'insert': 'y'},
+      ]);
+      // A grown run that carries an unknown key is not an append.
+      conflicts(
+        [
+          runs([
+            {'insert': 'x', 'future': 1},
+          ]),
+        ],
+        [
+          runs([
+            {'insert': 'xy', 'future': 1},
+          ]),
+        ],
+        [
+          runs([
+            {'insert': 'x', 'future': 1},
+          ]),
+          para('t'),
+        ],
+      );
     });
 
     test('one appends text, the other appends a block', () {
@@ -189,19 +269,23 @@ void main() {
             {'insert': ' B', 'attributes': bold},
           ]),
         ],
-        [para('hi t')],
+        [para('Oh hi')],
       );
       final delta = (blocks(r).first as Map)['data'] as Map;
       expect(delta['delta'], [
-        {'insert': 'hi'},
+        {'insert': 'Oh hi'},
         {'insert': ' B', 'attributes': bold},
-        {'insert': ' t'},
       ]);
     });
 
-    test('text added to a block that has no runs yet', () {
-      final r = merge([para('')], [para('m')], [para('t')]);
-      expect(texts(r), ['m', 't']);
+    test('text typed into an empty first block on both sides: conflict', () {
+      conflicts([para('')], [para('m')], [para('t')]);
+      conflicts([para('')], [para('same')], [para('other')]);
+    });
+
+    test('the same text typed into an empty block on both sides merges once',
+        () {
+      expect(texts(merge([para('')], [para('x')], [para('x')])), ['x']);
     });
 
     test('the other data of the extended block is kept', () {
@@ -214,9 +298,11 @@ void main() {
   });
 
   group('trailing blank paragraph', () {
-    test('typing into the blank line of a new box on both sides', () {
-      final r = merge([para('')], [para('m')], [para('t')]);
-      expect(texts(r), ['m', 't']);
+    test('typing into the trailing blank line (after other blocks) on both '
+        'sides: two added blocks', () {
+      final base = [para('a'), para('')];
+      final r = merge(base, [para('a'), para('m')], [para('a'), para('t')]);
+      expect(texts(r), ['a', 'm', 't']);
     });
 
     test('a side that dropped the blank line (AI append) and a user append',
@@ -276,6 +362,23 @@ void main() {
 
   group('anything else is a conflict', () {
     final base = [para('a'), para('b'), para('c')];
+
+    test('a sub-bullet added under a base list item', () {
+      final item = para('item', type: 'bulleted_list');
+      final withChild = {
+        ...item,
+        'children': [para('sub', type: 'bulleted_list')],
+      };
+      conflicts([item], [withChild], [item, para('t')]);
+    });
+
+    test('an edit of one of two identical base blocks', () {
+      conflicts(
+        [para('a'), para('a')],
+        [para('a'), para('A')],
+        [para('a'), para('a'), para('t')],
+      );
+    });
 
     test('an edited block', () {
       conflicts(

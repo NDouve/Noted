@@ -89,8 +89,9 @@ final class NoteCodec extends BoxCodec<NoteData> {
 
   /// Both sides only added (0020, 0051): blocks inserted, or text appended
   /// to the last block or prepended to the first. Anything else is a
-  /// conflict. The exact rules are on [mergeNoteJson]. [mine]'s other
-  /// top-level keys are kept.
+  /// conflict. The exact rules are on [mergeNoteJson]. The other top-level
+  /// keys are merged three-way: a side that changed one wins over one that
+  /// didn't, and both changing it differently is a conflict.
   @override
   MergeResult<NoteData> merge(NoteData base, NoteData mine, NoteData theirs) {
     final merged = mergeNoteJson(base.document, mine.document, theirs.document);

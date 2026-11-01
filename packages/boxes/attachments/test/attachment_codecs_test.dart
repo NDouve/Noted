@@ -116,7 +116,8 @@ void main() {
       expect(const FileCodec().isEmpty(null), isFalse);
     });
 
-    test('merge: one side\'s alt text wins; both changing it differently conflicts', () {
+    test('merge: both changing the alt text differently conflicts; the same '
+        'change on both sides merges', () {
       const codec = ImageCodec();
       final base = ImageData(
         ref: AttachmentRef(name: 'a.png', size: 1, hash: hash, file: 'f'),
@@ -125,7 +126,9 @@ void main() {
       );
       final mine = base.copyWith(alt: 'mine');
       expect(
-        (codec.merge(base, mine, base) as Merged<ImageData?>).data!.alt,
+        (codec.merge(base, mine, base.copyWith(alt: 'mine')) as Merged<ImageData?>)
+            .data!
+            .alt,
         'mine',
       );
       expect(
@@ -156,17 +159,18 @@ void main() {
       );
     });
 
-    test('image: different parts (picture one side, alt text the other) '
-        'merge, as before', () {
+    test('image: picture on one side and alt text on the other conflicts '
+        '(the text would describe the wrong picture)', () {
       const codec = ImageCodec();
       final base = ImageData(ref: ref('a.png'), width: 1, height: 1);
-      final r = codec.merge(
-        base,
-        base.copyWith(ref: ref('m.png')),
-        base.copyWith(alt: 'text'),
+      expect(
+        codec.merge(
+          base,
+          base.copyWith(ref: ref('m.png')),
+          base.copyWith(alt: 'text'),
+        ),
+        isA<Conflicted<ImageData?>>(),
       );
-      final d = (r as Merged<ImageData?>).data!;
-      expect((d.ref.name, d.alt), ('m.png', 'text'));
     });
 
     test('file: both replaced the file', () {

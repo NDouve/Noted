@@ -39,10 +39,14 @@
 /// different root, or another top-level key changed on both sides.
 ///
 /// Merging, where both sides added: at the same gap, mine's blocks go first
-/// then theirs (a gap both sides filled with the same blocks keeps one copy).
-/// Text appended to the same last block: mine's runs, then theirs (once if
-/// the same); prepended to the same first block: mine's runs, then theirs,
-/// then the base text. Runs that touch and have the same attributes join.
+/// then theirs. If both sides added exactly the same blocks at a gap, or
+/// exactly the same runs at the same end of a block, that is kept once (both
+/// sides made the same addition). Both sides adding different text at the
+/// same end of the same block is a conflict (the order would be a guess);
+/// text at different ends of a block merges (prepended runs, base text,
+/// appended runs). A run that grew at the seam with the base text joins it
+/// when both are plain `{insert, attributes?}` runs with equal attributes;
+/// no other runs are joined or rewritten.
 /// Blocks are never rewritten, so an AI box's `noted_ai` marks on blocks an
 /// AI added stay on them, and a mark on an extended block keeps its old
 /// fingerprint (so it stops counting, as for any edit of that block).
@@ -76,10 +80,15 @@ Map<String, Object?>? mergeNoteJson(
   final bAll = _children(bd), mAll = _children(md), tAll = _children(td);
   if (bAll == null || mAll == null || tAll == null) return null;
 
-  final bHad = _endsBlank(bAll);
-  final mHad = _endsBlank(mAll);
-  final tHad = _endsBlank(tAll);
-  final b = _stripBlank(bAll), m = _stripBlank(mAll), t = _stripBlank(tAll);
+  // A base that is only a blank paragraph is a block like any other: text
+  // typed into it on both sides is two edits of one block.
+  final strip = bAll.length > 1;
+  final bHad = strip && _endsBlank(bAll);
+  final mHad = strip && _endsBlank(mAll);
+  final tHad = strip && _endsBlank(tAll);
+  final b = strip ? _stripBlank(bAll) : bAll;
+  final m = strip ? _stripBlank(mAll) : mAll;
+  final t = strip ? _stripBlank(tAll) : tAll;
 
   final ms = _Side.parse(b, m);
   final ts = _Side.parse(b, t);
@@ -99,6 +108,11 @@ Map<String, Object?>? mergeNoteJson(
     }
     if (p == b.length) break;
     final em = ms.ext[p], et = ts.ext[p];
+    // Both extended the same end of the block with different text: the
+    // order is a guess ("Total: 507", "Meeting at 3Call Bob"), so ask.
+    if (em != null && et != null && em.atEnd == et.atEnd && !_eq(em.ops, et.ops)) {
+      return null;
+    }
     merged.add(em == null && et == null ? b[p] : _extend(b[p], em, et));
   }
 
@@ -265,6 +279,7 @@ List<Object?>? _extra(List<Object?> bo, List<Object?> s, bool atEnd) {
   if (b is! Map || o is! Map) return null;
   final bt = b['insert'], ot = o['insert'];
   if (bt is! String || ot is! String || ot.length <= bt.length) return null;
+  if (!_plain(b) || !_plain(o)) return null;
   if (!_joinable(b) || !_eq(_attrs(b), _attrs(o))) return null;
   final grew = atEnd ? ot.startsWith(bt) : ot.endsWith(bt);
   if (!grew) return null;
@@ -304,7 +319,13 @@ Map<String, Object?> _extend(Object? base, _Ext? mine, _Ext? theirs) {
     return _eq(x, y) ? x : [...x, ...y];
   }
 
-  final runs = _join([...add(false), ...delta, ...add(true)]);
+  final pre = add(false), post = add(true);
+  final runs = <Object?>[...pre, ...delta, ...post];
+  // Join only at the two seams between base runs and added runs.
+  if (post.isNotEmpty && delta.isNotEmpty) {
+    _joinAt(runs, pre.length + delta.length - 1);
+  }
+  if (pre.isNotEmpty && delta.isNotEmpty) _joinAt(runs, pre.length - 1);
   return {
     for (final e in block.entries) e.key.toString(): e.value,
     'data': {
@@ -314,26 +335,22 @@ Map<String, Object?> _extend(Object? base, _Ext? mine, _Ext? theirs) {
   };
 }
 
-/// [runs] with touching runs of the same attributes joined.
-List<Object?> _join(List<Object?> runs) {
-  final out = <Object?>[];
-  for (final r in runs) {
-    final prev = out.isEmpty ? null : out.last;
-    if (prev is Map &&
-        r is Map &&
-        _joinable(prev) &&
-        _joinable(r) &&
-        _eq(_attrs(prev), _attrs(r))) {
-      out[out.length - 1] = <String, Object?>{
-        'insert': '${prev['insert']}${r['insert']}',
-        'attributes': ?_attrs(prev),
-      };
-    } else {
-      out.add(r);
-    }
-  }
-  return out;
+/// Joins `runs[i]` and `runs[i + 1]` into one run when both are exactly
+/// `{insert, attributes?}` with equal attributes and plain text; otherwise
+/// leaves them as they are (no unknown key or odd attribute is dropped).
+void _joinAt(List<Object?> runs, int i) {
+  final a = runs[i], b = runs[i + 1];
+  if (a is! Map || b is! Map || !_plain(a) || !_plain(b)) return;
+  if (!_joinable(a) || !_joinable(b) || !_eq(_attrs(a), _attrs(b))) return;
+  runs[i] = <String, Object?>{
+    'insert': '${a['insert']}${b['insert']}',
+    'attributes': ?_attrs(a),
+  };
+  runs.removeAt(i + 1);
 }
+
+bool _plain(Map<Object?, Object?> op) =>
+    op.keys.every((k) => k == 'insert' || k == 'attributes');
 
 /// Deep equality of JSON values (maps by key, whatever their order).
 bool _eq(Object? a, Object? b) {

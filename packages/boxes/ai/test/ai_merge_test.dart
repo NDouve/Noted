@@ -130,20 +130,29 @@ void main() {
           ),
         );
 
-    test('on a new box (blank first line): both kept, AI marked', () {
+    test('on a new box (only a blank line): typing into it and an AI append '
+        'conflict, the user chooses', () {
       final base = boxOf([para('')], owner: owner);
       final ai = AiBoxData(closedAppend(base, 'Summary\n\n- one\n- two'));
-      // The user typed into the blank line.
       final user = boxOf([para('my note')], owner: owner);
+      expect(codec.merge(base, user, ai), isA<Conflicted<AiBoxData>>());
+      expect(codec.merge(base, ai, user), isA<Conflicted<AiBoxData>>());
+    });
+
+    test('a box with a line of text and a blank line: both kept, AI marked',
+        () {
+      final base = boxOf([para('first'), para('')], owner: owner);
+      final ai = AiBoxData(closedAppend(base, 'Summary\n\n- one\n- two'));
+      final user = boxOf([para('first'), para('my note')], owner: owner);
       final d = merged(codec.merge(base, user, ai));
       final blocks = blocksOf(d);
-      expect(blocks.map(textOf), ['my note', 'Summary', 'one', 'two']);
-      expect(isAiWritten(blocks[0]), isFalse);
-      expect(blocks.skip(1).every(isAiWritten), isTrue);
+      expect(blocks.map(textOf), ['first', 'my note', 'Summary', 'one', 'two']);
+      expect(isAiWritten(blocks[1]), isFalse);
+      expect(blocks.skip(2).every(isAiWritten), isTrue);
       expect(d.owner, owner);
-      // And the other way round (mine is the AI's).
       final d2 = merged(codec.merge(base, ai, user));
-      expect(blocksOf(d2).map(textOf), ['Summary', 'one', 'two', 'my note']);
+      expect(blocksOf(d2).map(textOf),
+          ['first', 'Summary', 'one', 'two', 'my note']);
     });
 
     test('after existing text and a trailing blank line', () {
