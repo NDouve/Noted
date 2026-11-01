@@ -31,9 +31,6 @@ class _Actions implements PageTreeActions {
   @override
   Future<void> moveToFolder(PageMeta page) async => calls.add('moveToFolder ${page.id}');
   @override
-  Future<void> convertAttachments(PageMeta page, AttachmentStorage to) async =>
-      calls.add('convertAttachments ${page.id} ${to.value}');
-  @override
   Future<void> newBinderFromTemplate() async => calls.add('newBinderFromTemplate');
   @override
   Future<void> newSubpage(PageMeta page) async => calls.add('newSubpage ${page.id}');
@@ -91,19 +88,6 @@ void main() {
           ('app.page.outdent', 'Outdent'),
           ('app.page.moveToFolder', 'Move to folder…'),
           ('app.page.delete', 'Delete'),
-          ('app.page.ai.inherit', 'Same as parent (Guarded)'),
-          ('app.page.ai.open', 'Open'),
-          ('app.page.ai.privileged', 'Privileged'),
-          ('app.page.ai.guarded', 'Guarded'),
-          ('app.page.attachments.inherit', 'Same as parent'),
-          ('app.page.attachments.folder', 'In a folder beside the page'),
-          ('app.page.attachments.embedded', 'In the page file'),
-          ('app.page.embedAttachments', 'Embed attachments'),
-          ('app.page.attachmentsToFolder', 'Move attachments to folder'),
-          ('app.page.background.plain', 'Page background: Plain'),
-          ('app.page.background.dots', 'Page background: Dots'),
-          ('app.page.background.graph', 'Page background: Graph'),
-          ('app.page.background.ruled', 'Page background: Ruled'),
         ],
       );
     });

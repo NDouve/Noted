@@ -17,6 +17,7 @@ import 'notebook.dart';
 import 'notebook_search.dart';
 import 'page_title_field.dart';
 import 'search_panel.dart';
+import 'settings_panel.dart';
 import 'page_tree_view.dart';
 import 'settings_menu.dart';
 
@@ -231,11 +232,25 @@ class _HomeState extends State<Home> {
                       children: [
                         Padding(
                           padding: EdgeInsets.fromLTRB(m.space6, m.space4, m.space6, m.space2),
-                          child: PageTitleField(
-                            key: ValueKey('title-${current.page.id}'),
-                            notebook: notebook,
-                            pageId: current.page.id,
-                            highlight: _titleHighlight,
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: PageTitleField(
+                                  key: ValueKey('title-${current.page.id}'),
+                                  notebook: notebook,
+                                  pageId: current.page.id,
+                                  highlight: _titleHighlight,
+                                ),
+                              ),
+                              IconButton(
+                                key: const ValueKey('page-settings'),
+                                tooltip: 'Page settings',
+                                icon: const Icon(Icons.tune_rounded),
+                                iconSize: m.icon,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                onPressed: () => showPageSettings(context, notebook, current.page.id),
+                              ),
+                            ],
                           ),
                         ),
                         const Divider(height: 1),
@@ -250,6 +265,7 @@ class _HomeState extends State<Home> {
                             child: PageCanvas(
                               key: _keyFor(current.page.id),
                               attachments: notebook.attachments,
+                              disallowedTypes: notebook.disallowedBoxTypesFor(current.page.id),
                               controller: current,
                               tools: notebook.tools,
                               readOnly: notebook.readOnlyReason != null,

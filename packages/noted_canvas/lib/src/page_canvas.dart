@@ -63,9 +63,18 @@ class PageCanvas extends StatefulWidget {
     this.findRequests,
     this.extraCommands,
     this.attachments,
+    this.disallowedTypes = const {},
   });
 
   final CanvasController controller;
+
+  /// Box types this page doesn't allow (module availability per page and
+  /// binder). Such a type behaves as a switched-off module here (0035): its
+  /// boxes show their saved snapshot read-only, its tools and commands are
+  /// disabled, and files for it are refused. Nothing is changed in the page.
+  /// A type that isn't a registered, switchable module is ignored: the
+  /// always-on type can't be disallowed.
+  final Set<String> disallowedTypes;
 
   /// The page's images and files (Box API 0.7), handed to the modules;
   /// null where the page has none (nothing can be pasted or dropped then).
@@ -176,7 +185,7 @@ class PageCanvasState extends State<PageCanvas>
     var point = at ?? viewCentre ?? Offset.zero;
     String? last;
     for (final f in files) {
-      final module = _c.modules.moduleForFile(f);
+      final module = _c.modules.moduleForFile(f, exclude: _off);
       if (module == null) continue;
       final made = await module.hostCreateFromFile(f, store);
       if (made == null || !mounted || _readOnly) continue;
@@ -299,12 +308,73 @@ class PageCanvasState extends State<PageCanvas>
   void _buildCommands() {
     final old = _commands;
     _commands = CommandRegistry()
-      ..registerAll(buildCanvasCommands(this))
-      ..registerAll(_c.modules.commandsFor(this))
+      ..registerAll(_forAvailability(buildCanvasCommands(this)))
+      ..registerAll(_moduleCommands())
       ..registerAll(widget.extraCommands?.call() ?? const []);
     // Last, so a real command with a placeholder's id wins.
     _commands.registerAll(placeholderCommands(_commands));
     old.dispose();
+  }
+
+  // The switchable modules whose type this page disallows.
+  Set<String> get _off => {
+    for (final id in widget.disallowedTypes)
+      if (_c.modules.isSwitchable(id)) id,
+  };
+
+  // The commands of the modules that are on, those of a disallowed module
+  // disabled (and saying why in their tooltip).
+  List<Command> _moduleCommands() {
+    final off = _off;
+    return [
+      for (final m in _c.modules.enabled)
+        ...off.contains(m.codec.typeId) ? m.commands(this).map(_notAllowed) : m.commands(this),
+    ];
+  }
+
+  // The canvas's own commands, with the tool command of a disallowed module
+  // disabled.
+  List<Command> _forAvailability(List<Command> commands) {
+    final off = _off;
+    if (off.isEmpty) return commands;
+    final toolIds = {
+      for (final m in _c.modules.enabled)
+        if (off.contains(m.codec.typeId))
+          for (final t in m.tools) t.id,
+    };
+    return [for (final c in commands) toolIds.contains(c.id) ? _notAllowed(c) : c];
+  }
+
+  Command _notAllowed(Command c) {
+    final disabled = Command(
+      id: c.id,
+      label: '${c.label} (not allowed on this page)',
+      icon: c.icon,
+      iconBuilder: c.iconBuilder,
+      showLabel: c.showLabel,
+      shortcut: c.shortcut,
+      enabled: () => false,
+      invoke: () {},
+      menu: c.menu,
+    );
+    c.dispose();
+    return disabled;
+  }
+
+  // A tool that is active but not allowed here (the selection is shared by
+  // pages) goes back to Select and type.
+  void _dropDisallowedTool() {
+    final active = _tools.active;
+    final off = _off;
+    if (active == null || off.isEmpty) return;
+    for (final m in _c.modules.enabled) {
+      if (off.contains(m.codec.typeId) && m.tools.any((t) => identical(t, active))) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && identical(_tools.active, active)) _tools.select(null);
+        });
+        return;
+      }
+    }
   }
 
   /// The current view, for tests and the app shell.
@@ -339,6 +409,7 @@ class PageCanvasState extends State<PageCanvas>
     _tools.addListener(_toolChanged);
     _find = _makeFind();
     _buildCommands();
+    _dropDisallowedTool();
     widget.findRequests?.addListener(_takeFindRequest);
     _takeFindRequest();
   }
@@ -367,9 +438,16 @@ class PageCanvasState extends State<PageCanvas>
       (oldWidget.tools ?? _ownTools).removeListener(_toolChanged);
       _tools.addListener(_toolChanged);
     }
+    final disallowedChanged = !setEquals(oldWidget.disallowedTypes, widget.disallowedTypes);
+    if (disallowedChanged) {
+      _hostsRevision++;
+      _hostPerBox.clear();
+    }
     if (oldWidget.controller != widget.controller ||
-        oldWidget.tools != widget.tools) {
+        oldWidget.tools != widget.tools ||
+        disallowedChanged) {
       _buildCommands();
+      _dropDisallowedTool();
     }
   }
 
@@ -718,6 +796,7 @@ class PageCanvasState extends State<PageCanvas>
               find: _find,
               attachments: widget.attachments,
               insertFilesBeside: _readOnly ? null : _insertFilesBeside,
+              disallowedTypes: _off,
             );
       kept[node.id] = (boxKey, host);
       hosts.add(host);

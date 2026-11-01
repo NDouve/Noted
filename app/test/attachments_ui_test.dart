@@ -10,10 +10,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_tree_view.dart';
+import 'package:noted/src/settings_panel.dart';
 import 'package:noted_core/noted_core.dart';
 
 void main() {
-  testWidgets('the page menu sets "Store images and files" and converts', (tester) async {
+  testWidgets('the page settings panel sets "Images and files" and converts; the menu no longer does', (
+    tester,
+  ) async {
     tester.view.physicalSize = const Size(900, 1500);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
@@ -39,14 +42,30 @@ void main() {
     );
     await tester.pump();
 
-    Future<void> menu() async {
-      final at = tester.getCenter(find.byKey(ValueKey('page-row-$a'))) + const Offset(-40, 0);
-      await tester.runAsync(() => tester.tapAt(at, buttons: kSecondaryButton));
-      await tester.pumpAndSettle();
+    // The right-click menu has page actions only.
+    final at = tester.getCenter(find.byKey(ValueKey('page-row-$a'))) + const Offset(-40, 0);
+    await tester.runAsync(() => tester.tapAt(at, buttons: kSecondaryButton));
+    await tester.pumpAndSettle();
+    expect(find.text('Rename'), findsOneWidget);
+    for (final label in [
+      'Store images and files',
+      'Embed attachments',
+      'Move attachments to folder',
+      'In the page file',
+      'AI access',
+    ]) {
+      expect(find.text(label), findsNothing, reason: label);
     }
+    await tester.tapAt(const Offset(800, 1000));
+    await tester.pumpAndSettle();
 
-    Future<void> choose(String label) async {
-      await tester.runAsync(() => tester.tap(find.text(label)));
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: SettingsPanel.page(notebook: nb, pageId: a))),
+    );
+    await tester.pump();
+
+    Future<void> tap(String key) async {
+      await tester.runAsync(() => tester.tap(find.byKey(ValueKey(key))));
       for (var i = 0; i < 6; i++) {
         await tester.pump(const Duration(milliseconds: 100));
         await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
@@ -54,17 +73,13 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    await menu();
-    expect(find.text('Store images and files'), findsOneWidget);
-    for (final label in ['Same as parent', 'In a folder beside the page', 'In the page file', 'Embed attachments', 'Move attachments to folder']) {
-      expect(find.text(label), findsOneWidget, reason: label);
-    }
-    await choose('In the page file');
+    expect(find.text('Same as parent'), findsNothing);
+    expect(find.text('App default (In a folder beside the page)'), findsOneWidget);
+    await tap('settings-att-embedded');
     expect(nb.ownAttachmentStorage(a), AttachmentStorage.embedded);
     expect(nb.attachmentStorageFor(a), AttachmentStorage.embedded);
 
-    await menu();
-    await choose('Embed attachments');
+    await tap('settings-att-embed');
     expect(find.text('Embedded 0 attachments.'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());

@@ -6,14 +6,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
-import 'package:noted/src/app_commands.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
-
-class _Actions implements PageTreeActions {
-  @override
-  dynamic noSuchMethod(Invocation invocation) => Future<void>.value();
-}
 
 void main() {
   late Directory root;
@@ -115,28 +109,21 @@ void main() {
     }
   });
 
-  test('the page menu offers only the allowed values and shows what is inherited', () async {
+  test('the allowed own values and what is inherited', () async {
     final a = nb.currentId!;
     final sub = await nb.createPage(parentId: a);
     await nb.setAiAccess(a, AiAccess.privileged);
-    final r = pageCommands(nb, nb.tree[sub]!, _Actions());
-    expect(r[AppCommands.aiInherit]!.label, 'Same as parent (Privileged)');
-    expect(r[AppCommands.aiInherit]!.checked, isTrue);
-    expect(r[AppCommands.aiId(AiAccess.open)], isNull, reason: 'looser than the parent: not offered');
-    expect(r[AppCommands.aiId(AiAccess.privileged)]!.checked, isFalse);
-    await r.invoke(AppCommands.aiId(AiAccess.guarded));
+    expect(nb.inheritedAiAccessFor(sub).value, AiAccess.privileged);
+    expect(nb.ownAiAccess(sub), isNull);
+    expect(nb.allowedOwnAiAccessFor(sub), [AiAccess.privileged, AiAccess.guarded], reason: 'looser: not offered');
+    await nb.setAiAccess(sub, AiAccess.guarded);
     expect(nb.ownAiAccess(sub), AiAccess.guarded);
-    final top = pageCommands(nb, nb.tree[a]!, _Actions());
-    expect(top[AppCommands.aiInherit]!.label, 'Same as parent (Guarded)');
-    for (final s in AiAccess.values) {
-      expect(top[AppCommands.aiId(s)], isNotNull, reason: 'a top-level page may choose any');
-    }
+    expect(nb.inheritedAiAccessFor(a).value, AiAccess.guarded, reason: 'nothing above a top-level page');
+    expect(nb.allowedOwnAiAccessFor(a), AiAccess.values, reason: 'a top-level page may choose any');
 
     final binder = await nb.addBinder((await Directory('${root.path}/C').create()).path);
-    final b = binderCommands(nb, binder, _Actions());
-    expect(b[AppCommands.binderAiDefault]!.label, 'App default (Guarded)');
-    expect(b[AppCommands.binderAiDefault]!.checked, isTrue);
-    await b.invoke(AppCommands.binderAiId(AiAccess.open));
+    expect(nb.binderAiAccess(binder.path), isNull, reason: 'the app default, Guarded');
+    await nb.setBinderAiAccess(binder.path, AiAccess.open);
     expect(nb.binders.single.binder!.aiAccess, AiAccess.open);
   });
 }

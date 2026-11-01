@@ -304,11 +304,12 @@ void canvasSuite() {
       });
     });
 
-    testWidgets('step 169, 173-174, 176-177: page backgrounds from the menu, undo, and persistence', (t) async {
+    testWidgets('step 169, 173-174, 176-177: page backgrounds from the page settings, undo, and persistence', (t) async {
       await withSession(t, 'background', (s) async {
-        final id = s.nb.currentId!;
-        // 169: right-click the page, Page background: Dots.
-        await s.pageMenu(id, 'Page background: Dots');
+        // 169: Page settings, Background: Dots.
+        await s.tapKey('page-settings');
+        await s.tapKey('settings-bg-dots');
+        await s.tapKey('settings-close');
         await s.pump(300);
         expect(s.nb.current!.page.meta.background, PageBackground.dots);
         // 173-174: from the toolbar dropdown.

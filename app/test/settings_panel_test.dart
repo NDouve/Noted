@@ -1,0 +1,435 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+import 'dart:io';
+
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:noted/main.dart';
+import 'package:noted/src/ai/ai_access_service.dart';
+import 'package:noted/src/home.dart';
+import 'package:noted/src/notebook.dart';
+import 'package:noted/src/page_tree_view.dart';
+import 'package:noted/src/settings_panel.dart';
+import 'package:noted_box_ai/noted_box_ai.dart';
+import 'package:noted_canvas/noted_canvas.dart';
+import 'package:noted_core/noted_core.dart';
+
+import 'support/real_io.dart';
+
+void main() {
+  late Directory root;
+  late AiAccessService service;
+  late Notebook nb;
+  late String a;
+
+  setUp(() async {
+    root = await Directory.systemTemp.createTemp('noted_settings');
+    final data = await Directory('${root.path}/app').create();
+    service = AiAccessService(dataFolder: data);
+    nb = Notebook(
+      PageStore(await Directory('${root.path}/pages').create()),
+      buildModules(aiAccess: service),
+      saveDelay: Duration.zero,
+      bindersFile: File('${data.path}/binders.json'),
+      aiAccess: service,
+    );
+    await nb.load();
+    a = nb.currentId!;
+  });
+
+  tearDown(() async {
+    await nb.flush();
+    nb.dispose();
+    service.dispose();
+    await root.delete(recursive: true);
+  });
+
+  // Pumps the panel of a page or binder on its own.
+  Future<void> pumpPanel(WidgetTester t, Widget panel) async {
+    t.view.physicalSize = const Size(1000, 1800);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    await t.pumpWidget(MaterialApp(home: Scaffold(body: panel)));
+    await t.pump();
+  }
+
+  // Taps with real IO allowed to finish.
+  Future<void> tap(WidgetTester t, String key) async {
+    await t.runAsync(() async {
+      await t.tap(find.byKey(ValueKey(key)));
+      await realIoPause(50);
+    });
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 50));
+  }
+
+  bool selected(WidgetTester t, String key) => t.widget<ChoiceChip>(find.byKey(ValueKey(key))).selected;
+
+  // Real file IO needs the real clock in a widget test.
+  Future<T> io<T>(WidgetTester t, Future<T> Function() f) async => (await t.runAsync(f)) as T;
+
+  Future<BinderSection> binder(WidgetTester t, String name) => io(t, () async {
+    final dir = await Directory('${root.path}/$name').create();
+    return nb.addBinder(dir.path);
+  });
+
+  group('AI access', () {
+    testWidgets('a page shows what it inherits and from where', (t) async {
+      final b = await binder(t, 'Work');
+      await io(t, () => nb.setBinderAiAccess(b.path, AiAccess.privileged));
+      final page = await io(t, () => nb.createPage(binderPath: b.path));
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: page));
+
+      expect(find.text('Same as binder (Privileged)'), findsOneWidget);
+      expect(selected(t, 'settings-ai-inherit'), isTrue);
+      expect(find.textContaining('Now: Privileged, from the binder'), findsOneWidget);
+
+      // A subpage of a page that tightened further: source is the parent.
+      final sub = await io(t, () => nb.createPage(parentId: page));
+      await io(t, () => nb.setAiAccess(page, AiAccess.guarded));
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: sub));
+      expect(find.text('Same as parent (Guarded)'), findsOneWidget);
+      expect(find.textContaining('Now: Guarded, from the parent page'), findsOneWidget);
+    });
+
+    testWidgets('a page offers only values that tighten what it inherits', (t) async {
+      final b = await binder(t, 'Work');
+      await io(t, () => nb.setBinderAiAccess(b.path, AiAccess.privileged));
+      final page = await io(t, () => nb.createPage(binderPath: b.path));
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: page));
+
+      expect(find.byKey(const ValueKey('settings-ai-open')), findsNothing, reason: 'looser: not offered');
+      expect(find.byKey(const ValueKey('settings-ai-privileged')), findsOneWidget);
+      expect(find.byKey(const ValueKey('settings-ai-guarded')), findsOneWidget);
+
+      await tap(t, 'settings-ai-guarded');
+      expect(nb.ownAiAccess(page), AiAccess.guarded);
+      expect(selected(t, 'settings-ai-guarded'), isTrue);
+      expect(find.textContaining('Now: Guarded, set on this page'), findsOneWidget);
+      await tap(t, 'settings-ai-inherit');
+      expect(nb.ownAiAccess(page), isNull);
+    });
+
+    testWidgets('a top-level standalone page may choose any value', (t) async {
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: a));
+      for (final s in AiAccess.values) {
+        expect(find.byKey(ValueKey('settings-ai-${s.value}')), findsOneWidget);
+      }
+      expect(find.text('App default (Guarded)'), findsOneWidget);
+    });
+
+    testWidgets('a binder offers all three and the app default, and saves its choice', (t) async {
+      final b = await binder(t, 'Work');
+      await pumpPanel(t, SettingsPanel.binder(notebook: nb, binderPath: b.path));
+      expect(find.text('Binder settings'), findsOneWidget);
+      expect(find.text('Background'), findsNothing, reason: 'a background is a page setting');
+      expect(find.text('App default (Guarded)'), findsOneWidget);
+      for (final s in AiAccess.values) {
+        expect(find.byKey(ValueKey('settings-ai-${s.value}')), findsOneWidget);
+      }
+      expect(selected(t, 'settings-ai-inherit'), isTrue);
+      await tap(t, 'settings-ai-open');
+      expect(nb.binderAiAccess(b.path), AiAccess.open);
+      expect(selected(t, 'settings-ai-open'), isTrue);
+    });
+  });
+
+  group('Privileged codes', () {
+    testWidgets('issue a Reader code for a page, shown once; list, revoke with confirm', (t) async {
+      await io(t, () => nb.setAiAccess(a, AiAccess.privileged));
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: a));
+      expect(find.byKey(ValueKey('settings-codes-$a')), findsOneWidget);
+      expect(find.byKey(const ValueKey('settings-no-codes')), findsOneWidget);
+
+      await t.tap(find.byKey(const ValueKey('settings-connect')));
+      await t.pumpAndSettle();
+      await t.enterText(find.byKey(const ValueKey('settings-code-label')), 'Feedback – work chat');
+      await t.pump();
+      await t.tap(find.byKey(const ValueKey('settings-code-expiry-7')));
+      await t.pump();
+      await t.runAsync(() async {
+        await t.tap(find.byKey(const ValueKey('settings-code-create')));
+        await realIoPause(50);
+      });
+      await t.pumpAndSettle();
+      final code = t.widget<SelectableText>(find.byKey(const ValueKey('settings-code'))).data!;
+      expect(code, startsWith('noted_'));
+      expect(find.text('Code for Feedback – work chat'), findsOneWidget);
+
+      // Escape doesn't close the stage that shows the code.
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('settings-code')), findsOneWidget);
+      await t.runAsync(() async {
+        await t.tap(find.byKey(const ValueKey('settings-code-copy')));
+        await realIoPause(20);
+      });
+      await t.pump();
+      expect(find.text('Copied'), findsOneWidget);
+      await t.tap(find.byKey(const ValueKey('settings-code-done')));
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('settings-code')), findsNothing);
+
+      // Listed, and in the store only as a hash.
+      final stored = service.codesFor(AiCodeTargetKind.page, a);
+      expect(stored, hasLength(1));
+      expect(stored.single.role, AiCodeRole.reader);
+      expect(stored.single.expires, isNotNull);
+      expect(File(service.store.file.path).readAsStringSync(), isNot(contains(code)));
+      expect(find.text('Feedback – work chat'), findsOneWidget);
+      final id = stored.single.id;
+      expect(find.byKey(ValueKey('settings-facts-$id')), findsOneWidget);
+      expect(
+        t.widget<Text>(find.byKey(ValueKey('settings-facts-$id'))).data,
+        allOf(contains('Reader'), contains('Never used'), contains('Expires')),
+      );
+
+      // Revoke asks first.
+      await t.tap(find.byKey(ValueKey('settings-revoke-$id')));
+      await t.pumpAndSettle();
+      expect(find.text('Revoke Feedback – work chat?'), findsOneWidget);
+      await t.tap(find.text('Cancel'));
+      await t.pumpAndSettle();
+      expect(service.codesFor(AiCodeTargetKind.page, a), hasLength(1));
+      await t.tap(find.byKey(ValueKey('settings-revoke-$id')));
+      await t.pumpAndSettle();
+      await t.runAsync(() async {
+        await t.tap(find.byKey(const ValueKey('settings-revoke-confirm')));
+        await realIoPause(50);
+      });
+      await t.pumpAndSettle();
+      expect(service.codesFor(AiCodeTargetKind.page, a), isEmpty);
+      expect(find.byKey(const ValueKey('settings-no-codes')), findsOneWidget);
+    });
+
+    testWidgets('a binder has its own codes; sessions can be revoked; activity shows', (t) async {
+      final b = await binder(t, 'Work');
+      await io(t, () => nb.setBinderAiAccess(b.path, AiAccess.privileged));
+      final binderId = b.binder!.id;
+      final code = await service.issue(
+        AiCodeTarget.binder(binderId),
+        role: AiCodeRole.reader,
+        label: 'Binder chat',
+      );
+      expect(code, startsWith('noted_'));
+      final issued = service.codesFor(AiCodeTargetKind.binder, binderId).single;
+      service.store.update(
+        (d) => d.put(
+          issued.copyWith(
+            sessions: [AiCodeSession(id: 's1', app: 'Claude Code', approved: DateTime.utc(2026, 11, 1))],
+          ),
+        ),
+      );
+      service.log.append(
+        AiActivityEntry(
+          time: DateTime.utc(2026, 11, 1, 10),
+          code: issued.id,
+          target: AiCodeTarget.binder(binderId),
+          op: 'read_page',
+          app: 'Claude Code',
+          label: 'Binder chat',
+          result: 'ok',
+        ),
+      );
+      // Another target's code is not listed here.
+      await io(t, () => service.issue(AiCodeTarget.page(a), role: AiCodeRole.reader, label: 'Other'));
+
+      await pumpPanel(t, SettingsPanel.binder(notebook: nb, binderPath: b.path));
+      expect(find.text('Binder chat'), findsOneWidget);
+      expect(find.text('Other'), findsNothing);
+      expect(find.textContaining('Claude Code · approved'), findsOneWidget);
+      expect(find.textContaining('Read page · Claude Code · Binder chat'), findsOneWidget);
+
+      await t.runAsync(() async {
+        await t.tap(find.byKey(const ValueKey('settings-session-revoke-s1')));
+        await realIoPause(50);
+      });
+      await t.pump();
+      expect(service.codesFor(AiCodeTargetKind.binder, binderId).single.sessions, isEmpty);
+      expect(find.byKey(const ValueKey('settings-session-s1')), findsNothing);
+    });
+
+    testWidgets('no Codes section unless Privileged, or codes exist to revoke', (t) async {
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: a));
+      expect(find.byKey(ValueKey('settings-codes-$a')), findsNothing);
+      await io(t, () => service.issue(AiCodeTarget.page(a), role: AiCodeRole.reader, label: 'Old'));
+      await t.pump();
+      expect(find.byKey(ValueKey('settings-codes-$a')), findsOneWidget);
+    });
+  });
+
+  group('Box types allowed', () {
+    testWidgets('a page can only tighten; the binder can allow or not; the note box is not listed', (t) async {
+      final b = await binder(t, 'Work');
+      final page = await io(t, () => nb.createPage(binderPath: b.path));
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: page));
+      expect(find.text('AI boxes'), findsOneWidget);
+      expect(find.text('Note boxes'), findsNothing);
+      expect(selected(t, 'settings-type-$aiBoxTypeId-allowed'), isTrue);
+      expect(nb.disallowedBoxTypesFor(page), isEmpty);
+
+      await tap(t, 'settings-type-$aiBoxTypeId-off');
+      expect(nb.ownBoxType(page, aiBoxTypeId), isFalse);
+      expect(nb.disallowedBoxTypesFor(page), {aiBoxTypeId});
+      expect(selected(t, 'settings-type-$aiBoxTypeId-off'), isTrue);
+      await tap(t, 'settings-type-$aiBoxTypeId-allowed');
+      expect(nb.ownBoxType(page, aiBoxTypeId), isNull);
+      expect(nb.disallowedBoxTypesFor(page), isEmpty);
+
+      // The binder disallows it: the page only shows that, with the source.
+      await pumpPanel(t, SettingsPanel.binder(notebook: nb, binderPath: b.path));
+      await tap(t, 'settings-type-$aiBoxTypeId-off');
+      expect(nb.binderBoxType(b.path, aiBoxTypeId), isFalse);
+      expect(nb.disallowedBoxTypesFor(page), {aiBoxTypeId});
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: page));
+      expect(find.text('Not allowed (set by the binder)'), findsOneWidget);
+      expect(find.byKey(const ValueKey('settings-type-$aiBoxTypeId-allowed')), findsNothing);
+      // A subpage inherits it too, naming no level it can change.
+      final sub = await io(t, () => nb.createPage(parentId: page));
+      expect(nb.disallowedBoxTypesFor(sub), {aiBoxTypeId});
+      expect(nb.boxTypeAvailabilityFor(sub, aiBoxTypeId).source, ConfigSource.binder);
+    });
+
+    testWidgets('disallowed: Insert is disabled, the box shows its snapshot read-only, allowing restores it, data untouched', (t) async {
+      t.view.physicalSize = const Size(1600, 1000);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      const codec = AiCodec();
+      nb.current!.insertBox(
+        BoxRecord.create(
+          id: 'aibox',
+          typeId: aiBoxTypeId,
+          dataVersion: codec.dataVersion,
+          bounds: const Bounds(40, 40, 400, 140),
+          data: RawJson.encode(codec.encode(codec.create())),
+          snapshotText: 'Saved snapshot text',
+          rev: 'r0',
+        ),
+      );
+      await io(t, () => nb.flush());
+      await t.pumpWidget(MaterialApp(home: Home(notebook: nb)));
+      await t.pump();
+      await t.pump();
+      // What the box holds: its type, saved data, snapshot and revision. (The
+      // live box may size itself to its content; its bounds aren't compared.)
+      String content() {
+        final n = nb.current!.page.nodes.single as BoxRecord;
+        return '${n.typeId}|${n.data?.text}|${n.snapshotText}|${n.rev}';
+      }
+
+      final before = content();
+      PageCanvasState canvas() => t.state<PageCanvasState>(find.byType(PageCanvas));
+      expect(canvas().commands[AiCommands.insert]!.enabled, isTrue);
+      expect(find.text('Not allowed on this page'), findsNothing);
+
+      await io(t, () => nb.setBoxType(a, aiBoxTypeId, false));
+      await t.pump();
+      await t.pump();
+      expect(canvas().commands[AiCommands.insert]!.enabled, isFalse);
+      expect(canvas().commands[AiCommands.insert]!.tooltip, contains('not allowed on this page'));
+      expect(find.text('Not allowed on this page'), findsOneWidget);
+      expect(find.text('Saved snapshot text'), findsOneWidget);
+      expect(find.text('AI'), findsNothing, reason: 'no module header: the live box is not shown');
+      // The page content (boxes) is untouched byte for byte; only the header
+      // holds the choice.
+      expect(writePage(nb.current!.page).contains('"boxTypes"'), isTrue);
+      expect(content(), before);
+
+      await io(t, () => nb.setBoxType(a, aiBoxTypeId, null));
+      await t.pump();
+      await t.pump();
+      expect(canvas().commands[AiCommands.insert]!.enabled, isTrue);
+      expect(find.text('Not allowed on this page'), findsNothing);
+      expect(find.text('AI'), findsWidgets);
+      expect(content(), before, reason: 'allowing again leaves the box as it was');
+      expect(writePage(nb.current!.page).contains('"boxTypes"'), isFalse);
+    });
+  });
+
+  group('where the settings are', () {
+    testWidgets('the page header has Page settings; the binder cover and header have Binder settings', (t) async {
+      final b = await binder(t, 'Work');
+      t.view.physicalSize = const Size(1600, 1000);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      await t.pumpWidget(MaterialApp(home: Home(notebook: nb)));
+      await t.pump();
+      await t.pump();
+      await t.tap(find.byTooltip('Page settings'));
+      await t.pumpAndSettle();
+      expect(find.text('Page settings'), findsWidgets);
+      expect(find.byKey(const ValueKey('settings-panel')), findsOneWidget);
+      await t.tap(find.byKey(const ValueKey('settings-close')));
+      await t.pumpAndSettle();
+
+      await t.tap(find.byKey(ValueKey('binder-settings-${b.path}')));
+      await t.pumpAndSettle();
+      expect(find.text('Binder settings'), findsOneWidget);
+      await t.tap(find.byKey(const ValueKey('settings-close')));
+      await t.pumpAndSettle();
+
+      await t.runAsync(() async {
+        nb.showCover(b.path);
+        await realIoPause(50);
+      });
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const ValueKey('cover-settings')));
+      await t.pumpAndSettle();
+      expect(find.text('Binder settings'), findsOneWidget);
+    });
+
+    testWidgets('the page and binder right-click menus keep only actions', (t) async {
+      final b = await binder(t, 'Work');
+      t.view.physicalSize = const Size(1000, 1200);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 260,
+              height: 900,
+              child: ListenableBuilder(listenable: nb, builder: (context, _) => PageTreeView(notebook: nb)),
+            ),
+          ),
+        ),
+      );
+      await t.pump();
+      const settingsWords = [
+        'AI access',
+        'Open',
+        'Privileged',
+        'Guarded',
+        'Store images and files',
+        'Embed attachments',
+        'Background',
+        'Box types',
+      ];
+      final at = t.getCenter(find.byKey(ValueKey('page-row-$a'))) + const Offset(-40, 0);
+      await t.runAsync(() => t.tapAt(at, buttons: kSecondaryButton));
+      await t.pumpAndSettle();
+      for (final s in ['New subpage', 'Rename', 'Move to folder…', 'Save as template…', 'Delete']) {
+        expect(find.text(s), findsOneWidget, reason: s);
+      }
+      for (final s in settingsWords) {
+        expect(find.text(s), findsNothing, reason: s);
+      }
+      await t.tapAt(const Offset(900, 1100));
+      await t.pumpAndSettle();
+
+      await t.runAsync(() => t.tap(find.byKey(ValueKey('binder-menu-${b.path}'))));
+      await t.pumpAndSettle();
+      for (final s in ['New page', 'Open cover', 'Save as template…', 'Remove from sidebar']) {
+        expect(find.text(s), findsWidgets, reason: s);
+      }
+      for (final s in settingsWords) {
+        expect(find.text(s), findsNothing, reason: s);
+      }
+    });
+  });
+}
+

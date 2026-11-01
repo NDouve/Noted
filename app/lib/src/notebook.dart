@@ -805,6 +805,90 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
     await job;
   }
 
+  /// The title of page [id] as the settings panel names it, or null if the
+  /// page isn't known.
+  String? pageTitleOf(String id) =>
+      ((id == currentId ? _current?.page.meta : null) ?? _metas[id])?.title;
+
+  // Box types allowed per page and binder (module availability) --------------
+
+  /// The box types a page or binder can allow or disallow: the modules that
+  /// are on and can be switched off (not the note box), in registration order.
+  List<String> get switchableBoxTypes => [
+    for (final m in modules.enabled)
+      if (modules.isSwitchable(m.codec.typeId)) m.codec.typeId,
+  ];
+
+  /// Whether [typeId] is allowed on page [id], and which level disallows it
+  /// otherwise.
+  BoxTypeAvailability boxTypeAvailabilityFor(String id, String typeId) =>
+      effectiveBoxTypeAllowed(typeId, _metaChain(id), binder: _binderOf(id));
+
+  /// What page [id] would have for [typeId] without its own choice.
+  BoxTypeAvailability inheritedBoxTypeFor(String id, String typeId) =>
+      inheritedBoxTypeAllowed(typeId, _metaChain(id), binder: _binderOf(id));
+
+  /// Page [id]'s own choice for [typeId], or null (inherit).
+  bool? ownBoxType(String id, String typeId) =>
+      ((id == currentId ? _current?.page.meta : null) ?? _metas[id])?.boxTypeChoice(typeId);
+
+  /// The box types page [id] doesn't allow, which its canvas treats as
+  /// switched-off modules.
+  Set<String> disallowedBoxTypesFor(String id) => {
+    for (final t in switchableBoxTypes)
+      if (!boxTypeAvailabilityFor(id, t).allowed) t,
+  };
+
+  /// Sets page [id]'s own choice for [typeId] (null: inherit). Only the
+  /// header changes; boxes of the type stay as they are.
+  Future<void> setBoxType(String id, String typeId, bool? allowed) async {
+    final loc = _loc[id] ?? _standalone;
+    _assertWritable(loc);
+    final c = _current;
+    if (c != null && c.page.id == id) {
+      final meta = c.page.meta.withBoxType(typeId, allowed);
+      if (identical(meta, c.page.meta)) return;
+      c.updateMeta(meta);
+      _metas[id] = meta;
+      notifyListeners();
+      return;
+    }
+    final page = await _storeOf(loc).load(id);
+    final meta = page.meta.withBoxType(typeId, allowed);
+    if (identical(meta, page.meta)) return;
+    final next = page.withMeta(meta);
+    await _write(loc, next);
+    _touch(loc);
+    _metas[id] = next.meta;
+    _rebuildTree();
+  }
+
+  /// Binder [path]'s own choice for [typeId], or null (allowed).
+  bool? binderBoxType(String path, String typeId) => _binders[path]?.binder?.boxTypeChoice(typeId);
+
+  /// Sets binder [path]'s choice for [typeId] (null: no choice, so allowed),
+  /// which its pages follow and may only tighten.
+  Future<void> setBinderBoxType(String path, String typeId, bool? allowed) async {
+    final s = _binders[path];
+    final b = s?.binder;
+    if (s == null || b == null || !s.available) return;
+    final next = b.withBoxType(typeId, allowed);
+    if (identical(next, b)) return;
+    s.binder = next;
+    notifyListeners();
+    final job = _saving.then((_) async {
+      final latest = s.binder;
+      if (latest != null) {
+        await BinderStore(Directory(path)).save(latest);
+        _binderText[_key(path)] = latest.write();
+      }
+    }).catchError((Object e) {
+      debugPrint('Saving binder $path failed: $e');
+    });
+    _saving = job;
+    await job;
+  }
+
   // Attachments (images and files) -----------------------------------------
 
   /// The "Store images and files" setting that applies to page [id]: its
@@ -829,6 +913,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost {
   /// its parent.
   AttachmentStorage? ownAttachmentStorage(String id) =>
       ((id == currentId ? _current?.page.meta : null) ?? _metas[id])?.attachmentStorage;
+
+  /// What page [id] would store its images and files as without its own
+  /// choice, and where that comes from: its nearest parent page's choice, its
+  /// binder's, else the app default (a folder).
+  (AttachmentStorage, ConfigSource) inheritedAttachmentStorageFor(String id) {
+    for (final p in _metaChain(id).skip(1)) {
+      final s = p.attachmentStorage;
+      if (s != null) return (s, ConfigSource.page(p.id));
+    }
+    final b = _binderOf(id)?.attachmentStorage;
+    if (b != null) return (b, ConfigSource.binder);
+    return (AttachmentStorage.folder, ConfigSource.appDefault);
+  }
 
   /// Sets page [id]'s own choice (null: follow the parent). Only the header
   /// changes; existing boxes keep their files where they are (see

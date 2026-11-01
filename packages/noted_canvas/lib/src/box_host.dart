@@ -42,9 +42,14 @@ class BoxHost extends StatefulWidget {
     this.find,
     this.attachments,
     this.insertFilesBeside,
+    this.disallowedTypes = const {},
   });
 
   final CanvasNode node;
+
+  /// Box types this page doesn't allow: their boxes show the saved snapshot
+  /// read-only, like a switched-off module (0035).
+  final Set<String> disallowedTypes;
   final CanvasController controller;
 
   /// Show every box with its module's read-only view and without grip,
@@ -118,7 +123,7 @@ class _BoxHostState extends State<BoxHost> {
     LiveBox? live;
     if (node is BoxRecord) {
       final r = _resolve(node);
-      if (r is LiveBox) {
+      if (r is LiveBox && !widget.disallowedTypes.contains(node.typeId)) {
         live = r;
         module = c.modules.moduleFor(node.typeId);
       }
@@ -172,7 +177,9 @@ class _BoxHostState extends State<BoxHost> {
           ForeignNode() => node.text ?? '',
         },
         label: node is BoxRecord
-            ? 'Editable on other devices'
+            ? (widget.disallowedTypes.contains(node.typeId)
+                  ? 'Not allowed on this page'
+                  : 'Editable on other devices')
             : 'Not a Noted box (${(node as ForeignNode).nodeType ?? 'unknown'})',
       );
     }

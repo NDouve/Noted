@@ -8,17 +8,11 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
-import 'package:noted/src/app_commands.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_tree_view.dart';
-import 'package:noted_canvas/noted_canvas.dart' show CommandRegistry, NotedMenuItem;
+import 'package:noted/src/settings_panel.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/real_io.dart';
-
-class _NoActions implements PageTreeActions {
-  @override
-  dynamic noSuchMethod(Invocation invocation) => Future<void>.value();
-}
 
 void main() {
   late Directory dir;
@@ -63,27 +57,27 @@ void main() {
     return bg;
   }
 
-  testWidgets('commands: checked follows, other page is saved, open page is undoable', (
+  testWidgets('setting it: the page follows, other page is saved, open page is undoable', (
     tester,
   ) async {
     await start(tester);
     PageMeta meta(String id) => nb.tree[id]!;
-    CommandRegistry cmds(String id) => pageCommands(nb, meta(id), _NoActions());
+    Future<void> setBg(String id, PageBackground bg) => nb.setBackground(id, bg);
 
-    expect(cmds(b)[AppCommands.backgroundId(PageBackground.plain)]!.checked, isTrue);
-    expect(cmds(b)[AppCommands.backgroundId(PageBackground.dots)]!.checked, isFalse);
+    expect(meta(b).background, PageBackground.plain);
+    expect(meta(b).background, isNot(PageBackground.dots));
 
     // Another page (not open): loaded, changed in its header, saved.
     final before = await tester.runAsync(() => File('${dir.path}/$b.canvas').readAsString());
-    await tester.runAsync(() => cmds(b).invoke(AppCommands.backgroundId(PageBackground.graph)));
-    expect(cmds(b)[AppCommands.backgroundId(PageBackground.graph)]!.checked, isTrue);
-    expect(cmds(b)[AppCommands.backgroundId(PageBackground.plain)]!.checked, isFalse);
+    await tester.runAsync(() => setBg(b, PageBackground.graph));
+    expect(meta(b).background, PageBackground.graph);
+    expect(meta(b).background, isNot(PageBackground.plain));
     expect(await onDisk(tester, b), PageBackground.graph);
     final after = await tester.runAsync(() => File('${dir.path}/$b.canvas').readAsString());
     expect(after!.replaceAll(',"background":"graph"', ''), before);
 
     // The open page: through its controller, one undo step.
-    await tester.runAsync(() => cmds(a).invoke(AppCommands.backgroundId(PageBackground.ruled)));
+    await tester.runAsync(() => setBg(a, PageBackground.ruled));
     expect(nb.current!.page.meta.background, PageBackground.ruled);
     expect(await onDisk(tester, a), PageBackground.ruled);
     nb.current!.undo();
@@ -102,10 +96,33 @@ void main() {
     await finish(tester);
   });
 
-  testWidgets('the page right-click menu changes the background and marks the current one', (
+  testWidgets('the page settings panel changes the background and marks the current one', (
     tester,
   ) async {
     await start(tester);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SettingsPanel.page(notebook: nb, pageId: a)),
+      ),
+    );
+    await tester.pump();
+
+    ChoiceChip chip(PageBackground bg) =>
+        tester.widget<ChoiceChip>(find.byKey(ValueKey('settings-bg-${bg.name}')));
+    for (final bg in PageBackground.values) {
+      expect(chip(bg).selected, bg == PageBackground.plain);
+    }
+    await tester.runAsync(() async {
+      await tester.tap(find.byKey(const ValueKey('settings-bg-dots')));
+      await realIoPause(50);
+    });
+    await settle(tester);
+    expect(chip(PageBackground.dots).selected, isTrue);
+    expect(chip(PageBackground.plain).selected, isFalse);
+    expect(nb.current!.page.meta.background, PageBackground.dots);
+    expect(await onDisk(tester, a), PageBackground.dots);
+
+    // The page's right-click menu no longer has it.
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -121,36 +138,11 @@ void main() {
       ),
     );
     await tester.pump();
-
-    Future<void> rightClick(String id) async {
-      final at = tester.getCenter(find.byKey(ValueKey('page-row-$id'))) + const Offset(-40, 0);
-      await tester.runAsync(() => tester.tapAt(at, buttons: kSecondaryButton));
-      await tester.pumpAndSettle();
-    }
-
-    await rightClick(b);
-    for (final bg in PageBackground.values) {
-      expect(find.text('Page background: ${bg.name[0].toUpperCase()}${bg.name.substring(1)}'),
-          findsOneWidget);
-    }
-    // Plain is the current one: one check mark for the background (the
-    // others are "Same as parent" for AI access and for storing files).
-    expect(find.byIcon(Icons.check_rounded), findsNWidgets(3));
-    await tester.tap(find.text('Page background: Dots'));
-    await tester.pump();
-    await settle(tester);
-    expect(await onDisk(tester, b), PageBackground.dots);
-
-    await rightClick(b);
-    expect(find.byIcon(Icons.check_rounded), findsNWidgets(3));
-    final checked = find.ancestor(
-      of: find.byIcon(Icons.check_rounded),
-      matching: find.byType(NotedMenuItem<String>),
-    );
-    expect(
-      find.descendant(of: checked, matching: find.text('Page background: Dots')),
-      findsOneWidget,
-    );
+    final at = tester.getCenter(find.byKey(ValueKey('page-row-$b'))) + const Offset(-40, 0);
+    await tester.runAsync(() => tester.tapAt(at, buttons: kSecondaryButton));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('background'), findsNothing);
+    expect(find.text('Rename'), findsOneWidget);
     await tester.tapAt(const Offset(500, 500));
     await tester.pumpAndSettle();
     await finish(tester);
@@ -205,10 +197,16 @@ void main() {
       await ro.load();
     });
     expect(ro.isReadOnlyPage(page), isTrue);
-    final meta = ro.treeOfPage(page)[page]!;
-    final cmds = pageCommands(ro, meta, _NoActions());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: SettingsPanel.page(notebook: ro, pageId: page))),
+    );
+    await tester.pump();
+    expect(find.byKey(const ValueKey('settings-read-only')), findsOneWidget);
     for (final bg in PageBackground.values) {
-      expect(cmds[AppCommands.backgroundId(bg)]!.enabled, isFalse);
+      expect(
+        tester.widget<ChoiceChip>(find.byKey(ValueKey('settings-bg-${bg.name}'))).onSelected,
+        isNull,
+      );
     }
     await tester.runAsync(() async {
       ro.dispose();

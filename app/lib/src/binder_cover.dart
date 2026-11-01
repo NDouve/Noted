@@ -8,6 +8,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'binder_colors.dart';
 import 'notebook.dart';
+import 'settings_panel.dart';
 
 /// Reads a binder color (`#AARRGGBB`); falls back to the first palette color.
 Color parseBinderColor(String hex) {
@@ -160,7 +161,19 @@ class _BinderCoverState extends State<BinderCover> {
                 children: [
                   Container(height: NotedMetrics.of(context).space1, color: color),
                   SizedBox(height: NotedMetrics.of(context).space4),
-                  Text('Binder cover', style: theme.textTheme.labelMedium),
+                  Row(
+                    children: [
+                      Expanded(child: Text('Binder cover', style: theme.textTheme.labelMedium)),
+                      IconButton(
+                        key: const ValueKey('cover-settings'),
+                        tooltip: 'Binder settings',
+                        icon: const Icon(Icons.tune_rounded),
+                        iconSize: NotedMetrics.of(context).icon,
+                        color: theme.colorScheme.onSurfaceVariant,
+                        onPressed: () => showBinderSettings(context, widget.notebook, widget.path),
+                      ),
+                    ],
+                  ),
                   SizedBox(height: NotedMetrics.of(context).space3),
                   _field('cover-title', 'Title', _title, focusNode: _titleFocus),
                   SizedBox(height: NotedMetrics.of(context).space4),
