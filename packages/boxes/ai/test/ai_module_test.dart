@@ -7,6 +7,7 @@ import 'dart:io' show FileSystemException;
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart' show SemanticsAction;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_box_ai/noted_box_ai.dart';
@@ -167,7 +168,7 @@ AiCode codeOf(
   DateTime? created,
   DateTime? lastUsed,
   DateTime? expires,
-  List<AiCodeSession> sessions = const [],
+  DateTime? approved,
 }) => AiCode(
   id: id,
   target: AiCodeTarget.box(boxId),
@@ -177,7 +178,7 @@ AiCode codeOf(
   created: created ?? DateTime.utc(2026, 11, 1, 9, 30),
   lastUsed: lastUsed,
   expires: expires,
-  sessions: sessions,
+  approved: approved,
 );
 
 void main() {
@@ -592,23 +593,23 @@ void main() {
       const FileSystemException('denied', r'C:\secret\ai-access.json'),
     ]) {
       testWidgets('a failed change shows in the panel (${error.runtimeType})', (t) async {
-        access.codes.add(
-          codeOf(
-            'a000000000000001',
-            'a',
-            sessions: [AiCodeSession(id: 's1', app: 'App')],
-          ),
-        );
+        access.codes.add(codeOf('a000000000000001', 'a'));
         await pump(t, pageOf([aiRecord('a', [para('x')])]));
         await t.tap(k('ai-box-connections'));
         await t.pumpAndSettle();
         access.changeError = error;
         final expected = error is StateError ? error.message : 'Could not save the change.';
 
-        await t.tap(k('ai-session-revoke-s1'));
+        await t.tap(k('ai-permission-full'));
         await t.pumpAndSettle();
+        expect(access.permission['a'], isNull);
         expect(find.text(expected), findsOneWidget);
         expect(find.textContaining('secret'), findsNothing);
+
+        await t.tap(k('ai-closed-switch'));
+        await t.pumpAndSettle();
+        expect(access.closed['a'], isNull);
+        expect(find.text(expected), findsOneWidget);
 
         await t.tap(k('ai-ask-switch'));
         await t.pumpAndSettle();
@@ -632,19 +633,13 @@ void main() {
       await t.pumpAndSettle();
     }
 
-    testWidgets('lists each code with its facts and sessions', (t) async {
+    testWidgets('lists each code with its facts and approval', (t) async {
       access.codes.add(
         codeOf(
           'a000000000000001',
           'a',
           lastUsed: DateTime.utc(2026, 11, 2, 12, 5),
-          sessions: [
-            AiCodeSession(
-              id: 's1',
-              app: 'Claude Code',
-              approved: DateTime.utc(2026, 11, 1, 10),
-            ),
-          ],
+          approved: DateTime.utc(2026, 11, 1, 10),
         ),
       );
       access.codes.add(
@@ -669,22 +664,15 @@ void main() {
       expect(readerFacts, contains('Never used'));
       expect(k('ai-expired-a000000000000002'), findsOneWidget);
       expect(k('ai-expired-a000000000000001'), findsNothing);
-      expect(find.textContaining('Claude Code'), findsOneWidget);
-      expect(k('ai-session-s1'), findsOneWidget);
+      expect(k('ai-approval-a000000000000001'), findsOneWidget);
     });
 
     testWidgets('icons are muted, not text colour', (t) async {
-      access.codes.add(
-        codeOf(
-          'a000000000000001',
-          'a',
-          sessions: [AiCodeSession(id: 's1', app: 'App')],
-        ),
-      );
+      access.codes.add(codeOf('a000000000000001', 'a'));
       await pump(t, pageOf([aiRecord('a', [para('x')])]));
       await open(t);
       final muted = notedThemeData(Brightness.light).colorScheme.onSurfaceVariant;
-      for (final key in ['ai-revoke-a000000000000001', 'ai-session-revoke-s1']) {
+      for (final key in ['ai-revoke-a000000000000001', 'ai-permission-append']) {
         final icon = t.widget<Icon>(
           find.descendant(of: k(key), matching: find.byType(Icon)),
         );
@@ -712,19 +700,121 @@ void main() {
       expect(k('ai-no-codes'), findsOneWidget);
     });
 
-    testWidgets('revoking a session calls through', (t) async {
+    testWidgets('shows approval per code and no session rows', (t) async {
+      access.codes.add(
+        codeOf('a000000000000001', 'a', approved: DateTime.utc(2026, 11, 1, 10)),
+      );
+      access.codes.add(codeOf('a000000000000002', 'a', role: 'reader', label: 'Other'));
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      expect(
+        t.widget<Text>(k('ai-approval-a000000000000001')).data,
+        startsWith('Approved 2026-11-01'),
+      );
+      expect(t.widget<Text>(k('ai-approval-a000000000000002')).data, 'Not approved yet');
+      expect(find.textContaining('Revoke approval'), findsNothing);
+      expect(k('ai-revoke-a000000000000001'), findsOneWidget);
+    });
+
+    testWidgets('the Writer permission defaults to Append only and calls through', (t) async {
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      expect(find.text('Append only'), findsOneWidget);
+      expect(find.text('Edit'), findsOneWidget);
+      expect(find.text('Full'), findsOneWidget);
+      expect(k('ai-permission-edit-note'), findsNothing);
+      await t.tap(k('ai-permission-edit'));
+      await t.pumpAndSettle();
+      expect(access.permission['a'], AiWriterPermission.edit);
+      expect(find.textContaining("stays the AI's"), findsOneWidget);
+      await t.tap(k('ai-permission-full'));
+      await t.pumpAndSettle();
+      expect(access.permission['a'], AiWriterPermission.full);
+      expect(k('ai-permission-edit-note'), findsNothing);
+      await t.tap(k('ai-permission-append'));
+      await t.pumpAndSettle();
+      expect(access.permission['a'], AiWriterPermission.append);
+    });
+
+    testWidgets('closed-app writes toggle through, and are disabled while Ask is on', (t) async {
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      expect(t.widget<SwitchListTile>(k('ai-closed-switch')).value, isFalse);
+      expect(find.textContaining('writes without asking you'), findsOneWidget);
+      await t.tap(k('ai-closed-switch'));
+      await t.pumpAndSettle();
+      expect(access.closed['a'], isTrue);
+      expect(t.widget<SwitchListTile>(k('ai-closed-switch')).value, isTrue);
+      await t.tap(k('ai-ask-switch'));
+      await t.pumpAndSettle();
+      final sw = t.widget<SwitchListTile>(k('ai-closed-switch'));
+      expect(sw.onChanged, isNull);
+      expect(sw.value, isFalse);
+      expect(find.textContaining('Not available while Ask'), findsOneWidget);
+      // Turning Ask on stored closed writes as off.
+      expect(access.closed['a'], isFalse);
+      await t.tap(k('ai-closed-switch'), warnIfMissed: false);
+      await t.pumpAndSettle();
+      expect(access.closed['a'], isFalse);
+      // Turning Ask off later doesn't bring them back.
+      await t.tap(k('ai-ask-switch'));
+      await t.pumpAndSettle();
+      expect(access.closed['a'], isFalse);
+      expect(t.widget<SwitchListTile>(k('ai-closed-switch')).value, isFalse);
+    });
+
+    testWidgets('an expired code shows no approval line', (t) async {
       access.codes.add(
         codeOf(
           'a000000000000001',
           'a',
-          sessions: [AiCodeSession(id: 's1', app: 'Claude Code')],
+          expires: DateTime.utc(2000),
+          approved: DateTime.utc(1999),
         ),
       );
       await pump(t, pageOf([aiRecord('a', [para('x')])]));
       await open(t);
-      await t.tap(k('ai-session-revoke-s1'));
-      await t.pumpAndSettle();
-      expect(access.sessionsRevoked, [('a000000000000001', 's1')]);
+      expect(k('ai-expired-a000000000000001'), findsOneWidget);
+      expect(k('ai-approval-a000000000000001'), findsNothing);
+      expect(find.textContaining('Approved'), findsNothing);
+    });
+
+    testWidgets('permission rows expose checked and one exclusive group', (t) async {
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      final handle = t.ensureSemantics();
+      for (final (p, checked) in [('append', true), ('edit', false), ('full', false)]) {
+        final node = t.getSemantics(k('ai-permission-$p'));
+        final data = node.getSemanticsData();
+        expect(data.flagsCollection.isChecked.toString(), endsWith(checked ? 'isTrue' : 'isFalse'));
+        expect(data.flagsCollection.isInMutuallyExclusiveGroup, isTrue);
+        expect(data.hasAction(SemanticsAction.tap), isTrue);
+      }
+      handle.dispose();
+    });
+
+    testWidgets('an entry from a closed-app write says so', (t) async {
+      AiActivityEntry entry(Map<String, Object?> extra) => AiActivityEntry(
+        time: DateTime.utc(2026, 11, 1, 12),
+        code: 'a000000000000001',
+        target: const AiCodeTarget.box('a'),
+        op: 'write_box',
+        app: 'Claude Code',
+        label: 'Chat',
+        result: 'ok',
+        extra: extra,
+      );
+      access.log.addAll([entry(const {}), entry(const {'closed': true})]);
+      await pump(t, pageOf([aiRecord('a', [para('x')])]));
+      await open(t);
+      expect(find.textContaining('while Noted was closed'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: k('ai-activity-0'),
+          matching: find.textContaining('while Noted was closed'),
+        ),
+        findsOneWidget,
+      );
     });
 
     testWidgets('Ask before each write toggles through', (t) async {

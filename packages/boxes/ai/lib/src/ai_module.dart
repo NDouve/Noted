@@ -29,7 +29,7 @@ const double aiHeaderHeight = 28;
 /// The AI box module: a note-like document that AI chats connect to with
 /// per-box codes. A Writer's text is marked; text the user types is not.
 ///
-/// [access] is the app's store of this box's codes, sessions, settings and
+/// [access] is the app's store of this box's codes, settings and
 /// activity; without one (tests, a host with no AI access) the box can't
 /// connect a chat.
 final class AiModule extends BoxModule<AiBoxData> {

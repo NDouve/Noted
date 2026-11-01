@@ -10,7 +10,7 @@ import 'package:noted_core/noted_core.dart';
 /// `ai-access.json` store and activity log and hands it to `AiModule`'s
 /// constructor; it is not part of the Box API.
 ///
-/// It notifies its listeners whenever codes, sessions, the box's settings or
+/// It notifies its listeners whenever codes, the box's settings or
 /// the activity log change, so an open box can refresh.
 abstract class AiBoxAccess implements Listenable {
   /// The codes of the box [boxId] (its Writer, if any, and its Readers),
@@ -32,8 +32,9 @@ abstract class AiBoxAccess implements Listenable {
   /// Revokes the code [codeId]: its requests are rejected at once.
   Future<void> revoke(String codeId);
 
-  /// Removes an approved session from [codeId]; its next request is asked
-  /// about again.
+  /// No longer used: approval is per code now (see [AiCode.approved]). A
+  /// no-op kept so existing hosts still compile.
+  @Deprecated('Approval is per code now')
   Future<void> revokeSession(String codeId, String sessionId);
 
   /// Whether every write to [boxId] asks the user first.

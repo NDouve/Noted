@@ -10,8 +10,9 @@ import 'package:noted_core/noted_core.dart';
 import 'ai_box_access.dart';
 import 'ai_focus_ring.dart';
 
-/// Box header → connections: the box's codes with their approved sessions,
-/// the Ask before each write switch and the activity list.
+/// Box header → connections: the box's codes (approved or not), the Writer
+/// permission, the Ask before each write and closed-app write switches, and
+/// the activity list.
 Future<void> showAiConnectionsDialog(
   BuildContext context,
   AiBoxAccess access,
@@ -42,6 +43,26 @@ String _sentence(String s) {
   final t = s.replaceAll('_', ' ');
   return t.isEmpty ? t : '${t[0].toUpperCase()}${t.substring(1)}';
 }
+
+/// The name of a Writer permission choice and its one-line explanation.
+(String, String) aiPermissionText(AiWriterPermission p) => switch (p) {
+  AiWriterPermission.append => (
+    'Append only',
+    'The AI can add text at the end of this box.',
+  ),
+  AiWriterPermission.edit => (
+    'Edit',
+    'Append, and change text the AI wrote itself.',
+  ),
+  AiWriterPermission.full => (
+    'Full',
+    'Also replace the whole box and delete its text.',
+  ),
+};
+
+/// The wording of a code's approval.
+String aiApprovalLabel(AiCode c) =>
+    c.approved == null ? 'Not approved yet' : 'Approved ${_date(c.approved!)}';
 
 /// The wording of a code's role.
 String aiRoleLabel(AiCode c) => switch (c.role) {
@@ -133,6 +154,7 @@ class _AiConnectionsDialogState extends State<AiConnectionsDialog> {
     final codes = access.connections(boxId);
     final activity = access.activity(boxId).reversed.take(aiActivityShown).toList();
     final problem = access.problem;
+    final ask = access.askBeforeWrite(boxId);
     final muted = text.bodySmall?.copyWith(color: scheme.onSurfaceVariant);
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -173,6 +195,8 @@ class _AiConnectionsDialogState extends State<AiConnectionsDialog> {
         else
           for (final c in codes) _codeRow(context, c, now),
         SizedBox(height: m.space2),
+        _permission(context),
+        SizedBox(height: m.space2),
         FocusVisibleRing(
           child: SwitchListTile(
             key: const ValueKey('ai-ask-switch'),
@@ -182,8 +206,30 @@ class _AiConnectionsDialogState extends State<AiConnectionsDialog> {
               'Noted asks you to allow every write to this box.',
               style: muted,
             ),
-            value: access.askBeforeWrite(boxId),
-            onChanged: (v) => _run(() => access.setAskBeforeWrite(boxId, v)),
+            value: ask,
+            onChanged: (v) => _run(() async {
+              // Turning Ask on also turns closed-app writes off, so turning
+              // Ask off later doesn't silently bring them back.
+              if (v) await access.setClosedWrites(boxId, false);
+              await access.setAskBeforeWrite(boxId, v);
+            }),
+          ),
+        ),
+        FocusVisibleRing(
+          child: SwitchListTile(
+            key: const ValueKey('ai-closed-switch'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Allow writes while Noted is closed (no approval)'),
+            subtitle: Text(
+              ask
+                  ? 'Not available while Ask before each write is on.'
+                  : 'While Noted is closed, the AI writes without asking you, '
+                        'within the Writer permission above.',
+              key: const ValueKey('ai-closed-note'),
+              style: ask ? muted : muted?.copyWith(color: scheme.error),
+            ),
+            value: access.closedWrites(boxId),
+            onChanged: ask ? null : (v) => _run(() => access.setClosedWrites(boxId, v)),
           ),
         ),
         SizedBox(height: m.space2),
@@ -193,6 +239,55 @@ class _AiConnectionsDialogState extends State<AiConnectionsDialog> {
           Text('Nothing yet.', key: const ValueKey('ai-no-activity'), style: muted)
         else
           for (var i = 0; i < activity.length; i++) _activityRow(context, i, activity[i]),
+      ],
+    );
+  }
+
+  Widget _permission(BuildContext context) {
+    final m = NotedMetrics.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
+    final muted = text.bodySmall?.copyWith(color: scheme.onSurfaceVariant);
+    final current = access.writerPermission(boxId);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text('Writer permission', style: text.titleSmall),
+        for (final p in AiWriterPermission.values)
+          MergeSemantics(
+            child: Semantics(
+              inMutuallyExclusiveGroup: true,
+              checked: p == current,
+              child: FocusVisibleRing(
+                child: ListTile(
+                  key: ValueKey('ai-permission-${p.wire}'),
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    p == current
+                        ? Icons.radio_button_checked_rounded
+                        : Icons.radio_button_unchecked_rounded,
+                    size: m.icon,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  title: Text(aiPermissionText(p).$1),
+                  subtitle: Text(aiPermissionText(p).$2, style: muted),
+                  onTap: () => _run(() => access.setWriterPermission(boxId, p)),
+                ),
+              ),
+            ),
+          ),
+        if (current == AiWriterPermission.edit)
+          Padding(
+            padding: EdgeInsets.only(top: m.space1),
+            child: Text(
+              "Text the AI wrote stays the AI's even if you bold or tick it, "
+              'so the AI may replace it. Once you change a block\'s words or '
+              'type, it is yours and the AI can\'t replace it.',
+              key: const ValueKey('ai-permission-edit-note'),
+              style: muted,
+            ),
+          ),
       ],
     );
   }
@@ -244,28 +339,13 @@ class _AiConnectionsDialogState extends State<AiConnectionsDialog> {
             padding: EdgeInsets.only(left: m.icon + m.space2),
             child: Text(facts, key: ValueKey('ai-facts-${c.id}'), style: muted),
           ),
-          for (final s in c.sessions)
+          if (!expired)
             Padding(
               padding: EdgeInsets.only(left: m.icon + m.space2),
-              child: Row(
-                key: ValueKey('ai-session-${s.id}'),
-                children: [
-                  Expanded(
-                    child: Text(
-                      '${s.app.isEmpty ? 'Unknown app' : s.app}'
-                      '${s.approved == null ? '' : ' · approved ${_dateTime(s.approved!)}'}',
-                      overflow: TextOverflow.ellipsis,
-                      style: muted,
-                    ),
-                  ),
-                  IconButton(
-                    key: ValueKey('ai-session-revoke-${s.id}'),
-                    tooltip: 'Revoke approval',
-                    visualDensity: VisualDensity.compact,
-                    icon: Icon(Icons.close_rounded, size: m.icon, color: scheme.onSurfaceVariant),
-                    onPressed: () => _run(() => access.revokeSession(c.id, s.id)),
-                  ),
-                ],
+              child: Text(
+                aiApprovalLabel(c),
+                key: ValueKey('ai-approval-${c.id}'),
+                style: muted,
               ),
             ),
         ],
@@ -281,6 +361,7 @@ class _AiConnectionsDialogState extends State<AiConnectionsDialog> {
       _sentence(e.op),
       if (e.app.isNotEmpty) e.app,
       if (e.label.isNotEmpty) e.label,
+      if (e.extra['closed'] == true) 'while Noted was closed',
     ].join(' · ');
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),

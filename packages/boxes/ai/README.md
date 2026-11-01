@@ -17,8 +17,8 @@ The AI box: a note-like box that AI chats connect to with per-box codes.
   once the module is registered.
 - `lib/src/ai_connect_dialog.dart`: Connect a chat. Writer or Reader, a
   label and an optional expiry, then the code, shown once.
-- `lib/src/ai_connections_dialog.dart`: the box's codes with their approved
-  sessions (each revocable), Ask before each write, and the activity list.
+- `lib/src/ai_connections_dialog.dart`: the box's codes (approved or not, each revocable), the Writer
+  permission, Ask before each write, closed-app writes, and the activity list.
 
 `AiModule(access: ...)` takes the app's `AiBoxAccess`; without one the box
 shows no connections and Connect is off. The look of the marker and the
