@@ -29,12 +29,12 @@ abstract final class AppCommands {
   static const String attachmentsInherit = 'app.page.attachments.inherit';
   static const String aiInherit = 'app.page.ai.inherit';
 
-  /// The page command that sets the AI setting to [s].
-  static String aiId(AiSetting s) => 'app.page.ai.${s.value}';
+  /// The page command that sets the AI access to [s].
+  static String aiId(AiAccess s) => 'app.page.ai.${s.value}';
   static const String binderAiDefault = 'app.binder.ai.default';
 
-  /// The binder command that sets the AI setting to [s].
-  static String binderAiId(AiSetting s) => 'app.binder.ai.${s.value}';
+  /// The binder command that sets the AI access to [s].
+  static String binderAiId(AiAccess s) => 'app.binder.ai.${s.value}';
   static const String embedAttachments = 'app.page.embedAttachments';
   static const String attachmentsToFolder = 'app.page.attachmentsToFolder';
 
@@ -228,27 +228,24 @@ CommandRegistry pageCommands(Notebook nb, PageMeta p, PageTreeActions a) {
       icon: Icons.delete_outline_rounded,
       invoke: () => a.delete(p),
     ),
-    // AI access (0028): the page's own choice, or its parent's, shown.
+    // AI access (0100): the page's own choice, or what it inherits, shown.
+    // Only values that tighten what it inherits are offered.
     Command(
       id: AppCommands.aiInherit,
-      label: 'Same as parent (${nb.inheritedAiSetting(p.id).label})',
+      label: 'Same as parent (${nb.inheritedAiAccessFor(p.id).value.label})',
       icon: Icons.subdirectory_arrow_left_rounded,
       enabled: () => !nb.isReadOnlyPage(p.id),
-      checked: () => nb.ownAiSetting(p.id) == null,
-      invoke: () => nb.setAiSetting(p.id, null),
+      checked: () => nb.ownAiAccess(p.id) == null,
+      invoke: () => nb.setAiAccess(p.id, null),
     ),
-    for (final s in AiSetting.values)
+    for (final s in nb.allowedOwnAiAccessFor(p.id))
       Command(
         id: AppCommands.aiId(s),
         label: s.label,
-        icon: switch (s) {
-          AiSetting.off => Icons.visibility_off_rounded,
-          AiSetting.boxOnly => Icons.crop_square_rounded,
-          AiSetting.wholePage => Icons.article_rounded,
-        },
+        icon: _aiAccessIcon(s),
         enabled: () => !nb.isReadOnlyPage(p.id),
-        checked: () => nb.ownAiSetting(p.id) == s,
-        invoke: () => nb.setAiSetting(p.id, s),
+        checked: () => nb.ownAiAccess(p.id) == s,
+        invoke: () => nb.setAiAccess(p.id, s),
       ),
     // Store images and files: the page's own choice, or its parent's.
     Command(
@@ -324,22 +321,18 @@ CommandRegistry binderCommands(
       ),
       Command(
         id: AppCommands.binderAiDefault,
-        label: 'App default (${defaultAiSetting.label})',
+        label: 'App default (${defaultAiAccess.label})',
         icon: Icons.settings_suggest_rounded,
-        checked: () => b.binder?.aiSetting == null,
-        invoke: () => nb.setBinderAiSetting(b.path, null),
+        checked: () => b.binder?.aiAccess == null,
+        invoke: () => nb.setBinderAiAccess(b.path, null),
       ),
-      for (final s in AiSetting.values)
+      for (final s in AiAccess.values)
         Command(
           id: AppCommands.binderAiId(s),
           label: s.label,
-          icon: switch (s) {
-            AiSetting.off => Icons.visibility_off_rounded,
-            AiSetting.boxOnly => Icons.crop_square_rounded,
-            AiSetting.wholePage => Icons.article_rounded,
-          },
-          checked: () => b.binder?.aiSetting == s,
-          invoke: () => nb.setBinderAiSetting(b.path, s),
+          icon: _aiAccessIcon(s),
+          checked: () => b.binder?.aiAccess == s,
+          invoke: () => nb.setBinderAiAccess(b.path, s),
         ),
       for (final s in AttachmentStorage.values)
         Command(
@@ -447,3 +440,9 @@ CommandRegistry themeCommands(AppSettings settings) => CommandRegistry()
         invoke: () => settings.theme = s,
       ),
   ]);
+
+IconData _aiAccessIcon(AiAccess s) => switch (s) {
+  AiAccess.open => Icons.public_rounded,
+  AiAccess.privileged => Icons.key_rounded,
+  AiAccess.guarded => Icons.shield_rounded,
+};

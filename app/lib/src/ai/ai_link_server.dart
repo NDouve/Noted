@@ -11,7 +11,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:noted_core/noted_core.dart';
 
-/// Answers an [AiLinkRequest]; the notebook's `aiWrite`.
+/// Answers an [AiLinkRequest]; the notebook's `handleAiLink`.
 typedef AiLinkHandler = Future<AiLinkResponse> Function(AiLinkRequest request);
 
 /// The app's end of the local link to the MCP server (invariant 4; the
@@ -137,7 +137,7 @@ class AiLinkServer {
       done.complete();
     }
 
-    // Stops reading and answers with [line] (null: just drops the client).
+    // Stops reading and answers with [response] (null: just drops the client).
     Future<void> reply(AiLinkResponse? response) async {
       if (finished) return;
       finished = true;
@@ -201,17 +201,22 @@ class AiLinkServer {
   Future<void> _handle(Uint8List bytes, Future<void> Function(AiLinkResponse?) reply) async {
     final AiLinkRequest? request;
     try {
-      request = AiLinkRequest.decode(utf8.decode(bytes));
+      request = AiLinkRequest.parse(utf8.decode(bytes));
     } on FormatException {
-      return reply(AiLinkResponse.error(AiLinkCode.badRequest));
+      return reply(null); // not text: not this protocol
     }
-    if (request == null) return reply(AiLinkResponse.error(AiLinkCode.badRequest));
+    // Not ai-link/2 at all (an HTTP request, other JSON): no answer.
+    if (request == null) return reply(null);
+    // This protocol, but not a request the app can act on.
+    if (request is AiLinkMalformed) {
+      return reply(AiLinkResponse.error(AiLinkCode.badRequest, request.message));
+    }
     AiLinkResponse response;
     try {
       response = await handler(request);
     } on Object catch (e) {
       // Only the type: an exception's text could hold request content.
-      debugPrint('Noted: an AI write failed: ${e.runtimeType}');
+      debugPrint('Noted: an AI request failed: ${e.runtimeType}');
       response = AiLinkResponse.error(AiLinkCode.saveFailed);
     }
     return reply(response);

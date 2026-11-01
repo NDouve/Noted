@@ -8,12 +8,9 @@ import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart'
     show Command, NotedMenuHeading, NotedMenuItem, NotedMetrics, ToolbarStyle;
 
-import 'ai/ai_connections_dialog.dart';
 import 'app_commands.dart';
 import 'app_settings.dart';
 import 'notebook.dart';
-
-const String _aiConnectionsId = 'settings.aiConnections';
 
 /// The gear at the bottom of the sidebar: a menu to choose the theme, the
 /// toolbar and the default folders for new pages and binders.
@@ -38,10 +35,6 @@ class SettingsMenu extends StatelessWidget {
           tooltip: 'Settings',
           icon: const Icon(Icons.settings_rounded),
           onSelected: (id) {
-            if (id == _aiConnectionsId) {
-              unawaited(showAiConnectionsDialog(context, settings));
-              return;
-            }
             final theme = themeCommands(settings);
             final toolbar = toolbarCommands(settings);
             if (theme[id] != null) {
@@ -81,13 +74,6 @@ class SettingsMenu extends StatelessWidget {
                   label: toolbar[AppCommands.toolbarId(s)]!.label,
                   leading: check(toolbar[AppCommands.toolbarId(s)]!),
                 ),
-              const NotedMenuHeading('AI'),
-              const NotedMenuItem<String>(
-                key: ValueKey('settings-ai-connections'),
-                value: _aiConnectionsId,
-                label: 'AI connections…',
-                icon: Icons.key_rounded,
-              ),
               if (canPick) ...[
                 const NotedMenuHeading('Default page folder'),
                 NotedMenuItem<String>(

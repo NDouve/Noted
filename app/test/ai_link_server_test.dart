@@ -9,7 +9,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/ai/ai_link_server.dart';
-import 'package:noted/src/app_settings.dart';
+import 'package:noted/src/ai/ai_access_service.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -50,7 +50,7 @@ void main() {
           handler ??
           (r) async {
             seen.add(r);
-            return AiLinkResponse.ok(page: 'p1', box: r.box);
+            return AiLinkResponse.written(box: (r as AiLinkWriteBox).box);
           },
       readTimeout: readTimeout ?? aiLinkReadTimeout,
       maxRequestBytes: maxRequestBytes ?? aiLinkMaxRequestBytes,
@@ -79,8 +79,14 @@ void main() {
     return out;
   }
 
-  AiLinkRequest request({String box = 'b1'}) =>
-      AiLinkRequest(token: 'noted_${'a' * 16}_${'B' * 43}', box: box, mode: AiLinkMode.append, content: 'hi');
+  AiLinkWriteBox request({String box = 'b1', String content = 'hi'}) => AiLinkWriteBox(
+    code: 'noted_${'a' * 16}_${'B' * 43}',
+    session: 'session-1',
+    app: 'Test client',
+    box: box,
+    mode: AiLinkMode.append,
+    content: content,
+  );
 
   test('writes ai-link.json and deletes it on dispose', () async {
     final s = await start();
@@ -126,14 +132,20 @@ void main() {
     expect(out, hasLength(2));
     final r = AiLinkResponse.decode(out[1])!;
     expect(r.ok, isTrue);
-    expect(r.box, 'b1');
-    expect(seen.single.content, 'hi');
-    expect(seen.single.mode, AiLinkMode.append);
+    expect((r as AiLinkWritten).box, 'b1');
+    final got = seen.single as AiLinkWriteBox;
+    expect(got.content, 'hi');
+    expect(got.mode, AiLinkMode.append);
+    expect(got.session, 'session-1');
+    expect(got.app, 'Test client');
   });
 
-  test('a request that is not understood gets bad_request', () async {
+  test('a request of this protocol that is not understood gets bad_request', () async {
     final s = await start();
-    final out = await exchange(s, '{"noted":"ai-link/1","op":"delete_everything"}');
+    final out = await exchange(
+      s,
+      '{"noted":"ai-link/2","op":"delete_everything","code":"x","session":"s"}',
+    );
     expect(AiLinkResponse.decode(out[1])!.code, AiLinkCode.badRequest);
     expect(seen, isEmpty);
   });
@@ -142,6 +154,20 @@ void main() {
     final s = await start();
     final out = await exchange(s, 'GET / HTTP/1.1\r\n\r\n');
     expect(out, hasLength(1), reason: 'only the greeting');
+    expect(seen, isEmpty);
+  });
+
+  test('a JSON line that is not ai-link/2 is dropped without an answer', () async {
+    final s = await start();
+    for (final line in [
+      '{"noted":"ai-link/1","op":"write_box"}',
+      '{"hello":"world"}',
+      '{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+      '{ not json',
+    ]) {
+      final out = await exchange(s, line);
+      expect(out, hasLength(1), reason: '$line: only the greeting');
+    }
     expect(seen, isEmpty);
   });
 
@@ -162,12 +188,7 @@ void main() {
     final s = await start(maxRequestBytes: 400);
     final base = request().encode();
     final pad = 400 - 1 - utf8.encode(base).length;
-    final okLine = AiLinkRequest(
-      token: request().token,
-      box: 'b1',
-      mode: AiLinkMode.append,
-      content: 'x' * (2 + pad),
-    ).encode();
+    final okLine = request(content: 'x' * (2 + pad)).encode();
     expect(utf8.encode(okLine).length + 1, 400);
     expect(AiLinkResponse.decode((await exchange(s, okLine))[1])!.ok, isTrue);
     final tooBig = '$okLine ';
@@ -218,35 +239,50 @@ void main() {
     expect(linkFile.existsSync(), isTrue);
   });
 
-  test('with the real notebook: a bad token with an unknown box id gives bad_token', () async {
+  test('with the real notebook: a bad code gives bad_code; a good one is asked about, then answered', () async {
     final dir = await Directory('${root.path}/pages').create();
-    final settings = AppSettings(File('${root.path}/settings.json'));
+    final service = AiAccessService(dataFolder: Directory('${root.path}/data'));
     final nb = Notebook(
       PageStore(dir),
       buildModules(),
       saveDelay: Duration.zero,
       bindersFile: File('${root.path}/app/binders.json'),
-      settings: settings,
+      aiAccess: service,
     );
     addTearDown(() async {
       await nb.flush();
       nb.dispose();
+      service.dispose();
     });
     await nb.load();
-    final s = await start(handler: nb.aiWrite);
+    final questions = <String>[];
+    nb.aiApprover = (r) async {
+      questions.add(r.message);
+      return true;
+    };
+    final s = await start(handler: nb.handleAiLink);
     final out = await exchange(s, request(box: 'no-such-box').encode());
-    expect(AiLinkResponse.decode(out[1])!.code, AiLinkCode.badToken);
+    expect(AiLinkResponse.decode(out[1])!.code, AiLinkCode.badCode);
+    expect(questions, isEmpty);
 
-    final token = await settings.addAiConnection('x');
-    final good = AiLinkRequest(token: token, box: 'no-such-box', mode: AiLinkMode.replace, content: '');
+    final code = await service.issue(AiCodeTarget.box('no-such-box'), role: AiCodeRole.writer, label: 'x');
+    final good = AiLinkWriteBox(
+      code: code,
+      session: 'session-1',
+      app: 'Test client',
+      box: 'no-such-box',
+      mode: AiLinkMode.replace,
+      content: '',
+    );
     final out2 = await exchange(s, good.encode());
     expect(AiLinkResponse.decode(out2[1])!.code, AiLinkCode.noBox);
+    expect(questions, ['Test client wants to write x. Allow?']);
   });
 
   test('ai-link.json is written again if it goes missing, but another file is never replaced', () async {
     final s = AiLinkServer(
       file: linkFile,
-      handler: (r) async => AiLinkResponse.ok(page: 'p', box: r.box),
+      handler: (r) async => AiLinkResponse.written(box: 'b'),
       recheckInterval: const Duration(milliseconds: 50),
     );
     servers.add(s);
@@ -278,4 +314,9 @@ void main() {
     final server = await startAiLink(nb, Directory(blocker.path));
     expect(server, isNull);
   });
+}
+
+extension on AiLinkResponse {
+  AiLinkCode? get code => this is AiLinkError ? (this as AiLinkError).code : null;
+  String? get message => this is AiLinkError ? (this as AiLinkError).message : null;
 }

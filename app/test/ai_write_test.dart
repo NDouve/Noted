@@ -2,17 +2,20 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
-import 'package:noted/src/app_settings.dart';
+import 'package:noted/src/ai/ai_access_service.dart';
+import 'package:noted/src/ai/ai_link_authority.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
-/// A box type that takes AI writes: `{"owner": id|null, "text": text}`.
+/// A box type that takes AI writes: `{"by": code id|null, "text": text}`.
 class _Codec extends BoxCodec<Map<String, Object?>> {
   const _Codec(this.typeId, {this.writes = true});
 
@@ -27,7 +30,7 @@ class _Codec extends BoxCodec<Map<String, Object?>> {
   @override
   BoxSizing get sizing => BoxSizing.fixed;
   @override
-  Map<String, Object?> create() => {'owner': null, 'text': ''};
+  Map<String, Object?> create() => {'by': null, 'text': ''};
   @override
   Map<String, Object?> decode(Object? json, int storedVersion) => Map<String, Object?>.from(json! as Map);
   @override
@@ -37,12 +40,14 @@ class _Codec extends BoxCodec<Map<String, Object?>> {
   @override
   AiExposure aiExposure(Map<String, Object?> data) => AiText(data['text']! as String);
   @override
-  String? aiOwner(Map<String, Object?> data) => data['owner'] as String?;
-  @override
   Map<String, Object?>? aiWrite(Map<String, Object?> data, AiWrite write) {
     if (!writes) return null;
     final old = data['text']! as String;
-    return {...data, 'text': write.mode == AiWriteMode.replace ? write.content : '$old${write.content}'};
+    return {
+      ...data,
+      'by': write.connectionId,
+      'text': write.mode == AiWriteMode.replace ? write.content : '$old${write.content}',
+    };
   }
 }
 
@@ -78,20 +83,25 @@ void main() {
   late Directory root;
   late Directory pages;
   late Directory folder;
-  late AppSettings settings;
+  late Directory data;
+  late AiAccessService service;
   late ModuleRegistry modules;
   late List<Notebook> opened;
-  late String token;
-  late String connId;
+  late List<AiApprovalRequest> asked;
+  // How the user answers a question; null: the question stays open.
+  late Future<bool> Function(AiApprovalRequest) answer;
+  var approvalTimeout = const Duration(seconds: 5);
 
   setUp(() async {
     root = await Directory.systemTemp.createTemp('noted_aiwrite');
     pages = await Directory('${root.path}/pages').create();
     folder = await Directory('${root.path}/Work').create();
+    data = await Directory('${root.path}/data').create();
     opened = [];
-    settings = AppSettings(File('${root.path}/settings.json'));
-    token = await settings.addAiConnection('Claude Code');
-    connId = parseAiToken(token)!.id;
+    asked = [];
+    answer = (_) async => true;
+    approvalTimeout = const Duration(seconds: 5);
+    service = AiAccessService(dataFolder: data);
     modules = _modules();
   });
 
@@ -100,6 +110,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
+    service.dispose();
     if (root.existsSync()) await root.delete(recursive: true);
   });
 
@@ -110,19 +121,24 @@ void main() {
       saveDelay: Duration.zero,
       bindersFile: File('${root.path}/app/binders.json'),
       deviceName: 'TestPC',
-      settings: settings,
+      aiAccess: service,
+      aiApprovalTimeout: approvalTimeout,
       recoveryDirectory: recovery,
     );
+    nb.aiApprover = (r) {
+      asked.add(r);
+      return answer(r);
+    };
     opened.add(nb);
     return nb;
   }
 
-  BoxRecord box(String id, {String? owner, String text = '', String type = 'test.ai'}) => BoxRecord.create(
+  BoxRecord box(String id, {String text = '', String type = 'test.ai'}) => BoxRecord.create(
     id: id,
     typeId: type,
     dataVersion: 1,
     bounds: const Bounds(40, 40, 200, 80),
-    data: RawJson.encode({'owner': owner, 'text': text}),
+    data: RawJson.encode({'by': null, 'text': text}),
     snapshotText: text,
     rev: 'r-$id',
   );
@@ -131,77 +147,112 @@ void main() {
   Map<String, Object?> dataOf(Notebook nb, String id) =>
       ((nb.current!.page.node(id)! as BoxRecord).data!.decode()! as Map).cast<String, Object?>();
 
-  AiLinkRequest req(
+  Future<String> issue(
     String boxId, {
-    String? tok,
+    AiCodeRole role = AiCodeRole.writer,
+    String label = 'Work chat',
+  }) => service.issue(AiCodeTarget.box(boxId), role: role, label: label);
+
+  AiLinkWriteBox req(
+    String boxId,
+    String code, {
     String content = 'hello',
     AiLinkMode mode = AiLinkMode.replace,
-  }) => AiLinkRequest(token: tok ?? token, box: boxId, mode: mode, content: content);
+    String session = 's1',
+    String? app = 'Claude Code',
+  }) => AiLinkWriteBox(code: code, session: session, app: app, box: boxId, mode: mode, content: content);
 
-  Future<AiLinkCode?> codeOf(Notebook nb, AiLinkRequest r) async => (await nb.aiWrite(r)).code;
+  Future<AiLinkCode?> codeOf(Notebook nb, AiLinkRequest r) async {
+    final response = await nb.handleAiLink(r);
+    return response is AiLinkError ? response.code : null;
+  }
 
-  // A notebook with page `a` (Whole page, box `ba` owned by the connection)
-  // and, optionally, the open page.
-  Future<({Notebook nb, String a})> withBox({AiSetting? setting = AiSetting.wholePage, String? owner}) async {
+  // A notebook with page `a` (Guarded: nothing chosen) and a box `ba` with a
+  // Writer code.
+  Future<({Notebook nb, String a, String code})> withBox() async {
     final nb = make();
     await nb.load();
     final a = nb.currentId!;
-    await nb.setAiSetting(a, setting);
-    nb.current!.insertBox(box('ba', owner: owner ?? connId, text: 'old'));
+    nb.current!.insertBox(box('ba', text: 'old'));
     await nb.flush();
-    return (nb: nb, a: a);
+    return (nb: nb, a: a, code: await issue('ba'));
   }
+
+  AiCode stored(String codeText) => service.store.codes().singleWhere((c) => c.id == parseAiToken(codeText)!.id);
 
   group('busy', () {
     test('a notebook that is still loading answers busy and changes nothing', () async {
       final nb = make();
+      final code = await issue('ba');
       // load() is never called.
-      final r = await nb.aiWrite(req('ba'));
-      expect(r.code, AiLinkCode.busy);
+      expect(await codeOf(nb, req('ba', code)), AiLinkCode.busy);
     }, timeout: const Timeout(Duration(seconds: 30)));
 
-    test('unreadable settings answer busy, not bad_token, until they can be read', () async {
+    test('an unreadable codes file answers busy until it can be read', () async {
       final t = await withBox();
-      final file = File('${root.path}/settings.json');
+      final file = service.store.file;
       final good = file.readAsStringSync();
       file.writeAsStringSync('{ damaged');
-      expect(await codeOf(t.nb, req('ba')), AiLinkCode.busy);
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.busy);
+      expect(await codeOf(t.nb, req('ba', 'nonsense')), AiLinkCode.busy);
       expect(dataOf(t.nb, 'ba')['text'], 'old');
-      expect(await codeOf(t.nb, req('ba', tok: 'nonsense')), AiLinkCode.badToken, reason: 'no stale flag');
+      expect(file.readAsStringSync(), '{ damaged', reason: 'the damaged file is left alone');
       file.writeAsStringSync(good);
-      expect(await codeOf(t.nb, req('ba', tok: 'noted_${connId}_${'A' * 43}')), AiLinkCode.badToken);
-      expect((await t.nb.aiWrite(req('ba'))).ok, isTrue);
+      expect((await t.nb.handleAiLink(req('ba', t.code))).ok, isTrue);
     });
+
+    test('a codes file another process holds locked answers busy', () async {
+      final t = await withBox();
+      final lock = File('${service.store.file.path}.lock').openSync(mode: FileMode.append)
+        ..lockSync(FileLock.exclusive);
+      try {
+        expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.busy);
+      } finally {
+        lock.unlockSync();
+        lock.closeSync();
+      }
+      expect(dataOf(t.nb, 'ba')['text'], 'old');
+    }, skip: !Platform.isWindows ? 'file locks are per process on POSIX' : false);
   });
 
   test('AiLinkMode and AiWriteMode have the same names', () {
     expect(AiLinkMode.values.map((m) => m.name), AiWriteMode.values.map((m) => m.name));
   });
 
+  test('a request that is this protocol but malformed answers bad_request', () async {
+    final t = await withBox();
+    final r = await t.nb.handleAiLink(const AiLinkMalformed('write_box needs a box.'));
+    expect((r as AiLinkError).code, AiLinkCode.badRequest);
+    expect(r.message, 'write_box needs a box.');
+  });
+
+  test('without codes at all, every code is bad_code', () async {
+    final nb = Notebook(PageStore(pages), modules, saveDelay: Duration.zero);
+    addTearDown(nb.dispose);
+    expect(await codeOf(nb, req('ba', 'noted_${'0' * 16}_${'A' * 43}')), AiLinkCode.badCode);
+  });
+
   group('accepted', () {
-    test('a write to the open page shows at once and is one undo step', () async {
+    test('a write to the open page shows at once, is one undo step and is saved', () async {
       final t = await withBox();
       final c = t.nb.current!;
       var notified = 0;
       c.addListener(() => notified++);
       final before = (c.page.node('ba')! as BoxRecord);
 
-      final r = await t.nb.aiWrite(req('ba', content: 'new text'));
-      expect(r.ok, isTrue);
-      expect(r.page, t.a);
-      expect(r.box, 'ba');
+      final r = await t.nb.handleAiLink(req('ba', t.code, content: 'new text'));
+      expect(r, isA<AiLinkWritten>());
+      expect((r as AiLinkWritten).box, 'ba');
+      expect(r.encode(), isNot(contains(t.a)), reason: 'the answer names no page');
       expect(notified, greaterThan(0), reason: 'the canvas is told');
       expect(dataOf(t.nb, 'ba')['text'], 'new text');
-      expect(dataOf(t.nb, 'ba')['owner'], connId);
+      expect(dataOf(t.nb, 'ba')['by'], stored(t.code).id, reason: 'the code id is the writer');
       final after = c.page.node('ba')! as BoxRecord;
       expect(after.snapshotText, 'new text');
       expect(after.rev, isNot(before.rev));
       expect(after.device, 'TestPC');
-      // Saved by the normal path.
-      expect(readPage(File('${pages.path}/${t.a}.canvas').readAsStringSync()).node('ba'), isA<BoxRecord>());
       expect(File('${pages.path}/${t.a}.canvas').readAsStringSync(), contains('new text'));
 
-      // One undo step, then the box is back and still there.
       c.undo();
       expect(dataOf(t.nb, 'ba')['text'], 'old');
       expect(c.page.node('ba'), isNotNull);
@@ -211,21 +262,26 @@ void main() {
 
     test('append adds to the text', () async {
       final t = await withBox();
-      await t.nb.aiWrite(req('ba', content: ' more', mode: AiLinkMode.append));
+      await t.nb.handleAiLink(req('ba', t.code, content: ' more', mode: AiLinkMode.append));
       expect(dataOf(t.nb, 'ba')['text'], 'old more');
     });
 
-    test('Box only allows writing too', () async {
-      final t = await withBox(setting: AiSetting.boxOnly);
-      expect((await t.nb.aiWrite(req('ba'))).ok, isTrue);
+    test('whatever the page access: Open, Privileged and Guarded all take the write', () async {
+      final t = await withBox();
+      for (final access in AiAccess.values) {
+        await t.nb.setAiAccess(t.a, access);
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: access.name));
+        expect(r.ok, isTrue, reason: access.name);
+        expect(dataOf(t.nb, 'ba')['text'], access.name);
+      }
     });
 
-    test('an inherited setting allows it', () async {
+    test('a box on a subpage is found', () async {
       final t = await withBox();
-      final sub = await t.nb.createPage(parentId: t.a);
-      t.nb.current!.insertBox(box('bs', owner: connId));
-      expect(t.nb.ownAiSetting(sub), isNull);
-      expect((await t.nb.aiWrite(req('bs'))).ok, isTrue);
+      await t.nb.createPage(parentId: t.a);
+      t.nb.current!.insertBox(box('bs'));
+      final code = await issue('bs');
+      expect((await t.nb.handleAiLink(req('bs', code))).ok, isTrue);
     });
 
     test('a write to a closed page is on disk and survives a restart', () async {
@@ -233,11 +289,9 @@ void main() {
       final other = await t.nb.createPage();
       expect(t.nb.currentId, other);
 
-      final r = await t.nb.aiWrite(req('ba', content: 'closed write'));
+      final r = await t.nb.handleAiLink(req('ba', t.code, content: 'closed write'));
       expect(r.ok, isTrue);
-      expect(r.page, t.a);
-      final file = File('${pages.path}/${t.a}.canvas');
-      expect(file.readAsStringSync(), contains('closed write'));
+      expect(File('${pages.path}/${t.a}.canvas').readAsStringSync(), contains('closed write'));
 
       t.nb.dispose();
       opened.clear();
@@ -251,38 +305,256 @@ void main() {
       expect(rec.rev, isNot('r-ba'));
     });
 
-    test('a page in a binder is found', () async {
+    test('a page in a binder is found, and a hint of the wrong page does not matter', () async {
       final nb = make();
       await nb.load();
       final s = await nb.addBinder(folder.path);
       final p = await nb.createPage(binderPath: s.path);
-      await nb.setAiSetting(p, AiSetting.wholePage);
-      nb.current!.insertBox(box('bb', owner: connId));
+      nb.current!.insertBox(box('bb'));
       await nb.open(nb.tree.roots.first.id);
       expect(nb.currentId, isNot(p));
-      final r = await nb.aiWrite(req('bb', content: 'in binder'));
+      final code = await service.issue(
+        AiCodeTarget.box('bb', page: 'a-page-that-moved-away'),
+        role: AiCodeRole.writer,
+        label: 'Binder chat',
+      );
+      final r = await nb.handleAiLink(req('bb', code, content: 'in binder'));
       expect(r.ok, isTrue);
-      expect(r.page, p);
       expect(File('${folder.path}/$p.canvas').readAsStringSync(), contains('in binder'));
+    });
+  });
+
+  group('approval', () {
+    test('the first use from a session asks, once; the session is then remembered', () async {
+      final t = await withBox();
+      expect((await t.nb.handleAiLink(req('ba', t.code, content: 'one'))).ok, isTrue);
+      expect(asked, hasLength(1));
+      expect(asked.single.message, 'Claude Code wants to write Work chat. Allow?');
+      expect(asked.single.perWrite, isFalse);
+      expect((await t.nb.handleAiLink(req('ba', t.code, content: 'two'))).ok, isTrue);
+      expect(asked, hasLength(1), reason: 'same session: not asked again');
+      final sessions = stored(t.code).sessions;
+      expect(sessions.single.id, 's1');
+      expect(sessions.single.app, 'Claude Code');
+      expect(sessions.single.approved, isNotNull);
+
+      // Another session asks again; a revoked session asks again.
+      expect((await t.nb.handleAiLink(req('ba', t.code, session: 's2'))).ok, isTrue);
+      expect(asked, hasLength(2));
+      await service.revokeSession(stored(t.code).id, 's1');
+      expect((await t.nb.handleAiLink(req('ba', t.code, session: 's1'))).ok, isTrue);
+      expect(asked, hasLength(3));
+    });
+
+    test('a read asks "read"', () async {
+      final t = await withBox();
+      final reader = await issue('ba', role: AiCodeRole.reader, label: 'Review chat');
+      await t.nb.handleAiLink(AiLinkAccess(code: reader, session: 's9', app: 'Cursor', action: AiLinkAction.readBox, target: 'ba'));
+      expect(asked.single.message, 'Cursor wants to read Review chat. Allow?');
+    });
+
+    test('a request without an app name still reads well', () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, app: null));
+      expect(asked.single.message, 'An AI app wants to write Work chat. Allow?');
+    });
+
+    test('control characters in the app name become spaces', () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, app: 'Evil\n\u0007App x'));
+      expect(asked.single.message, 'Evil  App x wants to write Work chat. Allow?');
+      expect(stored(t.code).sessions.single.app, 'Evil  App x');
+    });
+
+    test('deny: not_approved, nothing written, nothing remembered, asked again next time', () async {
+      final t = await withBox();
+      answer = (_) async => false;
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notApproved);
+      expect(dataOf(t.nb, 'ba')['text'], 'old');
+      expect(stored(t.code).sessions, isEmpty);
+      expect(stored(t.code).lastUsed, isNull);
+      answer = (_) async => true;
+      expect((await t.nb.handleAiLink(req('ba', t.code))).ok, isTrue);
+      expect(asked, hasLength(2));
+    });
+
+    test('no answer in time: not_approved, and the question is told to close', () async {
+      approvalTimeout = const Duration(milliseconds: 200);
+      final t = await withBox();
+      answer = (_) => Completer<bool>().future;
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notApproved);
+      await asked.single.expired;
+      expect(dataOf(t.nb, 'ba')['text'], 'old');
+      expect(stored(t.code).sessions, isEmpty);
+    });
+
+    test('nobody to ask: not_approved', () async {
+      final t = await withBox();
+      t.nb.aiApprover = null;
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notApproved);
+    });
+
+    test('revoked while the question is open: refused, nothing written or remembered', () async {
+      final t = await withBox();
+      final id = stored(t.code).id;
+      answer = (_) async {
+        await service.revoke(id);
+        return true;
+      };
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.badCode);
+      expect(dataOf(t.nb, 'ba')['text'], 'old');
+      expect(service.store.codes(), isEmpty);
+    });
+
+    test('expired while the question is open: refused', () async {
+      final t = await withBox();
+      final id = stored(t.code).id;
+      answer = (_) async {
+        service.store.update((d) => d.put(d.code(id)!.withExpires(DateTime.now().subtract(const Duration(hours: 1)))));
+        return true;
+      };
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.expired);
+      expect(dataOf(t.nb, 'ba')['text'], 'old');
+    });
+
+    test('two requests of one new session ask once', () async {
+      final t = await withBox();
+      final gate = Completer<bool>();
+      answer = (_) => gate.future;
+      final a = t.nb.handleAiLink(req('ba', t.code, content: 'a'));
+      final b = t.nb.handleAiLink(req('ba', t.code, content: 'b', mode: AiLinkMode.append));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(asked, hasLength(1));
+      gate.complete(true);
+      expect((await a).ok && (await b).ok, isTrue);
+      expect(asked, hasLength(1));
+    });
+  });
+
+  group('ask before each write', () {
+    test('asks with a preview; allow writes, deny does not', () async {
+      final t = await withBox();
+      await service.setAskBeforeWrite('ba', true);
+      expect((await t.nb.handleAiLink(req('ba', t.code, content: 'first'))).ok, isTrue);
+      expect(asked, hasLength(2), reason: 'the session, then the write');
+      final write = asked.last;
+      expect(write.perWrite, isTrue);
+      expect(write.message, 'Claude Code wants to write to Work chat. Allow?');
+      expect(write.preview, 'Replace with: first');
+
+      answer = (r) async => !r.perWrite;
+      expect(await codeOf(t.nb, req('ba', t.code, content: 'second', mode: AiLinkMode.append)), AiLinkCode.notApproved);
+      expect(asked.last.preview, 'Add: second');
+      expect(dataOf(t.nb, 'ba')['text'], 'first');
+
+      await service.setAskBeforeWrite('ba', false);
+      answer = (_) async => true;
+      final count = asked.length;
+      expect((await t.nb.handleAiLink(req('ba', t.code, content: 'third'))).ok, isTrue);
+      expect(asked, hasLength(count), reason: 'no longer asked');
+    });
+
+    test('a long preview is shortened', () async {
+      final t = await withBox();
+      await service.setAskBeforeWrite('ba', true);
+      await t.nb.handleAiLink(req('ba', t.code, content: 'x ${'word ' * 100}'));
+      expect(asked.last.preview!.length, lessThan(230));
+      expect(asked.last.preview, endsWith('…'));
+    });
+
+    test('is not asked about a write that would be refused', () async {
+      final t = await withBox();
+      await service.setAskBeforeWrite('ba', true);
+      t.nb.current!.readOnly = true;
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.locked);
+      expect(asked.where((a) => a.perWrite), isEmpty);
+    });
+
+    test('revoked while the question is open: refused', () async {
+      final t = await withBox();
+      await service.setAskBeforeWrite('ba', true);
+      final id = stored(t.code).id;
+      answer = (r) async {
+        if (r.perWrite) await service.revoke(id);
+        return true;
+      };
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.badCode);
+      expect(dataOf(t.nb, 'ba')['text'], 'old');
+    });
+
+    test('no answer in time: not_approved', () async {
+      approvalTimeout = const Duration(milliseconds: 200);
+      final t = await withBox();
+      await service.setAskBeforeWrite('ba', true);
+      answer = (r) => r.perWrite ? Completer<bool>().future : Future.value(true);
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notApproved);
+      expect(dataOf(t.nb, 'ba')['text'], 'old');
+    });
+  });
+
+  group('activity and use', () {
+    test('every request is logged with op, app, label and result, never the content', () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, content: 'a secret sentence'));
+      answer = (_) async => false;
+      await t.nb.handleAiLink(req('ba', t.code, session: 'other', app: 'Other app'));
+      final reader = await issue('ba', role: AiCodeRole.reader, label: 'Reader');
+      answer = (_) async => true;
+      await t.nb.handleAiLink(req('ba', reader)); // wrong role
+      await t.nb.handleAiLink(
+        AiLinkAccess(code: t.code, session: 's1', app: 'Claude Code', action: AiLinkAction.readBox, target: 'ba'),
+      );
+      await t.nb.handleAiLink(AiLinkDescribeCode(code: t.code, session: 's1', app: 'Claude Code'));
+
+      final entries = service.activity('ba');
+      expect(entries.map((e) => (e.op, e.result, e.app, e.label)), [
+        ('write_box', 'ok', 'Claude Code', 'Work chat'),
+        ('write_box', 'not_approved', 'Other app', 'Work chat'),
+        ('write_box', 'wrong_role', 'Claude Code', 'Reader'),
+        ('read_box', 'ok', 'Claude Code', 'Work chat'),
+        ('describe_code', 'ok', 'Claude Code', 'Work chat'),
+      ]);
+      expect(entries.first.code, stored(t.code).id);
+      expect(entries.first.target, const AiCodeTarget.box('ba'));
+      expect(File(service.log.file.path).readAsStringSync(), isNot(contains('secret sentence')));
+    });
+
+    test('a refused code is logged only when it is a known code (expired), a bad one not at all', () async {
+      final t = await withBox();
+      await codeOf(t.nb, req('ba', 'noted_${'0' * 16}_${'A' * 43}'));
+      expect(service.log.entries(), isEmpty);
+      service.store.update((d) => d.put(d.code(stored(t.code).id)!.withExpires(DateTime.now().subtract(const Duration(hours: 1)))));
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.expired);
+      expect(service.log.entries().single.result, 'expired');
+    });
+
+    test('a used code records when, and the listeners are told', () async {
+      final t = await withBox();
+      var told = 0;
+      service.addListener(() => told++);
+      expect(stored(t.code).lastUsed, isNull);
+      await t.nb.handleAiLink(req('ba', t.code));
+      expect(stored(t.code).lastUsed, isNotNull);
+      expect(told, greaterThan(0));
     });
   });
 
   group('ordering and races', () {
     test('queued writes are applied in the order they came', () async {
       final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up')); // the session is allowed
       final all = await Future.wait([
-        t.nb.aiWrite(req('ba', content: 'one', mode: AiLinkMode.replace)),
-        t.nb.aiWrite(req('ba', content: ' two', mode: AiLinkMode.append)),
-        t.nb.aiWrite(req('ba', content: ' three', mode: AiLinkMode.append)),
+        t.nb.handleAiLink(req('ba', t.code, content: 'one', mode: AiLinkMode.replace)),
+        t.nb.handleAiLink(req('ba', t.code, content: ' two', mode: AiLinkMode.append)),
+        t.nb.handleAiLink(req('ba', t.code, content: ' three', mode: AiLinkMode.append)),
       ]);
       expect(all.every((r) => r.ok), isTrue);
       expect(dataOf(t.nb, 'ba')['text'], 'one two three');
 
-      // The same for a closed page.
       await t.nb.createPage();
       await Future.wait([
-        t.nb.aiWrite(req('ba', content: 'A', mode: AiLinkMode.replace)),
-        t.nb.aiWrite(req('ba', content: 'B', mode: AiLinkMode.append)),
+        t.nb.handleAiLink(req('ba', t.code, content: 'A', mode: AiLinkMode.replace)),
+        t.nb.handleAiLink(req('ba', t.code, content: 'B', mode: AiLinkMode.append)),
       ]);
       await t.nb.open(t.a);
       expect(dataOf(t.nb, 'ba')['text'], 'AB');
@@ -291,23 +563,23 @@ void main() {
     for (final writeFirst in [true, false]) {
       test('a write to a closed page racing open() is not lost (${writeFirst ? 'write' : 'open'} first)', () async {
         final t = await withBox();
+        await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
         await t.nb.createPage(); // t.a is closed now
         final Future<AiLinkResponse> w;
         final Future<void> o;
         if (writeFirst) {
-          w = t.nb.aiWrite(req('ba', content: 'raced'));
+          w = t.nb.handleAiLink(req('ba', t.code, content: 'raced'));
           o = t.nb.open(t.a);
         } else {
           o = t.nb.open(t.a);
-          w = t.nb.aiWrite(req('ba', content: 'raced'));
+          w = t.nb.handleAiLink(req('ba', t.code, content: 'raced'));
         }
         expect((await w).ok, isTrue);
         await o;
         expect(t.nb.currentId, t.a);
         expect(dataOf(t.nb, 'ba')['text'], 'raced', reason: 'the open page shows it');
 
-        // The user's next save keeps it.
-        t.nb.current!.insertBox(box('user', owner: null, text: 'mine'));
+        t.nb.current!.insertBox(box('user', text: 'mine'));
         await t.nb.flush();
         final onDisk = readPage(File('${pages.path}/${t.a}.canvas').readAsStringSync());
         expect(onDisk.node('user'), isNotNull);
@@ -320,7 +592,7 @@ void main() {
       first.nb.dispose();
       opened.clear();
       final nb = make();
-      final r = nb.aiWrite(req('ba', content: 'early'));
+      final r = nb.handleAiLink(req('ba', first.code, content: 'early'));
       await Future<void>.delayed(const Duration(milliseconds: 100));
       await nb.load();
       expect((await r).ok, isTrue);
@@ -328,19 +600,9 @@ void main() {
       expect(dataOf(nb, 'ba')['text'], 'early');
     });
 
-    test('a bad token is refused without waiting for the load', () async {
+    test('a bad code is refused without waiting for the load', () async {
       final nb = make();
-      expect(await codeOf(nb, req('ba', tok: 'garbage')), AiLinkCode.badToken);
-    });
-
-    test('the closed page\'s own file decides the AI setting', () async {
-      final t = await withBox();
-      await t.nb.createPage();
-      final f = File('${pages.path}/${t.a}.canvas');
-      f.writeAsStringSync(f.readAsStringSync().replaceAll('"ai":"page"', '"ai":"off"'));
-      expect(f.readAsStringSync(), contains('"ai":"off"'));
-      expect(t.nb.aiSettingFor(t.a), AiSetting.wholePage, reason: 'the notebook has not looked yet');
-      expect(await codeOf(t.nb, req('ba')), AiLinkCode.noBox);
+      expect(await codeOf(nb, req('ba', 'garbage')), AiLinkCode.badCode);
     });
   });
 
@@ -349,14 +611,13 @@ void main() {
       final rec = Directory('${root.path}/rec');
       final nb = make(recovery: rec);
       await nb.load();
-      final a = nb.currentId!;
-      await nb.setAiSetting(a, AiSetting.wholePage);
-      nb.current!.insertBox(box('ba', owner: connId, text: 'old'));
+      nb.current!.insertBox(box('ba', text: 'old'));
       await nb.flush();
+      final code = await issue('ba');
       pages.deleteSync(recursive: true); // the folder goes away
 
-      final r = await nb.aiWrite(req('ba', content: 'new'));
-      expect(r.code, AiLinkCode.saveFailed);
+      final r = await nb.handleAiLink(req('ba', code, content: 'new'));
+      expect((r as AiLinkError).code, AiLinkCode.saveFailed);
       expect(r.message, contains("don't retry an append"));
       expect(dataOf(nb, 'ba')['text'], 'new', reason: 'still on screen');
       expect(rec.existsSync() && rec.listSync().isNotEmpty, isTrue, reason: 'kept for recovery');
@@ -367,16 +628,16 @@ void main() {
       final store = _VanishingStore(pages);
       final nb = make(store: store, recovery: rec);
       await nb.load();
-      final a = nb.currentId!;
-      await nb.setAiSetting(a, AiSetting.wholePage);
-      nb.current!.insertBox(box('ba', owner: connId, text: 'old'));
+      nb.current!.insertBox(box('ba', text: 'old'));
       await nb.flush();
+      final code = await issue('ba');
       await nb.createPage();
-      // The folder disappears after the write has read the page.
+      // The folder disappears after the write has read the page (the lookup
+      // loads it once, the write once).
       store.vanishOnLoad = store.loads + 2;
 
-      final r = await nb.aiWrite(req('ba', content: 'new'));
-      expect(r.code, AiLinkCode.saveFailed);
+      final r = await nb.handleAiLink(req('ba', code, content: 'new'));
+      expect((r as AiLinkError).code, AiLinkCode.saveFailed);
       expect(r.message, contains("don't retry an append"));
       expect(rec.existsSync() && rec.listSync().isNotEmpty, isTrue, reason: 'kept for recovery');
     });
@@ -385,155 +646,444 @@ void main() {
       final nb = make();
       await nb.load();
       final a = nb.currentId!;
-      await nb.setAiSetting(a, AiSetting.wholePage);
-      nb.current!.insertBox(box('ba', owner: connId, text: 'old'));
+      nb.current!.insertBox(box('ba', text: 'old'));
       await nb.flush();
       final b = await nb.createPage();
-      await nb.setAiSetting(b, AiSetting.wholePage);
-      nb.current!.insertBox(box('bb', owner: connId, text: 'old'));
+      nb.current!.insertBox(box('bb', text: 'old'));
       await nb.flush();
-      // Page b can't be saved (its file is a folder); page a still can.
+      final codeA = await issue('ba');
+      final codeB = await issue('bb');
       File('${pages.path}/$b.canvas').deleteSync();
       Directory('${pages.path}/$b.canvas').createSync();
-      expect((await nb.aiWrite(req('bb'))).code, AiLinkCode.saveFailed);
+      expect(await codeOf(nb, req('bb', codeB)), AiLinkCode.saveFailed);
       await nb.open(a);
-      expect((await nb.aiWrite(req('ba', content: 'fine'))).ok, isTrue);
+      expect((await nb.handleAiLink(req('ba', codeA, content: 'fine'))).ok, isTrue);
     });
   });
 
   group('rejected', () {
-    test('a malformed, wrong or unknown token', () async {
+    test('a malformed, wrong or unknown code', () async {
       final t = await withBox();
-      final good = parseAiToken(token)!;
+      final good = parseAiToken(t.code)!;
       final wrongKey = 'noted_${good.id}_${'A' * 43}';
       final unknownId = 'noted_${'0' * 16}_${good.key}';
-      for (final bad in ['', 'garbage', 'noted_', wrongKey, unknownId, '$token-x']) {
-        expect(await codeOf(t.nb, req('ba', tok: bad)), AiLinkCode.badToken, reason: bad);
+      for (final bad in ['', 'garbage', 'noted_', wrongKey, unknownId, '${t.code}-x']) {
+        expect(await codeOf(t.nb, req('ba', bad)), AiLinkCode.badCode, reason: bad);
       }
       expect(dataOf(t.nb, 'ba')['text'], 'old');
+      expect(asked, isEmpty, reason: 'nobody is asked about a bad code');
     });
 
-    test('the token is checked before the box is looked up', () async {
+    test('the code is checked before the box is looked up', () async {
       final t = await withBox();
-      expect(await codeOf(t.nb, req('no-such-box', tok: 'garbage')), AiLinkCode.badToken);
-      expect(await codeOf(t.nb, req('no-such-box')), AiLinkCode.noBox);
+      expect(await codeOf(t.nb, req('no-such-box', 'garbage')), AiLinkCode.badCode);
+      final code = await issue('no-such-box');
+      expect(await codeOf(t.nb, req('no-such-box', code)), AiLinkCode.noBox);
     });
 
-    test('a revoked token fails at once', () async {
+    test('a revoked code fails at once', () async {
       final t = await withBox();
-      expect((await t.nb.aiWrite(req('ba', content: 'one'))).ok, isTrue);
-      settings.revokeAiConnection(connId);
-      expect(await codeOf(t.nb, req('ba', content: 'two')), AiLinkCode.badToken);
+      expect((await t.nb.handleAiLink(req('ba', t.code, content: 'one'))).ok, isTrue);
+      await service.revoke(stored(t.code).id);
+      expect(await codeOf(t.nb, req('ba', t.code, content: 'two')), AiLinkCode.badCode);
       expect(dataOf(t.nb, 'ba')['text'], 'one');
     });
 
-    test('an unknown box', () async {
+    test('an old Writer code stops working when a new one is issued', () async {
       final t = await withBox();
-      expect(await codeOf(t.nb, req('nope')), AiLinkCode.noBox);
+      final next = await issue('ba');
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.badCode);
+      expect((await t.nb.handleAiLink(req('ba', next))).ok, isTrue);
     });
 
-    test('a page that is Off gives the same answer as no box', () async {
-      final t = await withBox(setting: AiSetting.off);
-      expect(await codeOf(t.nb, req('ba')), AiLinkCode.noBox);
-      expect(await codeOf(t.nb, req('nope')), AiLinkCode.noBox);
-      expect(dataOf(t.nb, 'ba')['text'], 'old');
-    });
-
-    test('Off with nothing chosen (the default) and Off inherited', () async {
-      final nb = make();
-      await nb.load();
-      final a = nb.currentId!;
-      nb.current!.insertBox(box('ba', owner: connId));
-      expect(await codeOf(nb, req('ba')), AiLinkCode.noBox, reason: 'Off by default');
-
-      await nb.setAiSetting(a, AiSetting.off);
-      final sub = await nb.createPage(parentId: a);
-      await nb.setAiSetting(sub, null);
-      nb.current!.insertBox(box('bs', owner: connId));
-      expect(nb.aiSettingFor(sub), AiSetting.off);
-      expect(await codeOf(nb, req('bs')), AiLinkCode.noBox);
-      await nb.open(a); // sub is closed now
-      expect(await codeOf(nb, req('bs')), AiLinkCode.noBox);
-    });
-
-    test('a box of another connection, or of nobody', () async {
+    test('an expired code', () async {
       final t = await withBox();
-      final other = await settings.addAiConnection('Other');
-      expect(await codeOf(t.nb, req('ba', tok: other)), AiLinkCode.notOwner);
-      t.nb.current!.insertBox(box('free'));
-      expect(await codeOf(t.nb, req('free')), AiLinkCode.notOwner);
+      await service.setExpires(stored(t.code).id, DateTime.now().subtract(const Duration(minutes: 1)));
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.expired);
       expect(dataOf(t.nb, 'ba')['text'], 'old');
+      await service.setExpires(stored(t.code).id, DateTime.now().add(const Duration(hours: 1)));
+      expect((await t.nb.handleAiLink(req('ba', t.code))).ok, isTrue);
+    });
+
+    test('a Reader code, a page code or a code of a role this build does not know cannot write', () async {
+      final t = await withBox();
+      final reader = await issue('ba', role: AiCodeRole.reader);
+      expect(await codeOf(t.nb, req('ba', reader)), AiLinkCode.wrongRole);
+      final pageCode = await service.issue(AiCodeTarget.page(t.a), role: AiCodeRole.reader, label: 'Page');
+      expect(await codeOf(t.nb, req('ba', pageCode)), AiLinkCode.wrongRole);
+      final future = newAiToken();
+      service.store.update(
+        (d) => d.put(
+          AiCode(
+            id: future.id,
+            target: const AiCodeTarget.box('ba'),
+            roleName: 'organize',
+            label: 'Newer',
+            hash: future.hash,
+            created: DateTime.now().toUtc(),
+          ),
+        ),
+      );
+      expect(await codeOf(t.nb, req('ba', future.token)), AiLinkCode.wrongRole);
+      expect(dataOf(t.nb, 'ba')['text'], 'old');
+      expect(asked, isEmpty, reason: 'refused before anyone is asked');
+    });
+
+    test('a box that is not the code\'s own gives the answer of a box that is not there', () async {
+      final t = await withBox();
+      t.nb.current!.insertBox(box('bother', text: 'theirs'));
+      expect(await codeOf(t.nb, req('bother', t.code)), AiLinkCode.noBox);
+      expect(await codeOf(t.nb, req('nope', t.code)), AiLinkCode.noBox);
+      expect(dataOf(t.nb, 'bother')['text'], 'theirs');
+      expect(asked, isEmpty);
+    });
+
+    test('a code for a box that does not exist', () async {
+      final t = await withBox();
+      final code = await issue('nope');
+      expect(await codeOf(t.nb, req('nope', code)), AiLinkCode.noBox);
     });
 
     test('a conflicted box', () async {
       final t = await withBox();
-      final other = box('ba', owner: connId, text: 'theirs');
+      final other = box('bc', text: 'theirs');
       t.nb.current!.insertBox(
-        box('bc', owner: connId, text: 'mine').withConflict(BoxConflict.other(node: other.toRaw(), at: 5)),
+        box('bc', text: 'mine').withConflict(BoxConflict.other(node: other.toRaw(), at: 5)),
       );
-      expect(await codeOf(t.nb, req('bc')), AiLinkCode.conflict);
+      final code = await issue('bc');
+      expect(await codeOf(t.nb, req('bc', code)), AiLinkCode.conflict);
       expect(dataOf(t.nb, 'bc')['text'], 'mine');
     });
 
     test('a box type that takes no AI writes', () async {
       final t = await withBox();
-      t.nb.current!.insertBox(box('bn', owner: connId, type: 'test.noai'));
-      expect(await codeOf(t.nb, req('bn')), AiLinkCode.notWritable);
+      t.nb.current!.insertBox(box('bn', type: 'test.noai'));
+      expect(await codeOf(t.nb, req('bn', await issue('bn'))), AiLinkCode.notWritable);
     });
 
     test('a box whose module is switched off, or not installed', () async {
       final t = await withBox();
       modules.codecs.setEnabled('test.ai', false);
-      expect(await codeOf(t.nb, req('ba')), AiLinkCode.notWritable);
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notWritable);
       modules.codecs.setEnabled('test.ai', true);
-      expect((await t.nb.aiWrite(req('ba'))).ok, isTrue);
+      expect((await t.nb.handleAiLink(req('ba', t.code))).ok, isTrue);
 
-      // Saved by a module this build doesn't have: passes through untouched.
       final foreign = BoxRecord.create(
         id: 'bf',
         typeId: 'other.thing',
         dataVersion: 1,
         bounds: const Bounds(0, 0, 10, 10),
-        data: RawJson.encode({'owner': connId}),
+        data: RawJson.encode({'by': null}),
         snapshotText: 'x',
         rev: 'r',
       );
       t.nb.current!.insertBox(foreign);
-      expect(await codeOf(t.nb, req('bf')), AiLinkCode.notWritable);
+      expect(await codeOf(t.nb, req('bf', await issue('bf'))), AiLinkCode.notWritable);
     });
 
-    Future<({Notebook nb, String page})> lockedBinder() async {
+    test('a box type the page does not allow, here or by a parent or the binder', () async {
+      final t = await withBox();
+      final c = t.nb.current!;
+      c.updateMeta(c.page.meta.withBoxType('test.ai', false));
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notWritable);
+      expect(dataOf(t.nb, 'ba')['text'], 'old');
+      c.updateMeta(c.page.meta.withBoxType('test.ai', null));
+      expect((await t.nb.handleAiLink(req('ba', t.code))).ok, isTrue);
+
+      // Disallowed by the parent page: the subpage's box can't be written.
+      final sub = await t.nb.createPage(parentId: t.a);
+      t.nb.current!.insertBox(box('bs'));
+      final code = await issue('bs');
+      await t.nb.open(t.a);
+      t.nb.current!.updateMeta(t.nb.current!.page.meta.withBoxType('test.ai', false));
+      expect(t.nb.tree[sub], isNotNull);
+      expect(await codeOf(t.nb, req('bs', code)), AiLinkCode.notWritable);
+    });
+
+    Future<({Notebook nb, String page, String binderId})> lockedBinder() async {
       final first = make();
       await first.load();
       final s = await first.addBinder(folder.path);
       final p = await first.createPage(binderPath: s.path);
-      await first.setAiSetting(p, AiSetting.wholePage);
-      first.current!.insertBox(box('bl', owner: connId, text: 'old'));
+      first.current!.insertBox(box('bl', text: 'old'));
       await first.flush();
+      final binderId = s.binder!.id;
       first.dispose();
       opened.clear();
       File('${folder.path}/$binderFileName').writeAsStringSync('{ not json');
       final nb = make();
       await nb.load();
       expect(nb.isReadOnlyPage(p), isTrue);
-      return (nb: nb, page: p);
+      return (nb: nb, page: p, binderId: binderId);
     }
 
     test('a page of a binder that can not be read, closed or open', () async {
       final t = await lockedBinder();
+      final code = await issue('bl');
       expect(t.nb.currentId, isNot(t.page));
-      expect(await codeOf(t.nb, req('bl')), AiLinkCode.locked);
+      expect(await codeOf(t.nb, req('bl', code)), AiLinkCode.locked);
       await t.nb.open(t.page);
-      expect(await codeOf(t.nb, req('bl')), AiLinkCode.locked);
+      expect(await codeOf(t.nb, req('bl', code)), AiLinkCode.locked);
       expect(dataOf(t.nb, 'bl')['text'], 'old');
-      expect(File('${folder.path}/${t.page}.canvas').readAsStringSync(), isNot(contains('hello')));
     });
 
     test('a read-only open page', () async {
       final t = await withBox();
       t.nb.current!.readOnly = true;
-      expect(await codeOf(t.nb, req('ba')), AiLinkCode.locked);
+      expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.locked);
       expect(dataOf(t.nb, 'ba')['text'], 'old');
+    });
+
+    test('a box in a locked binder is still readable by its box code', () async {
+      final t = await lockedBinder();
+      final code = await issue('bl', role: AiCodeRole.reader);
+      final r = await t.nb.handleAiLink(
+        AiLinkAccess(code: code, session: 's1', app: 'A', action: AiLinkAction.readBox, target: 'bl'),
+      );
+      expect((r as AiLinkGranted).grant, isA<AiLinkBoxGrant>());
+      expect((r.grant as AiLinkBoxGrant).page, t.page);
+    });
+
+    test('a page code in a locked binder reaches no page', () async {
+      final t = await lockedBinder();
+      final code = await service.issue(AiCodeTarget.page(t.page), role: AiCodeRole.reader, label: 'P');
+      final r = await t.nb.handleAiLink(
+        AiLinkAccess(code: code, session: 's1', app: 'A', action: AiLinkAction.listPages),
+      );
+      expect(((r as AiLinkGranted).grant as AiLinkPagesGrant).pages, isEmpty);
+    });
+  });
+
+  group('access', () {
+    Future<AiLinkResponse> access(
+      Notebook nb,
+      String code,
+      AiLinkAction action, {
+      String? target,
+    }) => nb.handleAiLink(AiLinkAccess(code: code, session: 's1', app: 'A', action: action, target: target));
+
+    List<String> granted(AiLinkResponse r) => ((r as AiLinkGranted).grant as AiLinkPagesGrant).pages.toList()..sort();
+
+    test('a box code grants its own box, whatever the page access, with the page', () async {
+      final t = await withBox();
+      for (final role in [AiCodeRole.reader, AiCodeRole.writer]) {
+        final code = await issue('ba', role: role);
+        final r = await access(t.nb, code, AiLinkAction.readBox, target: 'ba');
+        expect((r as AiLinkGranted).grant.toJson(), {'kind': 'box', 'box': 'ba', 'page': t.a});
+      }
+      // Also when the page is closed.
+      await t.nb.createPage();
+      final code = await issue('ba', role: AiCodeRole.reader);
+      final r = await access(t.nb, code, AiLinkAction.readBox, target: 'ba');
+      expect((r as AiLinkGranted).grant.toJson(), {'kind': 'box', 'box': 'ba', 'page': t.a});
+    });
+
+    test('a box code reaches nothing but its box: other boxes, pages, lists and search are refused', () async {
+      final t = await withBox();
+      t.nb.current!.insertBox(box('other'));
+      final code = await issue('ba', role: AiCodeRole.reader);
+      expect(await codeOf(t.nb, AiLinkAccess(code: code, session: 's1', action: AiLinkAction.readBox, target: 'other')), AiLinkCode.noBox);
+      for (final action in [AiLinkAction.readPage, AiLinkAction.listPages, AiLinkAction.search]) {
+        expect(await codeOf(t.nb, AiLinkAccess(code: code, session: 's1', action: action, target: 'x')), AiLinkCode.wrongRole, reason: action.wire);
+      }
+    });
+
+    test('a box code for a box that is gone', () async {
+      final t = await withBox();
+      final code = await issue('gone', role: AiCodeRole.reader);
+      expect(await codeOf(t.nb, AiLinkAccess(code: code, session: 's1', action: AiLinkAction.readBox, target: 'gone')), AiLinkCode.noBox);
+    });
+
+    test('a page code covers its page and subpages, minus Guarded and tightened ones', () async {
+      final nb = make();
+      await nb.load();
+      final a = nb.currentId!;
+      final sub = await nb.createPage(parentId: a);
+      final subsub = await nb.createPage(parentId: sub);
+      final sub2 = await nb.createPage(parentId: a);
+      final elsewhere = await nb.createPage();
+      await nb.setAiAccess(elsewhere, AiAccess.open);
+      await nb.setAiAccess(a, AiAccess.open);
+      await nb.setAiAccess(sub, AiAccess.privileged);
+      await nb.setAiAccess(sub2, AiAccess.guarded);
+      final code = await service.issue(AiCodeTarget.page(a), role: AiCodeRole.reader, label: 'Pages');
+
+      final r = await access(nb, code, AiLinkAction.listPages);
+      expect(granted(r), ([a, sub, subsub]..sort()), reason: 'Open and Privileged, not the Guarded subpage, not other pages');
+
+      // Tightening the page itself takes the whole subtree out.
+      await nb.setAiAccess(a, AiAccess.guarded);
+      expect(granted(await access(nb, code, AiLinkAction.readPage, target: sub)), isEmpty);
+      await nb.setAiAccess(a, AiAccess.privileged);
+      await nb.setAiAccess(sub, AiAccess.guarded);
+      expect(granted(await access(nb, code, AiLinkAction.search, target: 'q')), [a]);
+    });
+
+    test('a page code for a page that does not exist grants nothing', () async {
+      final t = await withBox();
+      final code = await service.issue(AiCodeTarget.page('nope'), role: AiCodeRole.reader, label: 'P');
+      expect(granted(await access(t.nb, code, AiLinkAction.listPages)), isEmpty);
+    });
+
+    test('a binder code covers its pages, minus Guarded ones; a standalone page is out', () async {
+      final nb = make();
+      await nb.load();
+      final standalone = nb.currentId!;
+      final s = await nb.addBinder(folder.path);
+      final p1 = await nb.createPage(binderPath: s.path);
+      final p2 = await nb.createPage(binderPath: s.path);
+      final p2sub = await nb.createPage(parentId: p2);
+      await nb.setAiAccess(standalone, AiAccess.open);
+      await nb.setBinderAiAccess(s.path, AiAccess.privileged);
+      final code = await service.issue(AiCodeTarget.binder(s.binder!.id), role: AiCodeRole.reader, label: 'Binder');
+
+      expect(granted(await access(nb, code, AiLinkAction.listPages)), ([p1, p2, p2sub]..sort()));
+      await nb.setAiAccess(p2, AiAccess.guarded);
+      expect(granted(await access(nb, code, AiLinkAction.listPages)), [p1]);
+      await nb.setBinderAiAccess(s.path, AiAccess.guarded);
+      expect(granted(await access(nb, code, AiLinkAction.listPages)), isEmpty, reason: 'Guarded binder');
+      await nb.setBinderAiAccess(s.path, AiAccess.open);
+      expect(granted(await access(nb, code, AiLinkAction.listPages)), [p1], reason: 'Open pages are included');
+    });
+
+    test('a binder that can not be read grants nothing', () async {
+      final first = make();
+      await first.load();
+      final s = await first.addBinder(folder.path);
+      await first.createPage(binderPath: s.path);
+      await first.setBinderAiAccess(s.path, AiAccess.privileged);
+      final binderId = s.binder!.id;
+      await first.flush();
+      first.dispose();
+      opened.clear();
+      File('${folder.path}/$binderFileName').writeAsStringSync('{ not json');
+      final nb = make();
+      await nb.load();
+      final code = await service.issue(AiCodeTarget.binder(binderId), role: AiCodeRole.reader, label: 'Binder');
+      expect(granted(await access(nb, code, AiLinkAction.listPages)), isEmpty);
+    });
+
+    test('an access is logged and asks the session once', () async {
+      final t = await withBox();
+      final code = await service.issue(AiCodeTarget.page(t.a), role: AiCodeRole.reader, label: 'Pages');
+      await access(t.nb, code, AiLinkAction.listPages);
+      await access(t.nb, code, AiLinkAction.search, target: 'budget');
+      expect(asked.single.message, 'A wants to read Pages. Allow?');
+      final entries = service.activityFor(AiCodeTargetKind.page, t.a);
+      expect(entries.map((e) => (e.op, e.result)), [('list_pages', 'ok'), ('search', 'ok')]);
+    });
+
+    test('describe_code answers what the code is, with no title', () async {
+      final t = await withBox();
+      final box = await t.nb.handleAiLink(AiLinkDescribeCode(code: t.code, session: 's1', app: 'A'));
+      expect(box.encode(), jsonEncode({'ok': true, 'kind': 'box', 'id': 'ba', 'role': 'writer', 'expires': null}));
+      final s = await t.nb.addBinder(folder.path);
+      final binderCode = await service.issue(
+        AiCodeTarget.binder(s.binder!.id),
+        role: AiCodeRole.reader,
+        label: 'B',
+        expires: DateTime.utc(2099, 1, 2),
+      );
+      final r = await t.nb.handleAiLink(AiLinkDescribeCode(code: binderCode, session: 's1'));
+      expect(r, isA<AiLinkDescribed>());
+      expect((r as AiLinkDescribed).kind, 'binder');
+      expect(r.id, s.binder!.id);
+      expect(r.role, 'reader');
+      expect(r.expires, '2099-01-02T00:00:00.000Z');
+      expect(r.encode(), isNot(contains(s.path)));
+    });
+
+    test('a code of a role this build does not know, on a page, grants nothing', () async {
+      final t = await withBox();
+      final future = newAiToken();
+      service.store.update(
+        (d) => d.put(
+          AiCode(
+            id: future.id,
+            target: AiCodeTarget.page(t.a),
+            roleName: 'organize',
+            label: 'Newer',
+            hash: future.hash,
+            created: DateTime.now().toUtc(),
+          ),
+        ),
+      );
+      expect(await codeOf(t.nb, AiLinkAccess(code: future.token, session: 's1', action: AiLinkAction.listPages)), AiLinkCode.wrongRole);
+    });
+  });
+
+  group('the service', () {
+    test('lists and revokes a box\'s connections, and one new Writer replaces the old', () async {
+      final t = await withBox();
+      final reader = await issue('ba', role: AiCodeRole.reader, label: 'Reader');
+      expect(service.connections('ba').map((c) => c.label), ['Work chat', 'Reader']);
+      final writer2 = await issue('ba', label: 'Second');
+      expect(service.connections('ba').map((c) => c.label), ['Reader', 'Second']);
+      expect(service.connections('other'), isEmpty);
+      await service.revoke(stored(reader).id);
+      expect(service.connections('ba').map((c) => c.label), ['Second']);
+      expect(parseAiToken(writer2), isNotNull);
+      expect(t.code, isNot(writer2));
+    });
+
+    test('connect records the page the box is on', () async {
+      final nb = make();
+      await nb.load();
+      nb.current!.insertBox(box('ba'));
+      final s = AiAccessService(dataFolder: Directory('${root.path}/data2'), pageOfBox: nb.aiPageOfBox);
+      addTearDown(s.dispose);
+      await s.connect('ba', role: AiCodeRole.writer, label: 'x');
+      expect(s.connections('ba').single.target.page, nb.currentId);
+    });
+
+    test('settings: ask before write, activity, an unreadable file as a problem', () async {
+      var told = 0;
+      service.addListener(() => told++);
+      expect(service.askBeforeWrite('ba'), isFalse);
+      await service.setAskBeforeWrite('ba', true);
+      expect(service.askBeforeWrite('ba'), isTrue);
+      expect(told, 1);
+      expect(service.problem, isNull);
+      service.store.file.writeAsStringSync('{ damaged');
+      expect(service.problem, isNotNull);
+      expect(service.connections('ba'), isEmpty);
+      await expectLater(issue('ba'), throwsA(isA<AiAccessException>()));
+      expect(service.store.file.readAsStringSync(), '{ damaged');
+    });
+
+    test('a page or binder: issue, list, sessions, activity, rename, revoke', () async {
+      final code = await service.issue(AiCodeTarget.page('p1'), role: AiCodeRole.reader, label: 'Notes chat');
+      final listed = service.codesFor(AiCodeTargetKind.page, 'p1').single;
+      expect(listed.label, 'Notes chat');
+      expect(service.codesFor(AiCodeTargetKind.binder, 'p1'), isEmpty);
+      await service.rename(listed.id, 'Renamed');
+      expect(service.codesFor(AiCodeTargetKind.page, 'p1').single.label, 'Renamed');
+      service.store.addSession(listed.id, AiCodeSession(id: 's', app: 'App', approved: DateTime.now().toUtc()));
+      expect(service.codesFor(AiCodeTargetKind.page, 'p1').single.sessions, hasLength(1));
+      await service.revokeSession(listed.id, 's');
+      expect(service.codesFor(AiCodeTargetKind.page, 'p1').single.sessions, isEmpty);
+      expect(service.activityFor(AiCodeTargetKind.page, 'p1'), isEmpty);
+      await service.revoke(listed.id);
+      expect(service.codesFor(AiCodeTargetKind.page, 'p1'), isEmpty);
+      expect(parseAiToken(code), isNotNull);
+      await expectLater(
+        service.issue(AiCodeTarget.page('p1'), role: AiCodeRole.writer, label: 'x'),
+        throwsA(isA<AiAccessException>()),
+        reason: 'a Writer is for a box',
+      );
+    });
+
+    test('notices a change another instance made to the files', () async {
+      final polled = AiAccessService(dataFolder: Directory('${root.path}/data3'), pollInterval: const Duration(milliseconds: 50));
+      addTearDown(polled.dispose);
+      var told = 0;
+      polled.addListener(() => told++);
+      final other = AiAccessService(dataFolder: Directory('${root.path}/data3'));
+      addTearDown(other.dispose);
+      await other.issue(AiCodeTarget.box('b'), role: AiCodeRole.reader, label: 'x');
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      expect(told, greaterThan(0));
+      expect(polled.connections('b'), hasLength(1));
     });
   });
 }

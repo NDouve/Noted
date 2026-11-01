@@ -9,6 +9,8 @@ import 'package:flutter/foundation.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'ai/ai_access_service.dart';
+import 'ai/ai_link_authority.dart';
 import 'app_settings.dart';
 import 'page_attachments.dart';
 import 'recovery_store.dart';
@@ -231,7 +233,7 @@ const String _standalone = '';
 
 /// The open notebook: standalone pages and binders (0026), the page on
 /// screen, and autosave.
-class Notebook extends ChangeNotifier {
+class Notebook extends ChangeNotifier implements AiLinkHost {
   Notebook(
     this.store,
     this.modules, {
@@ -246,10 +248,23 @@ class Notebook extends ChangeNotifier {
     this.folderCheckInterval = const Duration(seconds: 3),
     this.recoveryDirectory,
     this.settings,
+    this.aiAccess,
+    this.aiApprovalTimeout = aiLinkApprovalTimeout,
     this.cacheDirectory,
     this.attachmentPicker,
     this.attachmentOpener,
   });
+
+  /// The AI codes and activity log (`ai-access.json`, `ai-activity.json` in
+  /// the data folder). Null: no AI code is accepted.
+  final AiAccessService? aiAccess;
+
+  /// Asks the user to allow a new AI session or a write (the app shows a
+  /// dialog). Null: nobody can be asked, so those requests are refused.
+  AiApprover? aiApprover;
+
+  /// How long a question to the user may wait.
+  final Duration aiApprovalTimeout;
 
   /// Where derived files (image display copies) are cached; never in a page
   /// folder, so never synced. Null: `cache` next to [bindersFile], or a
@@ -699,7 +714,7 @@ class Notebook extends ChangeNotifier {
     watch: watchFiles,
   );
 
-  // The page AI setting (0028) -------------------------------------------------
+  // The page AI access (0100) -------------------------------------------------
 
   /// Page [id]'s header, then its parents' up to the top, nearest first. The
   /// open page's header comes from its controller.
@@ -717,30 +732,36 @@ class Notebook extends ChangeNotifier {
     return chain;
   }
 
-  /// The AI setting that applies to page [id]: its own, else its nearest
-  /// parent page's, else its binder's, else Off.
-  AiSetting aiSettingFor(String id) =>
-      effectiveAiSetting(_metaChain(id), binder: _binders[_loc[id] ?? _standalone]?.binder);
+  Binder? _binderOf(String id) => _binders[_loc[id] ?? _standalone]?.binder;
 
-  /// What page [id] would have without its own choice: its parent's, its
-  /// binder's or the app default.
-  AiSetting inheritedAiSetting(String id) {
-    final chain = _metaChain(id);
-    return effectiveAiSetting(chain.skip(1), binder: _binders[_loc[id] ?? _standalone]?.binder);
-  }
+  /// The AI access that applies to page [id], and where it comes from: the
+  /// binder's (or, in no binder, the top page's) choice, tightened by each
+  /// page down to this one, else the app default (Guarded).
+  EffectiveAiAccess aiAccessFor(String id) => effectiveAiAccess(_metaChain(id), binder: _binderOf(id));
+
+  /// What page [id] would have without its own choice: its parents', its
+  /// binder's or the app default. A top-level page in no binder inherits
+  /// nothing, so the app default is shown.
+  EffectiveAiAccess inheritedAiAccessFor(String id) =>
+      inheritedAiAccess(_metaChain(id), binder: _binderOf(id)) ??
+      const EffectiveAiAccess(defaultAiAccess, ConfigSource.appDefault);
+
+  /// The own values page [id] may choose (a looser one would be ignored).
+  List<AiAccess> allowedOwnAiAccessFor(String id) =>
+      allowedOwnAiAccess(inheritedAiAccess(_metaChain(id), binder: _binderOf(id))?.value);
 
   /// Page [id]'s own AI choice, or null if it follows its parent.
-  AiSetting? ownAiSetting(String id) =>
-      ((id == currentId ? _current?.page.meta : null) ?? _metas[id])?.aiSetting;
+  AiAccess? ownAiAccess(String id) =>
+      ((id == currentId ? _current?.page.meta : null) ?? _metas[id])?.aiAccess;
 
   /// Sets page [id]'s own AI choice (null: follow the parent). Only the
   /// header changes.
-  Future<void> setAiSetting(String id, AiSetting? value) async {
+  Future<void> setAiAccess(String id, AiAccess? value) async {
     final loc = _loc[id] ?? _standalone;
     _assertWritable(loc);
     final c = _current;
     if (c != null && c.page.id == id) {
-      final meta = c.page.meta.withAiSetting(value);
+      final meta = c.page.meta.withAiAccess(value);
       if (identical(meta, c.page.meta)) return;
       c.updateMeta(meta);
       _metas[id] = meta;
@@ -748,7 +769,7 @@ class Notebook extends ChangeNotifier {
       return;
     }
     final page = await _storeOf(loc).load(id);
-    final meta = page.meta.withAiSetting(value);
+    final meta = page.meta.withAiAccess(value);
     if (identical(meta, page.meta)) return;
     final next = page.withMeta(meta);
     await _write(loc, next);
@@ -757,14 +778,18 @@ class Notebook extends ChangeNotifier {
     _rebuildTree();
   }
 
-  /// Sets binder [path]'s AI choice (null: the app default, Off), which its
-  /// pages follow unless they have their own.
-  Future<void> setBinderAiSetting(String path, AiSetting? value) async {
+  /// The AI access binder [path] has chosen, or null (the app default).
+  AiAccess? binderAiAccess(String path) => _binders[path]?.binder?.aiAccess;
+
+  /// Sets binder [path]'s AI choice (null: the app default, Guarded), which
+  /// its pages follow and may only tighten.
+  Future<void> setBinderAiAccess(String path, AiAccess? value) async {
     final s = _binders[path];
     final b = s?.binder;
     if (s == null || b == null || !s.available) return;
-    if (b.aiSetting == value && (value != null || b.fields[aiSettingKey] == null)) return;
-    s.binder = b.withAiSetting(value);
+    final next = b.withAiAccess(value);
+    if (identical(next, b)) return;
+    s.binder = next;
     notifyListeners();
     final job = _saving.then((_) async {
       final latest = s.binder;
@@ -2072,7 +2097,23 @@ class Notebook extends ChangeNotifier {
     await job;
   }
 
-  // AI writes (invariant 4) ----------------------------------------------------
+  // AI requests (invariant 4) --------------------------------------------------
+
+  /// Decides a request from the MCP server (see [AiLinkAuthority]) and, for a
+  /// write, applies it. Null [aiAccess]: no code is accepted.
+  Future<AiLinkResponse> handleAiLink(AiLinkRequest request) {
+    final service = aiAccess;
+    if (service == null) return Future.value(AiLinkResponse.error(AiLinkCode.badCode));
+    final authority = _authority ??= AiLinkAuthority(
+      service: service,
+      host: this,
+      approvalTimeout: aiApprovalTimeout,
+    );
+    authority.approver = aiApprover;
+    return authority.handle(request);
+  }
+
+  AiLinkAuthority? _authority;
 
   Future<void> _aiQueue = Future.value();
 
@@ -2084,69 +2125,133 @@ class Notebook extends ChangeNotifier {
 
   static const String _keptMessage = "Noted kept the change on screen but couldn't save it; don't retry an append.";
 
-  /// Applies a write an AI asked for, if every rule holds, and answers it.
-  /// Requests are handled one at a time, and only after the notebook has
-  /// loaded. The token is checked before any box is looked up, and a page
-  /// that is Off gives the same answer as a box that doesn't exist.
-  Future<AiLinkResponse> aiWrite(AiLinkRequest request) {
-    final run = _aiQueue.then((_) => _aiWrite(request));
+  @override
+  Future<bool> aiWaitLoaded() async {
+    try {
+      await _loaded.future.timeout(aiLinkReadTimeout);
+      return true;
+    } on TimeoutException {
+      return false;
+    }
+  }
+
+  @override
+  Future<String?> aiPageOfBox(String boxId, {String? hint}) async {
+    final c = _current;
+    if (hint != null && _loc.containsKey(hint)) {
+      if (c != null && c.page.id == hint) {
+        if (c.page.node(boxId) is BoxRecord) return hint;
+      } else if (await _pageHasBox(hint, boxId)) {
+        return hint;
+      }
+    }
+    if (c != null && c.page.node(boxId) is BoxRecord) return c.page.id;
+    for (final e in _loc.entries.toList()) {
+      if (e.key == currentId || e.key == hint) continue;
+      if (await _pageHasBox(e.key, boxId)) return e.key;
+    }
+    return null;
+  }
+
+  Future<bool> _pageHasBox(String pageId, String boxId) async {
+    final loc = _loc[pageId];
+    if (loc == null) return false;
+    try {
+      return (await _storeOf(loc).load(pageId)).node(boxId) is BoxRecord;
+    } on Object {
+      return false; // not readable: not found
+    }
+  }
+
+  @override
+  List<String> aiReadablePages(AiCodeTarget target) {
+    final Iterable<String> covered;
+    switch (target.kind) {
+      case AiCodeTargetKind.page:
+        final loc = _loc[target.id];
+        if (loc == null) return const [];
+        covered = [target.id, ..._treeOf(loc).descendantsOf(target.id)];
+      case AiCodeTargetKind.binder:
+        final section = _binders.values.where((b) => b.binder?.id == target.id).firstOrNull;
+        if (section == null) return const [];
+        covered = [
+          for (final e in _loc.entries)
+            if (e.value == section.path) e.key,
+        ];
+      case AiCodeTargetKind.box:
+      case null:
+        return const [];
+    }
+    return [
+      for (final id in covered)
+        if (_loc[id] case final loc? when !_isLocked(loc) && aiAccessFor(id).value != AiAccess.guarded) id,
+    ];
+  }
+
+  @override
+  Future<AiLinkResponse> aiWriteBox(
+    AiLinkWriteBox request,
+    AiCode code, {
+    required AiLinkCode? Function() recheck,
+    Future<bool> Function()? confirm,
+  }) async {
+    if (!await aiWaitLoaded()) return AiLinkResponse.error(AiLinkCode.busy);
+    final refusal = recheck();
+    if (refusal != null) return AiLinkResponse.error(refusal);
+    final pageId = await aiPageOfBox(request.box, hint: code.target.page);
+    if (pageId == null) return AiLinkResponse.error(AiLinkCode.noBox);
+    if (confirm != null) {
+      // Ask only about a write that would go through, outside the queue so a
+      // question that waits doesn't hold up other requests.
+      final no = await _aiPrecheck(pageId, request, code, recheck);
+      if (no != null) return no;
+      if (!await confirm()) return AiLinkResponse.error(AiLinkCode.notApproved);
+    }
+    final run = _aiQueue.then((_) => _aiApply(pageId, request, code, recheck));
     _aiQueue = run.then((_) {}, onError: (_) {});
     return run;
   }
 
-  // Why a token was just refused: bad, or the settings couldn't be read (a
-  // moment's sharing violation, say), which shouldn't send the user off to
-  // replace a working token.
-  AiLinkCode get _tokenRefusal => settings?.aiSettingsUnreadable ?? false ? AiLinkCode.busy : AiLinkCode.badToken;
-
-  Future<AiLinkResponse> _aiWrite(AiLinkRequest req) async {
-    if (settings?.verifyAiToken(req.token) == null) return AiLinkResponse.error(_tokenRefusal);
-    try {
-      await _loaded.future.timeout(aiLinkReadTimeout);
-    } on TimeoutException {
-      return AiLinkResponse.error(AiLinkCode.busy);
+  // The answer a write would get now, or null if it would go through.
+  Future<AiLinkResponse?> _aiPrecheck(
+    String pageId,
+    AiLinkWriteBox req,
+    AiCode code,
+    AiLinkCode? Function() recheck,
+  ) async {
+    final loc = _loc[pageId];
+    if (loc == null) return AiLinkResponse.error(AiLinkCode.noBox);
+    final c = _current;
+    final NotedPage page;
+    var readOnly = false;
+    if (c != null && c.page.id == pageId) {
+      page = c.page;
+      readOnly = c.readOnly;
+    } else {
+      try {
+        page = await _storeOf(loc).load(pageId);
+      } on Object {
+        return AiLinkResponse.error(AiLinkCode.noBox);
+      }
     }
-    // The token is checked again by every apply step, just before it writes.
-    final conn = settings?.verifyAiToken(req.token);
-    if (conn == null) return AiLinkResponse.error(_tokenRefusal);
-    final pageId = await _pageOfBox(req.box);
-    if (pageId == null) return AiLinkResponse.error(AiLinkCode.noBox);
+    return _aiPrepare(page, loc, readOnly, code, req, recheck).error;
+  }
+
+  Future<AiLinkResponse> _aiApply(
+    String pageId,
+    AiLinkWriteBox req,
+    AiCode code,
+    AiLinkCode? Function() recheck,
+  ) async {
     for (var attempt = 0; attempt < 2; attempt++) {
       final c = _current;
-      if (c != null && c.page.id == pageId) return _aiWriteOpen(c, conn, req);
-      final r = await _afterSaves(() => _aiWriteClosed(pageId, conn, req));
+      if (c != null && c.page.id == pageId) return _aiWriteOpen(c, code, req, recheck);
+      final r = await _afterSaves(() => _aiWriteClosed(pageId, code, req, recheck));
       if (r != null) return r;
       // The page was opened while this waited its turn: apply it there.
     }
     return AiLinkResponse.error(AiLinkCode.saveFailed);
   }
-
-  // The page that holds box [boxId] and whose AI setting isn't Off, looking
-  // at the open page first, then every page the notebook knows.
-  Future<String?> _pageOfBox(String boxId) async {
-    final c = _current;
-    if (c != null && c.page.node(boxId) is BoxRecord && aiSettingFor(c.page.id) != AiSetting.off) {
-      return c.page.id;
-    }
-    for (final e in _loc.entries.toList()) {
-      if (e.key == currentId || aiSettingFor(e.key) == AiSetting.off) continue;
-      try {
-        final page = await _storeOf(e.value).load(e.key);
-        if (page.node(boxId) is BoxRecord) return e.key;
-      } on Object {
-        continue; // not readable: not found
-      }
-    }
-    return null;
-  }
-
-  // The AI setting of [page] as it is now: its own header (for a closed page,
-  // the one just read from its file), then its parents', binder's and the
-  // default.
-  AiSetting _aiSettingOf(NotedPage page) => effectiveAiSetting(
-    [page.meta, ..._metaChain(page.id).skip(1)],
-    binder: _binders[_loc[page.id] ?? _standalone]?.binder,
-  );
 
   // Every rule after the lookup, in order, on the box as it is now. Returns
   // an answer to refuse with, or the codec and the data to write.
@@ -2154,25 +2259,31 @@ class Notebook extends ChangeNotifier {
     NotedPage page,
     String loc,
     bool readOnly,
-    AiConnectionInfo conn,
-    AiLinkRequest req,
+    AiCode code,
+    AiLinkWriteBox req,
+    AiLinkCode? Function() recheck,
   ) {
-    ({AiLinkResponse? error, BoxCodec<Object?>? codec, Object? data}) no(AiLinkCode code) =>
-        (error: AiLinkResponse.error(code), codec: null, data: null);
+    ({AiLinkResponse? error, BoxCodec<Object?>? codec, Object? data}) no(AiLinkCode c) =>
+        (error: AiLinkResponse.error(c), codec: null, data: null);
     // Revoked while this waited: refuse. Nothing awaits between here and the
     // change itself.
-    if (settings?.verifyAiToken(req.token)?.id != conn.id) return no(_tokenRefusal);
+    final gone = recheck();
+    if (gone != null) return no(gone);
     final box = page.node(req.box);
-    if (box is! BoxRecord || _aiSettingOf(page) == AiSetting.off) return no(AiLinkCode.noBox);
+    if (box is! BoxRecord) return no(AiLinkCode.noBox);
     final r = modules.codecs.resolve(box);
     if (r is! LiveBox) return no(AiLinkCode.notWritable);
-    if (r.codec.aiOwner(r.data) != conn.id) return no(AiLinkCode.notOwner);
+    // A type this page doesn't allow behaves as switched off here.
+    final chain = [page.meta, ..._metaChain(page.id).skip(1)];
+    if (!effectiveBoxTypeAllowed(box.typeId, chain, binder: _binderOf(page.id)).allowed) {
+      return no(AiLinkCode.notWritable);
+    }
     if (box.isConflicted) return no(AiLinkCode.conflict);
     if (readOnly || _isLocked(loc)) return no(AiLinkCode.locked);
     final next = r.codec.aiWrite(
       r.data,
       AiWrite(
-        connectionId: conn.id,
+        connectionId: code.id,
         content: req.content,
         mode: AiWriteMode.values.byName(req.mode.name),
       ),
@@ -2183,11 +2294,16 @@ class Notebook extends ChangeNotifier {
 
   // The page is open: change it through its controller, as one undo step the
   // user sees at once, and let the normal save write it.
-  Future<AiLinkResponse> _aiWriteOpen(CanvasController c, AiConnectionInfo conn, AiLinkRequest req) async {
+  Future<AiLinkResponse> _aiWriteOpen(
+    CanvasController c,
+    AiCode code,
+    AiLinkWriteBox req,
+    AiLinkCode? Function() recheck,
+  ) async {
     final pageId = c.page.id;
     final loc = _loc[pageId];
     if (loc == null) return AiLinkResponse.error(AiLinkCode.noBox);
-    final p = _aiPrepare(c.page, loc, c.readOnly, conn, req);
+    final p = _aiPrepare(c.page, loc, c.readOnly, code, req, recheck);
     if (p.error != null) return p.error!;
     if (c.replaceBoxData({req.box: p.data}) == 0) {
       return AiLinkResponse.error(AiLinkCode.notWritable);
@@ -2197,12 +2313,17 @@ class Notebook extends ChangeNotifier {
     if ((_saveFailures[pageId] ?? 0) != failures) {
       return AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage);
     }
-    return AiLinkResponse.ok(page: pageId, box: req.box);
+    return AiLinkResponse.written(box: req.box);
   }
 
   // The page is closed: load it, commit the box as an edit does, and save it
   // through the page's store. Null: the page is open now.
-  Future<AiLinkResponse?> _aiWriteClosed(String pageId, AiConnectionInfo conn, AiLinkRequest req) async {
+  Future<AiLinkResponse?> _aiWriteClosed(
+    String pageId,
+    AiCode code,
+    AiLinkWriteBox req,
+    AiLinkCode? Function() recheck,
+  ) async {
     if (_current?.page.id == pageId) return null;
     final loc = _loc[pageId];
     if (loc == null) return AiLinkResponse.error(AiLinkCode.noBox);
@@ -2214,7 +2335,7 @@ class Notebook extends ChangeNotifier {
     } on Object {
       return AiLinkResponse.error(AiLinkCode.noBox);
     }
-    final p = _aiPrepare(page, loc, false, conn, req);
+    final p = _aiPrepare(page, loc, false, code, req, recheck);
     if (p.error != null) return p.error!;
     final box = page.node(req.box)! as BoxRecord;
     final next = page.replaceNode(
@@ -2240,7 +2361,7 @@ class Notebook extends ChangeNotifier {
     }
     _metas[pageId] = next.meta;
     _touch(loc);
-    return AiLinkResponse.ok(page: pageId, box: req.box);
+    return AiLinkResponse.written(box: req.box);
   }
 
   // Runs [job] after the saves queued so far, and before any later one.

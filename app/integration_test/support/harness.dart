@@ -19,6 +19,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
+import 'package:noted/src/ai/ai_access_service.dart';
 import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
@@ -118,6 +119,9 @@ class Session {
   late Notebook nb;
   late AppSettings settings;
 
+  /// The AI codes and activity log, in the sandbox's app folder.
+  late AiAccessService aiAccess;
+
   /// What the folder picker answers (null: cancelled), and how often it was asked.
   String? pickAnswer;
   int picks = 0;
@@ -133,9 +137,10 @@ class Session {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     settings = AppSettings(env.settingsFile);
+    aiAccess = AiAccessService(dataFolder: env.appDir);
     nb = Notebook(
       PageStore(env.pages),
-      buildModules(aiConnections: settings.aiConnections),
+      buildModules(aiAccess: aiAccess),
       saveDelay: saveDelay,
       bindersFile: env.binders,
       recoveryDirectory: env.recovery,
@@ -148,6 +153,7 @@ class Session {
       folderCheckInterval: folderCheckInterval,
       deviceName: 'TESTPC',
       settings: settings,
+      aiAccess: aiAccess,
     );
     env.assertIsolated(nb, settings);
     await nb.load();
@@ -161,6 +167,7 @@ class Session {
     await tester.pumpWidget(const SizedBox());
     await pump(100);
     nb.dispose();
+    aiAccess.dispose();
     settings.dispose();
   }
 

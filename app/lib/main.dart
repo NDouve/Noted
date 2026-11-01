@@ -18,6 +18,8 @@ import 'package:noted_box_template/noted_box_template.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'src/ai/ai_access_service.dart';
+import 'src/ai/ai_approval_dialog.dart';
 import 'src/ai/ai_link_server.dart';
 import 'src/app_settings.dart';
 import 'src/attachment_platform.dart';
@@ -29,9 +31,9 @@ import 'src/recovery_store.dart';
 
 /// The box modules compiled into this build (0034, stage 1).
 ///
-/// [aiConnections] (`settings.aiConnections`) is what an AI box's "Connected
-/// AI" picker lists; none when null.
-ModuleRegistry buildModules({ValueListenable<List<AiConnectionInfo>>? aiConnections}) =>
+/// [aiAccess] is what an AI box uses to manage its codes (per-box codes, the
+/// activity log); none when null.
+ModuleRegistry buildModules({AiBoxAccess? aiAccess}) =>
     ModuleRegistry()
       ..register(const NoteModule(), alwaysOn: true, isDefault: true)
       ..register(DrawingModule())
@@ -39,7 +41,7 @@ ModuleRegistry buildModules({ValueListenable<List<AiConnectionInfo>>? aiConnecti
       // file box (BoxModule.fileAffinity).
       ..register(const ImageModule())
       ..register(const FileModule())
-      ..register(AiModule(connections: aiConnections))
+      ..register(AiModule(access: aiAccess))
       // The template box module (docs/box-modules.md): compiled in, off by
       // default. Set enabled: true to try it.
       ..register(const StickyLabelModule(), enabled: false);
@@ -66,21 +68,30 @@ Future<void> main() async {
     );
   });
   final settings = AppSettings(defaultSettingsFile());
-  final notebook = Notebook(
+  final dataFolder = defaultSettingsFile().parent;
+  late final Notebook notebook;
+  final aiAccess = AiAccessService(
+    dataFolder: dataFolder,
+    pageOfBox: (id) => notebook.aiPageOfBox(id),
+    // Another Noted may change the codes or the log: show it.
+    pollInterval: const Duration(seconds: 3),
+  );
+  notebook = Notebook(
     PageStore(defaultPagesDirectory()),
-    buildModules(aiConnections: settings.aiConnections),
+    buildModules(aiAccess: aiAccess),
     bindersFile: defaultBindersFile(),
     recoveryDirectory: defaultRecoveryDirectory(defaultBindersFile()),
     pickFolder: () => getDirectoryPath(confirmButtonText: 'Use this folder'),
     watchFiles: true,
     deviceName: computerName(),
     settings: settings,
+    aiAccess: aiAccess,
     cacheDirectory: defaultCacheDirectory(),
     attachmentPicker: pickAttachments,
     attachmentOpener: openWithDefaultApp,
   );
   FileClipboard.read = readClipboardFiles;
-  final aiLink = await startAiLink(notebook, defaultSettingsFile().parent);
+  final aiLink = await startAiLink(notebook, dataFolder);
   runApp(NotedApp(notebook: notebook, settings: settings, aiLink: aiLink));
   await notebook.load();
 }
@@ -91,7 +102,7 @@ Future<void> main() async {
 Future<AiLinkServer?> startAiLink(Notebook notebook, Directory dataFolder) async {
   final server = AiLinkServer(
     file: File('${dataFolder.path}${Platform.pathSeparator}$aiLinkFileName'),
-    handler: notebook.aiWrite,
+    handler: notebook.handleAiLink,
   );
   try {
     await server.start();
@@ -126,6 +137,8 @@ class _NotedAppState extends State<NotedApp> {
   @override
   void initState() {
     super.initState();
+    // New AI sessions and per-write questions are asked in this window.
+    widget.notebook.aiApprover = (request) => showAiApprovalDialog(_navigatorKey, request);
     _lifecycle = AppLifecycleListener(
       // Write unsaved edits before the window closes.
       onExitRequested: () async {

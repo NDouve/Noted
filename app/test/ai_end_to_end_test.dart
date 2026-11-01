@@ -8,7 +8,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
-import 'package:noted/src/app_settings.dart';
+import 'package:noted/src/ai/ai_access_service.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_box_ai/noted_box_ai.dart';
 import 'package:noted_core/noted_core.dart';
@@ -65,27 +65,35 @@ class _Mcp {
   }
 }
 
+/// noted_mcp 0.3.0 (codes, `ai-link/2`) is rewritten by a parallel task. Until
+/// it is merged the server does not speak the new protocol, so this test is
+/// skipped; remove the flag and run it once it is merged.
+const _skipUntilMcpRewritten = 'needs noted_mcp 0.3.0 (run 2026-11-01-02): re-run after merging';
+
 void main() {
-  test('the real app link and the real noted_mcp over stdio write into an AI box', () async {
+  test('the real app link and the real noted_mcp over stdio: codes, approval, a write, reads', () async {
     final root = await Directory.systemTemp.createTemp('noted_ai_e2e');
     addTearDown(() async {
       if (root.existsSync()) await root.delete(recursive: true);
     });
     final data = await Directory('${root.path}/data').create();
-    final settings = AppSettings(File('${data.path}/settings.json'));
-    final token = await settings.addAiConnection('Claude Code');
-    final connId = parseAiToken(token)!.id;
+    final service = AiAccessService(dataFolder: data);
+    addTearDown(service.dispose);
 
     final nb = Notebook(
       PageStore(Directory('${data.path}/pages')),
-      buildModules(aiConnections: settings.aiConnections),
+      buildModules(aiAccess: service),
       saveDelay: Duration.zero,
       bindersFile: File('${data.path}/binders.json'),
-      settings: settings,
+      aiAccess: service,
     );
+    final approvals = <String>[];
+    nb.aiApprover = (r) async {
+      approvals.add(r.message);
+      return true;
+    };
     await nb.load();
     final pageId = nb.currentId!;
-    await nb.setAiSetting(pageId, AiSetting.boxOnly);
     const codec = AiCodec();
     nb.current!.insertBox(
       BoxRecord.create(
@@ -93,12 +101,14 @@ void main() {
         typeId: aiBoxTypeId,
         dataVersion: codec.dataVersion,
         bounds: const Bounds(40, 40, 400, 120),
-        data: RawJson.encode(codec.encode(codec.create().withOwner(connId))),
+        data: RawJson.encode(codec.encode(codec.create())),
         snapshotText: '',
         rev: 'r0',
       ),
     );
     await nb.flush();
+    final writer = await service.connect('aibox', role: AiCodeRole.writer, label: 'Feedback chat');
+    final reader = await service.connect('aibox', role: AiCodeRole.reader, label: 'Review chat');
 
     final link = (await startAiLink(nb, data))!;
     var linkStopped = false;
@@ -113,7 +123,6 @@ void main() {
       ['run', 'bin/noted_mcp.dart', '--data-dir', data.path],
       workingDirectory: '../packages/noted_mcp',
       runInShell: true,
-      environment: {'NOTED_TOKEN': token},
     );
     // With runInShell, kill() would end only the shell: close stdin so the
     // server exits and lets go of the data folder, and kill it if it hangs.
@@ -130,82 +139,83 @@ void main() {
     final mcp = _Mcp(process);
     await mcp.start();
 
-    final (mineError, mine) = await mcp.call('list_my_boxes');
-    expect(mineError, isFalse, reason: mine);
-    expect(mine, contains('aibox'));
+    // What a code is.
+    final (describeError, described) = await mcp.call('describe_code', {'code': writer});
+    expect(describeError, isFalse, reason: described);
+    expect(described, allOf(contains('aibox'), contains('writer')));
+    expect(described, isNot(contains(pageId)), reason: 'a box code names no page');
 
-    // The write goes through the app: it shows in the open page at once,
-    // marked AI-written, and is one undo step.
+    // The write goes through the app after the user allows the new session:
+    // it shows in the open page at once, marked AI-written, as one undo step.
     final (writeError, written) = await mcp.call('write_box', {
       'box_id': 'aibox',
+      'code': writer,
       'content': '# Plan\n\nShip the **AI box**.',
       'mode': 'replace',
     });
     expect(writeError, isFalse, reason: written);
-    expect(written, isNot(contains(token)));
+    expect(written, isNot(contains(writer)));
+    expect(approvals, ['noted end-to-end test wants to write Feedback chat. Allow?']);
     String shown() => (nb.current!.page.node('aibox')! as BoxRecord).snapshotText;
     expect(shown(), contains('Ship the **AI box**.'));
     final open = codec.decode((nb.current!.page.node('aibox')! as BoxRecord).data!.decode(), 1);
-    expect(open.json[aiOwnerKey], connId);
     final blocks = ((open.json['document']! as Map)['children']! as List).cast<Map<Object?, Object?>>();
     expect(blocks.where(isAiWritten), hasLength(2), reason: 'the heading and the paragraph');
 
-    // The saved file is what the server reads back: Box only shows the AI's
-    // own box, with its AI-written text marked.
-    final (readError, read) = await mcp.call('read_page', {'page_id': pageId});
+    // A Reader code reads the box from the saved file; it can't write.
+    final (readError, read) = await mcp.call('read_box', {'box_id': 'aibox', 'code': reader});
     expect(readError, isFalse, reason: read);
-    expect(read, contains('<ai-written>'));
     expect(read, contains('Ship the **AI box**.'));
-
-    final (appendError, appended) = await mcp.call('write_box', {
+    final (readerWriteError, _) = await mcp.call('write_box', {
       'box_id': 'aibox',
-      'content': 'And test it.',
-      'mode': 'append',
-    });
-    expect(appendError, isFalse, reason: appended);
-    expect(shown(), allOf(contains('Ship the **AI box**.'), contains('And test it.')));
-    nb.current!.undo();
-    expect(shown(), contains('Ship the **AI box**.'));
-    expect(shown(), isNot(contains('And test it.')));
-
-    // Rejected: a box that doesn't exist, a box another connection owns, and
-    // any write after revocation.
-    final (noBoxError, noBox) = await mcp.call('write_box', {'box_id': 'nope', 'content': 'x', 'mode': 'replace'});
-    expect(noBoxError, isTrue, reason: noBox);
-    final other = parseAiToken(await settings.addAiConnection('Other'))!.id;
-    nb.current!.insertBox(
-      BoxRecord.create(
-        id: 'otherbox',
-        typeId: aiBoxTypeId,
-        dataVersion: codec.dataVersion,
-        bounds: const Bounds(40, 300, 400, 120),
-        data: RawJson.encode(codec.encode(codec.create().withOwner(other))),
-        snapshotText: '',
-        rev: 'r1',
-      ),
-    );
-    await nb.flush();
-    final (notMineError, notMine) = await mcp.call('write_box', {
-      'box_id': 'otherbox',
+      'code': reader,
       'content': 'x',
       'mode': 'replace',
     });
-    expect(notMineError, isTrue, reason: notMine);
-    expect((nb.current!.page.node('otherbox')! as BoxRecord).snapshotText, '');
-    final beforeRevoke = shown();
-    settings.revokeAiConnection(connId);
-    final (revokedError, revoked) = await mcp.call('write_box', {'box_id': 'aibox', 'content': 'x', 'mode': 'replace'});
-    expect(revokedError, isTrue, reason: revoked);
-    expect(revoked, contains('revoked'));
-    expect(shown(), beforeRevoke, reason: 'nothing written');
+    expect(readerWriteError, isTrue);
 
-    // The app stops: writes fail cleanly, reads still work.
+    // The page is Guarded: invisible to an AI without a code, and to a box code.
+    final (guardedError, _) = await mcp.call('read_page', {'page_id': pageId});
+    expect(guardedError, isTrue);
+    final (boxCodePageError, _) = await mcp.call('read_page', {'page_id': pageId, 'code': reader});
+    expect(boxCodePageError, isTrue);
+
+    // Privileged: a page code reads it, nothing else does.
+    await nb.setAiAccess(pageId, AiAccess.privileged);
+    await nb.flush();
+    final pageCode = await service.issue(AiCodeTarget.page(pageId), role: AiCodeRole.reader, label: 'Notes chat');
+    final (withCodeError, withCode) = await mcp.call('read_page', {'page_id': pageId, 'code': pageCode});
+    expect(withCodeError, isFalse, reason: withCode);
+    expect(withCode, contains('<ai-written>'));
+    final (privNoCodeError, _) = await mcp.call('read_page', {'page_id': pageId});
+    expect(privNoCodeError, isTrue);
+
+    // Open: anyone reads it without a code.
+    await nb.setAiAccess(pageId, AiAccess.open);
+    await nb.flush();
+    final (openError, openText) = await mcp.call('read_page', {'page_id': pageId});
+    expect(openError, isFalse, reason: openText);
+    expect(openText, contains('Ship the **AI box**.'));
+
+    // Revoked: the write is refused and nothing changes.
+    final beforeRevoke = shown();
+    await service.revoke(parseAiToken(writer)!.id);
+    final (revokedError, _) = await mcp.call('write_box', {
+      'box_id': 'aibox',
+      'code': writer,
+      'content': 'x',
+      'mode': 'replace',
+    });
+    expect(revokedError, isTrue);
+    expect(shown(), beforeRevoke);
+
+    // The app stops: code-based calls fail cleanly, Open reads still work.
     await link.dispose();
     linkStopped = true;
-    final (downError, down) = await mcp.call('write_box', {'box_id': 'aibox', 'content': 'x', 'mode': 'replace'});
+    final (downError, down) = await mcp.call('read_box', {'box_id': 'aibox', 'code': reader});
     expect(downError, isTrue);
-    expect(down, contains("isn't running"));
+    expect(down, contains('needs Noted running'));
     final (listError, _) = await mcp.call('list_pages');
     expect(listError, isFalse);
-  }, timeout: const Timeout(Duration(minutes: 2)));
+  }, timeout: const Timeout(Duration(minutes: 2)), skip: _skipUntilMcpRewritten);
 }
