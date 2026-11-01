@@ -13,6 +13,7 @@ Read the request (the task text from the PM), `docs/design/README.md`, the compo
 - Use the **release build** (`app\build\windows\x64\runner\Release\noted.exe`). If it is older than the change, ask the PM for a rebuild rather than building yourself while another build or the integration suite runs.
 - **Scratch data only.** Launch with `APPDATA` (and `LOCALAPPDATA`) pointed at a fresh folder in your scratchpad, so the maintainer's notebook and settings are never read or changed. Write `settings.json` there to choose the theme (`light`/`dark`) and the toolbar (`tabs`/`contextual`). Make the pages you need by writing page files with the test helpers, never by editing real data.
 - Capture the window's own pixels (PrintWindow with `PW_RENDERFULLCONTENT`), not the screen, so nothing else on the desktop can appear in an image. If a capture shows any other window, delete it.
+- Script for this method: `app/scripts/screenshot-window.ps1` (run with `powershell -NoProfile -ExecutionPolicy Bypass -File`; see its help for -DataRoot, -Theme, -Toolbar, -Clicks, -Keys, -Out).
 - Send input only to Noted's `FLUTTERVIEW` child window (WM_MOUSEMOVE, then the button messages). In PowerShell, don't name a helper `lp`: it is an alias of `Out-Printer`.
 - Take each relevant state in **light and dark**. Close every instance you start.
 - Follow the GPU limits: one app instance at a time, never during a build or the integration suite; on a GPU timeout or display reset, stop and report.
