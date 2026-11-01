@@ -80,7 +80,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0008 — AI connects through MCP
 - **Date:** 2026-10-24
-- **Status:** Active
+- **Status:** Active; AI boxes and writing implemented by 0104 and 0106 (the per-box AI-read and AI-write switches are not built yet)
 - **Decision:**
   - Any AI connects through a local MCP server; there is no vendor-specific integration.
   - An AI writes only into its own AI box(es), and conversation with it happens there.
@@ -273,7 +273,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0028 — AI read scope per page
 - **Date:** 2026-10-24
-- **Status:** Active; the setting implemented by 0100, reading by the MCP server by 0101
+- **Status:** Active; the setting implemented by 0100, reading by the MCP server by 0101, writing and the AI-authored tag by 0104–0106
 - **Decision:**
   - Each page's AI setting is one of:
     - **Off:** no AI boxes, and the page is invisible to MCP.
@@ -1395,7 +1395,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Alternatives considered:** appflowy's own link menu (a separate overlay with its own styling); opening links on a plain click (it would move the caret instead of letting the user edit the link text).
 
 ## 0100 — The page AI setting
-- **Date:** 2026-11-01
+- **Date:** 2026-10-31
 - **Status:** Active (first entry of the AI phase; implements the setting of 0028)
 - **Decision:**
   - **Values:** each page has an AI setting:
@@ -1410,8 +1410,8 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Alternatives considered:** a default of Box only (it would list every page's title to any connected AI without the user choosing it); an app-wide switch only (too coarse for notebooks that mix private and shared pages).
 
 ## 0101 — Read-only MCP server
-- **Date:** 2026-11-01
-- **Status:** Active (AI phase; implements reading for 0028 and invariant 4)
+- **Date:** 2026-10-31
+- **Status:** Active (AI phase; implements reading for 0028 and invariant 4; amended by 0103 and 0106: writes go through the running app)
 - **Decision:**
   - **Program:** `packages/noted_mcp`, a separate pure-Dart executable (`noted_mcp.exe`) speaking MCP over stdio with the Dart team's `dart_mcp` (BSD-3-Clause, approved by the maintainer).
   - **Reads:** saved page and binder files only, from the folders the app lists in `%APPDATA%\Noted`:
@@ -1444,7 +1444,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - Using the stored text snapshot of unsupported boxes: it is the module's own text, but the maintainer requires a placeholder for anything the server can't vouch for.
 
 ## 0102 — Image and file boxes: Delete, and the alt text below the picture
-- **Date:** 2026-11-01
+- **Date:** 2026-10-31
 - **Status:** Active (amends 0098; Box API 0.8, approved by the maintainer)
 - **Decision:**
   - **Selecting:** a click on a box's content that doesn't move the focus into it selects the box, as a click on its grip does. This applies to an image, a file and a drawing. The canvas checks two frames after the click, so content that takes the focus (a note opening its editor) keeps it. A click inside a box that is being edited, or one that opens a menu, never selects.
@@ -1455,13 +1455,86 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Rationale:** Images and files should be deleted like any selected box. A caption over the picture hid part of it.
 - **Alternatives considered:** letterboxing the picture inside a box that keeps its overall shape (no API change, but resizing could leave empty bands); a delete hook in the Box API (unneeded once a click selects the box).
 
+## 0103 — Invariant 4: the MCP server writes only through the running app
+- **Date:** 2026-10-31
+- **Status:** Active (approved by the maintainer; supersedes the earlier wording of architecture invariant 4, "a separate executable with no key access and no decryption code" with reading only; amends 0101)
+- **Decision:** Architecture invariant 4 reads:
+  - The MCP server is a separate executable with no key access and no decryption code.
+  - It reads saved page files only. AI-facing output is never built from the live screen.
+  - It never writes any file.
+  - Its only way to change content is to send a write request to the running Noted app over a local connection.
+  - The app decides: it accepts a request only for a box owned by the requesting AI's token, on a page whose AI setting allows writing, and saves it through its normal path. It rejects everything else.
+  - If the app isn't running, every write fails.
+- **Scope:** AI boxes, AI writing through the app, and AI connections and tokens are in the current phase. Per-AI rules, tiers and lanes are not.
+- **Rationale:** An AI has to be able to write into its own box (0008) without the server gaining a way to touch files, keys or other boxes. The app already owns saving, undo, sync and conflicts, so a write that goes through it gets all of them, and a server that can only ask can't bypass them.
+- **Alternatives considered:** the server writing page files itself (it would duplicate the save path, race the app's own saves and conflict handling, and break "never writes a file"); writes queued in a file for the app to pick up later (a file write by the server, and no immediate answer).
+
+## 0104 — The AI box
+- **Date:** 2026-10-31
+- **Status:** Active (implements AI writing for 0008 and the AI-authored tag of 0028; new package under delegated authority)
+- **Decision:**
+  - **Module:** `packages/boxes/ai` (`noted_box_ai`), type `noted.ai`, a box type through the Box API like any other. Insert → *AI box* (in both toolbars) adds one at the middle of the view, selected and ready to type in. It is never removed as empty. It can be inserted on a page of any AI setting, but on an Off page no AI can read or write it.
+  - **Content:** a note document, stored in the note box's shape (`{"document": …}`), edited with the note box's editor. The user can type in it too.
+  - **Owner:** `"owner"` in the box data is the id of the AI connection that owns it (0105), never a token or secret. The *Connected AI* menu on the box picks it from the app's connections, or *None*. An id that isn't a current connection (revoked, or made on another device) owns nothing, so the box is ordinary user text.
+  - **AI-written mark:** each block an AI writes has `noted_ai` in its data: an FNV-1a 64-bit fingerprint of the block's type and text, including inline equation formulas and link targets. The mark counts only while it matches, so editing the text, changing the block's type, or typing into a block copied from it ends the mark; bold, a to-do tick or a level change don't. Stale marks are removed before each commit. AI-written blocks show a thin bar beside them, and the box has a small *AI* label.
+  - **Writes:** `replace` turns the AI's markdown into the box's whole content; `append` adds it after the existing blocks. Markdown import keeps only text blocks (paragraphs, headings, lists, to-dos, quotes, dividers, tables, equations), so images, fenced code blocks and raw HTML are dropped, and keeps a link's address only for `http`, `https` and `mailto`. An open editor starts over when the box's data changes from outside, so typing can't commit over an AI's write; it keeps the focus, so the box stays being edited.
+  - **Snapshot and AI text:** the box's markdown, with each run of AI-written blocks between `<ai-written>` and `</ai-written>` lines; `<` in the text is escaped so the markers can't be forged. Search and the MCP server read this, so another AI sees which text came from an AI.
+- **Rationale:** Reusing the note document keeps one editor and one markdown conversion. Tagging blocks by fingerprint needs no clean-up on edit: a changed block simply stops matching.
+- **Alternatives considered:** a separate AI-only box the user can't type in (0008 has the conversation happen in the box); a box-level "AI-written" flag (too coarse once the user edits part of it); storing the AI's raw markdown (it would drift from what the editor shows); per-box AI-read and AI-write switches from 0008 (not built in this phase).
+
+## 0105 — AI connections and tokens
+- **Date:** 2026-10-31
+- **Status:** Active (implements the revocable identity tokens of 0028)
+- **Decision:**
+  - **Where:** gear menu → *AI connections*: list, add, rename and revoke.
+  - **Token:** adding a connection makes `noted_<id>_<key>`: a random 16-hex-digit id and a random 256-bit key in base64url. It is shown once, with *Copy*, and the dialog can't be dismissed by accident while it shows.
+  - **Storage:** `settings.json` (local app settings, never synced and never in page files) holds `"aiConnections"`: `[{id, name, hash, created}]`, where `hash` is the SHA-256 of the key. Tokens are compared in constant time.
+  - **Checks:** the app reads the connections from the settings file on every check, so a revocation (here or in another Noted on the same computer) takes effect on the next request. A settings file that can't be read accepts no token; a missing file has no connections.
+  - **Revoking:** the connection's requests are rejected at once. Its boxes keep their content and become user-owned text (0104); no page is rewritten.
+  - **Registering:** the MCP server reads the token from `NOTED_TOKEN`. `app/scripts/register-mcp.ps1 -Token …` passes it to Claude Code; `docs/mcp.md` documents this and the Claude desktop entry.
+- **Rationale:** A token per AI app gives each one its own boxes and lets the user cut one off without touching the others. Keeping only a hash means the settings file can't be used to write as an AI. Reading a connection's own boxes on Box only pages is scoped by the token's id alone (0106).
+- **Alternatives considered:** one shared token for every AI (no per-AI ownership or revocation); tokens in page files (they would sync to every device and every reader of the page); OS secure storage for the hashes (unneeded for a hash, and platform-specific).
+
+## 0106 — The AI write path
+- **Date:** 2026-10-31
+- **Status:** Active (implements invariant 4 as worded in 0103; extends 0101)
+- **Decision:**
+  - **Local link:** while it runs, the app listens on loopback TCP (`127.0.0.1`, a port chosen by the system) and writes `ai-link.json` (`{"format":1,"port","pid","nonce"}`) in its data folder (`%APPDATA%\Noted`), removed on a clean exit. A client connects to loopback only and reads the greeting line `{"noted":"ai-link/1","nonce":…}`; it sends nothing unless the nonce matches the file. One request per connection, as one JSON line of at most 1 MiB: `{"noted":"ai-link/1","op":"write_box","token":…,"box":…,"mode":"replace"|"append","content":…}`. The app answers with one line, `{"ok":true,"page":…,"box":…}` or `{"ok":false,"code":…,"message":…}`, and closes the connection. Reads time out after 5 s, and at most 8 connections are open at once.
+  - **Acceptance:** a write is accepted only if all of these hold, otherwise it gets the code in brackets:
+    - the token is valid and not revoked (`bad_token`);
+    - the box exists on a page whose AI setting is Box only or Whole page; an Off page answers like a missing box (`no_box`);
+    - the box takes AI writes (`not_writable`) and is owned by that token's connection (`not_owner`);
+    - the box isn't in a sync conflict (0020) (`conflict`);
+    - the page can be edited: not in a locked binder, not read-only (`locked`).
+    - Other answers: `bad_request`, `busy` (still loading, or the settings can't be read for a moment; nothing changed) and `save_failed`. A code the client doesn't know is read as a failure, keeping the app's message.
+  - **Applying:** writes are handled one at a time. The token is checked again just before the change. On the open page the write replaces the box's data through the canvas, so it shows at once and is one undo step, then is saved. On any other page it is saved through the same store, with a recovery copy if the page's folder is unavailable. Both go through the normal sync and conflict handling.
+  - **MCP tools (server 0.2.0):** `list_my_boxes` (the boxes the token's connection owns, on pages that aren't Off) and `write_box(box_id, content, mode)`, where `mode` (`replace` or `append`) is required. The server forwards the write and returns the app's message, as a tool error when the write was refused, or its own "Noted isn't running" message when the app can't be reached. It never writes a file: a source scan of every Noted library it imports fails on any file-writing API, and on any socket API outside the link client.
+  - **Box only reading:** on a Box only page, `read_page`, `read_box` and `search` return box content only from that AI's own boxes. Titles stay listed and searchable (0101), and a page with none of that AI's boxes reads as its title and a note. The server identifies the connection by the token's id, as listed in `settings.json`; only the app verifies the key, so reading never needs it, and a token with a listed id and any key reads that connection's boxes. Off pages stay invisible.
+- **Rationale:** Loopback TCP works the same on every desktop platform. Dart can't serve a Windows named pipe without native code, and binding a Unix domain socket failed on Windows when tried with the Dart SDK used here. The nonce stops a client from sending a token to another program that took the port. Routing every write through one queue in the app keeps writes, saves and page switches in order.
+- **Alternatives considered:**
+  - A Windows named pipe: it needs FFI on the app side and an exception to the server's no-FFI rule.
+  - Unix domain sockets: binding one failed on Windows (see above).
+  - Scoping Box only reads by verifying the full token in the server: it would need the hash and a crypto library in the server, which the invariant test keeps out.
+
+## 0107 — Box API 0.9: AI writes and the view's centre
+- **Date:** 2026-10-31
+- **Status:** Active (additive; decided by the PM under delegated authority)
+- **Decision:**
+  - `AiWriteMode` (`replace`, `append`) and `AiWrite` (`connectionId`, `content` as markdown, `mode`) in noted_core.
+  - `BoxCodec.aiOwner(data)`, default null: the owning connection's id.
+  - `BoxCodec.aiWrite(data, write)`, default null: the data after the write, or null if the type takes no AI writes. The host checks ownership and the page's AI setting first.
+  - `CommandHost.viewCentre` (noted_canvas): the middle of the visible view in page coordinates, or null without a view. `CanvasController.insertBox` takes an optional `autofocus`.
+  - Recorded in `packages/noted_core/BOX_API_CHANGELOG.md`.
+- **Rationale:** The host must ask a box type, not parse its data, to learn who owns it and to apply a write (invariant 2).
+- **Alternatives considered:** the app reading the AI box's `"owner"` key directly (the core would parse a module's data); a separate AI-box-only interface outside the Box API (invariant 1).
+
 ---
 
 ## Open items
 - **Apple build path:** iOS/iPadOS and macOS releases have to be compiled with current Xcode on Apple-silicon-era macOS. The planned approach is cloud macOS build runners.
 - **Equation block sourcing:** resolved (0048).
 - **File format:** whether JSON Canvas extra fields are sufficient, and how faithfully appflowy_editor round-trips Markdown.
-- **MCP:** the full tool and resource list, and the user experience for linking an AI to a box.
+- **MCP:** the full tool and resource list. Linking an AI to a box: resolved (0104, 0105).
 - **Cloud conflict copies:** OneDrive copies are merged (0053); other providers name their conflict-copy files differently and are not handled yet.
 - **Per-AI overrides:** different rules for different AIs on the same page (deferred).
 - **Drawing box image snapshots:** where a drawing box's image snapshot (0035) is stored in the page format (0041).
