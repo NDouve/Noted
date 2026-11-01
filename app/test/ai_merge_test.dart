@@ -482,6 +482,78 @@ void main() {
     });
   });
 
+  group('echoed blocks whose links do not survive the markdown', () {
+    Map<String, Object?> linked(String href) => {
+      'type': 'paragraph',
+      'data': {
+        'delta': [
+          {'insert': 'See '},
+          {
+            'insert': 'the notes',
+            'attributes': {'href': href},
+          },
+        ],
+      },
+    };
+
+    Future<List<Map<Object?, Object?>>> merge(String id, String type, Map<String, Object?> mine,
+        Map<String, Object?> theirs, String content) async {
+      final m = _box(id, _doc([mine, _para('Mine only')]), type: type);
+      final o = _box(id, _doc([mine, _para('Theirs only')]), type: type, at: 2000, device: 'PC-B');
+      nb.current!.insertBox(m.withConflict(BoxConflict.other(node: o.toRaw(), at: 2000, device: 'PC-B')));
+      await nb.flush();
+      final pending = nb.aiMerge!.ask(pageId, id);
+      unawaited(pending.then((_) {}, onError: (_) {}));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final item = await theItem(pageCode);
+      expect(await link(propose(pageCode, item.id, content)), isA<AiLinkProposed>());
+      final p = await pending;
+      final children = p.data is AiBoxData
+          ? ((p.data! as AiBoxData).json['document']! as Map)['children']
+          : ((p.data! as NoteData).document['document']! as Map)['children'];
+      return [for (final b in children as List) b as Map<Object?, Object?>];
+    }
+
+    for (final href in ['noted:page/0123456789abcdef', 'file:///docs/a.pdf', 'ftp://example.com/x']) {
+      for (final type in ['noted.note', aiBoxTypeId]) {
+        test('an echo of a block with a $href link keeps it as it was, in $type', () async {
+          final orig = linked(href);
+          // As the server shows it (the link kept or reduced to its text), the AI echoes it back.
+          for (final echo in [noteToMarkdown(_doc([orig])), 'See the notes']) {
+            final blocks = await merge('e${echo.length}${type.length}', type, orig, orig, '$echo\n\nTheirs only\n\nMine only');
+            expect(blocks.first, orig, reason: 'the original block, link and all ($echo)');
+            expect(isAiWritten(blocks.first), isFalse);
+            nb.aiMerge!.cancel(pageId, 'e${echo.length}${type.length}');
+          }
+        });
+      }
+    }
+
+    for (final type in ['noted.note', aiBoxTypeId]) {
+      test('a text one version has marked as AI-written and the other plain matches neither, in $type', () async {
+        final marked = markAiWritten(_para('Same words'));
+        final m = _box('f1', _doc([marked]), type: type);
+        final o = _box('f1', _doc([_para('Same words')]), type: type, at: 2000, device: 'PC-B');
+        nb.current!.insertBox(m.withConflict(BoxConflict.other(node: o.toRaw(), at: 2000, device: 'PC-B')));
+        await nb.flush();
+        final pending = nb.aiMerge!.ask(pageId, 'f1');
+        unawaited(pending.then((_) {}, onError: (_) {}));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        final item = await theItem(pageCode);
+        await link(propose(pageCode, item.id, 'Same words'));
+        final p = await pending;
+        final children = p.data is AiBoxData
+            ? ((p.data! as AiBoxData).json['document']! as Map)['children']
+            : ((p.data! as NoteData).document['document']! as Map)['children'];
+        final block = (children as List).single as Map<Object?, Object?>;
+        // The versions disagree about who wrote this text: not silently mine's
+        // block but a new one (the AI's in an AI box, plain in a note box).
+        if (type != aiBoxTypeId) expect(block, isNot(marked));
+        expect(isAiWritten(block), type == aiBoxTypeId);
+      });
+    }
+  });
+
   group('more availability and lifecycle rules', () {
     test('the module must be on, the type allowed on the page, and a non-deleted conflict recorded', () async {
       await conflicted('n1');

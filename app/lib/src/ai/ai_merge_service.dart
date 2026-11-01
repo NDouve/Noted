@@ -338,12 +338,34 @@ class AiMergeService implements PageAiMerge {
 
   // A top-level block as markdown: two blocks that say the same thing render
   // the same.
-  static String _blockText(Object? block) => noteToMarkdown({
+  static String _blockText(Object? block, {String? Function(String href)? linkTarget}) => noteToMarkdown({
     'document': {
       'type': 'page',
       'children': [block],
     },
-  });
+  }, linkTarget: linkTarget);
+
+  // The server shows a link to a page the AI can't see as its text only, and
+  // the importer drops links it doesn't keep (`noted:`, `file:`, other
+  // schemes): an exact echo of such a block comes back without the link.
+  static String? _textOnlyInternalLinks(String href) {
+    final h = href.toLowerCase();
+    return h.startsWith('http://') || h.startsWith('https://') || h.startsWith('mailto:') ? href : null;
+  }
+
+  // The markdown a block of the original comes back as: the ways the AI may
+  // have seen it (as saved, or with internal links reduced to their text),
+  // each also taken through the importer as an echo would be.
+  static Set<String> _echoes(Map<String, Object?> block) {
+    final out = <String>{};
+    for (final seen in [_blockText(block), _blockText(block, linkTarget: _textOnlyInternalLinks)]) {
+      if (seen.trim().isEmpty) continue;
+      out.add(seen);
+      final back = markdownToNoteBlocks(seen);
+      if (back.length == 1) out.add(_blockText(back.single));
+    }
+    return out;
+  }
 
   static List<Map<String, Object?>> _blocksOf(Map<String, Object?> json) {
     final doc = json['document'];
@@ -358,14 +380,27 @@ class AiMergeService implements PageAiMerge {
   // The box's data for the proposal. The marks come from the two versions,
   // not from the AI: a block of the proposal that says what a block of mine
   // or theirs says is that block, verbatim (its AI mark or its lack of one,
-  // formulas, links and styles included; mine wins when both have it). A block
+  // formulas, links and styles included; a text the two versions have in
+  // different forms matches neither). A block
   // in neither is new: AI-written in an AI box, plain in a note box.
   AiMergeProposal _proposal(_Request r, String markdown, String? by) {
-    final known = <String, Map<String, Object?>>{};
+    // Markdown a block comes back as, to the block it is. A text that two
+    // different blocks (say, one in each version, differing only in
+    // formatting) share is ambiguous: it maps to null, matches neither, and
+    // so the block counts as new rather than silently taking one of them.
+    final known = <String, Map<String, Object?>?>{};
+    final encoded = <String, String>{};
     for (final v in [r.mine, r.theirs]) {
       for (final b in _blocksOf(v.json)) {
-        final text = _blockText(b);
-        if (text.trim().isNotEmpty) known.putIfAbsent(text, () => b);
+        final json = jsonEncode(b);
+        for (final text in _echoes(b)) {
+          if (!known.containsKey(text)) {
+            known[text] = b;
+            encoded[text] = json;
+          } else if (encoded[text] != json) {
+            known[text] = null;
+          }
+        }
       }
     }
     final blocks = <Map<String, Object?>>[];
