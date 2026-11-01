@@ -61,7 +61,21 @@ class _Mcp {
     final r = await request('tools/call', {'name': tool, 'arguments': args});
     final result = r['result']! as Map;
     final text = [for (final c in result['content']! as List) (c as Map)['text']].join('\n');
+    _transcribe(tool, args, result['isError'] == true, text);
     return (result['isError'] == true, text);
+  }
+
+  // With NOTED_E2E_TRANSCRIPT set to a file path, each call and answer is
+  // appended there, with codes replaced by a placeholder (for run reports).
+  void _transcribe(String tool, Map<String, Object?> args, bool isError, String text) {
+    final path = Platform.environment['NOTED_E2E_TRANSCRIPT'];
+    if (path == null || path.isEmpty) return;
+    String hide(String s) => s.replaceAll(RegExp(r'noted_[0-9a-f]{16}_[A-Za-z0-9_-]+'), '<code>');
+    final answer = text.split('\n').map((l) => '<< ${hide(l)}').join('\n');
+    File(path).writeAsStringSync(
+      '>> $tool ${hide(jsonEncode(args))}\n${isError ? '<< (error)\n' : ''}$answer\n',
+      mode: FileMode.append,
+    );
   }
 }
 
