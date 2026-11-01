@@ -52,11 +52,10 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 2. **The core never parses, rewrites or drops data from box types it doesn't support.** That data passes through load, save, sync and encryption byte-for-byte. Unsupported boxes render from their saved read-only snapshot.
 3. **Encrypted content exists as plaintext only in the on-screen editor state of an unlocked box.** Plaintext never reaches the page model, disk, autosave, undo history that persists past lock, search indexes, logs, crash reports, thumbnails or conflict copies.
 4. **The MCP server is a separate executable with no key access and no decryption code.**
-   - It reads saved page files only. AI-facing output is never built from the live screen.
-   - It never writes any file.
-   - Its only way to change content is to send a write request to the running Noted app over a local connection.
-   - The app decides: it accepts a request only for a box owned by the requesting AI's token, on a page whose AI setting allows writing, and saves it through its normal path. It rejects everything else.
-   - If the app isn't running, every write fails.
+   - AI-facing output is built from saved data only, never the live screen. Encrypted content is never readable.
+   - It may verify AI codes by hash (no keys, no decryption).
+   - It writes only two things: (1) its own access log, append only; (2) an AI box's own data in a page file, and only when Noted isn't running and that box allows writes while Noted is closed, within the Writer permission the box grants. It never writes anything else.
+   - While Noted is running, every write goes to the app over the local link, and the app decides and saves through its normal path.
 5. **There is no developer-run backend.** All data stays on the user's devices and in their chosen storage.
 
 ## Current phase: Prototype 1, the AI phase
