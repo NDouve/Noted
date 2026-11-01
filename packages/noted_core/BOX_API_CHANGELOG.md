@@ -10,6 +10,8 @@ Versions are listed newest first.
 
 Host-only (not the Box API), run 2026-11-01-02: `PageCanvas.disallowedTypes`, `ModuleRegistry.isSwitchable` and `moduleForFile(exclude:)`, `convertPageAttachments(skipTypes:)` and `showConflictDialog(disallowedTypes:)` let a page treat a box type as switched off (module availability per page). No module-facing member changed; no version bump.
 
+Host-only (not the Box API), run 2026-11-01-04: `PageChange.landed(id, before)` restores only a box's landed marker on undo (used by the canvas when a landed box is placed). Modules can construct `PageChange`s, but none needs this one; the subclasses stay private, so nothing switches on them. The page-issue helpers (`pageIssues`, keep, place both, accept merged) and the conflict UI are host code. No version bump.
+
 ## 0.10 — 2026-11-01
 - `AiWriteMode.replaceAiText`: replace only the box's AI-written blocks (those whose AI mark still matches their text) and keep every user-written block in place. Every run of consecutive AI-written blocks is removed and the new blocks go where the first run was, or at the end if there was none.
 - `applyAiWrite(boxJson, AiWrite)` in noted_core: the AI box's write on its stored JSON (append, replace, replaceAiText), shared by the AI codec and the MCP server's closed-app write. `AiWrite` and `AiWriteMode` now live in `ai/ai_box.dart` (still exported from `noted_core.dart` and `box_codec.dart`).
