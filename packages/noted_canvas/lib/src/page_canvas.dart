@@ -161,10 +161,11 @@ class PageCanvasState extends State<PageCanvas>
   static const double _fileGap = 16;
 
   /// The page point in the middle of the view.
-  Offset get _viewCentre {
+  @override
+  Offset? get viewCentre {
     final v = _view;
     final g = _geometry;
-    if (v == null || g == null) return Offset.zero;
+    if (v == null || g == null) return null;
     return v.toWorld(g.viewport.center(Offset.zero));
   }
 
@@ -172,7 +173,7 @@ class PageCanvasState extends State<PageCanvas>
   Future<void> insertFiles(List<IncomingFile> files, {Offset? at}) async {
     final store = widget.attachments;
     if (store == null || _readOnly || files.isEmpty) return;
-    var point = at ?? _viewCentre;
+    var point = at ?? viewCentre ?? Offset.zero;
     String? last;
     for (final f in files) {
       final module = _c.modules.moduleForFile(f);

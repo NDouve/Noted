@@ -12,6 +12,7 @@ Versions are listed newest first.
 - `AiWriteMode` (`replace`, `append`) and `AiWrite` (`connectionId`, `content` as markdown, `mode`) in noted_core.
 - `BoxCodec.aiOwner(data)` (default null): the id of the AI connection that owns the box, never a token or secret.
 - `BoxCodec.aiWrite(data, write)` (default null): the box's data after an AI's write, or null if the type takes no AI writes. The host checks ownership and the page's AI setting before calling it.
+- `CommandHost.viewCentre` (noted_canvas): the middle of the visible view in page coordinates, or null where there is no view. `CanvasController.insertBox` takes an optional `autofocus` to select the new box and focus its editor.
 - Additive: a module that overrides neither is unaffected. Decided by the PM under delegated authority; the AI box, run 2026-10-31-02.
 
 ## 0.8 — 2026-11-01

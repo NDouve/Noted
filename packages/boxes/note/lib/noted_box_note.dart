@@ -8,4 +8,6 @@ library;
 export 'src/note_codec.dart';
 export 'src/note_commands.dart' show NoteCommands, formatDateTime;
 export 'src/note_link.dart' show linkAt, linkOpener, normalizeLink;
+export 'src/note_markdown_import.dart' show markdownToNoteBlocks;
 export 'src/note_module.dart';
+export 'src/note_options.dart' show NoteBlockMark, NoteEditorOptions;

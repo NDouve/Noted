@@ -26,6 +26,10 @@ abstract interface class CommandHost {
   /// none.
   AttachmentStore? get attachments;
 
+  /// The middle of the visible view in page coordinates, or null where there
+  /// is no view (Box API 0.9). A command that adds a box can put it here.
+  Offset? get viewCentre;
+
   /// Creates a box for each of [files] (Box API 0.7), each with the module
   /// that holds it best (`BoxModule.fileAffinity`), at the page point [at]
   /// or, if null, in the middle of the view; several are stacked.

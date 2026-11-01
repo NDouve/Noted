@@ -9,6 +9,7 @@ workspace:
   - packages/noted_core
   - packages/noted_canvas
   - packages/boxes/note
+  - packages/boxes/ai
   - packages/boxes/drawing
   - packages/boxes/template
   - packages/boxes/attachments

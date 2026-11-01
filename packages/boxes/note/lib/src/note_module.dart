@@ -22,6 +22,7 @@ import 'note_editor_state.dart';
 import 'note_find.dart';
 import 'note_link.dart';
 import 'note_light_view.dart';
+import 'note_options.dart';
 import 'note_theme.dart';
 import 'table_formulas.dart';
 import 'table_menu.dart';
@@ -53,11 +54,36 @@ final class NoteModule extends BoxModule<NoteData> {
   List<Command> commands(CommandHost host) => noteCommands(host);
 }
 
-class _NoteEditor extends StatefulWidget {
-  const _NoteEditor({required this.box, required this.editable});
+/// The note box's editor and read-only view for a [NoteData] box, for box
+/// types that show a note document (for example the AI box). With the
+/// default [options] it is exactly the plain note box.
+class NoteEditorView extends StatelessWidget {
+  const NoteEditorView({
+    super.key,
+    required this.box,
+    required this.editable,
+    this.options = const NoteEditorOptions(),
+  });
 
   final BoxContext<NoteData> box;
   final bool editable;
+  final NoteEditorOptions options;
+
+  @override
+  Widget build(BuildContext context) =>
+      _NoteEditor(box: box, editable: editable, options: options);
+}
+
+class _NoteEditor extends StatefulWidget {
+  const _NoteEditor({
+    required this.box,
+    required this.editable,
+    this.options = const NoteEditorOptions(),
+  });
+
+  final BoxContext<NoteData> box;
+  final bool editable;
+  final NoteEditorOptions options;
 
   @override
   State<_NoteEditor> createState() => _NoteEditorState();
@@ -405,7 +431,8 @@ class _NoteEditorState extends State<_NoteEditor>
     } finally {
       _syncing = false;
     }
-    final next = NoteData(_editor!.document.toJson());
+    final json = _editor!.document.toJson();
+    final next = NoteData(widget.options.beforeCommit?.call(json) ?? json);
     _shown = next;
     widget.box.commit(next);
     // Find on page: the highlights follow what was typed.
@@ -730,6 +757,7 @@ class _NoteEditorState extends State<_NoteEditor>
     scheme: scheme,
     headerKey: _lightHeaderKey,
     footerKey: _lightFooterKey,
+    blockWrapper: _blockWrapper(),
     actions: LightActions(
       editable: widget.editable,
       onTap: _lightTap,
@@ -738,6 +766,16 @@ class _NoteEditorState extends State<_NoteEditor>
       onEditMathInline: _lightEditMathInline,
     ),
   );
+
+  /// Draws the options' block mark, if any, beside top-level blocks.
+  BlockComponentWrapper? _blockWrapper() {
+    final mark = widget.options.blockMark;
+    if (mark == null) return null;
+    return (context, {required node, required child}) =>
+        node.parent?.type == PageBlockKeys.type
+        ? MarkedBlock(key: ObjectKey(node), node: node, mark: mark, child: child)
+        : child;
+  }
 
   Widget _editorView(ColorScheme scheme) {
     _ensureEditor();
@@ -769,6 +807,7 @@ class _NoteEditorState extends State<_NoteEditor>
         // Caret-follow is done by _revealCaret; see there for why.
         disableAutoScroll: true,
         blockComponentBuilders: _builders,
+        blockWrapper: _blockWrapper(),
         characterShortcutEvents: _shortcuts,
         commandShortcutEvents: _formulas.commandShortcuts(noteCommandShortcuts),
         focusNode: _focus,

@@ -248,9 +248,15 @@ class CanvasController extends ChangeNotifier {
   }
 
   /// Adds a box a tool built, with its content, on top. Recorded for undo.
-  void insertBox(BoxRecord box) {
+  /// With [autofocus] the box is selected and its editor takes the keyboard
+  /// focus, as a new note does.
+  void insertBox(BoxRecord box, {bool autofocus = false}) {
     if (_readOnly) return;
     _history.record(PageChange.added(box.id));
+    if (autofocus) {
+      _selectedId = box.id;
+      _autofocusId = box.id;
+    }
     _set(_page.insertNode(box));
   }
 

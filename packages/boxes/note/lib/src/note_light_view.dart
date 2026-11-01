@@ -160,6 +160,7 @@ class NoteLightView extends StatelessWidget {
     required this.scheme,
     required this.headerKey,
     required this.footerKey,
+    this.blockWrapper,
     required this.actions,
   });
 
@@ -168,6 +169,9 @@ class NoteLightView extends StatelessWidget {
   final ColorScheme scheme;
   final Key headerKey;
   final Key footerKey;
+
+  /// Wraps each top-level block (the note box does not use it).
+  final BlockComponentWrapper? blockWrapper;
   final LightActions actions;
 
   @override
@@ -194,7 +198,13 @@ class NoteLightView extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(
                   horizontal: DesignMetrics.space2,
                 ),
-                child: env.block(context, block),
+                child: blockWrapper == null
+                    ? env.block(context, block)
+                    : blockWrapper!(
+                        context,
+                        node: block,
+                        child: env.block(context, block),
+                      ),
               ),
             SizedBox(key: footerKey, height: _verticalPadding),
           ],
