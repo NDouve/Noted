@@ -71,6 +71,9 @@ final class ClosedWriter {
           // The app's trim holds this same lock while it rewrites the file. A
           // non-blocking try, so a held lock never hangs the caller.
           await raf.lock(FileLock.exclusive);
+          // The app may have shortened the file between the open and the
+          // lock: write at its end now, not where it ended at open time.
+          await raf.setPosition(await raf.length());
           await raf.writeString('$line\n');
           await raf.flush();
           await raf.unlock();

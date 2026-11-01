@@ -120,7 +120,8 @@ class AiRunningLockBanner extends StatelessWidget {
   const AiRunningLockBanner({super.key});
 
   static const String message =
-      "Noted can't tell AI tools it's running, so writes while Noted is closed are paused.";
+      "Noted couldn't take its running lock and keeps trying. If its AI link isn't working either, AI tools may treat "
+      'Noted as closed and write to boxes that allow writes while Noted is closed.';
 
   @override
   Widget build(BuildContext context) {

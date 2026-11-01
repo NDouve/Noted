@@ -53,13 +53,16 @@ void main() {
 
   test('a holder that lets go is waited for, a holder that keeps it is not taken over', () async {
     if (!Platform.isWindows) return; // in-process locks only conflict on Windows
+    lockFile().writeAsStringSync('1234\n'); // left by an earlier run
     final other = probe()!;
     final lock = AiRunningLock(dir);
     addTearDown(lock.dispose);
     expect(lock.acquire(tries: 2, pause: const Duration(milliseconds: 20)), isFalse);
     expect(lock.held, isFalse);
-    final before = lockFile().lengthSync();
-    expect(before, 0, reason: 'a failed attempt never writes to the file');
+    // Read through the holder's own handle (another handle can't read a
+    // locked range on Windows).
+    other.setPositionSync(0);
+    expect(String.fromCharCodes(other.readSync(64)), '1234\n', reason: 'a failed attempt never changes the file');
 
     // It retries in the background and takes it once the other lets go.
     var told = 0;

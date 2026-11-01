@@ -283,23 +283,18 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
         if (lines <= keep) return false;
         final from = ends[lines - keep - 1] + 1;
         final tail = bytes.sublist(from);
-        // The file is opened for appending (Dart has no way to open it for
-        // writing without truncating or appending), so it is emptied and the
-        // kept lines written, all under the lock; if that fails half way, the
-        // original bytes are put back.
+        // Opened with FileMode.append, the file is still read-write: the kept
+        // lines are written over its start and only then is it shortened. A
+        // crash part way leaves the kept lines whole (at worst repeated, with
+        // one broken line at the seam, which the parser skips); nothing is
+        // lost.
         try {
-          raf.truncateSync(0);
           raf.setPositionSync(0);
           raf.writeFromSync(tail);
           raf.flushSync();
+          raf.truncateSync(tail.length);
+          raf.flushSync();
         } on Object {
-          try {
-            raf.truncateSync(0);
-            raf.writeFromSync(bytes);
-            raf.flushSync();
-          } on Object {
-            // Nothing more can be done.
-          }
           return false;
         }
         return true;
