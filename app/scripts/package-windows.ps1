@@ -82,12 +82,15 @@ Shortcuts
   If a shortcut or the taskbar still shows an old icon after an update, run
   it with -ResetIconCache (Explorer restarts and rebuilds its icon cache).
 
-AI (read-only MCP server)
+AI (MCP server)
   noted_mcp.exe lets an AI app read the pages whose AI setting allows it
-  (right-click a page > AI access). To add it to Claude Code and print the
-  Claude desktop configuration, run:
-    powershell -ExecutionPolicy Bypass -File register-mcp.ps1
-  See docs/mcp.md in the source for details.
+  (right-click a page > AI access). It never writes a file: an AI writes
+  only into its own AI boxes, through Noted while Noted is running.
+  To give an AI its own boxes, make a token in Noted (gear menu >
+  AI connections > Add), then add the server to Claude Code and print the
+  Claude desktop configuration from PowerShell, with the token copied:
+    powershell -ExecutionPolicy Bypass -File register-mcp.ps1 -Token (Get-Clipboard)
+  Without -Token the AI can only read. See docs/mcp.md in the source.
 
 Runtime
   The Visual C++ runtime DLLs the app needs (msvcp140.dll,
