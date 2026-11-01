@@ -157,11 +157,25 @@ class _AiBoxState extends State<_AiBox> {
   /// key starts it afresh from the new data.
   int _generation = 0;
 
+  /// Holds the focus whenever the note editor does.
+  final FocusNode _editorArea = FocusNode(canRequestFocus: false, skipTraversal: true);
+
+  /// Whether the editor had the focus when an outside change restarted it:
+  /// the new one takes it, so the user stays in the box and the page still
+  /// knows it is being edited (Escape and undo then work as before).
+  bool _refocus = false;
+
   @override
   void initState() {
     super.initState();
     _current = widget.box.data;
     _note = _current.note;
+  }
+
+  @override
+  void dispose() {
+    _editorArea.dispose();
+    super.dispose();
   }
 
   @override
@@ -171,7 +185,15 @@ class _AiBoxState extends State<_AiBox> {
     if (!identical(d, oldWidget.box.data) && !identical(d, _current)) {
       _current = d;
       _note = d.note;
+      // A box that can't be edited commits nothing, so its editor can't
+      // write over the change and takes it the usual way; restarting it
+      // would drop a focus it can't take back.
+      if (!widget.editable) return;
       _generation++;
+      _refocus = _editorArea.hasFocus;
+      if (_refocus) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _refocus = false);
+      }
     }
   }
 
@@ -202,11 +224,14 @@ class _AiBoxState extends State<_AiBox> {
           ),
         ),
         Expanded(
-          child: NoteEditorView(
-            key: ValueKey(_generation),
-            box: _NoteBox(this),
-            editable: widget.editable,
-            options: aiNoteOptions,
+          child: Focus(
+            focusNode: _editorArea,
+            child: NoteEditorView(
+              key: ValueKey(_generation),
+              box: _NoteBox(this),
+              editable: widget.editable,
+              options: aiNoteOptions,
+            ),
           ),
         ),
       ],
@@ -240,7 +265,7 @@ final class _NoteBox implements BoxContext<NoteData> {
   @override
   bool get autoHeight => _b.autoHeight;
   @override
-  bool get autofocus => _b.autofocus;
+  bool get autofocus => _b.autofocus || _s._refocus;
   @override
   void commit(NoteData data) => _s._commitNote(data);
   @override

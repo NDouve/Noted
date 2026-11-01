@@ -4,6 +4,7 @@
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_box_ai/noted_box_ai.dart';
 import 'package:noted_box_ai/src/ai_module.dart' show insertAiBox;
@@ -411,6 +412,60 @@ void main() {
       await t.pump(const Duration(milliseconds: 100));
       // Based on the AI's write, not on the "A!" the editor had.
       expect(aiBlockText(storedBlocks(c, 'a').single), 'Ax');
+    });
+
+    testWidgets('a box being edited stays edited through an AI write, so Escape still leaves it', (t) async {
+      const codec = AiCodec();
+      final (c, _) = await pump(t, pageOf([aiRecord('a', [para('B')], owner: ownerId)]));
+      await t.tap(find.text('B', findRichText: true).last);
+      for (var i = 0; i < 5; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+      }
+      expect(c.editingId, 'a');
+
+      c.replaceBoxData({
+        'a': codec.aiWrite(
+          codec.decode((c.page.node('a')! as BoxRecord).data!.decode(), 1),
+          AiWrite(connectionId: ownerId, content: 'A', mode: AiWriteMode.replace),
+        )!,
+      });
+      for (var i = 0; i < 5; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+      }
+      expect(c.editingId, 'a');
+      expect(find.byType(AppFlowyEditor), findsOneWidget);
+      final focus = FocusManager.instance.primaryFocus;
+      expect(
+        focus?.context != null &&
+            find.descendant(of: find.byType(AppFlowyEditor), matching: find.byWidget(focus!.context!.widget)).evaluate().isNotEmpty,
+        isTrue,
+        reason: 'the new editor has the focus',
+      );
+
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      for (var i = 0; i < 5; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+      }
+      expect(c.editingId, isNull);
+    });
+
+    testWidgets('an AI write into a box not being edited takes no focus', (t) async {
+      const codec = AiCodec();
+      final (c, _) = await pump(t, pageOf([aiRecord('a', [para('B')], owner: ownerId)]));
+      expect(c.editingId, isNull);
+      final before = FocusManager.instance.primaryFocus;
+      c.replaceBoxData({
+        'a': codec.aiWrite(
+          codec.decode((c.page.node('a')! as BoxRecord).data!.decode(), 1),
+          AiWrite(connectionId: ownerId, content: 'A', mode: AiWriteMode.replace),
+        )!,
+      });
+      for (var i = 0; i < 5; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+      }
+      expect(c.editingId, isNull);
+      expect(FocusManager.instance.primaryFocus, before);
+      expect(find.byType(AppFlowyEditor), findsNothing, reason: 'still the light view');
     });
 
     testWidgets('an AI write shows in the open box at once', (t) async {
