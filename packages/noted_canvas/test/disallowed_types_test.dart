@@ -47,7 +47,7 @@ class _Module extends BoxModule<String> {
       Text(box.data, key: ValueKey('view-${box.boxId}'));
   @override
   List<Command> commands(CommandHost host) => [
-    Command(id: '$id.insert', label: 'Insert $id', icon: Icons.add, invoke: () {}),
+    Command(id: '$id.insert', label: 'Insert $id', icon: Icons.add, text: () => 'Short $id', invoke: () {}),
   ];
   @override
   int fileAffinity(IncomingFile file) => affinity;
@@ -133,6 +133,7 @@ void main() {
     var cmd = key.currentState!.commands['test.other.insert']!;
     expect(cmd.enabled, isFalse);
     expect(cmd.tooltip, contains('not allowed on this page'));
+    expect(cmd.text?.call(), 'Short test.other', reason: 'the button keeps its text');
     expect(await key.currentState!.commands.invoke('test.other.insert'), isFalse);
 
     await pump(t, c, {}, key);

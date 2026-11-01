@@ -352,6 +352,8 @@ class PageCanvasState extends State<PageCanvas>
       icon: c.icon,
       iconBuilder: c.iconBuilder,
       showLabel: c.showLabel,
+      // The button keeps its text (only the tooltip says why it's off).
+      text: c.text,
       shortcut: c.shortcut,
       enabled: () => false,
       invoke: () {},
