@@ -35,9 +35,10 @@ final String _inlineMathChar = String.fromCharCode(0xFFFC);
 /// blank input.
 List<Map<String, Object?>> markdownToNoteBlocks(String markdown) {
   if (markdown.trim().isEmpty) return const [];
+  final budget = _Budget();
   return [
     for (final part in _split(markdown))
-      if (part.text != null) _plain(part.text!) else ..._decode(part.markdown!),
+      if (part.text != null) _plain(part.text!) else ..._decode(part.markdown!, budget),
   ];
 }
 
@@ -51,6 +52,27 @@ List<Map<String, Object?>> markdownToNoteBlocks(String markdown) {
 // these limits. A chunk that is over a limit by itself is kept as one plain
 // paragraph (its text as written, never interpreted), and so is a chunk the
 // decoder fails on.
+
+/// The most inline delimiters the decoder is given in one import, however
+/// the input is grouped: this bounds the total cost. Chunks past it are kept
+/// as plain paragraphs.
+const int _maxImportDelimiters = 20000;
+
+/// What is left of [_maxImportDelimiters] in one import.
+class _Budget {
+  int left = _maxImportDelimiters;
+
+  /// Takes [n] delimiters from the budget; false (and takes nothing) if
+  /// there aren't that many left.
+  bool take(int n) {
+    if (n > left) {
+      left = 0; // once one chunk is refused, later ones are too
+      return false;
+    }
+    left -= n;
+    return true;
+  }
+}
 
 /// The most characters in a group (and in a chunk the decoder may see).
 const int _maxGroupChars = 30000;
@@ -159,7 +181,7 @@ bool _fits(int chars, int delimiters, int definitions) =>
     definitions <= _maxGroupDefinitions;
 
 /// Decodes [markdown] within the bounds above.
-List<Map<String, Object?>> _decode(String markdown) {
+List<Map<String, Object?>> _decode(String markdown, _Budget budget) {
   if (markdown.trim().isEmpty) return const [];
   // Chunks: runs of non-blank lines.
   final chunks = <List<String>>[];
@@ -186,7 +208,7 @@ List<Map<String, Object?>> _decode(String markdown) {
 
   for (final chunk in chunks) {
     final c = _cost(chunk);
-    if (c.deep || !_fits(c.chars, c.delimiters, c.definitions)) {
+    if (c.deep || !_fits(c.chars, c.delimiters, c.definitions) || !budget.take(c.delimiters)) {
       flush();
       out.add(_plain(chunk.join('\n')));
       continue;

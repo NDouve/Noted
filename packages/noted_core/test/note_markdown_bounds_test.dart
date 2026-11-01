@@ -59,6 +59,33 @@ void main() {
       });
     }
 
+    // Paragraphs each just under the per-group delimiter cap, 1 MB in all:
+    // grouping alone would let every one of them be decoded.
+    for (final (name, unit, per) in [('_a', '_a', 595), ('*a', '*a', 595), ('<u>', '<u>', 198)]) {
+      test('paragraphs just under the group cap, $name, 1 MB in all', () {
+        final para = unit * per;
+        final md = List.filled(_mb ~/ (para.length + 2), para).join('\n\n');
+        final sw = Stopwatch()..start();
+        final out = markdownToNoteBlocks(md);
+        sw.stop();
+        expect(sw.elapsed, lessThan(const Duration(seconds: 3)), reason: name);
+        expect(out, isNotEmpty);
+        expect(textLength(out), greaterThan(md.length ~/ 3), reason: 'the text is kept');
+      });
+    }
+
+    test('past the whole-import delimiter budget, chunks stay as plain text', () {
+      final md = List.filled(100, '*a' * 295).join('\n\n');
+      final out = markdownToNoteBlocks(md);
+      expect(out, hasLength(100));
+      // 295 delimiters each: 67 chunks fit in 20000; the last 33 are plain,
+      // their text exactly as written.
+      final plain = out.where((b) => aiBlockText(b) == '*a' * 295);
+      expect(plain.length, 33);
+      expect(out.sublist(67).every((b) => aiBlockText(b) == '*a' * 295), isTrue);
+      expect(out.first, isNot(equals(out.last)));
+    });
+
     test('an over-limit chunk is one plain paragraph, its text as written', () {
       final md = '${'*a' * 5000}\n\nafter *me*';
       final out = markdownToNoteBlocks(md);
