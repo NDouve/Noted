@@ -161,6 +161,86 @@ void main() {
     expect((c.page.node('n')! as BoxRecord).snapshotText, before);
   });
 
+  testWidgets('Ctrl+Z uses the editor history first, then the page undo; redo likewise', (t) async {
+    await pump(t);
+    c.setBackground(PageBackground.graph);
+    expect(c.canUndo, isTrue);
+    final editor = await focusNote(t);
+    editor.selection = Selection.collapsed(Position(path: [0], offset: 10));
+    await frames(t);
+    await editor.insertTextAtCurrentSelection('!');
+    await frames(t);
+    String text() => editor.document.root.children.first.delta!.toPlainText();
+    expect(text(), 'first line!');
+
+    Future<void> ctrl(WidgetTester t, LogicalKeyboardKey key, {bool shift = false}) async {
+      await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      if (shift) await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await t.sendKeyEvent(key);
+      if (shift) await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await frames(t);
+    }
+
+    // The editor's own step goes first; the page is untouched.
+    await ctrl(t, LogicalKeyboardKey.keyZ);
+    expect(text(), 'first line');
+    expect(c.page.meta.background, PageBackground.graph);
+    expect(c.editingId, 'n');
+
+    // The editor has nothing left: the page's undo runs.
+    await ctrl(t, LogicalKeyboardKey.keyZ);
+    expect(c.page.meta.background, PageBackground.plain);
+    expect(text(), 'first line');
+
+    // Redo: the editor's own redo first, then the page's.
+    await ctrl(t, LogicalKeyboardKey.keyY);
+    expect(text(), 'first line!');
+    expect(c.page.meta.background, PageBackground.plain);
+    await ctrl(t, LogicalKeyboardKey.keyZ, shift: true);
+    expect(c.page.meta.background, PageBackground.graph);
+
+    // Nothing anywhere: nothing happens, and the editor is still open.
+    await ctrl(t, LogicalKeyboardKey.keyY);
+    expect(c.editingId, 'n');
+  });
+
+  testWidgets('Ctrl+Z that undoes the creation of the edited box leaves no stale editing id', (t) async {
+    await pump(t);
+    c.setBackground(PageBackground.graph);
+    final box = c.createBoxAt(const Bounds(500, 300, 0, 0));
+    await frames(t);
+    expect(c.editingId, box.id);
+
+    Future<void> ctrlZ() async {
+      await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await t.sendKeyEvent(LogicalKeyboardKey.keyZ);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await frames(t);
+    }
+
+    await ctrlZ();
+    expect(c.page.node(box.id), isNull);
+    expect(c.editingId, isNull);
+    // Canvas shortcuts work again: the next Ctrl+Z undoes the earlier step.
+    canvas(t).focusCanvas();
+    await frames(t);
+    await ctrlZ();
+    expect(c.page.meta.background, PageBackground.plain);
+  });
+
+  testWidgets('Ctrl+Z in a note on a read-only page does nothing to the page', (t) async {
+    await pump(t);
+    c.setBackground(PageBackground.graph);
+    await focusNote(t);
+    c.readOnly = true;
+    await frames(t);
+    await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await t.sendKeyEvent(LogicalKeyboardKey.keyZ);
+    await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await frames(t);
+    expect(c.page.meta.background, PageBackground.graph);
+  });
   testWidgets('Escape in a note with nothing open leaves the editor for Select', (t) async {
     final selection = CanvasToolSelection();
     addTearDown(selection.dispose);

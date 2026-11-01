@@ -60,6 +60,10 @@ abstract interface class NoteCommandTarget {
   /// Inserts an equation at the caret, as the slash menu's Equation item
   /// does (it asks for the formula).
   Future<void> insertEquation();
+
+  /// Runs the page's undo (or [redo]) for the canvas this editor is on, when
+  /// it has a step to take. False if there is nothing to do.
+  bool pageHistory({required bool redo});
 }
 
 /// Which note editor has keyboard focus, if any. The note module's commands

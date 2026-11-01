@@ -257,6 +257,20 @@ class _NoteEditorState extends State<_NoteEditor>
   }
 
   @override
+  bool pageHistory({required bool redo}) {
+    // The canvas this editor is on; the editor knows its box, not the page.
+    final c = mounted
+        ? context.findAncestorStateOfType<PageCanvasState>()?.controller
+        : null;
+    // A mounted canvas's controller is live, so no disposed check is needed
+    // (and none is added to the controller's API).
+    if (c == null || c.readOnly) return false;
+    if (!(redo ? c.canRedo : c.canUndo)) return false;
+    redo ? c.redo() : c.undo();
+    return true;
+  }
+
+  @override
   void insertFilesBeside(List<IncomingFile> files) => widget.box.insertFilesBeside(files);
 
   // Ctrl+click on a link opens it. The click has already put the caret

@@ -27,6 +27,8 @@ final List<CommandShortcutEvent> noteCommandShortcuts = [
   _escape,
   _linkCommand,
   _pasteCommand,
+  _undo,
+  _redo,
   _vertical(moveCursorUpCommand, up: true, extend: false),
   _vertical(moveCursorDownCommand, up: false, extend: false),
   _vertical(moveCursorUpSelectCommand, up: true, extend: true),
@@ -37,6 +39,8 @@ final Set<String> _replaced = {
   exitEditingCommand.key,
   showLinkMenuCommand.key,
   pasteCommand.key,
+  undoCommand.key,
+  redoCommand.key,
   moveCursorUpCommand.key,
   moveCursorDownCommand.key,
   moveCursorUpSelectCommand.key,
@@ -71,8 +75,35 @@ final CommandShortcutEvent _pasteCommand = pasteCommand.copyWith(
   },
 );
 
-CommandShortcutEvent _vertical(
+/// Ctrl+Z (Cmd+Z): the editor's own undo while it has steps; once its history
+/// is used up, the page's undo, as if the box were not being edited. With
+/// neither it is ignored.
+final CommandShortcutEvent _undo = undoCommand.copyWith(
+  handler: (editorState) {
+    if (editorState.undoManager.undoStack.isNonEmpty) {
+      return undoCommand.handler(editorState);
+    }
+    final target = NoteCommandFocus.active.value;
+    return target != null && target.pageHistory(redo: false)
+        ? KeyEventResult.handled
+        : KeyEventResult.ignored;
+  },
+);
 
+/// Ctrl+Y and Ctrl+Shift+Z (Cmd+Shift+Z): like [_undo], for redo.
+final CommandShortcutEvent _redo = redoCommand.copyWith(
+  handler: (editorState) {
+    if (editorState.undoManager.redoStack.isNonEmpty) {
+      return redoCommand.handler(editorState);
+    }
+    final target = NoteCommandFocus.active.value;
+    return target != null && target.pageHistory(redo: true)
+        ? KeyEventResult.handled
+        : KeyEventResult.ignored;
+  },
+);
+
+CommandShortcutEvent _vertical(
   CommandShortcutEvent original, {
   required bool up,
   required bool extend,

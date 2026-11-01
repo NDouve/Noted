@@ -500,6 +500,9 @@ class CanvasController extends ChangeNotifier {
     if (_selectedId != null && _page.node(_selectedId!) == null) {
       _selectedId = null;
     }
+    if (_editingId != null && _page.node(_editingId!) == null) {
+      _editingId = null;
+    }
     onChanged?.call(_page);
     _notify();
   }
