@@ -49,6 +49,7 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
        mcpLog = _file(dataFolder, aiMcpLogFileName) {
     if (pollInterval != null) {
       trimMcpLog();
+      pruneRevokedCodes();
       _stamp = _stampOf();
       _poll = Timer.periodic(pollInterval, (_) => _check());
     }
@@ -88,6 +89,7 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
     final now = _stampOf();
     if (now == _stamp) return;
     trimMcpLog();
+    pruneRevokedCodes();
     _stamp = _stampOf();
     changed();
   }
@@ -323,6 +325,51 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
       } on Object {
         // Nothing to do.
       }
+    }
+  }
+
+  // The text of a log file for the prune check: '' if it is missing, null if
+  // it exists but can't be read (then nothing is pruned).
+  String? _rawLog(File f) {
+    try {
+      return f.readAsStringSync();
+    } on Object {
+      return FileSystemEntity.typeSync(f.path) == FileSystemEntityType.notFound ? '' : null;
+    }
+  }
+
+  /// Removes the records of revoked codes with no activity left in either log
+  /// (Noted's `ai-activity.json` and the MCP server's `ai-mcp-log.jsonl`),
+  /// so `ai-access.json` doesn't grow with every revoke. A code that isn't
+  /// revoked, or has any entry left, stays. The check is on the raw log text
+  /// (the code id appearing anywhere), so a line this build can't parse keeps
+  /// its code. A log that can't be read, or a store that can't be read or
+  /// written, prunes nothing. Returns the number removed.
+  int pruneRevokedCodes() {
+    try {
+      // Look first, so the file isn't rewritten when there is nothing to do.
+      final own0 = _rawLog(log.file);
+      final closed0 = _rawLog(mcpLog);
+      if (own0 == null || closed0 == null) return 0;
+      if (!store.codes().any((c) => c.isRevoked && !own0.contains(c.id) && !closed0.contains(c.id))) return 0;
+      var removed = 0;
+      store.update((d) {
+        final revoked = [
+          for (final c in d.codes)
+            if (c.isRevoked) c,
+        ];
+        if (revoked.isEmpty) return;
+        final own = _rawLog(log.file);
+        final closed = _rawLog(mcpLog);
+        if (own == null || closed == null) return;
+        for (final c in revoked) {
+          if (!own.contains(c.id) && !closed.contains(c.id) && d.remove(c.id)) removed++;
+        }
+      });
+      if (removed > 0) changed();
+      return removed;
+    } on Object {
+      return 0;
     }
   }
 
