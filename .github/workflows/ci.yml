@@ -24,15 +24,13 @@ env:
 jobs:
   checks:
     name: Analyze and test (${{ matrix.os }})
-    # Windows blocks a push. Linux runs too but doesn't block yet
-    # (continue-on-error), so Linux-only failures, such as per-process file
-    # locks, show up without stopping anyone.
+    # Both Windows and Linux block a push, so Linux-only failures, such as
+    # per-process file locks, stop it too.
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4

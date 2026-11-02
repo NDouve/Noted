@@ -104,6 +104,12 @@ void main() {
       expect(calc('=${'(' * 5000}1${')' * 5000}'), '#ERROR!');
       expect(calc('=${'-' * 5000}1'), '#ERROR!');
       expect(calc('=1${'^1' * 5000}'), '#ERROR!');
+      // The cap is explicit (100), so it behaves the same on every platform.
+      expect(calc('=${'(' * 100}1${')' * 100}'), '1');
+      expect(calc('=${'(' * 101}1${')' * 101}'), '#ERROR!');
+      expect(calc('=${'-' * 100}1'), '1');
+      expect(calc('=2${'^1' * 100}'), '2');
+      expect(calc('=2${'^1' * 101}'), '#ERROR!');
       // Long but flat is fine.
       expect(calc('=${List.filled(3000, '1').join('+')}'), '3000');
     });

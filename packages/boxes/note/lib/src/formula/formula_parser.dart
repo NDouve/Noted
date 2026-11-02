@@ -403,7 +403,13 @@ final class _Parser {
 
   Expr _power() {
     var left = _unary();
+    // A chain of ^ builds a left-leaning tree that is evaluated recursively,
+    // so its length is capped like any other nesting, not left to the stack.
+    var chain = 0;
     while (_isOp('^')) {
+      if (++chain > _maxDepth) {
+        throw FormulaParseException('nested too deeply', _peek.start);
+      }
       _take();
       final right = _nested(_unary);
       left = BinaryExpr(left.start, right.end, '^', left, right);

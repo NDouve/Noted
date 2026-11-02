@@ -125,6 +125,10 @@ class AiLinkServer {
   }
 
   Future<void> _serve(Socket socket) async {
+    // A write to a client that is already gone fails after the call returns
+    // (broken pipe, connection reset). That is a closed connection, not an
+    // error to report, so it must not reach the zone as an uncaught error.
+    unawaited(socket.done.then<void>((_) {}, onError: (Object _) {}));
     final done = Completer<void>();
     final buffer = BytesBuilder(copy: false);
     var length = 0;

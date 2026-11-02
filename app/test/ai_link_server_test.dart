@@ -38,6 +38,38 @@ void main() {
     await root.delete(recursive: true);
   });
 
+  // A server that refuses a client (drops it, or finds it gone) shows up on the
+  // client side as a reset or a broken pipe. The OS error code tells which: on
+  // Linux EPIPE is 32 and ECONNRESET 104, on macOS EPIPE is 32 and ECONNRESET
+  // 54, on Windows WSAECONNABORTED is 10053 and WSAECONNRESET 10054. Any other
+  // error is still a failure.
+  bool isRefusal(Object e) {
+    if (e is! SocketException) return false;
+    const codes = {32, 54, 104, 10053, 10054};
+    final code = e.osError?.errorCode;
+    if (code != null) return codes.contains(code);
+    final m = e.message.toLowerCase();
+    return m.contains('broken pipe') || m.contains('connection reset');
+  }
+
+  // Runs [body], letting a refusal that surfaces as an uncaught socket error
+  // (a write to a connection the other side already closed) pass.
+  Future<void> acceptingRefusal(Future<void> Function() body) {
+    final result = Completer<void>();
+    runZonedGuarded(() async {
+      try {
+        await body();
+        if (!result.isCompleted) result.complete();
+      } on Object catch (e, st) {
+        if (!result.isCompleted) result.completeError(e, st);
+      }
+    }, (e, st) {
+      if (isRefusal(e)) return;
+      if (!result.isCompleted) result.completeError(e, st);
+    });
+    return result.future;
+  }
+
   Future<AiLinkServer> start({
     AiLinkHandler? handler,
     Duration? readTimeout,
@@ -73,7 +105,14 @@ void main() {
     final c = await connect(s);
     final out = <String>[];
     final done = Completer<void>();
-    c.lines.listen(out.add, onDone: done.complete, onError: (Object _) => done.complete());
+    c.lines.listen(
+      out.add,
+      onDone: done.complete,
+      onError: (Object e) {
+        if (done.isCompleted) return;
+        isRefusal(e) ? done.complete() : done.completeError(e);
+      },
+    );
     if (send != null) c.socket.add(utf8.encode(sendRaw ? send : '$send\n'));
     await done.future.timeout(const Duration(seconds: 10));
     return out;
@@ -115,6 +154,20 @@ void main() {
     final socket = await Socket.connect(InternetAddress.loopbackIPv4, s.port!);
     socket.destroy();
     expect(s.port, isNonZero);
+  });
+
+  test('a client that closes before the greeting raises no uncaught error', () async {
+    final s = await start();
+    // Several, so the server's greeting write meets a closed connection at
+    // least once on any platform. An uncaught error fails the test itself.
+    for (var i = 0; i < 20; i++) {
+      final socket = await Socket.connect(InternetAddress.loopbackIPv4, s.port!);
+      socket.destroy();
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    // The server still answers.
+    final out = await exchange(s, request().encode());
+    expect(AiLinkResponse.decode(out[1])!.ok, isTrue);
   });
 
   test('the greeting with the nonce comes first, before any request', () async {
@@ -213,7 +266,8 @@ void main() {
     final b = await connect(s);
     await a.lines.first;
     await b.lines.first;
-    final out = await exchange(s, request().encode());
+    late List<String> out;
+    await acceptingRefusal(() async => out = await exchange(s, request().encode()));
     expect(out, isEmpty, reason: 'no greeting, no answer for the third');
     expect(seen, isEmpty);
     // A place frees up when one goes.
