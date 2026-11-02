@@ -500,7 +500,14 @@ void main() {
           isA<NotebookException>().having(
             (e) => e.message,
             'message',
-            allOf(contains('kept in both places'), contains('duplicate page id')),
+            allOf(
+              contains('kept in both places'),
+              contains('duplicate page id'),
+              contains('original file is in Work'),
+              contains('copy made by the move is in Pages'),
+              contains('subpage of'),
+              isNot(contains('after a restart')),
+            ),
           ),
         ),
       );
@@ -546,6 +553,55 @@ void main() {
       expect(nb.binderOfPage(a), s.path);
     });
 
+    test('a file that appears at the source while it is put back is never written over', () async {
+      await nb.createPage(); // another page is open
+      source.failDelete.add(b);
+      source.onFailedDelete = (_) => File('${folder.path}/$a.canvas').writeAsStringSync('appeared');
+
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(
+          isA<NotebookException>().having((e) => e.message, 'message', contains('kept in both places')),
+        ),
+      );
+      expect(read(folder, a), 'appeared');
+      expect(nb.binderOfPage(a), s.path);
+    });
+
+    test('a page that cannot be reopened after a failed move: the error says so and nothing else escapes', () async {
+      await nb.open(b);
+      source.failDelete.add(b);
+      // b's file becomes unreadable once its delete failed, so the page cannot be reopened.
+      source.onFailedDelete = (id) => source.failRead.add(id);
+
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('kept in both places'), contains('could not be reopened')),
+          ),
+        ),
+      );
+      source.failRead.clear();
+      expect(nb.currentId, isNull);
+    });
+
+    test('a page kept in both places keeps its place in the tree, in memory too', () async {
+      await nb.createPage(); // another page is open
+      source.failDelete.add(b);
+      source.failSaveIds.add(a); // a cannot be put back: it moves; b stays
+      source.onFailedDelete = (id) {
+        final f = File('${folder.path}/$id.canvas');
+        f.writeAsStringSync(f.readAsStringSync().replaceFirst('"title":"', '"title":"Edited elsewhere '));
+      };
+
+      await expectLater(nb.moveToLocation(a), throwsA(isA<NotebookException>()));
+      source.failSaveIds.clear();
+      expect(s.tree.roots.firstWhere((x) => x.id == b).parentId, a);
+    });
+
     test('the partial move of the open page: it is reopened where it now is, and its stranded subpage goes to the top level', () async {
       await nb.open(a);
       source.failDelete.add(b);
@@ -571,6 +627,43 @@ void main() {
       expect(s.tree.parentIdOf(b), isNull);
       expect(read(folder, b), isNot(contains('"parentId":"$a"')));
     });
+  });
+
+  test('a move from Pages that keeps a page in both places names where the original and the copy are', () async {
+    final src = FlakyStore(pages);
+    final nb = Notebook(
+      src,
+      buildModules(),
+      saveDelay: Duration.zero,
+      bindersFile: settings,
+      storeFactory: PageStore.new,
+    );
+    opened.add(nb);
+    await nb.load();
+    final s = await nb.addBinder(folder.path);
+    final a = await nb.createPage();
+    final b = await nb.createPage(parentId: a);
+    await nb.createPage(); // another page is open
+    await nb.flush();
+    src.failDelete.add(b);
+    src.onFailedDelete = (id) {
+      final f = File('${pages.path}/$id.canvas');
+      f.writeAsStringSync(f.readAsStringSync().replaceFirst('"title":"', '"title":"Edited elsewhere '));
+    };
+    await expectLater(
+      nb.moveToLocation(a, binderPath: s.path),
+      throwsA(
+        isA<NotebookException>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('original file is in Pages'),
+            contains('copy made by the move is in Work'),
+            contains('duplicate page id'),
+          ),
+        ),
+      ),
+    );
   });
 
   group('a standalone-folder move whose source deletion fails', () {
@@ -609,9 +702,9 @@ void main() {
       expect(File('${extra1.path}/$a.canvas').existsSync(), isFalse);
       expect(read(extra2, a), contains('"pageId":"$a"'));
       expect(read(extra2, a), isNot(equals(aBefore)));
-      expect(read(extra1, b), allOf(contains('"pageId":"$b"'), isNot(contains('"parentId":"$a"'))));
+      expect(read(extra1, b), allOf(contains('"pageId":"$b"'), contains('"parentId":"$a"')));
       expect(File('${extra2.path}/$b.canvas').existsSync(), isFalse);
-      expect(nb.tree.parentIdOf(b), isNull);
+      expect(nb.tree.parentIdOf(b), a); // standalone folders share one tree
     });
   });
 

@@ -1105,6 +1105,60 @@ void main() {
         expect(r.message, contains("don't retry an append"));
         expect(rec.existsSync() && rec.listSync().isNotEmpty, isTrue, reason: 'kept for recovery');
       });
+
+      test('the folder vanishing at the reread: the entry holds the loaded page as its base', () async {
+        final rec = Directory('${root.path}/rec');
+        final nb = make(recovery: rec);
+        await nb.load();
+        nb.current!.insertBox(box('bb', text: 'old'));
+        await nb.flush();
+        final code = await issue('bb');
+        final a = nb.currentId!;
+        final before = File('${pages.path}/$a.canvas').readAsStringSync();
+        await nb.createPage();
+        nb.syncHook = (p, _) async {
+          if (p == 'closed-reread' && pages.existsSync()) pages.deleteSync(recursive: true);
+        };
+        await nb.handleAiLink(req('bb', code, content: 'new'));
+        final entry = (await nb.pendingRecovery()).entries.single;
+        expect(entry.pageId, a);
+        expect(entry.baseText, before);
+      });
+
+      test('the page forgotten with its vanishing folder at the reread: recovery, not noBox', () async {
+        final rec = Directory('${root.path}/rec');
+        final nb = make(recovery: rec);
+        await nb.load();
+        nb.current!.insertBox(box('bb', text: 'old'));
+        await nb.flush();
+        final code = await issue('bb');
+        final a = nb.currentId!;
+        await nb.createPage();
+        nb.syncHook = (p, _) async {
+          if (p == 'closed-reread' && pages.existsSync()) {
+            pages.deleteSync(recursive: true);
+            nb.debugRelocate(a, null); // what _folderGone does to the page
+          }
+        };
+        final r = await nb.handleAiLink(req('bb', code, content: 'new'));
+        expect((r as AiLinkError).code, AiLinkCode.saveFailed);
+        expect((await nb.pendingRecovery()).entries.single.pageId, a);
+      });
+
+      test('the page moved while the write waits: refused as noBox, the old file untouched', () async {
+        final other = await Directory('${root.path}/Other').create();
+        late String before;
+        t.nb.syncHook = (p, _) async {
+          if (p == 'closed-before-write') {
+            before = file.readAsStringSync();
+            t.nb.debugRelocate(t.a, other.path);
+          }
+        };
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect((r as AiLinkError).code, AiLinkCode.noBox);
+        expect(file.readAsStringSync(), before);
+        expect(textOf(disk(), 'ba'), 'old');
+      });
     });
 
     test('one page failing to save does not fail a write to another', () async {

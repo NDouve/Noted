@@ -213,9 +213,12 @@ void main() {
     expect(nb.current!.readOnly, isFalse);
   });
 
-  test('the open page whose folder returns with an unreadable file keeps merging what lands later', () async {
+  for (final saved in [false, true]) {
+  test('the open page whose folder returns with an unreadable file keeps merging what lands later${saved ? ' (no recovery entry)' : ''}', () async {
     final (nb, x, _) = await pendingEdit();
+    if (saved) await nb.flush();
     await vanish(nb);
+    if (saved) expect(recFiles(), isEmpty);
     final original = readPage(pageFile(away, x).readAsStringSync());
     pageFile(away, x).deleteSync();
     await restore();
@@ -225,7 +228,7 @@ void main() {
     await nb.checkFolders();
     expect(pageFile(extra, x).readAsStringSync(), newer, reason: 'never written over');
     expect(nb.current!.readOnly, isTrue);
-    expect(nb.readOnlyReason, isNotNull);
+    expect(nb.readOnlyReason, contains('not a page this version can read'));
 
     // A readable version lands, with a box the other device added.
     final theirBox = BoxRecord.create(
@@ -248,6 +251,7 @@ void main() {
     expect(disk.node('theirbox'), isNotNull, reason: 'their box must survive the next save');
     expect(disk.nodes.length, 3); // the pending box, theirs, the new one
   });
+  }
 
   test('a recovery that fails the check keeps the entry', () async {
     final nb = make();
