@@ -69,6 +69,11 @@ class NotebookException implements Exception {
   String toString() => message;
 }
 
+// A conflict copy or its original changed while it was being merged.
+class _SourceChanged implements Exception {
+  const _SourceChanged();
+}
+
 /// A save failed because the page's folder isn't there.
 class FolderUnavailableException extends NotebookException {
   const FolderUnavailableException() : super('That folder was not found.');
@@ -422,6 +427,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // page is read-only now.
   String? _orphanLoc;
   String? _readOnlyReason;
+  // The open page whose file on disk was replaced by something this app can't
+  // read (damaged, a newer format, or a read error): its saves are blocked
+  // and it is read-only, until a readable version appears on disk.
+  String? _diskBlockId;
+  String? _diskBlockReason;
+
+  /// Test seam: called at named points of a conflict-copy merge (`copy-merged`
+  /// just before the copy is revalidated for deletion, `original-read` just
+  /// before the original is revalidated for replacing) so a test can make the
+  /// sync writer change the file at that exact moment.
+  @visibleForTesting
+  Future<void> Function(String point, String path)? syncHook;
 
   /// Called with a page and its location (the key search uses to group pages)
   /// whenever the page's content is written by the app or read after a change
@@ -1058,6 +1075,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // writable again when it can.
   void _syncReadOnly() {
     final c = _current;
+    if (_diskBlockId != null && c?.page.id != _diskBlockId) {
+      _diskBlockId = null; // another page is open now; the block was this page's
+      _diskBlockReason = null;
+    }
     String? why;
     if (c != null) {
       final loc = _loc[c.page.id];
@@ -1068,6 +1089,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             ? "This binder's file can't be read, so this page is read-only."
             : "This page's folder isn't available, so it is read-only.";
       }
+      if (why == null && _diskBlockId == c.page.id) why = _diskBlockReason;
       c.readOnly = why != null;
     }
     if (why != _readOnlyReason) {
@@ -2630,7 +2652,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (_current?.page.id == page.id && _known.containsKey(_key(path))) {
         // Merge what someone else wrote since the last look first, so this
         // save doesn't overwrite it.
-        await _checkFile(path);
+        // A replacement this app can't read is never overwritten: the edits
+        // are in recovery and the page is read-only until a readable version
+        // lands (0051).
+        if (await _checkFile(path)) {
+          _countSaveFailure(page.id); // it did not land, so a caller that needs it must know
+          return;
+        }
         final c = _current;
         if (c != null && c.page.id == page.id) toSave = c.page;
       }
@@ -3111,51 +3139,106 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  Future<void> _checkFile(String path) async {
-    if (!path.endsWith(PageStore.extension)) return;
+  /// Returns true if [path] is the open page's file and it can't be read as a
+  /// page (damaged, a newer format, or a read error that isn't "missing"): the
+  /// open page is then read-only and must not be saved over it.
+  Future<bool> _checkFile(String path) async {
+    if (!path.endsWith(PageStore.extension)) return false;
     final loc = _locationOf(path);
-    if (loc == null) return;
+    if (loc == null) return false;
     final key = _key(path);
     final file = File(path);
+    final openId = _current?.page.id;
+    final isOpen = openId != null && _pathId[key] == openId && _loc[openId] == loc;
     String? text;
     var time = DateTime.now().millisecondsSinceEpoch;
     try {
       text = await file.readAsString();
       time = (await file.lastModified()).millisecondsSinceEpoch;
-    } on FileSystemException {
-      text = null;
+    } on FileSystemException catch (e) {
+      if (await FileSystemEntity.type(path) == FileSystemEntityType.notFound) {
+        text = null;
+      } else {
+        // It is there but can't be read now: not the same as missing.
+        if (_disposed) return false;
+        return isOpen && await _blockOpen(loc, key, 'could not be read: ${e.message}');
+      }
     } on FormatException {
-      if (_disposed) return;
+      if (_disposed) return false;
+      if (isOpen) return _blockOpen(loc, key, 'not valid UTF-8 text');
       _knownUnreadable(loc, key, path, 'not valid UTF-8 text');
-      return;
+      return false;
     }
-    if (_disposed) return;
+    if (_disposed) return false;
+    final wasBlocked = isOpen && _diskBlockId == openId;
     if (text == null) {
       // The whole folder going away is not the page file being deleted:
       // checkFolders deals with that.
-      if (_binders.containsKey(loc) && !await Directory(File(path).parent.path).exists()) return;
+      if (_binders.containsKey(loc) && !await Directory(File(path).parent.path).exists()) {
+        return false;
+      }
+      if (wasBlocked) {
+        // Nothing left to protect: the next save writes the page again.
+        _clearDiskBlock();
+        _pageChanged(_current!.page);
+      }
       _fileGone(loc, key, path);
-      return;
+      return false;
     }
     if (conflictCopyOriginalNames(path.split(RegExp(r'[\\/]')).last).isNotEmpty &&
         !_isLocked(loc) &&
         await _tryConflictCopy(loc, key, path, text, time)) {
-      return;
+      return false;
     }
-    if (_known[key] == text) return;
+    if (_known[key] == text && !wasBlocked) return false;
+    final previous = _known[key];
     _known[key] = text;
     final NotedPage page;
     try {
       page = readPage(text);
     } on PageFormatException catch (e) {
+      if (isOpen) {
+        // Keep the last readable text as the merge base for recovery.
+        if (previous == null) {
+          _known.remove(key);
+        } else {
+          _known[key] = previous;
+        }
+        return _blockOpen(loc, key, e.message);
+      }
       _knownUnreadable(loc, key, path, e.message);
-      return;
+      return false;
     }
+    if (wasBlocked) _clearDiskBlock(); // readable again: merge it as usual
     if (_current?.page.id == page.id && _loc[page.id] == loc) {
       _mergeOpen(page, text, time);
     } else {
       await _applyClosed(page, loc, key, path);
     }
+    return false;
+  }
+
+  // The open page's file can't be read: keep what is on disk, put the edits
+  // in recovery, and make the page read-only with the reason shown.
+  Future<bool> _blockOpen(String loc, String key, String why) async {
+    final c = _current;
+    if (c == null || _disposed) return false;
+    if (writePage(c.page) != _known[key]) {
+      await _keepForRecovery(loc, _storeOf(loc), c.page);
+    }
+    if (_disposed) return true;
+    _diskBlockId = c.page.id;
+    _diskBlockReason =
+        "This page's file was replaced by a version that can't be read ($why), "
+        'so the page is read-only and is not saved. Your edits are kept in recovery.';
+    _syncReadOnly();
+    return true;
+  }
+
+  void _clearDiskBlock() {
+    _diskBlockId = null;
+    _diskBlockReason = null;
+    _syncReadOnly();
   }
 
   /// Merges the conflict copies a scan found, and forgets them.
@@ -3179,16 +3262,37 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     String text,
     int time,
   ) async {
-    final NotedPage copy;
+    NotedPage copy;
     try {
       copy = readPage(text);
     } on PageFormatException {
       return false;
     }
-    final originalPath = await PageStore.findConflictOriginal(path, copy);
+    var originalPath = await PageStore.findConflictOriginal(path, copy);
     if (originalPath == null) return false;
     try {
-      await _mergeConflictCopy(loc, path, originalPath, copy, time);
+      // The sync client may change the copy or the original while this runs.
+      // The copy is deleted only if it still holds what was merged, and the
+      // original is replaced only if it still holds what was read; otherwise
+      // the merge is done again from what is there now.
+      for (var attempt = 0; ; attempt++) {
+        try {
+          await _mergeConflictCopy(loc, path, originalPath!, copy, time, text);
+          break;
+        } on _SourceChanged {
+          if (attempt >= 4) throw const FormatException('the page files keep changing');
+          try {
+            text = await File(path).readAsString();
+            time = (await File(path).lastModified()).millisecondsSinceEpoch;
+          } on FileSystemException {
+            if (await FileSystemEntity.type(path) != FileSystemEntityType.notFound) rethrow;
+            break; // the copy is gone: nothing left to merge or delete
+          }
+          copy = readPage(text);
+          originalPath = await PageStore.findConflictOriginal(path, copy);
+          if (originalPath == null) throw const FormatException('its page file is gone');
+        }
+      }
       _known.remove(key);
       _dropUnreadable(loc, path);
     } on Object catch (e) {
@@ -3199,12 +3303,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return true;
   }
 
+  // [consumed] is the text of the copy that [copy] was read from.
   Future<void> _mergeConflictCopy(
     String loc,
     String copyPath,
     String originalPath,
     NotedPage copy,
     int time,
+    String consumed,
   ) async {
     final id = copy.id;
     final st = _storeOf(loc);
@@ -3227,6 +3333,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (out != text) {
         // Make the store write to the file the original was read from.
         if (_key(st.pathFor(id)) != _key(originalPath)) await st.scan();
+        // Replace the original only if it still holds what the merge read.
+        await syncHook?.call('original-read', originalPath);
+        if (await File(originalPath).readAsString() != text) throw const _SourceChanged();
         await _write(loc, merged);
         final back = await st.readText(id);
         if (back != out) throw const FormatException('the saved page differs from what was written');
@@ -3239,6 +3348,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     if (failure != null) throw FormatException(failure);
+    // Delete the copy only if it is still exactly what was merged.
+    await syncHook?.call('copy-merged', copyPath);
+    final String now;
+    try {
+      now = await File(copyPath).readAsString();
+    } on FileSystemException {
+      if (await FileSystemEntity.type(copyPath) == FileSystemEntityType.notFound) return;
+      rethrow;
+    } on FormatException {
+      throw const _SourceChanged();
+    }
+    if (now != consumed) throw const _SourceChanged();
     await File(copyPath).delete();
   }
 
