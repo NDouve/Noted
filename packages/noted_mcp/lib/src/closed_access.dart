@@ -49,7 +49,8 @@ String _newRev() {
 ///
 /// While Noted runs none of this is used: the app decides over the link.
 final class ClosedAccess {
-  ClosedAccess(this.dataDir, {this.app, DateTime Function()? clock, this.beforeReplace}) : _clock = clock ?? DateTime.now;
+  ClosedAccess(this.dataDir, {this.app, DateTime Function()? clock, this.beforeReplace, this.beforeRead})
+    : _clock = clock ?? DateTime.now;
 
   final Directory dataDir;
 
@@ -62,6 +63,10 @@ final class ClosedAccess {
   /// Called before each try to replace the page file, with the try's number
   /// (0 or 1). Tests use it to change the file at the worst moment.
   final Future<void> Function(int attempt)? beforeReplace;
+
+  /// Called before each try reads the page file's bytes, after the library was
+  /// loaded. Tests use it to change the page between the two.
+  final Future<void> Function(int attempt)? beforeRead;
 
   static AiLinkError _error(AiLinkCode c) => AiLinkError(c);
 
@@ -307,11 +312,27 @@ final class ClosedAccess {
     };
     final List<int> bytes;
     try {
+      if (beforeRead != null) await beforeRead!(attempt);
       bytes = await File(page.path!).readAsBytes();
     } on Object {
       return done(AiLinkCode.noBox, page);
     }
-    final next = _spliced(bytes, boxId, code.id, aiMode, content);
+    // The page's own settings are checked again on these exact bytes, which
+    // are also what the replacement guard expects; its parents are from the
+    // library load.
+    final next = _spliced(
+      bytes,
+      boxId,
+      code.id,
+      aiMode,
+      content,
+      page.id,
+      page.page.meta.parentId,
+      chain.skip(1).toList(),
+      page.location.binder,
+    );
+    // The page moved under another parent since the library load: look again.
+    if (next == null) return attempt == 0 ? null : done(AiLinkCode.busy, page);
     if (next is AiLinkCode) return done(next, page);
     if (beforeReplace != null) await beforeReplace!(attempt);
     switch (await writer.replacePage(page.path!, expected: bytes, text: next as List<int>)) {
@@ -345,8 +366,19 @@ final class ClosedAccess {
   }
 
   // The new bytes of the page file [bytes] with [content] written into box
-  // [boxId], or an [AiLinkCode] to refuse with. Every other byte stays.
-  Object _spliced(List<int> bytes, String boxId, String codeId, AiWriteMode mode, String content) {
+  // [boxId], or an [AiLinkCode] to refuse with, or null if the page's parent
+  // is not the one [parents] was built for. Every other byte stays.
+  Object? _spliced(
+    List<int> bytes,
+    String boxId,
+    String codeId,
+    AiWriteMode mode,
+    String content,
+    String pageId,
+    String? parentId,
+    List<PageMeta> parents,
+    Binder? binder,
+  ) {
     final String text;
     try {
       final decoded = utf8.decode(bytes);
@@ -362,9 +394,14 @@ final class ClosedAccess {
     } on Object {
       return AiLinkCode.saveFailed;
     }
+    if (page.meta.id != pageId) return AiLinkCode.noBox;
+    if (page.meta.parentId != parentId) return null;
     final box = page.node(boxId);
     if (box is! BoxRecord) return AiLinkCode.noBox;
     if (box.typeId != aiBoxTypeId || isEncrypted(box)) return AiLinkCode.notWritable;
+    if (!effectiveBoxTypeAllowed(box.typeId, [page.meta, ...parents], binder: binder).allowed) {
+      return AiLinkCode.notWritable;
+    }
     if (box.isConflicted) return AiLinkCode.conflict;
     final Map<String, Object?> json;
     try {
