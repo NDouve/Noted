@@ -13,8 +13,15 @@ A run is one batch of work on Noted, led by the build team in `.claude/agents/` 
    - push, and confirm CI is green;
    - rebuild the release exe and zip;
    - curate `docs/decisions.md`;
-   - the independent Codex review of the run's changes (and any area audit `next.md` names), with `app/scripts/codex-review.ps1`. Reports go to `docs/reviews/`, unchanged.
+   - the independent Codex review of the run's changes (and any area audit `next.md` names), with `app/scripts/codex-review.ps1`. Reports go to `docs/reviews/`, unchanged;
+   - cleanup: stop the run's background agents and shells, then `app/scripts/cleanup-run.ps1` ends leftover Dart and `flutter_tester` processes and removes leftover worktree folders. Claude Code hooks in `.claude/settings.json`, once that file is in the repository, also run it whenever a subagent or the session stops.
 6. **Report.** The PM writes `docs/runs/YYYY-MM-DD-NN.md` (`NN` counts that day's runs from 01) and **deletes `next.md` in the same commit**, then pushes. An empty queue means the run is done.
+
+## Review cadence
+
+- **Every run:** the Codex run-diff review runs at the end, automatically.
+- **Area audits:** every `next.md` names one, chosen by the maintainer's PM chat. The rotation is `area-data-integrity` → `area-invariants` → `area-spec-drift` → `area-dead-code`, with `area-data-integrity` again whenever a run changes storage, sync, recovery or AI writes.
+- **Triage:** after each run, the maintainer's PM chat reads the new reports, sets each finding to accepted or rejected with a reason, and queues the accepted ones in the next `next.md` by report and R-number. Rejected findings stay rejected.
 
 ## Report format
 
