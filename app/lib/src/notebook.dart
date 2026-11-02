@@ -720,12 +720,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _base = page;
       _metas[id] = page.meta;
       _setConflict(id, hasConflicts(page));
-      _current = CanvasController(
+      // A change reported by a controller that is no longer the open one (a
+      // late callback after it was closed) is ignored: it would queue an
+      // unchecked save of a closed page.
+      late final CanvasController controller;
+      controller = CanvasController(
         page,
         modules,
-        onChanged: _pageChanged,
+        onChanged: (p) {
+          if (identical(_current, controller)) _pageChanged(p);
+        },
         deviceName: deviceName,
       );
+      _current = controller;
       _attachments = _makeAttachments(id, _loc[id] ?? _standalone);
       _syncReadOnly();
       _rebuildTree();
@@ -1529,44 +1536,83 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           removed.add(i);
         }
       } on Object catch (e) {
-        // Put back what was already deleted, so no page is left twice. A
-        // verified copy is removed only for a page whose source is positively
-        // intact (the file exists and holds what was copied, read back); a
-        // page whose source can't be established keeps its copy.
+        // Classify each page by what is at its source now. The source file is
+        // never written over: a page we deleted is put back only if nothing
+        // exists at its path.
+        //  intact: the source holds exactly what was copied; the copy goes.
+        //  gone:   no source and none can be put back; the copy is the page.
+        //  both:   a source exists but can't be verified or differs (an
+        //          external edit, another line ending, a locked file); both
+        //          stay and nothing about the page changes.
         final intact = <int>[];
-        final lost = <int>[];
+        final gone = <int>[];
+        final both = <int>[];
+        Future<bool> absent(int i) async =>
+            await FileSystemEntity.type(fromStore.pathFor(ids[i])) == FileSystemEntityType.notFound;
         for (var i = 0; i < ids.length; i++) {
           if (await _sourceIntact(fromStore, originals[i])) {
             intact.add(i);
             continue;
           }
-          try {
-            await _write(fromLoc, originals[i]);
-          } on Object catch (e2) {
-            debugPrint('Restoring page ${ids[i]} failed: $e2');
+          if (removed.contains(i) && await absent(i)) {
+            try {
+              await _write(fromLoc, originals[i]);
+            } on Object catch (e2) {
+              debugPrint('Restoring page ${ids[i]} failed: $e2');
+            }
+            if (await _sourceIntact(fromStore, originals[i])) {
+              intact.add(i);
+              continue;
+            }
           }
-          if (await _sourceIntact(fromStore, originals[i])) {
-            intact.add(i);
-          } else {
-            lost.add(i);
-          }
+          (await absent(i) ? gone : both).add(i);
         }
+        // Remove the copy of an intact page: the page file and its attachments
+        // each get their own try, and a failure keeps that page in both places.
+        final copyLeft = <int, String>{};
         for (final i in intact) {
           try {
             await _delete(toLoc, ids[i]);
-            await _removeDir(_assetsDir(toLoc, ids[i]));
           } on Object catch (e2) {
             debugPrint('Removing copy of page ${ids[i]} failed: $e2');
+            copyLeft[i] = 'the page file';
+          }
+          final dir = _assetsDir(toLoc, ids[i]);
+          try {
+            if (await dir.exists()) await dir.delete(recursive: true);
+          } on Object catch (e2) {
+            debugPrint('Removing the attachments of page ${ids[i]} at the target failed: $e2');
+            copyLeft[i] = copyLeft.containsKey(i) ? 'the page file and its attachments' : 'its attachments';
           }
         }
-        if (lost.isEmpty) {
+        if (gone.isEmpty && both.isEmpty && copyLeft.isEmpty) {
           throw NotebookException('Could not remove the old files, so nothing was moved: $e');
         }
-        // A partial move: the pages that could not be put back now live at
-        // the target, so the tree says so.
-        for (final i in lost) {
+        // Only a page with no source moves. A page whose parent ended up in
+        // the other location goes to the top level of its own (0059).
+        final movedIdx = gone.toSet();
+        final idIndex = {for (var i = 0; i < ids.length; i++) ids[i]: i};
+        for (final i in movedIdx) {
           _metas[ids[i]] = moved[i].meta;
           _loc[ids[i]] = toLoc;
+        }
+        for (var i = 0; i < ids.length; i++) {
+          final parent = moved[i].meta.parentId;
+          final pi = parent == null ? null : idIndex[parent];
+          if (pi == null || movedIdx.contains(i) == movedIdx.contains(pi)) continue;
+          final loc = movedIdx.contains(i) ? toLoc : fromLoc;
+          final fixed = moved[i].withMeta(
+            moved[i].meta.withPlacement(parentId: null, order: _treeOf(loc).nextOrder(null)),
+          );
+          _metas[ids[i]] = fixed.meta;
+          // Saved too, unless the file is one whose content wasn't verified.
+          if (movedIdx.contains(i) || intact.contains(i)) {
+            try {
+              await _write(loc, fixed);
+            } on Object catch (e2) {
+              debugPrint('Moving page ${ids[i]} to the top level failed: $e2');
+            }
+          }
         }
         _touch(fromLoc);
         _touch(toLoc);
@@ -1576,18 +1622,38 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           return '"${t.isEmpty ? 'Untitled' : t}"';
         }
 
+        String names(Iterable<int> l) => l.map(name).join(', ');
         final target = _binders[toLoc]?.title ?? 'Pages';
-        final stayed = [for (final i in intact) name(i)];
-        final stayedText = stayed.isEmpty
-            ? ''
-            : ' ${stayed.join(', ')} stayed where '
-                  '${stayed.length == 1 ? 'it was' : 'they were'}.';
-        throw NotebookException(
-          'The move was only partly done: ${lost.map(name).join(', ')} '
-          '${lost.length == 1 ? 'is' : 'are'} now in $target, because the old '
-          '${lost.length == 1 ? 'file' : 'files'} could not be put back.'
-          '$stayedText ($e)',
-        );
+        final parts = <String>[];
+        if (gone.isNotEmpty) {
+          parts.add(
+            '${names(gone)} ${gone.length == 1 ? 'is' : 'are'} now in $target, because the old '
+            '${gone.length == 1 ? 'file' : 'files'} could not be put back.',
+          );
+        }
+        if (both.isNotEmpty) {
+          parts.add(
+            '${names(both)} ${both.length == 1 ? 'is' : 'are'} kept in both places: the old '
+            '${both.length == 1 ? 'file is' : 'files are'} still there but could not be '
+            'checked or ${both.length == 1 ? 'has' : 'have'} changed, so nothing was deleted. '
+            'It shows where it was; after a restart the copy in $target is listed as an '
+            'unreadable page (duplicate page id), and one of the two can be deleted.',
+          );
+        }
+        if (copyLeft.isNotEmpty) {
+          parts.add(
+            [
+              for (final en in copyLeft.entries)
+                'The copy of ${name(en.key)} in $target (${en.value}) could not be removed, so it is '
+                    'kept in both places (the copy is listed as a duplicate page id).',
+            ].join(' '),
+          );
+        }
+        final stayed = intact.where((i) => !copyLeft.containsKey(i)).toList();
+        if (stayed.isNotEmpty) {
+          parts.add('${names(stayed)} stayed where ${stayed.length == 1 ? 'it was' : 'they were'}.');
+        }
+        throw NotebookException('The move was only partly done: ${parts.join(' ')} ($e)');
       }
       for (final id in ids) {
         await _removeDir(_assetsDir(fromLoc, id));
@@ -2694,8 +2760,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on _SaveRefused catch (e) {
       return e.response;
     }
+    final metaChanged = saved.meta != page.meta;
     _metas[pageId] = saved.meta;
     _touch(loc);
+    if (metaChanged) _rebuildTree();
     return AiLinkResponse.written(box: req.box);
   }
 
@@ -2716,13 +2784,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (await FileSystemEntity.type(path) == FileSystemEntityType.notFound) {
         return (text: null, page: null, time: 0);
       }
-      throw _SaveRefused(unreadable('could not be read: ${e.message}'));
+      throw _SaveRefused(unreadable(e.message));
     } on FormatException {
       throw _SaveRefused(unreadable('not valid UTF-8 text'));
     }
     try {
       final page = readPage(text);
-      if (page.id != id) throw _SaveRefused(unreadable('it holds another page'));
+      if (page.id != id) throw _SaveRefused(unreadable('it holds a different page'));
       return (text: text, page: page, time: time);
     } on PageFormatException catch (e) {
       throw _SaveRefused(unreadable(e.message));
@@ -2746,22 +2814,40 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final id = base.id;
     final path = st.pathFor(id);
     final baseText = writePage(base);
+    // The file is gone but its folder is there, or the page isn't in this
+    // place any more: it was deleted or moved meanwhile, and is not recreated.
+    // (A vanished folder is different: the save goes to recovery.)
+    Future<void> assertStillHere(String? text) async {
+      if (_loc[id] != loc) throw _SaveRefused(AiLinkResponse.error(AiLinkCode.noBox));
+      if (text == null && await st.directory.exists()) {
+        throw _SaveRefused(AiLinkResponse.error(AiLinkCode.noBox));
+      }
+    }
+
     for (var attempt = 0; attempt < 5; attempt++) {
       await syncHook?.call('closed-reread', path);
       final seen = await _readClosedPage(id, path);
+      await assertStillHere(seen.text);
       var toSave = mine;
+      var recoveryBase = base;
       final theirs = seen.page;
       if (theirs != null && writePage(theirs) != baseText) {
         toSave = mergePage(base, mine, theirs, modules.codecs, theirsTime: seen.time).page;
-        final refused = check(toSave);
-        if (refused != null) throw _SaveRefused(AiLinkResponse.error(refused));
+        recoveryBase = theirs;
       }
       await syncHook?.call('closed-before-write', path);
-      if ((await _readClosedPage(id, path)).text != seen.text) continue;
+      final again = await _readClosedPage(id, path);
+      if (again.text != seen.text) continue;
+      await assertStillHere(again.text);
+      // The rules are run on what is about to be written, every round, with
+      // nothing awaited between this and the write.
+      final refused = check(toSave);
+      if (refused != null) throw _SaveRefused(AiLinkResponse.error(refused));
+      if (_loc[id] != loc) throw _SaveRefused(AiLinkResponse.error(AiLinkCode.noBox));
       try {
         await _write(loc, toSave);
       } on FolderUnavailableException {
-        await _keepForRecovery(loc, st, toSave);
+        await _keepForRecovery(loc, st, toSave, base: recoveryBase);
         throw _SaveRefused(AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage));
       } on NotebookException {
         throw _SaveRefused(AiLinkResponse.error(AiLinkCode.locked));
@@ -2769,14 +2855,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (await st.directory.exists()) {
           throw _SaveRefused(AiLinkResponse.error(AiLinkCode.saveFailed));
         }
-        await _keepForRecovery(loc, st, toSave);
+        await _keepForRecovery(loc, st, toSave, base: recoveryBase);
         throw _SaveRefused(AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage));
       }
       return toSave;
     }
     throw _SaveRefused(
       AiLinkResponse.error(
-        AiLinkCode.saveFailed,
+        AiLinkCode.busy,
         'The page file keeps changing, so nothing was written to it.',
       ),
     );
@@ -2873,17 +2959,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // A save couldn't land because the folder is gone: keep exactly what the
   // save would have written, so the edit survives quitting (0066).
-  Future<void> _keepForRecovery(String loc, PageStore st, NotedPage page) async {
+  Future<void> _keepForRecovery(
+    String loc,
+    PageStore st,
+    NotedPage page, {
+    NotedPage? base,
+  }) async {
     final rec = _recovery;
     if (rec == null) return;
-    var base = _known[_key(st.pathFor(page.id))];
+    var baseText = base == null ? _known[_key(st.pathFor(page.id))] : writePage(base);
     final b = _base;
-    if (base == null && b != null && _current?.page.id == page.id) base = writePage(b);
+    if (baseText == null && b != null && _current?.page.id == page.id) baseText = writePage(b);
     try {
       await rec.write(
         folder: _normalizePath(st.directory.path),
         page: page,
-        baseText: base,
+        baseText: baseText,
         time: DateTime.now(),
       );
     } on Object catch (e) {
@@ -2953,6 +3044,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // damaged) is not that: it is never written over, and the entry stays.
         if (await FileSystemEntity.type(st.pathFor(id)) != FileSystemEntityType.notFound) {
           debugPrint('Recovery of page $id kept: its file is there but cannot be read as a page.');
+          // The page is back in its place but blocked, like any open page
+          // whose file can't be read: read-only until a readable version
+          // arrives, which is merged into it (_mergeOpen), never written over.
+          final key = _key(st.pathFor(id));
+          _loc[id] = loc;
+          _metas[id] = c.page.meta;
+          _orphanLoc = null;
+          _rebuildTree();
+          await _blockOpen(loc, key, 'it is not a page this version can read', id);
           return;
         }
         _loc[id] = loc;
@@ -3394,6 +3494,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       _knownUnreadable(loc, key, path, e.message);
       return false;
+    }
+    if (isOpen && page.id != openId) {
+      // A valid page, but not this one: saving over it would destroy it.
+      if (previous == null) {
+        _known.remove(key);
+      } else {
+        _known[key] = previous;
+      }
+      return _blockOpen(loc, key, 'it holds a different page', openId);
     }
     if (wasBlocked) {
       _clearDiskBlock(); // readable again: merge it as usual

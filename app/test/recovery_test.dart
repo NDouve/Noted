@@ -213,6 +213,42 @@ void main() {
     expect(nb.current!.readOnly, isFalse);
   });
 
+  test('the open page whose folder returns with an unreadable file keeps merging what lands later', () async {
+    final (nb, x, _) = await pendingEdit();
+    await vanish(nb);
+    final original = readPage(pageFile(away, x).readAsStringSync());
+    pageFile(away, x).deleteSync();
+    await restore();
+    // A newer-format file is in its place when the folder comes back.
+    final newer = writePage(original).replaceFirst(RegExp(r'"format"\s*:\s*1'), '"format":99');
+    pageFile(extra, x).writeAsStringSync(newer);
+    await nb.checkFolders();
+    expect(pageFile(extra, x).readAsStringSync(), newer, reason: 'never written over');
+    expect(nb.current!.readOnly, isTrue);
+    expect(nb.readOnlyReason, isNotNull);
+
+    // A readable version lands, with a box the other device added.
+    final theirBox = BoxRecord.create(
+      id: 'theirbox',
+      typeId: 'test.other',
+      dataVersion: 1,
+      bounds: const Bounds(300, 300, 100, 40),
+      data: RawJson.encode({'n': 1}),
+      snapshotText: 'theirs',
+      rev: 'r-theirs',
+    );
+    pageFile(extra, x).writeAsStringSync(writePage(original.insertNode(theirBox)));
+    await nb.checkFolders();
+    expect(nb.current!.readOnly, isFalse);
+    expect(nb.current!.page.node('theirbox'), isNotNull);
+
+    nb.current!.createBoxAt(const Bounds(80, 80, 0, 0));
+    await nb.flush();
+    final disk = readPage(pageFile(extra, x).readAsStringSync());
+    expect(disk.node('theirbox'), isNotNull, reason: 'their box must survive the next save');
+    expect(disk.nodes.length, 3); // the pending box, theirs, the new one
+  });
+
   test('a recovery that fails the check keeps the entry', () async {
     final nb = make();
     await nb.load();

@@ -1003,9 +1003,107 @@ void main() {
           file.writeAsStringSync(last);
         }, times: 100);
         final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
-        expect((r as AiLinkError).code, AiLinkCode.saveFailed);
+        expect((r as AiLinkError).code, AiLinkCode.busy);
+        expect(r.message, contains('keeps changing'));
         expect(file.readAsStringSync(), last);
         expect(textOf(disk(), 'ba'), 'old');
+      });
+
+      // Runs [change] once when the write reaches [point] (it may await).
+      void injectAsync(String point, Future<void> Function() change) {
+        var done = false;
+        t.nb.syncHook = (p, _) async {
+          if (p == point && !done) {
+            done = true;
+            await change();
+          }
+        };
+      }
+
+      test('the code revoked just before the write, the file unchanged: refused, nothing written', () async {
+        injectAsync('closed-before-write', () => service.revoke(stored(t.code).id));
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect(r.ok, isFalse);
+        expect(textOf(disk(), 'ba'), 'old');
+      });
+
+      test('the Writer permission lowered just before the write, the file unchanged: refused', () async {
+        injectAsync(
+          'closed-before-write',
+          () => service.setWriterPermission('ba', AiWriterPermission.append),
+        );
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect((r as AiLinkError).code, AiLinkCode.notPermitted);
+        expect(textOf(disk(), 'ba'), 'old');
+      });
+
+      test('the page deleted while the write waits: refused, the file is not recreated', () async {
+        injectAsync('closed-reread', () async {
+          await t.nb.delete(t.a);
+        });
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect((r as AiLinkError).code, AiLinkCode.noBox);
+        expect(file.existsSync(), isFalse);
+      });
+
+      test('the page deleted just before the write: refused, the file is not recreated', () async {
+        injectAsync('closed-before-write', () async {
+          await t.nb.delete(t.a);
+        });
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect((r as AiLinkError).code, AiLinkCode.noBox);
+        expect(file.existsSync(), isFalse);
+      });
+
+      test('the box type disallowed by the other writer: refused, their file stays', () async {
+        late String theirs;
+        inject('closed-reread', (_) {
+          theirs = writePage(disk().withMeta(disk().meta.withBoxType('test.ai', false)));
+          file.writeAsStringSync(theirs);
+        });
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect((r as AiLinkError).code, AiLinkCode.notWritable);
+        expect(file.readAsStringSync(), theirs);
+      });
+
+      test('a file holding another page id: refused, the file is untouched', () async {
+        late String other;
+        inject('closed-reread', (_) {
+          other = file.readAsStringSync().replaceAll(RegExp('"pageId"\\s*:\\s*"${t.a}"'), '"pageId":"other"');
+          file.writeAsStringSync(other);
+        });
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect((r as AiLinkError).code, AiLinkCode.saveFailed);
+        expect(r.message, allOf(contains("can't be read"), contains('a different page')));
+        expect(file.readAsStringSync(), other);
+      });
+
+      test('a newer format appearing at the reread: refused, the file is untouched', () async {
+        late String newer;
+        inject('closed-reread', (_) {
+          newer = writePage(disk()).replaceFirst(RegExp(r'"format"\s*:\s*1'), '"format":99');
+          file.writeAsStringSync(newer);
+        });
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect((r as AiLinkError).code, AiLinkCode.saveFailed);
+        expect(file.readAsStringSync(), newer);
+      });
+
+      test('the folder vanishing at the reread still goes to recovery', () async {
+        final rec = Directory('${root.path}/rec');
+        final nb = make(recovery: rec);
+        await nb.load();
+        nb.current!.insertBox(box('bb', text: 'old'));
+        await nb.flush();
+        final code = await issue('bb');
+        await nb.createPage();
+        nb.syncHook = (p, _) async {
+          if (p == 'closed-reread' && pages.existsSync()) pages.deleteSync(recursive: true);
+        };
+        final r = await nb.handleAiLink(req('bb', code, content: 'new'));
+        expect((r as AiLinkError).code, AiLinkCode.saveFailed);
+        expect(r.message, contains("don't retry an append"));
+        expect(rec.existsSync() && rec.listSync().isNotEmpty, isTrue, reason: 'kept for recovery');
       });
     });
 

@@ -34,18 +34,36 @@ class FlakyStore extends PageStore {
   final Set<String> failDelete = {};
   bool failSave = false;
 
+  /// Pages whose writes fail (the others can be written).
+  final Set<String> failSaveIds = {};
+
+  /// Pages whose file can't be read back, like a file locked by another program.
+  final Set<String> failRead = {};
+
+  /// Runs when a delete of one of [failDelete] is attempted, before it fails.
+  void Function(String pageId)? onFailedDelete;
+
   /// Makes writes fail from the first successful delete on.
   bool failSaveAfterDelete = false;
 
   @override
   Future<void> save(NotedPage page) async {
-    if (failSave) throw const FileSystemException('drive gone');
+    if (failSave || failSaveIds.contains(page.id)) throw const FileSystemException('drive gone');
     await super.save(page);
   }
 
   @override
+  Future<String> readText(String pageId) {
+    if (failRead.contains(pageId)) throw const FileSystemException('locked');
+    return super.readText(pageId);
+  }
+
+  @override
   Future<void> delete(String pageId) async {
-    if (failDelete.contains(pageId)) throw const FileSystemException('drive gone');
+    if (failDelete.contains(pageId)) {
+      onFailedDelete?.call(pageId);
+      throw const FileSystemException('drive gone');
+    }
     await super.delete(pageId);
     if (failSaveAfterDelete) failSave = true;
   }
@@ -466,6 +484,134 @@ void main() {
       expect(File('${pages.path}/$b.canvas').existsSync(), isFalse);
       expect(nb.binderOfPage(a), s.path);
       expect(nb.binderOfPage(b), s.path);
+    });
+
+    test('a source edited by someone else mid-move is left untouched and both copies are kept', () async {
+      late String edited;
+      source.failDelete.add(b);
+      source.onFailedDelete = (id) {
+        edited = read(folder, id).replaceFirst('"title":"', '"title":"Edited elsewhere ');
+        File('${folder.path}/$id.canvas').writeAsStringSync(edited);
+      };
+
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('kept in both places'), contains('duplicate page id')),
+          ),
+        ),
+      );
+      // The external version is still there, byte for byte, and so is the copy.
+      expect(read(folder, b), edited);
+      expect(File('${pages.path}/$b.canvas').existsSync(), isTrue);
+      // The page did not move: only the pages with no source do.
+      expect(nb.binderOfPage(b), s.path);
+      expect(File('${pages.path}/$a.canvas').existsSync(), isFalse);
+      expect(nb.binderOfPage(a), s.path);
+    });
+
+    test('a source that does not round-trip byte for byte is never deleted or rewritten', () async {
+      final crlf = '${read(folder, b)}\r\n';
+      File('${folder.path}/$b.canvas').writeAsStringSync(crlf);
+      source.failDelete.add(b);
+
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(
+          isA<NotebookException>().having((e) => e.message, 'message', contains('kept in both places')),
+        ),
+      );
+      expect(read(folder, b), crlf);
+      expect(nb.binderOfPage(b), s.path);
+    });
+
+    test('a locked source (delete and read fail) stays where it is, and the page does not move', () async {
+      final bBefore = read(folder, b);
+      await nb.createPage(); // another page is open, so b is not reopened
+      source.failDelete.add(b);
+      source.failRead.add(b);
+
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(
+          isA<NotebookException>().having((e) => e.message, 'message', contains('kept in both places')),
+        ),
+      );
+      source.failRead.clear();
+      expect(read(folder, b), bBefore);
+      expect(nb.binderOfPage(b), s.path);
+      expect(nb.binderOfPage(a), s.path);
+    });
+
+    test('the partial move of the open page: it is reopened where it now is, and its stranded subpage goes to the top level', () async {
+      await nb.open(a);
+      source.failDelete.add(b);
+      // Putting a back fails; b's file can still be written.
+      source.failSaveIds.add(a);
+
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('partly'), contains('Pages'), contains('stayed where')),
+          ),
+        ),
+      );
+      expect(nb.currentId, a);
+      expect(nb.binderOfPage(a), isNull);
+      expect(nb.binderOfPage(b), s.path);
+      // b's parent is in another location now: b is a top-level page of the
+      // binder, in memory and in its file.
+      expect(s.tree.roots.map((x) => x.id), [b]);
+      expect(s.tree.parentIdOf(b), isNull);
+      expect(read(folder, b), isNot(contains('"parentId":"$a"')));
+    });
+  });
+
+  group('a standalone-folder move whose source deletion fails', () {
+    test('goes through the same path', () async {
+      final extra1 = await Directory('${root.path}/One').create();
+      final extra2 = await Directory('${root.path}/Two').create();
+      late FlakyStore source;
+      final nb = make(
+        factory: (d) {
+          final st = FlakyStore(d);
+          if (d.path == extra1.path) source = st;
+          return st;
+        },
+      );
+      await nb.load();
+      final a = await nb.createPage(folderPath: extra1.path);
+      final b = await nb.createPage(parentId: a);
+      await nb.flush();
+      final aBefore = read(extra1, a);
+      source.failDelete.add(b);
+      source.failSaveIds.add(a);
+
+      await expectLater(
+        nb.moveToFolder(a, extra2.path),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('partly'), contains('stayed where')),
+          ),
+        ),
+      );
+      source.failSaveIds.clear();
+      source.failDelete.clear();
+      // a lives in the other folder only, b stayed intact, as a top-level page.
+      expect(File('${extra1.path}/$a.canvas').existsSync(), isFalse);
+      expect(read(extra2, a), contains('"pageId":"$a"'));
+      expect(read(extra2, a), isNot(equals(aBefore)));
+      expect(read(extra1, b), allOf(contains('"pageId":"$b"'), isNot(contains('"parentId":"$a"'))));
+      expect(File('${extra2.path}/$b.canvas').existsSync(), isFalse);
+      expect(nb.tree.parentIdOf(b), isNull);
     });
   });
 

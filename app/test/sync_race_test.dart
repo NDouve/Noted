@@ -122,6 +122,38 @@ void main() {
       expect((await nb.pendingRecovery()).entries.single.page.node(mine.id), isNotNull);
     });
 
+    test('a valid file of a different page is not overwritten', () async {
+      final (id, mine) = await editedPage();
+      final foreign = File(pathOf(id)).readAsStringSync().replaceAll(
+        RegExp('"pageId"\\s*:\\s*"$id"'),
+        '"pageId":"0000000000000abc"',
+      );
+      expect(foreign, isNot(contains(id)));
+      File(pathOf(id)).writeAsStringSync(foreign);
+      await nb.flush();
+      expectBlocked(id, mine, foreign);
+      expect((await nb.pendingRecovery()).entries.single.page.node(mine.id), isNotNull);
+    });
+
+    test('a late change from a controller that was closed saves nothing', () async {
+      await start();
+      final first = nb.currentId!;
+      final old = nb.current!;
+      final second = await nb.createPage();
+      await nb.flush();
+      expect(nb.currentId, second);
+      final before = File(pathOf(first)).readAsStringSync();
+      final saves = counting.saves;
+      try {
+        old.createBoxAt(const Bounds(10, 10, 0, 0));
+      } on Object {
+        return; // a closed controller refuses edits: nothing to guard
+      }
+      await nb.flush();
+      expect(counting.saves, saves);
+      expect(File(pathOf(first)).readAsStringSync(), before);
+    });
+
     test('text that is not UTF-8 is not overwritten', () async {
       final (id, mine) = await editedPage();
       final bytes = [0xff, 0xfe, 0xfd];
