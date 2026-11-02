@@ -96,10 +96,14 @@ final class NotedToolbox {
     this.greetingTimeout,
     this.responseTimeout,
     this.beforeClosedReplace,
+    this.beforeClosedRead,
   }) : session = session ?? newSessionId();
 
   /// Test hook: see [ClosedAccess.beforeReplace].
   final Future<void> Function(int attempt)? beforeClosedReplace;
+
+  /// Test hook: see [ClosedAccess.beforeRead].
+  final Future<void> Function(int attempt)? beforeClosedRead;
 
   final Directory dataDir;
 
@@ -127,7 +131,7 @@ final class NotedToolbox {
   /// Only then is the link used; otherwise the server works closed.
   Future<bool> _running() async => await isNotedRunning(dataDir) || await _client.greets();
 
-  ClosedAccess get _closed => ClosedAccess(dataDir, app: app, beforeReplace: beforeClosedReplace);
+  ClosedAccess get _closed => ClosedAccess(dataDir, app: app, beforeReplace: beforeClosedReplace, beforeRead: beforeClosedRead);
 
   /// While Noted holds its lock it is running: if its link doesn't answer
   /// (a busy listener, a slow greeting), the answer is "busy", and the server

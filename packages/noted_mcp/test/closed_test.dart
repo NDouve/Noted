@@ -76,6 +76,7 @@ void main() {
   NotedToolbox toolbox({
     String? app = 'Test App 1.2',
     Future<void> Function(int attempt)? beforeReplace,
+    Future<void> Function(int attempt)? beforeRead,
   }) => NotedToolbox(
     data,
     session: 's',
@@ -83,6 +84,7 @@ void main() {
     greetingTimeout: const Duration(milliseconds: 500),
     responseTimeout: const Duration(seconds: 5),
     beforeClosedReplace: beforeReplace,
+    beforeClosedRead: beforeRead,
   );
 
   String aiOpenPath() => '${data.path}/pages/${Ids.aiOpen}.canvas';
@@ -713,6 +715,72 @@ void main() {
       expect(out.text, contains('sync conflict'));
       expect(File(path).readAsStringSync(), isNot(contains('must not land')));
       expect(readLog(data).single.result, 'conflict');
+    });
+
+    test('a page that disallows AI boxes between the library load and the byte read is not written', () async {
+      writeStore(data, [writer()], allowClosed());
+      final path = aiOpenPath();
+      String? after;
+      final out = await toolbox(
+        beforeRead: (attempt) async {
+          if (attempt != 0) return;
+          final p = readPage(File(path).readAsStringSync());
+          File(path).writeAsStringSync(writePage(p.withMeta(p.meta.withBoxType(aiBoxTypeId, false))));
+          after = File(path).readAsStringSync();
+        },
+      ).writeBox(boxId: 'aiA', code: token(idWriter), mode: 'append', content: 'must not land');
+      expect(out.isError, isTrue);
+      expect(out.text, contains('does not take writes'));
+      expect(after, isNotNull);
+      await expectNothingChanged(path, after!);
+      expect(File(path).readAsStringSync(), isNot(contains('must not land')));
+      expect(readLog(data).single.result, 'not_writable');
+    });
+
+    test('a page moved under a parent that disallows AI boxes between the load and the read is looked at again and refused', () async {
+      writeStore(data, [writer()], allowClosed());
+      final path = aiOpenPath();
+      final parent = page('f000000000000040', 'No AI parent', ai: 'open');
+      final noAi = parent.withMeta(parent.meta.withBoxType(aiBoxTypeId, false));
+      File('${data.path}/pages/${noAi.id}.canvas').writeAsStringSync(writePage(noAi));
+      String? after;
+      final out = await toolbox(
+        beforeRead: (attempt) async {
+          if (attempt != 0) return;
+          final p = readPage(File(path).readAsStringSync());
+          File(path).writeAsStringSync(writePage(p.withMeta(p.meta.withParent(noAi.id))));
+          after = File(path).readAsStringSync();
+        },
+      ).writeBox(boxId: 'aiA', code: token(idWriter), mode: 'append', content: 'must not land');
+      // The first try sees the new parent and starts over; the second try's
+      // chain includes the parent, which refuses.
+      expect(out.isError, isTrue);
+      expect(out.text, contains('does not take writes'));
+      await expectNothingChanged(path, after!);
+      expect(File(path).readAsStringSync(), isNot(contains('must not land')));
+      expect(readLog(data).single.result, 'not_writable');
+    });
+
+    test('a file that now holds another page is not written: no such box', () async {
+      writeStore(data, [writer()], allowClosed());
+      final path = aiOpenPath();
+      final other = page(
+        'f000000000000041',
+        'Other',
+        ai: 'open',
+        nodes: [box('aiA', aiBoxTypeId, aiBoxData('old'), const Bounds(0, 0, 100, 40))],
+      );
+      String? after;
+      final out = await toolbox(
+        beforeRead: (attempt) async {
+          File(path).writeAsStringSync(writePage(other));
+          after = File(path).readAsStringSync();
+        },
+      ).writeBox(boxId: 'aiA', code: token(idWriter), mode: 'append', content: 'must not land');
+      expect(out.isError, isTrue);
+      expect(out.text, contains('No such box'));
+      await expectNothingChanged(path, after!);
+      expect(readLog(data).single.result, 'no_box');
     });
 
     test('a code revoked before the retry is not honoured', () async {
