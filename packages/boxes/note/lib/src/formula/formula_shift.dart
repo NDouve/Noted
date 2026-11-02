@@ -99,8 +99,9 @@ void _collect(
     case PercentExpr():
       _collect(e.operand, text, dr, dc, out);
     case BinaryExpr():
-      _collect(e.left, text, dr, dc, out);
-      _collect(e.right, text, dr, dc, out);
+      for (final o in e.operands) {
+        _collect(o, text, dr, dc, out);
+      }
     case NumberExpr() ||
         StringExpr() ||
         BoolExpr() ||

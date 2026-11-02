@@ -90,8 +90,9 @@ void _collect(Expr e, TableEdit edit, List<(int, int, String)> out) {
     case PercentExpr():
       _collect(e.operand, edit, out);
     case BinaryExpr():
-      _collect(e.left, edit, out);
-      _collect(e.right, edit, out);
+      for (final o in e.operands) {
+        _collect(o, edit, out);
+      }
     case NumberExpr() ||
         StringExpr() ||
         BoolExpr() ||

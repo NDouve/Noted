@@ -95,13 +95,16 @@ final class PercentExpr extends Expr {
   final Expr operand;
 }
 
+/// `a op b op c ...`: operators of one precedence level, applied left to
+/// right (`^` too, as in Excel). [operands] has one more entry than [ops].
+/// A flat run is one node, so a long sum is a wide tree, not a tall one.
 final class BinaryExpr extends Expr {
-  const BinaryExpr(super.start, super.end, this.op, this.left, this.right);
+  const BinaryExpr(super.start, super.end, this.ops, this.operands);
 
-  /// One of `+ - * / ^ & = <> < > <= >=`.
-  final String op;
-  final Expr left;
-  final Expr right;
+  /// Each one of `+ - * / ^ & = <> < > <= >=`; [ops]`[i]` sits between
+  /// [operands]`[i]` and [operands]`[i + 1]`.
+  final List<String> ops;
+  final List<Expr> operands;
 }
 
 /// A cell address, zero-based, with the `$` markers it was written with.
@@ -386,56 +389,44 @@ final class _Parser {
     return e;
   }
 
-  Expr _comparison() {
-    var left = _concat();
-    while (_peek.kind == _T.op &&
-        const {'=', '<>', '<', '>', '<=', '>='}.contains(_peek.text)) {
-      final op = _take().text;
-      final right = _concat();
-      left = _node(BinaryExpr(left.start, right.end, op, left, right), [left, right]);
+  /// A run of operators of one precedence level, `a op b op c ...`, as one
+  /// node that is applied left to right. A flat run adds one level to the
+  /// tree, however long it is.
+  Expr _chain(
+    Expr Function() first,
+    Expr Function() rest,
+    bool Function() atOp,
+  ) {
+    final head = first();
+    if (!atOp()) return head;
+    final operands = <Expr>[head];
+    final ops = <String>[];
+    while (atOp()) {
+      ops.add(_take().text);
+      operands.add(rest());
     }
-    return left;
+    return _node(
+      BinaryExpr(head.start, operands.last.end, ops, operands),
+      operands,
+    );
   }
 
-  Expr _concat() {
-    var left = _sum();
-    while (_isOp('&')) {
-      _take();
-      final right = _sum();
-      left = _node(BinaryExpr(left.start, right.end, '&', left, right), [left, right]);
-    }
-    return left;
-  }
+  Expr _comparison() => _chain(
+    _concat,
+    _concat,
+    () =>
+        _peek.kind == _T.op &&
+        const {'=', '<>', '<', '>', '<=', '>='}.contains(_peek.text),
+  );
 
-  Expr _sum() {
-    var left = _product();
-    while (_isOp('+') || _isOp('-')) {
-      final op = _take().text;
-      final right = _product();
-      left = _node(BinaryExpr(left.start, right.end, op, left, right), [left, right]);
-    }
-    return left;
-  }
+  Expr _concat() => _chain(_sum, _sum, () => _isOp('&'));
 
-  Expr _product() {
-    var left = _power();
-    while (_isOp('*') || _isOp('/')) {
-      final op = _take().text;
-      final right = _power();
-      left = _node(BinaryExpr(left.start, right.end, op, left, right), [left, right]);
-    }
-    return left;
-  }
+  Expr _sum() => _chain(_product, _product, () => _isOp('+') || _isOp('-'));
 
-  Expr _power() {
-    var left = _unary();
-    while (_isOp('^')) {
-      _take();
-      final right = _nested(_unary);
-      left = _node(BinaryExpr(left.start, right.end, '^', left, right), [left, right]);
-    }
-    return left;
-  }
+  Expr _product() => _chain(_power, _power, () => _isOp('*') || _isOp('/'));
+
+  Expr _power() =>
+      _chain(_unary, () => _nested(_unary), () => _isOp('^'));
 
   Expr _unary() {
     if (_isOp('-') || _isOp('+')) {

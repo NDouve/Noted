@@ -103,24 +103,54 @@ void main() {
     test('absurd nesting is an error, not a stack overflow', () {
       expect(calc('=${'(' * 5000}1${')' * 5000}'), '#ERROR!');
       expect(calc('=${'-' * 5000}1'), '#ERROR!');
-      expect(calc('=1${'^1' * 5000}'), '#ERROR!');
+      // A flat ^ run is no longer nesting (it was an error when it built a
+      // tree as tall as the run), so this is just 1.
+      expect(calc('=1${'^1' * 5000}'), '1');
+      expect(calc('=1${'^(1' * 5000}${')' * 5000}'), '#ERROR!');
       // The cap is explicit (100), so it behaves the same on every platform.
       expect(calc('=${'(' * 100}1${')' * 100}'), '1');
       expect(calc('=${'(' * 101}1${')' * 101}'), '#ERROR!');
       expect(calc('=${'-' * 100}1'), '1');
       // The tree height is capped too (256), whatever builds it.
-      expect(calc('=2${'^1' * 200}'), '2');
-      expect(calc('=2${'^1' * 300}'), '#ERROR!');
-      expect(calc('=${List.filled(200, '1').join('+')}'), '200');
-      expect(calc('=${List.filled(5000, '1').join('+')}'), '#ERROR!');
-      expect(calc('=${List.filled(8000, '1').join('+')}'), '#ERROR!');
-      // Parentheses do not reset the height: 99 levels of a 100-link chain
-      // are within the paren cap but far too tall.
+      // A flat run of one precedence level is one node, however long.
+      expect(calc('=2${'^1' * 300}'), '2');
+      expect(calc('=${List.filled(5000, '1').join('+')}'), '5000');
+      // 99 levels of a 100-link chain: one height per level now, so within
+      // both caps.
       var s = '1';
       for (var i = 0; i < 99; i++) {
         s = '($s${'^1' * 100})';
       }
-      expect(calc('=$s'), '#ERROR!');
+      expect(calc('=$s'), '1');
+    });
+
+    test('the tree height cap is exact: 256 parses, 257 is an error', () {
+      // Each level of this adds five to the height (the ^, *, +, & and =
+      // runs around the parentheses) and one parenthesis, so the height cap
+      // is reached long before the parenthesis cap of 100.
+      var s = '1';
+      for (var i = 0; i < 51; i++) {
+        s = '($s)^1*1+1&1=1';
+      }
+      // 1 + 5 * 51 = 256.
+      expect(calc('=$s'), isNot('#ERROR!'));
+      expect(calc('=($s)^1'), '#ERROR!'); // 257
+      // Past 100 parentheses the parenthesis cap applies first.
+      expect(calc('=${'(' * 101}1${')' * 101}'), '#ERROR!');
+    });
+
+    test('a long flat run of one operator level is not nesting', () {
+      expect(calc('=${List.filled(5000, '1').join('+')}'), '5000');
+      expect(calc('=0${'+3-1' * 1500}'), '3000');
+      expect(calc('=2${'*1' * 3000}'), '2');
+      expect(calc('="a"${'&"b"' * 3000}'), 'a${'b' * 3000}');
+      // Left to right, as before: ((1<2)<2)... is a boolean against 2.
+      expect(calc('=1${'<2' * 3000}'), 'FALSE');
+      expect(calc('=1${'<2' * 3000}=FALSE'), 'TRUE');
+      // An error anywhere in the run is the result; the left one wins.
+      expect(calc('=1${'+1' * 1000}+1/0${'+1' * 1000}'), '#DIV/0!');
+      expect(calc('=1/0+NOPE(1)'), '#DIV/0!');
+      expect(calc('=${List.filled(300, 'A1').join('+')}', [['2']]), '600');
     });
 
     test('names that are neither functions nor booleans are #NAME?', () {

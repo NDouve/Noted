@@ -118,22 +118,31 @@ final class FormulaSheet {
     }
   }
 
+  /// A run of operators, folded left to right in a loop (no recursion on its
+  /// length). Each operand is evaluated even after an error, as before; the
+  /// error of the left side wins.
   Object? _binary(BinaryExpr e) {
-    final l = _scalar(e.left);
-    final r = _scalar(e.right);
+    var acc = _scalar(e.operands[0]);
+    for (var i = 0; i < e.ops.length; i++) {
+      acc = _apply(e.ops[i], acc, _scalar(e.operands[i + 1]));
+    }
+    return acc;
+  }
+
+  Object? _apply(String op, Object? l, Object? r) {
     if (l is FormulaError) return l;
     if (r is FormulaError) return r;
-    switch (e.op) {
+    switch (op) {
       case '&':
         return formatFormulaValue(l) + formatFormulaValue(r);
       case '=' || '<>' || '<' || '>' || '<=' || '>=':
-        return _compare(e.op, l, r);
+        return _compare(op, l, r);
     }
     final a = _number(l);
     if (a is! double) return a;
     final b = _number(r);
     if (b is! double) return b;
-    switch (e.op) {
+    switch (op) {
       case '+':
         return _finite(a + b);
       case '-':

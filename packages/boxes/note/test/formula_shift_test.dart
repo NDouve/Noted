@@ -17,9 +17,29 @@ void main() {
       expect(sh('=C3', -2, -2), '=A1');
     });
 
+    test('a long flat formula is shifted and adjusted in every reference', () {
+      final f = '=${List.filled(3000, 'A1').join('+')}';
+      final down = '=${List.filled(3000, 'A2').join('+')}';
+      expect(sh(f, 1, 0), down);
+      expect(adjustFormula(f, const InsertRow(0)), down);
+      final mixed = '=A1${'+B2-C3' * 1000}';
+      expect(
+        sh(mixed, 0, 1),
+        '=B1${'+C2-D3' * 1000}',
+      );
+    });
+
     test('a formula too deep to parse is returned unchanged', () {
-      final deep = '=${List.filled(8000, 'A1').join('+')}';
-      expect(sh(deep, 1, 1), deep);
+      // 52 levels of five operator runs each: taller than the cap.
+      var s = 'A1';
+      for (var i = 0; i < 52; i++) {
+        s = '($s)^1*1+1&1=1';
+      }
+      expect(sh('=$s', 1, 1), '=$s');
+      expect(adjustFormula('=$s', const InsertRow(0)), '=$s');
+      // Nested parentheses past their own cap, too.
+      final paren = '=${'(' * 500}A1${')' * 500}';
+      expect(sh(paren, 1, 1), paren);
     });
 
     test('dollar anchors hold their part', () {
@@ -107,8 +127,8 @@ void main() {
       final s = FormulaSheet(rows: 2, cols: 2, textAt: (r, c) => rows[r][c]);
       expect(s.displayAt(1, 0), '17');
       final tree = parseFormula(r'=$A1+B$2') as BinaryExpr;
-      final l = tree.left as RefExpr;
-      final r = tree.right as RefExpr;
+      final l = tree.operands[0] as RefExpr;
+      final r = tree.operands[1] as RefExpr;
       expect(l.ref.absoluteCol, isTrue);
       expect(l.ref.absoluteRow, isFalse);
       expect(r.ref.absoluteCol, isFalse);
