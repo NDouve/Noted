@@ -17,10 +17,19 @@ typedef CellTextReader = String Function(int row, int col);
 ///
 /// A cell whose text starts with `=` is a formula; any other cell is a
 /// literal: empty, a number (`3`, `-2.5`, `1e3`), `TRUE` or `FALSE`, or text.
-/// Values are computed on demand and memoized, so each cell is evaluated at
-/// most once however many formulas use it, and a cell is evaluated before
-/// the cells that depend on it. A cell reached again while it is still being
-/// evaluated is a circular reference ([FormulaError.cycle]).
+/// Values are computed on demand and memoized, so each cell's value is
+/// computed once however many formulas use it, and a cell is computed before
+/// the cells that depend on it. (A formula that reads cells not yet computed
+/// is evaluated again once they are; all of its missing cells are collected
+/// in one pass, so it restarts once per level of the chain, not once per
+/// reference.) A cell reached again while it is still being
+/// evaluated is a circular reference. Every cell on a reference cycle is
+/// [FormulaError.cycle] whichever cell is computed first, whatever other
+/// error it would have (every operand and argument of a formula is read,
+/// even after an error; only the branch an `IF` does not take is not). A
+/// cell that merely depends on a cycle shows the error it passes on. (The
+/// cells of a cycle are found as a strongly connected set of the
+/// dependencies actually read, Tarjan style.)
 ///
 /// Nothing here throws: whatever goes wrong becomes an error value.
 ///
@@ -43,27 +52,133 @@ final class FormulaSheet {
   final Map<int, Object?> _values = {};
   final Set<int> _visiting = {};
   final Map<int, Object> _parsed = {};
+  final Map<int, String> _texts = {};
+
+  /// The cells the formula being evaluated read before they had a value.
+  final Set<int> _missing = {};
+
+  /// How many reads so far returned [_pending].
+  int _pendingReads = 0;
+
+  /// The worklist of the [valueAt] running: the cells in progress are in it
+  /// in dependency order.
+  List<int> _stack = const [];
+
+  /// For a cell found to be on a cycle: the earliest cell of that cycle that
+  /// was in progress at the time.
+  final Map<int, int> _roots = {};
+
+  /// Where a cell in progress sits in the worklist.
+  final Map<int, int> _pos = {};
 
   /// The value of the cell at ([row], [col]) ([FormulaError.ref] outside
   /// the sheet).
+  ///
+  /// Dependencies between cells are followed with an explicit worklist, not
+  /// by recursion: a formula that reads a cell not yet computed is
+  /// suspended, that cell is computed first, and the formula is evaluated
+  /// again. So a chain of any length uses constant stack, and the result
+  /// does not depend on which cell is asked for first.
   Object? valueAt(int row, int col) {
     if (row < 0 || col < 0 || row >= rows || col >= cols) {
       return FormulaError.ref;
     }
-    final key = row * cols + col;
-    if (_values.containsKey(key)) return _values[key];
-    if (!_visiting.add(key)) return FormulaError.cycle;
-    Object? value;
-    try {
-      value = _compute(key, textAt(row, col));
-    } on Object {
-      // A stack overflow from an absurdly deep chain, or a bug: a cell never
-      // takes the editor down.
-      value = FormulaError.parse;
-    } finally {
-      _visiting.remove(key);
+    final start = row * cols + col;
+    if (_values.containsKey(start)) return _values[start];
+    final stack = _stack = <int>[start];
+    while (stack.isNotEmpty) {
+      final key = stack.last;
+      if (_values.containsKey(key) && !_visiting.contains(key)) {
+        stack.removeLast();
+        continue;
+      }
+      _visiting.add(key);
+      _pos[key] = stack.length - 1;
+      _missing.clear();
+      Object? value;
+      _Pending? pending;
+      try {
+        value = _compute(
+          key,
+          _texts[key] ??= textAt(key ~/ cols, key % cols),
+        );
+      } on _Pending catch (p) {
+        pending = p;
+      } on Object {
+        // A stack overflow from an absurdly deep expression, or a bug: a
+        // cell never takes the editor down.
+        value = FormulaError.parse;
+      }
+      _missing.clear();
+      if (pending != null) {
+        // Stays in progress: a read of this cell meanwhile is a cycle.
+        stack.addAll(pending.keys);
+      } else {
+        _visiting.remove(key);
+        // A cell found to be on a cycle keeps that value, but finishes
+        // reading its own references first (they may be on the cycle too).
+        _values.putIfAbsent(key, () => value);
+        stack.removeLast();
+      }
     }
-    return _values[key] = value;
+    return _values[start];
+  }
+
+  /// The value of a cell read by a formula being evaluated: memoized, a
+  /// cycle if the cell is in progress, else the cell is noted as missing and
+  /// [_pending] stands in for its value (it passes through operators like
+  /// an error). [_compute] then suspends the formula until every missing
+  /// cell has been computed.
+  Object? _read(int row, int col) {
+    if (row < 0 || col < 0 || row >= rows || col >= cols) {
+      return FormulaError.ref;
+    }
+    final key = row * cols + col;
+    if (_visiting.contains(key)) {
+      _markCycle(key);
+      return FormulaError.cycle;
+    }
+    if (_values.containsKey(key)) {
+      // A cell on a cycle whose other members are still in progress: the
+      // reader is on that cycle too.
+      final root = _roots[key];
+      if (root != null && _visiting.contains(root)) _markCycle(root);
+      return _values[key];
+    }
+    _missing.add(key);
+    _pendingReads++;
+    return _pending;
+  }
+
+  /// Makes every cell in progress from [root] up to the one reading it
+  /// [FormulaError.cycle]. If one of them is already on a cycle with an
+  /// earlier cell still in progress, that cycle is joined: the cells of a
+  /// strongly connected set are all marked, whatever was computed first.
+  void _markCycle(int root) {
+    var lo = _pos[root]!;
+    // Already marked with this cycle or an earlier one: nothing to do.
+    final own = _roots[_stack.last];
+    if (own != null && _visiting.contains(own) && _pos[own]! <= lo) return;
+    for (var again = true; again;) {
+      again = false;
+      for (var i = lo; i < _stack.length; i++) {
+        final r = _roots[_stack[i]];
+        if (r == null || !_visiting.contains(r)) continue;
+        final j = _pos[r]!;
+        if (j < lo) {
+          lo = j;
+          again = true;
+          break;
+        }
+      }
+    }
+    final top = _stack[lo];
+    for (var i = lo; i < _stack.length; i++) {
+      final k = _stack[i];
+      if (!_visiting.contains(k)) continue;
+      _values[k] = FormulaError.cycle;
+      _roots[k] = top;
+    }
   }
 
   /// [valueAt] as the text a cell shows.
@@ -73,7 +188,11 @@ final class FormulaSheet {
     if (!isFormulaText(text)) return literalValue(text);
     final parsed = _parsed[key] ??= _parse(text);
     if (parsed is FormulaError) return parsed;
-    return _scalar(parsed as Expr);
+    final v = _scalar(parsed as Expr);
+    if (_missing.isNotEmpty) {
+      throw _Pending(_missing.toList().reversed.toList());
+    }
+    return v;
   }
 
   Object _parse(String text) {
@@ -100,7 +219,7 @@ final class FormulaSheet {
       case NameExpr():
         return FormulaError.name;
       case RefExpr():
-        return valueAt(e.ref.row, e.ref.col);
+        return _read(e.ref.row, e.ref.col);
       case RangeExpr():
         // No implicit intersection: a range needs a function around it.
         return _rangeInside(e) ? FormulaError.value : FormulaError.ref;
@@ -130,6 +249,7 @@ final class FormulaSheet {
   }
 
   Object? _apply(String op, Object? l, Object? r) {
+    if (identical(l, _pending) || identical(r, _pending)) return _pending;
     if (l is FormulaError) return l;
     if (r is FormulaError) return r;
     switch (op) {
@@ -168,6 +288,7 @@ final class FormulaSheet {
     if (v is double) return v;
     if (v is bool) return v ? 1.0 : 0.0;
     if (v is FormulaError) return v;
+    if (identical(v, _pending)) return v;
     return parseNumberText(v as String) ?? FormulaError.value;
   }
 
@@ -208,8 +329,12 @@ final class FormulaSheet {
     switch (e.name.toUpperCase()) {
       case 'IF':
         if (args.isEmpty || args.length > 3) return FormulaError.value;
+        final before = _pendingReads;
         final c = _truth(_scalar(args[0]));
-        if (c is FormulaError) return c;
+        // A condition made from cells with no value yet decides nothing: no
+        // branch is taken (it would be a dependency that may not exist).
+        if (_pendingReads != before) return _pending;
+        if (c is FormulaError || identical(c, _pending)) return c;
         if (c == true) {
           return args.length > 1 ? _scalar(args[1]) : true;
         }
@@ -221,13 +346,11 @@ final class FormulaSheet {
       case 'ROUND':
         if (args.isEmpty || args.length > 2) return FormulaError.value;
         final x = _number(_scalar(args[0]));
+        // Both arguments are read even if the first is an error.
+        final d = args.length == 2 ? _number(_scalar(args[1])) : 0.0;
         if (x is! double) return x;
-        var digits = 0.0;
-        if (args.length == 2) {
-          final d = _number(_scalar(args[1]));
-          if (d is! double) return d;
-          digits = d;
-        }
+        if (d is! double) return d;
+        final digits = d;
         return _round(x, digits.truncate());
       case 'SUM':
         return _aggregate(
@@ -275,6 +398,7 @@ final class FormulaSheet {
     if (v is bool) return v;
     if (v is double) return v != 0;
     if (v is FormulaError) return v;
+    if (identical(v, _pending)) return v;
     final t = (v as String).trim().toUpperCase();
     if (t == 'TRUE') return true;
     if (t == 'FALSE') return false;
@@ -300,7 +424,7 @@ final class FormulaSheet {
     if (r1 >= rows || c1 >= cols) return FormulaError.ref;
     return [
       for (var r = r0; r <= r1; r++)
-        for (var c = c0; c <= c1; c++) valueAt(r, c),
+        for (var c = c0; c <= c1; c++) _read(r, c),
     ];
   }
 
@@ -309,27 +433,40 @@ final class FormulaSheet {
       math.max(e.from.col, e.to.col) < cols;
 
   /// Collects the numbers among [args] and applies [reduce]; the first error
-  /// found (in argument order) is the result.
+  /// found (in argument order) is the result. Every argument is read even
+  /// after an error.
   Object? _aggregate(List<Expr> args, Object? Function(List<double>) reduce) {
     if (args.isEmpty) return FormulaError.value;
     final numbers = <double>[];
+    FormulaError? error;
     for (final a in args) {
       if (a is RefExpr || a is RangeExpr) {
         final cells = _cells(a);
-        if (cells is FormulaError) return cells;
+        if (cells is FormulaError) {
+          error ??= cells;
+          continue;
+        }
         for (final v in cells as List<Object?>) {
-          if (v is FormulaError) return v;
+          if (v is FormulaError) error ??= v;
           if (v is double) numbers.add(v);
         }
       } else {
         final v = _scalar(a);
-        if (v is FormulaError) return v;
+        if (v is FormulaError) {
+          error ??= v;
+          continue;
+        }
         final n = _number(v);
-        if (n is FormulaError) return n;
+        if (n is FormulaError) {
+          error ??= n;
+          continue;
+        }
+        if (identical(n, _pending)) continue;
         numbers.add(n as double);
       }
     }
-    return _finiteOrError(reduce(numbers));
+    // Missing cells: the formula is evaluated again, this value is dropped.
+    return error ?? _finiteOrError(reduce(numbers));
   }
 
   Object? _finiteOrError(Object? v) => v is double ? _finite(v) : v;
@@ -353,6 +490,17 @@ final class FormulaSheet {
     }
     return n.toDouble();
   }
+}
+
+/// Stands in for the value of a cell that has none yet (see
+/// [FormulaSheet]); never leaves the sheet.
+final Object _pending = Object();
+
+/// Thrown inside an evaluation to suspend a formula until the cells [keys]
+/// (to be computed, last first) have values. Never leaves [FormulaSheet].
+final class _Pending implements Exception {
+  _Pending(this.keys);
+  final List<int> keys;
 }
 
 /// The value of a cell that is not a formula: nothing for blank text, a

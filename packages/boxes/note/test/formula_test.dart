@@ -462,6 +462,155 @@ void main() {
     });
   });
 
+  group('long dependency chains', () {
+    List<List<String>> runningTotal(int n) => [
+      for (var i = 0; i < n; i++)
+        ['1', i == 0 ? '=A1' : '=B$i+A${i + 1}'],
+    ];
+
+    test('a running total of 5000 rows does not overflow the stack', () {
+      final s = sheet(runningTotal(5000));
+      expect(s.displayAt(4999, 1), '5000');
+    });
+
+    test('the result does not depend on which cell is asked first', () {
+      final rows = runningTotal(3000);
+      final fromLast = sheet(rows);
+      final fromFirst = sheet(rows);
+      final last = fromLast.displayAt(2999, 1);
+      final shown = [
+        for (var r = 0; r < 3000; r++) fromFirst.displayAt(r, 1),
+      ];
+      expect(last, '3000');
+      expect(shown.last, last);
+      expect(shown[1499], '1500');
+      expect(
+        [for (var r = 0; r < 3000; r++) fromLast.displayAt(r, 1)],
+        shown,
+      );
+    });
+
+    test('a range whose first cell is the deep end of a long chain', () {
+      const n = 5000;
+      // B_i = B_(i+1) + A_i, the last B is a literal: B1 is the deepest.
+      final rows = [
+        for (var i = 0; i < n; i++)
+          ['1', i == n - 1 ? '1' : '=B${i + 2}+A${i + 1}'],
+      ];
+      rows.add(['0', '=SUM(B1:B$n)']);
+      // B_i = n - i + 1 (1-based), summed over i = 1..n.
+      expect(sheet(rows).displayAt(n, 1), '${n * (n + 1) ~/ 2 + 0}');
+    });
+
+    test('a sum of 20000 separate references is not quadratic', () {
+      const n = 20000;
+      final rows = [
+        for (var i = 0; i < n; i++) ['${i + 1}', '=A${i + 1}'],
+      ];
+      rows.add([
+        '0',
+        '=${[for (var i = 1; i <= n; i++) 'B$i'].join('+')}',
+      ]);
+      final watch = Stopwatch()..start();
+      expect(sheet(rows).displayAt(n, 1), '${n * (n + 1) ~/ 2}');
+      expect(watch.elapsed, lessThan(const Duration(seconds: 3)));
+    });
+
+    test('an untaken IF branch is no cycle, whichever cell is read first', () {
+      List<List<String>> rows() => [
+        ['=IF(C1,B1,D1)', '=A1', 'FALSE', '7'],
+      ];
+      expect(sheet(rows()).displayAt(0, 0), '7');
+      expect(sheet(rows()).displayAt(0, 1), '7');
+      final s = sheet(rows());
+      expect(s.displayAt(0, 1), '7');
+      expect(s.displayAt(0, 0), '7');
+    });
+
+    test('a cell on a cycle is #CYCLE! whichever cell is computed first', () {
+      for (final f in ['=SUM(B1,C1)', '=B1+C1', '=ROUND(B1,C1)', '=B1&C1']) {
+        List<List<String>> rows() => [
+          [f, '=1/0', '=A1', '=C1+1'],
+        ];
+        for (final order in [
+          [0, 1, 2, 3],
+          [2, 1, 0, 3],
+          [3, 2, 1, 0],
+          [1, 3, 0, 2],
+        ]) {
+          final s = sheet(rows());
+          final shown = [for (final c in order) s.displayAt(0, c)];
+          final byCol = {
+            for (var i = 0; i < 4; i++) order[i]: shown[i],
+          };
+          expect(byCol[0], '#CYCLE!', reason: '$f from $order');
+          expect(byCol[1], '#DIV/0!', reason: '$f from $order');
+          expect(byCol[2], '#CYCLE!', reason: '$f from $order');
+          // Depends on the cycle without being on it.
+          expect(byCol[3], '#CYCLE!', reason: '$f from $order');
+        }
+      }
+    });
+
+    test('overlapping cycles are #CYCLE! whichever cell is computed first', () {
+      final tables = [
+        ['=B1+C1', '=A1', '=COUNT(A1)'],
+        ['=B1+C1', '=A1', '=D1+A1', '=1/0'],
+        ['=B1+C1', '=A1', '=D1+B1', '=1/0'],
+        ['=B1+C1', '=A1', '=E1+B1', '=1/0', '=D1'],
+      ];
+      for (final t in tables) {
+        final n = t.length;
+        // Every cell of A, B and C is on a cycle with A1.
+        for (final first in [for (var i = 0; i < n; i++) i]) {
+          final s = FormulaSheet(rows: 1, cols: n, textAt: (r, c) => t[c]);
+          final order = [first, for (var i = 0; i < n; i++) if (i != first) i];
+          final got = [for (final c in order) s.displayAt(0, c)];
+          final byCol = {for (var i = 0; i < n; i++) order[i]: got[i]};
+          for (var c = 0; c < 3; c++) {
+            expect(byCol[c], '#CYCLE!', reason: '$t first=$first col=$c');
+          }
+        }
+      }
+    });
+
+    test('an IF condition on cells not yet computed takes no branch', () {
+      // A1 reads itself only in the branch it does not take.
+      const t = ['=IF(COUNT(B1:C1),5,A1)', '1', '=B1'];
+      for (var first = 0; first < 3; first++) {
+        final s = FormulaSheet(rows: 1, cols: 3, textAt: (r, c) => t[c]);
+        s.displayAt(0, first);
+        expect(s.displayAt(0, 0), '5', reason: 'first=$first');
+      }
+    });
+
+    test('a cyclic operand does not spoil a deep chain operand', () {
+      const n = 3000;
+      final rows = [
+        for (var i = 0; i < n; i++)
+          ['1', i == 0 ? '=A1' : '=B$i+A${i + 1}', '', ''],
+      ];
+      rows.add(['=B$n+C${n + 1}', '', '=D${n + 1}', '=C${n + 1}']);
+      final s = sheet(rows);
+      expect(s.displayAt(n, 0), '#CYCLE!');
+      expect(s.displayAt(n - 1, 1), '$n');
+      final t = sheet(rows);
+      expect(t.displayAt(n - 1, 1), '$n');
+      expect(t.displayAt(n, 0), '#CYCLE!');
+    });
+
+    test('a long cycle is #CYCLE!', () {
+      const n = 4000;
+      final rows = [
+        for (var i = 0; i < n; i++) ['=A${(i + 1) % n + 1}+1'],
+      ];
+      final s = sheet(rows);
+      expect(s.displayAt(0, 0), '#CYCLE!');
+      expect(s.displayAt(n - 1, 0), '#CYCLE!');
+      expect(s.displayAt(n ~/ 2, 0), '#CYCLE!');
+    });
+  });
+
   group('recalculation', () {
     test('a formula sees the current text of other cells', () {
       var b = '2';
