@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -89,7 +90,7 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
     final now = _stampOf();
     if (now == _stamp) return;
     trimMcpLog();
-    pruneRevokedCodes();
+    _pruneRevoked();
     _stamp = _stampOf();
     changed();
   }
@@ -97,7 +98,15 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
   /// Tells the listeners that codes, sessions or the log changed.
   void changed() {
     if (_disposed) return;
-    if (_poll != null) _stamp = _stampOf();
+    if (_poll != null) {
+      // An app-side change (a revoke, a log trim) can leave a revoked code
+      // with no activity; prune before the stamp is taken, or the next poll
+      // sees the same stamp and never does.
+      // Only when there is a revoked code, so a plain request doesn't read
+      // both logs.
+      if (_hasRevoked()) _pruneRevoked();
+      _stamp = _stampOf();
+    }
     notifyListeners();
   }
 
@@ -346,6 +355,69 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
   /// its code. A log that can't be read, or a store that can't be read or
   /// written, prunes nothing. Returns the number removed.
   int pruneRevokedCodes() {
+    final removed = _pruneRevoked();
+    if (removed > 0) changed();
+    return removed;
+  }
+
+  bool _hasRevoked() {
+    try {
+      return store.codes().any((c) => c.isRevoked);
+    } on Object {
+      return false;
+    }
+  }
+
+  // The MCP log's text read under the same lock the server's append and
+  // [trimMcpLog] use; the lock is held until [release]. '' if the file is
+  // missing; null if it can't be locked or read (then nothing is pruned).
+  ({String? text, void Function() release}) _lockedMcpLog() {
+    RandomAccessFile? raf;
+    void release() {
+      try {
+        raf?.unlockSync();
+      } on Object {
+        // Nothing to do.
+      }
+      try {
+        raf?.closeSync();
+      } on Object {
+        // Nothing to do.
+      }
+      raf = null;
+    }
+
+    try {
+      if (!mcpLog.existsSync()) return (text: '', release: release);
+      raf = mcpLog.openSync(mode: FileMode.append);
+      final until = DateTime.now().add(const Duration(milliseconds: 500));
+      while (true) {
+        try {
+          raf!.lockSync(FileLock.exclusive);
+          break;
+        } on FileSystemException {
+          if (DateTime.now().isAfter(until)) {
+            release();
+            return (text: null, release: release);
+          }
+          sleep(const Duration(milliseconds: 20));
+        }
+      }
+      final length = raf!.lengthSync();
+      raf!.setPositionSync(0);
+      final bytes = raf!.readSync(length);
+      if (bytes.length != length) {
+        release();
+        return (text: null, release: release);
+      }
+      return (text: utf8.decode(bytes, allowMalformed: true), release: release);
+    } on Object {
+      release();
+      return (text: null, release: release);
+    }
+  }
+
+  int _pruneRevoked() {
     try {
       // Look first, so the file isn't rewritten when there is nothing to do.
       final own0 = _rawLog(log.file);
@@ -359,14 +431,23 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
             if (c.isRevoked) c,
         ];
         if (revoked.isEmpty) return;
-        final own = _rawLog(log.file);
-        final closed = _rawLog(mcpLog);
-        if (own == null || closed == null) return;
-        for (final c in revoked) {
-          if (!own.contains(c.id) && !closed.contains(c.id) && d.remove(c.id)) removed++;
+        // The MCP log is locked from the read to the end of the removal, so an
+        // append the server makes in that span waits and is seen. A request the
+        // server checked against the store before the revoke can still append
+        // after the prune; closing that would need the server to take the
+        // store lock.
+        final locked = _lockedMcpLog();
+        try {
+          final own = _rawLog(log.file);
+          final closed = locked.text;
+          if (own == null || closed == null) return;
+          for (final c in revoked) {
+            if (!own.contains(c.id) && !closed.contains(c.id) && d.remove(c.id)) removed++;
+          }
+        } finally {
+          locked.release();
         }
       });
-      if (removed > 0) changed();
       return removed;
     } on Object {
       return 0;

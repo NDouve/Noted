@@ -125,6 +125,53 @@ void main() {
     expect(ids(), [live]);
   });
 
+  group('app-side changes with polling on', () {
+    late AiAccessService polled;
+    setUp(() {
+      polled = AiAccessService(dataFolder: data, pollInterval: const Duration(milliseconds: 50));
+      addTearDown(polled.dispose);
+    });
+
+    test('revoking a never-used code prunes it without waiting for an outside change', () async {
+      final id = issue('A');
+      await polled.revoke(id);
+      expect(ids(), isEmpty);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(ids(), isEmpty);
+    });
+
+    test('revoking a code that is still in the MCP log keeps it', () async {
+      final id = issue('A');
+      inMcpLog(id);
+      await polled.revoke(id);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(ids(), [id]);
+    });
+
+    test('an app-side log trim that drops a revoked code last entry prunes it', () async {
+      final id = issue('A');
+      inAppLog(id);
+      await polled.revoke(id);
+      expect(ids(), [id]);
+      // Fill the log so the first entry is trimmed away.
+      for (var i = 0; i < aiActivityMaxEntries + 1; i++) {
+        polled.log.append(
+          AiActivityEntry(
+            time: DateTime.utc(2026, 11, 1, 11),
+            code: 'other',
+            target: target,
+            op: 'read_box',
+            app: 'App',
+            label: 'Chat',
+            result: 'ok',
+          ),
+        );
+      }
+      polled.changed();
+      expect(ids(), isEmpty);
+    });
+  });
+
   test('with polling on, the service prunes when it starts', () {
     final id = issue('A');
     service.store.revoke(id);
