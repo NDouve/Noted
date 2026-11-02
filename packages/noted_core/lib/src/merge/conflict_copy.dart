@@ -83,7 +83,7 @@ PageMerge mergeConflictCopy(
       out.add(o);
       final extra = switch (c) {
         ForeignNode() => c.copyWithId(newId()),
-        BoxRecord() => c.withId(newId()),
+        BoxRecord() => markLandedIfOverlapping(c.withId(newId()), [o], mergeTime: copyTime),
       };
       if (extra != null) out.add(extra);
     }

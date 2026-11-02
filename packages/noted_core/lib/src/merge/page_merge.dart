@@ -92,11 +92,15 @@ PageMerge mergePage(
       out.add(m.withConflict(BoxConflict.other(node: t.toRaw(), at: theirsTime, device: t is BoxRecord ? t.device : null)));
       conflicted.add(m.id);
     } else {
-      // Both changed a node Noted doesn't own: keep mine and keep theirs as
-      // a copy beside it, so nothing is lost.
+      // Mine is a node Noted doesn't own and both changed it: keep mine and
+      // keep theirs (a foreign node or a box) as a copy under a new id beside
+      // it, as the conflict-copy merge does, so nothing is lost. A foreign
+      // node that isn't a JSON object can't take an id and is kept as it is.
       out.add(m);
-      final copy = t is ForeignNode ? t.copyWithId(newId()) : null;
-      if (copy != null) out.add(copy);
+      out.add(switch (t) {
+        ForeignNode() => t.copyWithId(newId()) ?? t,
+        BoxRecord() => markLandedIfOverlapping(t.withId(newId()), [m], mergeTime: theirsTime),
+      });
     }
   }
 

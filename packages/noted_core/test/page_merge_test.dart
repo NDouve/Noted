@@ -303,6 +303,52 @@ void main() {
       expect(r.page.nodes.last.toRaw().text, contains('"c"'));
       expect(r.page.nodes.last.id, isNot('f'));
     });
+
+    test('mine foreign, theirs a box: theirs kept as a box under a new id', () {
+      final x = box('f', 'test.plain', 'x');
+      final y = box('f', 'test.plain', 'y');
+      final b0 = pageOf([x]);
+      final r = merge(b0, pageOf([f2]), pageOf([y]));
+      expect(r.page.nodes, hasLength(2));
+      expect(r.page.node('f')!.toRaw(), f2.toRaw());
+      final extra = r.page.nodes.last;
+      expect(extra, isA<BoxRecord>());
+      expect(extra.id, isNot('f'));
+      expect(dataOf(extra), 'y');
+      // Theirs is unchanged except the id and the landed marker (it overlaps).
+      expect((extra as BoxRecord).landed, isNotNull);
+      expect(extra.withoutLanded().withId('f').toRaw(), y.toRaw());
+    });
+
+    test('mine foreign, theirs a box elsewhere: the kept copy is not marked landed', () {
+      final x = box('f', 'test.plain', 'x');
+      final y = box('f', 'test.plain', 'y', at: const Bounds(500, 500, 100, 50));
+      final r = merge(pageOf([x]), pageOf([f2]), pageOf([y]));
+      final extra = r.page.nodes.last as BoxRecord;
+      expect(extra.landed, isNull);
+      expect(extra.withId('f').toRaw(), y.toRaw());
+    });
+
+    test('non-object nodes changed on both sides: both raws are kept verbatim', () {
+      ForeignNode n(String json) => ForeignNode.read(RawJson.trusted(json), fallbackId: '#0');
+      final fb = n('"base"');
+      final fm = n('{"type":"x","v":1}');
+      final ft = n('[1,2]');
+      final r = merge(pageOf([fb]), pageOf([fm]), pageOf([ft]));
+      final raws = [for (final x in r.page.nodes) x.toRaw().text];
+      expect(raws, contains('{"type":"x","v":1}'));
+      expect(raws, contains('[1,2]'));
+    });
+
+    test('mine a box, theirs foreign: both kept, foreign bytes unchanged', () {
+      final y = box('f', 'test.plain', 'y');
+      final b0 = pageOf([f]);
+      final r = merge(b0, pageOf([y]), pageOf([f3]));
+      final kept = r.page.node('f')! as BoxRecord;
+      expect(dataOf(kept), 'y');
+      expect(r.conflictedIds, {'f'});
+      expect(kept.conflicts.single.node, f3.toRaw());
+    });
   });
 
   group('conflict field', () {
