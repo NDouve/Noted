@@ -153,6 +153,8 @@ void main() {
     Directory.current = dir;
     try {
       final tmp2 = File('s.tmp')..writeAsBytesSync([2]);
+      // POSIX resolves `..` through the real folder, so it must exist.
+      Directory('sub').createSync();
       expect(await publishExclusive(tmp2, 'sub/../s.bin'), isTrue);
     } finally {
       Directory.current = old;
