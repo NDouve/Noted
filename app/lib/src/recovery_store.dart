@@ -121,7 +121,7 @@ class RecoveryStore {
   /// migration, so tests can inject a failure there (`tmp-written`: a new
   /// generation is complete but not yet published; `envelope-published`: an
   /// old entry is converted but its old files are still there;
-  /// `legacy-json-deleted`: the first of the old files is removed).
+  /// `legacy-first-deleted`: the first of the old files is removed).
   RecoveryStore(this.directory, {this.windows, this.hook});
 
   final Directory directory;
@@ -337,7 +337,7 @@ class RecoveryStore {
     final c = File('$base.canvas');
     final (first, second) = pageFirst ? (c, j) : (j, c);
     if (await first.exists()) await first.delete();
-    await hook?.call('legacy-json-deleted');
+    await hook?.call('legacy-first-deleted');
     if (await second.exists()) await second.delete();
   }
 
@@ -449,10 +449,18 @@ class RecoveryStore {
         if (at >= 0) {
           final env = _parse(text);
           _checkIdentity(file.substring(0, at), _name(env.folder, env.id), env.id, readPage(env.text), env.base);
+          // Another slot of this page and location may already hold exactly
+          // this; the tmp must not be renamed over an older slot then.
+          envs ??= await _envelopes();
+          if (envs.any((e) => e.key == env.key && e.id == env.id && e.text == env.text && e.base == env.base)) {
+            await f.delete();
+            continue;
+          }
           for (var k = 1; ; k++) {
             final target = _slot(env.folder, env.id, k);
             if (!await target.exists()) {
               await f.rename(target.path);
+              envs = null; // the entries changed
               break;
             }
             final e = await _peek(target);
@@ -464,6 +472,7 @@ class RecoveryStore {
             if (!env.timeOk) throw const FormatException('its time can\'t be read, so it is kept');
             if (e.timeOk && env.time.isAfter(e.time)) {
               await f.rename(target.path);
+              envs = null;
               break;
             }
             // Same time, other content (or the entry's time is unreadable):
@@ -500,8 +509,11 @@ class RecoveryStore {
     final damaged = <UnreadablePage>[];
     if (!await directory.exists()) return const RecoveryListing([], []);
 
-    await _migrate(problems, damaged);
+    // Settling a tmp can publish the entry that an old half-file waits for, so
+    // the old files are looked at again afterwards; only that pass reports.
+    await _migrate([], []);
     await _settleTmps(problems, damaged);
+    await _migrate(problems, damaged);
     final names = <String>[];
     await for (final f in directory.list()) {
       if (f is File && f.path.endsWith('.entry')) {

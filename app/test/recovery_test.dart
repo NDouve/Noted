@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
@@ -18,6 +19,49 @@ class _LossyStore extends PageStore {
 
   @override
   Future<void> save(NotedPage page) => super.save(NotedPage.create(page.meta));
+}
+
+/// A store whose scan can land a file and report a conflict copy at its path,
+/// like a sync client writing while the folder is being read again.
+class _LandingStore extends PageStore {
+  _LandingStore(super.directory, this.plan);
+
+  // Shared by every store the notebook makes for the folder.
+  final _Landing plan;
+
+  @override
+  Future<List<PageEntry>> scan() async {
+    final entries = await super.scan();
+    final p = plan.path;
+    if (p == null) return entries;
+    File(p).writeAsStringSync(plan.text!);
+    return [...entries, ConflictCopyPage(p, plan.page!.meta, p)];
+  }
+}
+
+class _Landing {
+  String? path;
+  String? text;
+  NotedPage? page;
+}
+
+/// A store whose reads and saves can be made to fail or to lose data.
+class _ToggleStore extends PageStore {
+  _ToggleStore(super.directory);
+
+  bool lossy = false;
+  bool throwOnRead = false;
+  bool alterRead = false;
+
+  @override
+  Future<void> save(NotedPage page) => super.save(lossy ? NotedPage.create(page.meta) : page);
+
+  @override
+  Future<String> readText(String pageId) async {
+    if (throwOnRead) throw const FileSystemException('injected read failure');
+    final t = await super.readText(pageId);
+    return alterRead ? '$t ' : t;
+  }
 }
 
 void main() {
@@ -45,10 +89,11 @@ void main() {
     if (root.existsSync()) await root.delete(recursive: true);
   });
 
-  Notebook make({PageStore? store}) {
+  Notebook make({PageStore? store, PageStore Function(Directory)? storeFactory}) {
     final nb = Notebook(
       store ?? PageStore(pages),
       buildModules(),
+      storeFactory: storeFactory ?? PageStore.new,
       saveDelay: const Duration(hours: 1), // saves happen only through flush
       bindersFile: File('${root.path}/app/binders.json'),
       recoveryDirectory: rec,
@@ -312,5 +357,196 @@ void main() {
       verifyRecoveredPage(base: base, mine: mine, theirs: base, result: base),
       isNotNull,
     );
+  });
+
+  group('an open page whose saved file is gone when its folder returns', () {
+    BoxRecord theirBox() => BoxRecord.create(
+      id: 'theirbox',
+      typeId: 'test.other',
+      dataVersion: 1,
+      bounds: const Bounds(300, 300, 100, 40),
+      data: RawJson.encode({'n': 1}),
+      snapshotText: 'theirs',
+      rev: 'r-theirs',
+    );
+
+    test('stays editable, and a file that lands later is merged, not overwritten', () async {
+      final (nb, x, _) = await pendingEdit();
+      await nb.flush(); // saved: no recovery entry
+      await vanish(nb);
+      expect(recFiles(), isEmpty);
+      final original = readPage(pageFile(away, x).readAsStringSync());
+      pageFile(away, x).deleteSync();
+      await restore();
+      await nb.checkFolders();
+      expect(nb.current!.readOnly, isFalse);
+
+      pageFile(extra, x).writeAsStringSync(writePage(original.insertNode(theirBox())));
+      await nb.checkFile(pageFile(extra, x).path);
+      expect(nb.current!.page.node('theirbox'), isNotNull, reason: 'merged into the open page');
+
+      nb.current!.createBoxAt(const Bounds(80, 80, 0, 0));
+      await nb.flush();
+      final disk = readPage(pageFile(extra, x).readAsStringSync());
+      expect(disk.node('theirbox'), isNotNull, reason: 'their box must survive the next save');
+      expect(disk.nodes.length, 3);
+    });
+
+    test('a file reported before the page is resumed is merged into it', () async {
+      final plan = _Landing();
+      final nb = make(storeFactory: (d) => _LandingStore(d, plan));
+      await nb.load();
+      final x = await nb.createPage(folderPath: extra.path);
+      await nb.flush();
+      await nb.open(x);
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      await nb.flush();
+      await vanish(nb);
+      final original = readPage(pageFile(away, x).readAsStringSync());
+      pageFile(away, x).deleteSync();
+      await restore();
+      plan
+        ..path = pageFile(extra, x).path
+        ..text = writePage(original.insertNode(theirBox()))
+        ..page = original;
+      await nb.checkFolders();
+      expect(nb.current!.page.node('theirbox'), isNotNull);
+      plan.path = null;
+      nb.current!.createBoxAt(const Bounds(80, 80, 0, 0));
+      await nb.flush();
+      expect(readPage(pageFile(extra, x).readAsStringSync()).node('theirbox'), isNotNull);
+    });
+  });
+
+  group('R-4 kept files land before the entry is retired', () {
+    final bytes = Uint8List.fromList([1, 2, 3, 4]);
+
+    // A page with a pending edit and a file kept for it, the folder away and
+    // the app quit. Returns the page id.
+    Future<String> keptFile() async {
+      final (nb, x, _) = await pendingEdit();
+      await extra.rename(away.path);
+      await nb.attachments!.put(bytes, extension: 'txt');
+      await nb.checkFolders();
+      expect(Directory('${rec.path}/$x.assets').existsSync(), isTrue);
+      quit(nb);
+      await restore();
+      return x;
+    }
+
+    List<String> entries() => recFiles().where((p) => p.endsWith('.entry')).toList();
+
+    test('a failed copy after the page landed keeps the entry; a restart lands the files and retires it', () async {
+      final x = await keptFile();
+      File('${extra.path}/$x.assets').writeAsStringSync('in the way'); // the copy can't make the folder
+      final again = make();
+      await again.load();
+      expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, hasLength(1), reason: 'the page landed');
+      expect(entries(), hasLength(1), reason: 'the entry is the retry');
+      expect(Directory('${rec.path}/$x.assets').existsSync(), isTrue);
+      expect(again.recoveryDamaged, hasLength(1));
+
+      File('${extra.path}/$x.assets').deleteSync();
+      quit(again);
+      final restarted = make();
+      await restarted.load();
+      expect(Directory('${extra.path}/$x.assets').listSync().whereType<File>().single.readAsBytesSync(), bytes);
+      expect(Directory('${rec.path}/$x.assets').existsSync(), isFalse);
+      expect(entries(), isEmpty);
+      expect(restarted.recoveryDamaged, isEmpty);
+    });
+
+    test('stopped between the page landing and the files landing, over and over: still retried', () async {
+      final x = await keptFile();
+      File('${extra.path}/$x.assets').writeAsStringSync('in the way');
+      for (var i = 0; i < 2; i++) {
+        final nb = make();
+        await nb.load();
+        quit(nb);
+        expect(entries(), hasLength(1));
+        expect(Directory('${rec.path}/$x.assets').existsSync(), isTrue);
+      }
+      File('${extra.path}/$x.assets').deleteSync();
+      final last = make();
+      await last.load();
+      expect(Directory('${extra.path}/$x.assets').existsSync(), isTrue);
+      expect(entries(), isEmpty);
+    });
+  });
+
+  group('R-7 replay failures are listed under Can\'t open', () {
+    // A page of the default folder with a pending edit, parked as an entry
+    // while the folder is away.
+    Future<(Notebook, _ToggleStore, Directory)> parked() async {
+      final st = _ToggleStore(pages);
+      final nb = make(store: st);
+      await nb.load();
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      final moved = Directory('${root.path}/pages-away');
+      await pages.rename(moved.path);
+      await nb.checkFolders();
+      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      return (nb, st, moved);
+    }
+
+    test('a failed check is listed', () async {
+      final (nb, st, moved) = await parked();
+      st.lossy = true;
+      await moved.rename(pages.path);
+      await nb.checkFolders();
+      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      expect(nb.recoveryDamaged, hasLength(1));
+      expect(nb.recoveryProblems, hasLength(1));
+    });
+
+    test('an exception during replay is listed, and cleared by a later successful replay', () async {
+      final (nb, st, moved) = await parked();
+      st.throwOnRead = true;
+      await moved.rename(pages.path);
+      await nb.checkFolders();
+      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      expect(nb.recoveryDamaged, hasLength(1));
+      expect(nb.recoveryDamaged.single.reason, contains('injected read failure'));
+
+      await pages.rename(moved.path);
+      await nb.checkFolders();
+      st.throwOnRead = false;
+      await moved.rename(pages.path);
+      await nb.checkFolders();
+      expect((await nb.pendingRecovery()).entries, isEmpty);
+      expect(nb.recoveryDamaged, isEmpty);
+    });
+
+    test('a read-back that differs from what was written is listed', () async {
+      final nb = make();
+      await nb.load();
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      final moved = Directory('${root.path}/pages-away');
+      await pages.rename(moved.path);
+      await nb.checkFolders();
+      quit(nb);
+      await moved.rename(pages.path);
+      final st = _ToggleStore(pages)..alterRead = true;
+      final again = make(store: st);
+      await again.load();
+      expect((await again.pendingRecovery()).entries, hasLength(1));
+      expect(again.recoveryDamaged, hasLength(1));
+    });
+  });
+
+  test('replay refuses an entry whose page is another page than the entry says', () async {
+    final (nb, x, _) = await pendingEdit();
+    await vanish(nb);
+    quit(nb);
+    await restore();
+    final entry = File(recFiles().singleWhere((p) => p.endsWith('.entry')));
+    final text = entry.readAsStringSync();
+    entry.writeAsStringSync(text.replaceFirst('"pageId":"$x"', '"pageId":"other"'));
+    final again = make();
+    await again.load();
+    expect(pageFile(extra, 'other').existsSync(), isFalse);
+    expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, isEmpty);
+    expect(entry.existsSync(), isTrue);
+    expect(again.recoveryDamaged, isNotEmpty);
   });
 }

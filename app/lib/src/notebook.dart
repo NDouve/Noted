@@ -74,6 +74,16 @@ class _SourceChanged implements Exception {
   const _SourceChanged();
 }
 
+// Why a recovery entry could not be applied; it is kept and listed.
+class _ReplayFailure implements Exception {
+  _ReplayFailure(this.why);
+
+  final String why;
+
+  @override
+  String toString() => why;
+}
+
 // A save of a closed page was refused; [response] says why.
 class _SaveRefused implements Exception {
   const _SaveRefused(this.response);
@@ -340,14 +350,25 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   List<String> _recoveryProblems = const [];
 
-  /// Recovery files that couldn't be read. They are kept, never deleted.
-  List<String> get recoveryProblems => _recoveryProblems;
+  // Entries that were read but couldn't be applied, by the entry's path
+  // without extension: why. Cleared once the entry is replayed (0077).
+  final Map<String, String> _replayProblems = {};
+
+  /// Recovery files that couldn't be read or applied. They are kept, never
+  /// deleted.
+  List<String> get recoveryProblems => [
+    ..._recoveryProblems,
+    for (final p in _replayProblems.entries) '${p.key}: ${p.value}',
+  ];
 
   List<UnreadablePage> _recoveryDamaged = const [];
 
   /// [recoveryProblems] as sidebar entries (path and reason). They stay
   /// until fixed or removed outside the app.
-  List<UnreadablePage> get recoveryDamaged => _recoveryDamaged;
+  List<UnreadablePage> get recoveryDamaged => [
+    ..._recoveryDamaged,
+    for (final p in _replayProblems.entries) UnreadablePage(p.key, "Recovery entry can't be applied: ${p.value}"),
+  ];
 
   /// The recovery entries and unreadable recovery files waiting now.
   Future<RecoveryListing> pendingRecovery() async =>
@@ -1559,6 +1580,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final intact = <int>[];
         final gone = <int>[];
         final both = <int>[];
+        final emptyAtSource = <int>{};
         Future<bool> absent(int i) async =>
             await FileSystemEntity.type(fromStore.pathFor(ids[i])) == FileSystemEntityType.notFound;
         for (var i = 0; i < ids.length; i++) {
@@ -1576,15 +1598,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             try {
               await f.create(exclusive: true);
               claimed = true;
+              // Checked again just before the store renames its file over the
+              // claim: if anything was put there meanwhile, it is not touched.
+              if (await File(fromStore.pathFor(ids[i])).length() != 0) {
+                throw const FileSystemException('the path was taken meanwhile');
+              }
               await _write(fromLoc, originals[i]);
             } on Object catch (e2) {
-              if (claimed) {
-                try {
-                  if (await f.length() == 0) await f.delete();
-                } on Object {
-                  // Left as it is; the page is then classified by what is there.
-                }
-              }
+              if (claimed) await _dropEmptyClaim(f);
               debugPrint('Restoring page ${ids[i]} failed: $e2');
             }
             if (await _sourceIntact(fromStore, originals[i])) {
@@ -1592,7 +1613,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               continue;
             }
           }
-          (await absent(i) ? gone : both).add(i);
+          // An empty file we claimed and could not remove is no original.
+          final emptyLeft = removed.contains(i) && await _isEmptyFile(File(fromStore.pathFor(ids[i])));
+          if (emptyLeft) emptyAtSource.add(i);
+          (emptyLeft || await absent(i) ? gone : both).add(i);
         }
         // Remove the copy of an intact page: the page file and its attachments
         // each get their own try, and a failure keeps that page in both places.
@@ -1680,6 +1704,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             '${gone.length == 1 ? 'file' : 'files'} could not be put back.',
           );
         }
+        if (emptyAtSource.isNotEmpty) {
+          parts.add(
+            'An empty file was left at the old place of ${names(emptyAtSource)} in $source; it can '
+            'be deleted.',
+          );
+        }
         if (both.isNotEmpty) {
           parts.add(
             '${names(both)} ${both.length == 1 ? 'is' : 'are'} kept in both places: the old '
@@ -1720,8 +1750,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _rebuildTree();
       if (index != null) await move(id, parentId: parentId, index: index);
     } on Object catch (e) {
-      pending = e;
-      rethrow;
+      // Only a NotebookException leaves here, so the user always sees a message.
+      final out = e is NotebookException ? e : NotebookException('Could not move the page: $e');
+      pending = out;
+      throw out;
     } finally {
       if (reopen != null && _current == null && _loc.containsKey(reopen)) {
         try {
@@ -1740,6 +1772,27 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             throw NotebookException('The page was moved, but it could not be reopened ($why).');
           }
         }
+      }
+    }
+  }
+
+  static Future<bool> _isEmptyFile(File f) async {
+    try {
+      return await f.exists() && await f.length() == 0;
+    } on Object {
+      return false;
+    }
+  }
+
+  // Removes the empty file claimed at a source path after a failed restore;
+  // tried twice. Anything that isn't empty is left alone.
+  static Future<void> _dropEmptyClaim(File f) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (await _isEmptyFile(f)) await f.delete();
+        return;
+      } on Object {
+        // Try once more.
       }
     }
   }
@@ -3082,29 +3135,51 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final listing = await rec.list();
     _recoveryProblems = listing.problems;
     _recoveryDamaged = listing.damaged;
+    // A failure stays listed only while its entry does.
+    final live = {for (final e in listing.entries) _entryKey(e)};
+    _replayProblems.removeWhere((k, _) => !live.contains(k));
     for (final e in listing.entries) {
       if (_disposed) return;
       final loc = _locOfFolder(e.folder);
       if (loc == null || _isLocked(loc) || (onlyLoc != null && loc != onlyLoc)) continue;
+      final key = _entryKey(e);
       try {
-        await _recoverEntry(rec, e, loc, resumed);
+        if (await _recoverEntry(rec, e, loc, resumed)) _replayProblems.remove(key);
+      } on _ReplayFailure catch (ex) {
+        debugPrint('Recovered page ${e.pageId} not accepted: ${ex.why}');
+        _replayProblems[key] = ex.why;
       } on Object catch (ex) {
         debugPrint('Recovering page ${e.pageId} failed: $ex');
+        _replayProblems[key] = '$ex';
       }
     }
     if (!_disposed) notifyListeners();
   }
 
-  Future<void> _recoverEntry(
+  static String _entryKey(RecoveryEntry e) {
+    final p = e.file.path;
+    return p.substring(0, p.length - '.entry'.length);
+  }
+
+  // Applies one entry. Returns true once it is replayed and retired, false if
+  // it isn't due yet; throws a _ReplayFailure (or anything else) if it can't be
+  // applied, and then it stays. The entry is retired last, after the page has
+  // landed, read back and verified and its kept files have landed and been
+  // checked (0098); a re-replay after an interruption is harmless, since the
+  // merge of a page with itself changes nothing.
+  Future<bool> _recoverEntry(
     RecoveryStore rec,
     RecoveryEntry e,
     String loc,
     ({bool ran, NotedPage? theirs})? resumed,
   ) async {
     final mine = e.page;
-    final id = mine.id;
+    // The target is the entry's verified identity. The store refuses entries
+    // where it disagrees with the page, so this guards against a regression.
+    final id = e.pageId;
+    if (mine.id != id) throw _ReplayFailure('the page is "${mine.id}" but the entry says "$id"');
     final st = _storeOf(loc);
-    if (!await st.directory.exists()) return;
+    if (!await st.directory.exists()) return false;
     final base = e.baseText == null ? NotedPage.create(mine.meta) : readPage(e.baseText!);
     final c = _current;
     if (c != null && c.page.id == id) {
@@ -3122,19 +3197,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _syncReadOnly();
         _rebuildTree();
       } else {
-        return;
+        return false;
       }
       if (theirs == null) _enqueueSave(c.page);
       await flush();
       final back = readPage(await st.readText(id));
       final why = verifyRecoveredPage(base: base, mine: mine, theirs: theirs, result: back);
-      if (why != null) {
-        debugPrint('Recovered page $id not accepted: $why');
-        return;
-      }
-      await rec.delete(e);
+      if (why != null) throw _ReplayFailure(why);
       await _landRecoveredAssets(rec, loc, id);
-      return;
+      await rec.delete(e);
+      return true;
     }
     final path = st.pathFor(id);
     final file = File(path);
@@ -3145,7 +3217,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       theirsText = await file.readAsString();
       theirs = readPage(theirsText);
       time = (await file.lastModified()).millisecondsSinceEpoch;
-      if (theirs.id != id) return;
+      if (theirs.id != id) throw _ReplayFailure('the saved file holds page "${theirs.id}", not "$id"');
     }
     final merged = theirs == null
         ? mine
@@ -3153,32 +3225,44 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final out = writePage(merged);
     if (out != theirsText) await _write(loc, merged);
     final back = await st.readText(id);
-    if (back != out) {
-      debugPrint('Recovered page $id not accepted: the saved page differs from what was written');
-      return;
-    }
+    if (back != out) throw _ReplayFailure('the saved page differs from what was written');
     final why = verifyRecoveredPage(base: base, mine: mine, theirs: theirs, result: readPage(back));
-    if (why != null) {
-      debugPrint('Recovered page $id not accepted: $why');
-      return;
-    }
+    if (why != null) throw _ReplayFailure(why);
     await _applyClosed(readPage(back), loc, _key(path), path);
-    await rec.delete(e);
     await _landRecoveredAssets(rec, loc, id);
+    await rec.delete(e);
+    return true;
   }
 
   // Files added while the page's folder was away were kept beside the
   // recovery entry; with the page saved, they move into its assets folder.
+  // The kept folder goes only when every file is there with its size; a
+  // failure throws, so the entry stays and the next launch tries again.
   Future<void> _landRecoveredAssets(RecoveryStore rec, String loc, String id) async {
     final kept = Directory('${rec.directory.path}${Platform.pathSeparator}${assetsFolderName(id)}');
     if (!await kept.exists()) return;
+    final to = _assetsDir(loc, id);
     try {
-      await _copyDir(kept, _assetsDir(loc, id));
+      await _copyDir(kept, to);
+      final missing = await _missingFiles(kept, to);
+      if (missing != null) throw _ReplayFailure('the kept file $missing did not land');
       await kept.delete(recursive: true);
       _attachments?.filesChanged();
     } on FileSystemException catch (e) {
-      debugPrint('Moving the kept attachments of page $id failed: $e');
+      throw _ReplayFailure('moving the kept files failed: ${e.message}');
     }
+  }
+
+  // The first file under [from] that isn't under [to] with the same size, or
+  // null.
+  static Future<String?> _missingFiles(Directory from, Directory to) async {
+    await for (final e in from.list(recursive: true)) {
+      if (e is! File || e.path.endsWith('.tmp')) continue;
+      final rel = e.path.substring(from.path.length);
+      final t = File('${to.path}$rel');
+      if (!await t.exists() || await t.length() != await e.length()) return rel;
+    }
+    return null;
   }
 
   Future<void> _write(String loc, NotedPage page) async {
@@ -3614,7 +3698,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Whether [key] is the file of the page on screen.
   bool _isOpenFile(String loc, String key) {
     final id = _current?.page.id;
-    if (id == null || _loc[id] != loc) return false;
+    // A page still waiting for its folder (_orphanLoc) owns that folder's file
+    // of its id as well, so one that lands is merged, never taken as closed.
+    if (id == null || (_loc[id] != loc && _orphanLoc != loc)) return false;
     try {
       return _key(_storeOf(loc).pathFor(id)) == key;
     } on Object {
@@ -4088,6 +4174,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             _orphanLoc = null;
             _rebuildTree();
             await _blockOpen(loc, _key(path), 'it is not a page this version can read', id);
+          } else {
+            // Its file is gone (the page was saved before the folder went and
+            // came back without it). The page stays and is editable; its next
+            // save writes the file, and a file that lands before that is
+            // merged into it like any other change to the open page.
+            _loc[id] = loc;
+            _metas[id] = c.page.meta;
+            _orphanLoc = null;
+            _syncReadOnly();
+            _rebuildTree();
+            return (ran: true, theirs: null);
           }
         } on Object catch (e) {
           debugPrint('Checking the open page after its folder came back failed: $e');

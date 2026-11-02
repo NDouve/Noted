@@ -172,8 +172,7 @@ void main() {
       final abs = File(rel).absolute.path;
       await store().write(folder: rel, page: _page('p1', 'existing'), baseText: null, time: later);
       legacy(abs, _page('p1', 'old'), time: t);
-      await store(hook: _failAt('legacy-json-deleted')).list();
-      expect(files('.canvas'), isEmpty);
+      File('${dir.path}/${_legacyName(abs, 'p1')}.canvas').deleteSync(); // stopped after the first delete
       expect(files('.json'), hasLength(1));
       final l = await store().list();
       expect(l.problems, isEmpty);
@@ -197,14 +196,24 @@ void main() {
 
     test('a migration stopped between the two deletes leaves nothing to report', () async {
       legacy(r'D:\Notes', _page('p1', 'old'));
-      await store(hook: _failAt('legacy-json-deleted')).list();
-      expect(files('.json'), isEmpty);
+      await store().list();
+      legacy(r'D:\Notes', _page('p1', 'old')); // stopped after the first delete: only the page is left
+      File('${dir.path}/${_legacyName(r'D:\Notes', 'p1')}.json').deleteSync();
       expect(files('.canvas'), hasLength(1));
       final l = await store().list();
       expect(l.entries, hasLength(1));
       expect(l.problems, isEmpty);
       expect(files('.canvas'), isEmpty);
       expect(files('.entry'), hasLength(1));
+    });
+
+    test('a listing stopped between the two deletes finishes the migration before returning', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'));
+      final l = await store(hook: _failAt('legacy-first-deleted')).list();
+      expect(l.entries, hasLength(1));
+      expect(l.problems, isEmpty);
+      expect(files('.canvas'), isEmpty);
+      expect(files('.json'), isEmpty);
     });
 
     test('a lone old metadata file that an entry already holds is removed, not reported', () async {
@@ -231,6 +240,49 @@ void main() {
       expect(l.entries, isEmpty);
       expect(l.problems, hasLength(1));
       expect(File('${dir.path}/orphan-1.canvas').existsSync(), isTrue);
+    });
+
+    test('a lone old metadata file with another base and an equal time is kept and reported', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'), base: writePage(_page('p1', 'b')));
+      await store().list();
+      File('${dir.path}/${_legacyName(r'D:\Notes', 'p1')}.json').writeAsStringSync(
+        jsonEncode({
+          'format': 1,
+          'folder': r'D:\Notes',
+          'pageId': 'p1',
+          'time': t.toIso8601String(),
+          'base': writePage(_page('p1', 'another base')),
+        }),
+      );
+      final l = await store().list();
+      expect(l.problems, hasLength(1));
+      expect(files('.json'), hasLength(1));
+      expect(l.entries, hasLength(1));
+    });
+
+    test('a lone old metadata file that only a promoted tmp holds is removed in the same listing', () async {
+      await expectLater(
+        store(hook: _failAt('tmp-written')).write(
+          folder: r'D:\Notes',
+          page: _page('p1', 'new'),
+          baseText: null,
+          time: later,
+        ),
+        throwsA(isA<FileSystemException>()),
+      );
+      File('${dir.path}/${_legacyName(r'D:\Notes', 'p1')}.json').writeAsStringSync(
+        jsonEncode({
+          'format': 1,
+          'folder': r'D:\Notes',
+          'pageId': 'p1',
+          'time': t.toIso8601String(),
+          'base': null,
+        }),
+      );
+      final l = await store().list();
+      expect(l.entries.single.page.meta.title, 'new');
+      expect(l.problems, isEmpty);
+      expect(files('.json'), isEmpty);
     });
   });
 
@@ -330,6 +382,21 @@ void main() {
       expect(l.problems, hasLength(2));
       expect(l.damaged, hasLength(2));
       expect(files('.tmp'), hasLength(2));
+    });
+
+    test('a leftover that another slot already holds is deleted, not renamed over an older slot', () async {
+      await store().write(folder: '/n', page: _page('p1', 'old'), baseText: null, time: t);
+      final slot1 = File(files('.entry').single);
+      final oldText = slot1.readAsStringSync();
+      await store().write(folder: '/n', page: _page('p1', 'new'), baseText: null, time: later);
+      final newText = slot1.readAsStringSync();
+      slot1.writeAsStringSync(oldText);
+      File(slot1.path.replaceFirst('.entry', '_dup2.entry')).writeAsStringSync(newText);
+      File('${slot1.path}.9-9.tmp').writeAsStringSync(newText);
+      final l = await store().list();
+      expect(l.entries.map((e) => e.page.meta.title).toList()..sort(), ['new', 'old']);
+      expect(files('.tmp'), isEmpty);
+      expect(files('.entry'), hasLength(2));
     });
 
     test('an unfinished write of the old layout is removed if an entry holds it, else reported', () async {

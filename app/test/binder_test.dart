@@ -48,9 +48,16 @@ class FlakyStore extends PageStore {
 
   @override
   Future<void> save(NotedPage page) async {
-    if (failSave || failSaveIds.contains(page.id)) throw const FileSystemException('drive gone');
+    if (failSave || failSaveIds.contains(page.id)) {
+      onFailedSave?.call(page.id);
+      throw const FileSystemException('drive gone');
+    }
+    saves.update(page.id, (n) => n + 1, ifAbsent: () => 1);
     await super.save(page);
   }
+
+  /// How often each page was written.
+  final Map<String, int> saves = {};
 
   @override
   Future<String> readText(String pageId) {
@@ -66,6 +73,34 @@ class FlakyStore extends PageStore {
     }
     await super.delete(pageId);
     if (failSaveAfterDelete) failSave = true;
+    if (pageId == racePage) _raceArmed = true;
+  }
+
+  /// Pages whose load fails with a raw error.
+  final Set<String> failLoad = {};
+
+  /// Runs when a write of a page is refused (see [failSave]), before it fails.
+  void Function(String pageId)? onFailedSave;
+
+  /// After [racePage] was deleted, its [raceAt]-th path lookup first writes
+  /// [raceText] to that path, like another program that got there first.
+  String? racePage;
+  int raceAt = 0;
+  String raceText = 'written elsewhere';
+  bool _raceArmed = false;
+  int _raceCalls = 0;
+
+  @override
+  String pathFor(String pageId) {
+    final p = super.pathFor(pageId);
+    if (_raceArmed && pageId == racePage && ++_raceCalls == raceAt) File(p).writeAsStringSync(raceText);
+    return p;
+  }
+
+  @override
+  Future<NotedPage> load(String pageId) {
+    if (failLoad.contains(pageId)) throw const FileSystemException('cannot read');
+    return super.load(pageId);
   }
 }
 
@@ -461,6 +496,61 @@ void main() {
       expect(nb.binderOfPage(a), isNull);
       expect(nb.binderOfPage(b), s.path);
       expect(nb.tree.roots.map((x) => x.id), contains(a));
+    });
+
+    test('an empty claim file that cannot be removed does not make the page "both"', () async {
+      source.failDelete.add(b);
+      source.failSaveAfterDelete = true;
+      final claim = '${folder.path}/$a.canvas';
+      // A read-only file can't be deleted on Windows.
+      source.onFailedSave = (id) {
+        if (id == a) Process.runSync('attrib', ['+R', claim]);
+      };
+      Object? error;
+      try {
+        await nb.moveToLocation(a);
+      } on NotebookException catch (e) {
+        error = e.message;
+      } finally {
+        Process.runSync('attrib', ['-R', claim]);
+      }
+      expect(error, allOf(contains('empty file was left'), contains('is now in'), isNot(contains('both places'))));
+      expect(File(claim).lengthSync(), 0);
+      expect(read(pages, a), contains('"pageId":"$a"'));
+      expect(nb.binderOfPage(a), isNull);
+    }, skip: !Platform.isWindows);
+
+    test('a file that appears at the old path before the claim is never written over', () async {
+      source.failDelete.add(b);
+      source.racePage = a;
+      source.raceAt = 2; // the path lookup that makes the claim
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('kept in both places'))),
+      );
+      expect(File('${folder.path}/$a.canvas').readAsStringSync(), 'written elsewhere');
+    });
+
+    test('a file that fills the claim before the page is written is never written over', () async {
+      source.failDelete.add(b);
+      source.racePage = a;
+      source.raceAt = 3; // the look at the claim just before the write
+      final before = source.saves[a] ?? 0;
+      addTearDown(() => expect(source.saves[a] ?? 0, before, reason: 'the page is not written into the claim'));
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('kept in both places'))),
+      );
+      expect(File('${folder.path}/$a.canvas').readAsStringSync(), 'written elsewhere');
+    });
+
+    test('a raw error while reading a source is turned into a message', () async {
+      source.failLoad.add(a);
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('Could not move the page'))),
+      );
+      expect(read(folder, a), contains('"pageId":"$a"'));
     });
 
     test('removes every copy when the sources are put back', () async {
