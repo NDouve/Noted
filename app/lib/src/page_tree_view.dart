@@ -200,7 +200,10 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       await action();
     } on NotebookException catch (e) {
       messenger?.hideCurrentSnackBar();
-      messenger?.showSnackBar(SnackBar(content: Text(e.message)));
+      // A message that asks the user to act stays until it is closed.
+      messenger?.showSnackBar(
+        SnackBar(content: Text(e.message), persist: e.needsAction, showCloseIcon: e.needsAction),
+      );
     }
   }
 

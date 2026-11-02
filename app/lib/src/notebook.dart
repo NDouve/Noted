@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
+import 'dart:convert' show utf8;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -61,9 +62,13 @@ File defaultBindersFile() {
 
 /// An operation on the notebook failed; [message] is fit to show the user.
 class NotebookException implements Exception {
-  const NotebookException(this.message);
+  const NotebookException(this.message, {this.needsAction = false});
 
   final String message;
+
+  // Whether the user has something to do about it (it stays on screen until
+  // closed, instead of fading).
+  final bool needsAction;
 
   @override
   String toString() => message;
@@ -76,12 +81,21 @@ class _SourceChanged implements Exception {
 
 // Why a recovery entry could not be applied; it is kept and listed.
 class _ReplayFailure implements Exception {
-  _ReplayFailure(this.why);
+  _ReplayFailure(this.why, {this.detail});
 
+  // The plain reason shown to the user, and the technical detail for the log.
   final String why;
+  final String? detail;
 
   @override
   String toString() => why;
+}
+
+// The kept files landed, but others stay in the kept folder.
+class _KeptFolderNotEmpty implements Exception {
+  _KeptFolderNotEmpty(this.left);
+
+  final List<String> left;
 }
 
 // A kept file that is in place under [name] with verified content.
@@ -387,9 +401,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   /// [recoveryProblems] as sidebar entries (path and reason). They stay
   /// until fixed or removed outside the app.
-  List<UnreadablePage> get recoveryDamaged => [
-    ..._recoveryDamaged,
-    for (final p in _replayProblems.values) UnreadablePage(p.path, "Recovery entry can't be applied: ${p.why}"),
+  List<UnreadablePage> get recoveryDamaged => [..._recoveryDamaged, ...recoveryOwnDamaged];
+
+  /// The part of [recoveryDamaged] that is not an unreadable recovery file:
+  /// entries that couldn't be applied and kept files that couldn't be landed.
+  List<UnreadablePage> get recoveryOwnDamaged => [
+    for (final p in _replayProblems.values)
+      UnreadablePage(p.path, "Recovery can't finish: ${p.why}${p.why.endsWith(')') ? '' : '.'}"),
     for (final p in _keptProblems.entries) UnreadablePage(p.key, p.value),
   ];
 
@@ -1583,7 +1601,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       } on Object catch (e) {
         await removeCopies();
         if (e is NotebookException) rethrow;
-        throw NotebookException('Could not move the page: $e');
+        debugPrint('Copying the page to its new place failed: $e');
+        throw NotebookException('Could not move the page.${_osReason(e)}');
       }
 
       final removed = <int>[];
@@ -1665,7 +1684,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           }
         }
         if (gone.isEmpty && both.isEmpty && copyLeft.isEmpty) {
-          throw NotebookException('Could not remove the old files, so nothing was moved: $e');
+          debugPrint('Removing the old page files failed: $e');
+          throw NotebookException('Could not remove the old files, so nothing was moved.${_osReason(e)}');
         }
         // Only a page with no source moves. A page whose parent ended up in
         // the other location goes to the top level of its own (0059).
@@ -1725,37 +1745,40 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
 
         String names(Iterable<int> l) => l.map(name).join(', ');
+        debugPrint('The move was only partly done: $e');
         final parts = <String>[];
         if (gone.isNotEmpty) {
           parts.add(
-            '${names(gone)} ${gone.length == 1 ? 'is' : 'are'} now in $target, because the old '
+            '${names(gone)} ${gone.length == 1 ? 'is' : 'are'} now in $target; the old '
             '${gone.length == 1 ? 'file' : 'files'} could not be put back.',
           );
         }
         if (emptyAtSource.isNotEmpty) {
           parts.add(
-            'An empty file was left at the old place of ${names(emptyAtSource)} in $source; it can '
-            'be deleted.',
+            'An empty file was left at the old place of ${names(emptyAtSource)} in $source. '
+            'You can delete it.',
           );
         }
         if (both.isNotEmpty) {
           parts.add(
-            '${names(both)} ${both.length == 1 ? 'is' : 'are'} kept in both places: the old '
-            '${both.length == 1 ? 'file is' : 'files are'} still there but could not be '
-            'checked or ${both.length == 1 ? 'has' : 'have'} changed, so nothing was deleted. '
-            'The original file is in $source (it could not be verified and may have been edited '
-            'elsewhere); the copy made by the move is in $target. It shows where it was. One of '
-            'the two will show as an unreadable page (duplicate page id) until the other is '
-            'removed.',
+            '${names(both)} ${both.length == 1 ? 'is' : 'are'} kept in both places. The old '
+            '${both.length == 1 ? 'file' : 'files'} in $source could not be checked or '
+            '${both.length == 1 ? 'has' : 'have'} changed, so nothing was deleted; the '
+            '${both.length == 1 ? 'copy is' : 'copies are'} in $target. One of the two will show '
+            'under "Can\'t open" until you delete the other.',
           );
         }
         if (copyLeft.isNotEmpty) {
           parts.add(
             [
               for (final en in copyLeft.entries)
-                'The copy of ${name(en.key)} in $target (${en.value}) could not be removed, so it is '
-                    'kept in both places (the original is in $source, the copy in $target; one of '
-                    'the two will show as a duplicate page id until the other is removed).',
+                if (en.value == 'its attachments')
+                  '${name(en.key)} stayed where it was, but a leftover attachments folder remains '
+                      'in $target. You can delete it.'
+                else
+                  'The copy of ${name(en.key)} in $target (${en.value}) could not be removed, so it '
+                      'is kept in both places. One of the two will show under "Can\'t open" until '
+                      'you delete the other.',
             ].join(' '),
           );
         }
@@ -1763,7 +1786,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (stayed.isNotEmpty) {
           parts.add('${names(stayed)} stayed where ${stayed.length == 1 ? 'it was' : 'they were'}.');
         }
-        throw NotebookException('The move was only partly done: ${parts.join(' ')} ($e)');
+        throw NotebookException(
+          'The move was only partly done. ${parts.join(' ')}',
+          needsAction: both.isNotEmpty || emptyAtSource.isNotEmpty || copyLeft.isNotEmpty,
+        );
       }
       for (final id in ids) {
         await _removeDir(_assetsDir(fromLoc, id));
@@ -1780,11 +1806,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (index != null) await move(id, parentId: parentId, index: index);
     } on Object catch (e) {
       // Only a NotebookException leaves here, so the user always sees a message.
+      if (e is! NotebookException) debugPrint('Moving the page failed: $e');
       final out = movedFully
-          ? NotebookException('The page was moved, but it could not be put at that position: $e')
+          ? const NotebookException('The page was moved, but it could not be put at that position.')
           : e is NotebookException
           ? e
-          : NotebookException('Could not move the page: $e');
+          : NotebookException('Could not move the page.${_osReason(e)}');
       pending = out;
       throw out;
     } finally {
@@ -1795,14 +1822,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // A failure to reopen never hides what happened to the move, and
           // nothing but a NotebookException leaves here.
           debugPrint('Reopening page $reopen after the move failed: $e');
-          final why = e is FileSystemException ? (e.osError?.message ?? e.message) : '$e';
           final p = pending;
           if (p is NotebookException) {
             // ignore: control_flow_in_finally
-            throw NotebookException('${p.message} The page could not be reopened ($why).');
+            throw NotebookException(
+              '${p.message} The page could not be reopened.${_osReason(e)}',
+              needsAction: p.needsAction,
+            );
           } else if (p == null) {
             // ignore: control_flow_in_finally
-            throw NotebookException('The page was moved, but it could not be reopened ($why).');
+            throw NotebookException('The page was moved, but it could not be reopened.${_osReason(e)}');
           }
         }
       }
@@ -3180,11 +3209,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       try {
         if (await _recoverEntry(rec, e, loc, resumed)) _replayProblems.remove(key);
       } on _ReplayFailure catch (ex) {
-        debugPrint('Recovered page ${e.pageId} not accepted: ${ex.why}');
+        debugPrint('Recovered page ${e.pageId} not accepted: ${ex.detail ?? ex.why}');
         _replayProblems[key] = (path: path, why: ex.why);
       } on Object catch (ex) {
+        // A write failure; the reading failures are _ReplayFailures above.
         debugPrint('Recovering page ${e.pageId} failed: $ex');
-        _replayProblems[key] = (path: path, why: '$ex');
+        _replayProblems[key] = (
+          path: path,
+          why:
+              'the edits kept for "${_titleOrUntitled(e.page.meta.title)}" could not be saved into '
+              'the page file${_osReason(ex)}',
+        );
       }
     }
     // The kept files go on their own: an entry is retired as soon as its page
@@ -3192,6 +3227,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _landKeptAssets(rec, onlyLoc: onlyLoc);
     if (!_disposed) notifyListeners();
   }
+
+  // The operating system's own reason, in brackets, when [e] has one (for
+  // example " (Access is denied.)"); empty otherwise.
+  static String _osReason(Object e) {
+    final m = e is FileSystemException ? e.osError?.message : null;
+    return m == null || m.trim().isEmpty ? '' : ' (${m.trim()})';
+  }
+
+  static String _titleOrUntitled(String title) => title.trim().isEmpty ? 'Untitled' : title.trim();
 
   static String _entryPath(RecoveryEntry e) {
     final p = e.file.path;
@@ -3220,10 +3264,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // The target is the entry's verified identity. The store refuses entries
     // where it disagrees with the page, so this guards against a regression.
     final id = e.pageId;
-    if (mine.id != id) throw _ReplayFailure('the page is "${mine.id}" but the entry says "$id"');
+    final label = '"${_titleOrUntitled(mine.meta.title)}"';
+    if (mine.id != id) {
+      throw _ReplayFailure(
+        'the edits kept for $label belong to a different page',
+        detail: 'the page is "${mine.id}" but the entry says "$id"',
+      );
+    }
     final st = _storeOf(loc);
     if (!await st.directory.exists()) return false;
-    final base = e.baseText == null ? NotedPage.create(mine.meta) : readPage(e.baseText!);
+    final base = e.baseText == null
+        ? NotedPage.create(mine.meta)
+        : _readForReplay(e.baseText!, 'the copy kept with the edits for $label');
     final c = _current;
     if (c != null && c.page.id == id) {
       // The page is open: it holds the edit and was merged with its file by
@@ -3244,9 +3296,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       if (theirs == null) _enqueueSave(c.page);
       await flush();
-      final back = readPage(await st.readText(id));
+      final back = _readForReplay(await st.readText(id), 'the saved file of $label');
       final why = verifyRecoveredPage(base: base, mine: mine, theirs: theirs, result: back);
-      if (why != null) throw _ReplayFailure(why);
+      if (why != null) throw _ReplayFailure(_notAllKept(label), detail: why);
       await rec.delete(e);
       return true;
     }
@@ -3256,10 +3308,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     String? theirsText;
     var time = DateTime.now().millisecondsSinceEpoch;
     if (await file.exists()) {
-      theirsText = await file.readAsString();
-      theirs = readPage(theirsText);
+      try {
+        theirsText = utf8.decode(await file.readAsBytes());
+      } on FormatException catch (ex) {
+        throw _ReplayFailure("the saved file of $label isn't a valid page file", detail: '$ex');
+      }
+      theirs = _readForReplay(theirsText, 'the saved file of $label');
       time = (await file.lastModified()).millisecondsSinceEpoch;
-      if (theirs.id != id) throw _ReplayFailure('the saved file holds page "${theirs.id}", not "$id"');
+      if (theirs.id != id) {
+        throw _ReplayFailure(
+          'the saved file for $label holds a different page',
+          detail: 'the saved file holds page "${theirs.id}", not "$id"',
+        );
+      }
     }
     final merged = theirs == null
         ? mine
@@ -3267,13 +3328,37 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final out = writePage(merged);
     if (out != theirsText) await _write(loc, merged);
     final back = await st.readText(id);
-    if (back != out) throw _ReplayFailure('the saved page differs from what was written');
-    final why = verifyRecoveredPage(base: base, mine: mine, theirs: theirs, result: readPage(back));
-    if (why != null) throw _ReplayFailure(why);
+    if (back != out) {
+      throw _ReplayFailure(
+        'the saved file of $label does not match what was written',
+        detail: 'the saved page differs from what was written',
+      );
+    }
+    final why = verifyRecoveredPage(
+      base: base,
+      mine: mine,
+      theirs: theirs,
+      result: _readForReplay(back, 'the saved file of $label'),
+    );
+    if (why != null) throw _ReplayFailure(_notAllKept(label), detail: why);
     await _applyClosed(readPage(back), loc, _key(path), path);
     await rec.delete(e);
     return true;
   }
+
+  // Reads page text during a replay; a format problem becomes a plain
+  // _ReplayFailure naming what was read ([what], e.g. 'the saved file of "T"').
+  static NotedPage _readForReplay(String text, String what) {
+    try {
+      return readPage(text);
+    } on UnsupportedPageFormatException catch (ex) {
+      throw _ReplayFailure('$what is from a newer version of Noted', detail: ex.message);
+    } on PageFormatException catch (ex) {
+      throw _ReplayFailure("$what isn't a valid page file", detail: ex.message);
+    }
+  }
+
+  static String _notAllKept(String label) => 'some of the edits kept for $label did not make it into the saved page';
 
   // Files added while the page's folder was away were kept in the recovery
   // folder, in `<page id>.assets`. That folder is its own marker: every one
@@ -3329,9 +3414,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         await _removeEmptyDirs(kept, top: true);
         _keptProblems.remove(kept.path);
         _attachments?.filesChanged();
+      } on _KeptFolderNotEmpty catch (e) {
+        debugPrint('Kept folder of page $id is not empty: ${e.left}');
+        _keptProblems[kept.path] =
+            'The files kept for "${_titleOrUntitled(_metas[id]?.title ?? '')}" were moved into place, '
+            'but other files stay in the kept folder (${e.left.join(', ')}).';
+        retry = true;
       } on FileSystemException catch (e) {
         debugPrint('Moving the kept files of page $id failed: $e');
-        _keptProblems[kept.path] = "Kept files can't be moved into place: ${e.message}";
+        // The app's own messages are plain; an OS error gets its reason in brackets.
+        final detail = e.osError == null ? ': ${e.message}' : _osReason(e);
+        _keptProblems[kept.path] =
+            'The files kept for "${_titleOrUntitled(_metas[id]?.title ?? '')}" could not be moved into place$detail.';
         retry = true;
       }
     }
@@ -3342,7 +3436,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           _binders.values.every((b) => b.available);
       for (final MapEntry(key: kept, value: id) in unmatched.entries) {
         if (settled && !waiting.contains(id)) {
-          _keptProblems[kept.path] = 'Kept files of page $id have no page to go with';
+          _keptProblems[kept.path] = 'These kept files have no page to go with.';
         } else {
           _keptProblems.remove(kept.path);
         }
@@ -3441,7 +3535,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on FileSystemException {
       if (!top) return;
       final left = [await for (final e in d.list(recursive: true)) _baseName(e.path)];
-      throw FileSystemException('files are left in the kept folder (${left.join(', ')})', d.path);
+      throw _KeptFolderNotEmpty(left);
     }
   }
 
@@ -3770,11 +3864,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       } else {
         // It is there but can't be read now: not the same as missing.
         if (_disposed) return false;
-        return isOpen && await _blockOpen(loc, key, 'could not be read: ${e.message}', openId);
+        debugPrint('Reading $path failed: $e');
+        return isOpen && await _blockOpen(loc, key, "it couldn't be read", openId);
       }
     } on FormatException {
       if (_disposed) return false;
-      if (isOpen) return _blockOpen(loc, key, 'not valid UTF-8 text', openId);
+      if (isOpen) return _blockOpen(loc, key, "it isn't a valid page file", openId);
       _knownUnreadable(loc, key, path, 'not valid UTF-8 text');
       return false;
     }
@@ -3815,7 +3910,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         } else {
           _known[key] = previous;
         }
-        return _blockOpen(loc, key, e.message, openId);
+        debugPrint('Page file $path is not readable: ${e.message}');
+        return _blockOpen(
+          loc,
+          key,
+          e is UnsupportedPageFormatException
+              ? 'it is from a newer version of Noted'
+              : "it isn't a valid page file",
+          openId,
+        );
       }
       _knownUnreadable(loc, key, path, e.message);
       return false;
@@ -3869,8 +3972,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_current?.page.id != openId) return true;
     _diskBlockId = openId;
     _diskBlockReason =
-        "This page's file was replaced by a version that can't be read ($why), "
-        'so the page is read-only and is not saved. Your edits are kept in recovery.';
+        'This page is read-only: its file was replaced and $why. '
+        'Your edits are kept in recovery. Put back a readable version, or open another page.';
     _syncReadOnly();
     return true;
   }
@@ -4340,6 +4443,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _recoverPending(onlyLoc: loc, resumed: resumed);
   }
 
+  // The plain reason the file at [path] can't be used as page [id], chosen
+  // like _checkFile does.
+  Future<String> _whyUnreadable(String path, String id) async {
+    try {
+      final page = readPage(utf8.decode(await File(path).readAsBytes()));
+      return page.id != id ? 'it holds a different page' : "it isn't a page this version of Noted can read";
+    } on UnsupportedPageFormatException {
+      return 'it is from a newer version of Noted';
+    } on PageFormatException {
+      return "it isn't a valid page file";
+    } on FormatException {
+      return "it isn't a valid page file";
+    } on Object {
+      return "it couldn't be read";
+    }
+  }
+
   // The open page was kept read-only while its folder was away: it is
   // writable again and merged with whatever its file holds now.
   //
@@ -4363,7 +4483,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             _metas[id] = c.page.meta;
             _orphanLoc = null;
             _rebuildTree();
-            await _blockOpen(loc, _key(path), 'it is not a page this version can read', id);
+            await _blockOpen(loc, _key(path), await _whyUnreadable(path, id), id);
           } else {
             // Its file is gone (the page was saved before the folder went and
             // came back without it). The page stays and is editable; its next

@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:noted_core/noted_core.dart';
 
 /// The folder for recovery entries: `recovery` next to `binders.json`, the
@@ -305,7 +306,13 @@ class RecoveryStore {
       ? e.message
       : e is PageFormatException
       ? e.message
-      : '$e';
+      : _plain(e);
+
+  // Not a format error: a plain reason for the user, the detail to the log.
+  static String _plain(Object e) {
+    debugPrint('Reading a recovery file failed: $e');
+    return "the file couldn't be read";
+  }
 
   static String _stemOf(String path) => path.split(RegExp(r'[\\/]')).last.replaceFirst(RegExp(r'\.[^.]*$'), '');
 

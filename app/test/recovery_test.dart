@@ -273,7 +273,7 @@ void main() {
     await nb.checkFolders();
     expect(pageFile(extra, x).readAsStringSync(), newer, reason: 'never written over');
     expect(nb.current!.readOnly, isTrue);
-    expect(nb.readOnlyReason, contains('not a page this version can read'));
+    expect(nb.readOnlyReason, allOf(contains('from a newer version of Noted'), contains('open another page')));
 
     // A readable version lands, with a box the other device added.
     final theirBox = BoxRecord.create(
@@ -620,6 +620,7 @@ void main() {
       expect(File('${assetsOf(id).path}/note.txt').readAsBytesSync(), [4, 3, 2, 1]);
       expect(File('${keptDir().path}/note.txt').readAsBytesSync(), bytes);
       expect(nb.recoveryProblems.single, contains('a different note.txt is already there; both are kept'));
+      expect(nb.recoveryDamaged.single.reason, allOf(startsWith('The files kept for'), contains('could not be moved into place: a different note.txt')));
       expect(assetsOf(id).listSync(), hasLength(1), reason: 'no temp file left');
     });
 
@@ -638,6 +639,7 @@ void main() {
       expect(File('${assetsOf(id).path}/$keptName').existsSync(), isFalse);
       expect(File('${keptDir().path}/$keptName.tmp').existsSync(), isTrue);
       expect(nb.recoveryProblems, hasLength(1));
+      expect(nb.recoveryDamaged.single.reason, startsWith('The files kept for'));
     });
 
     test('a file that arrives while landing is not deleted, and lands on the next check', () async {
@@ -653,6 +655,7 @@ void main() {
       expect(File('${keptDir().path}/$lateName').readAsBytesSync(), late);
       expect(File('${keptDir().path}/$keptName').existsSync(), isFalse, reason: 'the verified file went');
       expect(nb.recoveryProblems, hasLength(1));
+      expect(nb.recoveryDamaged.single.reason, allOf(contains('were moved into place'), contains('other files stay in the kept folder')));
 
       nb.keptLandedHook = null;
       await nb.checkFolders();
@@ -687,6 +690,7 @@ void main() {
       await again.checkFolders();
       expect(Directory('${rec.path}/ghost.assets').existsSync(), isTrue);
       expect(again.recoveryDamaged.map((d) => d.path.split(RegExp(r'[\\\\/]')).last), ['ghost.assets']);
+      expect(again.recoveryDamaged.single.reason, 'These kept files have no page to go with.');
       expect(again.tree[x], isNotNull);
     });
 
@@ -745,7 +749,8 @@ void main() {
       await nb.checkFolders();
       expect((await nb.pendingRecovery()).entries, hasLength(1));
       expect(nb.recoveryDamaged, hasLength(1));
-      expect(nb.recoveryDamaged.single.reason, contains('injected read failure'));
+      expect(nb.recoveryDamaged.single.reason, contains('could not be saved into the page file'));
+      expect(nb.recoveryDamaged.single.reason, isNot(contains('injected')));
 
       await pages.rename(moved.path);
       await nb.checkFolders();
@@ -772,6 +777,36 @@ void main() {
       expect(again.recoveryDamaged, hasLength(1));
     });
   });
+
+  for (final kind in ['newer', 'damaged', 'not UTF-8']) {
+    test('an entry whose saved file is $kind is kept and says so plainly', () async {
+      final (nb, x, _) = await pendingEdit();
+      await vanish(nb);
+      quit(nb);
+      await restore();
+      final file = pageFile(extra, x);
+      final original = file.readAsStringSync();
+      switch (kind) {
+        case 'newer':
+          file.writeAsStringSync(original.replaceFirst(RegExp(r'"format"\s*:\s*1'), '"format":99'));
+        case 'damaged':
+          file.writeAsStringSync('{ not json');
+        default:
+          file.writeAsBytesSync([0xff, 0xfe, 0xfd]);
+      }
+      final again = make();
+      await again.load();
+      expect(recFiles().where((p) => p.endsWith('.entry')), isNotEmpty, reason: 'the entry stays');
+      final reason = again.recoveryDamaged.map((d) => d.reason).join('\n');
+      expect(reason, contains("Recovery can't finish: the saved file of"));
+      expect(
+        reason,
+        contains(kind == 'newer' ? 'is from a newer version of Noted' : "isn't a valid page file"),
+      );
+      expect(reason, isNot(contains('could not be saved into the page file')));
+      expect(reason, isNot(contains('JSON')));
+    });
+  }
 
   test('replay refuses an entry whose page is another page than the entry says', () async {
     final (nb, x, _) = await pendingEdit();

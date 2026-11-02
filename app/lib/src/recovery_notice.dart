@@ -13,7 +13,11 @@ import 'notebook.dart';
 Future<void> showRecoveryNoticeOnExit(Notebook notebook, GlobalKey<NavigatorState> navigator) async {
   final listing = await notebook.pendingRecovery();
   final pages = listing.entries.length;
-  final problems = listing.problems;
+  // The same files and reasons as the sidebar's "Can't open" list.
+  final damaged = [...listing.damaged, ...notebook.recoveryOwnDamaged];
+  final problems = [
+    for (final u in damaged) '${u.path.split(RegExp(r'[\\/]')).last}: ${u.reason}',
+  ];
   if (pages == 0 && problems.isEmpty) return;
   final context = navigator.currentContext;
   if (context == null || !context.mounted) return;

@@ -507,13 +507,16 @@ void main() {
         if (id == a) Process.runSync('attrib', ['+R', claim]);
       };
       Object? error;
+      var needsAction = false;
       try {
         await nb.moveToLocation(a);
       } on NotebookException catch (e) {
         error = e.message;
+        needsAction = e.needsAction;
       } finally {
         Process.runSync('attrib', ['-R', claim]);
       }
+      expect(needsAction, isTrue);
       expect(error, allOf(contains('empty file was left'), contains('is now in'), isNot(contains('both places'))));
       expect(File(claim).lengthSync(), 0);
       expect(read(pages, a), contains('"pageId":"$a"'));
@@ -526,7 +529,11 @@ void main() {
       source.raceAt = 2; // the path lookup that makes the claim
       await expectLater(
         nb.moveToLocation(a),
-        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('kept in both places'))),
+        throwsA(
+          isA<NotebookException>()
+              .having((e) => e.message, 'message', contains('kept in both places'))
+              .having((e) => e.needsAction, 'needsAction', isTrue),
+        ),
       );
       expect(File('${folder.path}/$a.canvas').readAsStringSync(), 'written elsewhere');
     });
@@ -588,7 +595,11 @@ void main() {
       source.failLoad.add(a);
       await expectLater(
         nb.moveToLocation(a),
-        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('Could not move the page'))),
+        throwsA(
+          isA<NotebookException>()
+              .having((e) => e.message, 'message', 'Could not move the page.')
+              .having((e) => e.needsAction, 'needsAction', isFalse),
+        ),
       );
       expect(read(folder, a), contains('"pageId":"$a"'));
     });
@@ -632,10 +643,11 @@ void main() {
             'message',
             allOf(
               contains('kept in both places'),
-              contains('duplicate page id'),
-              contains('original file is in Work'),
-              contains('copy made by the move is in Pages'),
+              contains('under "Can\'t open"'),
+              contains('old file in Work'),
+              contains('copy is in Pages'),
               contains('subpage of'),
+              isNot(contains('duplicate page id')),
               isNot(contains('after a restart')),
             ),
           ),
@@ -741,11 +753,9 @@ void main() {
       await expectLater(
         nb.moveToLocation(a),
         throwsA(
-          isA<NotebookException>().having(
-            (e) => e.message,
-            'message',
-            allOf(contains('partly'), contains('Pages'), contains('stayed where')),
-          ),
+          isA<NotebookException>()
+              .having((e) => e.message, 'message', allOf(contains('partly'), contains('Pages'), contains('stayed where')))
+              .having((e) => e.needsAction, 'needsAction', isFalse),
         ),
       );
       expect(nb.currentId, a);
@@ -787,9 +797,9 @@ void main() {
           (e) => e.message,
           'message',
           allOf(
-            contains('original file is in Pages'),
-            contains('copy made by the move is in Work'),
-            contains('duplicate page id'),
+            contains('old file in Pages'),
+            contains('copy is in Work'),
+            contains('under "Can\'t open"'),
           ),
         ),
       ),

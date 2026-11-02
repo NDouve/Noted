@@ -68,6 +68,32 @@ void main() {
     await tearDownNotebook(tester, root, nb);
   });
 
+  testWidgets("the quit notice lists Can't open rows as 'name: reason', like the sidebar", (tester) async {
+    final (root, nb) = await setUpNotebook(tester, pending: false);
+    await tester.runAsync(() async {
+      final rec = await Directory('${root.path}/app/recovery').create(recursive: true);
+      File('${rec.path}/bad-1.json').writeAsStringSync('{ nope');
+      File('${rec.path}/bad-1.canvas').writeAsStringSync('not a page');
+    });
+    final key = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(MaterialApp(navigatorKey: key, home: const SizedBox()));
+    late Future<void> future;
+    await tester.runAsync(() async {
+      future = showRecoveryNoticeOnExit(nb, key);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    });
+    await tester.pump();
+    await tester.pump();
+    expect(find.text("Can't open:"), findsOneWidget);
+    expect(find.textContaining("bad-1: Recovery entry can't be read"), findsOneWidget);
+    expect(find.textContaining(root.path), findsNothing, reason: 'the file name, not the whole path');
+    await tester.tap(find.byKey(const ValueKey('recovery-exit-ok')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.runAsync(() => future);
+    await tearDownNotebook(tester, root, nb);
+  });
+
   testWidgets('no quit notice when nothing is pending', (tester) async {
     final (root, nb) = await setUpNotebook(tester, pending: false);
     final key = GlobalKey<NavigatorState>();

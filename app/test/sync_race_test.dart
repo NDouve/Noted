@@ -107,6 +107,8 @@ void main() {
       File(pathOf(id)).writeAsStringSync('{ not json');
       await nb.flush();
       expectBlocked(id, mine, '{ not json');
+      expect(nb.readOnlyReason, allOf(contains("it isn't a valid page file"), contains('open another page')));
+      expect(nb.readOnlyReason, isNot(contains('JSON')));
       final entries = (await nb.pendingRecovery()).entries;
       expect(entries.single.pageId, id);
       expect(entries.single.page.node(mine.id), isNotNull);
@@ -119,6 +121,7 @@ void main() {
       File(pathOf(id)).writeAsStringSync(newer);
       await nb.flush();
       expectBlocked(id, mine, newer);
+      expect(nb.readOnlyReason, contains('it is from a newer version of Noted'));
       expect((await nb.pendingRecovery()).entries.single.page.node(mine.id), isNotNull);
     });
 
@@ -132,6 +135,7 @@ void main() {
       File(pathOf(id)).writeAsStringSync(foreign);
       await nb.flush();
       expectBlocked(id, mine, foreign);
+      expect(nb.readOnlyReason, contains('it holds a different page'));
       expect((await nb.pendingRecovery()).entries.single.page.node(mine.id), isNotNull);
     });
 
@@ -161,6 +165,7 @@ void main() {
       await nb.flush();
       expect(File(pathOf(id)).readAsBytesSync(), bytes);
       expect(nb.readOnlyReason, isNotNull);
+      expect(nb.readOnlyReason, anyOf(contains("it isn't a valid page file"), contains("it couldn't be read")));
       expect((await nb.pendingRecovery()).entries.single.page.node(mine.id), isNotNull);
     });
 

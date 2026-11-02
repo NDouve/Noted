@@ -320,4 +320,54 @@ void main() {
     expect(File('${rec.path}/bad-1.canvas').existsSync(), isTrue);
     await finish(tester);
   });
+
+  for (final needsAction in [true, false]) {
+    testWidgets(
+      needsAction
+          ? 'a move error that needs action stays on screen with a close icon'
+          : 'an ordinary move error is a plain SnackBar that fades',
+      (tester) async {
+        await tester.runAsync(() async {
+          dir = await Directory.systemTemp.createTemp('noted_tree_ui');
+          nb = _FailingCreate(PageStore(dir), needsAction);
+          await nb.load();
+        });
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: PageTreeView(notebook: nb)),
+          ),
+        );
+        await tester.pump();
+        (nb as _FailingCreate).armed = true;
+        final state = tester.state<PageTreeViewState>(find.byType(PageTreeView));
+        await tester.runAsync(() => state.newStandalonePage());
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        final bar = tester.widget<SnackBar>(find.byType(SnackBar));
+        expect(bar.persist, needsAction);
+        expect(bar.showCloseIcon, needsAction);
+        expect(find.byIcon(Icons.close), needsAction ? findsOneWidget : findsNothing);
+        await tester.pump(const Duration(seconds: 30));
+        await tester.pump(const Duration(seconds: 1));
+        expect(find.byType(SnackBar), needsAction ? findsOneWidget : findsNothing);
+        await finish(tester);
+      },
+    );
+  }
+}
+
+/// A notebook whose page creation fails with a [NotebookException].
+class _FailingCreate extends Notebook {
+  _FailingCreate(PageStore store, this._needsAction) : super(store, buildModules(), saveDelay: Duration.zero);
+
+  final bool _needsAction;
+  bool armed = false;
+
+  @override
+  Future<String> createPage({
+    String? parentId,
+    String? binderPath,
+    String? folderPath,
+    bool focusTitle = false,
+  }) async => armed ? throw NotebookException('A failure.', needsAction: _needsAction) : super.createPage();
 }
