@@ -140,7 +140,7 @@ jobs:
   macos-build:
     name: macOS release build
     # Apple Silicon. When GitHub has no machine free it gives up after about
-    # 15 minutes and marks the job cancelled; the Intel job below then runs.
+    # 15 minutes and marks the job cancelled; the Intel job below covers it.
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
@@ -174,12 +174,11 @@ jobs:
 
   macos-build-intel:
     name: macOS release build (Intel fallback)
-    # Runs only when the Apple Silicon job never got a machine (cancelled),
-    # not when it failed, and not when the whole run was cancelled by a
-    # newer push. The Intel pool is separate; GitHub supports it until the
-    # macOS 15 image retires in fall 2027.
-    needs: macos-build
-    if: ${{ !cancelled() && needs.macos-build.result == 'cancelled' }}
+    # Runs alongside the Apple Silicon job rather than after it: GitHub
+    # reports "no machine free" as a cancellation, which a dependent job
+    # can't tell apart from a run cancelled by a newer push. The Intel pool
+    # is separate; GitHub supports it until the macOS 15 image retires in
+    # fall 2027. Either job's zip is the same app.
     runs-on: macos-15-intel
     timeout-minutes: 60
     steps:
@@ -206,7 +205,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Noted-macos
+          name: Noted-macos-intel-runner
           path: Noted-macos.zip
           if-no-files-found: error
           retention-days: 14
