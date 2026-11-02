@@ -7,6 +7,7 @@ import 'dart:io';
 import '../format/page_format.dart';
 import '../merge/conflict_copy.dart';
 import '../model/page.dart';
+import 'exclusive_publish.dart';
 
 /// The result of scanning one page file.
 sealed class PageEntry {
@@ -53,6 +54,7 @@ class PageStore {
 
   final Directory directory;
   final Map<String, String> _paths = {};
+  static int _tmpCounter = 0;
 
   /// Reads every page file in the folder.
   ///
@@ -148,6 +150,35 @@ class PageStore {
     await tmp.writeAsString(writePage(page), flush: true);
     await tmp.rename(path);
     _paths[page.id] = path;
+  }
+
+  /// Writes [page] as a new file, and only if no file is at its path at the
+  /// moment of publishing (see [publishExclusive]). Returns false, leaving the
+  /// existing file untouched and removing the temporary file, when one is.
+  ///
+  /// The temporary name is unique per call, so a leftover hard link (see
+  /// [publishExclusive]) is never reopened by a later [save].
+  ///
+  /// [beforePublish] runs after the temporary file is written and before it is
+  /// published; it is a seam for tests.
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
+    final path = _pathFor(page.id);
+    final tmp = File('$path.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
+    await tmp.writeAsString(writePage(page), flush: true);
+    final bool published;
+    try {
+      if (beforePublish != null) await beforePublish();
+      published = await publishExclusive(tmp, path);
+    } catch (_) {
+      if (await tmp.exists()) await tmp.delete();
+      rethrow;
+    }
+    if (!published) {
+      if (await tmp.exists()) await tmp.delete();
+      return false;
+    }
+    _paths[page.id] = path;
+    return true;
   }
 
   Future<void> delete(String pageId) async {
