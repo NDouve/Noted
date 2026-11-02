@@ -129,9 +129,13 @@ PageMerge mergeConflictCopy(
     isConflict = true;
   }
 
+  // The side that did not win, taken before r is rebuilt below (a rebuilt r is
+  // a new object, so identity can't be asked later).
+  final loser = identical(r, o) ? c : o;
+
   // Conflicts already recorded on either side are all kept.
   final want = <BoxConflict>[...r.conflicts];
-  for (final x in (identical(r, o) ? c : o).conflicts) {
+  for (final x in loser.conflicts) {
     if (!want.contains(x)) want.add(x);
   }
   if (isConflict) {
@@ -142,7 +146,7 @@ PageMerge mergeConflictCopy(
 
   // The landed marker has no base either: kept when either side has it.
   if (r.landed == null) {
-    final l = (identical(r, o) ? c : o).landed;
+    final l = loser.landed;
     if (l != null) r = r.withLanded(l);
   }
   return (r, isConflict);

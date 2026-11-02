@@ -272,6 +272,81 @@ void main() {
       );
     });
 
+    test('conflict copy: a marker survives when conflict records combine', () {
+      final plain = box('n', 'v');
+      final extra = BoxConflict.other(node: box('z', 'q').toRaw(), at: 3);
+      final marked = plain
+          .withLanded(BoxLanded(at: 5, device: 'PC'))
+          .withConflicts([extra]);
+      final withRecord = plain.withConflicts([extra]);
+      for (final (o, c) in [
+        // Copy has marker and the extra record; original wins.
+        (pageOf([plain]), pageOf([marked])),
+        // Mirror: original has both, copy has neither.
+        (pageOf([marked]), pageOf([plain])),
+        // Original has only the record, copy only the marker.
+        (
+          pageOf([withRecord]),
+          pageOf([plain.withLanded(BoxLanded(at: 5, device: 'PC'))]),
+        ),
+      ]) {
+        final r = boxOf(
+          mergeConflictCopy(o, c, registry(), copyTime: 1).page,
+          'n',
+        );
+        expect(r.landed, BoxLanded(at: 5, device: 'PC'));
+        expect(r.conflicts, [extra]);
+      }
+    });
+
+    test('conflict copy: a marker survives a real conflict and a newer copy', () {
+      final mark = BoxLanded(at: 5, device: 'PC');
+      final plain = box('n', 'v');
+      // Different revisions with no base between them: a conflict.
+      final other = BoxRecord.create(
+        id: 'n',
+        typeId: 'test.plain',
+        dataVersion: 1,
+        bounds: const Bounds(0, 0, 100, 50),
+        data: RawJson.encode('w'),
+        snapshotText: 'snap:w',
+        rev: 'r2',
+      ).withLanded(mark);
+      final r1 = boxOf(
+        mergeConflictCopy(
+          pageOf([plain]),
+          pageOf([other]),
+          registry(),
+          copyTime: 1,
+        ).page,
+        'n',
+      );
+      expect(r1.landed, mark);
+      expect(r1.conflicts, hasLength(1));
+
+      // The copy is newer (its base is the original's revision).
+      final extra = BoxConflict.other(node: box('z', 'q').toRaw(), at: 3);
+      final original = plain.withLanded(mark).withConflicts([extra]);
+      final newer = plain.withContent(
+        data: RawJson.encode('w'),
+        dataVersion: 1,
+        snapshotText: 'snap:w',
+        newRev: 'r2',
+      );
+      final r2 = boxOf(
+        mergeConflictCopy(
+          pageOf([original]),
+          pageOf([newer]),
+          registry(),
+          copyTime: 1,
+        ).page,
+        'n',
+      );
+      expect(r2.rev, 'r2');
+      expect(r2.landed, mark);
+      expect(r2.conflicts, [extra]);
+    });
+
     test('conflict copy: overlap only counts against boxes the copy could not see there', () {
       final original = pageOf([a, box('w', 'w', at: far)]);
       final copy = pageOf([
