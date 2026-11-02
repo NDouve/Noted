@@ -2,12 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:convert';
 import 'dart:io';
 
 import '../format/page_format.dart';
 import '../merge/conflict_copy.dart';
 import '../model/page.dart';
 import 'exclusive_publish.dart';
+import 'replace_if_unchanged.dart';
 
 /// The result of scanning one page file.
 sealed class PageEntry {
@@ -61,12 +63,23 @@ class PageStore {
   /// A file that is a sync client's conflict copy of another page file in the
   /// folder (see [conflictCopyOriginalNames]; same page id) is reported as a
   /// [ConflictCopyPage], not as a duplicate.
+  ///
+  /// It first runs [sweepAsideFiles], which takes the set-aside files of any
+  /// [saveIfUnchanged] in flight on this folder: callers must not run `scan`
+  /// and `saveIfUnchanged` on the same folder at the same time.
   Future<List<PageEntry>> scan() async {
     await directory.create(recursive: true);
+    // Put back what a crashed or failed replace left under a set-aside name
+    // (see [sweepAsideFiles]); one that can't be moved yet is listed below.
+    await sweepAsideFiles(directory, extension: extension);
     _paths.clear();
     final entries = <PageEntry>[];
     final read = <String, (String, NotedPage)>{}; // by file name
     await for (final f in directory.list()) {
+      if (f is File && (f.path.endsWith(asideSuffix) || f.path.endsWith(verifiedSuffix))) {
+        entries.add(UnreadablePage(f.path, 'left over from a replace; not put back yet'));
+        continue;
+      }
       if (f is! File || !f.path.endsWith(extension)) continue;
       try {
         read[_name(f.path)] = (f.path, readPage(await f.readAsString()));
@@ -134,6 +147,14 @@ class PageStore {
     return null;
   }
 
+  static bool _sameBytes(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
   static String _name(String path) => path.split(RegExp(r'[\\/]')).last;
 
   Future<NotedPage> load(String pageId) async =>
@@ -179,6 +200,62 @@ class PageStore {
     }
     _paths[page.id] = path;
     return true;
+  }
+
+  /// Writes [page] over the page's file only if the file still holds exactly
+  /// [expectedText] (null: no file expected) at the moment of replacing; see
+  /// [replaceIfUnchanged]. On [ReplaceOutcome.changed] and the `Kept` outcomes
+  /// the file on disk is not what the caller merged against: reread, merge
+  /// again and retry. The temporary file is always removed.
+  ///
+  /// Callers must serialise this with [scan] on the same folder (see [scan]).
+  ///
+  /// The hooks are seams for tests (see [replaceIfUnchanged]).
+  Future<ReplaceResult> saveIfUnchanged(
+    NotedPage page,
+    String? expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    void Function()? beforePublish,
+    void Function()? beforeRestore,
+  }) async {
+    final path = _pathFor(page.id);
+    final tmp = File('$path.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
+    try {
+      final written = writePage(page);
+      await tmp.writeAsString(written, flush: true);
+      final expected = expectedText == null ? null : utf8.encode(expectedText);
+      var result = await replaceIfUnchanged(
+        tmp,
+        path,
+        expected,
+        beforeMoveAside: beforeMoveAside,
+        afterRead: afterRead,
+        beforePublish: beforePublish,
+        beforeRestore: beforeRestore,
+      );
+      if (result.replaced) _paths[page.id] = path;
+      // A leftover set-aside file whose bytes are exactly the expected (or the
+      // written) text holds nothing that isn't already known: remove it.
+      // Anything else stays for the next scan to surface.
+      final kept = result.keptPath;
+      if (kept != null) {
+        try {
+          final f = File(kept);
+          final bytes = await f.readAsBytes();
+          if ((expected != null && _sameBytes(bytes, expected)) ||
+              _sameBytes(bytes, utf8.encode(written))) {
+            await f.delete();
+            result = ReplaceResult(result.outcome);
+          }
+        } on FileSystemException {
+          // Gone (a scan took it) or locked: leave it to the scan.
+        }
+      }
+      return result;
+    } finally {
+      if (await tmp.exists()) await tmp.delete();
+    }
   }
 
   Future<void> delete(String pageId) async {

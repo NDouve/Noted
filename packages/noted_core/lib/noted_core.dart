@@ -41,5 +41,6 @@ export 'src/search/search_query.dart';
 export 'src/search/text_folding.dart';
 export 'src/storage/exclusive_publish.dart';
 export 'src/storage/page_store.dart';
+export 'src/storage/replace_if_unchanged.dart';
 export 'src/template/template.dart';
 export 'src/tree/page_tree.dart';
