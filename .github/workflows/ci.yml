@@ -106,11 +106,6 @@ jobs:
             exit 1
           fi
 
-      - name: Cleanup script tests
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: powershell -ExecutionPolicy Bypass -File app/scripts/test/cleanup-run.tests.ps1
-
   windows-release:
     name: Windows release build
     # Runs in parallel with checks so a build problem shows up without

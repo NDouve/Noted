@@ -8,7 +8,7 @@
   in it, and saves a PNG of its window.
 
 .DESCRIPTION
-  For reviewing visible changes (.claude/agents/reviewer-ui.md). The child
+  For reviewing visible changes with screenshots on scratch data. The child
   process gets APPDATA and LOCALAPPDATA pointing into -DataRoot
   (<DataRoot>\Roaming and <DataRoot>\Local), so the real notebook is never
   touched; this script's own environment is unchanged. Noted keeps its

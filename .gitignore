@@ -47,7 +47,7 @@ app.*.map.json
 # Widget Preview related
 .widget_preview/
 
-# Claude Code worktrees made by the build team (docs/runs/README.md)
+# Claude Code worktrees made by the build tooling
 .claude/worktrees/
 
 # Local Codex config (never committed)
