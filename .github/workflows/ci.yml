@@ -139,8 +139,49 @@ jobs:
 
   macos-build:
     name: macOS release build
+    # Apple Silicon. When GitHub has no machine free it gives up after about
+    # 15 minutes and marks the job cancelled; the Intel job below then runs.
     runs-on: macos-latest
     timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Get dependencies (workspace root)
+        run: flutter pub get
+
+      # Unsigned: no team or certificate is configured, so the app is for
+      # inspection and Gatekeeper will not open it without an override.
+      - name: Build
+        working-directory: app
+        run: flutter build macos --release
+
+      - name: Zip Noted.app
+        working-directory: app/build/macos/Build/Products/Release
+        run: ditto -c -k --keepParent Noted.app "$GITHUB_WORKSPACE/Noted-macos.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Noted-macos
+          path: Noted-macos.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  macos-build-intel:
+    name: macOS release build (Intel fallback)
+    # Runs only when the Apple Silicon job never got a machine (cancelled),
+    # not when it failed, and not when the whole run was cancelled by a
+    # newer push. The Intel pool is separate; GitHub supports it until the
+    # macOS 15 image retires in fall 2027.
+    needs: macos-build
+    if: ${{ !cancelled() && needs.macos-build.result == 'cancelled' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
