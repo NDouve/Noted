@@ -1,0 +1,378 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:noted/src/recovery_store.dart';
+import 'package:noted_core/noted_core.dart';
+
+NotedPage _page(String id, String title) =>
+    NotedPage.create(PageMeta.create(id: id, title: title, order: 0));
+
+// The name entries had before the layout changed (case folded everywhere).
+String _legacyName(String folder, String id) {
+  var h = 0xcbf29ce484222325;
+  for (final u in utf8.encode('${folder.replaceAll(r'\', '/').toLowerCase()}|$id')) {
+    h = ((h ^ u) * 0x100000001b3) & 0x7fffffffffffffff;
+  }
+  return '$id-${h.toRadixString(16)}';
+}
+
+Future<void> Function(String) _failAt(String point) =>
+    (p) async {
+      if (p == point) throw const FileSystemException('injected');
+    };
+
+void main() {
+  late Directory root;
+  late Directory dir;
+  final t = DateTime.utc(2026, 10, 25, 10);
+  final later = t.add(const Duration(minutes: 1));
+
+  setUp(() async {
+    root = await Directory.systemTemp.createTemp('noted_recovery_store');
+    dir = Directory('${root.path}/rec');
+  });
+
+  tearDown(() async {
+    if (root.existsSync()) await root.delete(recursive: true);
+  });
+
+  List<String> files(String ext) => dir.existsSync()
+      ? [
+          for (final f in dir.listSync())
+            if (f is File && f.path.endsWith(ext)) f.path,
+        ]
+      : [];
+
+  RecoveryStore store({Future<void> Function(String)? hook}) => RecoveryStore(dir, windows: false, hook: hook);
+
+  // An entry in the layout used before the single file.
+  void legacy(String folder, NotedPage page, {String? base, String? stem, NotedPage? canvas, DateTime? time}) {
+    dir.createSync(recursive: true);
+    final s = stem ?? _legacyName(folder, page.id);
+    File('${dir.path}/$s.canvas').writeAsStringSync(writePage(canvas ?? page));
+    File('${dir.path}/$s.json').writeAsStringSync(
+      jsonEncode({
+        'format': 1,
+        'folder': folder,
+        'pageId': page.id,
+        'time': (time ?? t).toIso8601String(),
+        'base': base,
+      }),
+    );
+  }
+
+  group('R-5 location identity', () {
+    test('case-distinct locations are separate entries when case matters', () async {
+      final s = store();
+      await s.write(folder: '/Notes', page: _page('p1', 'upper'), baseText: null, time: t);
+      await s.write(folder: '/notes', page: _page('p1', 'lower'), baseText: null, time: t);
+      final l = await s.list();
+      expect(l.problems, isEmpty);
+      expect(l.entries.map((e) => e.page.meta.title).toSet(), {'upper', 'lower'});
+    });
+
+    test('on Windows they are one location', () async {
+      final s = RecoveryStore(dir, windows: true);
+      await s.write(folder: r'D:\Notes', page: _page('p1', 'one'), baseText: null, time: t);
+      await s.write(folder: 'd:/notes', page: _page('p1', 'two'), baseText: null, time: t);
+      final l = await s.list();
+      expect(l.entries, hasLength(1));
+      expect(l.entries.single.page.meta.title, 'two');
+    });
+
+    test('an old entry is migrated, nothing lost, and it is idempotent', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'), base: writePage(_page('p1', 'base')));
+      final s = store();
+      final l = await s.list();
+      expect(l.problems, isEmpty);
+      final e = l.entries.single;
+      expect(e.page.meta.title, 'old');
+      expect(e.folder, r'D:\Notes');
+      expect(e.baseText, writePage(_page('p1', 'base')));
+      expect(files('.canvas'), isEmpty);
+      expect(files('.json'), isEmpty);
+      expect(files('.entry'), hasLength(1));
+      final again = await s.list();
+      expect(again.entries, hasLength(1));
+      expect(again.problems, isEmpty);
+    });
+
+    test('an old entry newer than the existing one of its page is kept beside it and reported', () async {
+      const rel = 'relative_notes_folder';
+      final abs = File(rel).absolute.path;
+      await store().write(folder: rel, page: _page('p1', 'existing'), baseText: null, time: t);
+      legacy(abs, _page('p1', 'old'), time: later);
+      expect(_legacyName(rel, 'p1') == _legacyName(abs, 'p1'), isFalse);
+      final s = store();
+      final l = await s.list();
+      expect(l.entries.map((e) => e.page.meta.title).toSet(), {'existing', 'old'});
+      expect(l.problems, hasLength(1));
+      expect(l.damaged, hasLength(1));
+      expect(files('.entry'), hasLength(2));
+      expect(files('.canvas'), isEmpty);
+      final again = await s.list();
+      expect(again.entries, hasLength(2));
+      expect(again.problems, hasLength(1));
+    });
+
+    test('an old entry not newer than the existing one of its page is superseded, not made a duplicate', () async {
+      const rel = 'relative_notes_folder';
+      final abs = File(rel).absolute.path;
+      await store().write(folder: rel, page: _page('p1', 'existing'), baseText: null, time: t);
+      legacy(abs, _page('p1', 'old'), time: t);
+      final l = await store().list();
+      expect(l.entries.single.page.meta.title, 'existing');
+      expect(l.problems, isEmpty);
+      expect(files('.entry'), hasLength(1));
+      expect(files('.canvas'), isEmpty);
+      expect(files('.json'), isEmpty);
+    });
+
+    test('a migration stopped after publishing is finished later without a duplicate', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'));
+      final first = await store(hook: _failAt('envelope-published')).list();
+      expect(first.entries.length, lessThanOrEqualTo(1));
+      expect(files('.entry'), hasLength(1));
+      expect(files('.canvas'), hasLength(1)); // the old files are still there
+      final l = await store().list();
+      expect(l.entries, hasLength(1));
+      expect(l.problems, isEmpty);
+      expect(files('.entry'), hasLength(1));
+      expect(files('.canvas'), isEmpty);
+      expect(files('.json'), isEmpty);
+    });
+
+    test('a migration stopped between the two deletes leaves nothing to report', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'));
+      await store(hook: _failAt('legacy-json-deleted')).list();
+      expect(files('.json'), isEmpty);
+      expect(files('.canvas'), hasLength(1));
+      final l = await store().list();
+      expect(l.entries, hasLength(1));
+      expect(l.problems, isEmpty);
+      expect(files('.canvas'), isEmpty);
+      expect(files('.entry'), hasLength(1));
+    });
+
+    test('a lone old metadata file that an entry already holds is removed, not reported', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'), base: writePage(_page('p1', 'b')));
+      await store().list();
+      final meta = jsonEncode({
+        'format': 1,
+        'folder': r'D:\Notes',
+        'pageId': 'p1',
+        'time': t.toIso8601String(),
+        'base': writePage(_page('p1', 'b')),
+      });
+      File('${dir.path}/${_legacyName(r'D:\Notes', 'p1')}.json').writeAsStringSync(meta);
+      final l = await store().list();
+      expect(l.problems, isEmpty);
+      expect(files('.json'), isEmpty);
+      expect(l.entries, hasLength(1));
+    });
+
+    test('a lone old file that no entry holds is kept and reported', () async {
+      dir.createSync(recursive: true);
+      File('${dir.path}/orphan-1.canvas').writeAsStringSync(writePage(_page('p1', 'x')));
+      final l = await store().list();
+      expect(l.entries, isEmpty);
+      expect(l.problems, hasLength(1));
+      expect(File('${dir.path}/orphan-1.canvas').existsSync(), isTrue);
+    });
+  });
+
+  group('R-10 one generation', () {
+    test('a crash before publishing: a newer complete generation is promoted', () async {
+      final base1 = writePage(_page('p1', 'base-one'));
+      final base2 = writePage(_page('p1', 'base-two'));
+      await store().write(folder: '/n', page: _page('p1', 'one'), baseText: base1, time: t);
+      await expectLater(
+        store(hook: _failAt('tmp-written')).write(folder: '/n', page: _page('p1', 'two'), baseText: base2, time: later),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(files('.tmp'), hasLength(1));
+      final l = await store().list();
+      final e = l.entries.single;
+      // The page and the base are of the same generation.
+      expect(e.page.meta.title, 'two');
+      expect(e.baseText, base2);
+      expect(l.problems, isEmpty);
+      expect(files('.tmp'), isEmpty);
+    });
+
+    test('a crash before publishing: a leftover that is not newer is deleted as superseded', () async {
+      final base1 = writePage(_page('p1', 'base-one'));
+      await store().write(folder: '/n', page: _page('p1', 'one'), baseText: base1, time: t);
+      await expectLater(
+        store(hook: _failAt('tmp-written')).write(folder: '/n', page: _page('p1', 'two'), baseText: null, time: t),
+        throwsA(isA<FileSystemException>()),
+      );
+      final l = await store().list();
+      expect(l.entries.single.page.meta.title, 'one');
+      expect(l.entries.single.baseText, base1);
+      expect(l.problems, isEmpty);
+      expect(files('.tmp'), isEmpty);
+    });
+
+    test('a crash on the first write: the complete leftover becomes the entry', () async {
+      await expectLater(
+        store(hook: _failAt('tmp-written')).write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(files('.entry'), isEmpty);
+      final l = await store().list();
+      expect(l.entries.single.page.meta.title, 'one');
+      expect(l.problems, isEmpty);
+      expect(files('.tmp'), isEmpty);
+    });
+
+    test('a leftover that is cut short or inconsistent is kept and reported', () async {
+      await store().write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);
+      final entry = File(files('.entry').single);
+      final text = entry.readAsStringSync();
+      File('${entry.path}.1-1.tmp').writeAsStringSync(text.substring(0, text.length ~/ 2));
+      final m = jsonDecode(text) as Map<String, dynamic>;
+      m['pageId'] = 'other';
+      File('${entry.path}.2-2.tmp').writeAsStringSync(jsonEncode(m));
+      final l = await store().list();
+      expect(l.entries, hasLength(1));
+      expect(l.entries.single.page.meta.title, 'one');
+      expect(l.problems, hasLength(2));
+      expect(l.damaged, hasLength(2));
+      expect(files('.tmp'), hasLength(2));
+    });
+
+    test('an unfinished write of the old layout is removed if an entry holds it, else reported', () async {
+      await store().write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);
+      File('${dir.path}/a-1.canvas.tmp').writeAsStringSync(writePage(_page('p1', 'one')));
+      File('${dir.path}/b-1.canvas.tmp').writeAsStringSync(writePage(_page('p1', 'not held')));
+      final l = await store().list();
+      expect(l.problems, hasLength(1));
+      expect(files('.tmp').map((p) => p.split(RegExp(r'[\\/]')).last), ['b-1.canvas.tmp']);
+    });
+
+    test('a rename that fails removes the write\'s own tmp file', () async {
+      final s = store();
+      await s.write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);
+      final entry = File(files('.entry').single);
+      entry.deleteSync();
+      Directory(entry.path).createSync(); // the rename can't replace a folder
+      await expectLater(
+        s.write(folder: '/n', page: _page('p1', 'two'), baseText: null, time: later),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(files('.tmp'), isEmpty);
+    });
+
+    test('an entry of another location or page under the same name is not overwritten', () async {
+      // Entry for /a stored under the name that /b would use.
+      final scratch = Directory('${root.path}/scratch');
+      await RecoveryStore(scratch, windows: false).write(folder: '/b', page: _page('p1', 'b'), baseText: null, time: t);
+      final nameOfB = scratch.listSync().single.path.split(RegExp(r'[\\/]')).last;
+      await store().write(folder: '/a', page: _page('p1', 'a'), baseText: null, time: t);
+      final entry = File(files('.entry').single);
+      final aText = entry.readAsStringSync();
+      final stolen = File('${dir.path}/$nameOfB');
+      entry.renameSync(stolen.path);
+      await store().write(folder: '/b', page: _page('p1', 'b'), baseText: null, time: later);
+      expect(stolen.readAsStringSync(), aText);
+      expect(files('.entry'), hasLength(2));
+      expect(files('.entry').where((p) => p.contains('_dup2')), hasLength(1));
+    });
+
+    test('a listing waits for a write in progress', () async {
+      final reached = Completer<void>();
+      final gate = Completer<void>();
+      final s = store(
+        hook: (p) async {
+          if (p != 'tmp-written') return;
+          reached.complete();
+          await gate.future;
+        },
+      );
+      final w = s.write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);
+      await reached.future;
+      var listed = false;
+      final listing = store().list().then((v) {
+        listed = true;
+        return v;
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(listed, isFalse);
+      gate.complete();
+      await w;
+      final l = await listing;
+      expect(l.entries, hasLength(1));
+      expect(l.problems, isEmpty);
+      expect(files('.tmp'), isEmpty);
+    });
+
+    test('an entry is one file', () async {
+      await RecoveryStore(dir).write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);
+      expect(dir.listSync().whereType<File>(), hasLength(1));
+      expect(files('.entry'), hasLength(1));
+    });
+  });
+
+  group('R-6 identities must agree', () {
+    Future<File> valid({String? base}) async {
+      await store().write(folder: '/n', page: _page('p1', 'one'), baseText: base, time: t);
+      return File(files('.entry').single);
+    }
+
+    Future<void> expectRejected(String path) async {
+      final l = await store().list();
+      expect(l.entries, isEmpty);
+      expect(l.problems, hasLength(1));
+      expect(l.damaged, hasLength(1));
+      expect(File(path).existsSync(), isTrue);
+    }
+
+    test('the metadata page id differs from the page', () async {
+      final f = await valid();
+      final m = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
+      m['pageId'] = 'other';
+      f.writeAsStringSync(jsonEncode(m));
+      await expectRejected(f.path);
+    });
+
+    test('the page is another page', () async {
+      final f = await valid();
+      final m = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
+      m['page'] = writePage(_page('p2', 'two'));
+      f.writeAsStringSync(jsonEncode(m));
+      await expectRejected(f.path);
+    });
+
+    test('the base is another page', () async {
+      final f = await valid(base: writePage(_page('p1', 'base')));
+      final m = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
+      m['base'] = writePage(_page('p2', 'base'));
+      f.writeAsStringSync(jsonEncode(m));
+      await expectRejected(f.path);
+    });
+
+    test('the file name belongs to another entry', () async {
+      final f = await valid();
+      final moved = File('${dir.path}/p9-123.entry');
+      f.renameSync(moved.path);
+      await expectRejected(moved.path);
+    });
+
+    test('an old entry whose canvas is another page is not converted', () async {
+      legacy('/n', _page('p1', 'one'), canvas: _page('p2', 'two'));
+      final l = await store().list();
+      expect(l.entries, isEmpty);
+      expect(l.problems, hasLength(1));
+      expect(files('.canvas'), hasLength(1));
+      expect(files('.json'), hasLength(1));
+      expect(files('.entry'), isEmpty);
+    });
+  });
+}
