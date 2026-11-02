@@ -55,7 +55,7 @@ jobs:
       # flutter test runs them all. A failing package does not stop the rest.
       # Each package's dart_test.yaml fails a test after 2 minutes, but a test
       # stuck in a synchronous loop never lets that timer run. So a package
-      # gets 8 minutes in all; then its test process is killed and the last
+      # gets 15 minutes in all; then its test process is killed and the last
       # tests it started are reported. Failed tests are reported by name, with
       # the start of their error message.
       # (Annotations can be read without signing in; the log can't.)

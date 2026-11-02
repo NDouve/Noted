@@ -336,7 +336,17 @@ bool _isDigit(String s, int i) {
   return u >= 48 && u <= 57;
 }
 
+/// How deeply parentheses, arguments and unary operators may nest while
+/// parsing.
 const int _maxDepth = 100;
+
+/// The tallest tree a formula may build. The evaluator and the rewrites walk
+/// the tree recursively, so its height is bounded here, the same on every
+/// platform, instead of being left to the stack: a long run of `+` or `^`
+/// builds a tree as tall as the run. Real formulas stay far below this;
+/// 256 levels are safe on the smallest stack (the Windows main isolate),
+/// where a few thousand overflowed.
+const int _maxTreeHeight = 256;
 
 final class _Parser {
   _Parser(this._tokens, this._length);
@@ -345,6 +355,22 @@ final class _Parser {
   final int _length;
   int _i = 0;
   int _depth = 0;
+  final Expando<int> _heights = Expando<int>();
+
+  /// Returns [node] after checking that the tree under it is not too tall:
+  /// its height is one more than the tallest of its [children].
+  T _node<T extends Expr>(T node, List<Expr> children) {
+    var tallest = 0;
+    for (final c in children) {
+      final h = _heights[c] ?? 1;
+      if (h > tallest) tallest = h;
+    }
+    if (tallest + 1 > _maxTreeHeight) {
+      throw FormulaParseException('nested too deeply', node.start);
+    }
+    _heights[node] = tallest + 1;
+    return node;
+  }
 
   _Token get _peek => _tokens[_i];
 
@@ -366,7 +392,7 @@ final class _Parser {
         const {'=', '<>', '<', '>', '<=', '>='}.contains(_peek.text)) {
       final op = _take().text;
       final right = _concat();
-      left = BinaryExpr(left.start, right.end, op, left, right);
+      left = _node(BinaryExpr(left.start, right.end, op, left, right), [left, right]);
     }
     return left;
   }
@@ -376,7 +402,7 @@ final class _Parser {
     while (_isOp('&')) {
       _take();
       final right = _sum();
-      left = BinaryExpr(left.start, right.end, '&', left, right);
+      left = _node(BinaryExpr(left.start, right.end, '&', left, right), [left, right]);
     }
     return left;
   }
@@ -386,7 +412,7 @@ final class _Parser {
     while (_isOp('+') || _isOp('-')) {
       final op = _take().text;
       final right = _product();
-      left = BinaryExpr(left.start, right.end, op, left, right);
+      left = _node(BinaryExpr(left.start, right.end, op, left, right), [left, right]);
     }
     return left;
   }
@@ -396,23 +422,17 @@ final class _Parser {
     while (_isOp('*') || _isOp('/')) {
       final op = _take().text;
       final right = _power();
-      left = BinaryExpr(left.start, right.end, op, left, right);
+      left = _node(BinaryExpr(left.start, right.end, op, left, right), [left, right]);
     }
     return left;
   }
 
   Expr _power() {
     var left = _unary();
-    // A chain of ^ builds a left-leaning tree that is evaluated recursively,
-    // so its length is capped like any other nesting, not left to the stack.
-    var chain = 0;
     while (_isOp('^')) {
-      if (++chain > _maxDepth) {
-        throw FormulaParseException('nested too deeply', _peek.start);
-      }
       _take();
       final right = _nested(_unary);
-      left = BinaryExpr(left.start, right.end, '^', left, right);
+      left = _node(BinaryExpr(left.start, right.end, '^', left, right), [left, right]);
     }
     return left;
   }
@@ -421,12 +441,12 @@ final class _Parser {
     if (_isOp('-') || _isOp('+')) {
       final t = _take();
       final operand = _nested(_unary);
-      return UnaryExpr(t.start, operand.end, t.text, operand);
+      return _node(UnaryExpr(t.start, operand.end, t.text, operand), [operand]);
     }
     var e = _primary();
     while (_isOp('%')) {
       final t = _take();
-      e = PercentExpr(e.start, t.end, e);
+      e = _node(PercentExpr(e.start, t.end, e), [e]);
     }
     return e;
   }
@@ -489,13 +509,13 @@ final class _Parser {
     final args = <Expr>[];
     if (_peek.kind == _T.rparen) {
       final close = _take();
-      return CallExpr(name.start, close.end, name.text, args);
+      return _node(CallExpr(name.start, close.end, name.text, args), args);
     }
     while (true) {
       args.add(_nested(_comparison));
       final t = _take();
       if (t.kind == _T.rparen) {
-        return CallExpr(name.start, t.end, name.text, args);
+        return _node(CallExpr(name.start, t.end, name.text, args), args);
       }
       if (t.kind != _T.comma) {
         throw FormulaParseException('expected , or )', t.start);

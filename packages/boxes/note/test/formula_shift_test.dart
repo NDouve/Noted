@@ -17,6 +17,11 @@ void main() {
       expect(sh('=C3', -2, -2), '=A1');
     });
 
+    test('a formula too deep to parse is returned unchanged', () {
+      final deep = '=${List.filled(8000, 'A1').join('+')}';
+      expect(sh(deep, 1, 1), deep);
+    });
+
     test('dollar anchors hold their part', () {
       expect(sh(r'=$A$1', 3, 3), r'=$A$1');
       expect(sh(r'=$A1', 3, 3), r'=$A4');

@@ -108,10 +108,19 @@ void main() {
       expect(calc('=${'(' * 100}1${')' * 100}'), '1');
       expect(calc('=${'(' * 101}1${')' * 101}'), '#ERROR!');
       expect(calc('=${'-' * 100}1'), '1');
-      expect(calc('=2${'^1' * 100}'), '2');
-      expect(calc('=2${'^1' * 101}'), '#ERROR!');
-      // Long but flat is fine.
-      expect(calc('=${List.filled(3000, '1').join('+')}'), '3000');
+      // The tree height is capped too (256), whatever builds it.
+      expect(calc('=2${'^1' * 200}'), '2');
+      expect(calc('=2${'^1' * 300}'), '#ERROR!');
+      expect(calc('=${List.filled(200, '1').join('+')}'), '200');
+      expect(calc('=${List.filled(5000, '1').join('+')}'), '#ERROR!');
+      expect(calc('=${List.filled(8000, '1').join('+')}'), '#ERROR!');
+      // Parentheses do not reset the height: 99 levels of a 100-link chain
+      // are within the paren cap but far too tall.
+      var s = '1';
+      for (var i = 0; i < 99; i++) {
+        s = '($s${'^1' * 100})';
+      }
+      expect(calc('=$s'), '#ERROR!');
     });
 
     test('names that are neither functions nor booleans are #NAME?', () {

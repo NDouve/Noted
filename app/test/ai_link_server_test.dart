@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
@@ -65,7 +66,12 @@ void main() {
       }
     }, (e, st) {
       if (isRefusal(e)) return;
-      if (!result.isCompleted) result.completeError(e, st);
+      if (!result.isCompleted) {
+        result.completeError(e, st);
+      } else {
+        // Too late to fail the awaiting test: report it as uncaught.
+        Zone.root.handleUncaughtError(e, st);
+      }
     });
     return result.future;
   }
@@ -158,11 +164,28 @@ void main() {
 
   test('a client that closes before the greeting raises no uncaught error', () async {
     final s = await start();
-    // Several, so the server's greeting write meets a closed connection at
-    // least once on any platform. An uncaught error fails the test itself.
-    for (var i = 0; i < 20; i++) {
+    // SO_LINGER on, with a zero timeout, makes closing send a reset, so the
+    // server's greeting write fails the same way on every platform. An
+    // uncaught error fails the test itself.
+    final linger = Platform.isLinux
+        ? RawSocketOption(
+            1, // SOL_SOCKET
+            13, // SO_LINGER
+            Uint8List.fromList([1, 0, 0, 0, 0, 0, 0, 0]), // struct linger {1, 0}
+          )
+        : RawSocketOption(
+            0xffff, // SOL_SOCKET
+            0x0080, // SO_LINGER
+            // Windows: two u_short; macOS: two int. {1, 0} either way.
+            Uint8List.fromList(
+              Platform.isWindows ? [1, 0, 0, 0] : [1, 0, 0, 0, 0, 0, 0, 0],
+            ),
+          );
+    for (var i = 0; i < 50; i++) {
       final socket = await Socket.connect(InternetAddress.loopbackIPv4, s.port!);
+      socket.setRawOption(linger);
       socket.destroy();
+      if (i % 10 == 0) await Future<void>.delayed(Duration.zero);
     }
     await Future<void>.delayed(const Duration(milliseconds: 500));
     // The server still answers.
