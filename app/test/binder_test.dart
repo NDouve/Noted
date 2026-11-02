@@ -56,6 +56,17 @@ class FlakyStore extends PageStore {
     await super.save(page);
   }
 
+  @override
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
+    if (failSave || failSaveIds.contains(page.id)) {
+      onFailedSave?.call(page.id);
+      throw const FileSystemException('drive gone');
+    }
+    final ok = await super.saveNew(page, beforePublish: beforePublish);
+    if (ok) saves.update(page.id, (n) => n + 1, ifAbsent: () => 1);
+    return ok;
+  }
+
   /// How often each page was written.
   final Map<String, int> saves = {};
 
@@ -73,7 +84,6 @@ class FlakyStore extends PageStore {
     }
     await super.delete(pageId);
     if (failSaveAfterDelete) failSave = true;
-    if (pageId == racePage) _raceArmed = true;
   }
 
   /// Pages whose load fails with a raw error.
@@ -81,21 +91,6 @@ class FlakyStore extends PageStore {
 
   /// Runs when a write of a page is refused (see [failSave]), before it fails.
   void Function(String pageId)? onFailedSave;
-
-  /// After [racePage] was deleted, its [raceAt]-th path lookup first writes
-  /// [raceText] to that path, like another program that got there first.
-  String? racePage;
-  int raceAt = 0;
-  String raceText = 'written elsewhere';
-  bool _raceArmed = false;
-  int _raceCalls = 0;
-
-  @override
-  String pathFor(String pageId) {
-    final p = super.pathFor(pageId);
-    if (_raceArmed && pageId == racePage && ++_raceCalls == raceAt) File(p).writeAsStringSync(raceText);
-    return p;
-  }
 
   @override
   Future<NotedPage> load(String pageId) {
@@ -498,64 +493,6 @@ void main() {
       expect(nb.tree.roots.map((x) => x.id), contains(a));
     });
 
-    test('an empty claim file that cannot be removed does not make the page "both"', () async {
-      source.failDelete.add(b);
-      source.failSaveAfterDelete = true;
-      final claim = '${folder.path}/$a.canvas';
-      // A read-only file can't be deleted on Windows.
-      source.onFailedSave = (id) {
-        if (id == a) Process.runSync('attrib', ['+R', claim]);
-      };
-      Object? error;
-      var needsAction = false;
-      try {
-        await nb.moveToLocation(a);
-      } on NotebookException catch (e) {
-        error = e.message;
-        needsAction = e.needsAction;
-      } finally {
-        Process.runSync('attrib', ['-R', claim]);
-      }
-      expect(needsAction, isTrue);
-      expect(error, allOf(contains('empty file was left'), contains('is now in'), isNot(contains('both places'))));
-      expect(File(claim).lengthSync(), 0);
-      expect(read(pages, a), contains('"pageId":"$a"'));
-      expect(nb.binderOfPage(a), isNull);
-    }, skip: !Platform.isWindows);
-
-    test('a file that appears at the old path before the claim is never written over', () async {
-      source.failDelete.add(b);
-      source.racePage = a;
-      source.raceAt = 2; // the path lookup that makes the claim
-      await expectLater(
-        nb.moveToLocation(a),
-        throwsA(
-          isA<NotebookException>()
-              .having((e) => e.message, 'message', contains('kept in both places'))
-              .having((e) => e.needsAction, 'needsAction', isTrue),
-        ),
-      );
-      expect(File('${folder.path}/$a.canvas').readAsStringSync(), 'written elsewhere');
-    });
-
-    test('an empty file that appears at the old path is not our claim: both places, file untouched', () async {
-      source.failDelete.add(b);
-      source.racePage = a;
-      source.raceText = ''; // a sync placeholder, not ours
-      source.raceAt = 2;
-      await expectLater(
-        nb.moveToLocation(a),
-        throwsA(
-          isA<NotebookException>().having(
-            (e) => e.message,
-            'message',
-            allOf(contains('kept in both places'), isNot(contains('empty file was left'))),
-          ),
-        ),
-      );
-      expect(File('${folder.path}/$a.canvas').lengthSync(), 0);
-    });
-
     test('a placement that fails after the move completed says the page was moved', () async {
       await nb.open(a);
       await nb.flush();
@@ -578,17 +515,31 @@ void main() {
       expect(File('${pages.path}/$a.canvas').existsSync(), isTrue);
     });
 
-    test('a file that fills the claim before the page is written is never written over', () async {
+    test('a file that appears at the old path just before the page is put back is never written over', () async {
       source.failDelete.add(b);
-      source.racePage = a;
-      source.raceAt = 3; // the look at the claim just before the write
       final before = source.saves[a] ?? 0;
-      addTearDown(() => expect(source.saves[a] ?? 0, before, reason: 'the page is not written into the claim'));
+      nb.restoreBeforePublishHook = () async => File('${folder.path}/$a.canvas').writeAsStringSync('written elsewhere');
       await expectLater(
         nb.moveToLocation(a),
-        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('kept in both places'))),
+        throwsA(
+          isA<NotebookException>()
+              .having((e) => e.message, 'message', contains('Another file appeared at the old place'))
+              .having((e) => e.needsAction, 'needsAction', isTrue),
+        ),
       );
       expect(File('${folder.path}/$a.canvas').readAsStringSync(), 'written elsewhere');
+      expect(source.saves[a] ?? 0, before, reason: 'the page is not written');
+      expect(folder.listSync().where((f) => f.path.contains('.tmp')), isEmpty);
+    });
+
+    test('an empty file that appears at the old path just before publishing is left untouched', () async {
+      source.failDelete.add(b);
+      nb.restoreBeforePublishHook = () async => File('${folder.path}/$a.canvas').writeAsStringSync('');
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('Another file appeared at the old place'))),
+      );
+      expect(File('${folder.path}/$a.canvas').lengthSync(), 0);
     });
 
     test('a raw error while reading a source is turned into a message', () async {

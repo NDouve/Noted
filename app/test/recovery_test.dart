@@ -624,6 +624,50 @@ void main() {
       expect(assetsOf(id).listSync(), hasLength(1), reason: 'no temp file left');
     });
 
+    test('a different file that arrives at a non-hash name just before publishing is kept byte for byte', () async {
+      await pageOnly();
+      keep(name: 'note.txt');
+      final target = '${assetsOf(id).path}/note.txt';
+      // Another program creates the file after the copy was verified.
+      Notebook.landBeforePublishHook = () => File(target).writeAsBytesSync([4, 3, 2, 1]);
+      addTearDown(() => Notebook.landBeforePublishHook = null);
+      final nb = await launch();
+      expect(File(target).readAsBytesSync(), [4, 3, 2, 1]);
+      expect(File('${keptDir().path}/note.txt').readAsBytesSync(), bytes);
+      expect(nb.recoveryProblems.single, contains('a different note.txt is already there; both are kept'));
+      expect(assetsOf(id).listSync(), hasLength(1), reason: 'no temp file left');
+    });
+
+    test('a publish that throws loses nothing: the source stays, the problem is listed, the temp goes', () async {
+      await pageOnly();
+      keep(name: 'note.txt');
+      Notebook.landBeforePublishHook = () => throw const FileSystemException('no hard links here');
+      addTearDown(() => Notebook.landBeforePublishHook = null);
+      final nb = await launch();
+      expect(File('${keptDir().path}/note.txt').readAsBytesSync(), bytes);
+      expect(File('${assetsOf(id).path}/note.txt').existsSync(), isFalse);
+      expect(nb.recoveryDamaged.single.reason, startsWith('The files kept for'));
+      expect(assetsOf(id).listSync(), isEmpty, reason: 'no temp file left');
+    });
+
+
+    test('a failed rename onto a hash-named file that already holds the hash drops the temp and deletes nothing', () async {
+      await pageOnly();
+      keep();
+      assetsOf(id).createSync();
+      final target = '${assetsOf(id).path}/$keptName';
+      // The correct file arrives after the check, then the rename fails.
+      Notebook.landHashRenameHook = () {
+        File(target).writeAsBytesSync(bytes);
+        throw const FileSystemException('rename failed');
+      };
+      addTearDown(() => Notebook.landHashRenameHook = null);
+      final nb = await launch();
+      expect(File(target).readAsBytesSync(), bytes);
+      expect(assetsOf(id).listSync(), hasLength(1), reason: 'no temp file left');
+      expect(keptDir().existsSync(), isFalse, reason: 'it counted as landed');
+      expect(nb.recoveryDamaged, isEmpty);
+    });
     test('a complete kept temp file with no final file is landed under its hash name', () async {
       await pageOnly();
       keep(name: '$keptName.tmp');

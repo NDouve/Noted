@@ -1624,10 +1624,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final intact = <int>[];
         final gone = <int>[];
         final both = <int>[];
-        final emptyAtSource = <int>{};
-        // Pages whose path this code claimed with an empty file; an empty file
-        // anywhere else (a sync placeholder) is not ours.
-        final claimedHere = <int>{};
+        final appeared = <int>{}; // a file appeared at the old path during the restore
         Future<bool> absent(int i) async =>
             await FileSystemEntity.type(fromStore.pathFor(ids[i])) == FileSystemEntityType.notFound;
         for (var i = 0; i < ids.length; i++) {
@@ -1636,24 +1633,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             continue;
           }
           if (removed.contains(i) && await absent(i)) {
-            // An exclusive create: a file that appeared in the meantime is
-            // never written over (the page is then in both places).
-            // The empty file we create claims the path; the store writes the
-            // page into it, and it is removed again if that fails.
-            final f = File(fromStore.pathFor(ids[i]));
-            var claimed = false;
+            // An exclusive save: the page is published only if nothing is at
+            // its path at that moment, so a file that appears in the meantime
+            // is never written over (the page is then in both places).
             try {
-              await f.create(exclusive: true);
-              claimed = true;
-              claimedHere.add(i);
-              // Checked again just before the store renames its file over the
-              // claim: if anything was put there meanwhile, it is not touched.
-              if (await File(fromStore.pathFor(ids[i])).length() != 0) {
-                throw const FileSystemException('the path was taken meanwhile');
+              if (!await _writeNew(fromLoc, originals[i], beforePublish: restoreBeforePublishHook)) {
+                appeared.add(i);
+                debugPrint('Restoring page ${ids[i]}: a file appeared at its old path, keeping both');
               }
-              await _write(fromLoc, originals[i]);
             } on Object catch (e2) {
-              if (claimed) await _dropEmptyClaim(f);
               debugPrint('Restoring page ${ids[i]} failed: $e2');
             }
             if (await _sourceIntact(fromStore, originals[i])) {
@@ -1661,10 +1649,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               continue;
             }
           }
-          // An empty file we claimed and could not remove is no original.
-          final emptyLeft = claimedHere.contains(i) && await _isEmptyFile(File(fromStore.pathFor(ids[i])));
-          if (emptyLeft) emptyAtSource.add(i);
-          (emptyLeft || await absent(i) ? gone : both).add(i);
+          (await absent(i) ? gone : both).add(i);
         }
         // Remove the copy of an intact page: the page file and its attachments
         // each get their own try, and a failure keeps that page in both places.
@@ -1754,18 +1739,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             '${gone.length == 1 ? 'file' : 'files'} could not be put back.',
           );
         }
-        if (emptyAtSource.isNotEmpty) {
+        final appearedIdx = both.where(appeared.contains).toList();
+        final bothOther = both.where((i) => !appeared.contains(i)).toList();
+        if (appearedIdx.isNotEmpty) {
           parts.add(
-            'An empty file was left at the old place of ${names(emptyAtSource)} in $source. '
-            'You can delete it.',
+            'Another file appeared at the old place of ${names(appearedIdx)} in $source, so it was '
+            'left alone; the page ${appearedIdx.length == 1 ? 'is' : 'pages are'} in $target. One of the two '
+            'will show under "Can\'t open" until you delete the other.',
           );
         }
-        if (both.isNotEmpty) {
+        if (bothOther.isNotEmpty) {
           parts.add(
-            '${names(both)} ${both.length == 1 ? 'is' : 'are'} kept in both places. The old '
-            '${both.length == 1 ? 'file' : 'files'} in $source could not be checked or '
-            '${both.length == 1 ? 'has' : 'have'} changed, so nothing was deleted; the '
-            '${both.length == 1 ? 'copy is' : 'copies are'} in $target. One of the two will show '
+            '${names(bothOther)} ${bothOther.length == 1 ? 'is' : 'are'} kept in both places. The old '
+            '${bothOther.length == 1 ? 'file' : 'files'} in $source could not be checked or '
+            '${bothOther.length == 1 ? 'has' : 'have'} changed, so nothing was deleted; the '
+            '${bothOther.length == 1 ? 'copy is' : 'copies are'} in $target. One of the two will show '
             'under "Can\'t open" until you delete the other.',
           );
         }
@@ -1789,7 +1777,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
         throw NotebookException(
           'The move was only partly done. ${parts.join(' ')}',
-          needsAction: both.isNotEmpty || emptyAtSource.isNotEmpty || copyLeft.isNotEmpty,
+          needsAction: both.isNotEmpty || copyLeft.isNotEmpty,
         );
       }
       for (final id in ids) {
@@ -1835,27 +1823,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             throw NotebookException('The page was moved, but it could not be reopened.${_osReason(e)}');
           }
         }
-      }
-    }
-  }
-
-  static Future<bool> _isEmptyFile(File f) async {
-    try {
-      return await f.exists() && await f.length() == 0;
-    } on Object {
-      return false;
-    }
-  }
-
-  // Removes the empty file claimed at a source path after a failed restore;
-  // tried twice. Anything that isn't empty is left alone.
-  static Future<void> _dropEmptyClaim(File f) async {
-    for (var attempt = 0; attempt < 2; attempt++) {
-      try {
-        if (await _isEmptyFile(f)) await f.delete();
-        return;
-      } on Object {
-        // Try once more.
       }
     }
   }
@@ -3475,6 +3442,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   @visibleForTesting
   Future<void> Function(String keptFolder)? keptLandedHook;
 
+  /// Runs just before a non-hash kept file is published at its target. For
+  /// tests.
+  @visibleForTesting
+  static void Function()? landBeforePublishHook;
+
+  /// Runs just before a hash-named kept file is renamed into place; it may
+  /// throw to stand in for a failed rename. For tests.
+  @visibleForTesting
+  static void Function()? landHashRenameHook;
+
+  /// Runs just before a page put back at its old place during a failed move
+  /// is published. For tests.
+  @visibleForTesting
+  Future<void> Function()? restoreBeforePublishHook;
+
   // Whether [target] holds what the kept [source] holds under [name]: a file
   // named by its content hash is checked against the hash, any other by its
   // bytes. (The hash function is noted_core's; it takes whole bytes, and the
@@ -3523,20 +3505,43 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         done.add(_LandedFile(e, name, target));
         continue;
       }
-      if (_hashName.firstMatch(name) == null && await target.exists()) {
-        throw FileSystemException('a different $name is already there; both are kept', target.path);
+      final isHash = _hashName.firstMatch(name) != null;
+      final collision = FileSystemException('a different $name is already there; both are kept', target.path);
+      if (!isHash && await FileSystemEntity.type(target.path, followLinks: false) != FileSystemEntityType.notFound) {
+        throw collision;
       }
       if (await tmp.exists()) await tmp.delete();
-      await e.copy(tmp.path);
-      if (!await _holdsContent(e, name, tmp)) {
-        await tmp.delete();
-        throw FileSystemException('The copy of $name differs from the kept file', e.path);
-      }
       try {
-        await tmp.rename(target.path);
-      } on FileSystemException {
-        if (await target.exists()) await target.delete();
-        await tmp.rename(target.path);
+        await e.copy(tmp.path);
+        if (!await _holdsContent(e, name, tmp)) {
+          throw FileSystemException('The copy of $name differs from the kept file', e.path);
+        }
+        if (!isHash) {
+          // Never replaces: a different file that arrived since the check
+          // above stays as it is, and the kept source stays too.
+          if (!await publishExclusive(tmp, target.path, beforeOsCall: landBeforePublishHook)) throw collision;
+        } else {
+          try {
+            landHashRenameHook?.call();
+            await tmp.rename(target.path);
+          } on FileSystemException {
+            // A target that holds its hash is already the file; any other
+            // is a partial copy and goes.
+            if (await _holdsContent(e, name, target)) {
+              await tmp.delete();
+            } else {
+              if (await target.exists()) await target.delete();
+              await tmp.rename(target.path);
+            }
+          }
+        }
+      } catch (_) {
+        try {
+          if (await tmp.exists()) await tmp.delete();
+        } on Object {
+          // Only a cleanup; the original error is what counts.
+        }
+        rethrow;
       }
       done.add(_LandedFile(e, name, target));
     }
@@ -3567,6 +3572,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _pathId[key] = page.id;
     if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
     onPageContent?.call(loc, page);
+  }
+
+  // Like [_write], for a page that must be NEW at its path: false, with
+  // nothing written, when a file is there at the moment of publishing.
+  Future<bool> _writeNew(String loc, NotedPage page, {Future<void> Function()? beforePublish}) async {
+    await _assertCanWrite(loc);
+    final st = _storeOf(loc);
+    if (!await st.saveNew(page, beforePublish: beforePublish)) return false;
+    final key = _key(st.pathFor(page.id));
+    _known[key] = writePage(page);
+    _pathId[key] = page.id;
+    if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
+    onPageContent?.call(loc, page);
+    return true;
   }
 
   Future<void> _delete(String loc, String id) async {

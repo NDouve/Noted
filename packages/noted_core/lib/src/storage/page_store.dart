@@ -164,9 +164,9 @@ class PageStore {
   Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
     final path = _pathFor(page.id);
     final tmp = File('$path.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
-    await tmp.writeAsString(writePage(page), flush: true);
     final bool published;
     try {
+      await tmp.writeAsString(writePage(page), flush: true);
       if (beforePublish != null) await beforePublish();
       published = await publishExclusive(tmp, path);
     } catch (_) {
