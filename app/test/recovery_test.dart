@@ -602,14 +602,73 @@ void main() {
       expect(nb.recoveryDamaged.map((d) => d.path.split(RegExp(r'[\\\\/]')).last), ['$id.assets']);
     });
 
-    test('a file whose name is not a hash is compared by its bytes', () async {
+    test('a file whose name is not a hash is landed when identical', () async {
+      await pageOnly();
+      keep(name: 'note.txt');
+      assetsOf(id).createSync();
+      File('${assetsOf(id).path}/note.txt').writeAsBytesSync(bytes);
+      await launch();
+      expect(keptDir().existsSync(), isFalse);
+    });
+
+    test('a different file of the same non-hash name is never replaced: both are kept and listed', () async {
       await pageOnly();
       keep(name: 'note.txt');
       assetsOf(id).createSync();
       File('${assetsOf(id).path}/note.txt').writeAsBytesSync([4, 3, 2, 1]);
+      final nb = await launch();
+      expect(File('${assetsOf(id).path}/note.txt').readAsBytesSync(), [4, 3, 2, 1]);
+      expect(File('${keptDir().path}/note.txt').readAsBytesSync(), bytes);
+      expect(nb.recoveryProblems.single, contains('a different note.txt is already there; both are kept'));
+      expect(assetsOf(id).listSync(), hasLength(1), reason: 'no temp file left');
+    });
+
+    test('a complete kept temp file with no final file is landed under its hash name', () async {
+      await pageOnly();
+      keep(name: '$keptName.tmp');
       await launch();
-      expect(File('${assetsOf(id).path}/note.txt').readAsBytesSync(), bytes);
+      expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
       expect(keptDir().existsSync(), isFalse);
+    });
+
+    test('an incomplete kept temp file is not landed and keeps the folder', () async {
+      await pageOnly();
+      keep(name: '$keptName.tmp', content: [1, 2]);
+      final nb = await launch();
+      expect(File('${assetsOf(id).path}/$keptName').existsSync(), isFalse);
+      expect(File('${keptDir().path}/$keptName.tmp').existsSync(), isTrue);
+      expect(nb.recoveryProblems, hasLength(1));
+    });
+
+    test('a file that arrives while landing is not deleted, and lands on the next check', () async {
+      await pageOnly();
+      keep();
+      final late = Uint8List.fromList([5, 6, 7]);
+      final lateName = attachmentFileName(contentHash(late), 'txt');
+      final nb = make();
+      nb.keptLandedHook = (_) async {
+        File('${keptDir().path}/$lateName').writeAsBytesSync(late);
+      };
+      await nb.load();
+      expect(File('${keptDir().path}/$lateName').readAsBytesSync(), late);
+      expect(File('${keptDir().path}/$keptName').existsSync(), isFalse, reason: 'the verified file went');
+      expect(nb.recoveryProblems, hasLength(1));
+
+      nb.keptLandedHook = null;
+      await nb.checkFolders();
+      expect(File('${assetsOf(id).path}/$lateName').readAsBytesSync(), late);
+      expect(keptDir().existsSync(), isFalse);
+      expect(nb.recoveryProblems, isEmpty);
+    });
+
+    test('a stale landing temp file of a file that has landed is removed', () async {
+      await pageOnly();
+      keep();
+      assetsOf(id).createSync();
+      File('${assetsOf(id).path}/$keptName').writeAsBytesSync(bytes);
+      File('${assetsOf(id).path}/$keptName.landing.tmp').writeAsBytesSync([1]);
+      await launch();
+      expect(assetsOf(id).listSync().map((f) => f.path.split(RegExp(r'[\\/]')).last), [keptName]);
     });
 
     test('a kept folder whose page is not there stays, and is listed only once nothing is away', () async {

@@ -84,6 +84,15 @@ class _ReplayFailure implements Exception {
   String toString() => why;
 }
 
+// A kept file that is in place under [name] with verified content.
+class _LandedFile {
+  const _LandedFile(this.source, this.name, this.target);
+
+  final File source;
+  final String name;
+  final File target;
+}
+
 // A save of a closed page was refused; [response] says why.
 class _SaveRefused implements Exception {
   const _SaveRefused(this.response);
@@ -3303,10 +3312,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (_isLocked(loc) || (onlyLoc != null && loc != onlyLoc)) continue;
       try {
         final to = _assetsDir(loc, id);
-        await _landFiles(kept, to);
-        final bad = await _unverifiedFile(kept, to);
-        if (bad != null) throw FileSystemException('The kept file $bad did not land with its content');
-        await kept.delete(recursive: true);
+        final done = <_LandedFile>[];
+        await _landFiles(kept, to, done);
+        for (final f in done) {
+          if (!await _holdsContent(f.source, f.name, f.target)) {
+            throw FileSystemException('The kept file ${f.name} did not land with its content');
+          }
+        }
+        await keptLandedHook?.call(kept.path);
+        // Only what was verified is deleted, one file at a time; whatever else
+        // is in the folder (an incomplete temp file, a file that arrived
+        // meanwhile) keeps the folder.
+        for (final f in done) {
+          await f.source.delete();
+        }
+        await _removeEmptyDirs(kept, top: true);
         _keptProblems.remove(kept.path);
         _attachments?.filesChanged();
       } on FileSystemException catch (e) {
@@ -3337,12 +3357,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   static String _baseName(String path) => path.split(RegExp(r'[\\/]')).last;
 
-  // Whether [target] holds what the kept [source] holds: a file named by its
-  // content hash is checked against the hash, any other by its bytes.
-  static Future<bool> _holdsContent(File source, File target) async {
+  /// Runs after the kept files of a folder are landed and verified, before
+  /// they are deleted. For tests.
+  @visibleForTesting
+  Future<void> Function(String keptFolder)? keptLandedHook;
+
+  // Whether [target] holds what the kept [source] holds under [name]: a file
+  // named by its content hash is checked against the hash, any other by its
+  // bytes. (The hash function is noted_core's; it takes whole bytes, and the
+  // app has no hashing dependency of its own to stream with.)
+  static Future<bool> _holdsContent(File source, String name, File target) async {
     if (!await target.exists()) return false;
     final bytes = await target.readAsBytes();
-    final m = _hashName.firstMatch(_baseName(source.path));
+    final m = _hashName.firstMatch(name);
     if (m != null) return contentHash(bytes) == m.group(1);
     final kept = await source.readAsBytes();
     if (kept.length != bytes.length) return false;
@@ -3354,43 +3381,68 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Copies the files of the kept folder [from] into [to]. Each goes to a temp
   // name in [to], is checked there and renamed into place, so a partly copied
-  // file is never taken for the real one. A target that doesn't hold the
-  // content is replaced.
-  static Future<void> _landFiles(Directory from, Directory to) async {
+  // file is never taken for the real one. A target named by its hash that
+  // doesn't hold it is replaced (it is a partial copy); any other name that
+  // differs is someone's file that only shares the name, and is never
+  // replaced. A complete `<hash name>.tmp` (an attachment write stopped before
+  // its rename) lands as `<hash name>`; other `.tmp` files are not landed.
+  // Every file that is in place with verified content is added to [done].
+  static Future<void> _landFiles(Directory from, Directory to, List<_LandedFile> done) async {
     await to.create(recursive: true);
     await for (final e in from.list()) {
-      final name = _baseName(e.path);
-      final target = '${to.path}${Platform.pathSeparator}$name';
+      final raw = _baseName(e.path);
+      final sep = Platform.pathSeparator;
       if (e is Directory) {
-        await _landFiles(e, Directory(target));
-      } else if (e is File && !name.endsWith('.tmp')) {
-        if (await _holdsContent(e, File(target))) continue;
-        final tmp = File('$target.landing.tmp');
-        if (await tmp.exists()) await tmp.delete();
-        await e.copy(tmp.path);
-        if (!await _holdsContent(e, tmp)) {
-          await tmp.delete();
-          throw FileSystemException('The copy of $name differs from the kept file', e.path);
-        }
-        try {
-          await tmp.rename(target);
-        } on FileSystemException {
-          if (await File(target).exists()) await File(target).delete();
-          await tmp.rename(target);
-        }
+        await _landFiles(e, Directory('${to.path}$sep$raw'), done);
+        continue;
       }
+      if (e is! File) continue;
+      var name = raw;
+      if (raw.endsWith('.tmp')) {
+        name = raw.substring(0, raw.length - '.tmp'.length);
+        final m = _hashName.firstMatch(name);
+        if (m == null || contentHash(await e.readAsBytes()) != m.group(1)) continue;
+      }
+      final target = File('${to.path}$sep$name');
+      final tmp = File('${target.path}.landing.tmp');
+      if (await _holdsContent(e, name, target)) {
+        if (await tmp.exists()) await tmp.delete(); // left by an earlier try
+        done.add(_LandedFile(e, name, target));
+        continue;
+      }
+      if (_hashName.firstMatch(name) == null && await target.exists()) {
+        throw FileSystemException('a different $name is already there; both are kept', target.path);
+      }
+      if (await tmp.exists()) await tmp.delete();
+      await e.copy(tmp.path);
+      if (!await _holdsContent(e, name, tmp)) {
+        await tmp.delete();
+        throw FileSystemException('The copy of $name differs from the kept file', e.path);
+      }
+      try {
+        await tmp.rename(target.path);
+      } on FileSystemException {
+        if (await target.exists()) await target.delete();
+        await tmp.rename(target.path);
+      }
+      done.add(_LandedFile(e, name, target));
     }
   }
 
-  // The first file under [from] whose counterpart under [to] doesn't hold its
-  // content, or null.
-  static Future<String?> _unverifiedFile(Directory from, Directory to) async {
-    await for (final e in from.list(recursive: true)) {
-      if (e is! File || e.path.endsWith('.tmp')) continue;
-      final rel = e.path.substring(from.path.length);
-      if (!await _holdsContent(e, File('${to.path}$rel'))) return rel;
+  // Removes the emptied folders under [d] and then [d] itself, none of them
+  // recursively: a folder that still holds something stays, and that is
+  // reported.
+  static Future<void> _removeEmptyDirs(Directory d, {bool top = false}) async {
+    await for (final e in d.list()) {
+      if (e is Directory) await _removeEmptyDirs(e);
     }
-    return null;
+    try {
+      await d.delete();
+    } on FileSystemException {
+      if (!top) return;
+      final left = [await for (final e in d.list(recursive: true)) _baseName(e.path)];
+      throw FileSystemException('files are left in the kept folder (${left.join(', ')})', d.path);
+    }
   }
 
   Future<void> _write(String loc, NotedPage page) async {
