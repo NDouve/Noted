@@ -93,6 +93,26 @@ void main() {
     expect(ids(), [id]);
   });
 
+  test('nothing is pruned while the app log can not be read', () {
+    final id = issue('A');
+    service.store.revoke(id);
+    Directory(service.log.file.path).createSync();
+    expect(service.pruneRevokedCodes(), 0);
+    expect(ids(), [id]);
+  });
+
+  test('with polling on, a change to a log that removes the last activity prunes on the next poll', () async {
+    final id = issue('A');
+    service.store.revoke(id);
+    inMcpLog(id);
+    final polled = AiAccessService(dataFolder: data, pollInterval: const Duration(milliseconds: 50));
+    addTearDown(polled.dispose);
+    expect(ids(), [id], reason: 'kept at start: the log still holds activity');
+    service.mcpLog.writeAsStringSync('');
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    expect(ids(), isEmpty);
+  });
+
   test('pruning is idempotent, and holds after a restart', () {
     final gone = issue('gone');
     final live = issue('live');

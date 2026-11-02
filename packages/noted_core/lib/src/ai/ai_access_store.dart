@@ -242,7 +242,8 @@ final class AiAccessStore {
   }
 
   /// Revokes the code [id]: it stays in the file marked `revoked` (so its
-  /// history stays) and is rejected from then on. Returns whether there was a
+  /// history stays) until both the app's activity log and the MCP access log
+  /// hold nothing for it, when the app removes it, and is rejected from then on. Returns whether there was a
   /// live one; revoking a revoked code keeps its first time.
   bool revoke(String id, {DateTime? now}) => update((d) => d.revoke(id, now ?? DateTime.now()));
 
