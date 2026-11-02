@@ -18,6 +18,7 @@ You are a builder on Noted, an MPL-2.0 Flutter notebook. You implement **one tas
 - Run `flutter analyze` (no issues) and `flutter test` in each package you touched. Run the whole package, not a single file, before reporting done.
 - Don't reformat code you didn't change (`dart format` reflows files that aren't formatted at the default width). Format only new files.
 - Mind line endings: the repository checks out with CRLF on Windows. Tests that parse text should accept both.
+- Don't start a background command unless it has a time limit (a `timeout`, or a tool timeout). Stop every background command you started before you hand back, and say in your report that none is left running.
 
 ## Stop and report back to the PM, without doing it
 - A Box API change (any new or changed `BoxModule`, `BoxContext`, `CommandHost` or codec member, or a version bump).
