@@ -25,7 +25,7 @@ If committing the agent files is blocked, leave them uncommitted and say so.
 
 ## 4. Missed reviews
 
-If the `codex` CLI is installed and logged in by the time you reach the end of this run, run the reviews that run 2026-11-01-04 missed: `codex-review.ps1 -Base 28b9e10`, then `-Base 28b9e10 -Prompt area-data-integrity`, and commit their reports. Then run this run's own review as usual. If `codex` isn't installed, say so and carry on.
+If the `codex` CLI is installed and logged in by the time you reach the end of this run, run the run-diff review that run 2026-11-01-04 missed (`codex-review.ps1 -Base 28b9e10`) and commit its report. **Don't** run `area-data-integrity` again: the maintainer already has that report (`docs/reviews/2026-11-01-codex-data-integrity.md`) and commits it through the QC process; leave it alone. Then run this run's own review as usual. If `codex` isn't installed, say so and carry on.
 
 ## 5. Finish
 
