@@ -130,7 +130,10 @@ void main() {
     await t.pumpWidget(const SizedBox());
     await settle(t);
     await t.runAsync(() async {
-      await nb.flush();
+      // A save started inside the test's fake-time zone can't finish from
+      // here (its callbacks wait for that zone's microtasks), which once hung
+      // CI for the whole test timeout. The pages are scratch data: bound it.
+      await nb.flush().timeout(const Duration(seconds: 20), onTimeout: () {});
       nb.dispose();
       await root.delete(recursive: true);
     });
