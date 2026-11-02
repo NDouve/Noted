@@ -20,7 +20,7 @@ Previously reported findings still apply: **R-1 and R-3 in `docs/reviews/2026-11
 - What happens: `_landFiles` checks whether a non-hash destination exists before copying and verifying the temporary file. If a sync client creates a different `note.txt` during those awaited operations, the subsequent rename replaces that newly arrived file. If the rename fails, the fallback explicitly deletes the destination without checking its content, then retries. This destroys content that recovery never verified, contradicting 0124’s requirement to preserve different files sharing a non-hash name. Use publication that refuses an existing destination for non-hash names; retain both files and report the collision.
 - Test coverage: Partial. `app/test/recovery_test.dart:614` covers a different destination present before landing starts, but not one arriving between the existence check and publication.
 - Confidence: confirmed by static control-flow and interleaving analysis; not reproduced at runtime.
-- Status: open
+- Status: accepted (queued in docs/runs/next.md, 2026-11-02)
 
 ## Not checked
 
