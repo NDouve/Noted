@@ -121,17 +121,64 @@ void main() {
       expect(again.problems, hasLength(1));
     });
 
-    test('an old entry not newer than the existing one of its page is superseded, not made a duplicate', () async {
+    test('an old entry with the same time but other content is kept beside the existing one and reported', () async {
       const rel = 'relative_notes_folder';
       final abs = File(rel).absolute.path;
       await store().write(folder: rel, page: _page('p1', 'existing'), baseText: null, time: t);
       legacy(abs, _page('p1', 'old'), time: t);
       final l = await store().list();
+      expect(l.entries.map((e) => e.page.meta.title).toSet(), {'existing', 'old'});
+      expect(l.problems, hasLength(1));
+      expect(files('.entry'), hasLength(2));
+      expect(files('.canvas'), isEmpty);
+    });
+
+    test('an old entry identical to the existing one, or older than it, is superseded', () async {
+      const rel = 'relative_notes_folder';
+      final abs = File(rel).absolute.path;
+      await store().write(folder: rel, page: _page('p1', 'existing'), baseText: null, time: t);
+      legacy(abs, _page('p1', 'existing'), time: later); // same page and base, a later time
+      final l = await store().list();
       expect(l.entries.single.page.meta.title, 'existing');
       expect(l.problems, isEmpty);
+      expect(files('.canvas'), isEmpty);
+      expect(files('.json'), isEmpty);
+
+      legacy(abs, _page('p1', 'other'), time: t.subtract(const Duration(hours: 1)));
+      final l2 = await store().list();
+      expect(l2.entries.single.page.meta.title, 'existing');
+      expect(l2.problems, isEmpty);
       expect(files('.entry'), hasLength(1));
       expect(files('.canvas'), isEmpty);
       expect(files('.json'), isEmpty);
+    });
+
+    test('an old entry whose time can\'t be read is never superseded: kept and reported', () async {
+      const rel = 'relative_notes_folder';
+      final abs = File(rel).absolute.path;
+      await store().write(folder: rel, page: _page('p1', 'existing'), baseText: null, time: later);
+      legacy(abs, _page('p1', 'old'), time: t);
+      final j = File('${dir.path}/${_legacyName(abs, 'p1')}.json');
+      j.writeAsStringSync(j.readAsStringSync().replaceFirst(t.toIso8601String(), 'not a time'));
+      final l = await store().list();
+      expect(l.entries.single.page.meta.title, 'existing');
+      expect(l.problems, hasLength(1));
+      expect(files('.canvas'), hasLength(1));
+      expect(files('.json'), hasLength(1));
+    });
+
+    test('an old entry superseded by a later one and stopped between the deletes leaves nothing to report', () async {
+      const rel = 'relative_notes_folder';
+      final abs = File(rel).absolute.path;
+      await store().write(folder: rel, page: _page('p1', 'existing'), baseText: null, time: later);
+      legacy(abs, _page('p1', 'old'), time: t);
+      await store(hook: _failAt('legacy-json-deleted')).list();
+      expect(files('.canvas'), isEmpty);
+      expect(files('.json'), hasLength(1));
+      final l = await store().list();
+      expect(l.problems, isEmpty);
+      expect(files('.json'), isEmpty);
+      expect(l.entries.single.page.meta.title, 'existing');
     });
 
     test('a migration stopped after publishing is finished later without a duplicate', () async {
@@ -206,18 +253,55 @@ void main() {
       expect(files('.tmp'), isEmpty);
     });
 
-    test('a crash before publishing: a leftover that is not newer is deleted as superseded', () async {
+    test('a crash before publishing: a leftover that is older, or identical, is deleted as superseded', () async {
       final base1 = writePage(_page('p1', 'base-one'));
       await store().write(folder: '/n', page: _page('p1', 'one'), baseText: base1, time: t);
       await expectLater(
-        store(hook: _failAt('tmp-written')).write(folder: '/n', page: _page('p1', 'two'), baseText: null, time: t),
+        store(hook: _failAt('tmp-written')).write(
+          folder: '/n',
+          page: _page('p1', 'two'),
+          baseText: null,
+          time: t.subtract(const Duration(minutes: 1)),
+        ),
         throwsA(isA<FileSystemException>()),
       );
+      await expectLater(
+        store(hook: _failAt('tmp-written')).write(folder: '/n', page: _page('p1', 'one'), baseText: base1, time: t),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(files('.tmp'), hasLength(2));
       final l = await store().list();
       expect(l.entries.single.page.meta.title, 'one');
       expect(l.entries.single.baseText, base1);
       expect(l.problems, isEmpty);
       expect(files('.tmp'), isEmpty);
+    });
+
+    test('a leftover with the same time but other content is kept as a second entry and reported', () async {
+      await store().write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);
+      await expectLater(
+        store(hook: _failAt('tmp-written')).write(folder: '/n', page: _page('p1', 'two'), baseText: null, time: t),
+        throwsA(isA<FileSystemException>()),
+      );
+      final l = await store().list();
+      expect(l.entries.map((e) => e.page.meta.title).toSet(), {'one', 'two'});
+      expect(l.problems, hasLength(1));
+      expect(files('.tmp'), isEmpty);
+      expect(files('.entry'), hasLength(2));
+    });
+
+    test('a leftover whose time can\'t be read is never superseded: kept and reported', () async {
+      await store().write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: later);
+      await expectLater(
+        store(hook: _failAt('tmp-written')).write(folder: '/n', page: _page('p1', 'two'), baseText: null, time: t),
+        throwsA(isA<FileSystemException>()),
+      );
+      final tmp = File(files('.tmp').single);
+      tmp.writeAsStringSync(tmp.readAsStringSync().replaceFirst(t.toIso8601String(), 'not a time'));
+      final l = await store().list();
+      expect(l.entries.single.page.meta.title, 'one');
+      expect(l.problems, hasLength(1));
+      expect(files('.tmp'), hasLength(1));
     });
 
     test('a crash on the first write: the complete leftover becomes the entry', () async {
@@ -257,7 +341,7 @@ void main() {
       expect(files('.tmp').map((p) => p.split(RegExp(r'[\\/]')).last), ['b-1.canvas.tmp']);
     });
 
-    test('a rename that fails removes the write\'s own tmp file', () async {
+    test('a rename that fails keeps the complete tmp file, which the next listing promotes', () async {
       final s = store();
       await s.write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);
       final entry = File(files('.entry').single);
@@ -267,7 +351,24 @@ void main() {
         s.write(folder: '/n', page: _page('p1', 'two'), baseText: null, time: later),
         throwsA(isA<FileSystemException>()),
       );
+      expect(files('.tmp'), hasLength(1));
+      Directory(entry.path).deleteSync();
+      final l = await s.list();
+      expect(l.entries.single.page.meta.title, 'two');
+      expect(l.problems, isEmpty);
       expect(files('.tmp'), isEmpty);
+    });
+
+    test('deleting a listed entry keeps a generation written after the listing', () async {
+      final s = store();
+      await s.write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);
+      final listed = (await s.list()).entries.single;
+      await s.write(folder: '/n', page: _page('p1', 'newer'), baseText: null, time: later);
+      await s.delete(listed);
+      expect((await s.list()).entries.single.page.meta.title, 'newer');
+      // The generation that was listed is deleted.
+      await s.delete((await s.list()).entries.single);
+      expect(files('.entry'), isEmpty);
     });
 
     test('an entry of another location or page under the same name is not overwritten', () async {
@@ -312,6 +413,30 @@ void main() {
       expect(l.problems, isEmpty);
       expect(files('.tmp'), isEmpty);
     });
+
+    test('another spelling of the folder shares the sequence (Windows)', () async {
+      final reached = Completer<void>();
+      final gate = Completer<void>();
+      final w = RecoveryStore(
+        dir,
+        hook: (p) async {
+          if (p != 'tmp-written') return;
+          reached.complete();
+          await gate.future;
+        },
+      ).write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);
+      await reached.future;
+      var listed = false;
+      final other = RecoveryStore(Directory(dir.path.toUpperCase())).list().then((v) {
+        listed = true;
+        return v;
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(listed, isFalse);
+      gate.complete();
+      await w;
+      expect((await other).entries, hasLength(1));
+    }, skip: !Platform.isWindows);
 
     test('an entry is one file', () async {
       await RecoveryStore(dir).write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);

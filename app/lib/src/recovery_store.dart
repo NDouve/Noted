@@ -41,10 +41,10 @@ String recoveryLocationKey(String path, {bool? windows}) {
 ///
 /// The file is written to a unique `<name>.entry.<n>.tmp` file and then
 /// renamed over the entry, so a crash leaves the previous generation intact.
-/// If the rename fails, the write removes its own `.tmp`. After a crash, a
-/// `.tmp` that is a complete entry and newer than the published one is
-/// promoted by [RecoveryStore.list]; one that is not newer is deleted as
-/// superseded; one that can't be read is kept and reported. A newer edit of
+/// If the rename fails or the process stops, a complete `.tmp` stays;
+/// [RecoveryStore.list] promotes it when it is newer than the published
+/// entry (or none exists), deletes it when the entry has the same page and
+/// base or a strictly later time, and otherwise keeps it and reports it. A newer edit of
 /// the same page and location replaces its entry; an existing entry of
 /// another location or page under the same name is never replaced (the new
 /// one gets `<name>_dup<n>`). Files added while the folder was away are kept
@@ -97,10 +97,13 @@ class RecoveryListing {
 
 // A parsed entry file.
 class _Env {
-  _Env(this.folder, this.id, this.time, this.base, this.text, this.key);
+  _Env(this.folder, this.id, this.time, this.timeOk, this.base, this.text, this.key);
   final String folder;
   final String id;
   final DateTime time;
+
+  /// False if the time couldn't be read ([time] is then the epoch).
+  final bool timeOk;
   final String? base;
   final String text;
   final String key;
@@ -110,7 +113,8 @@ class _Env {
 /// by [delete] (and the superseded leftovers described at [RecoveryEntry]).
 ///
 /// Every write, migration, promotion and deletion runs one after another, per
-/// folder and across instances, so [list] never sees a write half done.
+/// folder and across instances, so [list] never sees a write half done. A
+/// `hook` runs inside that sequence, so it must not call back into the store.
 class RecoveryStore {
   /// [windows] says whether locations compare without regard to case (see
   /// [recoveryLocationKey]); [hook] is called at named points of a write or a
@@ -128,7 +132,7 @@ class RecoveryStore {
   static final Map<String, Future<void>> _chains = {};
 
   Future<T> _serial<T>(Future<T> Function() f) {
-    final k = directory.absolute.path;
+    final k = recoveryLocationKey(directory.path, windows: windows);
     final prev = _chains[k] ?? Future<void>.value();
     final c = Completer<T>();
     _chains[k] = prev.then((_) async {
@@ -184,12 +188,9 @@ class RecoveryStore {
     }
     // A failure injected here stands for a crash: the file stays.
     await hook?.call('tmp-written');
-    try {
-      await tmp.rename(f.path);
-    } on Object {
-      await _tryDelete(tmp);
-      rethrow;
-    }
+    // If the rename fails, the complete tmp stays: it may be the only copy of
+    // the newest edit, and the next listing promotes it.
+    await tmp.rename(f.path);
   }
 
   static Future<void> _tryDelete(File f) async {
@@ -210,8 +211,22 @@ class RecoveryStore {
         'page': page,
       });
 
-  static DateTime _time(Object? raw) =>
-      (DateTime.tryParse('$raw') ?? DateTime.fromMillisecondsSinceEpoch(0)).toUtc();
+  static DateTime? _tryTime(Object? raw) => DateTime.tryParse('$raw')?.toUtc();
+
+  static DateTime _time(Object? raw) => _tryTime(raw) ?? DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+
+  // Whether [held] makes a copy with [text], [base] and [time] redundant: the
+  // same page and base, or a strictly later time (when both can be read). An
+  // equal time with different content, or a time that can't be read, never
+  // does.
+  static bool _stands(_Env held, String text, String? base, DateTime? time) =>
+      (held.text == text && held.base == base) || (time != null && held.timeOk && held.time.isAfter(time));
+
+  // Whether an entry already holds what an old metadata file holds.
+  bool _jsonHeld(_Env e, ({String folder, String id, DateTime? time, String? base}) m) =>
+      e.key == _key(m.folder) &&
+      e.id == m.id &&
+      (e.base == m.base || (m.time != null && e.timeOk && e.time.isAfter(m.time!)));
 
   // Parses an entry file's text. Throws a FormatException if it isn't one.
   _Env _parse(String text) {
@@ -224,7 +239,8 @@ class RecoveryStore {
     if (folder is! String || id is! String || page is! String || (b != null && b is! String)) {
       throw const FormatException('missing fields');
     }
-    return _Env(folder, id, _time(meta['time']), b as String?, page, _key(folder));
+    final t = _tryTime(meta['time']);
+    return _Env(folder, id, t ?? _time(null), t != null, b as String?, page, _key(folder));
   }
 
   Future<_Env?> _peek(File f) async {
@@ -310,24 +326,29 @@ class RecoveryStore {
     return out;
   }
 
-  // Removes the files of an old entry: the metadata first, so that what is
-  // left after an interruption is a page file that is recognised as already
-  // converted.
-  Future<void> _removeLegacy(String base) async {
+  // Removes the files of an old entry. After it was converted, the metadata
+  // goes first, so that what is left after an interruption is a page file
+  // that equals the new entry's page. After it was superseded by an entry
+  // with other content, the page file goes first, so that what is left is a
+  // metadata file that the entry is known to stand for. Either way the
+  // leftover is recognised as already dealt with and just removed.
+  Future<void> _removeLegacy(String base, {required bool pageFirst}) async {
     final j = File('$base.json');
-    if (await j.exists()) await j.delete();
-    await hook?.call('legacy-json-deleted');
     final c = File('$base.canvas');
-    if (await c.exists()) await c.delete();
+    final (first, second) = pageFirst ? (c, j) : (j, c);
+    if (await first.exists()) await first.delete();
+    await hook?.call('legacy-json-deleted');
+    if (await second.exists()) await second.delete();
   }
 
   // Converts entries of the old two-file layout to the single file. Safe to
   // stop at any point and to run again: the new file is complete before the
   // old ones are removed, and an old entry that an existing entry of the same
-  // page and location (same time or newer) stands for is just removed. If the
-  // existing entry is older, both are kept, the converted one under
-  // `<name>_dup<n>`. Old files that can't be converted stay, and are
-  // described in [problems] and [damaged].
+  // page and location stands for (identical page and base, or a strictly later
+  // time) is just removed. Otherwise both are kept, the converted one under
+  // `<name>_dup<n>`; but one whose time can't be read stays as it is. Old
+  // files that can't be converted stay, and are described in [problems] and
+  // [damaged].
   Future<void> _migrate(List<String> problems, List<UnreadablePage> damaged) async {
     final bases = <String>{};
     await for (final f in directory.list()) {
@@ -356,7 +377,7 @@ class RecoveryStore {
             throw const FormatException('the .json file of the entry is missing');
           }
           final m = _legacyMeta(jsonDecode(await metaFile.readAsString()));
-          if (envs.any((e) => e.folder == m.folder && e.id == m.id && e.time == m.time && e.base == m.base)) {
+          if (envs.any((e) => _jsonHeld(e, m))) {
             await metaFile.delete();
             continue;
           }
@@ -365,7 +386,7 @@ class RecoveryStore {
         final m = _legacyMeta(jsonDecode(await metaFile.readAsString()));
         final text = await pageFile.readAsString();
         _checkIdentity(stem, _legacyName(m.folder, m.id), m.id, readPage(text), m.base);
-        final content = _encode(m.folder, m.id, m.time.toIso8601String(), m.base, text);
+        final content = _encode(m.folder, m.id, (m.time ?? _time(null)).toIso8601String(), m.base, text);
         final key = _key(m.folder);
         File? target;
         var already = false;
@@ -376,21 +397,27 @@ class RecoveryStore {
             break;
           }
           final e = await _peek(f);
-          if (e != null && e.key == key && e.id == m.id && !e.time.isBefore(m.time)) {
+          if (e == null || e.key != key || e.id != m.id) continue;
+          if (_stands(e, text, m.base, m.time)) {
             already = true;
             break;
+          }
+          if (m.time == null) {
+            throw const FormatException(
+              'its time can\'t be read, so it is kept beside the entry that has its name',
+            );
           }
         }
         if (!already) await _atomic(target!, content);
         await hook?.call('envelope-published');
-        await _removeLegacy(base);
+        await _removeLegacy(base, pageFirst: already);
       } on Object catch (e) {
         _report(problems, damaged, base, _why(e));
       }
     }
   }
 
-  static ({String folder, String id, DateTime time, String? base}) _legacyMeta(Object? meta) {
+  static ({String folder, String id, DateTime? time, String? base}) _legacyMeta(Object? meta) {
     if (meta is! Map || meta['format'] != 1) throw const FormatException('unknown format');
     final folder = meta['folder'];
     final id = meta['pageId'];
@@ -398,12 +425,15 @@ class RecoveryStore {
     if (folder is! String || id is! String || (b != null && b is! String)) {
       throw const FormatException('missing fields');
     }
-    return (folder: folder, id: id, time: _time(meta['time']), base: b as String?);
+    return (folder: folder, id: id, time: _tryTime(meta['time']), base: b as String?);
   }
 
   // Deals with `.tmp` files left by a write that didn't finish. One that is a
   // complete, consistent entry is promoted if no entry of its page and
-  // location is as new, else deleted as superseded; the rest are reported.
+  // location holds it, or if it is strictly newer; it is deleted if an entry
+  // has the same page and base or a strictly later time; with the same time
+  // and other content it is kept under the next free name. One whose time
+  // can't be read, and the rest, are kept and reported.
   Future<void> _settleTmps(List<String> problems, List<UnreadablePage> damaged) async {
     final tmps = <File>[];
     await for (final f in directory.list()) {
@@ -427,12 +457,17 @@ class RecoveryStore {
             }
             final e = await _peek(target);
             if (e == null || e.key != env.key || e.id != env.id) continue;
-            if (env.time.isAfter(e.time)) {
-              await f.rename(target.path);
-            } else {
+            if (_stands(e, env.text, env.base, env.timeOk ? env.time : null)) {
               await f.delete();
+              break;
             }
-            break;
+            if (!env.timeOk) throw const FormatException('its time can\'t be read, so it is kept');
+            if (e.timeOk && env.time.isAfter(e.time)) {
+              await f.rename(target.path);
+              break;
+            }
+            // Same time, other content (or the entry's time is unreadable):
+            // both are kept; it takes the next free name.
           }
         } else if (file.endsWith('.canvas.tmp') || file.endsWith('.json.tmp')) {
           // An unfinished write of the old layout: removed when an entry
@@ -444,7 +479,7 @@ class RecoveryStore {
             held = envs.any((e) => e.text == text);
           } else {
             final m = _legacyMeta(jsonDecode(text));
-            held = envs.any((e) => e.folder == m.folder && e.id == m.id && e.time == m.time && e.base == m.base);
+            held = envs.any((e) => _jsonHeld(e, m));
           }
           if (!held) throw const FormatException('an unfinished write was left here');
           await f.delete();
@@ -492,8 +527,12 @@ class RecoveryStore {
 
   /// Removes [entry]'s file.
   Future<void> delete(RecoveryEntry entry) => _serial(() async {
+    // Only the generation that was listed: a newer one written since stays.
     final f = entry.file;
-    if (await f.exists()) await f.delete();
+    final e = await _peek(f);
+    if (e != null && e.text == entry.pageText && e.base == entry.baseText && e.time == entry.time) {
+      await f.delete();
+    }
   });
 }
 
