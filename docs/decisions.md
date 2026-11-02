@@ -1691,7 +1691,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0120 — Sync issues: how they are shown and settled
 - **Date:** 2026-11-01
-- **Status:** Active (approved by the maintainer; refines 0020 and 0051, extends 0053, supersedes 0035's rule that a conflict on a box the device can't run waits for a supporting device)
+- **Status:** Active (approved by the maintainer; refines 0020 and 0051, extends 0053, supersedes 0035's rule that a conflict on a box the device can't run waits for a supporting device; amended by 0127)
 - **Decision:**
   - **Kinds of issue**, each belonging to one box and kept in the page file until resolved, so it survives restarts and reaches other devices:
     - **Landed:** a box that arrived from another device in a merge (0051's three-way merge or 0053's conflict-copy merge) and overlaps a box the other device couldn't see there (one it didn't have, or had elsewhere). Stored as `"landed":{"at":<ms>,"device":"<name>"}` in the box's `noted` header. A deliberate overlap made on the other device is not an issue. In the three-way merge the marker follows the rule of `conflicts` (the side that changed it wins); a conflict-copy merge keeps it if either side has it. The recovery merge never marks.
@@ -1746,7 +1746,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0124 — Saves, moves and recovery never overwrite or delete what they can't verify
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106)
+- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106; amended by 0127)
 - **Decision:**
   - **The open page's file (0051):** before every save of the open page, its file is read again, found by path. If it is unreadable, from a newer format, holds a different page, or can't be read for any reason other than not existing, nothing is written: the file stays as it is, the edits go to recovery, and the page becomes read-only with a plain reason and a way out ("Put back a readable version, or open another page"). The block is rechecked by the watcher and the folder timer; when a readable version appears it is merged three-way and the page is editable again, and the block's recovery entry is removed once the merged save reads back. A folder that comes back while the open page waits for it is handled the same way, with or without a recovery entry: a file that is there but unreadable blocks the page, and a missing file puts the page back in place so a file that lands later is merged.
   - **Conflict copies (0053):** a copy is deleted only if its bytes still equal the ones that were merged, and the original is replaced only if it still equals what the merge read. Otherwise the merge is redone, up to five times; then the copy is kept and listed under "Can't open".
@@ -1759,7 +1759,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0125 — Automatic cleanup after runs; review cadence
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer)
+- **Status:** Active (approved by the maintainer; amended by 0127: the scripts, hooks, agents and run history moved to a separate private repository)
 - **Decision:**
   - **`app/scripts/cleanup-run.ps1`** ends `dart`, `dartvm`, `dartaotruntime` and `flutter_tester` processes of this repository (command line, executable or working directory in the main checkout or a registered worktree) only when they are abandoned: their group (the Dart processes plus a `cmd /c` running flutter or dart) has no living parent. A live bash, sh, PowerShell, pwsh or `cmd /k` window always owns what runs under it, because Git Bash shells show a dead parent even while in use. Nothing in the release folder, and not the script or its parents, is ever ended. It removes folders under `.claude\worktrees\` that git no longer knows (no `.git`, or one pointing at a missing git directory) and that are at least 10 minutes old; anything it can't be sure of is kept. `-WhatIf` lists without acting; every action is logged to `%TEMP%\noted-cleanup-run.log`; its selection logic is tested on Windows CI.
   - **Hooks:** Claude Code runs it on SubagentStop and Stop from `.claude/settings.json`, asynchronously; a failure is a warning, never a stop. The file is added by the maintainer.
@@ -1770,7 +1770,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0126 — Linux CI blocks; formula depth; pruning revoked codes; settling saves in tests
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer; amends 0123)
+- **Status:** Active (approved by the maintainer; amends 0123; amended by 0127)
 - **Decision:**
   - **CI:** the Linux test job blocks a push, like Windows.
   - **Formulas:** a run of operators of one level (`A1+A2+…`) is one node and evaluates in a loop, so long flat formulas work and adjust on every platform; real nesting is capped by tree height (256) as well as by parentheses (100), and past it a formula is an error everywhere instead of depending on the stack.
@@ -1779,6 +1779,20 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Tests:** `settleSaves` (app/test/support) settles every queued save, binder and settings write inside the fake-time zone before teardown, and fails naming the stuck job instead of hanging.
 - **Rationale:** A blocking Linux job catches platform differences before release; results must not depend on the platform's stack size; `ai-access.json` should not grow forever.
 - **Alternatives considered:** skipping the Linux-only tests; capping only the `^` chain or the chain length (flat sums of a few hundred terms stopped working); keeping every revoked code (unbounded growth).
+
+## 0127 — Build tooling outside this repository; exclusive publishing; recovery, AI-code and formula fixes
+- **Date:** 2026-11-02
+- **Status:** Active (approved by the maintainer; amends 0120, 0124, 0125 and 0126)
+- **Decision:**
+  - **Repository:** the build tooling (agent definitions, run and review history, the review and cleanup scripts and the reviewers' instructions) lives in a separate private repository. This repository holds the app, its spec and its CI. The cleanup script's tests no longer run in this repository's CI.
+  - **Exclusive publishing (noted_core):** `publishExclusive` moves a written temporary file to its target only if nothing is there at that moment, with no gap between a check and the move: on Windows a move that doesn't replace, elsewhere a hard link followed by removing the temporary name. It never falls back to replacing; a volume without hard links is an error. On Windows the long-path prefix is added only from 260 characters, and a name Windows would change (a trailing dot or space, a device name) is refused. `PageStore.saveNew` saves a page this way.
+  - **Moves (amends 0124):** a source is put back with an exclusive save, no longer by first claiming the path with an empty file. A file that appears at the old place is left alone, and the message says so and where the page is.
+  - **Recovery (amends 0124):** a kept file with a name that isn't its content hash lands only through an exclusive publish and is never deleted to retry; if a different file is at that name, both are kept and it is reported. A file named by its hash replaces the target only when the target doesn't hold that hash. A recovery entry that listing would reject is never written over (the write goes to the next `_dup<n>` name), and it never counts as holding or superseding another copy.
+  - **Conflict copies (amends 0120):** the landed marker is kept when either side has it, also when both sides' conflict records are combined.
+  - **Revoked codes (amends 0126):** an unused revoked code is also removed on changes made in the app (revoking it, trimming the activity log), while the MCP access log is locked.
+  - **Formulas (amends 0126):** references between cells are evaluated with an explicit worklist instead of recursion, so chains of any length work. Every cell on a reference cycle is `#CYCLE!`, and every result is the same whichever cell is computed first.
+- **Rationale:** The public repository is the app; the build process and its history don't need to be. A check followed by a replacing move can still overwrite a file a sync client puts there in between. A table's values must not depend on stack size or on the order cells are computed in.
+- **Alternatives considered:** keeping the tooling in this repository; checking for the target and then renaming (leaves a window); claiming the path with an empty file (leaves an empty file behind on failure and still has a window inside the save); recursion with a depth limit (long running totals fail).
 
 ---
 
