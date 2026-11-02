@@ -244,9 +244,15 @@ class RecoveryStore {
     return _Env(folder, id, t ?? _time(null), t != null, b as String?, page, _key(folder));
   }
 
+  // The envelope of an entry file, only if [list] would accept it: the
+  // embedded page, the base and the file name must agree with the metadata. A
+  // file that fails is null, so it is never replaced, never counts as holding
+  // or superseding anything, and is left to [list] to report.
   Future<_Env?> _peek(File f) async {
     try {
-      return _parse(await f.readAsString());
+      final env = _parse(await f.readAsString());
+      _checkIdentity(_stemOf(f.path), _name(env.folder, env.id), env.id, readPage(env.text), env.base);
+      return env;
     } on Object {
       return null;
     }

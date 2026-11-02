@@ -567,4 +567,85 @@ void main() {
       expect(files('.entry'), isEmpty);
     });
   });
+
+  group('R-1 an invalid envelope is never replaced or trusted', () {
+    // Rewrites the single entry so its metadata still matches but [change]
+    // alters the fields; returns the new text.
+    String corrupt(void Function(Map<String, dynamic> m) change) {
+      final entry = File(files('.entry').single);
+      final m = jsonDecode(entry.readAsStringSync()) as Map<String, dynamic>;
+      change(m);
+      final text = jsonEncode(m);
+      entry.writeAsStringSync(text);
+      return text;
+    }
+
+    for (final (name, change) in <(String, void Function(Map<String, dynamic>))>[
+      ('the embedded page is another page', (m) => m['page'] = writePage(_page('other', 'x'))),
+      ('the embedded page is unreadable', (m) => m['page'] = 'not a page'),
+    ]) {
+      test('a write over a slot whose $name keeps it and writes _dup2', () async {
+        await store().write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);
+        final slot1 = File(files('.entry').single);
+        final bad = corrupt(change);
+        await store().write(folder: '/n', page: _page('p1', 'two'), baseText: null, time: later);
+        expect(slot1.readAsStringSync(), bad);
+        final dup = files('.entry').where((p) => p.endsWith('_dup2.entry')).toList();
+        expect(dup, hasLength(1));
+        expect(jsonDecode(File(dup.single).readAsStringSync())['time'], later.toIso8601String());
+        final l = await store().list();
+        expect(l.entries.single.page.meta.title, 'two');
+        // The invalid entry, and the note that the new one has another name.
+        expect(l.problems, hasLength(2));
+      });
+    }
+
+    test('a valid tmp is not deleted against an invalid later envelope', () async {
+      await store().write(folder: '/n', page: _page('p1', 'tmp'), baseText: null, time: later);
+      final slot1 = File(files('.entry').single);
+      File('${slot1.path}.9-9.tmp').writeAsStringSync(slot1.readAsStringSync());
+      corrupt((m) {
+        m['page'] = writePage(_page('other', 'x'));
+        m['time'] = later.add(const Duration(hours: 1)).toIso8601String();
+      });
+      final l = await store().list();
+      expect(l.entries.map((e) => e.page.meta.title), ['tmp']);
+      expect(files('.tmp'), isEmpty);
+      expect(files('.entry').where((p) => p.endsWith('_dup2.entry')), hasLength(1));
+    });
+
+    test('a lone old .canvas survives beside an invalid envelope with the same page text', () async {
+      await store().write(folder: '/n', page: _page('p1', 'x'), baseText: null, time: t);
+      final other = writePage(_page('other', 'x'));
+      corrupt((m) => m['page'] = other);
+      File('${dir.path}/a-1.canvas').writeAsStringSync(other);
+      await store().list();
+      expect(files('.canvas'), hasLength(1));
+    });
+
+    test('a tmp survives beside an envelope with the wrong file name and the same content', () async {
+      await store().write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);
+      final slot1 = File(files('.entry').single);
+      final text = slot1.readAsStringSync();
+      slot1.renameSync('${dir.path}/wrong-name.entry');
+      File('${slot1.path}.9-9.tmp').writeAsStringSync(text);
+      await store().list();
+      expect(files('.tmp'), isEmpty);
+      expect(slot1.existsSync(), isTrue);
+      expect(slot1.readAsStringSync(), text);
+    });
+
+    test('migration does not delete an old copy because of an invalid envelope', () async {
+      await store().write(folder: '/n', page: _page('p1', 'x'), baseText: null, time: t);
+      corrupt((m) {
+        m['page'] = writePage(_page('other', 'x'));
+        m['time'] = later.add(const Duration(hours: 1)).toIso8601String();
+      });
+      legacy('/n', _page('p1', 'old'));
+      final l = await store().list();
+      expect(l.entries.map((e) => e.page.meta.title), ['old']);
+      expect(files('.canvas'), isEmpty);
+      expect(files('.json'), isEmpty);
+    });
+  });
 }
