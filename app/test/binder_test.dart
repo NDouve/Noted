@@ -531,6 +531,46 @@ void main() {
       expect(File('${folder.path}/$a.canvas').readAsStringSync(), 'written elsewhere');
     });
 
+    test('an empty file that appears at the old path is not our claim: both places, file untouched', () async {
+      source.failDelete.add(b);
+      source.racePage = a;
+      source.raceText = ''; // a sync placeholder, not ours
+      source.raceAt = 2;
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('kept in both places'), isNot(contains('empty file was left'))),
+          ),
+        ),
+      );
+      expect(File('${folder.path}/$a.canvas').lengthSync(), 0);
+    });
+
+    test('a placement that fails after the move completed says the page was moved', () async {
+      await nb.open(a);
+      await nb.flush();
+      final other = nb.tree.roots.single.id;
+      expect(nb.currentId, a);
+      // The page already in "Pages" can't be read, so renumbering it fails.
+      File('${pages.path}/$other.canvas').writeAsStringSync('not a page');
+      await expectLater(
+        nb.moveToLocation(a, index: 0),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            allOf(startsWith('The page was moved, but it could not be put at that position'), isNot(contains('Could not move'))),
+          ),
+        ),
+      );
+      expect(nb.binderOfPage(a), isNull);
+      expect(File('${folder.path}/$a.canvas').existsSync(), isFalse);
+      expect(File('${pages.path}/$a.canvas').existsSync(), isTrue);
+    });
+
     test('a file that fills the claim before the page is written is never written over', () async {
       source.failDelete.add(b);
       source.racePage = a;

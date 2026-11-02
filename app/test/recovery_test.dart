@@ -436,13 +436,13 @@ void main() {
 
     List<String> entries() => recFiles().where((p) => p.endsWith('.entry')).toList();
 
-    test('a failed copy after the page landed keeps the entry; a restart lands the files and retires it', () async {
+    test('a failed copy after the page landed retires the entry and keeps the files; a restart lands them', () async {
       final x = await keptFile();
       File('${extra.path}/$x.assets').writeAsStringSync('in the way'); // the copy can't make the folder
       final again = make();
       await again.load();
       expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, hasLength(1), reason: 'the page landed');
-      expect(entries(), hasLength(1), reason: 'the entry is the retry');
+      expect(entries(), isEmpty, reason: 'the page part is done; the kept folder is the retry');
       expect(Directory('${rec.path}/$x.assets').existsSync(), isTrue);
       expect(again.recoveryDamaged, hasLength(1));
 
@@ -456,14 +456,14 @@ void main() {
       expect(restarted.recoveryDamaged, isEmpty);
     });
 
-    test('stopped between the page landing and the files landing, over and over: still retried', () async {
+    test('stopped after the page landed and before the files landed, over and over: still retried', () async {
       final x = await keptFile();
       File('${extra.path}/$x.assets').writeAsStringSync('in the way');
       for (var i = 0; i < 2; i++) {
         final nb = make();
         await nb.load();
         quit(nb);
-        expect(entries(), hasLength(1));
+        expect(entries(), isEmpty);
         expect(Directory('${rec.path}/$x.assets').existsSync(), isTrue);
       }
       File('${extra.path}/$x.assets').deleteSync();
@@ -471,6 +471,186 @@ void main() {
       await last.load();
       expect(Directory('${extra.path}/$x.assets').existsSync(), isTrue);
       expect(entries(), isEmpty);
+    });
+  });
+
+  group('R-4 an entry is retired when its page lands; kept files land on their own', () {
+    final bytes = Uint8List.fromList([1, 2, 3, 4]);
+    final keptName = attachmentFileName(contentHash(bytes), 'txt');
+    const id = 'pg1';
+
+    BoxRecord box(String rev, int n) => BoxRecord.create(
+      id: 'abox',
+      typeId: 'test.other',
+      dataVersion: 1,
+      bounds: const Bounds(10, 10, 100, 40),
+      data: RawJson.encode({'n': n}),
+      snapshotText: 's$n',
+      rev: rev,
+    );
+
+    final meta = PageMeta.create(id: id, title: 'p', order: 0);
+    Directory keptDir() => Directory('${rec.path}/$id.assets');
+    Directory assetsOf(String page) => Directory('${pages.path}/$page.assets');
+    List<String> entries() => recFiles().where((p) => p.endsWith('.entry')).toList();
+
+    void keep({List<int>? content, String? name}) {
+      keptDir().createSync(recursive: true);
+      File('${keptDir().path}/${name ?? keptName}').writeAsBytesSync(content ?? bytes);
+    }
+
+    // The saved page holds box rev r1; the entry holds the same box edited
+    // (rev r2) with a kept file; the target of the kept file is blocked.
+    Future<void> parkedEntry() async {
+      final base = NotedPage.create(meta).insertNode(box('r1', 1));
+      pageFile(pages, id).writeAsStringSync(writePage(base));
+      await RecoveryStore(rec).write(
+        folder: pages.path,
+        page: base.replaceNode(box('r2', 2)),
+        baseText: writePage(base),
+        time: DateTime.now(),
+      );
+      keep();
+      File(assetsOf(id).path).writeAsStringSync('in the way');
+    }
+
+    Future<Notebook> launch() async {
+      final nb = make();
+      await nb.load();
+      return nb;
+    }
+
+    test('the page lands and the entry is retired though the kept files can not land; they are listed', () async {
+      await parkedEntry();
+      final nb = await launch();
+      expect((readPage(pageFile(pages, id).readAsStringSync()).node('abox') as BoxRecord).rev, 'r2');
+      expect(entries(), isEmpty);
+      expect(keptDir().existsSync(), isTrue);
+      expect(nb.recoveryDamaged.map((d) => d.path.split(RegExp(r'[\\\\/]')).last), ['$id.assets']);
+      quit(nb);
+    });
+
+    test('a re-replay can not bring back a box the user deleted since', () async {
+      await parkedEntry();
+      quit(await launch());
+      // The user deletes the box the entry had changed; the blocker goes.
+      final landed = readPage(pageFile(pages, id).readAsStringSync());
+      pageFile(pages, id).writeAsStringSync(writePage(landed.removeNode('abox')));
+      File(assetsOf(id).path).deleteSync();
+
+      final again = await launch();
+      expect(readPage(pageFile(pages, id).readAsStringSync()).node('abox'), isNull);
+      expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
+      expect(keptDir().existsSync(), isFalse);
+      expect(again.recoveryDamaged, isEmpty);
+    });
+
+    test('a re-replay keeps the user\'s later edit, with no new conflict', () async {
+      await parkedEntry();
+      quit(await launch());
+      final landed = readPage(pageFile(pages, id).readAsStringSync());
+      pageFile(pages, id).writeAsStringSync(writePage(landed.replaceNode(box('r3', 3))));
+      File(assetsOf(id).path).deleteSync();
+
+      await launch();
+      final b = readPage(pageFile(pages, id).readAsStringSync()).node('abox') as BoxRecord;
+      expect(b.rev, 'r3');
+      expect(b.conflicts, isEmpty);
+      expect(keptDir().existsSync(), isFalse);
+    });
+
+    Future<void> pageOnly() async {
+      pageFile(pages, id).writeAsStringSync(writePage(NotedPage.create(meta)));
+    }
+
+    test('a kept folder with no entry is landed on the next launch', () async {
+      await pageOnly();
+      keep();
+      final nb = await launch();
+      expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
+      expect(keptDir().existsSync(), isFalse);
+      expect(nb.recoveryDamaged, isEmpty);
+    });
+
+    test('a partial copy of the same size is replaced, and the kept folder goes only then', () async {
+      await pageOnly();
+      keep();
+      assetsOf(id).createSync();
+      File('${assetsOf(id).path}/$keptName').writeAsBytesSync([9, 9, 9, 9]);
+      await launch();
+      expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
+      expect(keptDir().existsSync(), isFalse);
+      expect(assetsOf(id).listSync().map((f) => f.path.split(RegExp(r'[\\/]')).last), [keptName]);
+    });
+
+    test('a partial copy of another size is replaced', () async {
+      await pageOnly();
+      keep();
+      assetsOf(id).createSync();
+      File('${assetsOf(id).path}/$keptName').writeAsBytesSync([1, 2]);
+      await launch();
+      expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
+      expect(keptDir().existsSync(), isFalse);
+    });
+
+    test('a kept file that does not match its hash name is not landed and the folder stays', () async {
+      await pageOnly();
+      keep(content: [7, 7, 7, 7]);
+      final nb = await launch();
+      expect(File('${assetsOf(id).path}/$keptName').existsSync(), isFalse);
+      expect(File('${keptDir().path}/$keptName').existsSync(), isTrue);
+      expect(nb.recoveryDamaged.map((d) => d.path.split(RegExp(r'[\\\\/]')).last), ['$id.assets']);
+    });
+
+    test('a file whose name is not a hash is compared by its bytes', () async {
+      await pageOnly();
+      keep(name: 'note.txt');
+      assetsOf(id).createSync();
+      File('${assetsOf(id).path}/note.txt').writeAsBytesSync([4, 3, 2, 1]);
+      await launch();
+      expect(File('${assetsOf(id).path}/note.txt').readAsBytesSync(), bytes);
+      expect(keptDir().existsSync(), isFalse);
+    });
+
+    test('a kept folder whose page is not there stays, and is listed only once nothing is away', () async {
+      final (nb, x, _) = await pendingEdit();
+      await vanish(nb);
+      Directory('${rec.path}/ghost.assets').createSync(recursive: true);
+      File('${rec.path}/ghost.assets/f').writeAsStringSync('x');
+      quit(nb);
+
+      final again = make();
+      await again.load();
+      expect(again.recoveryDamaged, isEmpty, reason: 'its folder may be the one that is away');
+      expect(Directory('${rec.path}/ghost.assets').existsSync(), isTrue);
+
+      await restore();
+      await again.checkFolders();
+      expect(Directory('${rec.path}/ghost.assets').existsSync(), isTrue);
+      expect(again.recoveryDamaged.map((d) => d.path.split(RegExp(r'[\\\\/]')).last), ['ghost.assets']);
+      expect(again.tree[x], isNotNull);
+    });
+
+    test('the open page\'s kept files land while it stays open, and a failure is retried without a restart', () async {
+      final (nb, x, _) = await pendingEdit();
+      await extra.rename(away.path);
+      await nb.attachments!.put(bytes, extension: 'txt');
+      await nb.checkFolders();
+      expect(Directory('${rec.path}/$x.assets').existsSync(), isTrue);
+      await restore();
+      File('${extra.path}/$x.assets').writeAsStringSync('in the way');
+      await nb.checkFolders();
+      expect(nb.currentId, x);
+      expect(entries(), isEmpty, reason: 'the page landed');
+      expect(Directory('${rec.path}/$x.assets').existsSync(), isTrue);
+      expect(nb.recoveryDamaged, hasLength(1));
+
+      File('${extra.path}/$x.assets').deleteSync();
+      await nb.checkFolders(); // the open page is not reopened; the check retries
+      expect(File('${extra.path}/$x.assets/$keptName').readAsBytesSync(), bytes);
+      expect(Directory('${rec.path}/$x.assets').existsSync(), isFalse);
+      expect(nb.recoveryDamaged, isEmpty);
+      expect(nb.currentId, x);
     });
   });
 
