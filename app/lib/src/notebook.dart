@@ -1430,10 +1430,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  /// Whether the file of [page] in [store] exists and holds exactly the page
+  /// as it was copied (read back). Any failure to read counts as not intact.
+  Future<bool> _sourceIntact(PageStore store, NotedPage page) async {
+    try {
+      return await store.readText(page.id) == writePage(page);
+    } on Object {
+      return false;
+    }
+  }
+
   /// Moves [id] and its subpages to another location: each page file is
   /// written to the target folder and read back to check it, and only when
   /// all of them check out are the source files deleted. On any failure the
-  /// target files are removed again and the sources stay as they were.
+  /// target files are removed again and the sources stay as they were. If a
+  /// source can't be deleted and an already deleted one can't be put back, that
+  /// page keeps its copy at the target and the error names the partial result.
   Future<void> _moveAcross(String id, String toLoc, {String? parentId, int? index}) async {
     final fromLoc = _loc[id]!;
     _assertWritable(fromLoc);
@@ -1514,16 +1526,65 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           removed.add(i);
         }
       } on Object catch (e) {
-        // Put back what was already deleted, so no page is left twice.
-        for (final i in removed) {
+        // Put back what was already deleted, so no page is left twice. A
+        // verified copy is removed only for a page whose source is positively
+        // intact (the file exists and holds what was copied, read back); a
+        // page whose source can't be established keeps its copy.
+        final intact = <int>[];
+        final lost = <int>[];
+        for (var i = 0; i < ids.length; i++) {
+          if (await _sourceIntact(fromStore, originals[i])) {
+            intact.add(i);
+            continue;
+          }
           try {
             await _write(fromLoc, originals[i]);
           } on Object catch (e2) {
             debugPrint('Restoring page ${ids[i]} failed: $e2');
           }
+          if (await _sourceIntact(fromStore, originals[i])) {
+            intact.add(i);
+          } else {
+            lost.add(i);
+          }
         }
-        await removeCopies();
-        throw NotebookException('Could not remove the old files, so nothing was moved: $e');
+        for (final i in intact) {
+          try {
+            await _delete(toLoc, ids[i]);
+            await _removeDir(_assetsDir(toLoc, ids[i]));
+          } on Object catch (e2) {
+            debugPrint('Removing copy of page ${ids[i]} failed: $e2');
+          }
+        }
+        if (lost.isEmpty) {
+          throw NotebookException('Could not remove the old files, so nothing was moved: $e');
+        }
+        // A partial move: the pages that could not be put back now live at
+        // the target, so the tree says so.
+        for (final i in lost) {
+          _metas[ids[i]] = moved[i].meta;
+          _loc[ids[i]] = toLoc;
+        }
+        _touch(fromLoc);
+        _touch(toLoc);
+        _rebuildTree();
+        String name(int i) {
+          final t = originals[i].meta.title.trim();
+          return '"${t.isEmpty ? 'Untitled' : t}"';
+        }
+
+        final target = _binders[toLoc]?.title ?? 'Pages';
+        final stayed = [for (final i in intact) name(i)];
+        final stayedText = stayed.isEmpty
+            ? ''
+            : ' ${stayed.join(', ')} stayed where '
+                  '${stayed.length == 1 ? 'it was' : 'they were'}.';
+        throw NotebookException(
+          'The move was only partly done: ${lost.map(name).join(', ')} '
+          '${lost.length == 1 ? 'is' : 'are'} now in $target, because the old '
+          '${lost.length == 1 ? 'file' : 'files'} could not be put back.'
+          '$stayedText ($e)',
+        );
       }
       for (final id in ids) {
         await _removeDir(_assetsDir(fromLoc, id));

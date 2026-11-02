@@ -26,6 +26,31 @@ class CorruptingStore extends PageStore {
   }
 }
 
+/// A binder page store whose deletes of [failDelete] and (when [failSave]) all
+/// writes fail, like a source drive that went away.
+class FlakyStore extends PageStore {
+  FlakyStore(super.directory);
+
+  final Set<String> failDelete = {};
+  bool failSave = false;
+
+  /// Makes writes fail from the first successful delete on.
+  bool failSaveAfterDelete = false;
+
+  @override
+  Future<void> save(NotedPage page) async {
+    if (failSave) throw const FileSystemException('drive gone');
+    await super.save(page);
+  }
+
+  @override
+  Future<void> delete(String pageId) async {
+    if (failDelete.contains(pageId)) throw const FileSystemException('drive gone');
+    await super.delete(pageId);
+    if (failSaveAfterDelete) failSave = true;
+  }
+}
+
 void main() {
   late Directory root;
   late Directory pages; // standalone pages
@@ -359,6 +384,88 @@ void main() {
       expect(bad.binderOfPage(p), isNull);
       // The open page is still open.
       expect(bad.currentId, g);
+    });
+  });
+
+  group('a move whose source deletion fails half way', () {
+    late FlakyStore source;
+    late Notebook nb;
+    late BinderSection s;
+    late String a;
+    late String b;
+
+    setUp(() async {
+      nb = make(
+        factory: (d) {
+          final st = FlakyStore(d);
+          if (d.path == folder.path) source = st;
+          return st;
+        },
+      );
+      await nb.load();
+      s = await nb.addBinder(folder.path);
+      a = await nb.createPage(binderPath: s.path);
+      b = await nb.createPage(parentId: a);
+      await nb.flush();
+    });
+
+    tearDown(() {
+      source.failSaveAfterDelete = false;
+      source.failSave = false;
+      source.failDelete.clear();
+    });
+
+    test('keeps the copy of a page that could not be put back', () async {
+      final aBefore = read(folder, a);
+      final bBefore = read(folder, b);
+      source.failDelete.add(b);
+      // Deleting a works, deleting b fails, putting a back fails too.
+      source.failSaveAfterDelete = true;
+
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('partly'), isNot(contains('nothing was moved')), contains('Pages')),
+          ),
+        ),
+      );
+      // a's only remaining copy is at the destination, byte-identical.
+      expect(File('${folder.path}/$a.canvas').existsSync(), isFalse);
+      expect(read(pages, a), contains('"pageId":"$a"'));
+      expect(read(pages, a), isNot(equals(aBefore)));
+      expect(File('${pages.path}/$b.canvas').existsSync(), isFalse);
+      // b is intact at its source.
+      expect(read(folder, b), bBefore);
+      // The tree reports where each page really is.
+      expect(nb.binderOfPage(a), isNull);
+      expect(nb.binderOfPage(b), s.path);
+      expect(nb.tree.roots.map((x) => x.id), contains(a));
+    });
+
+    test('removes every copy when the sources are put back', () async {
+      final aBefore = read(folder, a);
+      final bBefore = read(folder, b);
+      source.failDelete.add(b);
+
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            contains('nothing was moved'),
+          ),
+        ),
+      );
+      expect(read(folder, a), aBefore);
+      expect(read(folder, b), bBefore);
+      expect(File('${pages.path}/$a.canvas').existsSync(), isFalse);
+      expect(File('${pages.path}/$b.canvas').existsSync(), isFalse);
+      expect(nb.binderOfPage(a), s.path);
+      expect(nb.binderOfPage(b), s.path);
     });
   });
 
