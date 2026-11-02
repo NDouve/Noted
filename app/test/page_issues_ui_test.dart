@@ -18,6 +18,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'search_ui_test.dart' show noteBox, notePage;
 import 'support/real_io.dart';
+import 'support/settle_saves.dart';
 
 void main() {
   late Directory root;
@@ -66,8 +67,8 @@ void main() {
   Future<void> finish(WidgetTester t) async {
     await t.pumpWidget(const SizedBox());
     await settle(t);
+    await settleSaves(t, nb);
     await t.runAsync(() async {
-      await nb.flush();
       nb.dispose();
       await root.delete(recursive: true);
     });

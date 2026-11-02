@@ -14,6 +14,7 @@ import 'package:noted/src/app_theme.dart';
 import 'package:noted/src/binder_colors.dart';
 import 'package:noted/src/binder_cover.dart';
 import 'package:noted/src/notebook.dart';
+import 'support/settle_saves.dart';
 import 'package:noted_box_drawing/noted_box_drawing.dart';
 import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_canvas/noted_canvas.dart';
@@ -456,8 +457,8 @@ void main() {
       expect(jsonDecode(file.readAsStringSync()), {'format': 1, 'theme': 'dark'});
 
       await t.pumpWidget(const SizedBox());
+      await settleSaves(t, nb);
       await t.runAsync(() async {
-        await nb.flush();
         nb.dispose();
         await dir.delete(recursive: true);
       });

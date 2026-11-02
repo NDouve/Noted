@@ -11,6 +11,7 @@ import 'package:noted/src/binder_cover.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/real_io.dart';
+import 'support/settle_saves.dart';
 
 void main() {
   late Directory root;
@@ -231,6 +232,7 @@ void main() {
         await tester.pump(const Duration(milliseconds: 100));
         await tester.runAsync(() => realIoPause(30));
       }
+      await settleSaves(tester, nb);
       await tester.runAsync(() async {
         await stop();
       });

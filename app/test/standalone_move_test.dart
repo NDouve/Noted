@@ -12,6 +12,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_tree_view.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/real_io.dart';
+import 'support/settle_saves.dart';
 
 /// A store whose [corruptAt]th write is damaged after it lands.
 class CorruptingStore extends PageStore {
@@ -211,6 +212,9 @@ void main() {
 
     Future<void> finish(WidgetTester tester) async {
       await tester.pumpWidget(const SizedBox());
+      for (final nb in [...opened]) {
+        await settleSaves(tester, nb);
+      }
       await tester.runAsync(cleanUp);
     }
 

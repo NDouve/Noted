@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
+import 'support/settle_saves.dart';
 import 'package:noted/src/page_tree_view.dart';
 import 'package:noted/src/settings_panel.dart';
 import 'package:noted_core/noted_core.dart';
@@ -83,8 +84,8 @@ void main() {
     expect(find.text('Embedded 0 attachments.'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
+    await settleSaves(tester, nb);
     await tester.runAsync(() async {
-      await nb.flush();
       nb.dispose();
       await dir.delete(recursive: true);
     });

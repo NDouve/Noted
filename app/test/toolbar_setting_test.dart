@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/notebook.dart';
+import 'support/settle_saves.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -107,8 +108,8 @@ void main() {
     expect(jsonDecode(file.readAsStringSync())['toolbar'], 'tabs');
 
     await t.pumpWidget(const SizedBox());
+    await settleSaves(t, nb);
     await t.runAsync(() async {
-      await nb.flush();
       nb.dispose();
       await dir.delete(recursive: true);
     });

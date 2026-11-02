@@ -19,6 +19,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/real_io.dart';
+import 'support/settle_saves.dart';
 
 void main() {
   late Directory root;
@@ -398,7 +399,7 @@ void main() {
           rev: 'r0',
         ),
       );
-      await io(t, () => nb.flush());
+      await settleSaves(t, nb);
       await t.pumpWidget(MaterialApp(home: Home(notebook: nb)));
       await t.pump();
       await t.pump();
@@ -414,6 +415,7 @@ void main() {
       expect(canvas().commands[AiCommands.insert]!.enabled, isTrue);
       expect(find.text('Not allowed on this page'), findsNothing);
 
+      await settleSaves(t, nb);
       await io(t, () => nb.setBoxType(a, aiBoxTypeId, false));
       await t.pump();
       await t.pump();
@@ -427,6 +429,7 @@ void main() {
       expect(writePage(nb.current!.page).contains('"boxTypes"'), isTrue);
       expect(content(), before);
 
+      await settleSaves(t, nb);
       await io(t, () => nb.setBoxType(a, aiBoxTypeId, null));
       await t.pump();
       await t.pump();

@@ -15,6 +15,7 @@ import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/real_io.dart';
+import 'support/settle_saves.dart';
 
 const _codec = NoteCodec();
 
@@ -129,11 +130,8 @@ void main() {
   Future<void> finish(WidgetTester t) async {
     await t.pumpWidget(const SizedBox());
     await settle(t);
+    await settleSaves(t, nb);
     await t.runAsync(() async {
-      // A save started inside the test's fake-time zone can't finish from
-      // here (its callbacks wait for that zone's microtasks), which once hung
-      // CI for the whole test timeout. The pages are scratch data: bound it.
-      await nb.flush().timeout(const Duration(seconds: 20), onTimeout: () {});
       nb.dispose();
       await root.delete(recursive: true);
     });

@@ -482,6 +482,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> _checking = Future.value();
   NotedPage? _pendingSave;
   Timer? _saveTimer;
+  final List<String> _unfinished = []; // queued writes not yet done, for unsavedDescription
   Future<void> _saving = Future.value();
   DeletedPages? _lastDeleted;
   String? _coverPath;
@@ -935,7 +936,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }).catchError((Object e) {
       debugPrint('Saving binder $path failed: $e');
     });
-    _saving = job;
+    _saving = _track('binder AI access of $path', job);
     await job;
   }
 
@@ -1019,7 +1020,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }).catchError((Object e) {
       debugPrint('Saving binder $path failed: $e');
     });
-    _saving = job;
+    _saving = _track('binder box types of $path', job);
     await job;
   }
 
@@ -1104,7 +1105,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }).catchError((Object e) {
       debugPrint('Saving binder $path failed: $e');
     });
-    _saving = job;
+    _saving = _track('binder attachment storage of $path', job);
     await job;
   }
 
@@ -2433,7 +2434,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }).catchError((Object e) {
       debugPrint('Saving binder $path failed: $e');
     });
-    _saving = job;
+    _saving = _track('binder cover edit of $path', job);
     await job;
   }
 
@@ -2568,7 +2569,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }).catchError((Object e) {
       debugPrint('Saving ${f.path} failed: $e');
     });
-    _saving = job;
+    _saving = _track('settings file write', job);
     await job;
   }
 
@@ -3058,14 +3059,32 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     );
   }
 
+  // Lists [job], a write queued on _saving, as unfinished until it completes.
+  Future<void> _track(String what, Future<void> job) {
+    _unfinished.add(what);
+    return job.whenComplete(() => _unfinished.remove(what));
+  }
+
   // Runs [job] after the saves queued so far, and before any later one.
   Future<T> _afterSaves<T>(Future<T> Function() job) {
     final r = _saving.then((_) => job());
-    _saving = r.then((_) {}, onError: (_) {});
+    _saving = _track('queued job', r.then((_) {}, onError: (_) {}));
     return r;
   }
 
   // Autosave ------------------------------------------------------------------
+
+  /// What is still waiting to be saved, or null when nothing is: a change on
+  /// the autosave timer, or a save that has started and not finished.
+  @visibleForTesting
+  String? get unsavedDescription {
+    final parts = <String>[
+      if (_pendingSave != null) 'page ${_pendingSave!.id} waiting for the autosave timer',
+      if (_saveTimer?.isActive ?? false) 'autosave timer running',
+      for (final w in _unfinished) '$w started and not finished',
+    ];
+    return parts.isEmpty ? null : parts.join('; ');
+  }
 
   /// Writes any unsaved change now.
   Future<void> flush() async {
@@ -3092,7 +3111,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Saves run one after another, so an older version never lands last.
   void _enqueueSave(NotedPage page) {
-    _saving = _saving.then((_) async {
+    _saving = _track('save of page ${page.id}', _saving.then((_) async {
       final loc = _loc[page.id];
       if (loc == null || _isLocked(loc)) return;
       final st = _storeOf(loc);
@@ -3132,7 +3151,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }).catchError((Object e) {
       _countSaveFailure(page.id);
       debugPrint('Saving page ${page.id} failed: $e');
-    });
+    }));
   }
 
   // Throws unless the pages of [loc] may be written. A folder that has gone

@@ -14,6 +14,7 @@ import 'package:noted/src/page_tree_view.dart';
 import 'package:noted_canvas/noted_canvas.dart' show NotedMenuItem, notedThemeData;
 import 'package:noted_core/noted_core.dart';
 import 'support/real_io.dart';
+import 'support/settle_saves.dart';
 
 void main() {
   late Directory dir;
@@ -81,8 +82,8 @@ void main() {
 
   Future<void> finish(WidgetTester tester) async {
     await tester.pumpWidget(const SizedBox());
+    await settleSaves(tester, nb);
     await tester.runAsync(() async {
-      await nb.flush();
       nb.dispose();
       await dir.delete(recursive: true);
     });
