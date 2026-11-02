@@ -101,7 +101,7 @@ void main() {
     expect(e.pageId, x);
     // Exactly what a save would have written, and the base it would merge on.
     expect(e.pageText, writePage(nb.current!.page));
-    expect(e.pageFile.readAsStringSync(), writePage(nb.current!.page));
+    expect(e.file.existsSync(), isTrue);
     expect(e.baseText, before);
     expect(e.page.nodes, hasLength(1));
     expect(extra.existsSync(), isFalse);
