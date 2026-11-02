@@ -439,6 +439,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // and it is read-only, until a readable version appears on disk.
   String? _diskBlockId;
   String? _diskBlockReason;
+  // The recovery entry written when the block started, for _dropBlockEntry.
+  ({String folder, String pageId, String pageText})? _blockEntry;
 
   /// Test seam: called at named points of a conflict-copy merge (`copy-merged`
   /// just before the copy is revalidated for deletion, `original-read` just
@@ -1088,6 +1090,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _diskBlockId = null; // another page is open now; the block was this page's
       _diskBlockReason = null;
     }
+    if (_blockEntry != null && c?.page.id != _blockEntry!.pageId) _blockEntry = null;
     String? why;
     if (c != null) {
       final loc = _loc[c.page.id];
@@ -2819,12 +2822,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final st = _storeOf(loc);
       var toSave = page;
       final path = st.pathFor(page.id);
-      if (_current?.page.id == page.id && _known.containsKey(_key(path))) {
+      if (_current?.page.id == page.id) {
         // Merge what someone else wrote since the last look first, so this
         // save doesn't overwrite it.
         // A replacement this app can't read is never overwritten: the edits
         // are in recovery and the page is read-only until a readable version
-        // lands (0051).
+        // lands (0051). This looks even if nothing is known about the file (it
+        // was deleted and a new one may have been put in its place); only a
+        // file that is really absent is written.
         if (await _checkFile(path)) {
           _countSaveFailure(page.id); // it did not land, so a caller that needs it must know
           return;
@@ -2847,6 +2852,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       if (_current?.page.id == toSave.id) _base = toSave;
       _touch(loc);
+      await _dropBlockEntry(st, toSave);
     }).catchError((Object e) {
       _countSaveFailure(page.id);
       debugPrint('Saving page ${page.id} failed: $e');
@@ -2942,7 +2948,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (resumed != null && resumed.ran) {
         theirs = resumed.theirs;
       } else if (_orphanLoc == loc && _loc[id] == null) {
-        // Its file was deleted while the folder was away: keep the page.
+        // Its file was deleted while the folder was away: keep the page. A
+        // file that is there but wasn't listed as a page (a newer format, or
+        // damaged) is not that: it is never written over, and the entry stays.
+        if (await FileSystemEntity.type(st.pathFor(id)) != FileSystemEntityType.notFound) {
+          debugPrint('Recovery of page $id kept: its file is there but cannot be read as a page.');
+          return;
+        }
         _loc[id] = loc;
         _metas[id] = c.page.meta;
         _orphanLoc = null;
@@ -3319,7 +3331,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final key = _key(path);
     final file = File(path);
     final openId = _current?.page.id;
-    final isOpen = openId != null && _pathId[key] == openId && _loc[openId] == loc;
+    // Decided by path, not by _pathId: that entry is dropped when the file is
+    // deleted, and a sync client often deletes first and renames the new file in.
+    final isOpen = openId != null && _isOpenFile(loc, key);
     String? text;
     var time = DateTime.now().millisecondsSinceEpoch;
     try {
@@ -3331,11 +3345,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       } else {
         // It is there but can't be read now: not the same as missing.
         if (_disposed) return false;
-        return isOpen && await _blockOpen(loc, key, 'could not be read: ${e.message}');
+        return isOpen && await _blockOpen(loc, key, 'could not be read: ${e.message}', openId);
       }
     } on FormatException {
       if (_disposed) return false;
-      if (isOpen) return _blockOpen(loc, key, 'not valid UTF-8 text');
+      if (isOpen) return _blockOpen(loc, key, 'not valid UTF-8 text', openId);
       _knownUnreadable(loc, key, path, 'not valid UTF-8 text');
       return false;
     }
@@ -3350,7 +3364,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (wasBlocked) {
         // Nothing left to protect: the next save writes the page again.
         _clearDiskBlock();
-        _pageChanged(_current!.page);
+        final cp = _current;
+        if (cp != null && cp.page.id == openId) _pageChanged(cp.page);
       }
       _fileGone(loc, key, path);
       return false;
@@ -3364,6 +3379,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final previous = _known[key];
     _known[key] = text;
     final NotedPage page;
+    var saveAfterMerge = false;
     try {
       page = readPage(text);
     } on PageFormatException catch (e) {
@@ -3374,14 +3390,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         } else {
           _known[key] = previous;
         }
-        return _blockOpen(loc, key, e.message);
+        return _blockOpen(loc, key, e.message, openId);
       }
       _knownUnreadable(loc, key, path, e.message);
       return false;
     }
-    if (wasBlocked) _clearDiskBlock(); // readable again: merge it as usual
+    if (wasBlocked) {
+      _clearDiskBlock(); // readable again: merge it as usual
+      // The merged page is saved even if it equals the file, so the recovery
+      // entry kept for the block can be dropped once that save has landed.
+      saveAfterMerge = _blockEntry != null;
+    }
     if (_current?.page.id == page.id && _loc[page.id] == loc) {
       _mergeOpen(page, text, time);
+      final cp = _current;
+      if (saveAfterMerge && cp != null && cp.page.id == page.id) _pageChanged(cp.page);
     } else {
       await _applyClosed(page, loc, key, path);
     }
@@ -3390,19 +3413,74 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // The open page's file can't be read: keep what is on disk, put the edits
   // in recovery, and make the page read-only with the reason shown.
-  Future<bool> _blockOpen(String loc, String key, String why) async {
+  // [openId] is the page the file belongs to; the page on screen may have
+  // changed while this waited, and then nothing is blocked (the file is left
+  // alone either way, so this still returns true).
+  Future<bool> _blockOpen(String loc, String key, String why, String openId) async {
+    if (_disposed) return false;
     final c = _current;
-    if (c == null || _disposed) return false;
-    if (writePage(c.page) != _known[key]) {
-      await _keepForRecovery(loc, _storeOf(loc), c.page);
+    if (c == null || c.page.id != openId) return true;
+    final text = writePage(c.page);
+    // Already blocked: the page is read-only, so its entry is still current.
+    if (_diskBlockId != openId && text != _known[key]) {
+      final st = _storeOf(loc);
+      await _keepForRecovery(loc, st, c.page);
+      _blockEntry = (
+        folder: _normalizePath(st.directory.path),
+        pageId: openId,
+        pageText: text,
+      );
     }
     if (_disposed) return true;
-    _diskBlockId = c.page.id;
+    if (_current?.page.id != openId) return true;
+    _diskBlockId = openId;
     _diskBlockReason =
         "This page's file was replaced by a version that can't be read ($why), "
         'so the page is read-only and is not saved. Your edits are kept in recovery.';
     _syncReadOnly();
     return true;
+  }
+
+  // Whether [key] is the file of the page on screen.
+  bool _isOpenFile(String loc, String key) {
+    final id = _current?.page.id;
+    if (id == null || _loc[id] != loc) return false;
+    try {
+      return _key(_storeOf(loc).pathFor(id)) == key;
+    } on Object {
+      return false;
+    }
+  }
+
+  // After a save that followed a block has landed and read back, the recovery
+  // entry _blockOpen kept is no longer needed. Only the entry that was written
+  // for the block is removed.
+  Future<void> _dropBlockEntry(PageStore st, NotedPage saved) async {
+    final b = _blockEntry;
+    final rec = _recovery;
+    if (b == null || rec == null || b.pageId != saved.id || _diskBlockId != null) return;
+    try {
+      if (await st.readText(saved.id) != writePage(saved)) return; // not landed
+      for (final e in (await rec.list()).entries) {
+        if (e.folder == b.folder && e.pageId == b.pageId && e.pageText == b.pageText) {
+          await rec.delete(e);
+        }
+      }
+      _blockEntry = null;
+    } on Object catch (e) {
+      debugPrint('Dropping the recovery entry of page ${saved.id} failed: $e');
+    }
+  }
+
+  // While the open page is blocked its file is looked at again, so a read
+  // error that was only passing (a sync client holding the file) clears.
+  Future<void> _recheckBlocked() async {
+    final id = _diskBlockId;
+    final c = _current;
+    if (id == null || c == null || c.page.id != id) return;
+    final loc = _loc[id];
+    if (loc == null || _isLocked(loc)) return;
+    await _checkFile(_storeOf(loc).pathFor(id));
   }
 
   void _clearDiskBlock() {
@@ -3678,6 +3756,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<void> _checkFolders() async {
+    await _recheckBlocked();
+    if (_disposed) return;
     final defaultExists = await store.directory.exists();
     if (_disposed) return;
     if (!_defaultGone && !defaultExists) {

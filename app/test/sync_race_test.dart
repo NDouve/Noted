@@ -10,6 +10,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/recovery_store.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -29,7 +30,20 @@ Map<String, Object?> doc(String text) => {
   },
 };
 
+// Counts the writes that reach the folder.
+class CountingStore extends PageStore {
+  CountingStore(super.directory);
+  int saves = 0;
+
+  @override
+  Future<void> save(NotedPage page) {
+    saves++;
+    return super.save(page);
+  }
+}
+
 void main() {
+  late CountingStore counting;
   late Directory root;
   late Directory dir;
   late Directory rec;
@@ -43,8 +57,9 @@ void main() {
     dir = await Directory('${root.path}${sep}pages').create();
     rec = Directory('${root.path}${sep}rec');
     modules = buildModules();
+    counting = CountingStore(dir);
     nb = Notebook(
-      PageStore(dir),
+      counting,
       modules,
       saveDelay: const Duration(hours: 1),
       recoveryDirectory: rec,
@@ -121,10 +136,85 @@ void main() {
       final (id, mine) = await editedPage();
       File(pathOf(id)).deleteSync();
       Directory(pathOf(id)).createSync(); // present, but can't be read as a file
+      final writes = counting.saves;
       await nb.flush();
+      expect(counting.saves, writes); // the save gate stopped the write
       expect(Directory(pathOf(id)).existsSync(), isTrue);
       expect(nb.readOnlyReason, isNotNull);
       expect((await nb.pendingRecovery()).entries.single.page.node(mine.id), isNotNull);
+    });
+
+    test('a read error that passes is rechecked on the folder timer', () async {
+      final (id, mine) = await editedPage();
+      final original = File(pathOf(id)).readAsStringSync();
+      File(pathOf(id)).deleteSync();
+      Directory(pathOf(id)).createSync();
+      await nb.flush();
+      expect(nb.readOnlyReason, isNotNull);
+      Directory(pathOf(id)).deleteSync();
+      File(pathOf(id)).writeAsStringSync(original); // no watcher event
+      await nb.checkFolders();
+      expect(nb.readOnlyReason, isNull);
+      expect(nb.current!.readOnly, isFalse);
+      await nb.flush();
+      expect(onDisk(id).node(mine.id), isNotNull);
+    });
+
+    // A sync client often deletes a file and then renames the new one in.
+    for (final withCreateEvent in [true, false]) {
+      for (final (label, bytes) in [
+        ('malformed', '{ not json'),
+        ('newer-format', null),
+      ]) {
+        test(
+          'deleted, then put back as $label text ${withCreateEvent ? 'with' : 'without'} a create event: not overwritten',
+          () async {
+            final (id, mine) = await editedPage();
+            final text =
+                bytes ??
+                writePage(onDisk(id)).replaceFirst(RegExp(r'"format"\s*:\s*1'), '"format":99');
+            File(pathOf(id)).deleteSync();
+            await nb.checkFile(pathOf(id)); // the delete event
+            File(pathOf(id)).writeAsStringSync(text);
+            if (withCreateEvent) await nb.checkFile(pathOf(id));
+            final writes = counting.saves;
+            await nb.flush();
+            expect(counting.saves, writes);
+            expectBlocked(id, mine, text);
+            expect((await nb.pendingRecovery()).entries.single.page.node(mine.id), isNotNull);
+          },
+        );
+      }
+    }
+
+    test('a file that is really absent is written', () async {
+      final (id, mine) = await editedPage();
+      File(pathOf(id)).deleteSync();
+      await nb.checkFile(pathOf(id));
+      await nb.flush();
+      expect(nb.readOnlyReason, isNull);
+      expect(onDisk(id).node(mine.id), isNotNull);
+    });
+
+    test('a folder that comes back holding a newer-format file is not overwritten', () async {
+      await start();
+      final extra = await Directory('${root.path}${sep}Elsewhere').create();
+      final away = Directory('${root.path}${sep}Elsewhere-away');
+      final x = await nb.createPage(folderPath: extra.path);
+      await nb.flush();
+      await nb.open(x);
+      nb.current!.createBoxAt(const Bounds(10, 10, 0, 0));
+      final file = File('${extra.path}$sep$x.canvas');
+      final newer = file.readAsStringSync().replaceFirst(RegExp(r'"format"\s*:\s*1'), '"format":99');
+      await extra.rename(away.path);
+      await nb.checkFolders();
+      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      File('${away.path}$sep$x.canvas').writeAsStringSync(newer);
+      await away.rename(extra.path);
+      await nb.checkFolders();
+      await nb.flush();
+      expect(file.readAsStringSync(), newer);
+      expect((await nb.pendingRecovery()).entries, hasLength(1)); // kept
     });
 
     test('a readable version later is merged and the page is editable again', () async {
@@ -147,6 +237,28 @@ void main() {
       expect(nb.current!.page.node(theirs.id), isNotNull);
       await nb.flush();
       expect(onDisk(id).nodes.map((n) => n.id).toSet(), {mine.id, theirs.id});
+      // The entry kept for the block is gone once the merged save landed.
+      expect((await nb.pendingRecovery()).entries, isEmpty);
+    });
+
+    test('a recovery entry that is not the block\'s own stays', () async {
+      final (id, mine) = await editedPage();
+      File(pathOf(id)).writeAsStringSync('{ not json');
+      await nb.flush();
+      final entry = (await nb.pendingRecovery()).entries.single;
+      // Someone else's newer entry for the same page replaces it.
+      await RecoveryStore(rec).write(
+        folder: entry.folder,
+        page: nb.current!.page.insertNode(noteBox('other')),
+        baseText: entry.baseText,
+        time: DateTime.now(),
+      );
+      await other.save(NotedPage.create(nb.current!.page.meta));
+      await nb.checkFile(pathOf(id));
+      await nb.flush();
+      expect(nb.readOnlyReason, isNull);
+      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      expect(mine.id, isNotEmpty);
     });
 
     test('the file being deleted lifts the block; the next save writes the page', () async {
