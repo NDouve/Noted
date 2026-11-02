@@ -540,7 +540,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0049 — Optional binders, without passwords
 - **Date:** 2026-10-25
-- **Status:** Active (implements 0026 except passwords, locking and encryption); "New binder asks for a folder" superseded by 0084
+- **Status:** Active (implements 0026 except passwords, locking and encryption); "New binder asks for a folder" superseded by 0084; failed-move rollback amended by 0124
 - **Decision:**
   - **Creating a binder:** "New binder" asks for a folder. A folder that already has a binder file is opened, never overwritten. Otherwise a binder file is created, and any page files already in the folder become its pages.
   - **Cover page:** title, description and owner are editable. It also shows last edited (the latest change to the binder's files), the storage folder, and a color chosen from an 8-color palette. The color is applied to the binder's sidebar entries.
@@ -572,7 +572,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0051 — External file changes and per-box merging
 - **Date:** 2026-10-25
-- **Status:** Active (implements 0020); refined by 0120 (the manual-edit merge view is removed; the issue sequence replaces the badge) and 0121
+- **Status:** Active (implements 0020); refined by 0120 (the manual-edit merge view is removed; the issue sequence replaces the badge) and 0121; unreadable replacements of the open page amended by 0124
 - **Decision:**
   - **Watching:** every storage folder is watched. A changed page file is checked after 300 ms.
     - The app recognises its own writes by their exact text and ignores them.
@@ -602,7 +602,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0053 — Cloud conflict-copy files (OneDrive)
 - **Date:** 2026-10-25
-- **Status:** Active; extended by 0120 (landed boxes)
+- **Status:** Active; extended by 0120 (landed boxes); deletion of a copy amended by 0124
 - **Decision:**
   - **Detection:** a file `<stem>-<suffix>.canvas` is a conflict copy when `<stem>.canvas` exists in the same folder and both have the same page id. OneDrive appends `-<COMPUTERNAME>`, then `-<COMPUTERNAME>-<n>`. This naming is *unverified*, so a broader suffix pattern is accepted.
   - **Merge**, box by box into the original. There is no common base, so revisions decide:
@@ -693,7 +693,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0059 — Moving pages across standalone folders
 - **Date:** 2026-10-25
-- **Status:** Active (supersedes the refusal of cross-folder nesting in 0056)
+- **Status:** Active (supersedes the refusal of cross-folder nesting in 0056); failed-move rollback amended by 0124
 - **Decision:**
   - Nesting a page under, or placing it before or after, a page in a different standalone folder moves the page's file and its subpages' files into that folder.
   - It uses the same copy, read-back-and-compare, delete-the-sources algorithm as binder moves (0049). On any failure the copies are removed and the sources stay.
@@ -841,7 +841,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0070 — Recovery store for edits that can't be saved
 - **Date:** 2026-10-26
-- **Status:** Active; extended by 0077 (damaged entries in the sidebar)
+- **Status:** Active; extended by 0077 (damaged entries in the sidebar); entry layout, identity checks and replay amended by 0124 (the two-file layout below is replaced by one entry file)
 - **Decision:**
   - **Writing an entry:** when a save can't land because its folder (standalone or binder) is unavailable (0064), the page is written at once to `%APPDATA%\Noted\recovery` as two files:
     - `<name>.canvas`: exactly the text a normal save would write, so it can never hold anything a page file wouldn't (invariant 3)
@@ -960,7 +960,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0077 — Damaged recovery entries in the sidebar
 - **Date:** 2026-10-26
-- **Status:** Active (extends 0070)
+- **Status:** Active (extends 0070); replay and landing problems added by 0124
 - **Decision:** Recovery entries that are corrupt or can't be verified are also listed in the sidebar under "Can't open", with the reason in the tooltip. They are kept and never deleted, as before.
 - **Rationale:** A pending edit that can't be restored should be visible where other unreadable files are shown.
 - **Alternatives considered:** reporting them only in the log.
@@ -1341,7 +1341,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0098 — Image and file boxes, and where their files are stored
 - **Date:** 2026-10-31
-- **Status:** Active (page format change approved by the maintainer; Box API 0.7 and the attachments package approved retroactively); amended by 0102 (Delete, alt text below the picture)
+- **Status:** Active (page format change approved by the maintainer; Box API 0.7 and the attachments package approved retroactively); amended by 0102 (Delete, alt text below the picture); landing kept files amended by 0124
 - **Decision:**
   - **Setting "Store images and files":** on pages and binders, either *In a folder beside the page* (the default) or *In the page file*.
     - It is stored as `"attachments":"folder"|"embedded"` in the page header's `noted` object or in the binder file. An absent value means the page follows its parent.
@@ -1497,7 +1497,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0106 — The AI write path
 - **Date:** 2026-10-31
-- **Status:** Active, amended by 0110 (ai-link/2, codes instead of tokens, MCP tools 0.3.0); implements invariant 4 as worded in 0103; extends 0101
+- **Status:** Active, amended by 0110 (ai-link/2, codes instead of tokens, MCP tools 0.3.0) and 0124 (closed-page writes reread and merge); implements invariant 4 as worded in 0103; extends 0101
 - **Decision:**
   - **Local link:** while it runs, the app listens on loopback TCP (`127.0.0.1`, a port chosen by the system) and writes `ai-link.json` (`{"format":1,"port","pid","nonce"}`) in its data folder (`%APPDATA%\Noted`), removed on a clean exit. A client connects to loopback only and reads the greeting line `{"noted":"ai-link/1","nonce":…}`; it sends nothing unless the nonce matches the file. One request per connection, as one JSON line of at most 1 MiB: `{"noted":"ai-link/1","op":"write_box","token":…,"box":…,"mode":"replace"|"append","content":…}`. The app answers with one line, `{"ok":true,"page":…,"box":…}` or `{"ok":false,"code":…,"message":…}`, and closes the connection. Reads time out after 5 s, and at most 8 connections are open at once.
   - **Acceptance:** a write is accepted only if all of these hold, otherwise it gets the code in brackets:
@@ -1733,7 +1733,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0123 — Revoked codes keep their history; CI on Linux; follow-ups
 - **Date:** 2026-11-01
-- **Status:** Active (approved by the maintainer; amends 0108, 0115 and 0093)
+- **Status:** Active (approved by the maintainer; amends 0108, 0115 and 0093); revoked codes pruned and the Linux job blocking per 0126
 - **Decision:**
   - **Revoked codes:** revoking a code, or retiring a box's old Writer when a new one is issued, marks it `"revoked": <ISO time>` and blanks its stored hash, instead of deleting it, so no build (including older ones) can verify it. It is listed as "Revoked <date>" without controls, and its activity, in-app and from `ai-mcp-log.jsonl`, stays visible marked revoked. Log lines of codes that were never issued are still dropped.
   - **Approval questions** name what the code reaches, on their own line, labelled and quoted ("Shown in Noted as: "…""): the AI box's first line, or the page or binder title. The name is cleaned like app names, cut at 60 characters by grapheme, and looked up within 2 seconds or left out.
@@ -1743,6 +1743,42 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Repository:** `.codex/` (local Codex config) is ignored.
 - **Rationale:** A revoked code's history is part of what the user needs to see what an AI did; blanking the hash keeps old builds from accepting it.
 - **Alternatives considered:** deleting revoked codes (history lost); keeping the hash with a format bump (older builds would refuse every code, not just revoked ones).
+
+## 0124 — Saves, moves and recovery never overwrite or delete what they can't verify
+- **Date:** 2026-11-02
+- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106)
+- **Decision:**
+  - **The open page's file (0051):** before every save of the open page, its file is read again, found by path. If it is unreadable, from a newer format, holds a different page, or can't be read for any reason other than not existing, nothing is written: the file stays as it is, the edits go to recovery, and the page becomes read-only with a plain reason and a way out ("Put back a readable version, or open another page"). The block is rechecked by the watcher and the folder timer; when a readable version appears it is merged three-way and the page is editable again, and the block's recovery entry is removed once the merged save reads back. A folder that comes back while the open page waits for it is handled the same way, with or without a recovery entry: a file that is there but unreadable blocks the page, and a missing file puts the page back in place so a file that lands later is merged.
+  - **Conflict copies (0053):** a copy is deleted only if its bytes still equal the ones that were merged, and the original is replaced only if it still equals what the merge read. Otherwise the merge is redone, up to five times; then the copy is kept and listed under "Can't open".
+  - **AI writes to a closed page (0106):** reread before saving and merged three-way with the loaded page as base; every rule (permission, revocation, conflict, lock, box type) is checked again on the result with nothing awaited between the check and the write. An unreadable or newer file, or a page deleted or moved meanwhile, refuses the write and leaves the file alone; a file that keeps changing answers `busy`; a vanished folder goes to recovery. The closed-app writer in noted_mcp (0117) already compares the bytes it read before and immediately before its rename, and retries once; it was not changed.
+  - **Moves (0049, 0059):** when a source can't be deleted, each page is settled on its own. A source is put back only if this move deleted it and the path is empty (claimed with an exclusive create); an existing file is never written over. A page whose source is verified intact loses its destination copy; one whose source is gone stays moved; one whose source exists but can't be verified is kept in both places, and the message names both. Stranded subpages go to the top level of their own location (not between standalone folders, which share one tree). The message always reaches the user, stays on screen when they must act, and gives the OS reason when there is one.
+  - **Recovery store (0070):** one file per folder and page, `<id>-<hash of location and id>.entry`, holding the page, its base, folder, page id and time, written to a temporary file and renamed. Location names fold case only on Windows, as the notebook does. An entry is accepted only if its page id, the page's id, the base's id and its file name agree; otherwise it is kept and listed. Leftover temporary files are promoted when newer, removed when an identical or strictly later entry holds them, and otherwise kept and listed. Old two-file entries are migrated without loss; a copy is only ever dropped when an identical or strictly later entry for the same folder and page exists, and an equal time with different content keeps both. Writes, listing, migration and deletion run one at a time, and deleting removes only the generation that was replayed.
+  - **Replay (0070, 0077, 0098):** an entry is replayed by its verified page id and retired as soon as its page has landed and been verified. A kept `<id>.assets` folder is its own retry marker: whenever recovery runs (and while the page stays open), its files are copied through a temporary name, checked against the content hash in their names (other names byte for byte), and only the verified files are removed. A different file with the same non-hash name is never replaced. Replay and landing problems are listed under "Can't open", and in the quit notice, with a plain reason, until they succeed.
+- **Rationale:** Sync clients replace, lock and delete files at any moment. A save, move or recovery step that acts on a file it hasn't just checked can destroy the only copy of someone's work.
+- **Alternatives considered:** saving over an unreadable file (destroys content from a newer app or another device); a recovery manifest with generation files (more files and cleanup for the same guarantee); replaying a whole entry again until its attachments land (not idempotent: brought back deleted boxes and reverted edits).
+
+## 0125 — Automatic cleanup after runs; review cadence
+- **Date:** 2026-11-02
+- **Status:** Active (approved by the maintainer)
+- **Decision:**
+  - **`app/scripts/cleanup-run.ps1`** ends `dart`, `dartvm`, `dartaotruntime` and `flutter_tester` processes of this repository (command line, executable or working directory in the main checkout or a registered worktree) only when they are abandoned: their group (the Dart processes plus a `cmd /c` running flutter or dart) has no living parent. A live bash, sh, PowerShell, pwsh or `cmd /k` window always owns what runs under it, because Git Bash shells show a dead parent even while in use. Nothing in the release folder, and not the script or its parents, is ever ended. It removes folders under `.claude\worktrees\` that git no longer knows (no `.git`, or one pointing at a missing git directory) and that are at least 10 minutes old; anything it can't be sure of is kept. `-WhatIf` lists without acting; every action is logged to `%TEMP%\noted-cleanup-run.log`; its selection logic is tested on Windows CI.
+  - **Hooks:** Claude Code runs it on SubagentStop and Stop from `.claude/settings.json`, asynchronously; a failure is a warning, never a stop. The file is added by the maintainer.
+  - **Agent rules:** builders give background commands a time limit and stop them before handing back; the PM pulls before reading `next.md`, looks for `codex` where its installers put it, and stops all background work and runs the script before writing the report.
+  - **Review cadence** (`docs/runs/README.md`): the Codex run-diff review runs at the end of every run; each `next.md` names one area audit, rotating `area-data-integrity`, `area-invariants`, `area-spec-drift`, `area-dead-code`, with `area-data-integrity` again whenever a run changes storage, sync, recovery or AI writes; the maintainer's PM chat triages new findings into accepted or rejected, and accepted ones are queued by report and R-number.
+- **Rationale:** Leftover test processes held worktree files and slowed later runs; cleanup must never touch live work.
+- **Alternatives considered:** ending every Dart process of the repository (kills live builders and `flutter run`); treating any shell that mentions flutter as a wrapper (ended a live test run in Git Bash).
+
+## 0126 — Linux CI blocks; formula depth; pruning revoked codes; settling saves in tests
+- **Date:** 2026-11-02
+- **Status:** Active (approved by the maintainer; amends 0123)
+- **Decision:**
+  - **CI:** the Linux test job blocks a push, like Windows.
+  - **Formulas:** a run of operators of one level (`A1+A2+…`) is one node and evaluates in a loop, so long flat formulas work and adjust on every platform; real nesting is capped by tree height (256) as well as by parentheses (100), and past it a formula is an error everywhere instead of depending on the stack.
+  - **AI link server:** a client that disappears before or during a reply is a closed connection, not an error.
+  - **Revoked codes (0123):** a revoked code is removed from `ai-access.json` once neither the app's activity log nor the MCP access log mentions it, at start and whenever the logs are trimmed or change. A code never used is removed right after it is revoked. Nothing is removed while a log can't be read. A removed code fails the same way as a revoked one.
+  - **Tests:** `settleSaves` (app/test/support) settles every queued save, binder and settings write inside the fake-time zone before teardown, and fails naming the stuck job instead of hanging.
+- **Rationale:** A blocking Linux job catches platform differences before release; results must not depend on the platform's stack size; `ai-access.json` should not grow forever.
+- **Alternatives considered:** skipping the Linux-only tests; capping only the `^` chain or the chain length (flat sums of a few hundred terms stopped working); keeping every revoked code (unbounded growth).
 
 ---
 
