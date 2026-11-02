@@ -20,7 +20,7 @@ The main paths exist and have substantial regression coverage, but the implement
 - What happens: open a page, replace its file externally with malformed JSON or a valid page whose format is newer than this app, then edit and flush the open page. The pre-save check records the replacement text and catches the format error. _knownUnreadable immediately returns for the current page, without making it read-only or stopping the save. _enqueueSave then writes the old in-memory page over the replacement. A parse failure is therefore treated as permission to destroy an unreadable file, including content belonging to a newer app. An ordinary read error is also treated as a missing file by _checkFile.
 - Test coverage: none for this case. app/test/external_changes_test.dart:102 and :114 cover unreadable closed pages; :246 covers a valid unseen external change.
 - Confidence: confirmed (static control-flow trace).
-- Status: accepted (queued in docs/runs/next.md, 2026-11-01)
+- Status: fixed (7c7375c, df71483, b993f94, 9b1ebcf, d424230)
 - Suggested correction: return a distinct unsafe-to-save result from the pre-save read; retain the disk file, preserve local edits in recovery, and expose the error until a readable version can be merged.
 
 ### R-2 Conflict-copy cleanup deletes a newer copy that was never merged
@@ -29,7 +29,7 @@ The main paths exist and have substantial regression coverage, but the implement
 - What happens: the watcher reads conflict copy C1; while the app merges and verifies C1, the sync provider replaces that same copy path with C2 containing additional edits. Verification compares the saved original against the in-memory C1. File(copyPath).delete() then removes C2 without reading or comparing it. Successful read-back of the destination does not prove the current source is the version that was merged. The closed-page original has a similar read/overwrite window at :3148–3155.
 - Test coverage: none for source replacement during merge. app/test/conflict_copy_test.dart:246 and :261 cover a dropped write/read-back failure; :280 covers watcher pickup, not a changing source during cleanup.
 - Confidence: confirmed (static interleaving).
-- Status: accepted (queued in docs/runs/next.md, 2026-11-01)
+- Status: fixed (7c7375c)
 - Suggested correction: claim a stable source generation or retain the copy unless its current identity and bytes still match the consumed version; re-merge changed copies. Revalidate the destination before replacing it as well.
 
 ### R-3 AI writes to a closed page bypass the pre-save external-change merge
@@ -38,7 +38,7 @@ The main paths exist and have substantial regression coverage, but the implement
 - What happens: while Noted runs with a different page open, an authorized AI write loads page P. A sync writer updates P after this load but before _write. _aiWriteClosed commits against the old page and calls _write directly, which saves without rereading or three-way merging. An edit to any other box can be silently overwritten, and a newly arrived conflict on the target is not rechecked. The in-process _saving queue orders app work but cannot serialize a sync provider. The open-page save at least invokes _checkFile; this path does not.
 - Test coverage: none for an external disk edit between AI load and save. app/test/ai_write_test.dart:304 covers persistence; :743 covers AI queue ordering and opening a page concurrently; :827 covers a disappearing folder.
 - Confidence: confirmed (static interleaving).
-- Status: accepted (queued in docs/runs/next.md, 2026-11-01)
+- Status: fixed (af822f1, b993f94, 9b1ebcf)
 - Suggested correction: keep the loaded page as a merge base, reread before committing, merge external changes, and repeat conflict/permission checks against the resulting target. Use one guarded persistence path for both open and closed pages.
 
 ### R-4 Recovery is retired before its attachments have landed
@@ -47,7 +47,7 @@ The main paths exist and have substantial regression coverage, but the implement
 - What happens: both replay branches delete the recovery metadata and canvas before _landRecoveredAssets. If copying the assets fails or the app stops in between, the assets directory survives but there is no recovery entry left to trigger a retry. RecoveryStore.list only enumerates .canvas/.json entries, not orphan asset directories. The same device may still read the fallback bytes, but other devices see missing files, and subsequent launches do not complete the intended move.
 - Test coverage: none for failure/crash between page replay and asset landing. app/test/attachments_test.dart:244 checks the successful recovery path.
 - Confidence: confirmed (static trace).
-- Status: accepted (queued in docs/runs/next.md, 2026-11-01)
+- Status: fixed (d424230, be6ab4e, 99e6050)
 - Suggested correction: keep a replay marker until assets are copied and verified; make retry work after restart even when the page itself already landed.
 
 ### R-5 Recovery entries collide for case-distinct storage locations
@@ -56,7 +56,7 @@ The main paths exist and have substantial regression coverage, but the implement
 - What happens: RecoveryStore._name lowercases every folder path on every platform. On a case-sensitive filesystem, /Notes and /notes are distinct storage locations. Recovery writes for the same page id in those locations use the same filename and the second replaces the first. Duplicate page ids are realistic when folders contain copied pages or a move leaves recovery behind. Notebook._key correctly limits case folding to Windows; recovery does not.
 - Test coverage: none. app/test/recovery_test.dart:246 tests replacement of one page in one location, not distinct case-sensitive locations.
 - Confidence: confirmed. An isolated Dart probe called RecoveryStore.write for /Notes and /notes with the same id; list() returned one entry. Executed on Windows with those paths stored as metadata; the actual case-sensitive-filesystem consequence follows from the unconditional naming function.
-- Status: accepted (queued in docs/runs/next.md, 2026-11-01)
+- Status: fixed (84c9e4b)
 - Suggested correction: use platform-appropriate canonical location identity consistently for recovery naming; preserve existing entries when migrating names.
 
 ### R-6 Recovery accepts mismatched metadata, page and base identities
@@ -65,7 +65,7 @@ The main paths exist and have substantial regression coverage, but the implement
 - What happens: the recovery reader validates that each component parses but never checks that metadata.pageId, page.id and base.id agree, or that the filename belongs to the metadata location/id. Replay then selects the target using the canvas page id and folder from the metadata, ignoring entry.pageId. A damaged or mismatched pair can be applied to the wrong page/location instead of being retained as an unverifiable entry.
 - Test coverage: none for valid-but-mismatched components. app/test/recovery_test.dart:234 covers syntactically damaged files.
 - Confidence: confirmed. An isolated Dart probe replaced an entry's canvas with a valid different-page canvas; list() accepted one entry with zero problems.
-- Status: accepted (queued in docs/runs/next.md, 2026-11-01)
+- Status: fixed (84c9e4b, 64a8d20, d424230)
 - Suggested correction: validate all identities before accepting an entry, and retain/report any mismatch rather than replaying it.
 
 ### R-7 Unverifiable recovery replay is logged but not listed under Can't open
@@ -74,7 +74,7 @@ The main paths exist and have substantial regression coverage, but the implement
 - What happens: only errors found during RecoveryStore.list populate recoveryProblems/recoveryDamaged. A readable entry that fails replay read-back or verifyRecoveredPage merely produces debugPrint output and returns. The entry is kept, but the promised sidebar reason is missing; general replay exceptions take the same log-only route.
 - Test coverage: partial. app/test/recovery_test.dart:216 verifies that a failed check keeps the entry, but does not assert the sidebar/problem list; :234 covers parse failures only.
 - Confidence: confirmed (static trace).
-- Status: accepted (queued in docs/runs/next.md, 2026-11-01)
+- Status: fixed (d424230)
 - Suggested correction: retain per-entry replay failures in the same problems/damaged collections used by the sidebar and clear them only after successful replay.
 
 ### R-8 Unsupported boxes can be resolved destructively on a device that cannot run them
@@ -92,7 +92,7 @@ The main paths exist and have substantial regression coverage, but the implement
 - What happens: moving a page tree first verifies destination copies, then deletes sources. Suppose deleting source A succeeds and deleting source B fails because the source drive disappears. Restoring A also fails. The restoration exception is only logged; removeCopies still deletes every destination copy, including the only surviving A. The error then incorrectly says nothing was moved.
 - Test coverage: no regression found for a partial source deletion followed by failed restoration. Existing binder/standalone move tests cover successful moves and earlier copy failures.
 - Confidence: confirmed (static failure interleaving).
-- Status: accepted (queued in docs/runs/next.md, 2026-11-01)
+- Status: fixed (597bf62, b993f94, 9b1ebcf, d424230, be6ab4e)
 - Suggested correction: track restoration success per page and never remove a verified destination unless an intact source is positively established; surface partial recovery explicitly.
 
 ### R-10 Recovery's two-file entry has no atomic generation boundary
@@ -101,7 +101,7 @@ The main paths exist and have substantial regression coverage, but the implement
 - What happens: each file is independently replaced, canvas first and metadata second. A crash after the first rename leaves either an orphan canvas on first write, or a new canvas paired with old metadata/base on replacement. There is no generation id or content digest to detect the latter. This is weaker than an atomic recovery entry and can leave valid-looking mismatched generations. An orphan is preserved, which limits loss, but automatic replay is not guaranteed.
 - Test coverage: none for interruption between the two renames or mixed generations; ordinary write/replace/relaunch tests exist in app/test/recovery_test.dart.
 - Confidence: confirmed (write ordering); the exact incorrect-merge consequence of a mixed base is not runtime reproduced.
-- Status: accepted (queued in docs/runs/next.md, 2026-11-01)
+- Status: fixed (84c9e4b, 64a8d20)
 - Suggested correction: publish a manifest pointing at a complete immutable generation, or use a single transactional envelope, with startup handling for incomplete generations.
 
 ## Data-path trace and existing safeguards
