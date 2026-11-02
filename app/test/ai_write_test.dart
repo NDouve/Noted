@@ -918,6 +918,97 @@ void main() {
       expect(rec.existsSync() && rec.listSync().isNotEmpty, isTrue, reason: 'kept for recovery');
     });
 
+    group('a closed page whose file changes while the write is made', () {
+      late ({Notebook nb, String a, String code}) t;
+      late File file;
+
+      setUp(() async {
+        t = await withBox();
+        await t.nb.createPage(); // t.a is closed now
+        file = File('${pages.path}/${t.a}.canvas');
+      });
+
+      NotedPage disk() => readPage(file.readAsStringSync());
+
+      // Runs [change] the first [times] times the write reaches [point].
+      void inject(String point, void Function(int n) change, {int times = 1}) {
+        var n = 0;
+        t.nb.syncHook = (p, _) async {
+          if (p == point && n < times) change(n++);
+        };
+      }
+
+      String textOf(NotedPage p, String id) => ((p.node(id)! as BoxRecord).data!.decode()! as Map)['text']! as String;
+
+      for (final point in ['closed-reread', 'closed-before-write']) {
+        test('another box added at $point: both edits are saved', () async {
+          inject(point, (_) => file.writeAsStringSync(writePage(disk().insertNode(box('bx', text: 'sync')))));
+          final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+          expect(r.ok, isTrue);
+          final saved = disk();
+          expect(textOf(saved, 'ba'), 'ai');
+          expect(textOf(saved, 'bx'), 'sync');
+        });
+      }
+
+      test('the box becoming conflicted in between: refused, the other writer\'s file stays', () async {
+        late String theirs;
+        inject('closed-reread', (_) {
+          BoxRecord version(String text, String rev) => BoxRecord.create(
+            id: 'ba',
+            typeId: 'test.ai',
+            dataVersion: 1,
+            bounds: const Bounds(40, 40, 200, 80),
+            data: RawJson.encode({'by': null, 'text': text}),
+            snapshotText: text,
+            rev: rev,
+          );
+          theirs = writePage(
+            disk().replaceNode(
+              version('theirs', 'r-theirs').withConflict(
+                BoxConflict.other(node: version('elsewhere', 'r-other').toRaw(), at: 5),
+              ),
+            ),
+          );
+          file.writeAsStringSync(theirs);
+        });
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect((r as AiLinkError).code, AiLinkCode.conflict);
+        expect(file.readAsStringSync(), theirs);
+      });
+
+      test('the file becoming unreadable in between: refused, the file is untouched', () async {
+        inject('closed-reread', (_) => file.writeAsStringSync('{ not json'));
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect((r as AiLinkError).code, AiLinkCode.saveFailed);
+        expect(r.message, contains("can't be read"));
+        expect(file.readAsStringSync(), '{ not json');
+      });
+
+      test('a newer format appearing just before the write: refused, the file is untouched', () async {
+        late String newer;
+        inject('closed-before-write', (_) {
+          newer = writePage(disk()).replaceFirst(RegExp(r'"format"\s*:\s*1'), '"format":99');
+          file.writeAsStringSync(newer);
+        });
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect((r as AiLinkError).code, AiLinkCode.saveFailed);
+        expect(file.readAsStringSync(), newer);
+      });
+
+      test('a file that keeps changing is refused after a few rounds, and nothing is lost', () async {
+        var last = '';
+        inject('closed-before-write', (n) {
+          last = writePage(disk().insertNode(box('bx$n', text: 'sync')));
+          file.writeAsStringSync(last);
+        }, times: 100);
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect((r as AiLinkError).code, AiLinkCode.saveFailed);
+        expect(file.readAsStringSync(), last);
+        expect(textOf(disk(), 'ba'), 'old');
+      });
+    });
+
     test('one page failing to save does not fail a write to another', () async {
       final nb = make();
       await nb.load();

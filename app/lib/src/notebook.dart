@@ -74,6 +74,13 @@ class _SourceChanged implements Exception {
   const _SourceChanged();
 }
 
+// A save of a closed page was refused; [response] says why.
+class _SaveRefused implements Exception {
+  const _SaveRefused(this.response);
+
+  final AiLinkResponse response;
+}
+
 /// A save failed because the page's folder isn't there.
 class FolderUnavailableException extends NotebookException {
   const FolderUnavailableException() : super('That folder was not found.');
@@ -435,8 +442,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   /// Test seam: called at named points of a conflict-copy merge (`copy-merged`
   /// just before the copy is revalidated for deletion, `original-read` just
-  /// before the original is revalidated for replacing) so a test can make the
-  /// sync writer change the file at that exact moment.
+  /// before the original is revalidated for replacing; `closed-reread` and
+  /// `closed-before-write` around the rereads of a closed page that is being
+  /// saved) so a test can make the sync writer change the file at that exact
+  /// moment.
   @visibleForTesting
   Future<void> Function(String point, String path)? syncHook;
 
@@ -2491,6 +2500,38 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return AiLinkResponse.error(AiLinkCode.saveFailed);
   }
 
+  // The rules that decide whether the box may be written at all, in order, on
+  // [page] as it is now. Null: allowed. Also run on a merged page, so the
+  // rules hold for what is about to be saved.
+  AiLinkCode? _aiGate(
+    NotedPage page,
+    String loc,
+    bool readOnly,
+    AiCode code,
+    AiLinkWriteBox req,
+    AiLinkCode? Function() recheck,
+  ) {
+    // Revoked while this waited: refuse. Nothing awaits between here and the
+    // change itself.
+    final gone = recheck();
+    if (gone != null) return gone;
+    // The Writer permission may have changed while this waited.
+    final permission = aiAccess?.writerPermission(req.box) ?? AiWriterPermission.append;
+    if (!permission.allows(req.mode)) return AiLinkCode.notPermitted;
+    final box = page.node(req.box);
+    if (box is! BoxRecord) return AiLinkCode.noBox;
+    final r = modules.codecs.resolve(box);
+    if (r is! LiveBox) return AiLinkCode.notWritable;
+    // A type this page doesn't allow behaves as switched off here.
+    final chain = [page.meta, ..._metaChain(page.id).skip(1)];
+    if (!effectiveBoxTypeAllowed(box.typeId, chain, binder: _binderOf(page.id)).allowed) {
+      return AiLinkCode.notWritable;
+    }
+    if (box.isConflicted) return AiLinkCode.conflict;
+    if (readOnly || _isLocked(loc)) return AiLinkCode.locked;
+    return null;
+  }
+
   // Every rule after the lookup, in order, on the box as it is now. Returns
   // an answer to refuse with, or the codec and the data to write.
   ({AiLinkResponse? error, BoxCodec<Object?>? codec, Object? data}) _aiPrepare(
@@ -2503,24 +2544,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   ) {
     ({AiLinkResponse? error, BoxCodec<Object?>? codec, Object? data}) no(AiLinkCode c) =>
         (error: AiLinkResponse.error(c), codec: null, data: null);
-    // Revoked while this waited: refuse. Nothing awaits between here and the
-    // change itself.
-    final gone = recheck();
-    if (gone != null) return no(gone);
-    // The Writer permission may have changed while this waited.
-    final permission = aiAccess?.writerPermission(req.box) ?? AiWriterPermission.append;
-    if (!permission.allows(req.mode)) return no(AiLinkCode.notPermitted);
-    final box = page.node(req.box);
-    if (box is! BoxRecord) return no(AiLinkCode.noBox);
-    final r = modules.codecs.resolve(box);
-    if (r is! LiveBox) return no(AiLinkCode.notWritable);
-    // A type this page doesn't allow behaves as switched off here.
-    final chain = [page.meta, ..._metaChain(page.id).skip(1)];
-    if (!effectiveBoxTypeAllowed(box.typeId, chain, binder: _binderOf(page.id)).allowed) {
-      return no(AiLinkCode.notWritable);
-    }
-    if (box.isConflicted) return no(AiLinkCode.conflict);
-    if (readOnly || _isLocked(loc)) return no(AiLinkCode.locked);
+    final refused = _aiGate(page, loc, readOnly, code, req, recheck);
+    if (refused != null) return no(refused);
+    final r = modules.codecs.resolve(page.node(req.box)! as BoxRecord) as LiveBox;
     final next = r.codec.aiWrite(
       r.data,
       AiWrite(
@@ -2592,21 +2618,104 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         at: deviceName == null ? null : DateTime.now().millisecondsSinceEpoch,
       ),
     );
+    final NotedPage saved;
     try {
-      await _write(loc, next);
-    } on FolderUnavailableException {
-      await _keepForRecovery(loc, st, next);
-      return AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage);
-    } on NotebookException {
-      return AiLinkResponse.error(AiLinkCode.locked);
-    } on FileSystemException {
-      if (await st.directory.exists()) return AiLinkResponse.error(AiLinkCode.saveFailed);
-      await _keepForRecovery(loc, st, next);
-      return AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage);
+      saved = await _saveClosedPage(
+        loc,
+        st,
+        page,
+        next,
+        (merged) => _aiGate(merged, loc, false, code, req, recheck),
+      );
+    } on _SaveRefused catch (e) {
+      return e.response;
     }
-    _metas[pageId] = next.meta;
+    _metas[pageId] = saved.meta;
     _touch(loc);
     return AiLinkResponse.written(box: req.box);
+  }
+
+  // Reads the file of a closed page: null text if it is not there. Throws
+  // _SaveRefused if it is there but can't be read as this page: it is never
+  // written over (0051).
+  Future<({String? text, NotedPage? page, int time})> _readClosedPage(String id, String path) async {
+    AiLinkResponse unreadable(String why) => AiLinkResponse.error(
+      AiLinkCode.saveFailed,
+      "This page's file can't be read ($why), so nothing was written to it.",
+    );
+    final String text;
+    final int time;
+    try {
+      text = await File(path).readAsString();
+      time = (await File(path).lastModified()).millisecondsSinceEpoch;
+    } on FileSystemException catch (e) {
+      if (await FileSystemEntity.type(path) == FileSystemEntityType.notFound) {
+        return (text: null, page: null, time: 0);
+      }
+      throw _SaveRefused(unreadable('could not be read: ${e.message}'));
+    } on FormatException {
+      throw _SaveRefused(unreadable('not valid UTF-8 text'));
+    }
+    try {
+      final page = readPage(text);
+      if (page.id != id) throw _SaveRefused(unreadable('it holds another page'));
+      return (text: text, page: page, time: time);
+    } on PageFormatException catch (e) {
+      throw _SaveRefused(unreadable(e.message));
+    }
+  }
+
+  // Saves [mine], an edit of [base], to a page that isn't open, with the same
+  // guard the open page has: the file is read again, what others wrote since
+  // [base] is merged in (three-way, as for the open page), [check] is run on
+  // the merged page (non-null: refuse with that code), and the file is read
+  // once more just before the write. If it changed in between, the merge is
+  // done again; after a few rounds the save is refused. A file this app can't
+  // read is refused and left as it is. Returns the page written.
+  Future<NotedPage> _saveClosedPage(
+    String loc,
+    PageStore st,
+    NotedPage base,
+    NotedPage mine,
+    AiLinkCode? Function(NotedPage merged) check,
+  ) async {
+    final id = base.id;
+    final path = st.pathFor(id);
+    final baseText = writePage(base);
+    for (var attempt = 0; attempt < 5; attempt++) {
+      await syncHook?.call('closed-reread', path);
+      final seen = await _readClosedPage(id, path);
+      var toSave = mine;
+      final theirs = seen.page;
+      if (theirs != null && writePage(theirs) != baseText) {
+        toSave = mergePage(base, mine, theirs, modules.codecs, theirsTime: seen.time).page;
+        final refused = check(toSave);
+        if (refused != null) throw _SaveRefused(AiLinkResponse.error(refused));
+      }
+      await syncHook?.call('closed-before-write', path);
+      if ((await _readClosedPage(id, path)).text != seen.text) continue;
+      try {
+        await _write(loc, toSave);
+      } on FolderUnavailableException {
+        await _keepForRecovery(loc, st, toSave);
+        throw _SaveRefused(AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage));
+      } on NotebookException {
+        throw _SaveRefused(AiLinkResponse.error(AiLinkCode.locked));
+      } on FileSystemException {
+        if (await st.directory.exists()) {
+          throw _SaveRefused(AiLinkResponse.error(AiLinkCode.saveFailed));
+        }
+        await _keepForRecovery(loc, st, toSave);
+        throw _SaveRefused(AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage));
+      }
+      return toSave;
+    }
+    throw _SaveRefused(
+      AiLinkResponse.error(
+        AiLinkCode.saveFailed,
+        'The page file keeps changing, so nothing was written to it.',
+      ),
+    );
   }
 
   // Runs [job] after the saves queued so far, and before any later one.
