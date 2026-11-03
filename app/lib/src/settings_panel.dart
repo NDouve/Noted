@@ -42,6 +42,24 @@ String boxTypeName(String typeId) => switch (typeId) {
   _ => typeId,
 };
 
+/// What the panel says after converting a page's attachments [to] one way:
+/// how many changed, the files kept in the folder for their size, and the
+/// boxes left as they were because they changed while it ran.
+String conversionNotice(AttachmentConversion r, AttachmentStorage to) {
+  final n = r.changed;
+  final done = switch (to) {
+    AttachmentStorage.embedded => 'Embedded $n ${n == 1 ? 'attachment' : 'attachments'}',
+    AttachmentStorage.folder => 'Moved $n ${n == 1 ? 'attachment' : 'attachments'} to the folder',
+  };
+  final kept = r.overLimit.isEmpty ? '' : '. Kept in the folder (over 5 MB): ${r.overLimit.join(', ')}';
+  final s = r.skipped.length;
+  final skipped = s == 0
+      ? ''
+      : '. ${s == 1 ? '1 box' : '$s boxes'} changed while this ran and ${s == 1 ? 'was' : 'were'} '
+            'left as ${s == 1 ? 'it was' : 'they were'}; run it again';
+  return '$done$kept$skipped.'.replaceAll('..', '.');
+}
+
 String _two(int n) => n.toString().padLeft(2, '0');
 
 String _date(DateTime t) {
@@ -342,13 +360,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
 
   Future<void> _convert(AttachmentStorage to) => _run(() async {
     final r = await nb.convertAttachments(_pid!, to);
-    final n = r.changed;
-    final done = switch (to) {
-      AttachmentStorage.embedded => 'Embedded $n ${n == 1 ? 'attachment' : 'attachments'}',
-      AttachmentStorage.folder => 'Moved $n ${n == 1 ? 'attachment' : 'attachments'} to the folder',
-    };
-    final kept = r.overLimit.isEmpty ? '' : '. Kept in the folder (over 5 MB): ${r.overLimit.join(', ')}';
-    if (mounted) setState(() => _notice = '$done$kept.'.replaceAll('..', '.'));
+    if (mounted) setState(() => _notice = conversionNotice(r, to));
   });
 
   // AI access ----------------------------------------------------------------------
