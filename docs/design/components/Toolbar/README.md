@@ -17,3 +17,10 @@ Two built-in layouts, chosen in Settings → Toolbar. Both use the bar above.
 - **Tabs:** a row of tabs (`control` + `space-1`, 40px) above the 52px bar. Tabs are ghost buttons with a `body` label; the chosen tab has `bodyStrong` in `accent` with a 2px `accent` underline. Undo and Redo sit left of the tabs, Search at the right end of the row. The bar shows the chosen tab's commands.
 - **Contextual:** one 52px bar. The left and right ends are fixed; between them a section filled with `surface-hover` (`radius-md`) swaps with the context: text tools, ink colours and widths, or insert tools.
 - Commands that don't exist yet show as disabled placeholders whose tooltip ends in "(coming later)".
+
+## Compact bar (narrower than 800px)
+
+When the toolbar is narrower than 800px (the bar's own width, `compactToolbarWidth`) the fixed ends would have to shrink below legible size, so the layouts change. Text and buttons keep their normal size; what doesn't fit goes into the More menu.
+
+- **Tabs:** the tabs take the whole row, with `space-2` side padding in place of `space-3`. Undo, Redo and Search join the commands of the bar below, in that order around the chosen tab's commands.
+- **Contextual:** one row that overflows into More, in the order left end, section, right end. The section's commands keep the `surface-hover` fill as one strip.
