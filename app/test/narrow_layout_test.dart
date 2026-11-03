@@ -107,6 +107,7 @@ void main() {
     await settleIo(t);
     expect(nb.currentId, second);
     expect(find.byType(PageTreeView), findsNothing);
+    await close(t);
   });
 
   testWidgets('phone width: choosing a search result closes the drawer', (t) async {
@@ -125,6 +126,7 @@ void main() {
     // microtask when the page closes, which must not outlive the home.
     await t.runAsync(() => nb.open(second));
     await settleIo(t);
+    await close(t);
   });
 
   testWidgets('phone width: Ctrl+N makes a page and Ctrl+Shift+F opens the drawer on the search field', (t) async {
@@ -147,6 +149,7 @@ void main() {
     expect(find.byType(SearchField), findsOneWidget);
     final field = t.widget<TextField>(find.descendant(of: find.byType(SearchField), matching: find.byType(TextField)));
     expect(field.focusNode!.hasFocus, isTrue);
+    await close(t);
   });
 
   testWidgets('phone width: Escape closes the drawer and the focus comes back', (t) async {
@@ -163,6 +166,7 @@ void main() {
     await t.pumpAndSettle();
     expect(find.byType(PageTreeView), findsNothing);
     expect(FocusManager.instance.primaryFocus, same(focused));
+    await close(t);
   });
 
   testWidgets('phone width: the menu button does not cover the binder cover', (t) async {
@@ -180,6 +184,7 @@ void main() {
     expect(menu.bottom, lessThanOrEqualTo(header.top));
     // Nor the cover as a whole (its colour bar is at the top).
     expect(menu.overlaps(t.getRect(find.byType(BinderCover))), isFalse);
+    await close(t);
   });
 
   for (final style in ToolbarStyle.values) {

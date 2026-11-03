@@ -83,6 +83,12 @@ abstract interface class PageTreeActions {
   Future<void> binderRemove(BinderSection binder);
 }
 
+/// New page's keys, also used by the home when no page tree is on screen.
+const SingleActivator newPageShortcut = SingleActivator(LogicalKeyboardKey.keyN, control: true);
+const List<SingleActivator> newPageAlternateShortcuts = [
+  SingleActivator(LogicalKeyboardKey.keyN, meta: true),
+];
+
 /// The commands of the "Pages" header: new page (Ctrl+N), new binder, new
 /// binder in another folder and open binder (when this device can pick a
 /// folder), and the same from a template.
@@ -95,8 +101,8 @@ CommandRegistry pagesHeaderCommands(Notebook nb, PageTreeActions a) {
       icon: Icons.add_rounded,
       // Works anywhere in the window, also in a note editor (the editor has
       // no Ctrl+N of its own) and on a read-only page.
-      shortcut: const SingleActivator(LogicalKeyboardKey.keyN, control: true),
-      alternateShortcuts: const [SingleActivator(LogicalKeyboardKey.keyN, meta: true)],
+      shortcut: newPageShortcut,
+      alternateShortcuts: newPageAlternateShortcuts,
       whileEditing: true,
       whileReadOnly: true,
       invoke: a.newStandalonePage,

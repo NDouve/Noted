@@ -146,19 +146,6 @@ class _HomeState extends State<Home> {
     });
   }
 
-  // Focus before the drawer opened; given back when it closes.
-  FocusNode? _beforeDrawer;
-
-  void _drawerChanged(bool open) {
-    if (open) {
-      _beforeDrawer = FocusManager.instance.primaryFocus;
-      return;
-    }
-    final node = _beforeDrawer;
-    _beforeDrawer = null;
-    if (node != null && node.context != null && node.canRequestFocus) node.requestFocus();
-  }
-
   void _closeDrawer() {
     final scaffold = _scaffold.currentState;
     if (scaffold != null && scaffold.isDrawerOpen) scaffold.closeDrawer();
@@ -222,7 +209,7 @@ class _HomeState extends State<Home> {
         search.run();
         return KeyEventResult.handled;
       }
-      if (_newPageKeys.any((a) => a.accepts(event, k))) {
+      if ([newPageShortcut, ...newPageAlternateShortcuts].any((a) => a.accepts(event, k))) {
         unawaited(_newPage());
         return KeyEventResult.handled;
       }
@@ -235,11 +222,6 @@ class _HomeState extends State<Home> {
     command.run();
     return KeyEventResult.handled;
   }
-
-  static const _newPageKeys = [
-    SingleActivator(LogicalKeyboardKey.keyN, control: true),
-    SingleActivator(LogicalKeyboardKey.keyN, meta: true),
-  ];
 
   // Ctrl+N with no page tree on screen: the same as the tree's New page.
   Future<void> _newPage() async {
@@ -262,24 +244,12 @@ class _HomeState extends State<Home> {
       onKeyEvent: _onKey,
       child: Scaffold(
         key: _scaffold,
-        onDrawerChanged: _drawerChanged,
         // On a narrow window the sidebar is a drawer (0129).
         drawer: isNarrowLayout(context)
             ? Drawer(
                 width: NotedMetrics.of(context).sidebarWidth,
                 shape: const RoundedRectangleBorder(),
-                // Escape shuts it (the search field clears itself first).
-                child: Focus(
-                  autofocus: true,
-                  onKeyEvent: (node, event) {
-                    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) {
-                      _closeDrawer();
-                      return KeyEventResult.handled;
-                    }
-                    return KeyEventResult.ignored;
-                  },
-                  child: _sidebar(NotedMetrics.of(context)),
-                ),
+                child: _sidebar(NotedMetrics.of(context)),
               )
             : null,
         body: _body(),
