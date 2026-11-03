@@ -117,10 +117,11 @@ void main() {
     String from,
     Offset target, {
     PointerDeviceKind kind = PointerDeviceKind.touch,
+    bool hold = true,
   }) async {
     final start = tester.getTopLeft(row(from)) + const Offset(60, 18);
     final g = await tester.startGesture(start, kind: kind);
-    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
+    if (hold) await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
     await g.moveTo(start + const Offset(0, 4));
     await tester.pump();
     await g.moveTo(target);
@@ -144,7 +145,7 @@ void main() {
     expect(find.text('Outdent'), findsOneWidget);
     await tester.tap(find.text('Move up'));
     await tester.pump();
-    await settle(tester);
+    await until(tester, () => rootIds().join() == [b, a, c].join());
     expect(rootIds(), [b, a, c]);
     await finish(tester);
   });
@@ -191,6 +192,7 @@ void main() {
   testWidgets('dropping on the upper edge places a page before the row', (tester) async {
     await start(tester);
     await dragTo(tester, c, at(tester, a, 0.08));
+    await until(tester, () => rootIds().join() == [c, a, b].join());
     expect(rootIds(), [c, a, b]);
     await finish(tester);
   });
@@ -198,6 +200,7 @@ void main() {
   testWidgets('dropping on the lower edge places a page after the row', (tester) async {
     await start(tester);
     await dragTo(tester, a, at(tester, b, 0.92));
+    await until(tester, () => rootIds().join() == [b, a, c].join());
     expect(rootIds(), [b, a, c]);
     await finish(tester);
   });
@@ -397,7 +400,9 @@ void main() {
     await start(tester);
     await longPress(tester, b, PointerDeviceKind.mouse);
     expect(find.text('New subpage'), findsNothing);
-    await dragTo(tester, c, at(tester, a, 0.08), kind: PointerDeviceKind.mouse);
+    // No pre-hold: a mouse drag starts at once.
+    await dragTo(tester, c, at(tester, a, 0.08), kind: PointerDeviceKind.mouse, hold: false);
+    await until(tester, () => rootIds().join() == [c, a, b].join());
     expect(find.text('New subpage'), findsNothing);
     expect(rootIds(), [c, a, b]);
     await finish(tester);
@@ -426,6 +431,38 @@ void main() {
     await finish(tester);
   });
 
+  testWidgets('a cancelled held touch opens no menu', (tester) async {
+    await start(tester);
+    final at = tester.getCenter(row(b)) + const Offset(-40, 0);
+    final g = await tester.startGesture(at, kind: PointerDeviceKind.touch);
+    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
+    await g.cancel();
+    await tester.pumpAndSettle();
+    expect(find.text('New subpage'), findsNothing);
+    await finish(tester);
+  });
+
+  testWidgets('a second finger on another row does not open a dragged row menu', (tester) async {
+    await start(tester);
+    final g = await tester.startGesture(
+      tester.getTopLeft(row(b)) + const Offset(20, 3),
+      kind: PointerDeviceKind.touch,
+    );
+    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
+    await g.moveBy(const Offset(0, 19)); // past the slop, still over its own row
+    await tester.pump();
+    final g2 = await tester.startGesture(
+      tester.getCenter(row(c)) + const Offset(-40, 0),
+      kind: PointerDeviceKind.touch,
+    );
+    await g2.up();
+    await tester.pump();
+        await tester.runAsync(() => g.up());
+    await tester.pumpAndSettle();
+    expect(find.text('New subpage'), findsNothing);
+    await finish(tester);
+  });
+
   testWidgets('a long press by touch opens nothing on a read-only row', (tester) async {
     await start(tester, watch: true);
     late String page;
@@ -434,7 +471,14 @@ void main() {
       final binder = await nb.addBinder(folder.path);
       page = await nb.createPage(binderPath: binder.path);
       await nb.flush();
-      folder.renameSync('${dir.path}/Away-gone');
+      for (var i = 0; i < 100; i++) {
+        try {
+          folder.renameSync('${dir.path}/Away-gone');
+          break;
+        } on FileSystemException {
+          await realIoPause(30); // a file in it is open for a moment
+        }
+      }
     });
     await until(tester, () => nb.isReadOnlyPage(page));
     expect(nb.isReadOnlyPage(page), isTrue);

@@ -654,20 +654,25 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
   };
 
   /// Opens a binder header's menu on a touch or pen long press, at the press
-  /// point, and on a right click: the same menu as its options button.
+  /// point, and on a right click: the same menu as its options button. A slow
+  /// mouse click is still a tap.
   Widget _binderMenuOn(BuildContext context, BinderSection b, Widget child) {
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
-      supportedDevices: {..._fingerKinds, PointerDeviceKind.mouse},
       onSecondaryTapDown: (d) => _binderContextMenu(context, b, d.globalPosition),
-      onLongPressStart: (d) => _binderContextMenu(context, b, d.globalPosition),
-      child: child,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        supportedDevices: _fingerKinds,
+        onLongPressStart: (d) => _binderContextMenu(context, b, d.globalPosition),
+        child: child,
+      ),
     );
   }
 
-  // Where a finger or pen went down on a row, and whether it has moved.
-  Offset? _pressAt;
-  bool _pressMoved = false;
+  // The finger or pen press on each row (by page id): where it went down and
+  // whether it moved or was cancelled. Kept per row and per pointer, so a
+  // second finger elsewhere can't change it.
+  final Map<String, _Press> _presses = {};
 
   /// Wraps a row so it can be dragged. A mouse drags at once (a sidebar list
   /// doesn't scroll on mouse drag, so nothing competes with it). A finger or
@@ -699,8 +704,25 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     return Listener(
       onPointerDown: (e) {
         if (!_fingerKinds.contains(e.kind)) return;
-        _pressAt = e.position;
-        _pressMoved = false;
+        final old = _presses[p.id];
+        if (old != null && !old.ended) return; // a second finger on this row
+        _presses[p.id] = _Press(e.pointer, e.position);
+      },
+      onPointerMove: (e) {
+        final press = _presses[p.id];
+        if (press == null || press.pointer != e.pointer) return;
+        if ((e.position - press.at).distance > kTouchSlop) press.moved = true;
+      },
+      onPointerUp: (e) {
+        final press = _presses[p.id];
+        if (press != null && press.pointer == e.pointer) press.ended = true;
+      },
+      onPointerCancel: (e) {
+        final press = _presses[p.id];
+        if (press != null && press.pointer == e.pointer) {
+          press.ended = true;
+          press.cancelled = true;
+        }
       },
       child: _FingerDraggable<String>(
         data: p.id,
@@ -708,15 +730,12 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         dragAnchorStrategy: pointerDragAnchorStrategy,
         feedback: feedback,
         childWhenDragging: ghost,
-        onDragUpdate: (d) {
-          final at = _pressAt;
-          if (at != null && (d.globalPosition - at).distance > kTouchSlop) _pressMoved = true;
-        },
         onDragEnd: (d) {
-          final at = _pressAt;
-          _pressAt = null;
-          if (at == null || _pressMoved || d.wasAccepted || !mounted) return;
-          _contextMenu(context, p, at);
+          final press = _presses.remove(p.id);
+          if (press == null || press.moved || press.cancelled || d.wasAccepted || !mounted) {
+            return;
+          }
+          _contextMenu(context, p, press.at);
         },
         child: mouse,
       ),
@@ -893,6 +912,17 @@ class _RenameDialogState extends State<_RenameDialog> {
       ],
     );
   }
+}
+
+/// A finger or pen press on a row.
+class _Press {
+  _Press(this.pointer, this.at);
+
+  final int pointer;
+  final Offset at;
+  bool moved = false;
+  bool ended = false;
+  bool cancelled = false;
 }
 
 /// A [Draggable] that only a mouse or trackpad starts, at once.
