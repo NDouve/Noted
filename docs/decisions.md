@@ -164,7 +164,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0018 — Platforms and reference test devices
 - **Date:** 2026-10-24
-- **Status:** Active, extended by 0032
+- **Status:** Active, extended by 0032 and 0129
 - **Decision:**
   - Targets: Windows, macOS, Linux, iOS/iPadOS and Android.
   - Freeform drawing must be validated on a Windows pen tablet, an iPad with stylus, and an Android phone without an active stylus.
@@ -572,7 +572,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0051 — External file changes and per-box merging
 - **Date:** 2026-10-25
-- **Status:** Active (implements 0020); refined by 0120 (the manual-edit merge view is removed; the issue sequence replaces the badge) and 0121; unreadable replacements of the open page amended by 0124
+- **Status:** Active (implements 0020); refined by 0120 (the manual-edit merge view is removed; the issue sequence replaces the badge) and 0121; unreadable replacements of the open page amended by 0124; mixed foreign and Noted nodes amended by 0128
 - **Decision:**
   - **Watching:** every storage folder is watched. A changed page file is checked after 300 ms.
     - The app recognises its own writes by their exact text and ignores them.
@@ -1658,7 +1658,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0117 — Writer permissions and writes while Noted is closed
 - **Date:** 2026-11-01
-- **Status:** Active (approved by the maintainer; amends 0104 and 0108; Box API 0.10 approved by the maintainer)
+- **Status:** Active (approved by the maintainer; amends 0104 and 0108; Box API 0.10 approved by the maintainer); write eligibility amended by 0128
 - **Decision:**
   - **Writer permission** per AI box, chosen in its connections panel: **Append only** (default), **Edit** (append, and change its own AI-written text), **Full** (also replace the whole box, and replacing with nothing empties it). Stored locally as `"writerPermission"` per box in `ai-access.json`; absent or unknown reads as Append only. The app enforces it on link writes, before any question and again just before applying; `noted_mcp` enforces it on closed-app writes. A mode it doesn't allow answers `not_permitted`.
   - **Modes** on the wire and in `write_box`: `append`, `replace_ai`, `replace`. **Box API 0.10:** `AiWriteMode.replaceAiText` removes every block whose AI mark still matches it (0104) and puts the new blocks where the first such run was (or at the end), keeping every user-written block in place byte for byte. Because the mark survives bold, a to-do tick or a level change, Edit can replace such a block; once the user changes a block's words or type it is theirs. The panel says so.
@@ -1793,6 +1793,30 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Formulas (amends 0126):** references between cells are evaluated with an explicit worklist instead of recursion, so chains of any length work. Every cell on a reference cycle is `#CYCLE!`, and every result is the same whichever cell is computed first.
 - **Rationale:** The public repository is the app; the build process and its history don't need to be. A check followed by a replacing move can still overwrite a file a sync client puts there in between. A table's values must not depend on stack size or on the order cells are computed in.
 - **Alternatives considered:** keeping the tooling in this repository; checking for the target and then renaming (leaves a window); claiming the path with an empty file (leaves an empty file behind on failure and still has a window inside the save); recursion with a depth limit (long running totals fail).
+
+## 0128 — Mixed foreign and Noted nodes in merges; closed-app write eligibility; compare-and-swap replace
+- **Date:** 2026-11-02
+- **Status:** Active (approved by the maintainer; amends 0051 and 0117)
+- **Decision:**
+  - **Merges (amends 0051):** when both sides changed the same node and one side's node is foreign while the other's is a box, nothing is dropped. With mine foreign, mine is kept as it is and theirs is kept under a new id: a box keeps all its data, and a foreign node that isn't a JSON object is kept unchanged. With mine a box, theirs is recorded in the box's conflicts byte for byte. A box kept under a new id that overlaps the other side's node gets the landed marker (0121), in the three-way merge and in the conflict-copy merge alike.
+  - **Closed-app writes (amends 0117):** the MCP server checks whether the page allows the box's type against the exact page bytes it replaces, on every attempt. If the page's parent changed since the library was read, the write is tried again with the new parents. A file that now holds a different page is not written.
+  - **Compare-and-swap replace (noted_core):** `PageStore.saveIfUnchanged` replaces a page only if the file still holds the expected bytes. It reads the target first and returns "changed" without touching anything if the bytes differ; otherwise it moves the target aside under a unique name, compares again, renames the verified copy to a second unique name and publishes the new file exclusively (0127). A version written in between is never replaced: the result says the file changed, or that a newer file is at the target and which copy was kept. `scan` first puts back what an interrupted replace left: a verified copy is published back if the target is missing and deleted otherwise; an unverified copy is published back, or becomes a `<id>-recovered-<hex>` conflict copy if the target is taken; anything that can't be moved is listed as unreadable. Callers serialise `scan` with these saves. On Linux, macOS and Android a writer that already has the file open and writes in place isn't detected, and the page is briefly absent while it is replaced. The app doesn't use it yet; the conflict-copy merge will.
+- **Rationale:** A node only one device can read must not cost the other device's box. Eligibility checked on an earlier read can be out of date by the time the bytes are written. Rereading before a replacing rename still leaves a window in which a synced version is overwritten.
+- **Alternatives considered:** keeping only mine when the kinds differ (drops data); flagging the kept copy as conflicted (a foreign node can't carry a conflict record without rewriting it); a plain reread before the rename (leaves a window); deleting an aside copy that wasn't verified (could lose the only copy).
+
+## 0129 — iPad and Android test builds
+- **Date:** 2026-11-02
+- **Status:** Active (approved by the maintainer; extends 0018). The mobile adaptations listed below are decided but not yet built.
+- **Decision:**
+  - **Scope:** iPad and Android test builds for testing pen, touch and layout: sideloaded, notes stored on the device, no mobile sync yet.
+  - **Projects:** `app/ios` and `app/android`, id `io.github.ndouve.noted`, minimum iPadOS/iOS 15 (needed by `file_selector`) and Android 8 (API 26). iPad uses all four orientations. Android paste uses pasteboard's file provider, limited to the app's cache folder. Android library plugins that compile against an older SDK than the app (for example `keyboard_height_plugin`, through `appflowy_editor`) are raised to the app's compile SDK at build time.
+  - **Icons:** generated from the master by `app/scripts/generate_icons.dart`. iOS gets opaque icons, H1 on white, with corners left to iOS. Android gets an adaptive icon (H1 inside the circular safe zone, which the generator checks, a white background and a monochrome layer) plus fallback PNGs.
+  - **Builds:** CI builds them on pushes to `main` and on manual runs, kept 14 days: an unsigned `.ipa` (the archived app zipped into `Payload/`) from both Mac jobs, as `Noted-unsigned-ipa` (Apple Silicon) and `Noted-unsigned-ipa-intel-runner` (Intel, not blocking), and a debug-signed release `.apk` from Linux as `Noted-android-apk`.
+  - **Off on mobile (to build):** drag and drop onto the canvas; the AI link server and anything that expects `noted_mcp` (AI boxes still show their content); the single-instance guard; folder watching beyond the app's own storage. Paste stays on.
+  - **Storage on mobile (to build):** pages, binders, settings and recovery live in the app's documents and support folders on the device, and the default folders point there.
+  - **Touch and pen (to build):** the tool-based input rules (0033) apply; two-finger pan and pinch zoom on the canvas; long-press opens the menus that right-click opens on desktop. Narrow windows show the sidebar as a drawer and the toolbar's More menu; an iPad in landscape keeps the desktop layout.
+- **Rationale:** Pen, touch and small-screen behaviour can only be judged on the devices. Sideloading needs no store account, and keeping notes on the device avoids a mobile sync design for now.
+- **Alternatives considered:** store or TestFlight distribution (needs a paid account); waiting for mobile sync (delays device testing); a signed `.ipa` (needs a team and certificate in CI).
 
 ---
 
