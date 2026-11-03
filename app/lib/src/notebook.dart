@@ -378,6 +378,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // clean): the path and why. Cleared once the entry is replayed (0077).
   final Map<String, ({String path, String why})> _replayProblems = {};
 
+  // Pages whose recovered edits landed and were retired, but whose page was
+  // changed right after (or couldn't be read back), by page id. One-off: the
+  // entry is gone, so the next pass must not prune it; cleared when the user
+  // opens the page.
+  final Map<String, ({String path, String why})> _landedProblems = {};
+
   // Kept `<id>.assets` folders that couldn't be landed, or whose page isn't
   // there, by the folder's path: why (0098).
   final Map<String, String> _keptProblems = {};
@@ -394,6 +400,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   List<String> get recoveryProblems => [
     ..._recoveryProblems,
     for (final p in _replayProblems.values) '${p.path}: ${p.why}',
+    for (final p in _landedProblems.values) '${p.path}: ${p.why}',
     for (final p in _keptProblems.entries) '${p.key}: ${p.value}',
   ];
 
@@ -408,8 +415,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   List<UnreadablePage> get recoveryOwnDamaged => [
     for (final p in _replayProblems.values)
       UnreadablePage(p.path, "Recovery can't finish: ${p.why}${p.why.endsWith(')') ? '' : '.'}"),
+    for (final p in _landedProblems.values) UnreadablePage(p.path, '${p.why}.'),
     for (final p in _keptProblems.entries) UnreadablePage(p.key, p.value),
   ];
+
+  /// Whether the file at [path] has a notice of its own (a recovered page that
+  /// landed and was then changed); the sidebar lists that notice, not also the
+  /// file as unreadable.
+  bool hasLandedNotice(String path) {
+    final k = _key(path);
+    return _landedProblems.values.any((p) => _key(p.path) == k);
+  }
 
   /// The recovery entries and unreadable recovery files waiting now.
   Future<RecoveryListing> pendingRecovery() async =>
@@ -717,7 +733,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   final Completer<void> _loaded = Completer<void>();
 
   Future<void> _load() async {
-    final entries = await store.scan();
+    final entries = await _scan(store);
     _metas.clear();
     _loc.clear();
     _binders.clear();
@@ -744,7 +760,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_tree.roots.isEmpty) {
       await _createFallbackPage();
     } else {
+      // The first page shown at start is not the user looking at a notice.
+      final notices = {..._landedProblems};
       await open(_tree.roots.first.id);
+      _landedProblems.addAll(notices);
     }
   }
 
@@ -772,6 +791,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<void> open(String id) async {
+    await _open(id);
+    // Only once the page is open: a failed open leaves the notice for the next
+    // look.
+    if (_landedProblems.remove(id) != null) notifyListeners();
+  }
+
+  Future<void> _open(String id) async {
     if (_coverPath != null) {
       _coverPath = null;
       notifyListeners();
@@ -1430,6 +1456,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _lastDeleted = deleted;
     for (final p in ids) {
       await _delete(loc, p);
+      _landedProblems.remove(p); // the user deleted it
       _metas.remove(p);
       _loc.remove(p);
     }
@@ -2296,8 +2323,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   /// Takes the folder out of the list. Its files stay where they are.
+  // A notice of a page in the folder [loc] that the user removed from the app.
+  void _dropLandedIn(String loc) {
+    final k = _key(_normalizePath(loc));
+    _landedProblems.removeWhere((_, p) => _key(_normalizePath(File(p.path).parent.path)) == k);
+  }
+
   Future<void> removeStandaloneFolder(String path) async {
     final folder = _folders[path];
+    _dropLandedIn(path);
     if (folder == null) return;
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId) || _orphanLoc == path;
@@ -2332,7 +2366,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       if (await BinderStore(dir).file.exists()) return unavailable('This folder holds a binder.');
       final pages = storeFactory(dir);
-      final entries = await pages.scan();
+      final entries = await _scan(pages);
       _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
       final bad = <UnreadablePage>[...entries.whereType<UnreadablePage>()];
       for (final e in entries.whereType<ReadablePage>()) {
@@ -2597,6 +2631,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// Takes the binder out of the sidebar. Its folder and files stay.
   Future<void> removeBinder(String path) async {
     final section = _binders[path];
+    _dropLandedIn(path);
     if (section == null) return;
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
@@ -2686,7 +2721,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _binderText.remove(_key(path));
       }
       final pages = storeFactory(dir);
-      final entries = await pages.scan();
+      final entries = await _scan(pages);
       if (binder != null) {
         // Conflict copies are merged by writing, which a damaged binder forbids.
         _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
@@ -3486,12 +3521,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Applies one entry. Returns true once it is replayed and retired, false if
   // it isn't due yet; throws a _ReplayFailure (or anything else) if it can't be
-  // applied, and then it stays. The entry is retired as soon as the page has
-  // landed, read back and verified: merging it again later, against a page the
-  // user has changed since, would bring back what they deleted. Its kept files
-  // are landed apart (_landKeptAssets, 0098); a re-replay after an
-  // interruption before the retire is harmless, since the merge of a page with
-  // itself changes nothing.
+  // applied, and then it stays. The entry is retired as soon as its page has
+  // landed (the publish went through over exactly what was merged against):
+  // merging it again later, against a page the user has changed since, would
+  // bring back what they deleted. So once it has landed it is retired whatever
+  // the read-back shows; if the read-back is not what landed, the entry's own
+  // edits are looked for in it, and if one is gone (or it can't be read) the
+  // user is told (_landedProblems). Only a page that landed and reads back as
+  // written, but fails the check, stays as an entry. Its kept files are landed
+  // apart (_landKeptAssets, 0098); a re-replay after an interruption before
+  // the retire is harmless, since the merge of a page with itself changes
+  // nothing.
   Future<bool> _recoverEntry(
     RecoveryStore rec,
     RecoveryEntry e,
@@ -3559,7 +3599,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           throw _ReplayFailure("the saved file of $label isn't a valid page file", detail: '$ex');
         } on FileSystemException catch (ex) {
           // Locked or gone since exists(): look again.
-          if (attempt < 4) continue;
+          if (attempt < 4) {
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+            continue;
+          }
           throw _ReplayFailure(
             "the saved file of $label can't be read just now",
             detail: ex.message,
@@ -3586,27 +3629,75 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       final wrote = out != theirsText;
       if (wrote) await syncHook?.call('recover-published', path);
+      // From here on, if [wrote], the page has landed (the publish only
+      // succeeds over exactly what was merged against): the entry is retired
+      // as soon as that is so (0124), whatever the read-back shows. Merging it
+      // again later, against a page someone has changed since, would bring
+      // back what they deleted.
       String? back;
       for (var read = 0; back == null; read++) {
         try {
           back = await st.readText(id);
         } on FileSystemException {
-          if (read >= 2) rethrow; // a lock may pass; a few tries
+          if (read < 2) {
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+            continue; // a lock may pass; a few tries
+          }
+          if (!wrote) rethrow;
+          // Landed but can't be read back to check: retired, and listed.
+          debugPrint('Recovered page $id landed but could not be read back to check');
+          await _applyClosed(merged, loc, _key(path), path);
+          await rec.delete(e);
+          _landedProblems[id] = (path: path, why: _landedThenChanged(label));
+          return true;
         }
       }
       if (back != out) {
         // Nothing of ours was written: the file changed since it was read.
         if (!wrote && attempt < 4) continue;
-        // Someone wrote on top of what was published. Merging again against
-        // the old base could bring back what they deleted, so the entry stays
-        // for a later replay, which merges against the file as it is then.
-        throw _ReplayFailure(
-          wrote
-              ? 'the page changed after the edits kept for $label were saved into it; '
-                    'they are kept for the next replay'
-              : 'the saved file of $label keeps changing',
-          detail: 'the saved page differs from what was written',
-        );
+        if (!wrote) {
+          throw _ReplayFailure(
+            'the saved file of $label keeps changing',
+            detail: 'the page file changed on every attempt to merge into it',
+          );
+        }
+        // Another writer is on top of what landed: not merged again (that
+        // could bring back what they deleted), and the external-change check
+        // picks their file up as it does any other. The entry's own edits are
+        // looked for in what is there; if any is gone, or it can't be read,
+        // the user is told.
+        final key = _key(path);
+        NotedPage? now;
+        String? unreadable;
+        try {
+          now = readPage(back);
+          if (now.id != id) unreadable = 'it holds a different page';
+        } on PageFormatException catch (ex) {
+          unreadable = ex.message;
+        }
+        await rec.delete(e);
+        if (now == null || unreadable != null) {
+          // Listed as a page that can't be opened, like any file that turns
+          // unreadable.
+          _known[key] = back;
+          final notice = 'The edits kept for $label were saved, but the page was then changed '
+              'and can no longer be read ($unreadable)';
+          _landedProblems[id] = (path: path, why: notice);
+          _knownUnreadable(
+            loc,
+            key,
+            path,
+            notice,
+          );
+          return true;
+        }
+        await _applyClosed(now, loc, key, path);
+        final lost = _ownEditsMissing(base, mine, now);
+        if (lost != null) {
+          debugPrint('Recovered page $id landed, then changed: $lost');
+          _landedProblems[id] = (path: path, why: _landedThenChanged(label));
+        }
+        return true;
       }
       final why = verifyRecoveredPage(
         base: base,
@@ -3623,6 +3714,36 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       'the saved file of $label keeps changing',
       detail: 'the page file changed on every attempt to merge into it',
     );
+  }
+
+  static String _landedThenChanged(String label) =>
+      'The edits kept for $label were saved, but the page changed right after; check it';
+
+  // Why an edit of [mine] (relative to [base]) is not in [result], or null if
+  // each one is: a box it added or changed is there (with its content, or
+  // conflicted, or changed again since: all fine) and not back as in [base];
+  // a box it deleted is not back exactly as in [base]; a title it changed is
+  // not [base]'s again. What [mine] didn't touch isn't looked at, so what
+  // another writer deleted of those doesn't count.
+  static String? _ownEditsMissing(NotedPage base, NotedPage mine, NotedPage result) {
+    final baseById = {for (final n in base.nodes) n.id: n};
+    final mineIds = {for (final n in mine.nodes) n.id};
+    for (final m in mine.nodes) {
+      final b = baseById[m.id];
+      if (b != null && b.toRaw() == m.toRaw()) continue;
+      final x = result.node(m.id);
+      if (x == null) return 'box ${m.id} is missing';
+      if (b != null && x.toRaw() == b.toRaw()) return 'the edit of box ${m.id} was undone';
+    }
+    for (final b in base.nodes) {
+      if (mineIds.contains(b.id)) continue;
+      final x = result.node(b.id);
+      if (x != null && x.toRaw() == b.toRaw()) return 'box ${b.id}, deleted, is back';
+    }
+    if (mine.meta.title != base.meta.title && result.meta.title == base.meta.title) {
+      return 'the title is the old one again';
+    }
+    return null;
   }
 
   // Reads page text during a replay; a format problem becomes a plain
@@ -3919,12 +4040,51 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return true;
   }
 
+  // PageStore.scan puts back what an interrupted compare-and-swap replace
+  // left aside, so it must not run while one is in flight on the same folder
+  // (0128). Both go through _underFolderLock: one at a time per folder. The job
+  // is a single store call, never another locked call, so they can't wait on
+  // each other.
+  final Map<String, Future<void>> _folderLocks = {};
+
+  // The same folder under any spelling (trailing separator, case on Windows,
+  // symbolic links when it exists).
+  String _lockKey(Directory d) {
+    var p = _normalizePath(d.path);
+    try {
+      if (d.existsSync()) p = _normalizePath(d.resolveSymbolicLinksSync());
+    } on FileSystemException {
+      // Keep the normalised path.
+    }
+    return _key(p);
+  }
+
+  Future<T> _underFolderLock<T>(PageStore st, Future<T> Function() job) {
+    final key = _lockKey(st.directory);
+    final run = (_folderLocks[key] ?? Future<void>.value()).then((_) => job());
+    final done = run.then<void>((_) {}, onError: (_) {});
+    _folderLocks[key] = done;
+    unawaited(
+      done.whenComplete(() {
+        if (identical(_folderLocks[key], done)) _folderLocks.remove(key);
+      }),
+    );
+    return run;
+  }
+
+  Future<List<PageEntry>> _scan(PageStore st) => _underFolderLock(st, st.scan);
+
   // Like [_write], for a page that must still hold exactly [expectedText] at
   // the moment of publishing: false, with nothing written, when it doesn't.
   Future<bool> _writeIfUnchanged(String loc, NotedPage page, String expectedText) async {
-    await _assertCanWrite(loc);
+    _assertWritable(loc);
     final st = _storeOf(loc);
-    if (!(await st.saveIfUnchanged(page, expectedText)).replaced) return false;
+    // The check is made inside the lock, right before the replace.
+    final result = await _underFolderLock(st, () async {
+      await _assertCanWrite(loc);
+      return st.saveIfUnchanged(page, expectedText);
+    });
+    if (!result.replaced) return false;
     final key = _key(st.pathFor(page.id));
     _known[key] = writePage(page);
     _pathId[key] = page.id;
@@ -4506,11 +4666,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final out = writePage(merged);
       if (out != text) {
         // Make the store write to the file the original was read from.
-        if (_key(st.pathFor(id)) != _key(originalPath)) await st.scan();
-        // Replace the original only if it still holds what the merge read.
+        if (_key(st.pathFor(id)) != _key(originalPath)) await _scan(st);
+        // Replace the original only if it still holds exactly what the merge
+        // read, checked at the moment of replacing (0128); if not, merge again.
         await syncHook?.call('original-read', originalPath);
-        if (await File(originalPath).readAsString() != text) throw const _SourceChanged();
-        await _write(loc, merged);
+        if (!await _writeIfUnchanged(loc, merged, text)) throw const _SourceChanged();
         final back = await st.readText(id);
         if (back != out) throw const FormatException('the saved page differs from what was written');
         failure = verifyConflictCopyMerge(readPage(back), original, copy);
@@ -4627,7 +4787,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final st = _storeOf(loc);
       // Make the store find files whose names aren't the page id.
       // (Never when the folder is gone: a scan would create it.)
-      if (_key(st.pathFor(id)) != key && await st.directory.exists()) await st.scan();
+      if (_key(st.pathFor(id)) != key && await st.directory.exists()) await _scan(st);
     }
     _setConflict(id, hasConflicts(page));
     _touch(loc);
@@ -4800,7 +4960,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   Future<void> _folderBack(String loc) async {
     if (loc == _standalone) {
-      final entries = await store.scan();
+      final entries = await _scan(store);
       _defaultGone = false;
       _adoptDefault(entries);
     } else {

@@ -90,6 +90,53 @@ class _FlakyFile implements File {
       throw UnimplementedError('${invocation.memberName}');
 }
 
+/// A store that notes a scan and a compare-and-swap replace running at the
+/// same time. [trigger] runs when the replace starts; the replace then waits
+/// a moment, so whatever it started has time to reach a scan.
+class _OverlapStore extends PageStore {
+  _OverlapStore(super.directory);
+
+  void Function()? trigger;
+  var _replacing = false;
+  var _scanning = false;
+  var overlapped = false;
+  var scans = 0;
+
+  @override
+  Future<List<PageEntry>> scan() async {
+    scans++;
+    if (_replacing) overlapped = true;
+    _scanning = true;
+    try {
+      return await super.scan();
+    } finally {
+      _scanning = false;
+    }
+  }
+
+  @override
+  Future<ReplaceResult> saveIfUnchanged(
+    NotedPage page,
+    String? expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    void Function()? beforePublish,
+    void Function()? beforeRestore,
+  }) async {
+    if (_scanning) overlapped = true;
+    _replacing = true;
+    try {
+      final t = trigger;
+      trigger = null;
+      t?.call();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      return await super.saveIfUnchanged(page, expectedText);
+    } finally {
+      _replacing = false;
+    }
+  }
+}
+
 /// A store that runs [onPublish] just before a save, replace or new-file
 /// publish: a file changing between the replay's read and its write.
 class _RacingStore extends PageStore {
@@ -400,7 +447,7 @@ void main() {
       expect(recFiles(), isEmpty);
     });
 
-    test('a write landing after the publish keeps the entry and does not undo their deletion', () async {
+    test('a write landing after the publish: entry retired, their deletion stays after a reload', () async {
       final (again, x, _, _) = await setUp1((_, _, _) {});
       again.syncHook = (point, path) async {
         if (point != 'recover-published') return;
@@ -412,7 +459,31 @@ void main() {
       await again.load();
       expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, isEmpty,
           reason: 'not merged again against the old base');
-      expect(recFiles(), isNotEmpty);
+      expect(recFiles(), isEmpty, reason: 'it had landed, so it is retired (0124)');
+      expect(again.recoveryProblems, hasLength(1), reason: 'their deletion took the edit: the user is told');
+
+      quit(again);
+      final third = make();
+      await third.load();
+      expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, isEmpty,
+          reason: 'a later replay does not bring the box back');
+      expect(third.recoveryProblems, isEmpty);
+      expect((await third.pendingRecovery()).entries, isEmpty);
+    });
+
+    test('a landed page that can never be read back is retired, and listed as unchecked, not as unsaved', () async {
+      final (nb, x, _) = await pendingEdit();
+      await vanish(nb);
+      quit(nb);
+      await restore();
+      final again = make(
+        storeFactory: (d) => d.path == extra.path ? _FlakyReadStore(d, () => true) : PageStore(d),
+      );
+      await again.load();
+      expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, hasLength(1));
+      expect(recFiles(), isEmpty);
+      expect(again.recoveryProblems, hasLength(1), reason: 'landed but never checked: the user is told');
+      expect(again.recoveryProblems.single, contains('saved, but the page changed'));
     });
 
     test('a read-back that fails once is retried', () async {
@@ -449,6 +520,33 @@ void main() {
       expect(recFiles(), isEmpty);
     });
 
+    test('a scan started by a watcher does not run during the replay\'s replace', () async {
+      final (nb, x, _) = await pendingEdit();
+      await vanish(nb);
+      quit(nb);
+      await restore();
+      final store = _OverlapStore(extra);
+      late final Notebook again;
+      final stray = '${extra.path}/stray-name.canvas';
+      store.trigger = () {
+        // A file the watcher reports, named other than its page id: looking at
+        // it makes the store scan the folder to find it.
+        File(stray).writeAsStringSync(
+          writePage(NotedPage.create(PageMeta.create(id: 'strayid', title: 's', order: 5))),
+        );
+        unawaited(again.checkFile(stray));
+      };
+      again = make(storeFactory: (d) => d.path == extra.path ? store : PageStore(d));
+      await again.load();
+      await again.checkFolders(); // the queued check is done
+      expect(store.scans, greaterThan(1), reason: 'the watcher check did scan');
+      expect(store.overlapped, isFalse);
+      expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, hasLength(1));
+      expect(recFiles(), isEmpty);
+      expect(extra.listSync().map((f) => f.path).where((p) => p.contains('recovered')), isEmpty);
+      expect(again.tree['strayid'], isNotNull);
+    });
+
     test('the entry stays when the file keeps changing, and nothing newer is lost', () async {
       var n = 0;
       final (again, x, _, _) = await setUp1((call, f, o) => landNewer(f, 'gen${n++}', o));
@@ -458,6 +556,174 @@ void main() {
         expect(disk.node('gen$i'), isNotNull);
       }
       expect(recFiles(), isNotEmpty, reason: 'never verified: the entry is not retired');    });
+  });
+
+  group('R-2 a landed page that is changed right after', () {
+    // A page of `extra` with one box saved (the base), and an entry that moves
+    // the box (or deletes it) and retitles the page. Returns a notebook about
+    // to replay it, with [onPublished] run on the file right after the publish.
+    Future<(Notebook, String, NotedPage)> parkedEntry(
+      void Function(File f, NotedPage cur, NotedPage base) onPublished, {
+      bool deleteBox = false,
+    }) async {
+      final nb = make();
+      await nb.load();
+      final x = await nb.createPage(folderPath: extra.path);
+      await nb.flush();
+      await nb.open(x);
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      await nb.flush();
+      final baseText = pageFile(extra, x).readAsStringSync();
+      final base = readPage(baseText);
+      quit(nb);
+      final box = base.nodes.single as BoxRecord;
+      var mine = deleteBox ? base.removeNode(box.id) : base.replaceNode(box.withBounds(const Bounds(200, 200, 30, 30)));
+      mine = mine.withMeta(mine.meta.withTitle('Mine'));
+      await RecoveryStore(rec).write(folder: extra.path, page: mine, baseText: baseText, time: DateTime.now());
+      final again = make();
+      again.syncHook = (point, path) async {
+        if (point != 'recover-published') return;
+        final f = File(path);
+        onPublished(f, readPage(f.readAsStringSync()), base);
+      };
+      return (again, x, base);
+    }
+
+    Future<void> expectTold(Notebook nb) async {
+      expect(recFiles(), isEmpty, reason: 'it landed: retired');
+      expect(nb.recoveryProblems, hasLength(1));
+      expect(nb.recoveryProblems.single, contains('saved, but the page changed right after'));
+    }
+
+    test('an edit put back as it was is told', () async {
+      final (nb, _, _) = await parkedEntry((f, cur, base) {
+        f.writeAsStringSync(writePage(cur.replaceNode(base.nodes.single)));
+      });
+      await nb.load();
+      await expectTold(nb);
+    });
+
+    test('a title put back as it was is told', () async {
+      final (nb, _, _) = await parkedEntry((f, cur, base) {
+        f.writeAsStringSync(writePage(cur.withMeta(cur.meta.withTitle(base.meta.title))));
+      });
+      await nb.load();
+      await expectTold(nb);
+    });
+
+    test('a deleted box that is back as it was is told', () async {
+      final (nb, _, _) = await parkedEntry((f, cur, base) {
+        f.writeAsStringSync(writePage(cur.insertNode(base.nodes.single)));
+      }, deleteBox: true);
+      await nb.load();
+      await expectTold(nb);
+    });
+
+    test('a change that leaves the edits alone is not told', () async {
+      final (nb, x, _) = await parkedEntry((f, cur, base) {
+        final other = BoxRecord.create(
+          id: 'otherbox',
+          typeId: 'test.other',
+          dataVersion: 1,
+          bounds: const Bounds(300, 300, 100, 40),
+          data: RawJson.encode({'n': 1}),
+          snapshotText: 'other',
+          rev: 'r-other',
+        );
+        f.writeAsStringSync(writePage(cur.insertNode(other)));
+      });
+      await nb.load();
+      expect(recFiles(), isEmpty);
+      expect(nb.recoveryProblems, isEmpty);
+      expect(nb.tree[x], isNotNull);
+    });
+
+    for (final kind in ['not json', 'newer format', 'another page']) {
+      test('a read-back that is $kind lists the page as one that can not be opened', () async {
+        final (nb, x, _) = await parkedEntry((f, cur, base) {
+          switch (kind) {
+            case 'not json':
+              f.writeAsStringSync('{ nope');
+            case 'newer format':
+              f.writeAsStringSync(
+                writePage(cur).replaceFirst(RegExp(r'"format"\s*:\s*1'), '"format":99'),
+              );
+            default:
+              f.writeAsStringSync(
+                writePage(NotedPage.create(PageMeta.create(id: 'other', title: 'o', order: 0))),
+              );
+          }
+        });
+        await nb.load();
+        expect(recFiles(), isEmpty, reason: 'it landed: retired');
+        expect(nb.tree[x], isNull);
+        final own = nb.recoveryOwnDamaged;
+        expect(own, hasLength(1), reason: 'counted by the quit notice and listed in Can\'t open');
+        expect(own.single.reason, contains('saved, but the page was then changed'));
+        expect(nb.hasLandedNotice(pageFile(extra, x).path), isTrue);
+        // A rescan of the file or the folder does not drop or double it.
+        await nb.checkFile(pageFile(extra, x).path);
+        await nb.checkFolders();
+        expect(nb.recoveryOwnDamaged, hasLength(1));
+      });
+    }
+
+    group('the notice', () {
+      // The lossy store loses the entry's box, so a notice is raised for the
+      // page that stays in `pages`.
+      Future<(Notebook, String)> noticed() async {
+        final nb = make();
+        await nb.load();
+        final a = nb.currentId!;
+        nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+        final moved = Directory('${root.path}/pages-away');
+        await pages.rename(moved.path);
+        await nb.checkFolders();
+        quit(nb);
+        await moved.rename(pages.path);
+        final again = make(store: _LossyStore(pages));
+        await again.load();
+        expect(again.recoveryProblems, hasLength(1));
+        return (again, a);
+      }
+
+      test('goes when its page is deleted', () async {
+        final (nb, a) = await noticed();
+        await nb.delete(a);
+        expect(nb.recoveryProblems, isEmpty);
+      });
+
+      test('survives its file being deleted and created again by a sync client', () async {
+        final (nb, a) = await noticed();
+        final b = await nb.createPage();
+        await nb.open(b);
+        final f = pageFile(pages, a);
+        final text = f.readAsStringSync();
+        f.deleteSync();
+        await nb.checkFile(f.path); // gone: the page leaves the tree
+        expect(nb.tree[a], isNull);
+        expect(nb.recoveryProblems, hasLength(1));
+        f.writeAsStringSync(text);
+        await nb.checkFile(f.path);
+        expect(nb.recoveryProblems, hasLength(1));
+        await nb.open(a);
+        expect(nb.recoveryProblems, isEmpty);
+      });
+
+      test('stays through a failed open of its page and the open of another page', () async {
+        final (nb, a) = await noticed();
+        final b = await nb.createPage();
+        await nb.open(b);
+        expect(nb.recoveryProblems, hasLength(1), reason: 'another page opened');
+        final good = pageFile(pages, a).readAsStringSync();
+        pageFile(pages, a).writeAsStringSync('{ nope');
+        await expectLater(nb.open(a), throwsA(anything));
+        expect(nb.recoveryProblems, hasLength(1), reason: 'the open failed');
+        pageFile(pages, a).writeAsStringSync(good);
+        await nb.open(a);
+        expect(nb.recoveryProblems, isEmpty);
+      });
+    });
   });
 
   test('the page file was deleted while away: the recovered page is written', () async {
@@ -526,7 +792,7 @@ void main() {
   });
   }
 
-  test('a recovery that fails the check keeps the entry', () async {
+  test('a landed write that lost the recovered edits retires the entry and tells the user once', () async {
     final nb = make();
     await nb.load();
     final a = nb.currentId!;
@@ -540,8 +806,14 @@ void main() {
 
     final again = make(store: _LossyStore(pages));
     await again.load();
-    expect((await again.pendingRecovery()).entries.single.pageId, a);
-    expect(recFiles(), isNotEmpty);
+    expect((await again.pendingRecovery()).entries, isEmpty, reason: 'it landed: retired, never merged again');
+    expect(again.recoveryProblems, hasLength(1));
+    expect(again.recoveryProblems.single, contains('saved, but the page changed right after'));
+    expect(again.recoveryOwnDamaged, hasLength(1), reason: 'listed in the sidebar and the quit notice');
+    await again.checkFolders(); // a following pass does not prune it
+    expect(again.recoveryProblems, hasLength(1));
+    await again.open(a); // looking at the page clears it
+    expect(again.recoveryProblems, isEmpty);
   });
 
   test('a damaged entry is kept and reported', () async {
@@ -1033,7 +1305,7 @@ void main() {
       expect(nb.recoveryDamaged, isEmpty);
     });
 
-    test('a read-back that differs from what was written is listed', () async {
+    test('a read-back that differs but keeps the edits: retired, nothing listed, not merged again', () async {
       final nb = make();
       await nb.load();
       nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
@@ -1045,8 +1317,9 @@ void main() {
       final st = _ToggleStore(pages)..alterRead = true;
       final again = make(store: st);
       await again.load();
-      expect((await again.pendingRecovery()).entries, hasLength(1));
-      expect(again.recoveryDamaged, hasLength(1));
+      expect((await again.pendingRecovery()).entries, isEmpty);
+      expect(again.recoveryDamaged, isEmpty);
+      expect(again.recoveryProblems, isEmpty, reason: 'its own edits are all there: nothing to tell');
     });
   });
 

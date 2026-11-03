@@ -93,12 +93,15 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     for (final f in _nb.standaloneFolders) {
       if (!f.available) rows.add(_folderHeader(context, f));
     }
-    final cantOpen = <UnreadablePage>[..._nb.unreadable, ..._nb.recoveryDamaged];
+    final cantOpen = <UnreadablePage>[
+      ..._nb.unreadable.where((u) => !_nb.hasLandedNotice(u.path)),
+      ..._nb.recoveryDamaged,
+    ];
     for (final b in _nb.binders) {
       rows.add(_binderHeader(context, b));
       // A binder whose folder is away keeps its pages listed, greyed.
       if (!b.available && !b.readOnly && !b.missing) continue;
-      cantOpen.addAll(b.unreadable);
+      cantOpen.addAll(b.unreadable.where((u) => !_nb.hasLandedNotice(u.path)));
       if (!_collapsed.contains(_binderKey(b))) {
         addTree(b.tree, b.available ? binderSidebarColor(context, b.color) : null);
       }
