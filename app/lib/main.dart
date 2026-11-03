@@ -85,7 +85,7 @@ Future<void> main() async {
   final settings = AppSettings(defaultSettingsFile());
   final notebook = buildAppNotebook(settings: settings);
   FileClipboard.read = readClipboardFiles;
-  final services = await startAiServices(notebook, defaultSettingsFile().parent);
+  final services = await startAiServices(notebook, defaultAiDataFolder());
   runApp(NotedApp(notebook: notebook, settings: settings, aiLink: services.link, runningLock: services.lock));
   await notebook.load();
   // After the first frame, so the window can show the questions.
@@ -117,6 +117,11 @@ class StorageErrorApp extends StatelessWidget {
   );
 }
 
+/// The folder for `ai-access.json`, `ai-activity.json`, `ai-link.json` and the
+/// running lock: beside `binders.json` (and `settings.json`) on desktop. Mobile
+/// has no AI service, so nothing is written there.
+Directory defaultAiDataFolder([File? bindersFile]) => (bindersFile ?? defaultBindersFile()).absolute.parent;
+
 /// The notebook with this build's platform wiring (0129): on mobile there is
 /// no AI access service (no MCP server), no folder watching and no folder
 /// picker (neither file_selector's iOS nor its Android folder picker gives
@@ -128,7 +133,7 @@ Notebook buildAppNotebook({AppSettings? settings, Directory? pagesDirectory, Fil
   final aiAccess = isMobilePlatform
       ? null
       : AiAccessService(
-          dataFolder: binders.absolute.parent,
+          dataFolder: defaultAiDataFolder(binders),
           pageOfBox: (id) => notebook.aiPageOfBox(id),
           // Another Noted may change the codes or the log: show it.
           pollInterval: const Duration(seconds: 3),

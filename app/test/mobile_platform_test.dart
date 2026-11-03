@@ -62,6 +62,15 @@ void main() {
         norm(defaultRecoveryDirectory(defaultBindersFile()).absolute.path),
         '${norm(support.absolute.path)}/Noted/recovery',
       );
+      // A binders file that is not the default keeps recovery beside it.
+      expect(
+        norm(
+          defaultRecoveryDirectory(
+            File('${root.path}/other/binders.json'),
+          ).absolute.path,
+        ),
+        '${norm(root.absolute.path)}/other/recovery',
+      );
       // Pages and binders land in the app's documents folder.
       final base = '${norm(docs.absolute.path)}/Noted';
       expect(norm(defaultPagesDirectory().absolute.path), '$base/pages');

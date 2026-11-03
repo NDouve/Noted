@@ -35,7 +35,8 @@ enum ThemeSetting {
   }
 }
 
-/// This device's settings file, `settings.json`, next to `binders.json`.
+/// This device's settings file, `settings.json`: beside `binders.json` on desktop,
+/// in `<support>/Noted` on a device.
 File defaultSettingsFile() {
   final support = deviceSupportDirectory();
   if (support != null) return File('${support.path}${Platform.pathSeparator}settings.json');
