@@ -24,11 +24,11 @@ class _FailingStore extends PageStore {
   @override
   Future<void> save(NotedPage page) async {
     throw const FileSystemException('disk full');
+  }
 
   @override
   Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
     throw const FileSystemException('disk full');
-  }
   }
 }
 
