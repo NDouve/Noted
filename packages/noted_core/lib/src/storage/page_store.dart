@@ -280,6 +280,7 @@ class PageStore {
     String expectedText, {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
+    Future<void> Function()? beforeDelete,
     void Function()? beforeRestore,
   }) async {
     final r = await deleteFileIfUnchanged(
@@ -287,6 +288,7 @@ class PageStore {
       utf8.encode(expectedText),
       beforeMoveAside: beforeMoveAside,
       afterRead: afterRead,
+      beforeDelete: beforeDelete,
       beforeRestore: beforeRestore,
     );
     if (r.deleted || r.outcome == DeleteOutcome.absent) _paths.remove(pageId);

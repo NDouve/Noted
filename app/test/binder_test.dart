@@ -112,6 +112,7 @@ class FlakyStore extends PageStore {
   final Set<String> seamIds = {};
   void Function()? seamBeforeMoveAside;
   void Function()? seamAfterRead;
+  Future<void> Function()? seamBeforeDelete;
 
   /// Runs at the start of a compare-and-delete of a page, before the check.
   void Function(String pageId)? beforeDeleteIfUnchanged;
@@ -122,6 +123,7 @@ class FlakyStore extends PageStore {
     String expectedText, {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
+    Future<void> Function()? beforeDelete,
     void Function()? beforeRestore,
   }) async {
     if (failDelete.contains(pageId)) {
@@ -135,6 +137,7 @@ class FlakyStore extends PageStore {
       expectedText,
       beforeMoveAside: seam ? seamBeforeMoveAside : beforeMoveAside,
       afterRead: seam ? seamAfterRead : afterRead,
+      beforeDelete: seam ? seamBeforeDelete : beforeDelete,
       beforeRestore: beforeRestore,
     );
     if (r.deleted && failSaveAfterDelete) failSave = true;
@@ -817,6 +820,23 @@ void main() {
         throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('could not be read'))),
       );
       expect(canvasFiles(pages).where((f) => f.contains(a) || f.contains(b)), isEmpty);
+    });
+
+    test('a scan of the source folder waits while a source is set aside for its delete', () async {
+      source.seamIds.add(b);
+      var sweptDuring = false;
+      Future<List<PageEntry>>? scan;
+      source.seamBeforeDelete = () async {
+        scan = nb.scanLocationForTest(s.path);
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        // A scan that ran now would have put the set-aside file back.
+        sweptDuring = File('${folder.path}/$b.canvas').existsSync();
+      };
+      expect(await nb.moveToLocation(a), isTrue);
+      await scan;
+      expect(sweptDuring, isFalse);
+      expect(File('${pages.path}/$b.canvas').existsSync(), isTrue);
+      expect(File('${folder.path}/$b.canvas').existsSync(), isFalse);
     });
 
     test('a source that cannot be read at the start is not moved', () async {

@@ -3983,7 +3983,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _assertWritable(loc);
     final st = _storeOf(loc);
     final key = _key(st.pathFor(id));
-    final r = await st.deleteIfUnchanged(id, expectedText);
+    // One at a time with a scan of the folder, which would put the set-aside
+    // file back (see _underFolderLock). The job is the single store call.
+    final r = await _underFolderLock(st, () => st.deleteIfUnchanged(id, expectedText));
     if (r.deleted || r.outcome == DeleteOutcome.absent) {
       _known.remove(key);
       _pathId.remove(key);
@@ -4073,6 +4075,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<List<PageEntry>> _scan(PageStore st) => _underFolderLock(st, st.scan);
+
+  /// Scans the folder of location [loc] through the folder lock, as the
+  /// notebook's own scans do.
+  @visibleForTesting
+  Future<List<PageEntry>> scanLocationForTest(String loc) => _scan(_storeOf(loc));
 
   // Like [_write], for a page that must still hold exactly [expectedText] at
   // the moment of publishing: false, with nothing written, when it doesn't.

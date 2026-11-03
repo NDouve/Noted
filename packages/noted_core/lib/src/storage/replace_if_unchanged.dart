@@ -349,13 +349,15 @@ class DeleteResult {
 /// puts it back, so the page reappears (a duplicate of what the caller meant
 /// to delete). Nothing is lost.
 ///
-/// Test seams: [beforeMoveAside], [afterRead] (the target is absent) and
+/// Test seams: [beforeMoveAside], [afterRead] (the target is absent), the
+/// asynchronous [beforeDelete] (the verified file is still set aside) and
 /// [beforeRestore], as in [replaceIfUnchanged].
 Future<DeleteResult> deleteFileIfUnchanged(
   String target,
   List<int> expected, {
   void Function()? beforeMoveAside,
   void Function()? afterRead,
+  Future<void> Function()? beforeDelete,
   void Function()? beforeRestore,
 }) async {
   try {
@@ -392,6 +394,7 @@ Future<DeleteResult> deleteFileIfUnchanged(
         : DeleteResult(DeleteOutcome.changedKept, r.keptPath);
   }
   try {
+    if (beforeDelete != null) await beforeDelete();
     await aside.delete();
   } catch (_) {
     await _putBack(aside, target, beforeRestore);
