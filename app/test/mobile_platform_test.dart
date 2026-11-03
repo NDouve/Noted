@@ -1,0 +1,178 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+import 'dart:io';
+
+import 'package:desktop_drop/desktop_drop.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:noted/main.dart';
+import 'package:noted/src/app_settings.dart';
+import 'package:noted/src/attachment_platform.dart';
+import 'package:noted/src/device_storage.dart';
+import 'package:noted/src/home.dart';
+import 'package:noted/src/notebook.dart';
+import 'package:noted_core/noted_core.dart';
+
+void main() {
+  late Directory root;
+
+  setUp(() async {
+    root = Directory.systemTemp.createTempSync('noted_mobile');
+    Directory('${root.path}/app').createSync();
+    resetDeviceStorage();
+  });
+
+  tearDown(() async {
+    debugDefaultTargetPlatformOverride = null;
+    resetDeviceStorage();
+    if (root.existsSync()) root.deleteSync(recursive: true);
+  });
+
+  File binders() => File('${root.path}/app/binders.json');
+
+  String norm(String p) => p.replaceAll(r'\', '/');
+
+  group('storage', () {
+    test('on mobile the defaults are the app\'s folders', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final docs = await Directory('${root.path}/docs').create();
+      final cache = await Directory('${root.path}/cache').create();
+      await initDeviceStorage(
+        documents: () async => docs,
+        cache: () async => cache,
+      );
+
+      expect(
+        norm(devicePagesDirectory()!.path),
+        '${norm(docs.path)}/Noted/pages',
+      );
+      expect(
+        norm(defaultSettingsFile().path),
+        '${norm(docs.path)}/Noted/settings.json',
+      );
+      expect(norm(defaultCacheDirectory().path), '${norm(cache.path)}/Noted');
+    });
+
+    test('iOS is mobile too', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      expect(isMobilePlatform, isTrue);
+    });
+
+    test(
+      'on desktop nothing is looked up and the defaults are unchanged',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+        final before = (
+          defaultSettingsFile().path,
+          defaultCacheDirectory().path,
+        );
+        var asked = false;
+        Future<Directory> ask() async {
+          asked = true;
+          return root;
+        }
+
+        await initDeviceStorage(documents: ask, cache: ask);
+        expect(asked, isFalse);
+        expect(isMobilePlatform, isFalse);
+        expect(devicePagesDirectory(), isNull);
+        expect(deviceCacheDirectory(), isNull);
+        expect((
+          defaultSettingsFile().path,
+          defaultCacheDirectory().path,
+        ), before);
+        expect(
+          norm(defaultSettingsFile().path),
+          '${norm(defaultPagesDirectory().absolute.parent.path)}/settings.json',
+        );
+      },
+    );
+  });
+
+  group('home', () {
+    Future<Notebook> open(WidgetTester t) async {
+      late Notebook nb;
+      await t.runAsync(() async {
+        nb = Notebook(
+          PageStore(Directory('${root.path}/pages')..createSync()),
+          buildModules(),
+          saveDelay: Duration.zero,
+          bindersFile: binders(),
+        );
+        await nb.load();
+      });
+      addTearDown(nb.dispose);
+      return nb;
+    }
+
+    testWidgets('no drop target on mobile', (t) async {
+      t.view.physicalSize = const Size(1400, 900);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        final nb = await open(t);
+        await t.pumpWidget(MaterialApp(home: Home(notebook: nb)));
+        await t.pump();
+        await t.pump();
+        expect(find.byType(DropTarget), findsNothing);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('a drop target on desktop', (t) async {
+      t.view.physicalSize = const Size(1400, 900);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      try {
+        final nb = await open(t);
+        await t.pumpWidget(MaterialApp(home: Home(notebook: nb)));
+        await t.pump();
+        await t.pump();
+        expect(find.byType(DropTarget), findsOneWidget);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+  });
+
+  group('AI services', () {
+    test('not started on mobile: no lock, no link, no files', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final nb = Notebook(
+        PageStore(Directory('${root.path}/pages')..createSync()),
+        buildModules(),
+        bindersFile: binders(),
+      );
+      addTearDown(nb.dispose);
+      final data = await Directory('${root.path}/data').create();
+      final s = await startAiServices(nb, data);
+      expect(s.lock, isNull);
+      expect(s.link, isNull);
+      expect(data.listSync(), isEmpty);
+    });
+
+    test('started on desktop', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      final nb = Notebook(
+        PageStore(Directory('${root.path}/pages')..createSync()),
+        buildModules(),
+        bindersFile: binders(),
+      );
+      addTearDown(nb.dispose);
+      final data = await Directory('${root.path}/data').create();
+      final s = await startAiServices(nb, data);
+      addTearDown(() async {
+        await s.link?.dispose();
+        s.lock?.dispose();
+      });
+      expect(s.lock, isNotNull);
+      expect(s.link, isNotNull);
+    });
+  });
+}

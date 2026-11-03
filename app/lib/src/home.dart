@@ -14,6 +14,7 @@ import 'ai_access_note.dart';
 import 'app_commands.dart';
 import 'app_settings.dart';
 import 'binder_cover.dart';
+import 'device_storage.dart';
 import 'notebook.dart';
 import 'notebook_search.dart';
 import 'page_title_field.dart';
@@ -98,6 +99,9 @@ class _HomeState extends State<Home> {
     }
     return _canvasKey!;
   }
+
+  // No drag and drop on a phone or tablet (0129).
+  Widget _droppable(Widget canvas) => isMobilePlatform ? canvas : DropTarget(onDragDone: _dropped, child: canvas);
 
   // Files dropped on the canvas become boxes where they were dropped.
   Future<void> _dropped(DropDoneDetails d) async {
@@ -277,9 +281,8 @@ class _HomeState extends State<Home> {
                             reason: notebook.readOnlyReason!,
                           ),
                         Expanded(
-                          child: DropTarget(
-                            onDragDone: _dropped,
-                            child: PageCanvas(
+                          child: _droppable(
+                            PageCanvas(
                               key: _keyFor(current.page.id),
                               attachments: notebook.attachments,
                               disallowedTypes: notebook.disallowedBoxTypesFor(current.page.id),

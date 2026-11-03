@@ -10,6 +10,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:pasteboard/pasteboard.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'device_storage.dart';
 import 'notebook.dart' show defaultPagesDirectory;
 
 /// The image formats offered by Insert → Image.
@@ -39,6 +40,8 @@ Future<void> openWithDefaultApp(File file) async {
 /// (not roaming) app data on Windows, never in a page folder, so never
 /// synced.
 Directory defaultCacheDirectory() {
+  final device = deviceCacheDirectory();
+  if (device != null) return device;
   final sep = Platform.pathSeparator;
   final local = Platform.environment['LOCALAPPDATA'];
   if (Platform.isWindows && local != null) return Directory('$local${sep}Noted${sep}cache');

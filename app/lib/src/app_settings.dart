@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart' show ToolbarStyle;
 
+import 'device_storage.dart';
 import 'notebook.dart' show defaultPagesDirectory;
 
 /// The settings file format version this build reads and writes.
@@ -36,7 +37,7 @@ enum ThemeSetting {
 
 /// This device's settings file, `settings.json`, next to `binders.json`.
 File defaultSettingsFile() {
-  final pages = defaultPagesDirectory().absolute;
+  final pages = (devicePagesDirectory() ?? defaultPagesDirectory()).absolute;
   return File('${pages.parent.path}${Platform.pathSeparator}settings.json');
 }
 
