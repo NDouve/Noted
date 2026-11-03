@@ -41,6 +41,8 @@ class Home extends StatefulWidget {
 
 class _HomeState extends State<Home> {
   final _tree = GlobalKey<PageTreeViewState>();
+  final _scaffold = GlobalKey<ScaffoldState>();
+  String? _lastChoice;
 
   Notebook get notebook => widget.notebook;
 
@@ -186,9 +188,93 @@ class _HomeState extends State<Home> {
       canRequestFocus: false,
       skipTraversal: true,
       onKeyEvent: _onKey,
-      child: Scaffold(body: _body()),
+      child: Scaffold(
+        key: _scaffold,
+        // On a narrow window the sidebar is a drawer (0129).
+        drawer: isNarrowLayout(context)
+            ? Drawer(
+                width: NotedMetrics.of(context).sidebarWidth,
+                shape: const RoundedRectangleBorder(),
+                child: _sidebar(NotedMetrics.of(context)),
+              )
+            : null,
+        body: _body(),
+      ),
     );
   }
+
+  // The page tree with search and settings; inline, or in the drawer on a
+  // narrow window.
+  Widget _sidebar(NotedMetrics m) {
+    return SizedBox(
+      width: m.sidebarWidth,
+      child: ColoredBox(
+        color: NotedColors.of(context).bgSidebar,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SearchField(search: _search, onOpen: _openResult),
+            Expanded(
+              child: ListenableBuilder(
+                listenable: _search,
+                builder: (context, _) {
+                  final searching = _search.hasQuery;
+                  // The tree stays mounted (its expanded state and
+                  // the page shortcuts) while results are shown.
+                  return Stack(
+                    children: [
+                      Positioned.fill(
+                        child: Offstage(
+                          offstage: searching,
+                          child: PageTreeView(key: _tree, notebook: notebook),
+                        ),
+                      ),
+                      if (searching)
+                        Positioned.fill(
+                          child: SearchResultsView(search: _search, onOpen: _openResult),
+                        ),
+                    ],
+                  );
+                },
+              ),
+            ),
+            if (widget.settings != null)
+              SettingsMenu(settings: widget.settings!, notebook: notebook),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Closes the drawer once a page (or the cover) has been chosen in it.
+  void _closeDrawerOnChoice() {
+    final choice = notebook.cover != null ? 'cover-${notebook.coverPath}' : notebook.currentId;
+    if (choice == _lastChoice) return;
+    _lastChoice = choice;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final scaffold = _scaffold.currentState;
+      if (mounted && scaffold != null && scaffold.isDrawerOpen) scaffold.closeDrawer();
+    });
+  }
+
+  Widget _menuButton(NotedMetrics m) => IconButton(
+    key: const ValueKey('sidebar-menu'),
+    tooltip: 'Pages',
+    icon: const Icon(Icons.menu_rounded),
+    iconSize: m.icon,
+    color: Theme.of(context).colorScheme.onSurfaceVariant,
+    onPressed: () => _scaffold.currentState?.openDrawer(),
+  );
+
+  // The menu button over a view that has no title row.
+  Widget _withMenu(bool narrow, NotedMetrics m, Widget child) => narrow
+      ? Stack(
+          children: [
+            Positioned.fill(child: child),
+            Positioned(left: m.space2, top: m.space2, child: _menuButton(m)),
+          ],
+        )
+      : child;
 
   Widget _body() {
     return ListenableBuilder(
@@ -197,57 +283,27 @@ class _HomeState extends State<Home> {
       builder: (context, _) {
         final current = notebook.current;
         final m = NotedMetrics.of(context);
+        final narrow = isNarrowLayout(context);
+        _closeDrawerOnChoice();
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            SizedBox(
-              width: m.sidebarWidth,
-              child: ColoredBox(
-                color: NotedColors.of(context).bgSidebar,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    SearchField(search: _search, onOpen: _openResult),
-                    Expanded(
-                      child: ListenableBuilder(
-                        listenable: _search,
-                        builder: (context, _) {
-                          final searching = _search.hasQuery;
-                          // The tree stays mounted (its expanded state and
-                          // the page shortcuts) while results are shown.
-                          return Stack(
-                            children: [
-                              Positioned.fill(
-                                child: Offstage(
-                                  offstage: searching,
-                                  child: PageTreeView(key: _tree, notebook: notebook),
-                                ),
-                              ),
-                              if (searching)
-                                Positioned.fill(
-                                  child: SearchResultsView(search: _search, onOpen: _openResult),
-                                ),
-                            ],
-                          );
-                        },
-                      ),
-                    ),
-                    if (widget.settings != null)
-                      SettingsMenu(settings: widget.settings!, notebook: notebook),
-                  ],
-                ),
-              ),
-            ),
-            const VerticalDivider(width: 1),
+            if (!narrow) ...[
+              _sidebar(m),
+              const VerticalDivider(width: 1),
+            ],
             Expanded(
               child: notebook.cover != null
-                  ? BinderCover(
-                      key: ValueKey('cover-${notebook.coverPath}'),
-                      notebook: notebook,
-                      path: notebook.coverPath!,
-                    )
+                  ? _withMenu(
+                      narrow,
+                      m,
+                      BinderCover(
+                        key: ValueKey('cover-${notebook.coverPath}'),
+                        notebook: notebook,
+                        path: notebook.coverPath!,
+                      ))
                   : current == null
-                  ? const Center(child: CircularProgressIndicator())
+                  ? _withMenu(narrow, m, const Center(child: CircularProgressIndicator()))
                   : Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -255,6 +311,7 @@ class _HomeState extends State<Home> {
                           padding: EdgeInsets.fromLTRB(m.space6, m.space4, m.space6, m.space2),
                           child: Row(
                             children: [
+                              if (narrow) _menuButton(m),
                               Expanded(
                                 child: PageTitleField(
                                   key: ValueKey('title-${current.page.id}'),
