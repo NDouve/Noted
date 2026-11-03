@@ -223,7 +223,8 @@ void main() {
       final from = tester.getTopLeft(row(a)) + const Offset(60, 18);
       final r = tester.getRect(row(x));
       final target = Offset(r.left + 80, r.top + r.height * 0.5);
-      final g = await tester.startGesture(from, kind: PointerDeviceKind.mouse);
+      final g = await tester.startGesture(from);
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
       await g.moveTo(from + const Offset(0, 4));
       await tester.pump();
       await g.moveTo(target);

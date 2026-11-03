@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'package:flutter/gestures.dart' show PointerDeviceKind, kTouchSlop, ImmediateMultiDragGestureRecognizer, DelayedMultiDragGestureRecognizer, GestureMultiDragStartCallback;
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
@@ -375,8 +375,9 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         });
         _guard(() => _nb.moveToLocation(d.data, binderPath: b.path));
       },
-      builder: (context, _, _) => _onLongPress(
-        (at) => _binderContextMenu(context, b, at),
+      builder: (context, _, _) => _binderMenuOn(
+        context,
+        b,
         _binderGroupHeader(context, b, color, collapsed, hover || shown),
       ),
     );
@@ -565,8 +566,10 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
               itemBuilder: (_) => _menuItems(p),
             ),
       onTap: () {
-        _guard(() => _nb.open(p.id));
-        widget.onPageChosen?.call();
+        _guard(() async {
+          await _nb.open(p.id);
+          widget.onPageChosen?.call();
+        });
       },
       onDoubleTap: locked ? null : () => _rename(context, p),
     );
@@ -632,41 +635,45 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       builder: (context, _, _) => GestureDetector(
         behavior: HitTestBehavior.translucent,
         onSecondaryTapDown: locked ? null : (d) => _contextMenu(context, p, d.globalPosition),
-        child: _onLongPress(
-          locked ? null : (at) => _contextMenu(context, p, at),
-          Stack(
-            key: key,
-            children: [
-              draggable,
-              if (hover == DropZone.before) Positioned(top: 0, left: 0, right: 0, child: line),
-              if (hover == DropZone.after) Positioned(bottom: 0, left: 0, right: 0, child: line),
-            ],
-          ),
+        child: Stack(
+          key: key,
+          children: [
+            draggable,
+            if (hover == DropZone.before) Positioned(top: 0, left: 0, right: 0, child: line),
+            if (hover == DropZone.after) Positioned(bottom: 0, left: 0, right: 0, child: line),
+          ],
         ),
       ),
     );
   }
 
-  /// Opens a row's menu on a touch or pen long press, at the press point
-  /// (the same menu a right click opens). A mouse is left alone. A touch
-  /// that moves first is a drag or a scroll, so a drag by touch is quick,
-  /// not held; the menu has the move actions for a held press.
-  Widget _onLongPress(void Function(Offset at)? open, Widget child) {
-    if (open == null) return child;
+  static const _fingerKinds = {
+    PointerDeviceKind.touch,
+    PointerDeviceKind.stylus,
+    PointerDeviceKind.invertedStylus,
+  };
+
+  /// Opens a binder header's menu on a touch or pen long press, at the press
+  /// point, and on a right click: the same menu as its options button.
+  Widget _binderMenuOn(BuildContext context, BinderSection b, Widget child) {
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
-      supportedDevices: const {
-        PointerDeviceKind.touch,
-        PointerDeviceKind.stylus,
-        PointerDeviceKind.invertedStylus,
-      },
-      onLongPressStart: (d) => open(d.globalPosition),
+      supportedDevices: {..._fingerKinds, PointerDeviceKind.mouse},
+      onSecondaryTapDown: (d) => _binderContextMenu(context, b, d.globalPosition),
+      onLongPressStart: (d) => _binderContextMenu(context, b, d.globalPosition),
       child: child,
     );
   }
 
-  /// Wraps a row so it can be dragged. Touch needs a long press so scrolling
-  /// the list still works; a mouse drags at once.
+  // Where a finger or pen went down on a row, and whether it has moved.
+  Offset? _pressAt;
+  bool _pressMoved = false;
+
+  /// Wraps a row so it can be dragged. A mouse drags at once (a sidebar list
+  /// doesn't scroll on mouse drag, so nothing competes with it). A finger or
+  /// pen uses one long-press recogniser: a quick swipe scrolls the list;
+  /// holding and then moving drags the page; holding and letting go without
+  /// moving opens the page menu at the press point.
   Widget _draggable(PageMeta p, String title, bool locked, Widget child) {
     if (locked) return child; // read-only pages can't be dragged
     final feedback = Material(
@@ -681,15 +688,38 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       ),
     );
     final ghost = Opacity(opacity: 0.4, child: child);
-    // Drags as soon as the mouse moves (desktop); a sidebar list doesn't
-    // scroll on mouse drag, so nothing competes with it.
-    return Draggable<String>(
+    final mouse = _MouseDraggable<String>(
       data: p.id,
       maxSimultaneousDrags: 1,
       dragAnchorStrategy: pointerDragAnchorStrategy,
       feedback: feedback,
       childWhenDragging: ghost,
       child: child,
+    );
+    return Listener(
+      onPointerDown: (e) {
+        if (!_fingerKinds.contains(e.kind)) return;
+        _pressAt = e.position;
+        _pressMoved = false;
+      },
+      child: _FingerDraggable<String>(
+        data: p.id,
+        maxSimultaneousDrags: 1,
+        dragAnchorStrategy: pointerDragAnchorStrategy,
+        feedback: feedback,
+        childWhenDragging: ghost,
+        onDragUpdate: (d) {
+          final at = _pressAt;
+          if (at != null && (d.globalPosition - at).distance > kTouchSlop) _pressMoved = true;
+        },
+        onDragEnd: (d) {
+          final at = _pressAt;
+          _pressAt = null;
+          if (at == null || _pressMoved || d.wasAccepted || !mounted) return;
+          _contextMenu(context, p, at);
+        },
+        child: mouse,
+      ),
     );
   }
 
@@ -862,5 +892,54 @@ class _RenameDialogState extends State<_RenameDialog> {
         ),
       ],
     );
+  }
+}
+
+/// A [Draggable] that only a mouse or trackpad starts, at once.
+class _MouseDraggable<T extends Object> extends Draggable<T> {
+  const _MouseDraggable({
+    super.key,
+    required super.child,
+    required super.feedback,
+    super.data,
+    super.childWhenDragging,
+    super.dragAnchorStrategy,
+    super.maxSimultaneousDrags,
+  });
+
+  @override
+  ImmediateMultiDragGestureRecognizer createRecognizer(GestureMultiDragStartCallback onStart) {
+    return ImmediateMultiDragGestureRecognizer(
+      supportedDevices: const {PointerDeviceKind.mouse, PointerDeviceKind.trackpad},
+      allowedButtonsFilter: allowedButtonsFilter,
+    )..onStart = onStart;
+  }
+}
+
+/// A [Draggable] that a finger or pen starts after a long press, so a quick
+/// swipe still scrolls.
+class _FingerDraggable<T extends Object> extends Draggable<T> {
+  const _FingerDraggable({
+    super.key,
+    required super.child,
+    required super.feedback,
+    super.data,
+    super.childWhenDragging,
+    super.dragAnchorStrategy,
+    super.maxSimultaneousDrags,
+    super.onDragUpdate,
+    super.onDragEnd,
+  });
+
+  @override
+  DelayedMultiDragGestureRecognizer createRecognizer(GestureMultiDragStartCallback onStart) {
+    return DelayedMultiDragGestureRecognizer(
+      supportedDevices: const {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.stylus,
+        PointerDeviceKind.invertedStylus,
+      },
+      allowedButtonsFilter: allowedButtonsFilter,
+    )..onStart = onStart;
   }
 }

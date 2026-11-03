@@ -44,7 +44,7 @@ void main() {
     await settle(tester);
   }
 
-  Future<void> start(WidgetTester tester, {ThemeData? theme}) async {
+  Future<void> start(WidgetTester tester, {ThemeData? theme, bool watch = false}) async {
     // Room for the whole page menu.
     if (tester.view.physicalSize.height / tester.view.devicePixelRatio < 1400) {
       tester.view.physicalSize = const Size(800, 1400);
@@ -53,7 +53,14 @@ void main() {
     }
     await tester.runAsync(() async {
       dir = await Directory.systemTemp.createTemp('noted_tree_ui');
-      nb = Notebook(PageStore(dir), buildModules(), saveDelay: Duration.zero);
+      nb = Notebook(
+        PageStore(dir),
+        buildModules(),
+        saveDelay: Duration.zero,
+        watchFiles: watch,
+        watchDebounce: const Duration(milliseconds: 40),
+        folderCheckInterval: watch ? const Duration(milliseconds: 100) : Duration.zero,
+      );
       await nb.load();
       a = nb.currentId!;
       b = await nb.createPage();
@@ -104,10 +111,16 @@ void main() {
   List<String> kids(String id) => nb.tree.childrenOf(id).map((p) => p.id).toList();
 
   /// Drags row [from] to [to] at [fraction] of the target row's height (or
-  /// to the given point). A mouse drags at once; a held touch opens the menu.
-  Future<void> dragTo(WidgetTester tester, String from, Offset target) async {
+  /// to the given point), holding long enough for a touch long press.
+  Future<void> dragTo(
+    WidgetTester tester,
+    String from,
+    Offset target, {
+    PointerDeviceKind kind = PointerDeviceKind.touch,
+  }) async {
     final start = tester.getTopLeft(row(from)) + const Offset(60, 18);
-    final g = await tester.startGesture(start, kind: PointerDeviceKind.mouse);
+    final g = await tester.startGesture(start, kind: kind);
+    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
     await g.moveTo(start + const Offset(0, 4));
     await tester.pump();
     await g.moveTo(target);
@@ -377,10 +390,57 @@ void main() {
     });
   }
 
-  testWidgets('a held mouse press does not open the menu', (tester) async {
+
+  testWidgets('a held mouse press does not open the menu, and a held mouse drag reorders', (
+    tester,
+  ) async {
     await start(tester);
     await longPress(tester, b, PointerDeviceKind.mouse);
     expect(find.text('New subpage'), findsNothing);
+    await dragTo(tester, c, at(tester, a, 0.08), kind: PointerDeviceKind.mouse);
+    expect(find.text('New subpage'), findsNothing);
+    expect(rootIds(), [c, a, b]);
+    await finish(tester);
+  });
+
+  testWidgets('a touch swipe on a row scrolls the list and moves no page', (tester) async {
+    await start(tester);
+    await tester.runAsync(() async {
+      for (var i = 0; i < 25; i++) {
+        await nb.createPage();
+      }
+    });
+    await tester.pumpAndSettle();
+    final before = rootIds();
+    final scrollable = find.descendant(
+      of: find.byType(PageTreeView),
+      matching: find.byType(Scrollable),
+    );
+    final position = tester.state<ScrollableState>(scrollable.first).position;
+    expect(position.pixels, 0);
+    await tester.drag(row(b), const Offset(0, -300), kind: PointerDeviceKind.touch);
+    await tester.pumpAndSettle();
+    expect(position.pixels, greaterThan(0));
+    expect(rootIds(), before);
+    expect(find.text('New subpage'), findsNothing);
+    await finish(tester);
+  });
+
+  testWidgets('a long press by touch opens nothing on a read-only row', (tester) async {
+    await start(tester, watch: true);
+    late String page;
+    await tester.runAsync(() async {
+      final folder = await Directory('${dir.path}/Away').create();
+      final binder = await nb.addBinder(folder.path);
+      page = await nb.createPage(binderPath: binder.path);
+      await nb.flush();
+      folder.renameSync('${dir.path}/Away-gone');
+    });
+    await until(tester, () => nb.isReadOnlyPage(page));
+    expect(nb.isReadOnlyPage(page), isTrue);
+    await longPress(tester, page, PointerDeviceKind.touch);
+    expect(find.text('New subpage'), findsNothing);
+    expect(find.byType(PopupMenuItem<String>), findsNothing);
     await finish(tester);
   });
 
@@ -402,6 +462,26 @@ void main() {
     await tester.runAsync(() => g.up());
     await tester.pumpAndSettle();
     expect(find.text('New page'), findsWidgets);
+    expect(find.text('Remove from sidebar'), findsOneWidget);
+    await tester.tapAt(const Offset(790, 5));
+    await tester.pumpAndSettle();
+    await finish(tester);
+  });
+
+  testWidgets('a right click on a binder header opens the binder menu', (tester) async {
+    await start(tester);
+    await tester.runAsync(() async {
+      final folder = await Directory('${dir.path}/Work').create();
+      await nb.addBinder(folder.path);
+    });
+    await tester.pumpAndSettle();
+    final header = find.byWidgetPredicate(
+      (w) => w.key is ValueKey && (w.key! as ValueKey).value.toString().startsWith('binder-header-'),
+    );
+    await tester.runAsync(
+      () => tester.tapAt(tester.getCenter(header) + const Offset(-40, 0), buttons: kSecondaryButton),
+    );
+    await tester.pumpAndSettle();
     expect(find.text('Remove from sidebar'), findsOneWidget);
     await tester.tapAt(const Offset(790, 5));
     await tester.pumpAndSettle();
