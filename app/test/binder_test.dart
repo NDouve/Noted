@@ -810,16 +810,24 @@ void main() {
       expect(nb.binderOfPage(b), isNull);
     });
 
-    test('a missing source folder is not mistaken for vanished pages', () async {
+    test('a missing source folder keeps the copies, which are then the only ones', () async {
       source.reads.clear();
       source.onRead = (id, n) {
         if (id == a && n == 3) folder.deleteSync(recursive: true);
       };
       await expectLater(
         nb.moveToLocation(a),
-        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('could not be read'))),
+        throwsA(
+          isA<NotebookException>()
+              .having((e) => e.message, 'message', allOf(contains('Work is not available'), contains('kept there')))
+              .having((e) => e.needsAction, 'needsAction', isTrue),
+        ),
       );
-      expect(canvasFiles(pages).where((f) => f.contains(a) || f.contains(b)), isEmpty);
+      // The copies are the only ones left, so they stay, and the pages count as moved.
+      expect(File('${pages.path}/$a.canvas').existsSync(), isTrue);
+      expect(File('${pages.path}/$b.canvas').existsSync(), isTrue);
+      expect(nb.binderOfPage(a), isNull);
+      expect(nb.binderOfPage(b), isNull);
     });
 
     test('a scan of the source folder waits while a source is set aside for its delete', () async {

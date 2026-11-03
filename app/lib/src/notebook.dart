@@ -14,6 +14,7 @@ import 'ai/ai_access_service.dart';
 import 'ai/ai_link_authority.dart';
 import 'ai/ai_merge_service.dart';
 import 'app_settings.dart';
+import 'attachment_copy.dart';
 import 'page_attachments.dart';
 import 'recovery_store.dart';
 import 'search_scope.dart';
@@ -1153,119 +1154,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Directory _assetsDir(String loc, String id) =>
       Directory('${_storeOf(loc).directory.path}${Platform.pathSeparator}${assetsFolderName(id)}');
 
-  /// Copies the files of [from] into [to] (made if needed). Each file is
-  /// written to a temporary name and published with [publishExclusive], so a
-  /// file already at the target is never written over and an interrupted copy
-  /// never leaves a truncated file under the final name. A file already there
-  /// is trusted only if its bytes equal the source's.
-  ///
-  /// [created] collects what this call published or made (directories, files),
-  /// so a rollback can remove just that. [verified] collects the source files
-  /// whose target now holds exactly their bytes (the only ones that may be
-  /// deleted from the source). [differing] collects the targets that exist
-  /// with other bytes: they are kept as they are, and their sources stay.
-  static Future<void> _copyDir(
-    Directory from,
-    Directory to, {
-    List<String>? created,
-    List<File>? verified,
-    List<String>? differing,
-  }) async {
-    if (!await from.exists()) return;
-    if (!await to.exists()) {
-      await to.create(recursive: true);
-      created?.add(to.path);
-    }
-    await for (final e in from.list()) {
-      final name = e.path.split(RegExp(r'[\\/]')).last;
-      final target = '${to.path}${Platform.pathSeparator}$name';
-      if (e is Directory) {
-        await _copyDir(e, Directory(target), created: created, verified: verified, differing: differing);
-      } else if (e is File && !name.endsWith('.tmp')) {
-        if (await _copyFileVerified(e, target, created)) {
-          verified?.add(e);
-        } else {
-          differing?.add(target);
-        }
-      }
-    }
-  }
-
-  static int _copyTmpCounter = 0;
-
-  /// Copies [src] to [target] without replacing anything; true when [target]
-  /// holds exactly the bytes of [src] afterwards (whether this call published
-  /// it or it was there already).
-  static Future<bool> _copyFileVerified(File src, String target, List<String>? created) async {
-    final bytes = await src.readAsBytes();
-    Future<bool> same() async {
-      try {
-        return listEquals(await File(target).readAsBytes(), bytes);
-      } on FileSystemException {
-        return false;
-      }
-    }
-
-    if (FileSystemEntity.typeSync(target, followLinks: false) != FileSystemEntityType.notFound) {
-      return same();
-    }
-    final tmp = File('$target.${DateTime.now().microsecondsSinceEpoch}-${_copyTmpCounter++}.tmp');
-    try {
-      await tmp.writeAsBytes(bytes, flush: true);
-      if (await publishExclusive(tmp, target)) created?.add(target);
-    } finally {
-      if (await tmp.exists()) await tmp.delete();
-    }
-    return same();
-  }
-
-  /// Deletes the source files in [files] (all verified copied), then the
-  /// folders under [root] (and [root]) that are empty. Anything else in
-  /// [root], such as a file that arrived after the copy, stays.
-  static Future<void> _removeVerifiedSources(List<File> files, Directory root) async {
-    for (final f in files) {
-      try {
-        if (await f.exists()) await f.delete();
-      } on FileSystemException catch (e) {
-        debugPrint('Removing ${f.path} failed: $e');
-      }
-    }
-    Future<void> prune(Directory d) async {
-      if (!await d.exists()) return;
-      await for (final e in d.list(followLinks: false)) {
-        if (e is Directory) await prune(e);
-      }
-      try {
-        if (await d.list().isEmpty) await d.delete();
-      } on FileSystemException catch (e) {
-        debugPrint('Removing ${d.path} failed: $e');
-      }
-    }
-
-    await prune(root);
-  }
-
-  /// Removes what [_copyDir] recorded in `created`: the files, then the
-  /// directories it made (deepest first), each only if it is empty by then.
-  /// Returns whether everything was removed.
-  static Future<bool> _removeCreated(List<String> created) async {
-    var all = true;
-    for (final p in created.reversed) {
-      try {
-        final type = FileSystemEntity.typeSync(p, followLinks: false);
-        if (type == FileSystemEntityType.notFound) continue; // a partial copy that never landed
-        if (type == FileSystemEntityType.file) {
-          await File(p).delete();
-        } else {
-          await Directory(p).delete();
-        }
-      } on Object catch (e) {
-        all = false;
-        debugPrint('Removing $p failed: $e');
-      }
-    }
-    return all;
-  }
+  /// Copies the files of [from] into [to] (made if needed) without replacing
+  /// anything; see [copyAttachmentTree]. [into] collects what happened.
+  static Future<void> _copyDir(Directory from, Directory to, {AttachmentCopy? into}) =>
+      copyAttachmentTree(from, to, into ?? AttachmentCopy());
 
   /// Moves [from] to [to]: a rename, or a copy and delete across drives.
   static Future<void> _moveDir(Directory from, Directory to) async {
@@ -1275,18 +1167,31 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (forceCopyMoveForTest) throw const FileSystemException('forced');
       await from.rename(to.path);
     } on FileSystemException {
-      final verified = <File>[];
-      final differing = <String>[];
-      await _copyDir(from, to, verified: verified, differing: differing);
-      if (differing.isNotEmpty) {
+      final copy = AttachmentCopy();
+      await _copyDir(from, to, into: copy);
+      if (copy.differing.isNotEmpty) {
         throw FileSystemException(
-          '${differing.length} attachment file(s) differ from files already at the destination; '
+          '${copy.differing.length} attachment file(s) differ from files already at the destination; '
           'the originals were kept',
           to.path,
         );
       }
-      await _removeVerifiedSources(verified, from);
+      await removeVerifiedSources(copy, from);
     }
+  }
+
+  // What to tell the user when attachment files stayed because the target
+  // already holds something else under their name.
+  static String _differingNote(List<String> targets, String targetPlace, String sourcePlace) {
+    final names = targets.map(_baseName).toList();
+    final one = names.length == 1;
+    final shown = names.length <= 3
+        ? names.map((n) => '"$n"').join(', ')
+        : '${names.take(3).map((n) => '"$n"').join(', ')} and ${names.length - 3} more';
+    return 'the attachment ${one ? 'file' : 'files'} $shown could not be moved: $targetPlace already has '
+        '${one ? 'a different file' : 'different files'} with ${one ? 'that name' : 'those names'}. '
+        '${one ? 'It was' : 'They were'} left as ${one ? 'it is' : 'they are'}, and '
+        '${one ? 'the original stays' : 'the originals stay'} in $sourcePlace.';
   }
 
   /// Makes [_moveDir] skip the rename, as a move across drives does.
@@ -1489,11 +1394,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on NotebookException {
       return;
     }
+    var attachmentsLeft = 0;
     for (final MapEntry(key: id, value: dir) in deleted._assets.entries) {
       try {
         await _moveDir(dir, _assetsDir(deleted._location, id));
       } on FileSystemException catch (e) {
         debugPrint('Restoring the attachments of page $id failed: $e');
+        attachmentsLeft++;
       }
     }
     for (final page in deleted.pages) {
@@ -1505,6 +1412,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
     final reopen = deleted.openId;
     if (reopen != null) await open(reopen);
+    if (attachmentsLeft > 0) {
+      throw NotebookException(
+        'The ${deleted.pages.length == 1 ? 'page was' : 'pages were'} brought back, but the '
+        'attachments of ${attachmentsLeft == 1 ? 'one page' : '$attachmentsLeft pages'} could not be restored '
+        'completely: a different file with the same name was already there and was left as it is. '
+        'The saved attachments are still in the app\'s deleted-attachments folder.',
+        needsAction: true,
+      );
+    }
   }
 
   /// Drops the in-memory copy of [deleted] (its snackbar went away).
@@ -1699,6 +1615,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     Object? pending; // what the move is failing with, for the reopen below
     NotebookException? notice; // the move worked; there is something to tell
+    String? attachmentsNote;
     var movedFully = false; // the pages are at the target; only placing is left
     try {
       // The text of each source as it was copied: the generation that must
@@ -1731,9 +1648,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Only what this move published: a page file it created (never one that
       // was already there) and the attachment files and folders it created.
       final written = <String>[];
-      final assetsMade = <String, List<String>>{};
-      final sourceAssets = <String, List<File>>{}; // verified copied, by page
-      final differingAssets = <String>[]; // targets that hold other bytes
+      final copies = <String, AttachmentCopy>{}; // the attachments copied, by page
       Future<void> removeCopies() async {
         for (final w in written) {
           try {
@@ -1741,7 +1656,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           } on Object catch (e) {
             debugPrint('Removing copy of page $w failed: $e');
           }
-          await _removeCreated(assetsMade[w] ?? const []);
+          await removeCreated(copies[w]?.created ?? const []);
         }
       }
 
@@ -1762,13 +1677,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             );
           }
           // Its images and files go with it.
-          final made = assetsMade[p.id] = <String>[];
           await _copyDir(
             _assetsDir(fromLoc, p.id),
             _assetsDir(toLoc, p.id),
-            created: made,
-            verified: sourceAssets.putIfAbsent(p.id, () => <File>[]),
-            differing: differingAssets,
+            into: copies[p.id] = AttachmentCopy(),
           );
         }
       } on Object catch (e) {
@@ -1802,6 +1714,26 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             unreadable.add(i);
           }
         }
+      }
+      if (!fromStore.directory.existsSync() && unreadable.isNotEmpty) {
+        // The folder itself is gone (moved away, a drive that left): nothing
+        // there can be checked or removed, and the copies are then the only
+        // ones. They are kept, and the pages count as being in the target.
+        for (final p in moved) {
+          _metas[p.id] = p.meta;
+          _loc[p.id] = toLoc;
+        }
+        _touch(fromLoc);
+        _touch(toLoc);
+        _rebuildTree();
+        final src = _placeName(fromLoc);
+        throw NotebookException(
+          '$src is not available right now, so the old ${ids.length == 1 ? 'file' : 'files'} could not be '
+          'checked or removed. The ${ids.length == 1 ? 'page was' : 'pages were'} copied to '
+          '${_placeName(toLoc)} and kept there. If $src comes back with the old '
+          '${ids.length == 1 ? 'page' : 'pages'}, delete the ${ids.length == 1 ? 'one' : 'ones'} you do not need.',
+          needsAction: true,
+        );
       }
       if (vanished.isEmpty && (stale.isNotEmpty || unreadable.isNotEmpty)) {
         await removeCopies();
@@ -1908,7 +1840,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           }
           // Only what this move copied, never an attachments folder (or a file
           // in it) that was at the target before.
-          if (!await _removeCreated(assetsMade[ids[i]] ?? const [])) {
+          if (!await removeCreated(copies[ids[i]]?.created ?? const [])) {
             debugPrint('Removing the attachments of page ${ids[i]} at the target failed');
             copyLeft[i] = copyLeft.containsKey(i) ? 'the page file and its attachments' : 'its attachments';
           }
@@ -2047,8 +1979,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // source; a file that arrived there after the copy, or whose target
       // differs, stays.
       for (final id in ids) {
-        await _removeVerifiedSources(sourceAssets[id] ?? const [], _assetsDir(fromLoc, id));
+        final copy = copies[id];
+        if (copy != null) await removeVerifiedSources(copy, _assetsDir(fromLoc, id));
       }
+      // Files that stayed because the target holds something else.
+      final differing = [for (final c in copies.values) ...c.differing];
+      attachmentsNote = differing.isEmpty
+          ? null
+          : _differingNote(differing, _placeName(toLoc), _placeName(fromLoc));
 
       for (final p in moved) {
         _metas[p.id] = p.meta;
@@ -2058,25 +1996,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _touch(toLoc);
       _rebuildTree();
       movedFully = true;
+      // Said together with a failed placement, so neither hides the other.
+      notice = attachmentsNote == null
+          ? null
+          : NotebookException('The page was moved, but $attachmentsNote', needsAction: true);
       if (index != null) await move(id, parentId: parentId, index: index);
-      if (differingAssets.isNotEmpty) {
-        final one = differingAssets.length == 1;
-        notice = NotebookException(
-          'The page was moved, but ${one ? 'an attachment file' : '${differingAssets.length} attachment files'} '
-          'could not be moved: ${_placeName(toLoc)} already has ${one ? 'a different file' : 'different files'} '
-          'with the same ${one ? 'name' : 'names'}. The existing ${one ? 'file was' : 'files were'} left '
-          'as ${one ? 'it' : 'they'} ${one ? 'was' : 'were'}, and the originals stay in ${_placeName(fromLoc)}.',
-          needsAction: true,
-        );
-        throw notice;
-      }
+      if (notice != null) throw notice;
     } on Object catch (e) {
       // Only a NotebookException leaves here, so the user always sees a message.
       if (e is! NotebookException) debugPrint('Moving the page failed: $e');
       final out = identical(e, notice)
           ? notice!
           : movedFully
-          ? const NotebookException('The page was moved, but it could not be put at that position.')
+          ? NotebookException(
+              'The page was moved, but it could not be put at that position.'
+              '${notice == null ? '' : ' Also, $attachmentsNote'}',
+              needsAction: notice != null,
+            )
           : e is NotebookException
           ? e
           : NotebookException('Could not move the page.${_osReason(e)}');

@@ -763,7 +763,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
           SnackBar(
             duration: const Duration(seconds: 10),
             content: Text('Deleted "${p.title.isEmpty ? 'Untitled page' : p.title}"'),
-            action: SnackBarAction(label: 'Undo', onPressed: () => _nb.undoDelete(deleted)),
+            action: SnackBarAction(label: 'Undo', onPressed: () => _guard(() => _nb.undoDelete(deleted))),
           ),
         )
         .closed
