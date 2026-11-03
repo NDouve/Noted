@@ -200,13 +200,15 @@ class _CommandToolbarState extends State<CommandToolbar> {
     List<Widget> trailing = const [],
   }) {
     final m = NotedMetrics.of(context);
+    final wrapOnTouch = m.touch && !isNarrowLayout(context);
+    final endShare = isNarrowLayout(context) ? 0.3 : 0.4;
     return LayoutBuilder(
       builder: (context, c) {
-        // Each fixed end may take at most 40% of the bar; the rest is for
-        // the middle.
+        // Each fixed end may take at most 40% of the bar (30% on a narrow
+        // window, so the More button keeps room); the rest is for the middle.
         Widget fit(List<Widget> children, Alignment alignment) =>
             ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: c.maxWidth * 0.4),
+              constraints: BoxConstraints(maxWidth: c.maxWidth * endShare),
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 alignment: alignment,
@@ -223,7 +225,7 @@ class _CommandToolbarState extends State<CommandToolbar> {
         final wrapped = <Widget>[
           if (middle.isNotEmpty)
             (wrapMiddle ?? (w) => w)(
-              m.touch
+              wrapOnTouch
                   ? Wrap(
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [for (final u in middle) u.widget],
@@ -240,7 +242,7 @@ class _CommandToolbarState extends State<CommandToolbar> {
             ),
         ];
         final touchMiddle = [...leading, ...wrapped];
-        return m.touch
+        return wrapOnTouch
             ? ConstrainedBox(
                 constraints: BoxConstraints(minHeight: m.toolbarHeight),
                 child: Padding(

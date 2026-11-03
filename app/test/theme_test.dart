@@ -425,6 +425,9 @@ void main() {
 
   group('settings menu', () {
     testWidgets('choosing Dark applies at once and is saved', (t) async {
+      t.view.physicalSize = const Size(1280, 800);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
       late Directory dir;
       late Notebook nb;
       late File file;

@@ -556,3 +556,14 @@ ButtonStyle notedDestructiveButtonStyle(BuildContext context) {
   final error = Theme.of(context).colorScheme.error;
   return OutlinedButton.styleFrom(foregroundColor: error, iconColor: error);
 }
+
+/// Windows narrower than this (logical px) use the small-screen layout: the
+/// sidebar is a drawer and the toolbar keeps to the More menu, even on touch.
+/// Phones (up to about 930 px wide in landscape) and an iPad in portrait or
+/// split view fall below it; an iPad in landscape (1080 px and more) and
+/// desktop windows keep the desktop layout.
+const double narrowLayoutWidth = 1000;
+
+/// Whether the window is narrower than [narrowLayoutWidth].
+bool isNarrowLayout(BuildContext context) =>
+    MediaQuery.sizeOf(context).width < narrowLayoutWidth;

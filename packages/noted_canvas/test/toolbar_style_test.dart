@@ -346,7 +346,7 @@ void main() {
         t,
       ) async {
         final touch = notedThemeData(brightness, touch: true);
-        await pump(t, touch, width: 700);
+        await pump(t, touch, width: 1100);
         expect(NotedMetrics.of(t.element(find.byType(CommandToolbar))).touch, isTrue);
         expect(t.getSize(icon('Undo')), const Size.square(44));
         expect(
@@ -354,11 +354,12 @@ void main() {
           44,
         );
         expect(t.getSize(find.widgetWithText(TextButton, 'Fit all')).height, 44);
-        // A narrow screen wraps to a second row instead of scrolling.
-        await pump(t, touch, width: 360);
-        final height = t.getSize(find.byType(CommandToolbar)).height;
-        expect(height, greaterThan(52));
+        // A wide window wraps to a second row instead of scrolling.
+        await pump(t, touch, width: 1010);
         expect(find.byType(Wrap), findsOneWidget);
+        // A narrow window (0129) keeps to the More menu, even on touch.
+        await pump(t, touch, width: 360);
+        expect(find.byType(Wrap), findsNothing);
         expect(find.byType(SingleChildScrollView), findsNothing);
         expect(t.takeException(), isNull);
       });

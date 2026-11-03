@@ -346,6 +346,9 @@ void main() {
     });
 
     testWidgets('the sidebar lists a vanished folder as on another device', (tester) async {
+      tester.view.physicalSize = const Size(1280, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
       late Notebook nb;
       late String x;
       await tester.runAsync(() async {
