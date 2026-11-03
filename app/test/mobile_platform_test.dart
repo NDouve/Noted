@@ -14,6 +14,7 @@ import 'package:noted/src/attachment_platform.dart';
 import 'package:noted/src/device_storage.dart';
 import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/recovery_store.dart';
 import 'package:noted_core/noted_core.dart';
 
 void main() {
@@ -54,6 +55,21 @@ void main() {
         '${norm(docs.path)}/Noted/settings.json',
       );
       expect(norm(defaultCacheDirectory().path), '${norm(cache.path)}/Noted');
+      // Pages, binders and recovery all land in the app's documents folder.
+      final base = '${norm(docs.absolute.path)}/Noted';
+      expect(norm(defaultPagesDirectory().absolute.path), '$base/pages');
+      expect(norm(defaultBindersDirectory().absolute.path), '$base/binders');
+      expect(norm(defaultBindersFile().absolute.path), '$base/binders.json');
+      expect(
+        norm(defaultRecoveryDirectory(defaultBindersFile()).absolute.path),
+        '$base/recovery',
+      );
+    });
+
+    test('on desktop the default pages folder is not a device folder', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      final p = norm(defaultPagesDirectory().path);
+      expect(p.endsWith('/Noted/pages') || p.endsWith('/.noted/pages'), isTrue);
     });
 
     test('iOS is mobile too', () async {
