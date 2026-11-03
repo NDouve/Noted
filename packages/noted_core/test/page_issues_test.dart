@@ -251,6 +251,28 @@ void main() {
       expect(boxOf(r.page, 'n').landed, isNull);
     });
 
+    test('three-way: mixed node (mine foreign, theirs a box) honours markLanded', () {
+      ForeignNode foreign(String text) => ForeignNode.read(
+        RawJson.trusted(
+          '{"id":"f","type":"text","text":"$text","x":0,"y":0,"width":100,"height":100}',
+        ),
+        fallbackId: 'f',
+      );
+      final base = pageOf([foreign('b')]);
+      final mine = pageOf([foreign('m')]);
+      final theirs = pageOf([box('f', 'x', at: const Bounds(10, 10, 20, 20))]);
+      Iterable<BoxRecord> copies(bool markLanded) => mergePage(
+        base,
+        mine,
+        theirs,
+        registry(),
+        theirsTime: 1,
+        markLanded: markLanded,
+      ).page.nodes.whereType<BoxRecord>();
+      expect(copies(true).single.landed, isNotNull);
+      expect(copies(false).single.landed, isNull);
+    });
+
     test('conflict copy: a marker on either side is kept', () {
       final plain = box('n', 'v');
       final marked = plain.withLanded(BoxLanded(at: 5, device: 'PC'));

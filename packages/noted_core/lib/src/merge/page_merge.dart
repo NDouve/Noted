@@ -99,7 +99,9 @@ PageMerge mergePage(
       out.add(m);
       out.add(switch (t) {
         ForeignNode() => t.copyWithId(newId()) ?? t,
-        BoxRecord() => markLandedIfOverlapping(t.withId(newId()), [m], mergeTime: theirsTime),
+        BoxRecord() => markLanded
+            ? markLandedIfOverlapping(t.withId(newId()), [m], mergeTime: theirsTime)
+            : t.withId(newId()),
       });
     }
   }
