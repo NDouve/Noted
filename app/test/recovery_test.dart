@@ -484,6 +484,153 @@ void main() {
       expect(recFiles(), isNotEmpty, reason: 'never verified: the entry is not retired');    });
   });
 
+  group('R-2 a landed page that is changed right after', () {
+    // A page of `extra` with one box saved (the base), and an entry that moves
+    // the box (or deletes it) and retitles the page. Returns a notebook about
+    // to replay it, with [onPublished] run on the file right after the publish.
+    Future<(Notebook, String, NotedPage)> parkedEntry(
+      void Function(File f, NotedPage cur, NotedPage base) onPublished, {
+      bool deleteBox = false,
+    }) async {
+      final nb = make();
+      await nb.load();
+      final x = await nb.createPage(folderPath: extra.path);
+      await nb.flush();
+      await nb.open(x);
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      await nb.flush();
+      final baseText = pageFile(extra, x).readAsStringSync();
+      final base = readPage(baseText);
+      quit(nb);
+      final box = base.nodes.single as BoxRecord;
+      var mine = deleteBox ? base.removeNode(box.id) : base.replaceNode(box.withBounds(const Bounds(200, 200, 30, 30)));
+      mine = mine.withMeta(mine.meta.withTitle('Mine'));
+      await RecoveryStore(rec).write(folder: extra.path, page: mine, baseText: baseText, time: DateTime.now());
+      final again = make();
+      again.syncHook = (point, path) async {
+        if (point != 'recover-published') return;
+        final f = File(path);
+        onPublished(f, readPage(f.readAsStringSync()), base);
+      };
+      return (again, x, base);
+    }
+
+    Future<void> expectTold(Notebook nb) async {
+      expect(recFiles(), isEmpty, reason: 'it landed: retired');
+      expect(nb.recoveryProblems, hasLength(1));
+      expect(nb.recoveryProblems.single, contains('saved, but the page changed right after'));
+    }
+
+    test('an edit put back as it was is told', () async {
+      final (nb, _, _) = await parkedEntry((f, cur, base) {
+        f.writeAsStringSync(writePage(cur.replaceNode(base.nodes.single)));
+      });
+      await nb.load();
+      await expectTold(nb);
+    });
+
+    test('a title put back as it was is told', () async {
+      final (nb, _, _) = await parkedEntry((f, cur, base) {
+        f.writeAsStringSync(writePage(cur.withMeta(cur.meta.withTitle(base.meta.title))));
+      });
+      await nb.load();
+      await expectTold(nb);
+    });
+
+    test('a deleted box that is back as it was is told', () async {
+      final (nb, _, _) = await parkedEntry((f, cur, base) {
+        f.writeAsStringSync(writePage(cur.insertNode(base.nodes.single)));
+      }, deleteBox: true);
+      await nb.load();
+      await expectTold(nb);
+    });
+
+    test('a change that leaves the edits alone is not told', () async {
+      final (nb, x, _) = await parkedEntry((f, cur, base) {
+        final other = BoxRecord.create(
+          id: 'otherbox',
+          typeId: 'test.other',
+          dataVersion: 1,
+          bounds: const Bounds(300, 300, 100, 40),
+          data: RawJson.encode({'n': 1}),
+          snapshotText: 'other',
+          rev: 'r-other',
+        );
+        f.writeAsStringSync(writePage(cur.insertNode(other)));
+      });
+      await nb.load();
+      expect(recFiles(), isEmpty);
+      expect(nb.recoveryProblems, isEmpty);
+      expect(nb.tree[x], isNotNull);
+    });
+
+    for (final kind in ['not json', 'newer format', 'another page']) {
+      test('a read-back that is $kind lists the page as one that can not be opened', () async {
+        final (nb, x, _) = await parkedEntry((f, cur, base) {
+          switch (kind) {
+            case 'not json':
+              f.writeAsStringSync('{ nope');
+            case 'newer format':
+              f.writeAsStringSync(
+                writePage(cur).replaceFirst(RegExp(r'"format"\s*:\s*1'), '"format":99'),
+              );
+            default:
+              f.writeAsStringSync(
+                writePage(NotedPage.create(PageMeta.create(id: 'other', title: 'o', order: 0))),
+              );
+          }
+        });
+        await nb.load();
+        expect(recFiles(), isEmpty, reason: 'it landed: retired');
+        expect(nb.tree[x], isNull);
+        expect(
+          nb.unreadable.where((u) => u.reason.contains('saved, but the page was then changed')),
+          hasLength(1),
+        );
+      });
+    }
+
+    group('the notice', () {
+      // The lossy store loses the entry's box, so a notice is raised for the
+      // page that stays in `pages`.
+      Future<(Notebook, String)> noticed() async {
+        final nb = make();
+        await nb.load();
+        final a = nb.currentId!;
+        nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+        final moved = Directory('${root.path}/pages-away');
+        await pages.rename(moved.path);
+        await nb.checkFolders();
+        quit(nb);
+        await moved.rename(pages.path);
+        final again = make(store: _LossyStore(pages));
+        await again.load();
+        expect(again.recoveryProblems, hasLength(1));
+        return (again, a);
+      }
+
+      test('goes when its page is deleted', () async {
+        final (nb, a) = await noticed();
+        await nb.delete(a);
+        expect(nb.recoveryProblems, isEmpty);
+      });
+
+      test('stays through a failed open of its page and the open of another page', () async {
+        final (nb, a) = await noticed();
+        final b = await nb.createPage();
+        await nb.open(b);
+        expect(nb.recoveryProblems, hasLength(1), reason: 'another page opened');
+        final good = pageFile(pages, a).readAsStringSync();
+        pageFile(pages, a).writeAsStringSync('{ nope');
+        await expectLater(nb.open(a), throwsA(anything));
+        expect(nb.recoveryProblems, hasLength(1), reason: 'the open failed');
+        pageFile(pages, a).writeAsStringSync(good);
+        await nb.open(a);
+        expect(nb.recoveryProblems, isEmpty);
+      });
+    });
+  });
+
   test('the page file was deleted while away: the recovered page is written', () async {
     final (nb, x, _) = await pendingEdit();
     final mine = writePage(nb.current!.page);

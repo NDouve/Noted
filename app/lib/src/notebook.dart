@@ -783,7 +783,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<void> open(String id) async {
+    await _open(id);
+    // Only once the page is open: a failed open leaves the notice for the next
+    // look.
     if (_landedProblems.remove(id) != null) notifyListeners();
+  }
+
+  Future<void> _open(String id) async {
     if (_coverPath != null) {
       _coverPath = null;
       notifyListeners();
@@ -3391,21 +3397,31 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // picks their file up as it does any other. The entry's own edits are
         // looked for in what is there; if any is gone, or it can't be read,
         // the user is told.
+        final key = _key(path);
         NotedPage? now;
-        String? lost;
+        String? unreadable;
         try {
           now = readPage(back);
-          if (now.id != id) {
-            now = null;
-            lost = 'it holds a different page';
-          } else {
-            lost = _ownEditsMissing(base, mine, now);
-          }
+          if (now.id != id) unreadable = 'it holds a different page';
         } on PageFormatException catch (ex) {
-          lost = ex.message;
+          unreadable = ex.message;
         }
-        await _applyClosed(now ?? merged, loc, _key(path), path);
         await rec.delete(e);
+        if (now == null || unreadable != null) {
+          // Listed as a page that can't be opened, like any file that turns
+          // unreadable.
+          _known[key] = back;
+          _knownUnreadable(
+            loc,
+            key,
+            path,
+            'The edits kept for $label were saved, but the page was then changed '
+            'and can no longer be read ($unreadable)',
+          );
+          return true;
+        }
+        await _applyClosed(now, loc, key, path);
+        final lost = _ownEditsMissing(base, mine, now);
         if (lost != null) {
           debugPrint('Recovered page $id landed, then changed: $lost');
           _landedProblems[id] = (path: path, why: _landedThenChanged(label));
@@ -3432,16 +3448,29 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   static String _landedThenChanged(String label) =>
       'The edits kept for $label were saved, but the page changed right after; check it';
 
-  // Why an edit of [mine] (a box it added or changed since [base]) is not in
-  // [result] at all, or null if each one is there (with its content, conflicted
-  // or changed again since: all fine). Boxes [mine] didn't touch aren't looked
-  // at, so what another writer deleted of those doesn't count.
+  // Why an edit of [mine] (relative to [base]) is not in [result], or null if
+  // each one is: a box it added or changed is there (with its content, or
+  // conflicted, or changed again since: all fine) and not back as in [base];
+  // a box it deleted is not back exactly as in [base]; a title it changed is
+  // not [base]'s again. What [mine] didn't touch isn't looked at, so what
+  // another writer deleted of those doesn't count.
   static String? _ownEditsMissing(NotedPage base, NotedPage mine, NotedPage result) {
     final baseById = {for (final n in base.nodes) n.id: n};
+    final mineIds = {for (final n in mine.nodes) n.id};
     for (final m in mine.nodes) {
       final b = baseById[m.id];
       if (b != null && b.toRaw() == m.toRaw()) continue;
-      if (result.node(m.id) == null) return 'box ${m.id} is missing';
+      final x = result.node(m.id);
+      if (x == null) return 'box ${m.id} is missing';
+      if (b != null && x.toRaw() == b.toRaw()) return 'the edit of box ${m.id} was undone';
+    }
+    for (final b in base.nodes) {
+      if (mineIds.contains(b.id)) continue;
+      final x = result.node(b.id);
+      if (x != null && x.toRaw() == b.toRaw()) return 'box ${b.id}, deleted, is back';
+    }
+    if (mine.meta.title != base.meta.title && result.meta.title == base.meta.title) {
+      return 'the title is the old one again';
     }
     return null;
   }
@@ -4706,6 +4735,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   void _rebuildTree() {
+    // A notice for a page that is gone (deleted, binder closed) has no page to
+    // point at.
+    _landedProblems.removeWhere((id, _) => !_metas.containsKey(id));
     final groups = <String, List<PageMeta>>{};
     for (final e in _metas.entries) {
       (groups[_loc[e.key] ?? _standalone] ??= []).add(e.value);
