@@ -104,11 +104,10 @@ void main() {
   List<String> kids(String id) => nb.tree.childrenOf(id).map((p) => p.id).toList();
 
   /// Drags row [from] to [to] at [fraction] of the target row's height (or
-  /// to the given point), holding long enough for a touch long press.
+  /// to the given point). A mouse drags at once; a held touch opens the menu.
   Future<void> dragTo(WidgetTester tester, String from, Offset target) async {
     final start = tester.getTopLeft(row(from)) + const Offset(60, 18);
-    final g = await tester.startGesture(start);
-    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
+    final g = await tester.startGesture(start, kind: PointerDeviceKind.mouse);
     await g.moveTo(start + const Offset(0, 4));
     await tester.pump();
     await g.moveTo(target);
@@ -355,6 +354,59 @@ void main() {
       },
     );
   }
+
+  Future<void> longPress(WidgetTester tester, String id, PointerDeviceKind kind) async {
+    final at = tester.getCenter(row(id)) + const Offset(-40, 0);
+    final g = await tester.startGesture(at, kind: kind);
+    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
+    await tester.runAsync(() => g.up());
+    await tester.pumpAndSettle();
+  }
+
+  for (final kind in [PointerDeviceKind.touch, PointerDeviceKind.stylus]) {
+    testWidgets('a ${kind.name} long press opens the page menu at the press point', (tester) async {
+      await start(tester);
+      await longPress(tester, b, kind);
+      expect(find.text('New subpage'), findsOneWidget);
+      expect(find.text('Outdent'), findsOneWidget);
+      final pressed = tester.getCenter(row(b)) + const Offset(-40, 0);
+      expect((tester.getTopLeft(find.text('New subpage')) - pressed).distance, lessThan(200));
+      await tester.tapAt(const Offset(790, 5));
+      await tester.pumpAndSettle();
+      await finish(tester);
+    });
+  }
+
+  testWidgets('a held mouse press does not open the menu', (tester) async {
+    await start(tester);
+    await longPress(tester, b, PointerDeviceKind.mouse);
+    expect(find.text('New subpage'), findsNothing);
+    await finish(tester);
+  });
+
+  testWidgets('a long press on a binder header opens the binder menu', (tester) async {
+    await start(tester);
+    await tester.runAsync(() async {
+      final folder = await Directory('${dir.path}/Work').create();
+      await nb.addBinder(folder.path);
+    });
+    await tester.pumpAndSettle();
+    final header = find.byWidgetPredicate(
+      (w) => w.key is ValueKey && (w.key! as ValueKey).value.toString().startsWith('binder-header-'),
+    );
+    final g = await tester.startGesture(
+      tester.getCenter(header) + const Offset(-40, 0),
+      kind: PointerDeviceKind.touch,
+    );
+    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
+    await tester.runAsync(() => g.up());
+    await tester.pumpAndSettle();
+    expect(find.text('New page'), findsWidgets);
+    expect(find.text('Remove from sidebar'), findsOneWidget);
+    await tester.tapAt(const Offset(790, 5));
+    await tester.pumpAndSettle();
+    await finish(tester);
+  });
 }
 
 /// A notebook whose page creation fails with a [NotebookException].

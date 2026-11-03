@@ -258,8 +258,7 @@ void main() {
     await start(tester);
     final startAt = tester.getTopLeft(row(b)) + const Offset(60, 18);
     final target = tester.getCenter(header(binder.path));
-    final g = await tester.startGesture(startAt);
-    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
+    final g = await tester.startGesture(startAt, kind: PointerDeviceKind.mouse);
     await g.moveTo(startAt + const Offset(0, 4));
     await tester.pump();
     await g.moveTo(target);
@@ -283,8 +282,7 @@ void main() {
     // And back: dropping on the "Pages" header makes it standalone again.
     final from = tester.getTopLeft(row(b)) + const Offset(60, 18);
     final pagesHeader = tester.getCenter(find.byKey(const ValueKey('pages-header')));
-    final g2 = await tester.startGesture(from);
-    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
+    final g2 = await tester.startGesture(from, kind: PointerDeviceKind.mouse);
     await g2.moveTo(from + const Offset(0, 4));
     await tester.pump();
     await g2.moveTo(pagesHeader);

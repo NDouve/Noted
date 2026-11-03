@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
@@ -31,9 +32,16 @@ enum DropZone {
 /// Rows can be dragged to reorder or nest them, and every row has a menu
 /// (the "⋯" button, or a right click) with the same actions.
 class PageTreeView extends StatefulWidget {
-  const PageTreeView({super.key, required this.notebook});
+  const PageTreeView({super.key, required this.notebook, this.collapsed, this.onPageChosen});
 
   final Notebook notebook;
+
+  /// Where the folded rows are kept. A host that rebuilds the tree (the
+  /// narrow-layout drawer) passes its own set so the folds outlast it.
+  final Set<String>? collapsed;
+
+  /// Called when a page row is tapped, whether or not it was already open.
+  final VoidCallback? onPageChosen;
 
   @override
   State<PageTreeView> createState() => PageTreeViewState();
@@ -42,7 +50,7 @@ class PageTreeView extends StatefulWidget {
 class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
 
   // Collapsed state lasts for the session only.
-  final Set<String> _collapsed = {};
+  late final Set<String> _collapsed = widget.collapsed ?? {};
   final Map<String, GlobalKey> _rowKeys = {};
 
   // The drop being previewed: a row and zone, or the empty area at the end.
@@ -325,7 +333,6 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
   }
 
   Widget _binderHeader(BuildContext context, BinderSection b) {
-    final theme = Theme.of(context);
     final color = binderSidebarColor(context, b.color);
     if (!b.available) {
       final unreadable = b.status == BinderStatus.unreadable;
@@ -368,11 +375,26 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         });
         _guard(() => _nb.moveToLocation(d.data, binderPath: b.path));
       },
-      builder: (context, _, _) => SidebarGroupHeader(
+      builder: (context, _, _) => _onLongPress(
+        (at) => _binderContextMenu(context, b, at),
+        _binderGroupHeader(context, b, color, collapsed, hover || shown),
+      ),
+    );
+  }
+
+  Widget _binderGroupHeader(
+    BuildContext context,
+    BinderSection b,
+    Color color,
+    bool collapsed,
+    bool filled,
+  ) {
+    final theme = Theme.of(context);
+    return SidebarGroupHeader(
         chipKey: ValueKey('binder-stripe-${b.path}'),
         title: b.title,
         chipColor: color,
-        fill: hover || shown ? theme.colorScheme.primaryContainer : null,
+        fill: filled ? theme.colorScheme.primaryContainer : null,
         onTap: () => _nb.showCover(b.path),
         chevron: SidebarChevron(
           collapsed: collapsed,
@@ -397,7 +419,6 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
             ),
           ],
         ),
-      ),
     );
   }
 
@@ -543,7 +564,10 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
               onSelected: (v) => pageCommands(_nb, p, this).invoke(v),
               itemBuilder: (_) => _menuItems(p),
             ),
-      onTap: () => _guard(() => _nb.open(p.id)),
+      onTap: () {
+        _guard(() => _nb.open(p.id));
+        widget.onPageChosen?.call();
+      },
       onDoubleTap: locked ? null : () => _rename(context, p),
     );
 
@@ -608,15 +632,36 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       builder: (context, _, _) => GestureDetector(
         behavior: HitTestBehavior.translucent,
         onSecondaryTapDown: locked ? null : (d) => _contextMenu(context, p, d.globalPosition),
-        child: Stack(
-          key: key,
-          children: [
-            draggable,
-            if (hover == DropZone.before) Positioned(top: 0, left: 0, right: 0, child: line),
-            if (hover == DropZone.after) Positioned(bottom: 0, left: 0, right: 0, child: line),
-          ],
+        child: _onLongPress(
+          locked ? null : (at) => _contextMenu(context, p, at),
+          Stack(
+            key: key,
+            children: [
+              draggable,
+              if (hover == DropZone.before) Positioned(top: 0, left: 0, right: 0, child: line),
+              if (hover == DropZone.after) Positioned(bottom: 0, left: 0, right: 0, child: line),
+            ],
+          ),
         ),
       ),
+    );
+  }
+
+  /// Opens a row's menu on a touch or pen long press, at the press point
+  /// (the same menu a right click opens). A mouse is left alone. A touch
+  /// that moves first is a drag or a scroll, so a drag by touch is quick,
+  /// not held; the menu has the move actions for a held press.
+  Widget _onLongPress(void Function(Offset at)? open, Widget child) {
+    if (open == null) return child;
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      supportedDevices: const {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.stylus,
+        PointerDeviceKind.invertedStylus,
+      },
+      onLongPressStart: (d) => open(d.globalPosition),
+      child: child,
     );
   }
 
@@ -704,13 +749,22 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
   Future<void> delete(PageMeta p) => _delete(context, p);
 
   Future<void> _contextMenu(BuildContext context, PageMeta p, Offset at) async {
+    final v = await _menuAt(context, at, _menuItems(p));
+    if (v != null && context.mounted) await pageCommands(_nb, p, this).invoke(v);
+  }
+
+  Future<String?> _menuAt(BuildContext context, Offset at, List<PopupMenuEntry<String>> items) {
     final overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
-    final v = await showMenu<String>(
+    return showMenu<String>(
       context: context,
       position: RelativeRect.fromRect(at & Size.zero, Offset.zero & overlay.size),
-      items: _menuItems(p),
+      items: items,
     );
-    if (v != null && context.mounted) await pageCommands(_nb, p, this).invoke(v);
+  }
+
+  Future<void> _binderContextMenu(BuildContext context, BinderSection b, Offset at) async {
+    final v = await _menuAt(context, at, _binderItems(b));
+    if (v != null && context.mounted) await binderCommands(_nb, b, this).invoke(v);
   }
 
   String? _aboveSibling(String id) {

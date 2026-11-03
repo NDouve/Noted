@@ -43,6 +43,9 @@ class _HomeState extends State<Home> {
   final _tree = GlobalKey<PageTreeViewState>();
   final _scaffold = GlobalKey<ScaffoldState>();
   String? _lastChoice;
+
+  // Folded rows; kept here so they outlast the narrow-layout drawer.
+  final Set<String> _folded = {};
   int _seenFocusTick = 0;
 
   Notebook get notebook => widget.notebook;
@@ -280,7 +283,12 @@ class _HomeState extends State<Home> {
                       Positioned.fill(
                         child: Offstage(
                           offstage: searching,
-                          child: PageTreeView(key: _tree, notebook: notebook),
+                          child: PageTreeView(
+                            key: _tree,
+                            notebook: notebook,
+                            collapsed: _folded,
+                            onPageChosen: _closeDrawer,
+                          ),
                         ),
                       ),
                       if (searching)
