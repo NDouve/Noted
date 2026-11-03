@@ -152,14 +152,18 @@ class PageCanvasState extends State<PageCanvas>
   double _pinchStartScale = 1;
   Offset _pinchPan = Offset.zero;
 
-  // Touch screens: the fingers down now (canvas-local, in the order they
   // landed), and whether the current touch gesture ever had two. Set until
-  // the next pointer goes down, so the tap a finger's lift would make
+  // the next pointer goes down; it keeps a third or last finger from
+  // starting a tool session mid-gesture.
   // (a new note) is not taken as a canvas click.
   final Map<int, Offset> _touches = {};
   bool _multiTouch = false;
   Offset? _touchFocal;
   double? _touchSpan;
+
+  /// True from the second finger until all fingers lift; boxes stop moving
+  /// or resizing under a finger while it is.
+  final ValueNotifier<bool> _multiTouchActive = ValueNotifier(false);
 
   /// Where the mouse last was over the canvas, null when it is elsewhere.
   Offset? _hover;
@@ -544,10 +548,13 @@ class PageCanvasState extends State<PageCanvas>
     _find.dispose();
     _findFocus.dispose();
     _commands.dispose();
-    _cancelSession();
-    _autoPan?.dispose();
+    // Listeners first: ending a session notifies the controller, and a
+    // canvas being disposed must not rebuild.
     _c.removeListener(_changed);
     _tools.removeListener(_toolChanged);
+    _cancelSession();
+    _autoPan?.dispose();
+    _multiTouchActive.dispose();
     _transform.dispose();
     _focus.dispose();
     _ownTools.dispose();
@@ -793,16 +800,28 @@ class PageCanvasState extends State<PageCanvas>
   void _touchDown(PointerDownEvent e) {
     if (_touches.isEmpty) _multiTouch = false;
     if (e.kind != PointerDeviceKind.touch) return;
+    // A pen stroke or mouse drag in progress is not interrupted by touches
+    // (a resting palm): they are ignored until it ends.
+    if (_session != null && _lastToolEvent?.kind != PointerDeviceKind.touch) {
+      return;
+    }
     _touches[e.pointer] = e.localPosition;
-    if (_touches.length == 2) {
+    if (_touches.length >= 2) {
       // The first finger was only the start of a pinch: a tool session it
       // began (an ink stroke) is dropped.
       _multiTouch = true;
+      _multiTouchActive.value = true;
       _cancelSession();
-      final pair = _touchPair()!;
-      _touchFocal = pair.$1;
-      _touchSpan = pair.$2;
+      _resetPair();
     }
+  }
+
+  /// Takes the fingers' current centre and distance as the basis for the
+  /// next move, so a change of which two fingers count never jumps the view.
+  void _resetPair() {
+    final pair = _touchPair();
+    _touchFocal = pair?.$1;
+    _touchSpan = pair?.$2;
   }
 
   /// Handles a touch move; true if it belongs to a two-finger gesture.
@@ -829,15 +848,13 @@ class PageCanvasState extends State<PageCanvas>
     if (_touches.remove(e.pointer) == null) return;
     // With one finger left the gesture is over; that finger does nothing
     // more until it lifts.
-    if (_touches.length < 2) {
-      _touchFocal = null;
-      _touchSpan = null;
-    }
+    _resetPair();
+    if (_touches.isEmpty) _multiTouchActive.value = false;
   }
 
   void _onBackgroundTap(TapUpDetails d) {
     final v = _view;
-    if (v == null || _readOnly || _tools.active != null || _multiTouch) return;
+    if (v == null || _readOnly || _tools.active != null) return;
     final world = v.toWorld(d.localPosition);
     // A click that lands on a box's chrome or snapshot isn't a canvas click.
     for (final n in _c.page.nodes) {
@@ -936,6 +953,7 @@ class PageCanvasState extends State<PageCanvas>
               controller: _c,
               childOrigin: childOrigin,
               scaleOf: () => scale,
+              multiTouch: _multiTouchActive,
               onGripTap: _focus.requestFocus,
               readOnly: readOnly,
               find: _find,

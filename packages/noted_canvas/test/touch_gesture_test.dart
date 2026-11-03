@@ -210,6 +210,7 @@ void main() {
     await pump(t);
     final a = await finger(t, 1, const Offset(500, 300));
     final b = await finger(t, 2, const Offset(700, 300));
+    final before = view(t);
     await a.moveBy(const Offset(5000, 5000));
     await b.moveBy(const Offset(5000, 5000));
     await t.pump();
@@ -217,6 +218,7 @@ void main() {
       content: c.page.contentBounds!.rect,
       viewport: t.getSize(find.byType(LayoutBuilder).last),
     );
+    expect(view(t), isNot(before));
     expect(view(t), g.clamp(view(t)));
     await a.up();
     await b.up();
@@ -300,5 +302,115 @@ void main() {
     expect(view(t), before);
     await m.up();
     await s.up();
+  });
+
+  testWidgets('a pen stroke is not cancelled by touches landing', (t) async {
+    await pump(t);
+    selection.select(tool);
+    await t.pump();
+    final before = view(t);
+    final pen = await t.startGesture(
+      bar + const Offset(400, 400),
+      pointer: 1,
+      kind: PointerDeviceKind.stylus,
+    );
+    await pen.moveBy(const Offset(30, 0));
+    final a = await finger(t, 2, const Offset(500, 300));
+    final b = await finger(t, 3, const Offset(700, 300));
+    await a.moveTo(bar + const Offset(300, 300));
+    await b.moveTo(bar + const Offset(900, 300));
+    await pen.moveBy(const Offset(30, 0));
+    await t.pump();
+    expect(tool.cancelled, 0);
+    expect(tool.started, 1);
+    expect(view(t), before);
+    expect(tool.samples, hasLength(3));
+    await pen.up();
+    expect(tool.ended, 1);
+    await a.up();
+    await b.up();
+  });
+
+  testWidgets('lifting one of three fingers does not jump the view', (t) async {
+    await pump(t);
+    final a = await finger(t, 1, const Offset(500, 300));
+    final b = await finger(t, 2, const Offset(700, 300));
+    final c3 = await finger(t, 3, const Offset(900, 600));
+    await a.moveBy(const Offset(10, 0));
+    await t.pump();
+    final before = view(t);
+    await a.up();
+    // The pair is now the second and third fingers, far apart in a
+    // different direction; a small move must only change the view a little.
+    await b.moveBy(const Offset(2, 0));
+    await t.pump();
+    final after = view(t);
+    expect((after.scale - before.scale).abs(), lessThan(0.05));
+    expect((after.offset - before.offset).distance, lessThan(40));
+    await b.up();
+    await c3.up();
+  });
+
+  testWidgets('a pinch then lifting never makes a note; a later tap does', (
+    t,
+  ) async {
+    await pump(t);
+    final nodes = c.page.nodes.length;
+    final a = await finger(t, 1, const Offset(500, 300));
+    final b = await finger(t, 2, const Offset(700, 300));
+    // Moves under the touch slop: the tap recognizer is not beaten by drag.
+    await b.moveBy(const Offset(4, 0));
+    await b.up();
+    await a.up();
+    await t.pumpAndSettle();
+    expect(c.page.nodes.length, nodes);
+
+    final tap = await finger(t, 3, const Offset(900, 500));
+    await tap.up();
+    await t.pumpAndSettle();
+    expect(c.page.nodes.length, nodes + 1);
+  });
+
+  testWidgets('a box under a finger stops moving once a second finger lands', (
+    t,
+  ) async {
+    await pump(t);
+    final start = c.page.nodes.first.bounds!;
+    final grip = view(t).toScreen(
+      Offset(start.x + 40, start.y - boxGripHeight / 2),
+    );
+    final a = await t.startGesture(
+      bar + grip,
+      pointer: 1,
+      kind: PointerDeviceKind.touch,
+    );
+    await a.moveBy(const Offset(40, 0));
+    await t.pump();
+    final moved = c.page.nodes.first.bounds!;
+    expect(moved.x, greaterThan(start.x));
+    final b = await finger(t, 2, const Offset(900, 500));
+    await a.moveBy(const Offset(60, 0));
+    await b.moveBy(const Offset(60, 0));
+    await t.pump();
+    expect(c.page.nodes.first.bounds, moved);
+    await a.up();
+    await b.up();
+  });
+
+  testWidgets('disposing the canvas in the middle of a stroke is safe', (
+    t,
+  ) async {
+    await pump(t);
+    selection.select(tool);
+    await t.pump();
+    final g = await t.startGesture(
+      bar + const Offset(400, 400),
+      pointer: 1,
+      kind: PointerDeviceKind.mouse,
+    );
+    await g.moveBy(const Offset(30, 0));
+    await t.pumpWidget(const MaterialApp(home: SizedBox()));
+    expect(t.takeException(), isNull);
+    await g.up();
   });
 }

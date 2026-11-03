@@ -4,6 +4,7 @@
 
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -44,7 +45,12 @@ class BoxHost extends StatefulWidget {
     this.insertFilesBeside,
     this.disallowedTypes = const {},
     this.onIssueTap,
+    this.multiTouch,
   });
+
+  /// True while a two-finger gesture is on the canvas: a box being moved or
+  /// resized stops where it is, and none starts.
+  final ValueListenable<bool>? multiTouch;
 
   final CanvasNode node;
 
@@ -101,6 +107,28 @@ class _BoxHostState extends State<BoxHost> {
   void initState() {
     super.initState();
     _autofocus = widget.controller.takeAutofocus(widget.node.id);
+    widget.multiTouch?.addListener(_multiTouchChanged);
+  }
+
+  @override
+  void didUpdateWidget(BoxHost oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.multiTouch != widget.multiTouch) {
+      oldWidget.multiTouch?.removeListener(_multiTouchChanged);
+      widget.multiTouch?.addListener(_multiTouchChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.multiTouch?.removeListener(_multiTouchChanged);
+    super.dispose();
+  }
+
+  bool get _multiTouchOn => widget.multiTouch?.value ?? false;
+
+  void _multiTouchChanged() {
+    if (_multiTouchOn) _end();
   }
 
   BoxResolution _resolve(BoxRecord box) {
@@ -532,7 +560,7 @@ class _BoxHostState extends State<BoxHost> {
 
   void _begin(Offset global) {
     final b = widget.node.bounds;
-    if (b == null) return;
+    if (b == null || _multiTouchOn) return;
     _gestureStart = global;
     _gestureBounds = b;
     widget.controller.beginGesture(widget.node.id);
