@@ -27,6 +27,11 @@ abstract class CanvasTool {
 
   MouseCursor get cursor => SystemMouseCursors.precise;
 
+  /// What a pen's pointers do with this tool while Select and type is picked
+  /// (0033): the [StylusRole.pen] tool inks with the stylus, the
+  /// [StylusRole.eraser] tool erases with its eraser end. Default none.
+  StylusRole get stylusRole => StylusRole.none;
+
   /// Extra controls shown in the toolbar while the tool is active.
   Widget? buildOptions(BuildContext context) => null;
 
@@ -34,6 +39,9 @@ abstract class CanvasTool {
   /// the rest of that pointer's events, or null to ignore the pointer.
   ToolSession? start(ToolContext context, ToolPointer pointer);
 }
+
+/// The part a tool plays for a stylus when no tool is picked.
+enum StylusRole { none, pen, eraser }
 
 /// One pointer's use of a tool, from down to up.
 ///

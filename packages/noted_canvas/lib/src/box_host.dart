@@ -46,7 +46,12 @@ class BoxHost extends StatefulWidget {
     this.disallowedTypes = const {},
     this.onIssueTap,
     this.multiTouch,
+    this.inkedBy,
   });
+
+  /// True for a pointer kind that goes to a tool here (a pen over Select):
+  /// the box then takes no click from it.
+  final bool Function(PointerDeviceKind kind)? inkedBy;
 
   /// True while a two-finger gesture is on the canvas: a box being moved or
   /// resized stops where it is, and none starts.
@@ -632,7 +637,9 @@ class _BoxHostState extends State<BoxHost> {
   void _contentDown(PointerDownEvent e) {
     // Not in a box that is being edited (a click on a note's table handle
     // or menu keeps the note as it is).
-    if (e.buttons != kPrimaryButton || widget.controller.editingId == widget.node.id) {
+    if (e.buttons != kPrimaryButton ||
+        widget.controller.editingId == widget.node.id ||
+        (widget.inkedBy?.call(e.kind) ?? false)) {
       _downAt = null;
       return;
     }

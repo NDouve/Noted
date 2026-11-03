@@ -12,6 +12,8 @@ Host-only (not the Box API), run 2026-11-01-02: `PageCanvas.disallowedTypes`, `M
 
 Host-only (not the Box API), run 2026-11-01-04: `PageChange.landed(id, before)` restores only a box's landed marker on undo (used by the canvas when a landed box is placed). Modules can construct `PageChange`s, but none needs this one; the subclasses stay private, so nothing switches on them. The page-issue helpers (`pageIssues`, keep, place both, accept merged) and the conflict UI are host code. No version bump.
 
+Run stylus (additive, no version bump): `CanvasTool.stylusRole` (default `StylusRole.none`; enum `none`, `pen`, `eraser`, in noted_canvas). While Select and type is picked, the canvas sends a stylus to the tool with role `pen` and the eraser end to the one with role `eraser` (0033). The drawing module's pen and eraser set it; a tool that doesn't override it is unaffected. The version stays 0.10 because a major-0 host needs an exact match and nothing existing changes; the PM may bump it.
+
 ## 0.10 — 2026-11-01
 - `AiWriteMode.replaceAiText`: replace only the box's AI-written blocks (those whose AI mark still matches their text) and keep every user-written block in place. Every run of consecutive AI-written blocks is removed and the new blocks go where the first run was, or at the end if there was none.
 - `applyAiWrite(boxJson, AiWrite)` in noted_core: the AI box's write on its stored JSON (append, replace, replaceAiText), shared by the AI codec and the MCP server's closed-app write. `AiWrite` and `AiWriteMode` now live in `ai/ai_box.dart` (still exported from `noted_core.dart` and `box_codec.dart`).

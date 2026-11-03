@@ -12,9 +12,9 @@ import 'package:noted_core/noted_core.dart';
 /// tool (0033).
 
 class _Codec extends BoxCodec<String> {
-  const _Codec();
+  const _Codec(this.typeId);
   @override
-  String get typeId => 'test.text';
+  final String typeId;
   @override
   int get dataVersion => 1;
   @override
@@ -34,7 +34,9 @@ class _Codec extends BoxCodec<String> {
 }
 
 class _Tool extends CanvasTool {
-  _Tool(this.id);
+  _Tool(this.id, [this.stylusRole = StylusRole.none]);
+  @override
+  final StylusRole stylusRole;
   @override
   final String id;
   final List<ToolPointer> samples = [];
@@ -69,11 +71,12 @@ class _Session extends ToolSession {
 }
 
 class _Module extends BoxModule<String> {
-  _Module(this.tools);
+  _Module(this.typeId, this.tools);
+  final String typeId;
   @override
   final List<CanvasTool> tools;
   @override
-  BoxCodec<String> get codec => const _Codec();
+  BoxCodec<String> get codec => _Codec(typeId);
   @override
   Widget buildEditor(BuildContext context, BoxContext<String> box) =>
       Text(box.data);
@@ -93,14 +96,20 @@ void main() {
   CanvasView view(WidgetTester t) =>
       t.state<PageCanvasState>(find.byType(PageCanvas)).view!;
 
-  Future<void> pump(WidgetTester t, {bool withPen = true}) async {
+  Future<void> pump(
+    WidgetTester t, {
+    bool withPen = true,
+    bool readOnly = false,
+    Set<String> disallowed = const {},
+  }) async {
     t.view.physicalSize = const Size(1200, 800);
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
-    pen = _Tool('noted.drawing.pen');
-    eraser = _Tool('noted.drawing.eraser');
+    pen = _Tool('draw.pen', StylusRole.pen);
+    eraser = _Tool('draw.eraser', StylusRole.eraser);
     final modules = ModuleRegistry()
-      ..register(_Module(withPen ? [pen, eraser] : const []), isDefault: true);
+      ..register(_Module('test.text', const []), isDefault: true)
+      ..register(_Module('test.draw', withPen ? [pen, eraser] : const []));
     final page = NotedPage.create(
       PageMeta.create(id: 'p', title: '', order: 0),
     ).insertNode(
@@ -122,6 +131,8 @@ void main() {
         home: Scaffold(
           body: PageCanvas(
             controller: c,
+            readOnly: readOnly,
+            disallowedTypes: disallowed,
             tools: selection,
             toolbar: const ContextualToolbarLayout(
               leading: [],
@@ -255,5 +266,56 @@ void main() {
     expect(pen.samples, hasLength(2));
     await a.up();
     await b.up();
+  });
+
+  testWidgets('a stylus tap on a box inks and does not select it', (t) async {
+    await pump(t);
+    await tap(t, PointerDeviceKind.stylus, onBox(t));
+    expect(pen.started, 1);
+    expect(pen.ended, 1);
+    expect(c.selectedId, isNull);
+  });
+
+  testWidgets('a hand resting on empty page during a stroke makes no note', (
+    t,
+  ) async {
+    await pump(t);
+    final nodes = c.page.nodes.length;
+    final palm = await t.startGesture(
+      bar + const Offset(900, 600),
+      pointer: 2,
+      kind: PointerDeviceKind.touch,
+    );
+    final s = await t.startGesture(
+      bar + const Offset(600, 400),
+      pointer: 1,
+      kind: PointerDeviceKind.stylus,
+    );
+    await s.moveBy(const Offset(30, 0));
+    await s.moveBy(const Offset(30, 0));
+    await palm.up();
+    await s.up();
+    await t.pumpAndSettle();
+    expect(pen.ended, 1);
+    expect(c.page.nodes.length, nodes);
+    // A later finger tap still makes a note.
+    await tap(t, PointerDeviceKind.touch, bar + const Offset(900, 500));
+    expect(c.page.nodes.length, nodes + 1);
+  });
+
+  testWidgets('on a read-only page a stylus does not ink', (t) async {
+    await pump(t, readOnly: true);
+    await drag(t, PointerDeviceKind.stylus, onBox(t));
+    expect(pen.started, 0);
+    expect(eraser.started, 0);
+  });
+
+  testWidgets('with drawing not allowed the stylus falls back to the tool', (
+    t,
+  ) async {
+    await pump(t, disallowed: {'test.draw'});
+    await tap(t, PointerDeviceKind.stylus, onBox(t));
+    expect(pen.started, 0);
+    expect(c.selectedId, 'b0');
   });
 }
