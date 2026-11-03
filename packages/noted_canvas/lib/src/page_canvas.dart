@@ -50,6 +50,8 @@ const double autoPanMaxSpeed = 3000;
 /// - click empty canvas: new note box (0015)
 /// - wheel: scroll; Shift+wheel: scroll sideways; Ctrl+wheel: zoom
 /// - middle-drag or two-finger touchpad: pan; pinch: zoom
+/// - two fingers on a touch screen: pan and pinch-zoom around the fingers
+///   (one finger does what the tool does, 0033)
 /// - drag a box's grip to move it, its edges to resize it
 ///
 /// With a module's canvas tool active (0033: the tool decides what input
@@ -149,6 +151,18 @@ class PageCanvasState extends State<PageCanvas>
   // two-finger pan applied so far (to move only by what is new).
   double _pinchStartScale = 1;
   Offset _pinchPan = Offset.zero;
+
+  // Touch screens: the fingers down now (canvas-local, in the order they
+  // landed), and whether the current touch gesture ever had two. Set until
+  // the next pointer goes down; no tool session starts while it is set.
+  final Map<int, Offset> _touches = {};
+  bool _multiTouch = false;
+  Offset? _touchFocal;
+  double? _touchSpan;
+
+  /// True from the second finger until all fingers lift; boxes stop moving
+  /// or resizing under a finger while it is.
+  final ValueNotifier<bool> _multiTouchActive = ValueNotifier(false);
 
   /// Where the mouse last was over the canvas, null when it is elsewhere.
   Offset? _hover;
@@ -533,10 +547,13 @@ class PageCanvasState extends State<PageCanvas>
     _find.dispose();
     _findFocus.dispose();
     _commands.dispose();
-    _cancelSession();
-    _autoPan?.dispose();
+    // Listeners first: ending a session notifies the controller, and a
+    // canvas being disposed must not rebuild.
     _c.removeListener(_changed);
     _tools.removeListener(_toolChanged);
+    _cancelSession();
+    _autoPan?.dispose();
+    _multiTouchActive.dispose();
     _transform.dispose();
     _focus.dispose();
     _ownTools.dispose();
@@ -768,8 +785,92 @@ class PageCanvasState extends State<PageCanvas>
     });
   }
 
+  /// The two first fingers' centre and distance, or null with fewer.
+  (Offset, double)? _touchPair() {
+    if (_touches.length < 2) return null;
+    final it = _touches.values.iterator;
+    it.moveNext();
+    final a = it.current;
+    it.moveNext();
+    final b = it.current;
+    return ((a + b) / 2, (a - b).distance);
+  }
+
+  void _touchDown(PointerDownEvent e) {
+    if (_touches.isEmpty) _multiTouch = false;
+    if (e.kind != PointerDeviceKind.touch) return;
+    _touches[e.pointer] = e.localPosition;
+    _startPinch();
+  }
+
+  /// Starts the two-finger gesture once two fingers are down and no pen or
+  /// mouse session holds the input (a resting palm must not interrupt a
+  /// stroke; the next finger to land starts the pinch).
+  void _startPinch() {
+    if (_touches.length < 2 || _multiTouch) {
+      if (_multiTouch) _resetPair();
+      return;
+    }
+    if (_session != null && _lastToolEvent?.kind != PointerDeviceKind.touch) {
+      return;
+    }
+    // The first finger was only the start of a pinch: a tool session it
+    // began (an ink stroke) is dropped.
+    _multiTouch = true;
+    _multiTouchActive.value = true;
+    _cancelSession();
+    _resetPair();
+  }
+
+  /// Ends the two-finger gesture without waiting for the fingers to lift.
+  void _endPinch() {
+    _multiTouch = false;
+    _multiTouchActive.value = false;
+    _touchFocal = null;
+    _touchSpan = null;
+  }
+
+  /// Takes the fingers' current centre and distance as the basis for the
+  /// next move, so a change of which two fingers count never jumps the view.
+  void _resetPair() {
+    final pair = _touchPair();
+    _touchFocal = pair?.$1;
+    _touchSpan = pair?.$2;
+  }
+
+  /// Handles a touch move; true if it belongs to a two-finger gesture.
+  bool _touchMove(PointerMoveEvent e) {
+    if (e.kind != PointerDeviceKind.touch || !_touches.containsKey(e.pointer)) {
+      return false;
+    }
+    _touches[e.pointer] = e.localPosition;
+    if (!_multiTouch) return false;
+    final pair = _touchPair();
+    final focal = _touchFocal;
+    final span = _touchSpan;
+    if (pair == null || focal == null || span == null) return true;
+    _touchFocal = pair.$1;
+    _touchSpan = pair.$2;
+    // The content under the fingers stays under them: pan by the focal
+    // point's move, zoom by the change of their distance around it.
+    final factor = span > 0 && pair.$2 > 0 ? pair.$2 / span : 1.0;
+    _setView((g, v) => g.zoomAt(v, pair.$1, factor, pan: pair.$1 - focal));
+    return true;
+  }
+
+  void _touchEnd(PointerEvent e) {
+    if (_touches.remove(e.pointer) == null) return;
+    // With one finger left the gesture is over; that finger does nothing
+    // more until it lifts.
+    _resetPair();
+    if (_touches.isEmpty) _multiTouchActive.value = false;
+  }
+
   void _onBackgroundTap(TapUpDetails d) {
     final v = _view;
+    // A tap with two fingers never gets here: the gesture arena (the
+    // InteractiveViewer's scale recognizer) suppresses it; the "pinch then
+    // lift" test guards that.
     if (v == null || _readOnly || _tools.active != null) return;
     final world = v.toWorld(d.localPosition);
     // A click that lands on a box's chrome or snapshot isn't a canvas click.
@@ -869,6 +970,7 @@ class PageCanvasState extends State<PageCanvas>
               controller: _c,
               childOrigin: childOrigin,
               scaleOf: () => scale,
+              multiTouch: _multiTouchActive,
               onGripTap: _focus.requestFocus,
               readOnly: readOnly,
               find: _find,
@@ -944,22 +1046,33 @@ class PageCanvasState extends State<PageCanvas>
                     if (e.buttons & kMiddleMouseButton != 0) {
                       _middlePointer = e.pointer;
                     } else {
-                      _toolDown(e);
+                      _touchDown(e);
+                      if (e.kind == PointerDeviceKind.touch) {
+                        // A second finger never starts a tool session.
+                        if (!_multiTouch) _toolDown(e);
+                      } else {
+                        // A pen or mouse takes the input over: resting
+                        // fingers stop panning and zooming.
+                        _endPinch();
+                        _toolDown(e);
+                      }
                     }
                   },
                   onPointerMove: (e) {
                     if (e.pointer == _middlePointer) {
                       _setView((g, v) => g.pan(v, e.delta));
-                    } else {
+                    } else if (!_touchMove(e)) {
                       _toolMove(e);
                     }
                   },
                   onPointerUp: (e) {
                     if (e.pointer == _middlePointer) _middlePointer = null;
+                    _touchEnd(e);
                     _toolUp(e);
                   },
                   onPointerCancel: (e) {
                     if (e.pointer == _middlePointer) _middlePointer = null;
+                    _touchEnd(e);
                     if (e.pointer == _sessionPointer) _cancelSession();
                   },
                   onPointerHover: (e) {
