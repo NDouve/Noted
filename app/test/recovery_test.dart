@@ -1004,6 +1004,73 @@ void main() {
       expect(readPage(pageFile(pages, a).readAsStringSync()).nodes, hasLength(1));
     });
 
+    for (final binder in [false, true]) {
+      test('taking a ${binder ? 'binder' : 'folder'} out while a retry is writing never deletes the page file', () async {
+        final es = _ToggleStore(extra);
+        String norm(String p) => p.replaceAll(r'\', '/').toLowerCase();
+        final nb = make(storeFactory: (d) => norm(d.path) == norm(extra.path) ? es : PageStore(d));
+        await nb.load();
+        late final String x;
+        late final String loc;
+        if (binder) {
+          final section = await nb.addBinder(extra.path);
+          loc = section.path;
+          x = await nb.createPage(binderPath: loc);
+        } else {
+          loc = extra.path;
+          x = await nb.createPage(folderPath: loc);
+        }
+        await nb.flush();
+        await nb.open(x);
+        nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+        es.failSave = true;
+        await nb.flush();
+        await nb.open(nb.tree.roots.firstWhere((p) => p.id != x).id);
+        es.failSave = false;
+        es.gate = Completer<void>();
+        addTearDown(() {
+          if (!es.gate!.isCompleted) es.gate!.complete();
+        });
+        es.onSave = Completer<void>();
+        final retry = nb.flush(); // the retry is past its checks and writing
+        await es.onSave!.future;
+        // (Later steps of the removal wait for the save queue, so the write is
+        // let go after the place has been taken out, while the removal runs.)
+        final removal = binder ? nb.removeBinder(loc) : nb.removeStandaloneFolder(loc);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        es.gate!.complete();
+        await removal;
+        await retry;
+        expect(pageFile(extra, x).existsSync(), isTrue, reason: 'taking a place out never deletes its files');
+        expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, hasLength(1), reason: 'with the edits');
+      });
+    }
+
+    test('a page put back after a stray check never replaces a file that has appeared; both stay', () async {
+      final (nb, st, a, b) = await editing();
+      st.failSave = true;
+      await nb.open(b);
+      st.failSave = false;
+      addTearDown(() {
+        if (!st.gate!.isCompleted) st.gate!.complete();
+      });
+      st.lossy = true; // what the retry writes is not what it meant to, so it is not "ours"
+      st.gate = Completer<void>();
+      st.onSave = Completer<void>();
+      final path = pageFile(pages, a).path;
+      nb.strayRestoreHook = () => File(path).writeAsStringSync('a version a sync client just published');
+      final retry = nb.flush();
+      await st.onSave!.future;
+      await nb.delete(a);
+      st.gate!.complete();
+      await retry;
+      expect(File(path).readAsStringSync(), 'a version a sync client just published');
+      final aside = pages.listSync().whereType<File>().where((f) => f.path.contains('.stray-')).toList();
+      expect(aside, hasLength(1), reason: 'the file moved aside is kept');
+      expect(readPage(aside.single.readAsStringSync()).id, a);
+      st.lossy = false;
+    });
+
     test('a delete that fails while preparing leaves the kept edits as they were', () async {
       final st = _ToggleStore(pages);
       final nb = make(store: st);

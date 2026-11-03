@@ -1365,7 +1365,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final openId = ids.contains(currentId) ? currentId : null;
     // From here no retry of a kept edit writes for these pages (one already
     // writing is taken back by itself, see _retryClosed).
-    _structural.addAll(ids);
+    _markStructural(ids);
     try {
       return await _deleteMarked(loc, st, ids, openId);
     } on Object {
@@ -1689,7 +1689,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     // From here no retry of a kept edit writes for these pages; the move
     // carries the edits itself.
-    _structural.addAll(ids);
+    _markStructural(ids);
     Object? pending; // what the move is failing with, for the reopen below
     var movedFully = false; // the pages are at the target; only placing is left
     try {
@@ -3458,6 +3458,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final baseText = u.baseText;
     final base = baseText == null ? NotedPage.create(u.page.meta) : readPage(baseText);
     var stopped = false;
+    final gen0 = _structuralGen[id] ?? 0;
     try {
       final merged = await _saveClosedPage(loc, st, base, u.page, (_) {
         // Run just before the write: a delete or a move that began, or edits
@@ -3468,10 +3469,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
         return null;
       });
-      if (!identical(_unsaved[id], u) || _loc[id] != loc || _structural.contains(id)) {
-        // The page was deleted or moved while this was writing: what it wrote
-        // is taken away again, if it is still exactly that.
-        if (_loc[id] != loc) await _removeStray(loc, st, merged);
+      final moved = _loc[id] != loc;
+      final structural = _structural.contains(id) || (_structuralGen[id] ?? 0) != gen0;
+      if (moved && structural) {
+        // A delete or a move of the page went through while this was writing:
+        // what it wrote is taken away again, if it is still exactly that.
+        await _removeStray(loc, st, merged);
+        return;
+      }
+      if (!identical(_unsaved[id], u) || structural) return;
+      if (moved) {
+        // Only the place was taken out of the notebook: its files are never
+        // touched. The file written is a correct save of the page into its own
+        // folder, so the edits are in it.
+        await _retireUnsaved(st, merged);
         return;
       }
       _touch(loc);
@@ -3501,6 +3512,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // wait, so nothing is written for a page while it goes.
   final Set<String> _structural = {};
 
+  // How many times a delete or a move has begun for a page: the only evidence
+  // that a page which left its place was deleted or moved (a binder or folder
+  // taken out of the notebook records nothing, and never deletes its files).
+  final Map<String, int> _structuralGen = {};
+
+  void _markStructural(Iterable<String> ids) {
+    for (final id in ids) {
+      _structural.add(id);
+      _structuralGen[id] = (_structuralGen[id] ?? 0) + 1;
+    }
+  }
+
+  /// Test seam: runs just before a file moved aside by [_removeStray] is put
+  /// back, so a test can make a file appear at its path at that moment.
+  @visibleForTesting
+  void Function()? strayRestoreHook;
+
   // A retry wrote [page] into [loc], and the page is not there any more (it
   // was deleted or moved meanwhile): the file is removed again, but only if it
   // still holds exactly what was written.
@@ -3520,10 +3548,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         same = listEquals(await aside.readAsBytes(), utf8.encode(writePage(page)));
       } finally {
         if (!same) {
-          // Whatever went wrong, a file that is not known to be ours goes back.
-          if (!await File(path).exists()) {
-            await aside.rename(path);
-          } else {
+          // Whatever went wrong, a file that is not known to be ours goes back,
+          // but never over a file that is at the path by now: then both stay
+          // (the one moved aside under its aside name).
+          var back = false;
+          try {
+            back = await publishExclusive(aside, path, beforeOsCall: strayRestoreHook);
+          } on Object catch (e) {
+            debugPrint('Putting back $path failed: $e');
+          }
+          if (!back) {
             debugPrint('A different file is now at $path; the one moved aside stays at ${aside.path}.');
           }
         }
