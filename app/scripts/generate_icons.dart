@@ -4,7 +4,16 @@
 
 // Generates the app icons from the master, docs/design/icon/noted-icon.svg:
 // the Windows .ico, the macOS .icns and asset catalog PNGs, and the Android
-// and iOS icon sets, all with a transparent background.
+// and iOS icon sets (app/icons), all with a transparent background. It also
+// writes the icons of the Flutter mobile projects:
+// - iOS: the project's AppIcon.appiconset, opaque (no alpha channel at all)
+//   on white, the master at [_squareContent] of the canvas so iOS's rounded
+//   corners don't clip it;
+// - Android: an adaptive icon (foreground with the master inside the inner
+//   66 dp-diameter circular safe zone of the 108 dp canvas, a white
+//   background colour, and a
+//   single-colour monochrome layer for themed icons) plus legacy
+//   mipmap-*/ic_launcher.png fallbacks (master on white).
 //
 // Run from the repository root:
 //
@@ -120,6 +129,9 @@ void main(List<String> args) {
     ),
   );
 
+  _writeIosProject(svg);
+  _writeAndroidProject(svg);
+
   // Previews of the small sizes, enlarged without smoothing, for checking
   // sharpness by eye.
   if (args.contains('--preview')) {
@@ -132,6 +144,162 @@ void main(List<String> args) {
     }
   }
 }
+
+const _iosAppIconSet = 'app/ios/Runner/Assets.xcassets/AppIcon.appiconset';
+const _androidRes = 'app/android/app/src/main/res';
+
+/// The share of a legacy or iOS icon's width the master fills; the rest is
+/// a white margin.
+const _squareContent = 0.8;
+
+/// [svg] at [content] of a [size] px square, centred, over a transparent
+/// ([white] false) or white background.
+Image _composed(Svg svg, int size, double content, {bool white = false}) {
+  final inner = (size * content).round();
+  final src = render(svg, inner);
+  final out = Image(size);
+  if (white) out.rgba.fillRange(0, out.rgba.length, 255);
+  final off = (size - inner) ~/ 2;
+  for (var y = 0; y < inner; y++) {
+    for (var x = 0; x < inner; x++) {
+      final i = (y * inner + x) * 4, o = ((y + off) * size + x + off) * 4;
+      final a = src.rgba[i + 3];
+      if (white) {
+        for (var c = 0; c < 3; c++) {
+          out.rgba[o + c] = ((src.rgba[i + c] * a + 255 * (255 - a)) / 255)
+              .round();
+        }
+      } else {
+        out.rgba.setRange(o, o + 4, src.rgba, i);
+      }
+    }
+  }
+  return out;
+}
+
+/// The distance from the centre of [img] to its furthest non-transparent
+/// pixel centre.
+double _reach(Image img) {
+  var far = 0.0;
+  final c = img.size / 2;
+  for (var y = 0; y < img.size; y++) {
+    for (var x = 0; x < img.size; x++) {
+      if (img.rgba[(y * img.size + x) * 4 + 3] == 0) continue;
+      far = math.max(
+        far,
+        math.sqrt(math.pow(x + .5 - c, 2) + math.pow(y + .5 - c, 2)),
+      );
+    }
+  }
+  return far;
+}
+
+/// The adaptive foreground for a [layer] px canvas (108 dp). Launchers mask
+/// the layer to a shape, and only a centred circle of 66 dp diameter is
+/// always visible, so the master is centred on its opaque bounding box and
+/// scaled until its furthest opaque pixel is inside that circle.
+Image _adaptiveForeground(Svg svg, int layer) {
+  final limit = layer * 33 / 108;
+
+  // The box of the master that is opaque, to centre on.
+  final full = render(svg, layer);
+  var x0 = layer, x1 = 0, y0 = layer, y1 = 0;
+  for (var y = 0; y < layer; y++) {
+    for (var x = 0; x < layer; x++) {
+      if (full.rgba[(y * layer + x) * 4 + 3] == 0) continue;
+      x0 = math.min(x0, x);
+      x1 = math.max(x1, x);
+      y0 = math.min(y0, y);
+      y1 = math.max(y1, y);
+    }
+  }
+  final cx = (x0 + x1 + 1) / 2 / layer, cy = (y0 + y1 + 1) / 2 / layer;
+  for (var content = 0.5; content > 0.1; content -= 0.002) {
+    final inner = (layer * content).round();
+    final src = render(svg, inner);
+    final out = Image(layer);
+    final ox = (layer / 2 - cx * inner).round();
+    final oy = (layer / 2 - cy * inner).round();
+    for (var y = 0; y < inner; y++) {
+      for (var x = 0; x < inner; x++) {
+        final tx = x + ox, ty = y + oy;
+        if (tx < 0 || ty < 0 || tx >= layer || ty >= layer) continue;
+        out.rgba.setRange(
+          (ty * layer + tx) * 4,
+          (ty * layer + tx) * 4 + 4,
+          src.rgba,
+          (y * inner + x) * 4,
+        );
+      }
+    }
+    if (_reach(out) <= limit) return out;
+  }
+  throw StateError('no adaptive foreground scale fits');
+}
+
+/// The iOS project's catalog: its Contents.json (Flutter's template) names
+/// `Icon-App-WxH@Sx.png` files; each is written at the size in its name.
+void _writeIosProject(Svg svg) {
+  final contents = File('$_iosAppIconSet/Contents.json').readAsStringSync();
+  for (final m in RegExp(
+    r'"(Icon-App-([\d.]+)x[\d.]+@(\d)x\.png)"',
+  ).allMatches(contents)) {
+    final px = (double.parse(m.group(2)!) * int.parse(m.group(3)!)).round();
+    _write(
+      '$_iosAppIconSet/${m.group(1)}',
+      encodePng(_composed(svg, px, _squareContent, white: true), opaque: true),
+    );
+  }
+}
+
+/// The Android project's launcher icons: adaptive (API 26+) and legacy.
+void _writeAndroidProject(Svg svg) {
+  // The 108 dp adaptive canvas and the 48 dp legacy icon per density.
+  const densities = {
+    'mdpi': (108, 48),
+    'hdpi': (162, 72),
+    'xhdpi': (216, 96),
+    'xxhdpi': (324, 144),
+    'xxxhdpi': (432, 192),
+  };
+  for (final MapEntry(key: d, value: (layer, legacy)) in densities.entries) {
+    final dir = '$_androidRes/mipmap-$d';
+    final fg = _adaptiveForeground(svg, layer);
+    _write('$dir/ic_launcher_foreground.png', encodePng(fg));
+    // Themed icons use only the alpha: the silhouette in one colour.
+    final mono = Image(layer);
+    for (var i = 0; i < mono.rgba.length; i += 4) {
+      mono.rgba[i + 3] = fg.rgba[i + 3];
+    }
+    for (final (name, img) in [('foreground', fg), ('monochrome', mono)]) {
+      if (_reach(img) > layer * 33 / 108) {
+        throw StateError('$name is outside the safe zone');
+      }
+    }
+    _write('$dir/ic_launcher_monochrome.png', encodePng(mono));
+    _write(
+      '$dir/ic_launcher.png',
+      encodePng(_composed(svg, legacy, _squareContent, white: true)),
+    );
+  }
+  _writeText('$_androidRes/mipmap-anydpi-v26/ic_launcher.xml', '''
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
+</adaptive-icon>
+''');
+  _writeText('$_androidRes/values/ic_launcher_background.xml', '''
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#FFFFFF</color>
+</resources>
+''');
+}
+
+void _writeText(String path, String text) =>
+    _write(path, Uint8List.fromList(text.codeUnits));
 
 void _write(String path, Uint8List bytes) {
   File(path)
@@ -690,13 +858,26 @@ int _crc(List<int> bytes) {
   return c ^ 0xFFFFFFFF;
 }
 
-Uint8List encodePng(Image img) {
+/// [img] as a PNG: RGBA, or with [opaque] RGB with no alpha channel (the
+/// alpha of [img] is ignored).
+Uint8List encodePng(Image img, {bool opaque = false}) {
   final raw = BytesBuilder();
   for (var y = 0; y < img.size; y++) {
     raw.addByte(0);
-    raw.add(
-      Uint8List.sublistView(img.rgba, y * img.size * 4, (y + 1) * img.size * 4),
-    );
+    if (opaque) {
+      for (var x = 0; x < img.size; x++) {
+        final o = (y * img.size + x) * 4;
+        raw.add([img.rgba[o], img.rgba[o + 1], img.rgba[o + 2]]);
+      }
+    } else {
+      raw.add(
+        Uint8List.sublistView(
+          img.rgba,
+          y * img.size * 4,
+          (y + 1) * img.size * 4,
+        ),
+      );
+    }
   }
   final out = BytesBuilder()..add([137, 80, 78, 71, 13, 10, 26, 10]);
   void chunk(String type, List<int> data) {
@@ -707,7 +888,15 @@ Uint8List encodePng(Image img) {
       ..add(_be32(_crc(body)));
   }
 
-  chunk('IHDR', [..._be32(img.size), ..._be32(img.size), 8, 6, 0, 0, 0]);
+  chunk('IHDR', [
+    ..._be32(img.size),
+    ..._be32(img.size),
+    8,
+    opaque ? 2 : 6,
+    0,
+    0,
+    0,
+  ]);
   chunk('IDAT', ZLibCodec(level: 9).encode(raw.toBytes()));
   chunk('IEND', const []);
   return out.toBytes();
