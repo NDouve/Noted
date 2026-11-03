@@ -580,8 +580,34 @@ class PageCanvasState extends State<PageCanvas>
               .clamp(0.0, 1.0),
   );
 
+  /// The tool a pen's pointer uses (0033): with Select and type picked, the
+  /// stylus inks and its eraser end erases, whatever box is under it. A
+  /// picked tool is kept, except that the eraser end erases while the pen is
+  /// picked. Null when the module that supplies the tool is off or missing.
+  CanvasTool? _stylusTool(PointerDeviceKind kind) {
+    final active = _tools.active;
+    final String id;
+    if (kind == PointerDeviceKind.stylus) {
+      if (active != null) return active;
+      id = _penToolId;
+    } else if (kind == PointerDeviceKind.invertedStylus) {
+      if (active != null && active.id != _penToolId) return active;
+      id = _eraserToolId;
+    } else {
+      return active;
+    }
+    final off = _off;
+    for (final m in _c.modules.enabled) {
+      if (off.contains(m.codec.typeId)) continue;
+      for (final t in m.tools) {
+        if (t.id == id) return t;
+      }
+    }
+    return active;
+  }
+
   void _toolDown(PointerDownEvent e) {
-    final tool = _tools.active;
+    final tool = _stylusTool(e.kind);
     if (_readOnly || tool == null || _session != null || _view == null) return;
     final usable = e.kind == PointerDeviceKind.mouse
         ? e.buttons & kPrimaryButton != 0
@@ -1111,7 +1137,20 @@ class PageCanvasState extends State<PageCanvas>
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onTapUp: _onBackgroundTap,
-                    child: MouseRegion(
+                    // A pen's pointer wins the arena at once, so no box under
+                    // it moves, resizes or places a caret: it inks (0033).
+                    child: RawGestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      gestures: {
+                        _PenClaim:
+                            GestureRecognizerFactoryWithHandlers<_PenClaim>(
+                              _PenClaim.new,
+                              (r) => r.inks = () =>
+                                  !_readOnly &&
+                                  _stylusTool(PointerDeviceKind.stylus) != null,
+                            ),
+                      },
+                      child: MouseRegion(
                       onExit: (_) => _hover = null,
                       cursor: tool?.cursor ?? MouseCursor.defer,
                       child: ColoredBox(
@@ -1149,6 +1188,7 @@ class PageCanvasState extends State<PageCanvas>
                         ),
                         ),
                       ),
+                    ),
                     ),
                   ),
                 ),
@@ -1203,6 +1243,44 @@ class PageCanvasState extends State<PageCanvas>
         },
     );
   }
+}
+
+/// Ids of the tools a pen's pointers use while Select and type is picked.
+const String _penToolId = 'noted.drawing.pen';
+const String _eraserToolId = 'noted.drawing.eraser';
+
+/// Wins the gesture arena at once for a pen's pointer (when [inks] says it
+/// inks), so boxes under it see no tap or drag.
+class _PenClaim extends OneSequenceGestureRecognizer {
+  _PenClaim()
+    : super(
+        supportedDevices: {
+          PointerDeviceKind.stylus,
+          PointerDeviceKind.invertedStylus,
+        },
+      );
+
+  bool Function() inks = () => false;
+
+  @override
+  void addAllowedPointer(PointerDownEvent event) {
+    if (!inks()) return;
+    startTrackingPointer(event.pointer, event.transform);
+    resolve(GestureDisposition.accepted);
+  }
+
+  @override
+  void handleEvent(PointerEvent event) {
+    if (event is PointerUpEvent || event is PointerCancelEvent) {
+      stopTrackingPointer(event.pointer);
+    }
+  }
+
+  @override
+  void didStopTrackingLastPointer(int pointer) {}
+
+  @override
+  String get debugDescription => 'pen claim';
 }
 
 const double _issueIconSize = 34;
