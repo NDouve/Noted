@@ -567,3 +567,11 @@ const double narrowLayoutWidth = 1000;
 /// Whether the window is narrower than [narrowLayoutWidth].
 bool isNarrowLayout(BuildContext context) =>
     MediaQuery.sizeOf(context).width < narrowLayoutWidth;
+
+/// A toolbar narrower than this (logical px) is compact. The two ends of the
+/// Contextual bar need about 400 px at full size, and on a narrower bar they
+/// would be scaled down until unreadable. So Tabs gives the tabs the whole
+/// row (Undo, Redo and Search join the command bar below) and Contextual is
+/// one row that overflows into More, with its section still shaded. The bar's
+/// own width decides, not the window's.
+const double compactToolbarWidth = 800;

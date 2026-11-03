@@ -16,7 +16,6 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_tree_view.dart';
 import 'package:noted/src/settings_panel.dart';
 import 'package:noted_box_ai/noted_box_ai.dart';
-import 'package:noted_box_attachments/noted_box_attachments.dart';
 import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_box_template/noted_box_template.dart';
 import 'package:noted_canvas/noted_canvas.dart';

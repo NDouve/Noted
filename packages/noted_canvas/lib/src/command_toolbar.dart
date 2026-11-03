@@ -120,10 +120,15 @@ class _CommandToolbarState extends State<CommandToolbar> {
           child: SizedBox(
             width: double.infinity,
             child: ExcludeFocus(
-              child: switch (widget.layout) {
-                final TabbedToolbarLayout l => _tabbed(context, l),
-                final ContextualToolbarLayout l => _contextual(context, l),
-              },
+              child: LayoutBuilder(
+                builder: (context, c) {
+                  final compact = c.maxWidth < compactToolbarWidth;
+                  return switch (widget.layout) {
+                    final TabbedToolbarLayout l => _tabbed(context, l, compact),
+                    final ContextualToolbarLayout l => _contextual(context, l, compact),
+                  };
+                },
+              ),
             ),
           ),
         ),
@@ -288,11 +293,7 @@ class _CommandToolbarState extends State<CommandToolbar> {
     );
   }
 
-  /// Windows narrower than this (logical px) get the contextual toolbar as a
-  /// single row that overflows into More.
-  static const double _compactBarWidth = 800;
-
-  Widget _contextual(BuildContext context, ContextualToolbarLayout l) {
+  Widget _contextual(BuildContext context, ContextualToolbarLayout l, bool compact) {
     final m = NotedMetrics.of(context);
     final scheme = Theme.of(context).colorScheme;
     ContextualSection? shown;
@@ -317,9 +318,41 @@ class _CommandToolbarState extends State<CommandToolbar> {
     // On a phone-width window the two ends would take 60% of the bar and be
     // scaled down to unreadable size; there everything is one row that
     // overflows into More, in the order leading, section, trailing.
-    if (MediaQuery.sizeOf(context).width < _compactBarWidth) {
+    if (compact) {
+      final lead = _resolve(l.leading);
+      final trail = _resolve(l.trailing);
+      final units = _units([...lead, ...groups, ...trail]);
+      // The section's units keep its shading, joined into one strip.
+      final from = lead.fold<int>(0, (n, g) => n + g.length);
+      final to = from + groups.fold<int>(0, (n, g) => n + g.length);
       return _bar(
-        middle: _units([..._resolve(l.leading), ...groups, ..._resolve(l.trailing)]),
+        middle: [
+          for (final (i, u) in units.indexed)
+            if (i < from || i >= to)
+              u
+            else
+              ToolbarUnit(
+                command: u.command,
+                group: u.group,
+                widget: Container(
+                  key: i == from ? CommandToolbar.sectionKey(shown!.id) : null,
+                  padding: EdgeInsets.fromLTRB(
+                    i == from ? m.space1 : 0,
+                    m.space1 / 2,
+                    i == to - 1 ? m.space1 : 0,
+                    m.space1 / 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.horizontal(
+                      left: i == from ? m.borderMd.topLeft : Radius.zero,
+                      right: i == to - 1 ? m.borderMd.topRight : Radius.zero,
+                    ),
+                  ),
+                  child: u.widget,
+                ),
+              ),
+        ],
       );
     }
     return _bar(
@@ -341,7 +374,7 @@ class _CommandToolbarState extends State<CommandToolbar> {
     );
   }
 
-  Widget _tabbed(BuildContext context, TabbedToolbarLayout l) {
+  Widget _tabbed(BuildContext context, TabbedToolbarLayout l, bool compact) {
     final m = NotedMetrics.of(context);
     final scheme = Theme.of(context).colorScheme;
     final type = NotedTypography.of(context);
@@ -352,7 +385,6 @@ class _CommandToolbarState extends State<CommandToolbar> {
     final current = tabs.where((t) => t.id == _tab).firstOrNull ?? tabs.firstOrNull;
     // On a phone-width window the tabs get the whole row; Undo, Redo and
     // Search join the commands of the bar below, which overflows into More.
-    final compact = MediaQuery.sizeOf(context).width < _compactBarWidth;
     final leading = compact ? <Widget>[] : _groups(_resolve(l.leading));
     Widget tab(ToolbarTab t) {
       final selected = t.id == current?.id;

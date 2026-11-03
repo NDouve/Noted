@@ -65,8 +65,8 @@ void main() {
 
   testWidgets('contextual at 400 px: the tools keep their size', (t) async {
     await open(t, 400, ToolbarStyle.contextual);
-    expect(t.getSize(find.byKey(const ValueKey('canvas.select'))), const Size.square(36));
-    expect(t.getSize(find.byKey(const ValueKey('canvas.undo'))), const Size.square(36));
+    expect(t.getRect(find.byKey(const ValueKey('canvas.select'))).width, closeTo(36, 0.01));
+    expect(t.getRect(find.byKey(const ValueKey('canvas.undo'))).width, closeTo(36, 0.01));
     expect(find.byTooltip('More'), findsOneWidget);
     expect(t.takeException(), isNull);
     await close(t);

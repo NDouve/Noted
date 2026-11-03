@@ -275,16 +275,43 @@ void main() {
     ) async {
       await pump(t, contextualToolbarLayout, width: 400);
       for (final id in ['canvas.select', 'canvas.undo']) {
-        expect(
-          t.getSize(find.byKey(ValueKey(id))),
-          const Size.square(36),
-          reason: id,
-        );
+        // The rect includes any scaling; the size alone would not.
+        expect(t.getRect(find.byKey(ValueKey(id))).width, closeTo(36, 0.01), reason: id);
       }
       expect(find.byTooltip('More'), findsOneWidget);
       final bar = t.getRect(find.byType(CommandToolbar));
       expect(bar.contains(t.getRect(find.byTooltip('More')).centerRight), isTrue);
       expect(t.takeException(), isNull);
+    });
+
+    testWidgets('contextual: the section stays shaded as one strip', (t) async {
+      await pump(t, contextualToolbarLayout, width: 400);
+      final first = find.byKey(CommandToolbar.sectionKey('insert'));
+      expect(first, findsOneWidget);
+      final box = t.widget<Container>(first).decoration! as BoxDecoration;
+      expect(box.color, notedThemeData(Brightness.light).colorScheme.surfaceContainerHighest);
+    });
+
+    testWidgets('the bar width decides, not the window width', (t) async {
+      t.view.physicalSize = const Size(2400, 600);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      await t.pumpWidget(
+        MaterialApp(
+          theme: notedThemeData(Brightness.light),
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 400,
+                child: CommandToolbar(registry: registry, layout: contextualToolbarLayout),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(t.getRect(find.byKey(const ValueKey('canvas.undo'))).width, closeTo(36, 0.01));
+      expect(find.byTooltip('More'), findsOneWidget);
     });
 
     testWidgets('desktop width: the ends and shaded middle are unchanged', (
