@@ -29,6 +29,16 @@ class CorruptingStore extends PageStore {
       await f.writeAsString(' ', mode: FileMode.append);
     }
   }
+
+  @override
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
+    final ok = await super.saveNew(page, beforePublish: beforePublish);
+    if (ok && ++saves == corruptAt) {
+      final f = File('${directory.path}${Platform.pathSeparator}${page.id}.canvas');
+      await f.writeAsString(' ', mode: FileMode.append);
+    }
+    return ok;
+  }
 }
 
 void main() {

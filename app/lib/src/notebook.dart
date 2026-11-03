@@ -1516,9 +1516,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   /// Whether the file of [page] in [store] exists and holds exactly the page
   /// as it was copied (read back). Any failure to read counts as not intact.
-  Future<bool> _sourceIntact(PageStore store, NotedPage page) async {
+  Future<bool> _sourceIntact(PageStore store, NotedPage page, [String? copiedText]) async {
     try {
-      return await store.readText(page.id) == writePage(page);
+      final now = await store.readText(page.id);
+      return now == writePage(page) || now == copiedText;
     } on Object {
       return false;
     }
@@ -1560,7 +1561,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     Object? pending; // what the move is failing with, for the reopen below
     var movedFully = false; // the pages are at the target; only placing is left
     try {
-      final originals = [for (final p in ids) await fromStore.load(p)];
+      // The text of each source as it was copied: the generation that must
+      // still be there when the source is deleted.
+      final copiedText = <String>[];
+      final originals = <NotedPage>[];
+      for (final p in ids) {
+        final before = await fromStore.readText(p);
+        final page = await fromStore.load(p);
+        if (await fromStore.readText(p) != before) {
+          throw const NotebookException('A page changed while it was being read, so nothing was moved.');
+        }
+        copiedText.add(before);
+        originals.add(page);
+      }
       // Only the moved page's parent and order change; its subpages keep
       // theirs.
       final moved = [
@@ -1575,7 +1588,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               : originals[i],
       ];
 
+      // Only what this move published: a page file it created (never one that
+      // was already there) and an attachments folder it created.
       final written = <String>[];
+      final assetsMade = <String>{};
       Future<void> removeCopies() async {
         for (final w in written) {
           try {
@@ -1583,20 +1599,26 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           } on Object catch (e) {
             debugPrint('Removing copy of page $w failed: $e');
           }
-          await _removeDir(_assetsDir(toLoc, w));
+          if (assetsMade.contains(w)) await _removeDir(_assetsDir(toLoc, w));
         }
       }
 
       try {
         for (final p in moved) {
+          if (!await _writeNew(toLoc, p)) {
+            throw NotebookException(
+              'A page file with the same id already exists in ${_placeName(toLoc)}, so nothing was '
+              'moved. Both were kept; the page stays where it was.',
+            );
+          }
           written.add(p.id);
-          await _write(toLoc, p);
           if (await toStore.readText(p.id) != writePage(p)) {
             throw const NotebookException(
               'A page was not copied correctly, so nothing was moved.',
             );
           }
           // Its images and files go with it.
+          if (!await _assetsDir(toLoc, p.id).exists()) assetsMade.add(p.id);
           await _copyDir(_assetsDir(fromLoc, p.id), _assetsDir(toLoc, p.id));
         }
       } on Object catch (e) {
@@ -1609,6 +1631,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final removed = <int>[];
       try {
         for (var i = 0; i < ids.length; i++) {
+          // Only the generation that was copied is deleted; a source that
+          // changed since (sync, another editor) is kept and reported below.
+          if (!await _sourceIntact(fromStore, originals[i], copiedText[i])) {
+            throw const NotebookException('A page changed during the move.');
+          }
           await _delete(fromLoc, ids[i]);
           removed.add(i);
         }
@@ -1628,7 +1655,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         Future<bool> absent(int i) async =>
             await FileSystemEntity.type(fromStore.pathFor(ids[i])) == FileSystemEntityType.notFound;
         for (var i = 0; i < ids.length; i++) {
-          if (await _sourceIntact(fromStore, originals[i])) {
+          if (await _sourceIntact(fromStore, originals[i], copiedText[i])) {
             intact.add(i);
             continue;
           }
@@ -3603,6 +3630,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       throw _KeptFolderNotEmpty(left);
     }
   }
+
+  String _placeName(String loc) => _binders[loc]?.title ?? (loc == _standalone ? 'Pages' : loc);
 
   Future<void> _write(String loc, NotedPage page) async {
     await _assertCanWrite(loc);
