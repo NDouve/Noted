@@ -80,8 +80,9 @@ void main() {
     ToolbarArrangement layout, {
     bool readOnly = false,
     Brightness brightness = Brightness.light,
+    double width = 2400,
   }) async {
-    t.view.physicalSize = const Size(2400, 600);
+    t.view.physicalSize = Size(width, 600);
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
     await t.pumpWidget(
@@ -244,5 +245,57 @@ void main() {
         expect(box.color, isNot(notedThemeData(b).colorScheme.surface));
       });
     }
+  });
+
+  group('At 400 px', () {
+    testWidgets('tabs: all tabs fit the row and no icon overlaps them', (
+      t,
+    ) async {
+      await pump(t, tabbedToolbarLayout, width: 400);
+      final strip = t.getRect(find.byType(SingleChildScrollView));
+      final tabs = [
+        for (final id in ['home', 'insert', 'draw', 'view'])
+          t.getRect(find.byKey(CommandToolbar.tabKey(id))),
+      ];
+      // Each tab is whole inside the strip, so none is cut off at its end.
+      for (final r in tabs) {
+        expect(strip.contains(r.centerRight), isTrue);
+        expect(strip.contains(r.centerLeft), isTrue);
+      }
+      // No command button shares the row of the tabs.
+      for (final id in ['canvas.undo', 'canvas.redo', 'app.search']) {
+        final f = find.byKey(ValueKey(id));
+        if (f.evaluate().isEmpty) continue;
+        expect(t.getRect(f).overlaps(strip), isFalse, reason: id);
+      }
+      expect(t.takeException(), isNull);
+    });
+    testWidgets('contextual: the ends keep full size, the rest is in More', (
+      t,
+    ) async {
+      await pump(t, contextualToolbarLayout, width: 400);
+      for (final id in ['canvas.select', 'canvas.undo']) {
+        expect(
+          t.getSize(find.byKey(ValueKey(id))),
+          const Size.square(36),
+          reason: id,
+        );
+      }
+      expect(find.byTooltip('More'), findsOneWidget);
+      final bar = t.getRect(find.byType(CommandToolbar));
+      expect(bar.contains(t.getRect(find.byTooltip('More')).centerRight), isTrue);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('desktop width: the ends and shaded middle are unchanged', (
+      t,
+    ) async {
+      await pump(t, contextualToolbarLayout, width: 1200);
+      expect(
+        t.getSize(find.byKey(const ValueKey('canvas.select'))),
+        const Size.square(36),
+      );
+      expect(find.byKey(CommandToolbar.sectionKey('insert')), findsOneWidget);
+    });
   });
 }

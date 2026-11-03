@@ -224,7 +224,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
   }) {
     final chip = ChoiceChip(
       key: ValueKey(key),
-      label: Text(label),
+      label: Text(label, softWrap: true, maxLines: 4, overflow: TextOverflow.visible),
       selected: selected,
       onSelected: onTap == null ? null : (_) => onTap(),
     );
@@ -656,9 +656,11 @@ class _CodesSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            Expanded(child: Text('Codes', key: const ValueKey('settings-codes-heading'), style: sub)),
+            Text('Codes', key: const ValueKey('settings-codes-heading'), style: sub),
             TextButton.icon(
               key: const ValueKey('settings-connect'),
               icon: Icon(Icons.add_link_rounded, size: m.icon, color: scheme.onSurfaceVariant),

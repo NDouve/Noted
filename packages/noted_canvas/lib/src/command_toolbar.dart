@@ -288,6 +288,10 @@ class _CommandToolbarState extends State<CommandToolbar> {
     );
   }
 
+  /// Windows narrower than this (logical px) get the contextual toolbar as a
+  /// single row that overflows into More.
+  static const double _compactBarWidth = 800;
+
   Widget _contextual(BuildContext context, ContextualToolbarLayout l) {
     final m = NotedMetrics.of(context);
     final scheme = Theme.of(context).colorScheme;
@@ -310,6 +314,14 @@ class _CommandToolbarState extends State<CommandToolbar> {
       }
     }
     _shownSection = shown?.id;
+    // On a phone-width window the two ends would take 60% of the bar and be
+    // scaled down to unreadable size; there everything is one row that
+    // overflows into More, in the order leading, section, trailing.
+    if (MediaQuery.sizeOf(context).width < _compactBarWidth) {
+      return _bar(
+        middle: _units([..._resolve(l.leading), ...groups, ..._resolve(l.trailing)]),
+      );
+    }
     return _bar(
       leading: _groups(_resolve(l.leading)),
       middle: _units(groups),
@@ -338,7 +350,10 @@ class _CommandToolbarState extends State<CommandToolbar> {
         if (_resolve(t.groups).isNotEmpty) t,
     ];
     final current = tabs.where((t) => t.id == _tab).firstOrNull ?? tabs.firstOrNull;
-    final leading = _groups(_resolve(l.leading));
+    // On a phone-width window the tabs get the whole row; Undo, Redo and
+    // Search join the commands of the bar below, which overflows into More.
+    final compact = MediaQuery.sizeOf(context).width < _compactBarWidth;
+    final leading = compact ? <Widget>[] : _groups(_resolve(l.leading));
     Widget tab(ToolbarTab t) {
       final selected = t.id == current?.id;
       return Semantics(
@@ -348,7 +363,7 @@ class _CommandToolbarState extends State<CommandToolbar> {
           onPressed: () => setState(() => _tab = t.id),
           style: TextButton.styleFrom(
             minimumSize: Size(m.controlSize, m.controlSize),
-            padding: EdgeInsets.symmetric(horizontal: m.space3),
+            padding: EdgeInsets.symmetric(horizontal: compact ? m.space2 : m.space3),
             foregroundColor: selected ? scheme.primary : scheme.onSurface,
             textStyle: selected ? type.bodyStrong : type.body,
             shape: RoundedRectangleBorder(borderRadius: m.borderMd),
@@ -400,13 +415,19 @@ class _CommandToolbarState extends State<CommandToolbar> {
                     ),
                   ),
                 ),
-                ..._groups(_resolve(l.trailing)),
+                if (!compact) ..._groups(_resolve(l.trailing)),
               ],
             ),
           ),
         ),
         _bar(
-          middle: current == null ? const [] : _units(_resolve(current.groups)),
+          middle: current == null
+              ? const []
+              : _units([
+                  if (compact) ..._resolve(l.leading),
+                  ..._resolve(current.groups),
+                  if (compact) ..._resolve(l.trailing),
+                ]),
         ),
       ],
     );

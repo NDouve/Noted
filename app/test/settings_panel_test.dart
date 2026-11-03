@@ -6,6 +6,7 @@ import 'dart:io';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
@@ -50,8 +51,8 @@ void main() {
   });
 
   // Pumps the panel of a page or binder on its own.
-  Future<void> pumpPanel(WidgetTester t, Widget panel) async {
-    t.view.physicalSize = const Size(1000, 1800);
+  Future<void> pumpPanel(WidgetTester t, Widget panel, {double width = 1000}) async {
+    t.view.physicalSize = Size(width, 1800);
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
     await t.pumpWidget(MaterialApp(home: Scaffold(body: panel)));
@@ -127,6 +128,30 @@ void main() {
       expect(find.textContaining('Now: Guarded, set on this page'), findsOneWidget);
       await tap(t, 'settings-ai-inherit');
       expect(nb.ownAiAccess(page), isNull);
+    });
+
+    testWidgets('at 400 px no choice is cut off with an ellipsis', (t) async {
+      final b = await binder(t, 'Work');
+      await io(t, () => nb.setBinderAiAccess(b.path, AiAccess.privileged));
+      final page = await io(t, () => nb.createPage(binderPath: b.path));
+      await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: page), width: 400);
+
+      final pin = find.byKey(const ValueKey('settings-ai-privileged'));
+      expect(pin, findsOneWidget);
+      final label = find.descendant(of: pin, matching: find.byType(Text));
+      final box = t.renderObject<RenderParagraph>(label);
+      // The long label wraps to a second line instead of ending in an ellipsis.
+      expect(box.getMaxIntrinsicWidth(double.infinity), greaterThan(box.size.width));
+      expect(box.size.height, greaterThan(30));
+      expect(box.didExceedMaxLines, isFalse);
+      expect(t.takeException(), isNull);
+      // Every chip's text is shown whole: no paragraph wider than its chip.
+      for (final chip in find.byType(ChoiceChip).evaluate()) {
+        final c = find.byWidget(chip.widget);
+        final p = t.renderObject<RenderParagraph>(find.descendant(of: c, matching: find.byType(Text)).first);
+        expect(p.didExceedMaxLines, isFalse);
+        expect(t.getRect(c).right, lessThanOrEqualTo(400));
+      }
     });
 
     testWidgets('a top-level standalone page may choose any value', (t) async {
