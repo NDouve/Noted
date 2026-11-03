@@ -1143,26 +1143,33 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (e is Directory) {
         await _copyDir(e, Directory(target), created: created);
       } else if (e is File && !name.endsWith('.tmp') && !await File(target).exists()) {
-        await e.copy(target);
+        // Recorded first, so a copy that fails half way is removed too.
         created?.add(target);
+        await e.copy(target);
       }
     }
   }
 
   /// Removes what [_copyDir] recorded in `created`: the files, then the
   /// directories it made (deepest first), each only if it is empty by then.
-  static Future<void> _removeCreated(List<String> created) async {
+  /// Returns whether everything was removed.
+  static Future<bool> _removeCreated(List<String> created) async {
+    var all = true;
     for (final p in created.reversed) {
       try {
-        if (FileSystemEntity.typeSync(p, followLinks: false) == FileSystemEntityType.file) {
+        final type = FileSystemEntity.typeSync(p, followLinks: false);
+        if (type == FileSystemEntityType.notFound) continue; // a partial copy that never landed
+        if (type == FileSystemEntityType.file) {
           await File(p).delete();
         } else {
           await Directory(p).delete();
         }
       } on Object catch (e) {
+        all = false;
         debugPrint('Removing $p failed: $e');
       }
     }
+    return all;
   }
 
   /// Moves [from] to [to]: a rename, or a copy and delete across drives.
@@ -1661,7 +1668,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         try {
           if (await fromStore.readText(ids[i]) != copiedText[i]) stale.add(i);
         } on Object {
-          unreadable.add(i);
+          // A source that is gone is not a failure: the copy is then the page
+          // (the delete below reports it as absent). Any other failure to read
+          // stops the move.
+          if (FileSystemEntity.typeSync(fromStore.pathFor(ids[i]), followLinks: false) !=
+              FileSystemEntityType.notFound) {
+            unreadable.add(i);
+          }
         }
       }
       if (stale.isNotEmpty || unreadable.isNotEmpty) {
@@ -1672,16 +1685,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
 
         final source = _placeName(fromLoc);
+        String list(List<int> l) => l.map(label).join(', ');
+        String it(List<int> l) => l.length == 1 ? 'it' : 'them';
         throw NotebookException(
           [
+            'Nothing was moved.',
             if (stale.isNotEmpty)
-              '${stale.map(label).join(', ')} was not moved: a newer version of '
-                  '${stale.length == 1 ? 'it' : 'them'} is in $source, so ${stale.length == 1 ? 'it was' : 'they were'} '
-                  'left there and the copy made for the move was dropped.',
+              '${list(stale)} ${stale.length == 1 ? 'has' : 'have'} a newer version in $source, so '
+                  '${stale.length == 1 ? 'it was' : 'they were'} left there and the copy made for the move was dropped.',
             if (unreadable.isNotEmpty)
-              '${unreadable.map(label).join(', ')} was not moved: ${unreadable.length == 1 ? 'its' : 'their'} '
-                  'file in $source could not be read to check it. ${unreadable.length == 1 ? 'It stays' : 'They stay'} '
-                  'where ${unreadable.length == 1 ? 'it was' : 'they were'}.',
+              '${list(unreadable)} could not be read in $source to check ${it(unreadable)}, so '
+                  '${unreadable.length == 1 ? 'it stays' : 'they stay'} where '
+                  '${unreadable.length == 1 ? 'it was' : 'they were'}.',
+            if (!stale.contains(0) && !unreadable.contains(0)) '${label(0)} stayed where it was.',
           ].join(' '),
           needsAction: true,
         );
@@ -1760,12 +1776,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             debugPrint('Removing copy of page ${ids[i]} failed: $e2');
             copyLeft[i] = 'the page file';
           }
-          try {
-            // Only what this move copied, never an attachments folder (or a
-            // file in it) that was at the target before.
-            await _removeCreated(assetsMade[ids[i]] ?? const []);
-          } on Object catch (e2) {
-            debugPrint('Removing the attachments of page ${ids[i]} at the target failed: $e2');
+          // Only what this move copied, never an attachments folder (or a file
+          // in it) that was at the target before.
+          if (!await _removeCreated(assetsMade[ids[i]] ?? const [])) {
+            debugPrint('Removing the attachments of page ${ids[i]} at the target failed');
             copyLeft[i] = copyLeft.containsKey(i) ? 'the page file and its attachments' : 'its attachments';
           }
         }

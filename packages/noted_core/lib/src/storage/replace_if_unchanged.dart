@@ -343,6 +343,12 @@ class DeleteResult {
 /// [replaceIfUnchanged]: target is briefly absent, and a [FileSystemException]
 /// means "retry later" with the original kept (see there).
 ///
+/// Crash window: the file is only set aside, not yet deleted, between the
+/// move-aside and the final delete. A crash there leaves it under its
+/// [asideSuffix] name; the next [sweepAsideFiles] (run by [PageStore.scan])
+/// puts it back, so the page reappears (a duplicate of what the caller meant
+/// to delete). Nothing is lost.
+///
 /// Test seams: [beforeMoveAside], [afterRead] (the target is absent) and
 /// [beforeRestore], as in [replaceIfUnchanged].
 Future<DeleteResult> deleteFileIfUnchanged(

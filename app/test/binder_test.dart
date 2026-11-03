@@ -107,6 +107,12 @@ class FlakyStore extends PageStore {
     if (failSaveAfterDelete) failSave = true;
   }
 
+  /// Pages whose compare-and-delete runs the two seam hooks below (the
+  /// move-aside and the read of the set-aside file).
+  final Set<String> seamIds = {};
+  void Function()? seamBeforeMoveAside;
+  void Function()? seamAfterRead;
+
   /// Runs at the start of a compare-and-delete of a page, before the check.
   void Function(String pageId)? beforeDeleteIfUnchanged;
 
@@ -123,11 +129,12 @@ class FlakyStore extends PageStore {
       throw const FileSystemException('drive gone');
     }
     beforeDeleteIfUnchanged?.call(pageId);
+    final seam = seamIds.contains(pageId);
     final r = await super.deleteIfUnchanged(
       pageId,
       expectedText,
-      beforeMoveAside: beforeMoveAside,
-      afterRead: afterRead,
+      beforeMoveAside: seam ? seamBeforeMoveAside : beforeMoveAside,
+      afterRead: seam ? seamAfterRead : afterRead,
       beforeRestore: beforeRestore,
     );
     if (r.deleted && failSaveAfterDelete) failSave = true;
@@ -645,7 +652,7 @@ void main() {
               .having(
                 (e) => e.message,
                 'message',
-                allOf(contains('was not moved'), contains('newer version'), isNot(contains('partly'))),
+                allOf(contains('Nothing was moved.'), contains('newer version'), isNot(contains('partly'))),
               )
               .having((e) => e.needsAction, 'needsAction', isTrue),
         ),
@@ -697,7 +704,7 @@ void main() {
       await expectLater(
         nb.moveToLocation(a),
         throwsA(
-          isA<NotebookException>().having((e) => e.message, 'message', contains('could not be read to check it')),
+          isA<NotebookException>().having((e) => e.message, 'message', contains('could not be read in Work to check it')),
         ),
       );
       source.failRead.clear();
@@ -720,6 +727,44 @@ void main() {
       );
       expect(File('${pages.path}/$a.canvas').existsSync(), isFalse);
       expect(File('${pages.path}/$b.canvas').existsSync(), isFalse);
+    });
+
+    test('a restore puts back the copied bytes, not a rewritten page', () async {
+      final crlf = '${read(folder, a)}\r\n';
+      File('${folder.path}/$a.canvas').writeAsStringSync(crlf);
+      source.failDelete.add(b);
+      await expectLater(nb.moveToLocation(a), throwsA(isA<NotebookException>()));
+      expect(read(folder, a), crlf, reason: 'a was deleted, then put back as it was, line ends included');
+      expect(File('${pages.path}/$a.canvas').existsSync(), isFalse);
+    });
+
+    test('a newer file appearing while the source is set aside: both kept, reported', () async {
+      source.seamIds.add(b);
+      late String newer;
+      source.seamBeforeMoveAside = () {
+        newer = read(folder, b).replaceFirst('"title":"', '"title":"Newer ');
+        File('${folder.path}/$b.canvas').writeAsStringSync(newer);
+      };
+      source.seamAfterRead = () => File('${folder.path}/$b.canvas').writeAsStringSync('arrived meanwhile');
+
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('newer version'))),
+      );
+      expect(read(folder, b), 'arrived meanwhile', reason: 'the file at the path is never written over');
+      final kept = folder.listSync().where((f) => f.path.endsWith('.cas-old')).toList();
+      expect(kept, hasLength(1), reason: 'the set-aside version is kept for the next scan');
+      expect(File(kept.single.path).readAsStringSync(), newer);
+      expect(File('${pages.path}/$b.canvas').existsSync(), isFalse);
+    });
+
+    test('a source that vanished while being deleted: the copy is the page', () async {
+      source.seamIds.add(b);
+      source.seamBeforeMoveAside = () => File('${folder.path}/$b.canvas').deleteSync();
+      expect(await nb.moveToLocation(a), isTrue);
+      expect(File('${pages.path}/$b.canvas').existsSync(), isTrue);
+      expect(File('${folder.path}/$b.canvas').existsSync(), isFalse);
+      expect(nb.binderOfPage(b), isNull);
     });
 
     test('a source that cannot be read at the start is not moved', () async {
