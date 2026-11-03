@@ -79,6 +79,10 @@ class _Kept {
   NotedPage? page;
   String? baseText;
 
+  // When [page] was taken: a recovery entry written after that (the open
+  // page blocked, a save whose folder vanished) is newer, and replaces it.
+  DateTime? heldAt;
+
   // The page text of the recovery entry that holds the edits (written here,
   // or read from it); a newer edit replaces it.
   String? entryText;
@@ -305,14 +309,42 @@ class UnsavedEdits {
     } else {
       k
         ..page = page
-        ..baseText = baseText;
+        ..baseText = baseText
+        ..heldAt = DateTime.now();
     }
     return ok;
+  }
+
+  // Writes the copy held in memory to recovery, unless a newer entry is there
+  // (then that one holds the edits). True when recovery holds them.
+  Future<bool> _keepHeld(String id, _Kept k) async {
+    final page = k.page;
+    if (page == null || await _adoptNewer(id, k)) return true;
+    return _keep(id, k, page, k.baseText);
+  }
+
+  // An entry of the page written after the copy in memory was taken holds
+  // newer edits (from the open page, or a save whose folder vanished): it
+  // replaces that copy, which is never written over it.
+  Future<bool> _adoptNewer(String id, _Kept k) async {
+    final at = k.heldAt;
+    if (k.page == null || at == null) return false;
+    final rec = host.recovery;
+    if (rec == null) return false;
+    final newer = (await rec.list()).entries.where((e) => e.folder == k.folder && e.pageId == id && e.time.isAfter(at));
+    if (newer.isEmpty) return false;
+    k
+      ..page = null
+      ..baseText = null
+      ..heldAt = null
+      ..entryText = newer.first.pageText;
+    return true;
   }
 
   // The kept page and its base: from memory, or from the recovery entry (null
   // if it is not there any more).
   Future<({NotedPage mine, NotedPage base})?> _edits(String id, _Kept k) async {
+    await _adoptNewer(id, k);
     var mine = k.page;
     var baseText = k.baseText;
     if (mine == null) {
@@ -337,13 +369,15 @@ class UnsavedEdits {
     _delay = null; // a save landed: the next failure starts again from the first delay
     final rec = host.recovery;
     final text = k.entryText;
-    // A copy held in memory is newer than any entry of the page: they all go,
-    // or a later replay would bring back what was deleted since.
-    final newest = k.page != null;
-    if (rec == null || (text == null && !newest)) return;
+    // A copy held in memory is newer than the entries of the page written
+    // before it was taken: they go too, or a later replay would bring back
+    // what was deleted since. One written after it is never deleted here.
+    final heldAt = k.page == null ? null : k.heldAt;
+    if (rec == null || (text == null && heldAt == null)) return;
     try {
       for (final e in (await rec.list()).entries) {
-        if (e.folder == k.folder && e.pageId == id && (newest || e.pageText == text)) await rec.delete(e);
+        if (e.folder != k.folder || e.pageId != id) continue;
+        if (e.pageText == text || (heldAt != null && !e.time.isAfter(heldAt))) await rec.delete(e);
       }
     } on Object catch (e) {
       debugPrint('Dropping the recovery entry of page $id failed: $e');
@@ -353,8 +387,7 @@ class UnsavedEdits {
   // The page is gone from its place (deleted or moved on another device): its
   // entry stays, and restores it at the next start (0070).
   Future<void> _gone(String id, _Kept k) async {
-    final page = k.page;
-    if (page != null && !await _keep(id, k, page, k.baseText)) return _schedule();
+    if (!await _keepHeld(id, k)) return _schedule();
     if (!identical(_remove(id), k) || _disposed) return;
     final title = k.title.trim();
     host.notify(
@@ -371,8 +404,7 @@ class UnsavedEdits {
     try {
       if (host.isLocked(k.loc)) {
         // Its place can't be written now; wait for it.
-        final page = k.page;
-        if (page != null) await _keep(id, k, page, k.baseText);
+        await _keepHeld(id, k);
         return _schedule();
       }
       if (host.locOf(id) != k.loc) return await _gone(id, k);
@@ -410,15 +442,13 @@ class UnsavedEdits {
         case ClosedSaveResult.unreadable:
           // Never written over: the edits stay in recovery until a readable
           // version is there (0124).
-          final page = k.page;
-          if (page != null) await _keep(id, k, page, k.baseText);
+          await _keepHeld(id, k);
           k.blocked = true;
           host.unreadable(k.loc, id, out.why ?? "it couldn't be read");
         case ClosedSaveResult.folderGone:
           // The save wrote its own entry, which the next retry reads; edits
           // held in memory are kept there too.
-          final page = k.page;
-          if (page != null) await _keep(id, k, page, k.baseText);
+          await _keepHeld(id, k);
           _schedule();
         case ClosedSaveResult.busy || ClosedSaveResult.failed:
           _schedule();

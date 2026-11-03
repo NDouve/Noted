@@ -1516,5 +1516,46 @@ void main() {
       expect(deleted.pages.single.nodes.whereType<BoxRecord>().where((n) => n.landed != null), isEmpty);
       st.failSave = false;
     });
+
+    // Page a's edits (box 1) are held in memory only; it is reopened and
+    // edited again (box 2); then recovery works, its file turns unreadable
+    // (the open page's block keeps box 1 and 2 in a newer entry), and page b
+    // is opened. Returns the file, its readable text, and the ids of the boxes.
+    Future<(Notebook, _ToggleStore, File, String, List<String>)> heldThenBlocked() async {
+      File(rec.path).createSync(recursive: true); // recovery can not be written
+      final (nb, st, a, b) = await editing();
+      st.failSave = true;
+      await nb.open(b); // box 1 is held in memory only
+      await nb.open(a); // a fresh editor from the held copy
+      nb.current!.createBoxAt(const Bounds(300, 300, 0, 0)); // box 2
+      final ids = [for (final n in nb.current!.page.nodes) n.id];
+      File(rec.path).deleteSync(); // recovery works again
+      final file = pageFile(pages, a);
+      final readable = file.readAsStringSync();
+      file.writeAsStringSync(readable.replaceFirst(RegExp(r'"format"\s*:\s*1'), '"format":99'));
+      await nb.checkFile(file.path); // blocked: box 1 and 2 go to recovery
+      expect(nb.readOnlyReason, isNotNull);
+      expect((await entries(nb)).single.page.nodes, hasLength(2));
+      await nb.open(b); // the blocked page is left; its save does not run
+      return (nb, st, file, readable, ids);
+    }
+
+    test('edits kept by a blocked page are newer than a copy held in memory: they land, nothing is lost', () async {
+      final (nb, st, file, readable, ids) = await heldThenBlocked();
+      file.writeAsStringSync(readable); // a readable version is back
+      st.failSave = false;
+      await nb.flush();
+      expect(readPage(file.readAsStringSync()).nodes.map((n) => n.id), unorderedEquals(ids));
+      expect(await entries(nb), isEmpty);
+      expect(nb.unsavedDescription, isNull);
+    });
+
+    test('a retry that finds the file still unreadable never writes the older copy over the newer entry', () async {
+      final (nb, st, file, _, ids) = await heldThenBlocked();
+      st.failSave = false;
+      await nb.flush(); // the file is still unreadable
+      expect(file.readAsStringSync(), contains('"format":99'), reason: 'never written over');
+      expect((await entries(nb)).single.page.nodes.map((n) => n.id), unorderedEquals(ids));
+    });
   });
 }

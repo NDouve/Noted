@@ -374,6 +374,26 @@ void main() {
     expect(await entries(), isEmpty, reason: 'a later replay would bring back what was deleted since');
   });
 
+  test(
+    'an entry written after the copy in memory was taken replaces it: it lands and is never deleted unlanded',
+    () async {
+      host.keepFails = true;
+      await failed('a'); // box 1, held in memory only
+      host.keepFails = false;
+      // A save whose folder vanished (an AI write, say) kept a newer version.
+      final (base, newer) = page('a', boxes: 2);
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      await host.recovery!.write(folder: _folder, page: newer, baseText: writePage(base), time: DateTime.now());
+      host.locked.add(_loc);
+      await retry(); // the place is locked: the copy in memory must not overwrite it
+      expect((await entries()).single.pageText, writePage(newer));
+      host.locked.clear();
+      await retry();
+      expect(readPage(host.files['a']!).nodes, hasLength(2));
+      expect(await entries(), isEmpty);
+    },
+  );
+
   test('an entry replayed by someone else ends the tracking', () async {
     await failed('a');
     for (final e in await entries()) {
