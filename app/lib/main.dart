@@ -25,6 +25,7 @@ import 'src/ai/ai_link_server.dart';
 import 'src/ai/ai_running_lock.dart';
 import 'src/app_settings.dart';
 import 'src/attachment_platform.dart';
+import 'src/device_storage.dart';
 import 'src/app_theme.dart';
 import 'src/home.dart';
 import 'src/notebook.dart';
@@ -73,22 +74,42 @@ Future<void> main() async {
       await rootBundle.loadString('assets/fonts/Inter/OFL.txt'),
     );
   });
+  // On a phone or tablet, finds the app's folders before any default path is
+  // read (0129).
+  await initDeviceStorage();
   final settings = AppSettings(defaultSettingsFile());
-  final dataFolder = defaultSettingsFile().parent;
+  final notebook = buildAppNotebook(settings: settings);
+  FileClipboard.read = readClipboardFiles;
+  final services = await startAiServices(notebook, defaultSettingsFile().parent);
+  runApp(NotedApp(notebook: notebook, settings: settings, aiLink: services.link, runningLock: services.lock));
+  await notebook.load();
+  // After the first frame, so the window can show the questions.
+  WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(notebook.askPendingAiApprovals()));
+}
+
+/// The notebook with this build's platform wiring (0129): on mobile there is
+/// no AI access service (no MCP server), no folder watching and no folder
+/// picker (neither file_selector's iOS nor its Android folder picker gives
+/// a usable path). The folders default to the platform's; tests pass their
+/// own.
+Notebook buildAppNotebook({AppSettings? settings, Directory? pagesDirectory, File? bindersFile}) {
+  final binders = bindersFile ?? defaultBindersFile();
   late final Notebook notebook;
-  final aiAccess = AiAccessService(
-    dataFolder: dataFolder,
-    pageOfBox: (id) => notebook.aiPageOfBox(id),
-    // Another Noted may change the codes or the log: show it.
-    pollInterval: const Duration(seconds: 3),
-  );
-  notebook = Notebook(
-    PageStore(defaultPagesDirectory()),
+  final aiAccess = isMobilePlatform
+      ? null
+      : AiAccessService(
+          dataFolder: binders.absolute.parent,
+          pageOfBox: (id) => notebook.aiPageOfBox(id),
+          // Another Noted may change the codes or the log: show it.
+          pollInterval: const Duration(seconds: 3),
+        );
+  return notebook = Notebook(
+    PageStore(pagesDirectory ?? defaultPagesDirectory()),
     buildModules(aiAccess: aiAccess),
-    bindersFile: defaultBindersFile(),
-    recoveryDirectory: defaultRecoveryDirectory(defaultBindersFile()),
-    pickFolder: () => getDirectoryPath(confirmButtonText: 'Use this folder'),
-    watchFiles: true,
+    bindersFile: binders,
+    recoveryDirectory: defaultRecoveryDirectory(binders),
+    pickFolder: isMobilePlatform ? null : () => getDirectoryPath(confirmButtonText: 'Use this folder'),
+    watchFiles: !isMobilePlatform,
     deviceName: computerName(),
     settings: settings,
     aiAccess: aiAccess,
@@ -96,17 +117,18 @@ Future<void> main() async {
     attachmentPicker: pickAttachments,
     attachmentOpener: openWithDefaultApp,
   );
-  FileClipboard.read = readClipboardFiles;
+}
+
+/// Starts what `noted_mcp` relies on: the running lock and the local link.
+/// Neither runs on mobile (0129), which has no MCP server; both are null then.
+Future<({AiRunningLock? lock, AiLinkServer? link})> startAiServices(Notebook notebook, Directory dataFolder) async {
+  if (isMobilePlatform) return (lock: null, link: null);
   // Held until the app exits: it tells noted_mcp that Noted is running.
   final runningLock = appRunningLock = AiRunningLock(dataFolder)..acquire();
   // If another process held it for too long, keep trying, with a warning
   // on screen until it is ours.
   if (!runningLock.held) runningLock.startRetrying();
-  final aiLink = await startAiLink(notebook, dataFolder);
-  runApp(NotedApp(notebook: notebook, settings: settings, aiLink: aiLink, runningLock: runningLock));
-  await notebook.load();
-  // After the first frame, so the window can show the questions.
-  WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(notebook.askPendingAiApprovals()));
+  return (lock: runningLock, link: await startAiLink(notebook, dataFolder));
 }
 
 /// Starts the local link the MCP server writes through (invariant 4), with
