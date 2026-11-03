@@ -54,8 +54,8 @@ void main() {
     expect(safeAttachmentName(null), 'Pasted file');
     expect(safeAttachmentName('a/b/'), 'Pasted file');
     expect(safeAttachmentName('.pdf'), 'Pasted file.pdf');
-    expect(safeAttachmentName('a\u007fb‮c.txt'), 'a_b_c.txt');
-    expect(safeAttachmentName('x​.txt'), 'x_.txt');
+    expect(safeAttachmentName('a\u007fb\u202Ec.txt'), 'a_b_c.txt');
+    expect(safeAttachmentName('x\u200b.txt'), 'x_.txt');
     final long = safeAttachmentName('${'a' * 300}.pdf');
     expect(long.length, 255);
     expect(long.endsWith('.pdf'), isTrue);

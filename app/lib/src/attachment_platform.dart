@@ -121,7 +121,7 @@ Future<IncomingFile?> readContentUri(String uri) async {
 String safeAttachmentName(String? raw) {
   var name = (raw ?? '').split(RegExp(r'[\\/]')).last;
   name = name
-      .replaceAll(RegExp('[\u0000-\u001f\u007f​-‏‪-‮⁦-⁩<>:"|?*]'), '_')
+      .replaceAll(RegExp(r'[\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069<>:"|?*]'), '_')
       .trim();
   name = name.replaceAll(RegExp(r'[. ]+$'), '');
   final lead = RegExp(r'^\.+').firstMatch(name);
