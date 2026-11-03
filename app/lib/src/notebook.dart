@@ -3290,46 +3290,70 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     final path = st.pathFor(id);
     final file = File(path);
-    NotedPage? theirs;
-    String? theirsText;
-    var time = DateTime.now().millisecondsSinceEpoch;
-    if (await file.exists()) {
-      try {
-        theirsText = utf8.decode(await file.readAsBytes());
-      } on FormatException catch (ex) {
-        throw _ReplayFailure("the saved file of $label isn't a valid page file", detail: '$ex');
+    // Read, merge, publish only over exactly what was merged against (or only
+    // if still absent), and read back: the same loop as _saveClosedPage. If the
+    // file changed in between (a newer generation landed), merge again; the
+    // entry is retired only once the bytes on disk are the ones merged.
+    for (var attempt = 0; attempt < 5; attempt++) {
+      await syncHook?.call('recover-reread', path);
+      NotedPage? theirs;
+      String? theirsText;
+      var time = DateTime.now().millisecondsSinceEpoch;
+      if (await file.exists()) {
+        try {
+          theirsText = utf8.decode(await file.readAsBytes());
+        } on FormatException catch (ex) {
+          throw _ReplayFailure("the saved file of $label isn't a valid page file", detail: '$ex');
+        }
+        theirs = _readForReplay(theirsText, 'the saved file of $label');
+        time = (await file.lastModified()).millisecondsSinceEpoch;
+        if (theirs.id != id) {
+          throw _ReplayFailure(
+            'the saved file for $label holds a different page',
+            detail: 'the saved file holds page "${theirs.id}", not "$id"',
+          );
+        }
       }
-      theirs = _readForReplay(theirsText, 'the saved file of $label');
-      time = (await file.lastModified()).millisecondsSinceEpoch;
-      if (theirs.id != id) {
+      final merged = theirs == null
+          ? mine
+          : mergePage(base, mine, theirs, modules.codecs, theirsTime: time, markLanded: false).page;
+      final out = writePage(merged);
+      if (out != theirsText) {
+        await syncHook?.call('recover-before-publish', path);
+        final published = theirsText == null
+            ? await _writeNew(loc, merged)
+            : await _writeIfUnchanged(loc, merged, theirsText);
+        if (!published) continue; // the file changed since it was read
+      }
+      final String back;
+      try {
+        back = await st.readText(id);
+      } on FileSystemException {
+        if (attempt < 4) continue;
+        rethrow;
+      }
+      if (back != out) {
+        if (attempt < 4) continue; // changed again after publishing: merge again
         throw _ReplayFailure(
-          'the saved file for $label holds a different page',
-          detail: 'the saved file holds page "${theirs.id}", not "$id"',
+          'the saved file of $label does not match what was written',
+          detail: 'the saved page differs from what was written',
         );
       }
-    }
-    final merged = theirs == null
-        ? mine
-        : mergePage(base, mine, theirs, modules.codecs, theirsTime: time, markLanded: false).page;
-    final out = writePage(merged);
-    if (out != theirsText) await _write(loc, merged);
-    final back = await st.readText(id);
-    if (back != out) {
-      throw _ReplayFailure(
-        'the saved file of $label does not match what was written',
-        detail: 'the saved page differs from what was written',
+      final why = verifyRecoveredPage(
+        base: base,
+        mine: mine,
+        theirs: theirs,
+        result: _readForReplay(back, 'the saved file of $label'),
       );
+      if (why != null) throw _ReplayFailure(_notAllKept(label), detail: why);
+      await _applyClosed(readPage(back), loc, _key(path), path);
+      await rec.delete(e);
+      return true;
     }
-    final why = verifyRecoveredPage(
-      base: base,
-      mine: mine,
-      theirs: theirs,
-      result: _readForReplay(back, 'the saved file of $label'),
+    throw _ReplayFailure(
+      'the saved file of $label keeps changing',
+      detail: 'the page file changed on every attempt to merge into it',
     );
-    if (why != null) throw _ReplayFailure(_notAllKept(label), detail: why);
-    await _applyClosed(readPage(back), loc, _key(path), path);
-    await rec.delete(e);
-    return true;
   }
 
   // Reads page text during a replay; a format problem becomes a plain
@@ -3580,6 +3604,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _assertCanWrite(loc);
     final st = _storeOf(loc);
     if (!await st.saveNew(page, beforePublish: beforePublish)) return false;
+    final key = _key(st.pathFor(page.id));
+    _known[key] = writePage(page);
+    _pathId[key] = page.id;
+    if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
+    onPageContent?.call(loc, page);
+    return true;
+  }
+
+  // Like [_write], for a page that must still hold exactly [expectedText] at
+  // the moment of publishing: false, with nothing written, when it doesn't.
+  Future<bool> _writeIfUnchanged(String loc, NotedPage page, String expectedText) async {
+    await _assertCanWrite(loc);
+    final st = _storeOf(loc);
+    if (!(await st.saveIfUnchanged(page, expectedText)).replaced) return false;
     final key = _key(st.pathFor(page.id));
     _known[key] = writePage(page);
     _pathId[key] = page.id;

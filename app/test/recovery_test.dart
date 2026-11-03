@@ -19,6 +19,50 @@ class _LossyStore extends PageStore {
 
   @override
   Future<void> save(NotedPage page) => super.save(NotedPage.create(page.meta));
+
+  @override
+  Future<ReplaceResult> saveIfUnchanged(
+    NotedPage page,
+    String? expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    void Function()? beforePublish,
+    void Function()? beforeRestore,
+  }) => super.saveIfUnchanged(NotedPage.create(page.meta), expectedText);
+}
+
+/// A store that runs [onPublish] just before a save, replace or new-file
+/// publish: a file changing between the replay's read and its write.
+class _RacingStore extends PageStore {
+  _RacingStore(super.directory, this.onPublish);
+
+  final void Function(int call) onPublish;
+  int calls = 0;
+
+  @override
+  Future<void> save(NotedPage page) {
+    onPublish(calls++);
+    return super.save(page);
+  }
+
+  @override
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) {
+    onPublish(calls++);
+    return super.saveNew(page, beforePublish: beforePublish);
+  }
+
+  @override
+  Future<ReplaceResult> saveIfUnchanged(
+    NotedPage page,
+    String? expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    void Function()? beforePublish,
+    void Function()? beforeRestore,
+  }) {
+    onPublish(calls++);
+    return super.saveIfUnchanged(page, expectedText);
+  }
 }
 
 /// A store whose scan can land a file and report a conflict copy at its path,
@@ -230,6 +274,82 @@ void main() {
     expect(merged.nodes, hasLength(2));
     expect(merged.nodes.map((n) => n.id), containsAll(theirs.nodes.map((n) => n.id)));
     expect(recFiles(), isEmpty);
+  });
+
+  group('R-2 replay over a page file that changes while it runs', () {
+    BoxRecord newerBox(String id) => BoxRecord.create(
+      id: id,
+      typeId: 'test.other',
+      dataVersion: 1,
+      bounds: const Bounds(300, 300, 100, 40),
+      data: RawJson.encode({'n': 1}),
+      snapshotText: 'newer',
+      rev: 'r-$id',
+    );
+
+    // Adds box [id] to whatever the file holds now, as a newer generation, or
+    // creates the file from [fallback] when it is absent.
+    void landNewer(File f, String id, NotedPage fallback) {
+      final cur = f.existsSync() ? readPage(f.readAsStringSync()) : fallback;
+      f.writeAsStringSync(writePage(cur.insertNode(newerBox(id))));
+    }
+
+    Future<(Notebook, String, NotedPage, _RacingStore)> setUp1(
+      void Function(int call, File f, NotedPage original) onPublish, {
+      bool deleteFile = false,
+    }) async {
+      final (nb, x, _) = await pendingEdit();
+      await vanish(nb);
+      quit(nb);
+      final original = readPage(pageFile(away, x).readAsStringSync());
+      if (deleteFile) pageFile(away, x).deleteSync();
+      await restore();
+      final store = _RacingStore(extra, (call) => onPublish(call, pageFile(extra, x), original));
+      return (
+        make(storeFactory: (d) => d.path == extra.path ? store : PageStore(d)),
+        x,
+        original,
+        store,
+      );
+    }
+
+    test('a newer generation landing before the publish is merged, not overwritten', () async {
+      var entryPresent = false;
+      final (again, x, original, _) = await setUp1((call, f, o) {
+        if (call == 0) {
+          entryPresent = recFiles().isNotEmpty;
+          landNewer(f, 'newgen', o);
+        }
+      });
+      await again.load();
+      expect(entryPresent, isTrue, reason: 'the entry is still there when the publish is attempted');
+      final disk = readPage(pageFile(extra, x).readAsStringSync());
+      expect(disk.node('newgen'), isNotNull, reason: 'the newer edits survive');
+      expect(disk.nodes, hasLength(original.nodes.length + 2)); // the pending box and theirs
+      expect(recFiles(), isEmpty);
+    });
+
+    test('a page absent at the read is published only if still absent', () async {
+      final (again, x, original, store) = await setUp1((call, f, o) {
+        if (call == 0) landNewer(f, 'newgen', o);
+      }, deleteFile: true);
+      await again.load();
+      final disk = readPage(pageFile(extra, x).readAsStringSync());
+      expect(disk.node('newgen'), isNotNull, reason: 'the file that appeared is merged, not replaced');
+      expect(disk.nodes, hasLength(original.nodes.length + 2)); // the pending box and theirs
+      expect(store.calls, 2);
+      expect(recFiles(), isEmpty);
+    });
+
+    test('the entry stays when the file keeps changing, and nothing newer is lost', () async {
+      var n = 0;
+      final (again, x, _, _) = await setUp1((call, f, o) => landNewer(f, 'gen${n++}', o));
+      await again.load();
+      final disk = readPage(pageFile(extra, x).readAsStringSync());
+      for (var i = 0; i < n; i++) {
+        expect(disk.node('gen$i'), isNotNull);
+      }
+      expect(recFiles(), isNotEmpty, reason: 'never verified: the entry is not retired');    });
   });
 
   test('the page file was deleted while away: the recovered page is written', () async {
