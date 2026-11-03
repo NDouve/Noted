@@ -1192,16 +1192,38 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // What to tell the user when attachment files stayed because the target
   // already holds something else under their name.
-  static String _differingNote(List<String> targets, String targetPlace, String sourcePlace) {
-    final names = targets.map(_baseName).toList();
-    final one = names.length == 1;
-    final shown = names.length <= 3
-        ? names.map((n) => '"$n"').join(', ')
-        : '${names.take(3).map((n) => '"$n"').join(', ')} and ${names.length - 3} more';
-    return 'the attachment ${one ? 'file' : 'files'} $shown could not be moved: $targetPlace already has '
+  static String _attachmentsNote(
+    List<String> differing,
+    List<String> keptAside,
+    String targetPlace,
+    String sourcePlace,
+  ) {
+    String shown(List<String> paths) {
+      final names = paths.map(_baseName).toList();
+      return names.length <= 3
+          ? names.map((n) => '"$n"').join(', ')
+          : '${names.take(3).map((n) => '"$n"').join(', ')} and ${names.length - 3} more';
+    }
+
+    final parts = <String>[];
+    if (differing.isNotEmpty) {
+      final one = differing.length == 1;
+      parts.add(
+        'the attachment ${one ? 'file' : 'files'} ${shown(differing)} could not be moved: $targetPlace already has '
         '${one ? 'a different file' : 'different files'} with ${one ? 'that name' : 'those names'}. '
         '${one ? 'It was' : 'They were'} left as ${one ? 'it is' : 'they are'}, and '
-        '${one ? 'the original stays' : 'the originals stay'} in $sourcePlace.';
+        '${one ? 'the original stays' : 'the originals stay'} in $sourcePlace.',
+      );
+    }
+    if (keptAside.isNotEmpty) {
+      final one = keptAside.length == 1;
+      parts.add(
+        '${one ? 'a leftover temporary file' : '${keptAside.length} leftover temporary files'} '
+        '(${shown(keptAside)}) in $sourcePlace could not be checked or put back, so '
+        '${one ? 'it was' : 'they were'} left there.',
+      );
+    }
+    return parts.join(' Also, ');
   }
 
   /// Makes [_moveDir] skip the rename, as a move across drives does.
@@ -2008,9 +2030,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       // Files that stayed because the target holds something else.
       final differing = [for (final c in copies.values) ...c.differing];
-      attachmentsNote = differing.isEmpty
+      final keptAside = [for (final c in copies.values) ...c.keptAside];
+      attachmentsNote = differing.isEmpty && keptAside.isEmpty
           ? null
-          : _differingNote(differing, _placeName(toLoc), _placeName(fromLoc));
+          : _attachmentsNote(differing, keptAside, _placeName(toLoc), _placeName(fromLoc));
 
       for (final p in moved) {
         _metas[p.id] = p.meta;
@@ -3866,12 +3889,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         continue;
       }
       if (e is! File) continue;
-      var name = raw;
-      if (raw.endsWith('.tmp')) {
-        name = raw.substring(0, raw.length - '.tmp'.length);
-        final m = _hashName.firstMatch(name);
-        if (m == null || contentHash(await e.readAsBytes()) != m.group(1)) continue;
-      }
+      final name = await attachmentNameToTake(e, raw);
+      if (name == null) continue;
       final target = File('${to.path}$sep$name');
       final tmp = File('${target.path}.landing.tmp');
       if (await _holdsContent(e, name, target)) {
@@ -4035,6 +4054,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<List<PageEntry>> _scan(PageStore st) => _underFolderLock(st, st.scan);
+
+  /// Whether the notebook still tracks the file at [path] (its last known
+  /// text or its page id).
+  @visibleForTesting
+  bool knowsFileForTest(String path) => _known.containsKey(_key(path)) || _pathId.containsKey(_key(path));
 
   /// Scans the folder of location [loc] through the folder lock, as the
   /// notebook's own scans do.

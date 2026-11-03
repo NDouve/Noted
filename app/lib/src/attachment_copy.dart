@@ -32,6 +32,11 @@ class AttachmentCopy {
 
   /// Whether the source attachments folder existed when it was copied.
   bool sourceExisted = false;
+
+  /// Leftover temporary files in the source that could not be put back or
+  /// checked, and set-aside originals that could not be put back. They stay
+  /// where they are and are reported to the user.
+  final List<String> keptAside = [];
 }
 
 final RegExp _hashName = RegExp(r'^([0-9a-f]{64})(\.[a-z0-9]+)?$');
@@ -49,7 +54,70 @@ Future<bool> Function(File tmp, String target)? attachmentPublishHook;
 @visibleForTesting
 Future<void> Function(String target)? attachmentBeforePublishHook;
 
+/// Run in [removeVerifiedSources] just before a source is moved aside. For
+/// tests.
+@visibleForTesting
+Future<void> Function(File source)? attachmentBeforeRemoveHook;
+
+/// Run in [removeVerifiedSources] just after a source was moved aside. For
+/// tests.
+@visibleForTesting
+Future<void> Function(File aside)? attachmentAfterAsideHook;
+
 const _chunk = 64 * 1024;
+
+/// The name a file of an attachments folder is copied or landed under, or
+/// null when it is not an attachment to take along. The writer's temporary
+/// name is `<attachment name>.tmp`. `<hash>.tmp` is also a real attachment (a
+/// file called report.tmp), so it keeps its own name, never renamed. Only
+/// `<hash>.<ext>.tmp`, which no attachment is called, is an unfinished write:
+/// when it holds its hash it lands as `<hash>.<ext>`. Any other `.tmp` is not
+/// an attachment.
+Future<String?> attachmentNameToTake(File f, String raw) async {
+  if (!raw.endsWith('.tmp')) return raw;
+  final stripped = raw.substring(0, raw.length - '.tmp'.length);
+  final m = _hashName.firstMatch(stripped);
+  if (m != null && m.group(2) != null) {
+    return await contentHashOfStream(f.openRead()) == m.group(1) ? stripped : null;
+  }
+  return _hashName.firstMatch(raw) != null ? raw : null;
+}
+
+// `<name>.<micros>-<n>.tmp`: the unique temporary and set-aside names.
+final RegExp _uniqueTmp = RegExp(r'^(.+)\.\d+-\d+\.tmp$');
+
+/// Puts back what an interrupted write or removal left under a unique
+/// temporary name in [dir]: a file that holds its hash goes back to its name
+/// if that is free, and a duplicate of a file already there is dropped. Any
+/// other leftover stays and is added to [AttachmentCopy.keptAside].
+Future<void> _sweepLeftovers(Directory dir, AttachmentCopy r) async {
+  final sep = Platform.pathSeparator;
+  final found = <File>[];
+  await for (final e in dir.list(followLinks: false)) {
+    if (e is File && _uniqueTmp.hasMatch(_baseName(e.path))) found.add(e);
+  }
+  for (final f in found) {
+    final base = _uniqueTmp.firstMatch(_baseName(f.path))!.group(1)!;
+    final target = '${dir.path}$sep$base';
+    try {
+      final hm = _hashName.firstMatch(base);
+      final complete = hm != null && await contentHashOfStream(f.openRead()) == hm.group(1);
+      if (complete) {
+        if (FileSystemEntity.typeSync(target, followLinks: false) == FileSystemEntityType.notFound) {
+          if (await publishExclusive(f, target)) continue;
+        }
+        if (FileSystemEntity.typeSync(target, followLinks: false) == FileSystemEntityType.file &&
+            await sameContent(f, File(target))) {
+          await f.delete(); // a duplicate of what is there
+          continue;
+        }
+      }
+    } on FileSystemException catch (e) {
+      debugPrint('Checking the leftover ${f.path} failed: $e');
+    }
+    r.keptAside.add(f.path);
+  }
+}
 
 Future<Uint8List> _readFully(RandomAccessFile f) async {
   final out = BytesBuilder(copy: false);
@@ -93,12 +161,14 @@ Future<bool> sameContent(File a, File b) async {
 /// bytes equal the source's; if it is named by its content hash and does not
 /// hold that hash it is a partial copy and is replaced; anything else
 /// (different bytes, a link, a folder) stays as it is and is reported in
-/// [AttachmentCopy.differing]. A complete `<hash>.tmp` in the source (an
-/// attachment write stopped before its rename) is copied as `<hash>`; other
-/// `.tmp` files are skipped.
+/// [AttachmentCopy.differing]. Names are taken as [attachmentNameToTake] says
+/// (a `<hash>.tmp` attachment keeps its name; an unfinished `<hash>.<ext>.tmp`
+/// lands as `<hash>.<ext>`). Leftover unique temporary names in the source are
+/// put back or reported (see [AttachmentCopy.keptAside]).
 Future<void> copyAttachmentTree(Directory from, Directory to, AttachmentCopy r) async {
   if (!await from.exists()) return;
   r.sourceExisted = true;
+  await _sweepLeftovers(from, r);
   if (!await to.exists()) {
     await to.create(recursive: true);
     r.created.add(to.path);
@@ -111,22 +181,8 @@ Future<void> copyAttachmentTree(Directory from, Directory to, AttachmentCopy r) 
       continue;
     }
     if (e is! File) continue;
-    var name = raw;
-    if (raw.endsWith('.tmp')) {
-      // The writer's temporary name is `<attachment name>.tmp`. `<hash>.tmp`
-      // is also a real attachment (a file called report.tmp), so it is copied
-      // under its own name, never renamed. Only `<hash>.<ext>.tmp`, which no
-      // attachment is called, is an unfinished write: if it holds its hash it
-      // lands as `<hash>.<ext>`. Any other `.tmp` is not an attachment.
-      final stripped = raw.substring(0, raw.length - '.tmp'.length);
-      final m = _hashName.firstMatch(stripped);
-      if (m != null && m.group(2) != null) {
-        if (await contentHashOfStream(e.openRead()) != m.group(1)) continue;
-        name = stripped;
-      } else if (_hashName.firstMatch(raw) == null) {
-        continue;
-      }
-    }
+    final name = await attachmentNameToTake(e, raw);
+    if (name == null) continue;
     await _copyFile(e, '${to.path}$sep$name', name, r);
   }
 }
@@ -140,6 +196,7 @@ Future<void> _copyFile(File src, String target, String name, AttachmentCopy r) a
   final tmp = File('$target.${DateTime.now().microsecondsSinceEpoch}-${_counter++}.tmp');
   try {
     await _streamCopy(src, tmp);
+    final written = await tmp.length();
     if (attachmentBeforePublishHook != null) await attachmentBeforePublishHook!(target);
     if (await _publish(tmp, target)) {
       r.created.add(target);
@@ -147,7 +204,9 @@ Future<void> _copyFile(File src, String target, String name, AttachmentCopy r) a
         // Ours, and wrong: take it away again and let the move fail.
         r.created.removeLast();
         try {
-          await File(target).delete();
+          // Only while it is still what was written; a file somebody else put
+          // there since is not ours to remove.
+          if (await File(target).length() == written) await File(target).delete();
         } on FileSystemException {
           // The rollback reports what is left.
         }
@@ -295,12 +354,19 @@ Future<void> removeVerifiedSources(AttachmentCopy r, Directory root) async {
       }
       // Moved aside first and compared there, so a file that replaces the
       // source in between is never the one deleted.
+      await attachmentBeforeRemoveHook?.call(c.source);
       final aside = File('${c.source.path}.${DateTime.now().microsecondsSinceEpoch}-${_counter++}.tmp');
       await c.source.rename(aside.path);
-      if (await sameContent(aside, c.target)) {
-        await aside.delete();
-      } else if (!await publishExclusive(aside, c.source.path)) {
-        debugPrint('Keeping ${aside.path}: the original changed after it was copied');
+      try {
+        await attachmentAfterAsideHook?.call(aside);
+        if (await sameContent(aside, c.target)) {
+          await aside.delete();
+        } else if (!await publishExclusive(aside, c.source.path)) {
+          r.keptAside.add(aside.path); // something new is at the path: both stay
+        }
+      } on FileSystemException catch (e) {
+        debugPrint('Putting back ${c.source.path} failed: $e');
+        if (aside.existsSync()) r.keptAside.add(aside.path);
       }
     } on FileSystemException catch (e) {
       debugPrint('Removing ${c.source.path} failed: $e');

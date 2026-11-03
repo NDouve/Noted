@@ -343,6 +343,57 @@ void main() {
       expect(asset(pages, a).existsSync(), isFalse, reason: 'the unchanged file is removed');
     });
 
+    test('a source that changed just before it was set aside is put back as it is, with no aside file left', () async {
+      final (nb, a, binder) = await pageWithNotes();
+      attachmentBeforeRemoveHook = (src) async {
+        if (src.path.endsWith('notes.txt')) src.writeAsStringSync('changed at the last moment');
+      };
+      addTearDown(() => attachmentBeforeRemoveHook = null);
+      expect(await nb.moveToLocation(a, binderPath: binder.path), isTrue);
+      expect(File('${assets(pages, a).path}/notes.txt').readAsStringSync(), 'changed at the last moment');
+      expect(assets(pages, a).listSync().where((f) => f.path.endsWith('.tmp')), isEmpty);
+    });
+
+    test('a file that takes the source path while it is set aside: both stay and it is reported', () async {
+      final (nb, a, binder) = await pageWithNotes();
+      attachmentAfterAsideHook = (aside) async {
+        if (!aside.path.contains('notes.txt')) return;
+        File(aside.path.replaceFirst(RegExp(r'\.\d+-\d+\.tmp$'), '')).writeAsStringSync('arrived');
+        // The aside file now differs from the copy.
+        aside.writeAsStringSync('different');
+      };
+      addTearDown(() => attachmentAfterAsideHook = null);
+      await expectLater(
+        nb.moveToLocation(a, binderPath: binder.path),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('The page was moved'), contains('leftover temporary file')),
+          ),
+        ),
+      );
+      final left = assets(pages, a).listSync().whereType<File>().where((f) => f.path.endsWith('.tmp')).toList();
+      expect(left, hasLength(1), reason: 'the set-aside original is kept');
+      expect(File('${assets(pages, a).path}/notes.txt').readAsStringSync(), 'arrived');
+    });
+
+    test('leftover unique temporary files in the source: a complete one is put back, an incomplete one is kept and reported', () async {
+      final (nb, a, binder) = await pageWithNotes();
+      final done = Uint8List.fromList(utf8.encode('finished but never renamed'));
+      final h = contentHash(done);
+      File('${assets(pages, a).path}/$h.txt.1700000000000-3.tmp').writeAsBytesSync(done);
+      File('${assets(pages, a).path}/$h.png.1700000000000-4.tmp').writeAsBytesSync([1, 2]);
+      await expectLater(
+        nb.moveToLocation(a, binderPath: binder.path),
+        throwsA(
+          isA<NotebookException>().having((e) => e.message, 'message', contains('a leftover temporary file')),
+        ),
+      );
+      expect(File('${assets(extra, a).path}/$h.txt').readAsBytesSync(), done, reason: 'put back, then moved');
+      expect(File('${assets(pages, a).path}/$h.png.1700000000000-4.tmp').existsSync(), isTrue);
+    });
+
     test('a complete <hash>.<ext>.tmp (an unfinished write) in the source lands as <hash>.<ext>', () async {
       final (nb, a, binder) = await pageWithNotes();
       final other = Uint8List.fromList(utf8.encode('stopped before its rename'));
@@ -440,13 +491,49 @@ void main() {
         nb.undoDelete(deleted),
         throwsA(
           isA<NotebookException>()
-              .having((e) => e.message, 'message', allOf(contains('brought back'), contains('attachments')))
+              .having(
+                (e) => e.message,
+                'message',
+                allOf(
+                  contains('brought back'),
+                  contains('could not be restored completely'),
+                  contains('a different file with the same name was already there'),
+                  contains('deleted-attachments'),
+                ),
+              )
               .having((e) => e.needsAction, 'needsAction', isTrue),
         ),
       );
       expect(clash.readAsBytesSync(), [9, 9], reason: 'never written over');
       expect(inTrash.existsSync(), isTrue, reason: 'the only verified copy is not deleted');
       expect(nb.tree[a], isNotNull, reason: 'the page itself is back');
+    });
+
+    test('an undo that fails for a reason that is not known names no cause, but shows where the files are', () async {
+      Notebook.forceCopyMoveForTest = true;
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
+      final nb = make();
+      await nb.load();
+      final a = await nb.createPage();
+      await nb.open(a);
+      await attach(nb);
+      final deleted = await nb.delete(a);
+      // A plain file where the assets folder has to be made.
+      File('${pages.path}/$a.assets').writeAsStringSync('in the way');
+      await expectLater(
+        nb.undoDelete(deleted),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('could not be restored completely'),
+              isNot(contains('a different file')),
+              contains('deleted-attachments'),
+            ),
+          ),
+        ),
+      );
     });
 
     test('a cross-drive undo with nothing in the way restores the files', () async {

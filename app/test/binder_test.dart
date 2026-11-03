@@ -812,6 +812,10 @@ void main() {
 
     test('a missing source folder keeps the copies, which are then the only ones', () async {
       source.reads.clear();
+      File('${folder.path}/$a.assets/x.txt')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('attached');
+      expect(nb.knowsFileForTest('${folder.path}/$a.canvas'), isTrue);
       source.onRead = (id, n) {
         if (id == a && n == 3) folder.deleteSync(recursive: true);
       };
@@ -819,10 +823,22 @@ void main() {
         nb.moveToLocation(a),
         throwsA(
           isA<NotebookException>()
-              .having((e) => e.message, 'message', allOf(contains('Work is not available'), contains('kept there')))
+              .having(
+                (e) => e.message,
+                'message',
+                allOf(
+                  contains('Work is not available right now'),
+                  contains('copied to Pages and kept there, with its attachments'),
+                  contains('If Work comes back with the old pages, delete the ones you do not need.'),
+                ),
+              )
               .having((e) => e.needsAction, 'needsAction', isTrue),
         ),
       );
+      expect(File('${pages.path}/$a.assets/x.txt').readAsStringSync(), 'attached');
+      expect(nb.knowsFileForTest('${folder.path}/$a.canvas'), isFalse, reason: 'the source file is forgotten');
+      expect(nb.knowsFileForTest('${folder.path}/$b.canvas'), isFalse);
+      expect(nb.hasConflict(a), isFalse);
       // The copies are the only ones left, so they stay, and the pages count as moved.
       expect(File('${pages.path}/$a.canvas').existsSync(), isTrue);
       expect(File('${pages.path}/$b.canvas').existsSync(), isTrue);

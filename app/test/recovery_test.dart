@@ -1176,6 +1176,17 @@ void main() {
       expect(keptDir().existsSync(), isFalse);
     });
 
+    test('a kept <hash>.tmp (a real attachment called report.tmp) lands under its own name', () async {
+      await pageOnly();
+      final report = Uint8List.fromList([7, 7, 7, 1]);
+      final name = attachmentFileName(contentHash(report), 'tmp');
+      keep(name: name, content: report);
+      await launch();
+      expect(File('${assetsOf(id).path}/$name').readAsBytesSync(), report);
+      expect(File('${assetsOf(id).path}/${contentHash(report)}').existsSync(), isFalse, reason: 'never renamed');
+      expect(keptDir().existsSync(), isFalse);
+    });
+
     test('an incomplete kept temp file is not landed and keeps the folder', () async {
       await pageOnly();
       keep(name: '$keptName.tmp', content: [1, 2]);
