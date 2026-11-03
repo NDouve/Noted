@@ -163,7 +163,8 @@ class UnsavedEdits {
     } on IOException {
       return _schedule();
     }
-    if (identical(_kept[saved.id], k)) await _retire(saved.id, k);
+    // The open page holds every kept edit: all entries of the page go.
+    if (identical(_kept[saved.id], k)) await _retire(saved.id, k, all: true);
   }
 
   /// The kept edits of page [id] in [loc], to show when it is opened: the page
@@ -315,36 +316,45 @@ class UnsavedEdits {
     return ok;
   }
 
-  // Writes the copy held in memory to recovery, unless a newer entry is there
-  // (then that one holds the edits). True when recovery holds them.
+  // Writes the copy held in memory to recovery (merged with a newer entry
+  // first). True when recovery holds them.
   Future<bool> _keepHeld(String id, _Kept k) async {
+    await _mergeNewer(id, k);
     final page = k.page;
-    if (page == null || await _adoptNewer(id, k)) return true;
-    return _keep(id, k, page, k.baseText);
+    return page == null || await _keep(id, k, page, k.baseText);
   }
 
   // An entry of the page written after the copy in memory was taken holds
-  // newer edits (from the open page, or a save whose folder vanished): it
-  // replaces that copy, which is never written over it.
-  Future<bool> _adoptNewer(String id, _Kept k) async {
+  // other edits: the open page's (made on that copy) or a save's whose folder
+  // vanished (an AI write, made on the file without that copy). Neither may
+  // replace the copy: the two are merged and kept as the entry, which is
+  // never written over with the copy alone. If listing fails, the copy in
+  // memory stays as it is.
+  Future<void> _mergeNewer(String id, _Kept k) async {
     final at = k.heldAt;
-    if (k.page == null || at == null) return false;
+    final held = k.page;
     final rec = host.recovery;
-    if (rec == null) return false;
-    final newer = (await rec.list()).entries.where((e) => e.folder == k.folder && e.pageId == id && e.time.isAfter(at));
-    if (newer.isEmpty) return false;
-    k
-      ..page = null
-      ..baseText = null
-      ..heldAt = null
-      ..entryText = newer.first.pageText;
-    return true;
+    if (held == null || at == null || rec == null) return;
+    final RecoveryEntry? newer;
+    try {
+      newer = (await rec.list()).entries
+          .where((e) => e.folder == k.folder && e.pageId == id && e.time.isAfter(at))
+          .fold<RecoveryEntry?>(null, (a, e) => a == null || e.time.isAfter(a.time) ? e : a);
+    } on Object catch (e) {
+      debugPrint('Listing the recovery entries of page $id failed: $e');
+      return;
+    }
+    if (newer == null || !identical(_kept[id], k)) return;
+    final merged = host.merge(_baseOf(k.baseText, held), held, newer.page);
+    await _keep(id, k, merged, newer.baseText);
   }
+
+  static NotedPage _baseOf(String? text, NotedPage mine) => text == null ? NotedPage.create(mine.meta) : readPage(text);
 
   // The kept page and its base: from memory, or from the recovery entry (null
   // if it is not there any more).
   Future<({NotedPage mine, NotedPage base})?> _edits(String id, _Kept k) async {
-    await _adoptNewer(id, k);
+    await _mergeNewer(id, k);
     var mine = k.page;
     var baseText = k.baseText;
     if (mine == null) {
@@ -354,7 +364,7 @@ class UnsavedEdits {
       mine = e.page;
       baseText = e.baseText;
     }
-    return (mine: mine, base: baseText == null ? NotedPage.create(mine.meta) : readPage(baseText));
+    return (mine: mine, base: _baseOf(baseText, mine));
   }
 
   Future<RecoveryEntry?> _entryOf(String id, _Kept k) async {
@@ -363,8 +373,9 @@ class UnsavedEdits {
     return (await rec.list()).entries.where((e) => e.folder == k.folder && e.pageId == id).firstOrNull;
   }
 
-  // The edits are in the file: the entry that held them goes.
-  Future<void> _retire(String id, _Kept k) async {
+  // The edits are in the file: the entry that held them goes ([all]: every
+  // entry of the page, after the open page, the newest copy, was saved).
+  Future<void> _retire(String id, _Kept k, {bool all = false}) async {
     _remove(id);
     _delay = null; // a save landed: the next failure starts again from the first delay
     final rec = host.recovery;
@@ -373,11 +384,11 @@ class UnsavedEdits {
     // before it was taken: they go too, or a later replay would bring back
     // what was deleted since. One written after it is never deleted here.
     final heldAt = k.page == null ? null : k.heldAt;
-    if (rec == null || (text == null && heldAt == null)) return;
+    if (rec == null || (text == null && heldAt == null && !all)) return;
     try {
       for (final e in (await rec.list()).entries) {
         if (e.folder != k.folder || e.pageId != id) continue;
-        if (e.pageText == text || (heldAt != null && !e.time.isAfter(heldAt))) await rec.delete(e);
+        if (all || e.pageText == text || (heldAt != null && !e.time.isAfter(heldAt))) await rec.delete(e);
       }
     } on Object catch (e) {
       debugPrint('Dropping the recovery entry of page $id failed: $e');

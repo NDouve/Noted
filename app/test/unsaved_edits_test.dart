@@ -374,25 +374,49 @@ void main() {
     expect(await entries(), isEmpty, reason: 'a later replay would bring back what was deleted since');
   });
 
-  test(
-    'an entry written after the copy in memory was taken replaces it: it lands and is never deleted unlanded',
-    () async {
-      host.keepFails = true;
-      await failed('a'); // box 1, held in memory only
-      host.keepFails = false;
-      // A save whose folder vanished (an AI write, say) kept a newer version.
-      final (base, newer) = page('a', boxes: 2);
-      await Future<void>.delayed(const Duration(milliseconds: 5));
-      await host.recovery!.write(folder: _folder, page: newer, baseText: writePage(base), time: DateTime.now());
-      host.locked.add(_loc);
-      await retry(); // the place is locked: the copy in memory must not overwrite it
-      expect((await entries()).single.pageText, writePage(newer));
-      host.locked.clear();
-      await retry();
-      expect(readPage(host.files['a']!).nodes, hasLength(2));
-      expect(await entries(), isEmpty);
-    },
-  );
+  test('an entry written after the copy in memory was taken (an AI write, without that copy) is merged with it, never replaced', () async {
+    host.keepFails = true;
+    final held = await failed('a'); // box 1, held in memory only
+    host.keepFails = false;
+    // A save whose folder vanished (an AI write, made on the file without box 1)
+    // kept another version.
+    final (base, newer) = page('a', boxes: 2);
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    await host.recovery!.write(folder: _folder, page: newer, baseText: writePage(base), time: DateTime.now());
+    host.locked.add(_loc);
+    await retry(); // the place is locked: the copy and the entry are merged into the entry
+    final kept = (await entries()).single.page.nodes.map((n) => n.id);
+    expect(kept, containsAll([...held.nodes.map((n) => n.id), ...newer.nodes.map((n) => n.id)]));
+    host.locked.clear();
+    await retry();
+    expect(readPage(host.files['a']!).nodes, hasLength(3), reason: 'both copies landed');
+    expect(await entries(), isEmpty);
+  });
+
+  test('a recovery folder that can not be listed leaves the copy in memory to land', () async {
+    host = _Host(_UnlistableStore(Directory('${root.path}/rec')));
+    unsaved = UnsavedEdits(host, firstDelay: const Duration(hours: 1));
+    host.keepFails = true;
+    await failed('a');
+    host.keepFails = false;
+    (host.recovery! as _UnlistableStore).fail = true;
+    await retry();
+    expect(readPage(host.files['a']!).nodes, hasLength(1));
+    expect(unsaved.has('a'), isFalse);
+  });
+
+  test('the open page saved retires every entry of the page, also one it did not write', () async {
+    final mine = await failed('a');
+    final (base, other) = page('a', boxes: 2);
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    await host.recovery!.write(folder: _folder, page: other, baseText: writePage(base), time: DateTime.now());
+    host
+      ..open = 'a'
+      ..files['a'] = writePage(mine);
+    await unsaved.onSaved(_loc, mine);
+    expect(unsaved.has('a'), isFalse);
+    expect(await entries(), isEmpty);
+  });
 
   test('an entry replayed by someone else ends the tracking', () async {
     await failed('a');
@@ -402,4 +426,17 @@ void main() {
     expect(await unsaved.edits('a', _loc), isNull);
     expect(unsaved.has('a'), isFalse);
   });
+}
+
+/// A recovery store whose listing fails while [fail] is set.
+class _UnlistableStore extends RecoveryStore {
+  _UnlistableStore(super.directory);
+
+  bool fail = false;
+
+  @override
+  Future<RecoveryListing> list() {
+    if (fail) throw const FileSystemException('injected: access denied');
+    return super.list();
+  }
 }

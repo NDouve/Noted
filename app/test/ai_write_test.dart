@@ -78,6 +78,15 @@ class _VanishingStore extends PageStore {
     if (loads == vanishOnLoad) directory.deleteSync(recursive: true);
     return page;
   }
+
+  /// Saves of this page fail (its folder stays there).
+  String? failSaveOf;
+
+  @override
+  Future<void> save(NotedPage page) {
+    if (page.id == failSaveOf) throw const FileSystemException('injected write failure');
+    return super.save(page);
+  }
 }
 
 void main() {
@@ -916,6 +925,43 @@ void main() {
       expect((r as AiLinkError).code, AiLinkCode.saveFailed);
       expect(r.message, contains("don't retry an append"));
       expect(rec.existsSync() && rec.listSync().isNotEmpty, isTrue, reason: 'kept for recovery');
+    });
+
+    test('a closed page write whose folder vanishes is merged with edits held in memory, not put in their place', () async {
+      final rec = Directory('${root.path}/rec');
+      final store = _VanishingStore(pages);
+      final nb = make(store: store, recovery: rec);
+      await nb.load();
+      final a = nb.currentId!;
+      nb.current!.insertBox(box('ba', text: 'old'));
+      await nb.flush();
+      final code = await issue('ba');
+      File(rec.path).createSync(recursive: true); // recovery can not be written
+      store.failSaveOf = a;
+      nb.current!.insertBox(box('mine', text: 'typed by the user'));
+      await nb.createPage(); // leaving page a: its save fails, and recovery too
+      expect(nb.unsavedPageCount, 1);
+      File(rec.path).deleteSync(); // recovery works again
+      nb.syncHook = (p, _) async {
+        if (p == 'closed-reread' && pages.existsSync()) pages.deleteSync(recursive: true);
+      };
+      final r = await nb.handleAiLink(req('ba', code, content: 'new'));
+      expect((r as AiLinkError).code, AiLinkCode.saveFailed); // the AI's page went to recovery
+      nb.syncHook = null;
+      await nb.flush(); // the retry of page a finds that newer entry
+      final entry = (await nb.pendingRecovery()).entries.single;
+      expect(entry.page.node('mine'), isNotNull, reason: "the user's box is kept");
+      expect(((entry.page.node('ba')! as BoxRecord).data!.decode()! as Map)['text'], 'new', reason: "and the AI's write");
+
+      // The folder is back at the next start: the page lands with both.
+      nb.dispose();
+      opened.remove(nb);
+      pages.createSync(recursive: true);
+      final again = make(recovery: rec);
+      await again.load();
+      final landed = readPage(File('${pages.path}/$a.canvas').readAsStringSync());
+      expect(landed.node('mine'), isNotNull);
+      expect(((landed.node('ba')! as BoxRecord).data!.decode()! as Map)['text'], 'new');
     });
 
     group('a closed page whose file changes while the write is made', () {
