@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 package io.github.ndouve.noted
 
 import android.net.Uri
@@ -11,6 +15,11 @@ import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
     private val reader = Executors.newSingleThreadExecutor()
+
+    override fun onDestroy() {
+        reader.shutdown()
+        super.onDestroy()
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -30,8 +39,10 @@ class MainActivity : FlutterActivity() {
                     try {
                         val read = readContent(Uri.parse(uri))
                         runOnUiThread { result.success(read) }
-                    } catch (e: Exception) {
-                        runOnUiThread { result.error("read_failed", e.message, null) }
+                    } catch (e: Throwable) {
+                        // Includes OutOfMemoryError: a file too big for the heap is skipped.
+                        Log.d("Noted", "Reading a pasted file failed: $e")
+                        runOnUiThread { result.success(null) }
                     }
                 }
             }
@@ -40,30 +51,51 @@ class MainActivity : FlutterActivity() {
     /** The display name and bytes of [uri], or null when over [MAX_BYTES]. */
     private fun readContent(uri: Uri): Map<String, Any?>? {
         var name: String? = null
-        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+        var size = -1L
+        contentResolver.query(
+            uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null
+        )?.use { c ->
             if (c.moveToFirst()) {
-                val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (i >= 0) name = c.getString(i)
+                val n = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (n >= 0) name = c.getString(n)
+                val z = c.getColumnIndex(OpenableColumns.SIZE)
+                if (z >= 0 && !c.isNull(z)) size = c.getLong(z)
             }
         }
+        if (size > MAX_BYTES) return tooBig()
         val input = contentResolver.openInputStream(uri) ?: return null
         input.use { s ->
+            if (size >= 0) {
+                // Known size: one exact buffer, no copy.
+                val bytes = ByteArray(size.toInt())
+                var got = 0
+                while (got < bytes.size) {
+                    val n = s.read(bytes, got, bytes.size - got)
+                    if (n < 0) break
+                    got += n
+                }
+                if (got == bytes.size && s.read() >= 0) return tooBig()
+                val exact = if (got == bytes.size) bytes else bytes.copyOf(got)
+                return mapOf("name" to name, "bytes" to exact)
+            }
             val out = ByteArrayOutputStream()
             val buf = ByteArray(64 * 1024)
             while (true) {
                 val n = s.read(buf)
                 if (n < 0) break
-                if (out.size() + n > MAX_BYTES) {
-                    Log.d("Noted", "Pasted file is over the size limit; skipped")
-                    return null
-                }
+                if (out.size() + n > MAX_BYTES) return tooBig()
                 out.write(buf, 0, n)
             }
             return mapOf("name" to name, "bytes" to out.toByteArray())
         }
     }
 
+    private fun tooBig(): Map<String, Any?>? {
+        Log.d("Noted", "Pasted file is over the size limit; skipped")
+        return null
+    }
+
     companion object {
-        private const val MAX_BYTES = 100 * 1024 * 1024
+        private const val MAX_BYTES = 50 * 1024 * 1024
     }
 }

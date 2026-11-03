@@ -53,7 +53,12 @@ void main() {
     expect(safeAttachmentName(''), 'Pasted file');
     expect(safeAttachmentName(null), 'Pasted file');
     expect(safeAttachmentName('a/b/'), 'Pasted file');
-    expect(safeAttachmentName('.hidden'), 'hidden');
+    expect(safeAttachmentName('.pdf'), 'Pasted file.pdf');
+    expect(safeAttachmentName('a\u007fb‮c.txt'), 'a_b_c.txt');
+    expect(safeAttachmentName('x​.txt'), 'x_.txt');
+    final long = safeAttachmentName('${'a' * 300}.pdf');
+    expect(long.length, 255);
+    expect(long.endsWith('.pdf'), isTrue);
     expect(safeAttachmentName('a:b?.txt'), 'a_b_.txt');
   });
 
@@ -82,5 +87,21 @@ void main() {
       },
     );
     expect(out.map((f) => f.name), ['ok.txt']);
+  });
+
+  test('on desktop a content URI is never handed to the platform reader', () async {
+    final out = await readClipboardFiles(
+      imageReader: _noImage,
+      filesReader: () async => ['content://x/1'],
+      contentReader: (_) async => fail('desktop must not use the content reader'),
+    );
+    expect(out, isEmpty);
+  });
+
+  test('a null from the channel gives no file', () async {
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(const MethodChannel('noted/content'), (call) async => null);
+    addTearDown(() => messenger.setMockMethodCallHandler(const MethodChannel('noted/content'), null));
+    expect(await readContentUri('content://x/1'), isNull);
   });
 }

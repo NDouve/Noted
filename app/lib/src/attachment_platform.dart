@@ -120,7 +120,20 @@ Future<IncomingFile?> readContentUri(String uri) async {
 /// characters; a generic name when nothing usable is left.
 String safeAttachmentName(String? raw) {
   var name = (raw ?? '').split(RegExp(r'[\\/]')).last;
-  name = name.replaceAll(RegExp(r'[\x00-\x1f<>:"|?*]'), '_').trim();
-  name = name.replaceAll(RegExp(r'^\.+'), '').replaceAll(RegExp(r'[. ]+$'), '');
+  name = name
+      .replaceAll(RegExp('[\u0000-\u001f\u007f​-‏‪-‮⁦-⁩<>:"|?*]'), '_')
+      .trim();
+  name = name.replaceAll(RegExp(r'[. ]+$'), '');
+  final lead = RegExp(r'^\.+').firstMatch(name);
+  if (lead != null) {
+    // ".pdf" keeps its extension; ".." leaves nothing.
+    final rest = name.substring(lead.end);
+    name = rest.isEmpty ? '' : 'Pasted file.$rest';
+  }
+  if (name.length > 255) {
+    final dot = name.lastIndexOf('.');
+    final ext = dot > 0 && name.length - dot <= 20 ? name.substring(dot) : '';
+    name = name.substring(0, 255 - ext.length) + ext;
+  }
   return name.isEmpty ? 'Pasted file' : name;
 }
