@@ -1661,23 +1661,30 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
       // Every source is checked before any is deleted. One that changed (or
       // can't be read) since it was copied stops the move: nothing is deleted,
-      // and this move's own verified copies are dropped.
+      // and this move's own verified copies are dropped. A source that is gone
+      // (its folder is still there) is different: its copy is then the only
+      // one of the page and is never dropped, so the check does not stop the
+      // move; the delete step below handles every page, vanished or not, and
+      // reports what really happened.
       final stale = <int>[];
       final unreadable = <int>[];
+      final vanished = <int>{};
       for (var i = 0; i < ids.length; i++) {
         try {
           if (await fromStore.readText(ids[i]) != copiedText[i]) stale.add(i);
         } on Object {
-          // A source that is gone is not a failure: the copy is then the page
-          // (the delete below reports it as absent). Any other failure to read
-          // stops the move.
-          if (FileSystemEntity.typeSync(fromStore.pathFor(ids[i]), followLinks: false) !=
-              FileSystemEntityType.notFound) {
+          // Gone only if the folder itself is still there; a missing folder or
+          // drive can't be told from a missing page, so it stops the move.
+          if (fromStore.directory.existsSync() &&
+              FileSystemEntity.typeSync(fromStore.pathFor(ids[i]), followLinks: false) ==
+                  FileSystemEntityType.notFound) {
+            vanished.add(i);
+          } else {
             unreadable.add(i);
           }
         }
       }
-      if (stale.isNotEmpty || unreadable.isNotEmpty) {
+      if (vanished.isEmpty && (stale.isNotEmpty || unreadable.isNotEmpty)) {
         await removeCopies();
         String label(int i) {
           final t = originals[i].meta.title.trim();
@@ -1712,7 +1719,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // after the check above is kept (and the classification below
           // reports it).
           final r = await _deleteIfUnchanged(fromLoc, ids[i], copiedText[i]);
-          if (!r.deleted && r.outcome != DeleteOutcome.absent) {
+          if (r.outcome == DeleteOutcome.absent) {
+            vanished.add(i); // never restored: it was removed by someone else
+            continue;
+          }
+          if (!r.deleted) {
             changedNow.add(i);
             throw const NotebookException('A page changed during the move.');
           }
@@ -1848,10 +1859,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         debugPrint('The move was only partly done: $e');
         final parts = <String>[];
         if (gone.isNotEmpty) {
-          parts.add(
-            '${names(gone)} ${gone.length == 1 ? 'is' : 'are'} now in $target; the old '
-            '${gone.length == 1 ? 'file' : 'files'} could not be put back.',
-          );
+          final goneGone = gone.where(vanished.contains).toList();
+          final goneOther = gone.where((i) => !vanished.contains(i)).toList();
+          if (goneGone.isNotEmpty) {
+            parts.add(
+              '${names(goneGone)} ${goneGone.length == 1 ? 'was' : 'were'} no longer in $source, so '
+              '${goneGone.length == 1 ? 'it is' : 'they are'} kept in $target.',
+            );
+          }
+          if (goneOther.isNotEmpty) {
+            parts.add(
+              '${names(goneOther)} ${goneOther.length == 1 ? 'is' : 'are'} now in $target; the old '
+              '${goneOther.length == 1 ? 'file' : 'files'} could not be put back.',
+            );
+          }
         }
         final appearedIdx = both.where(appeared.contains).toList();
         final bothOther = both.where((i) => !appeared.contains(i)).toList();

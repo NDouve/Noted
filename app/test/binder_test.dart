@@ -767,6 +767,58 @@ void main() {
       expect(nb.binderOfPage(b), isNull);
     });
 
+    test('a source that vanishes at the check while another is stale: its copy is kept, the stale one is not moved', () async {
+      source.reads.clear();
+      late String edited;
+      source.onRead = (id, n) {
+        if (n != 3) return;
+        if (id == a) File('${folder.path}/$a.canvas').deleteSync();
+        if (id == b) {
+          edited = read(folder, b).replaceFirst('"title":"', '"title":"Newer ');
+          File('${folder.path}/$b.canvas').writeAsStringSync(edited);
+        }
+      };
+
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('no longer in Work'), contains('kept in Pages'), contains('newer version')),
+          ),
+        ),
+      );
+      expect(File('${pages.path}/$a.canvas').existsSync(), isTrue, reason: 'the only copy of a is kept');
+      expect(File('${folder.path}/$a.canvas').existsSync(), isFalse, reason: 'a is not brought back');
+      expect(read(folder, b), edited);
+      expect(File('${pages.path}/$b.canvas').existsSync(), isFalse);
+      expect(nb.binderOfPage(a), isNull);
+    });
+
+    test('a source that vanishes at the check does not stop the move; its copy is the page', () async {
+      source.reads.clear();
+      source.onRead = (id, n) {
+        if (id == b && n == 3) File('${folder.path}/$b.canvas').deleteSync();
+      };
+      expect(await nb.moveToLocation(a), isTrue);
+      expect(File('${pages.path}/$b.canvas').existsSync(), isTrue);
+      expect(File('${folder.path}/$b.canvas').existsSync(), isFalse);
+      expect(nb.binderOfPage(b), isNull);
+    });
+
+    test('a missing source folder is not mistaken for vanished pages', () async {
+      source.reads.clear();
+      source.onRead = (id, n) {
+        if (id == a && n == 3) folder.deleteSync(recursive: true);
+      };
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('could not be read'))),
+      );
+      expect(canvasFiles(pages).where((f) => f.contains(a) || f.contains(b)), isEmpty);
+    });
+
     test('a source that cannot be read at the start is not moved', () async {
       source.failRead.add(a);
       await expectLater(
