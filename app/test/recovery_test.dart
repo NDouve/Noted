@@ -400,7 +400,7 @@ void main() {
       expect(recFiles(), isEmpty);
     });
 
-    test('a write landing after the publish keeps the entry and does not undo their deletion', () async {
+    test('a write landing after the publish: entry retired, their deletion stays after a reload', () async {
       final (again, x, _, _) = await setUp1((_, _, _) {});
       again.syncHook = (point, path) async {
         if (point != 'recover-published') return;
@@ -412,7 +412,31 @@ void main() {
       await again.load();
       expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, isEmpty,
           reason: 'not merged again against the old base');
-      expect(recFiles(), isNotEmpty);
+      expect(recFiles(), isEmpty, reason: 'it had landed, so it is retired (0124)');
+      expect(again.recoveryProblems, isEmpty);
+
+      quit(again);
+      final third = make();
+      await third.load();
+      expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, isEmpty,
+          reason: 'a later replay does not bring the box back');
+      expect(third.recoveryProblems, isEmpty);
+      expect((await third.pendingRecovery()).entries, isEmpty);
+    });
+
+    test('a landed page that can never be read back is retired, not reported as unsaved', () async {
+      final (nb, x, _) = await pendingEdit();
+      await vanish(nb);
+      quit(nb);
+      await restore();
+      final again = make(
+        storeFactory: (d) => d.path == extra.path ? _FlakyReadStore(d, () => true) : PageStore(d),
+      );
+      await again.load();
+      expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, hasLength(1));
+      expect(recFiles(), isEmpty);
+      expect(again.recoveryProblems, isEmpty);
+      expect(again.recoveryDamaged, isEmpty);
     });
 
     test('a read-back that fails once is retried', () async {
@@ -526,10 +550,9 @@ void main() {
   });
   }
 
-  test('a recovery that fails the check keeps the entry', () async {
+  test('a write that reads back different (a lossy store looks like another writer) retires the entry', () async {
     final nb = make();
     await nb.load();
-    final a = nb.currentId!;
     nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
     final moved = Directory('${root.path}/pages-away');
     await pages.rename(moved.path);
@@ -540,8 +563,8 @@ void main() {
 
     final again = make(store: _LossyStore(pages));
     await again.load();
-    expect((await again.pendingRecovery()).entries.single.pageId, a);
-    expect(recFiles(), isNotEmpty);
+    expect((await again.pendingRecovery()).entries, isEmpty);
+    expect(again.recoveryProblems, isEmpty);
   });
 
   test('a damaged entry is kept and reported', () async {
@@ -1033,7 +1056,7 @@ void main() {
       expect(nb.recoveryDamaged, isEmpty);
     });
 
-    test('a read-back that differs from what was written is listed', () async {
+    test('a read-back that differs from what landed is another writer: retired, not merged again', () async {
       final nb = make();
       await nb.load();
       nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
@@ -1045,8 +1068,8 @@ void main() {
       final st = _ToggleStore(pages)..alterRead = true;
       final again = make(store: st);
       await again.load();
-      expect((await again.pendingRecovery()).entries, hasLength(1));
-      expect(again.recoveryDamaged, hasLength(1));
+      expect((await again.pendingRecovery()).entries, isEmpty);
+      expect(again.recoveryDamaged, isEmpty);
     });
   });
 

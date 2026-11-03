@@ -3307,7 +3307,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           throw _ReplayFailure("the saved file of $label isn't a valid page file", detail: '$ex');
         } on FileSystemException catch (ex) {
           // Locked or gone since exists(): look again.
-          if (attempt < 4) continue;
+          if (attempt < 4) {
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+            continue;
+          }
           throw _ReplayFailure(
             "the saved file of $label can't be read just now",
             detail: ex.message,
@@ -3334,27 +3337,42 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       final wrote = out != theirsText;
       if (wrote) await syncHook?.call('recover-published', path);
+      // From here on, if [wrote], the page has landed (the publish only
+      // succeeds over exactly what was merged against): the entry is retired
+      // as soon as that is so (0124), whatever the read-back shows. Merging it
+      // again later, against a page someone has changed since, would bring
+      // back what they deleted.
       String? back;
       for (var read = 0; back == null; read++) {
         try {
           back = await st.readText(id);
         } on FileSystemException {
-          if (read >= 2) rethrow; // a lock may pass; a few tries
+          if (read < 2) {
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+            continue; // a lock may pass; a few tries
+          }
+          if (!wrote) rethrow;
+          // Landed but can't be read back to check: it is retired unchecked.
+          debugPrint('Recovered page $id landed but could not be read back to check');
+          await _applyClosed(merged, loc, _key(path), path);
+          await rec.delete(e);
+          return true;
         }
       }
       if (back != out) {
         // Nothing of ours was written: the file changed since it was read.
         if (!wrote && attempt < 4) continue;
-        // Someone wrote on top of what was published. Merging again against
-        // the old base could bring back what they deleted, so the entry stays
-        // for a later replay, which merges against the file as it is then.
-        throw _ReplayFailure(
-          wrote
-              ? 'the page changed after the edits kept for $label were saved into it; '
-                    'they are kept for the next replay'
-              : 'the saved file of $label keeps changing',
-          detail: 'the saved page differs from what was written',
-        );
+        if (!wrote) {
+          throw _ReplayFailure(
+            'the saved file of $label keeps changing',
+            detail: 'the page file changed on every attempt to merge into it',
+          );
+        }
+        // Another writer is on top of what landed: not merged again; the
+        // external-change check picks their file up as it does any other.
+        await _applyClosed(merged, loc, _key(path), path);
+        await rec.delete(e);
+        return true;
       }
       final why = verifyRecoveredPage(
         base: base,
