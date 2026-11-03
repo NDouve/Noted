@@ -182,12 +182,21 @@ class PageStore {
   ///
   /// [beforePublish] runs after the temporary file is written and before it is
   /// published; it is a seam for tests.
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) =>
+      saveNewText(page, writePage(page), beforePublish: beforePublish);
+
+  /// As [saveNew], but writes [text] (the page's file text, for putting back a
+  /// file byte for byte); [page] is the page [text] holds.
+  Future<bool> saveNewText(
+    NotedPage page,
+    String text, {
+    Future<void> Function()? beforePublish,
+  }) async {
     final path = _pathFor(page.id);
     final tmp = File('$path.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
     final bool published;
     try {
-      await tmp.writeAsString(writePage(page), flush: true);
+      await tmp.writeAsString(text, flush: true);
       if (beforePublish != null) await beforePublish();
       published = await publishExclusive(tmp, path);
     } catch (_) {

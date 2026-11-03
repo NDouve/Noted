@@ -10,6 +10,7 @@ import 'package:noted_core/noted_core.dart';
 
 void main() {
   deleteTests();
+  saveNewTextTests();
   late Directory dir;
 
   setUp(() async => dir = await Directory.systemTemp.createTemp('noted_cas'));
@@ -438,5 +439,19 @@ void deleteTests() {
     File(store.pathFor('p1')).writeAsStringSync(text);
     expect((await store.deleteIfUnchanged('p1', text)).deleted, isTrue);
     expect(File(store.pathFor('p1')).existsSync(), isFalse);
+  });
+}
+
+void saveNewTextTests() {
+  test('PageStore.saveNewText writes the given text byte for byte, never over a file', () async {
+    final dir = await Directory.systemTemp.createTemp('noted_snt');
+    addTearDown(() => dir.delete(recursive: true));
+    final store = PageStore(dir);
+    final page = NotedPage.create(PageMeta.create(id: 'p1', title: 'A', order: 0));
+    final text = '${writePage(page)}\r\n';
+    expect(await store.saveNewText(page, text), isTrue);
+    expect(File(store.pathFor('p1')).readAsStringSync(), text);
+    expect(await store.saveNewText(page, 'other'), isFalse);
+    expect(File(store.pathFor('p1')).readAsStringSync(), text);
   });
 }

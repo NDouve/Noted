@@ -67,12 +67,16 @@ class FlakyStore extends PageStore {
   }
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
+  Future<bool> saveNewText(
+    NotedPage page,
+    String text, {
+    Future<void> Function()? beforePublish,
+  }) async {
     if (failSave || failSaveIds.contains(page.id)) {
       onFailedSave?.call(page.id);
       throw const FileSystemException('drive gone');
     }
-    final ok = await super.saveNew(page, beforePublish: beforePublish);
+    final ok = await super.saveNewText(page, text, beforePublish: beforePublish);
     if (ok) saves.update(page.id, (n) => n + 1, ifAbsent: () => 1);
     return ok;
   }
@@ -101,6 +105,33 @@ class FlakyStore extends PageStore {
     }
     await super.delete(pageId);
     if (failSaveAfterDelete) failSave = true;
+  }
+
+  /// Runs at the start of a compare-and-delete of a page, before the check.
+  void Function(String pageId)? beforeDeleteIfUnchanged;
+
+  @override
+  Future<DeleteResult> deleteIfUnchanged(
+    String pageId,
+    String expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    void Function()? beforeRestore,
+  }) async {
+    if (failDelete.contains(pageId)) {
+      onFailedDelete?.call(pageId);
+      throw const FileSystemException('drive gone');
+    }
+    beforeDeleteIfUnchanged?.call(pageId);
+    final r = await super.deleteIfUnchanged(
+      pageId,
+      expectedText,
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforeRestore: beforeRestore,
+    );
+    if (r.deleted && failSaveAfterDelete) failSave = true;
+    return r;
   }
 
   /// Pages whose load fails with a raw error.
@@ -595,11 +626,11 @@ void main() {
       expect(nb.binderOfPage(b), s.path);
     });
 
-    test('a source replaced after it was copied is kept, never deleted, and reported', () async {
+    test('a source replaced after it was read for the copy: nothing is deleted, the copies are dropped', () async {
       late String edited;
       source.reads.clear();
       source.onRead = (id, n) {
-        // The third read of b is the check just before its deletion.
+        // The third read of b is the check of all sources before any delete.
         if (id == b && n == 3) {
           edited = read(folder, b).replaceFirst('"title":"', '"title":"Synced from elsewhere ');
           File('${folder.path}/$b.canvas').writeAsStringSync(edited);
@@ -614,36 +645,96 @@ void main() {
               .having(
                 (e) => e.message,
                 'message',
-                allOf(contains('kept in both places'), contains('has changed'), contains('copy is in Pages')),
+                allOf(contains('was not moved'), contains('newer version'), isNot(contains('partly'))),
               )
               .having((e) => e.needsAction, 'needsAction', isTrue),
         ),
       );
       expect(read(folder, b), edited, reason: 'the newer source is kept byte for byte');
-      expect(File('${pages.path}/$b.canvas').existsSync(), isTrue, reason: 'its copy is reported, not dropped');
-      // a had not changed: it stayed, and its copy was removed.
-      expect(read(folder, a), aBefore);
+      expect(read(folder, a), aBefore, reason: 'nothing was deleted, not even the unchanged page');
       expect(File('${pages.path}/$a.canvas').existsSync(), isFalse);
+      expect(File('${pages.path}/$b.canvas').existsSync(), isFalse, reason: "this move's own copies are dropped");
       expect(nb.binderOfPage(b), s.path);
     });
 
-    test('the first source replaced after it was copied is kept', () async {
+    test('a source replaced between the check and its delete is kept; the earlier delete is put back', () async {
       late String edited;
-      source.reads.clear();
-      source.onRead = (id, n) {
-        if (id == a && n == 3) {
-          edited = read(folder, a).replaceFirst('"title":"', '"title":"Synced ');
-          File('${folder.path}/$a.canvas').writeAsStringSync(edited);
+      source.beforeDeleteIfUnchanged = (id) {
+        if (id == b) {
+          edited = read(folder, b).replaceFirst('"title":"', '"title":"Synced late ');
+          File('${folder.path}/$b.canvas').writeAsStringSync(edited);
         }
       };
-      await expectLater(nb.moveToLocation(a), throwsA(isA<NotebookException>()));
-      expect(read(folder, a), edited);
-      expect(File('${folder.path}/$b.canvas').existsSync(), isTrue);
+      final aBefore = read(folder, a);
+
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(
+          isA<NotebookException>()
+              .having(
+                (e) => e.message,
+                'message',
+                allOf(contains('was not moved'), contains('newer version'), contains('left there'), isNot(contains('partly'))),
+              )
+              .having((e) => e.needsAction, 'needsAction', isTrue),
+        ),
+      );
+      expect(read(folder, b), edited);
+      expect(read(folder, a), aBefore, reason: 'a was deleted first and is put back byte for byte');
+      expect(File('${pages.path}/$a.canvas').existsSync(), isFalse);
+      expect(File('${pages.path}/$b.canvas').existsSync(), isFalse);
+      expect(folder.listSync().where((f) => f.path.contains('.cas-')), isEmpty);
+      expect(nb.binderOfPage(a), s.path);
+      expect(nb.binderOfPage(b), s.path);
+    });
+
+    test('a source that cannot be read at the check stops the move with the copies dropped', () async {
+      source.reads.clear();
+      source.onRead = (id, n) {
+        if (id == b && n >= 2) source.failRead.add(b);
+      };
+      final bBefore = read(folder, b);
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(
+          isA<NotebookException>().having((e) => e.message, 'message', contains('could not be read to check it')),
+        ),
+      );
+      source.failRead.clear();
+      expect(read(folder, b), bBefore);
+      expect(File('${pages.path}/$a.canvas').existsSync(), isFalse);
+      expect(File('${pages.path}/$b.canvas').existsSync(), isFalse);
+    });
+
+    test('a source that changes while it is being read stops the move before anything is written', () async {
+      source.reads.clear();
+      source.onRead = (id, n) {
+        // The second read of a is the one that follows the load.
+        if (id == a && n == 2) {
+          File('${folder.path}/$a.canvas').writeAsStringSync(read(folder, a).replaceFirst('"title":"', '"title":"X '));
+        }
+      };
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('changed while it was being read'))),
+      );
+      expect(File('${pages.path}/$a.canvas').existsSync(), isFalse);
+      expect(File('${pages.path}/$b.canvas').existsSync(), isFalse);
+    });
+
+    test('a source that cannot be read at the start is not moved', () async {
+      source.failRead.add(a);
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', 'Could not move the page.')),
+      );
+      source.failRead.clear();
+      expect(File('${pages.path}/$a.canvas').existsSync(), isFalse);
       expect(nb.binderOfPage(a), s.path);
     });
 
     test('an existing destination file is never overwritten, and nothing is moved', () async {
-      File('${pages.path}/$a.canvas').writeAsStringSync('someone else\'s newer-format page');
+      File('${pages.path}/$a.canvas').writeAsStringSync("someone else's newer-format page");
       final aBefore = read(folder, a);
       final bBefore = read(folder, b);
       final writesBefore = source.saves[a] ?? 0;
@@ -651,14 +742,16 @@ void main() {
       await expectLater(
         nb.moveToLocation(a),
         throwsA(
-          isA<NotebookException>().having(
-            (e) => e.message,
-            'message',
-            allOf(contains('already exists in Pages'), contains('Both were kept')),
-          ),
+          isA<NotebookException>()
+              .having(
+                (e) => e.message,
+                'message',
+                allOf(contains('Pages already has a file for this page'), contains('was not moved')),
+              )
+              .having((e) => e.needsAction, 'needsAction', isTrue),
         ),
       );
-      expect(File('${pages.path}/$a.canvas').readAsStringSync(), 'someone else\'s newer-format page');
+      expect(File('${pages.path}/$a.canvas').readAsStringSync(), "someone else's newer-format page");
       expect(read(folder, a), aBefore);
       expect(read(folder, b), bBefore);
       expect(File('${pages.path}/$b.canvas').existsSync(), isFalse);
@@ -667,21 +760,45 @@ void main() {
     });
 
     test('after a collision, only the files this move published are removed', () async {
-      // a is published by the move; b collides with an existing file and a
-      // folder of attachments that were already there.
+      // a is published by the move (with its attachments, into a folder that
+      // already holds a file of its own); b collides with an existing file.
       File('${pages.path}/$b.canvas').writeAsStringSync('existing b');
-      final keep = File('${pages.path}/$b.assets/keep.txt')..createSync(recursive: true);
+      final keep = File('${pages.path}/$a.assets/photo.png')..createSync(recursive: true);
       keep.writeAsStringSync('mine');
+      File('${folder.path}/$a.assets/moved.png')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('from the source');
       final bBefore = read(folder, b);
 
       await expectLater(
         nb.moveToLocation(a),
-        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('already exists'))),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('already has a file'))),
       );
       expect(File('${pages.path}/$a.canvas').existsSync(), isFalse, reason: 'the copy this move made is removed');
+      expect(File('${pages.path}/$a.assets/moved.png').existsSync(), isFalse, reason: 'so is the file it copied');
       expect(File('${pages.path}/$b.canvas').readAsStringSync(), 'existing b');
-      expect(keep.readAsStringSync(), 'mine');
+      expect(keep.readAsStringSync(), 'mine', reason: 'a file that was already there survives the rollback');
+      expect(File('${folder.path}/$a.assets/moved.png').existsSync(), isTrue);
       expect(read(folder, b), bBefore);
+    });
+
+    test('a newer source found at delete time never costs a pre-existing attachments file', () async {
+      final keep = File('${pages.path}/$a.assets/photo.png')..createSync(recursive: true);
+      keep.writeAsStringSync('mine');
+      File('${folder.path}/$a.assets/moved.png')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('from the source');
+      source.beforeDeleteIfUnchanged = (id) {
+        if (id == b) {
+          File('${folder.path}/$b.canvas').writeAsStringSync(read(folder, b).replaceFirst('"title":"', '"title":"Late '));
+        }
+      };
+
+      await expectLater(nb.moveToLocation(a), throwsA(isA<NotebookException>()));
+      expect(keep.readAsStringSync(), 'mine');
+      expect(File('${pages.path}/$a.assets/moved.png').existsSync(), isFalse);
+      expect(File('${pages.path}/$a.canvas').existsSync(), isFalse);
+      expect(File('${folder.path}/$a.assets/moved.png').existsSync(), isTrue);
     });
 
     test('a source edited by someone else mid-move is left untouched and both copies are kept', () async {

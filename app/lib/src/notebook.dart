@@ -1129,16 +1129,38 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   /// Copies the files of [from] into [to] (made if needed), leaving files
   /// that are there already (same name, same content).
-  static Future<void> _copyDir(Directory from, Directory to) async {
+  /// [created] collects what this call made (directories it created, files it
+  /// copied), so a rollback can remove just that.
+  static Future<void> _copyDir(Directory from, Directory to, {List<String>? created}) async {
     if (!await from.exists()) return;
-    await to.create(recursive: true);
+    if (!await to.exists()) {
+      await to.create(recursive: true);
+      created?.add(to.path);
+    }
     await for (final e in from.list()) {
       final name = e.path.split(RegExp(r'[\\/]')).last;
       final target = '${to.path}${Platform.pathSeparator}$name';
       if (e is Directory) {
-        await _copyDir(e, Directory(target));
+        await _copyDir(e, Directory(target), created: created);
       } else if (e is File && !name.endsWith('.tmp') && !await File(target).exists()) {
         await e.copy(target);
+        created?.add(target);
+      }
+    }
+  }
+
+  /// Removes what [_copyDir] recorded in `created`: the files, then the
+  /// directories it made (deepest first), each only if it is empty by then.
+  static Future<void> _removeCreated(List<String> created) async {
+    for (final p in created.reversed) {
+      try {
+        if (FileSystemEntity.typeSync(p, followLinks: false) == FileSystemEntityType.file) {
+          await File(p).delete();
+        } else {
+          await Directory(p).delete();
+        }
+      } on Object catch (e) {
+        debugPrint('Removing $p failed: $e');
       }
     }
   }
@@ -1589,9 +1611,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       ];
 
       // Only what this move published: a page file it created (never one that
-      // was already there) and an attachments folder it created.
+      // was already there) and the attachment files and folders it created.
       final written = <String>[];
-      final assetsMade = <String>{};
+      final assetsMade = <String, List<String>>{};
       Future<void> removeCopies() async {
         for (final w in written) {
           try {
@@ -1599,7 +1621,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           } on Object catch (e) {
             debugPrint('Removing copy of page $w failed: $e');
           }
-          if (assetsMade.contains(w)) await _removeDir(_assetsDir(toLoc, w));
+          await _removeCreated(assetsMade[w] ?? const []);
         }
       }
 
@@ -1607,8 +1629,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         for (final p in moved) {
           if (!await _writeNew(toLoc, p)) {
             throw NotebookException(
-              'A page file with the same id already exists in ${_placeName(toLoc)}, so nothing was '
-              'moved. Both were kept; the page stays where it was.',
+              '${_placeName(toLoc)} already has a file for this page, so it was not moved. The '
+              'existing file was left as it is, and the page stays where it was. Move or delete '
+              'the file in ${_placeName(toLoc)} if you want to move the page there.',
+              needsAction: true,
             );
           }
           written.add(p.id);
@@ -1618,8 +1642,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             );
           }
           // Its images and files go with it.
-          if (!await _assetsDir(toLoc, p.id).exists()) assetsMade.add(p.id);
-          await _copyDir(_assetsDir(fromLoc, p.id), _assetsDir(toLoc, p.id));
+          final made = assetsMade[p.id] = <String>[];
+          await _copyDir(_assetsDir(fromLoc, p.id), _assetsDir(toLoc, p.id), created: made);
         }
       } on Object catch (e) {
         await removeCopies();
@@ -1628,15 +1652,54 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         throw NotebookException('Could not move the page.${_osReason(e)}');
       }
 
+      // Every source is checked before any is deleted. One that changed (or
+      // can't be read) since it was copied stops the move: nothing is deleted,
+      // and this move's own verified copies are dropped.
+      final stale = <int>[];
+      final unreadable = <int>[];
+      for (var i = 0; i < ids.length; i++) {
+        try {
+          if (await fromStore.readText(ids[i]) != copiedText[i]) stale.add(i);
+        } on Object {
+          unreadable.add(i);
+        }
+      }
+      if (stale.isNotEmpty || unreadable.isNotEmpty) {
+        await removeCopies();
+        String label(int i) {
+          final t = originals[i].meta.title.trim();
+          return '"${t.isEmpty ? 'Untitled' : t}"';
+        }
+
+        final source = _placeName(fromLoc);
+        throw NotebookException(
+          [
+            if (stale.isNotEmpty)
+              '${stale.map(label).join(', ')} was not moved: a newer version of '
+                  '${stale.length == 1 ? 'it' : 'them'} is in $source, so ${stale.length == 1 ? 'it was' : 'they were'} '
+                  'left there and the copy made for the move was dropped.',
+            if (unreadable.isNotEmpty)
+              '${unreadable.map(label).join(', ')} was not moved: ${unreadable.length == 1 ? 'its' : 'their'} '
+                  'file in $source could not be read to check it. ${unreadable.length == 1 ? 'It stays' : 'They stay'} '
+                  'where ${unreadable.length == 1 ? 'it was' : 'they were'}.',
+          ].join(' '),
+          needsAction: true,
+        );
+      }
+
       final removed = <int>[];
+      final changedNow = <int>{}; // found changed by the compare-and-delete
       try {
         for (var i = 0; i < ids.length; i++) {
-          // Only the generation that was copied is deleted; a source that
-          // changed since (sync, another editor) is kept and reported below.
-          if (!await _sourceIntact(fromStore, originals[i], copiedText[i])) {
+          // Only the generation that was copied is deleted: the file is set
+          // aside, compared and only then removed, so a version that arrives
+          // after the check above is kept (and the classification below
+          // reports it).
+          final r = await _deleteIfUnchanged(fromLoc, ids[i], copiedText[i]);
+          if (!r.deleted && r.outcome != DeleteOutcome.absent) {
+            changedNow.add(i);
             throw const NotebookException('A page changed during the move.');
           }
-          await _delete(fromLoc, ids[i]);
           removed.add(i);
         }
       } on Object catch (e) {
@@ -1651,6 +1714,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final intact = <int>[];
         final gone = <int>[];
         final both = <int>[];
+        // changed: a newer version arrived after the check; it stays, and this
+        // move's own copy of the older one is dropped.
+        final changed = <int>[];
         final appeared = <int>{}; // a file appeared at the old path during the restore
         Future<bool> absent(int i) async =>
             await FileSystemEntity.type(fromStore.pathFor(ids[i])) == FileSystemEntityType.notFound;
@@ -1664,39 +1730,46 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             // its path at that moment, so a file that appears in the meantime
             // is never written over (the page is then in both places).
             try {
-              if (!await _writeNew(fromLoc, originals[i], beforePublish: restoreBeforePublishHook)) {
+              if (!await _restoreText(fromLoc, originals[i], copiedText[i], beforePublish: restoreBeforePublishHook)) {
                 appeared.add(i);
                 debugPrint('Restoring page ${ids[i]}: a file appeared at its old path, keeping both');
               }
             } on Object catch (e2) {
               debugPrint('Restoring page ${ids[i]} failed: $e2');
             }
-            if (await _sourceIntact(fromStore, originals[i])) {
+            if (await _sourceIntact(fromStore, originals[i], copiedText[i])) {
               intact.add(i);
               continue;
             }
           }
-          (await absent(i) ? gone : both).add(i);
+          if (await absent(i)) {
+            gone.add(i);
+          } else if (changedNow.contains(i)) {
+            changed.add(i);
+          } else {
+            both.add(i);
+          }
         }
         // Remove the copy of an intact page: the page file and its attachments
         // each get their own try, and a failure keeps that page in both places.
         final copyLeft = <int, String>{};
-        for (final i in intact) {
+        for (final i in [...intact, ...changed]) {
           try {
             await _delete(toLoc, ids[i]);
           } on Object catch (e2) {
             debugPrint('Removing copy of page ${ids[i]} failed: $e2');
             copyLeft[i] = 'the page file';
           }
-          final dir = _assetsDir(toLoc, ids[i]);
           try {
-            if (await dir.exists()) await dir.delete(recursive: true);
+            // Only what this move copied, never an attachments folder (or a
+            // file in it) that was at the target before.
+            await _removeCreated(assetsMade[ids[i]] ?? const []);
           } on Object catch (e2) {
             debugPrint('Removing the attachments of page ${ids[i]} at the target failed: $e2');
             copyLeft[i] = copyLeft.containsKey(i) ? 'the page file and its attachments' : 'its attachments';
           }
         }
-        if (gone.isEmpty && both.isEmpty && copyLeft.isEmpty) {
+        if (gone.isEmpty && both.isEmpty && changed.isEmpty && copyLeft.isEmpty) {
           debugPrint('Removing the old page files failed: $e');
           throw NotebookException('Could not remove the old files, so nothing was moved.${_osReason(e)}');
         }
@@ -1713,7 +1786,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // at all, so the tree and its file agree.
         final shareTree = _isStandaloneLoc(fromLoc) && _isStandaloneLoc(toLoc);
         for (var i = 0; i < ids.length && !shareTree; i++) {
-          if (both.contains(i)) continue;
+          if (both.contains(i) || changed.contains(i)) continue;
           final parent = moved[i].meta.parentId;
           final pi = parent == null ? null : idIndex[parent];
           if (pi == null || movedIdx.contains(i) == movedIdx.contains(pi)) continue;
@@ -1798,13 +1871,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             ].join(' '),
           );
         }
+        final changedOk = changed.where((i) => !copyLeft.containsKey(i)).toList();
+        if (changedOk.isNotEmpty) {
+          parts.add(
+            '${names(changedOk)} ${changedOk.length == 1 ? 'was' : 'were'} not moved: a newer version of '
+            '${changedOk.length == 1 ? 'it' : 'them'} is in $source, so ${changedOk.length == 1 ? 'it was' : 'they were'} '
+            'left there and the copy made for the move was dropped.',
+          );
+        }
         final stayed = intact.where((i) => !copyLeft.containsKey(i)).toList();
         if (stayed.isNotEmpty) {
           parts.add('${names(stayed)} stayed where ${stayed.length == 1 ? 'it was' : 'they were'}.');
         }
         throw NotebookException(
-          'The move was only partly done. ${parts.join(' ')}',
-          needsAction: both.isNotEmpty || copyLeft.isNotEmpty,
+          '${gone.isEmpty && both.isEmpty && copyLeft.isEmpty ? 'The page was not moved.' : 'The move was only partly done.'} '
+          '${parts.join(' ')}',
+          needsAction: both.isNotEmpty || copyLeft.isNotEmpty || changed.isNotEmpty,
         );
       }
       for (final id in ids) {
@@ -3629,6 +3711,42 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final left = [await for (final e in d.list(recursive: true)) _baseName(e.path)];
       throw _KeptFolderNotEmpty(left);
     }
+  }
+
+  // Like [_delete], but only if the file still holds exactly [expectedText]
+  // (see PageStore.deleteIfUnchanged); a changed file is kept.
+  Future<DeleteResult> _deleteIfUnchanged(String loc, String id, String expectedText) async {
+    _assertWritable(loc);
+    final st = _storeOf(loc);
+    final key = _key(st.pathFor(id));
+    final r = await st.deleteIfUnchanged(id, expectedText);
+    if (r.deleted || r.outcome == DeleteOutcome.absent) {
+      _known.remove(key);
+      _pathId.remove(key);
+      _conflicts.remove(id);
+    }
+    return r;
+  }
+
+  // Puts back the source file with exactly [text] (what it held when it was
+  // copied), only if nothing is at its path when it is published. [page] is the
+  // parsed [text], for the bookkeeping.
+  Future<bool> _restoreText(
+    String loc,
+    NotedPage page,
+    String text, {
+    Future<void> Function()? beforePublish,
+  }) async {
+    await _assertCanWrite(loc);
+    final st = _storeOf(loc);
+    if (!await st.saveNewText(page, text, beforePublish: beforePublish)) return false;
+    final path = st.pathFor(page.id);
+    final key = _key(path);
+    _known[key] = text;
+    _pathId[key] = page.id;
+    if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
+    onPageContent?.call(loc, page);
+    return true;
   }
 
   String _placeName(String loc) => _binders[loc]?.title ?? (loc == _standalone ? 'Pages' : loc);
