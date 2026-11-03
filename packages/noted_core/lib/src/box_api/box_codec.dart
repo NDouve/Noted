@@ -43,8 +43,8 @@ final class BoxApiVersion {
 /// frame style; 0.6 added Find on page (`BoxFind`); 0.7 added images and files;
 /// 0.8 added `aspectRatioExtraHeight`; 0.9 added AI writes (`AiWrite`,
 /// `BoxCodec.aiOwner` and `BoxCodec.aiWrite`); 0.10 added
-/// `AiWriteMode.replaceAiText`. See `BOX_API_CHANGELOG.md` in this package.
-const BoxApiVersion boxApiVersion = BoxApiVersion(0, 10);
+/// `AiWriteMode.replaceAiText`; 0.11 added `CanvasTool.stylusRole`. See `BOX_API_CHANGELOG.md` in this package.
+const BoxApiVersion boxApiVersion = BoxApiVersion(0, 11);
 
 /// How a box's size relates to its content.
 enum BoxSizing {

@@ -47,17 +47,29 @@ String boxTypeName(String typeId) => switch (typeId) {
 /// boxes left as they were because they changed while it ran.
 String conversionNotice(AttachmentConversion r, AttachmentStorage to) {
   final n = r.changed;
-  final done = switch (to) {
-    AttachmentStorage.embedded => 'Embedded $n ${n == 1 ? 'attachment' : 'attachments'}',
-    AttachmentStorage.folder => 'Moved $n ${n == 1 ? 'attachment' : 'attachments'} to the folder',
+  final again = switch (to) {
+    AttachmentStorage.embedded => 'Embed attachments',
+    AttachmentStorage.folder => 'Move attachments to folder',
   };
-  final kept = r.overLimit.isEmpty ? '' : '. Kept in the folder (over 5 MB): ${r.overLimit.join(', ')}';
   final s = r.skipped.length;
-  final skipped = s == 0
-      ? ''
-      : '. ${s == 1 ? '1 box' : '$s boxes'} changed while this ran and ${s == 1 ? 'was' : 'were'} '
-            'left as ${s == 1 ? 'it was' : 'they were'}; run it again';
-  return '$done$kept$skipped.'.replaceAll('..', '.');
+  final parts = [
+    switch (to) {
+      AttachmentStorage.embedded => 'Embedded $n ${n == 1 ? 'attachment' : 'attachments'}',
+      AttachmentStorage.folder => 'Moved $n ${n == 1 ? 'attachment' : 'attachments'} to the folder',
+    },
+    if (r.overLimit.isNotEmpty) 'Kept in the folder (over 5 MB): ${r.overLimit.join(', ')}',
+    if (s > 0)
+      '${s == 1 ? '1 box' : '$s boxes'} changed while this ran and ${s == 1 ? 'was' : 'were'} '
+          'left as ${s == 1 ? 'it was' : 'they were'}; press $again again',
+  ];
+  // A full stop between parts, and at the end, only where the part before
+  // doesn't end in one already (a file name may).
+  final text = StringBuffer();
+  for (final (i, p) in parts.indexed) {
+    if (i > 0) text.write(parts[i - 1].endsWith('.') ? ' ' : '. ');
+    text.write(p);
+  }
+  return parts.last.endsWith('.') ? '$text' : '$text.';
 }
 
 String _two(int n) => n.toString().padLeft(2, '0');
@@ -224,7 +236,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
   }) {
     final chip = ChoiceChip(
       key: ValueKey(key),
-      label: Text(label),
+      label: Text(label, softWrap: true, maxLines: 4, overflow: TextOverflow.visible),
       selected: selected,
       onSelected: onTap == null ? null : (_) => onTap(),
     );
@@ -525,13 +537,27 @@ class _SettingsPanelState extends State<SettingsPanel> {
     }
     return Padding(
       padding: EdgeInsets.only(bottom: m.space2),
-      child: Row(
-        key: ValueKey('settings-type-$t'),
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          SizedBox(width: 130, child: Text(boxTypeName(t))),
-          Expanded(child: choices),
-        ],
+      // Beside the name when there is room for the chips; under it on a narrow
+      // panel, where chips squeezed next to the name would clip their labels.
+      child: LayoutBuilder(
+        builder: (context, c) => c.maxWidth < 360
+            ? Column(
+                key: ValueKey('settings-type-$t'),
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(boxTypeName(t)),
+                  SizedBox(height: m.space1),
+                  choices,
+                ],
+              )
+            : Row(
+                key: ValueKey('settings-type-$t'),
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  SizedBox(width: 130, child: Text(boxTypeName(t))),
+                  Expanded(child: choices),
+                ],
+              ),
       ),
     );
   }
@@ -656,9 +682,11 @@ class _CodesSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            Expanded(child: Text('Codes', key: const ValueKey('settings-codes-heading'), style: sub)),
+            Text('Codes', key: const ValueKey('settings-codes-heading'), style: sub),
             TextButton.icon(
               key: const ValueKey('settings-connect'),
               icon: Icon(Icons.add_link_rounded, size: m.icon, color: scheme.onSurfaceVariant),

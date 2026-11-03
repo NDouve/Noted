@@ -120,10 +120,15 @@ class _CommandToolbarState extends State<CommandToolbar> {
           child: SizedBox(
             width: double.infinity,
             child: ExcludeFocus(
-              child: switch (widget.layout) {
-                final TabbedToolbarLayout l => _tabbed(context, l),
-                final ContextualToolbarLayout l => _contextual(context, l),
-              },
+              child: LayoutBuilder(
+                builder: (context, c) {
+                  final compact = c.maxWidth < compactToolbarWidth;
+                  return switch (widget.layout) {
+                    final TabbedToolbarLayout l => _tabbed(context, l, compact),
+                    final ContextualToolbarLayout l => _contextual(context, l, compact),
+                  };
+                },
+              ),
             ),
           ),
         ),
@@ -157,8 +162,16 @@ class _CommandToolbarState extends State<CommandToolbar> {
 
   /// The units of [groups] for a row that can overflow into More: each
   /// command with its spacing, a separator before the first of a later group.
-  List<ToolbarUnit> _units(List<List<Command>> groups) {
+  /// [strip] wraps the units from index [stripFrom] up to [stripTo] (the shaded
+  /// section); the separator before the strip's first unit stays outside it.
+  List<ToolbarUnit> _units(
+    List<List<Command>> groups, {
+    int stripFrom = 0,
+    int stripTo = 0,
+    Widget Function(int index, Widget unit)? strip,
+  }) {
     final m = NotedMetrics.of(context);
+    var n = -1;
     return [
       for (final (gi, g) in groups.indexed)
         for (final (i, c) in g.indexed)
@@ -166,23 +179,35 @@ class _CommandToolbarState extends State<CommandToolbar> {
             command: c,
             group: gi,
             widget: () {
+              n++;
+              final index = n;
+              final inStrip =
+                  strip != null && index >= stripFrom && index < stripTo;
               final entry = ToolbarEntry(
                 key: ValueKey(c.id),
                 command: c,
                 registry: widget.registry,
               );
-              if (i > 0) {
-                return Padding(
-                  padding: EdgeInsets.only(left: m.space1),
-                  child: entry,
-                );
-              }
-              return gi > 0
-                  ? Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [const ToolbarSeparator(), entry],
+              final core = i > 0
+                  ? Padding(
+                      padding: EdgeInsets.only(left: m.space1),
+                      child: entry,
                     )
                   : entry;
+              final separated = i == 0 && gi > 0;
+              if (inStrip && separated && index == stripFrom) {
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [const ToolbarSeparator(), strip(index, core)],
+                );
+              }
+              final unit = separated
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [const ToolbarSeparator(), core],
+                    )
+                  : core;
+              return inStrip ? strip(index, unit) : unit;
             }(),
           ),
     ];
@@ -288,7 +313,7 @@ class _CommandToolbarState extends State<CommandToolbar> {
     );
   }
 
-  Widget _contextual(BuildContext context, ContextualToolbarLayout l) {
+  Widget _contextual(BuildContext context, ContextualToolbarLayout l, bool compact) {
     final m = NotedMetrics.of(context);
     final scheme = Theme.of(context).colorScheme;
     ContextualSection? shown;
@@ -310,6 +335,39 @@ class _CommandToolbarState extends State<CommandToolbar> {
       }
     }
     _shownSection = shown?.id;
+    // On a phone-width window the two ends would take 60% of the bar and be
+    // scaled down to unreadable size; there everything is one row that
+    // overflows into More, in the order leading, section, trailing.
+    if (compact) {
+      final lead = _resolve(l.leading);
+      final trail = _resolve(l.trailing);
+      // The section's units keep its shading, joined into one strip.
+      final from = lead.fold<int>(0, (n, g) => n + g.length);
+      final to = from + groups.fold<int>(0, (n, g) => n + g.length);
+      final units = _units(
+        [...lead, ...groups, ...trail],
+        stripFrom: from,
+        stripTo: to,
+        strip: (i, unit) => Container(
+          key: i == from ? CommandToolbar.sectionKey(shown!.id) : null,
+          padding: EdgeInsets.fromLTRB(
+            i == from ? m.space1 : 0,
+            m.space1 / 2,
+            i == to - 1 ? m.space1 : 0,
+            m.space1 / 2,
+          ),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.horizontal(
+              left: i == from ? m.borderMd.topLeft : Radius.zero,
+              right: i == to - 1 ? m.borderMd.topRight : Radius.zero,
+            ),
+          ),
+          child: unit,
+        ),
+      );
+      return _bar(middle: units);
+    }
     return _bar(
       leading: _groups(_resolve(l.leading)),
       middle: _units(groups),
@@ -329,7 +387,7 @@ class _CommandToolbarState extends State<CommandToolbar> {
     );
   }
 
-  Widget _tabbed(BuildContext context, TabbedToolbarLayout l) {
+  Widget _tabbed(BuildContext context, TabbedToolbarLayout l, bool compact) {
     final m = NotedMetrics.of(context);
     final scheme = Theme.of(context).colorScheme;
     final type = NotedTypography.of(context);
@@ -338,7 +396,9 @@ class _CommandToolbarState extends State<CommandToolbar> {
         if (_resolve(t.groups).isNotEmpty) t,
     ];
     final current = tabs.where((t) => t.id == _tab).firstOrNull ?? tabs.firstOrNull;
-    final leading = _groups(_resolve(l.leading));
+    // On a phone-width window the tabs get the whole row; Undo, Redo and
+    // Search join the commands of the bar below, which overflows into More.
+    final leading = compact ? <Widget>[] : _groups(_resolve(l.leading));
     Widget tab(ToolbarTab t) {
       final selected = t.id == current?.id;
       return Semantics(
@@ -348,7 +408,7 @@ class _CommandToolbarState extends State<CommandToolbar> {
           onPressed: () => setState(() => _tab = t.id),
           style: TextButton.styleFrom(
             minimumSize: Size(m.controlSize, m.controlSize),
-            padding: EdgeInsets.symmetric(horizontal: m.space3),
+            padding: EdgeInsets.symmetric(horizontal: compact ? m.space2 : m.space3),
             foregroundColor: selected ? scheme.primary : scheme.onSurface,
             textStyle: selected ? type.bodyStrong : type.body,
             shape: RoundedRectangleBorder(borderRadius: m.borderMd),
@@ -400,13 +460,19 @@ class _CommandToolbarState extends State<CommandToolbar> {
                     ),
                   ),
                 ),
-                ..._groups(_resolve(l.trailing)),
+                if (!compact) ..._groups(_resolve(l.trailing)),
               ],
             ),
           ),
         ),
         _bar(
-          middle: current == null ? const [] : _units(_resolve(current.groups)),
+          middle: current == null
+              ? const []
+              : _units([
+                  if (compact) ..._resolve(l.leading),
+                  ..._resolve(current.groups),
+                  if (compact) ..._resolve(l.trailing),
+                ]),
         ),
       ],
     );

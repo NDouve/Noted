@@ -14,7 +14,11 @@ import 'ai/ai_access_service.dart';
 import 'ai/ai_link_authority.dart';
 import 'ai/ai_merge_service.dart';
 import 'app_settings.dart';
+<<<<<<< HEAD
 import 'attachment_copy.dart';
+=======
+import 'device_storage.dart';
+>>>>>>> main
 import 'page_attachments.dart';
 import 'recovery_store.dart';
 import 'search_scope.dart';
@@ -26,6 +30,8 @@ import 'search_scope.dart';
 Directory defaultPagesDirectory() {
   const override = String.fromEnvironment('NOTED_PAGES_DIR');
   if (override.isNotEmpty) return Directory(override);
+  final device = devicePagesDirectory();
+  if (device != null) return device;
   final env = Platform.environment;
   final sep = Platform.pathSeparator;
   if (Platform.isWindows && env['APPDATA'] != null) {

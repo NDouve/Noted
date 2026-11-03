@@ -33,7 +33,7 @@ class AiAccessException implements Exception {
 
 /// The app's end of the per-box codes, and of the codes on pages and binders
 /// (run 2026-11-01-02): the local store `ai-access.json` and the activity log
-/// `ai-activity.json`, both in the data folder beside settings.json.
+/// `ai-activity.json`, both in the data folder (beside binders.json and settings.json on desktop).
 ///
 /// It is what an AI box sees ([AiBoxAccess]) and what the settings panel for
 /// pages and binders uses ([codesFor], [issue], [activityFor] ...). It reads

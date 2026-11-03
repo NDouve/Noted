@@ -87,6 +87,8 @@ class PenTool extends CanvasTool {
   @override
   String get label => 'Pen';
   @override
+  StylusRole get stylusRole => StylusRole.pen;
+  @override
   IconData get icon => Icons.edit_rounded;
   @override
   LogicalKeyboardKey? get shortcut => LogicalKeyboardKey.keyP;
@@ -255,6 +257,8 @@ class EraserTool extends CanvasTool {
   String get id => 'noted.drawing.eraser';
   @override
   String get label => 'Eraser';
+  @override
+  StylusRole get stylusRole => StylusRole.eraser;
   @override
   IconData get icon => Icons.layers_clear_rounded;
   @override

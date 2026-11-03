@@ -9,10 +9,22 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:noted_core/noted_core.dart';
 
+import 'device_storage.dart';
+
 /// The folder for recovery entries: `recovery` next to `binders.json`, the
 /// app settings folder.
-Directory defaultRecoveryDirectory(File bindersFile) =>
-    Directory('${bindersFile.absolute.parent.path}${Platform.pathSeparator}recovery');
+///
+/// On a device the default `binders.json` is in the documents folder, but
+/// recovery goes to the app's support folder (0129).
+Directory defaultRecoveryDirectory(File bindersFile) {
+  final sep = Platform.pathSeparator;
+  final support = deviceSupportDirectory();
+  final docs = devicePagesDirectory()?.parent;
+  if (support != null && docs != null && recoveryLocationKey(bindersFile.parent.path) == recoveryLocationKey(docs.path)) {
+    return Directory('${support.path}${sep}recovery');
+  }
+  return Directory('${bindersFile.absolute.parent.path}${sep}recovery');
+}
 
 /// A comparable form of a storage location: absolute, with forward slashes
 /// and, on Windows only, lower case. This mirrors `Notebook._key` in

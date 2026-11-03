@@ -157,6 +157,11 @@ class PageCanvasState extends State<PageCanvas>
   // the next pointer goes down; no tool session starts while it is set.
   final Map<int, Offset> _touches = {};
   bool _multiTouch = false;
+  // Fingers that landed during a pen stroke or were down when it began: a
+  // resting hand. Its lift selects and makes nothing. _upWasPalm is whether
+  // the pointer that just lifted was one (the page tap that follows reads it).
+  final Set<int> _palmPointers = {};
+  bool _upWasPalm = false;
   Offset? _touchFocal;
   double? _touchSpan;
 
@@ -580,8 +585,43 @@ class PageCanvasState extends State<PageCanvas>
               .clamp(0.0, 1.0),
   );
 
+  /// The tool a pen's pointer uses (0033): with Select and type picked, the
+  /// stylus inks and its eraser end erases, whatever box is under it. A
+  /// picked tool is kept, except that the eraser end erases while the pen is
+  /// picked. Null when the module that supplies the tool is off or missing.
+  CanvasTool? _stylusTool(PointerDeviceKind kind) {
+    final active = _tools.active;
+    final StylusRole role;
+    if (kind == PointerDeviceKind.stylus) {
+      if (active != null) return active;
+      role = StylusRole.pen;
+    } else if (kind == PointerDeviceKind.invertedStylus) {
+      if (active != null && active.stylusRole != StylusRole.pen) return active;
+      role = StylusRole.eraser;
+    } else {
+      return active;
+    }
+    final off = _off;
+    for (final m in _c.modules.enabled) {
+      if (off.contains(m.codec.typeId)) continue;
+      for (final t in m.tools) {
+        if (t.stylusRole == role) return t;
+      }
+    }
+    return active;
+  }
+
+  /// True if a click by [e] is no click on a box: a pen going to a tool, or
+  /// a resting hand.
+  bool _boxIgnores(PointerEvent e) =>
+      _palmPointers.contains(e.pointer) || _inkedBy(e.kind);
+
+  /// True if the pointer [kind] goes to a tool (and so to no box) here.
+  bool _inkedBy(PointerDeviceKind kind) =>
+      !_readOnly && _stylusTool(kind) != null;
+
   void _toolDown(PointerDownEvent e) {
-    final tool = _tools.active;
+    final tool = _stylusTool(e.kind);
     if (_readOnly || tool == null || _session != null || _view == null) return;
     final usable = e.kind == PointerDeviceKind.mouse
         ? e.buttons & kPrimaryButton != 0
@@ -799,6 +839,10 @@ class PageCanvasState extends State<PageCanvas>
   void _touchDown(PointerDownEvent e) {
     if (_touches.isEmpty) _multiTouch = false;
     if (e.kind != PointerDeviceKind.touch) return;
+    // A finger that lands during a pen stroke is a resting hand.
+    if (_session != null && _lastToolEvent?.kind != PointerDeviceKind.touch) {
+      _palmPointers.add(e.pointer);
+    }
     _touches[e.pointer] = e.localPosition;
     _startPinch();
   }
@@ -872,6 +916,7 @@ class PageCanvasState extends State<PageCanvas>
     // InteractiveViewer's scale recognizer) suppresses it; the "pinch then
     // lift" test guards that.
     if (v == null || _readOnly || _tools.active != null) return;
+    if (d.kind == PointerDeviceKind.touch && _upWasPalm) return;
     final world = v.toWorld(d.localPosition);
     // A click that lands on a box's chrome or snapshot isn't a canvas click.
     for (final n in _c.page.nodes) {
@@ -971,6 +1016,7 @@ class PageCanvasState extends State<PageCanvas>
               childOrigin: childOrigin,
               scaleOf: () => scale,
               multiTouch: _multiTouchActive,
+              inkedBy: _boxIgnores,
               onGripTap: _focus.requestFocus,
               readOnly: readOnly,
               find: _find,
@@ -1055,6 +1101,8 @@ class PageCanvasState extends State<PageCanvas>
                         // fingers stop panning and zooming.
                         _endPinch();
                         _toolDown(e);
+                        // A finger already down is a resting hand.
+                        if (_session != null) _palmPointers.addAll(_touches.keys);
                       }
                     }
                   },
@@ -1067,11 +1115,13 @@ class PageCanvasState extends State<PageCanvas>
                   },
                   onPointerUp: (e) {
                     if (e.pointer == _middlePointer) _middlePointer = null;
+                    _upWasPalm = _palmPointers.remove(e.pointer);
                     _touchEnd(e);
                     _toolUp(e);
                   },
                   onPointerCancel: (e) {
                     if (e.pointer == _middlePointer) _middlePointer = null;
+                    _palmPointers.remove(e.pointer);
                     _touchEnd(e);
                     if (e.pointer == _sessionPointer) _cancelSession();
                   },
@@ -1111,7 +1161,18 @@ class PageCanvasState extends State<PageCanvas>
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onTapUp: _onBackgroundTap,
-                    child: MouseRegion(
+                    // A pen's pointer wins the arena at once, so no box under
+                    // it moves, resizes or places a caret: it inks (0033).
+                    child: RawGestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      gestures: {
+                        _PenClaim:
+                            GestureRecognizerFactoryWithHandlers<_PenClaim>(
+                              _PenClaim.new,
+                              (r) => r.inks = _inkedBy,
+                            ),
+                      },
+                      child: MouseRegion(
                       onExit: (_) => _hover = null,
                       cursor: tool?.cursor ?? MouseCursor.defer,
                       child: ColoredBox(
@@ -1149,6 +1210,7 @@ class PageCanvasState extends State<PageCanvas>
                         ),
                         ),
                       ),
+                    ),
                     ),
                   ),
                 ),
@@ -1203,6 +1265,40 @@ class PageCanvasState extends State<PageCanvas>
         },
     );
   }
+}
+
+/// Wins the gesture arena at once for a pen's pointer (when [inks] says it
+/// inks), so boxes under it see no tap or drag.
+class _PenClaim extends OneSequenceGestureRecognizer {
+  _PenClaim()
+    : super(
+        supportedDevices: {
+          PointerDeviceKind.stylus,
+          PointerDeviceKind.invertedStylus,
+        },
+      );
+
+  bool Function(PointerDeviceKind kind) inks = (_) => false;
+
+  @override
+  void addAllowedPointer(PointerDownEvent event) {
+    if (!inks(event.kind)) return;
+    startTrackingPointer(event.pointer, event.transform);
+    resolve(GestureDisposition.accepted);
+  }
+
+  @override
+  void handleEvent(PointerEvent event) {
+    if (event is PointerUpEvent || event is PointerCancelEvent) {
+      stopTrackingPointer(event.pointer);
+    }
+  }
+
+  @override
+  void didStopTrackingLastPointer(int pointer) {}
+
+  @override
+  String get debugDescription => 'pen claim';
 }
 
 const double _issueIconSize = 34;
