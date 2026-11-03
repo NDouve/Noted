@@ -142,7 +142,7 @@ jobs:
     # Apple Silicon. When GitHub has no machine free it gives up after about
     # 15 minutes and marks the job cancelled; the Intel job below covers it.
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -172,6 +172,40 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # iPad/iPhone test build, after the macOS upload so a failure here
+      # never costs the macOS artifact. Unsigned: no team or certificate is
+      # configured, so it must be re-signed before it can be installed.
+      # Mobile builds only on pushes to main and manual runs, not PRs.
+      - name: Build iOS (unsigned)
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        working-directory: app
+        run: flutter build ipa --release --no-codesign
+
+      # flutter build ipa --no-codesign leaves an .xcarchive; the app is the
+      # one .app inside it.
+      - name: Package unsigned .ipa
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        working-directory: app
+        run: |
+          set -e
+          apps=(build/ios/archive/Runner.xcarchive/Products/Applications/*.app)
+          if [ "${#apps[@]}" -ne 1 ] || [ ! -d "${apps[0]}" ]; then
+            echo "::error::Expected exactly one .app in the Runner.xcarchive, found: ${apps[*]}"
+            exit 1
+          fi
+          rm -rf Payload Noted-unsigned.ipa
+          mkdir Payload
+          ditto "${apps[0]}" "Payload/$(basename "${apps[0]}")"
+          zip -qry Noted-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        with:
+          name: Noted-unsigned-ipa
+          path: app/Noted-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
   macos-build-intel:
     name: macOS release build (Intel fallback)
     # Runs alongside the Apple Silicon job rather than after it: GitHub
@@ -180,7 +214,7 @@ jobs:
     # is separate; GitHub supports it until the macOS 15 image retires in
     # fall 2027. Either job's zip is the same app.
     runs-on: macos-15-intel
-    timeout-minutes: 60
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
 
@@ -207,5 +241,79 @@ jobs:
         with:
           name: Noted-macos-intel-runner
           path: Noted-macos.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      # Same unsigned .ipa as the Apple Silicon job. continue-on-error: the
+      # Apple Silicon job is the one that must pass; an iOS failure that only
+      # shows on this older, scarcer Intel machine must not fail the run.
+      # Mobile builds only on pushes to main and manual runs, not PRs. The
+      # step timeout plus continue-on-error keeps a slow Intel build green.
+      - name: Build iOS (unsigned)
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        timeout-minutes: 30
+        continue-on-error: true
+        working-directory: app
+        run: flutter build ipa --release --no-codesign
+
+      - name: Package unsigned .ipa
+        id: ipa
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        continue-on-error: true
+        working-directory: app
+        run: |
+          set -e
+          apps=(build/ios/archive/Runner.xcarchive/Products/Applications/*.app)
+          if [ "${#apps[@]}" -ne 1 ] || [ ! -d "${apps[0]}" ]; then
+            echo "::error::Expected exactly one .app in the Runner.xcarchive, found: ${apps[*]}"
+            exit 1
+          fi
+          rm -rf Payload Noted-unsigned.ipa
+          mkdir Payload
+          ditto "${apps[0]}" "Payload/$(basename "${apps[0]}")"
+          zip -qry Noted-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        if: steps.ipa.outcome == 'success' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        continue-on-error: true
+        with:
+          name: Noted-unsigned-ipa-intel-runner
+          path: app/Noted-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+  android-build:
+    name: Android release build
+    # Debug-signed: no release key is configured, so Flutter's template signs
+    # the release build with the debug key. Fine for installing a test build.
+    # Pushes to main and manual runs only, not PRs.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Get dependencies (workspace root)
+        run: flutter pub get
+
+      - name: Build
+        working-directory: app
+        run: flutter build apk --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Noted-android-apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
