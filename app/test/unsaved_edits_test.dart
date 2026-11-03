@@ -362,6 +362,18 @@ void main() {
     expect(unsaved.retryDelay, const Duration(hours: 1));
   });
 
+  test('a copy held in memory that lands retires older entries of the page it never wrote', () async {
+    // An older entry of the page is already there (one replay could not land).
+    final (base, older) = page('a', boxes: 2);
+    await host.recovery!.write(folder: _folder, page: older, baseText: writePage(base), time: DateTime.now());
+    host.keepFails = true;
+    await failed('a'); // newer edits, held in memory only
+    host.keepFails = false;
+    await retry();
+    expect(unsaved.has('a'), isFalse);
+    expect(await entries(), isEmpty, reason: 'a later replay would bring back what was deleted since');
+  });
+
   test('an entry replayed by someone else ends the tracking', () async {
     await failed('a');
     for (final e in await entries()) {

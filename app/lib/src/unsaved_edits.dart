@@ -337,10 +337,13 @@ class UnsavedEdits {
     _delay = null; // a save landed: the next failure starts again from the first delay
     final rec = host.recovery;
     final text = k.entryText;
-    if (rec == null || text == null) return;
+    // A copy held in memory is newer than any entry of the page: they all go,
+    // or a later replay would bring back what was deleted since.
+    final newest = k.page != null;
+    if (rec == null || (text == null && !newest)) return;
     try {
       for (final e in (await rec.list()).entries) {
-        if (e.folder == k.folder && e.pageId == id && e.pageText == text) await rec.delete(e);
+        if (e.folder == k.folder && e.pageId == id && (newest || e.pageText == text)) await rec.delete(e);
       }
     } on Object catch (e) {
       debugPrint('Dropping the recovery entry of page $id failed: $e');
