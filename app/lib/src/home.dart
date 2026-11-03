@@ -43,6 +43,7 @@ class _HomeState extends State<Home> {
   final _tree = GlobalKey<PageTreeViewState>();
   final _scaffold = GlobalKey<ScaffoldState>();
   String? _lastChoice;
+  int _seenFocusTick = 0;
 
   Notebook get notebook => widget.notebook;
 
@@ -68,6 +69,7 @@ class _HomeState extends State<Home> {
   @override
   void initState() {
     super.initState();
+    _seenFocusTick = _search.focusTick;
     _search.addListener(_searchChanged);
     _notices = notebook.attachmentNotices.listen(_showNotice);
     final settings = widget.settings;
@@ -123,6 +125,43 @@ class _HomeState extends State<Home> {
   // Clearing the search also clears the title highlight it put there.
   void _searchChanged() {
     if (!_search.hasQuery) _titleHighlight.value = null;
+    if (_search.focusTick == _seenFocusTick) return;
+    _seenFocusTick = _search.focusTick;
+    // The search field lives in the drawer on a narrow window: open it, and
+    // ask for the focus again once the field exists.
+    _openDrawer(then: () {
+      _search.requestFocus();
+      _seenFocusTick = _search.focusTick;
+    });
+  }
+
+  // Opens the drawer (narrow windows, when it is shut), then runs [then]
+  // after the frame that builds its content.
+  void _openDrawer({VoidCallback? then}) {
+    final scaffold = _scaffold.currentState;
+    if (scaffold == null || !isNarrowLayout(context) || scaffold.isDrawerOpen) return;
+    scaffold.openDrawer();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) then?.call();
+    });
+  }
+
+  // Focus before the drawer opened; given back when it closes.
+  FocusNode? _beforeDrawer;
+
+  void _drawerChanged(bool open) {
+    if (open) {
+      _beforeDrawer = FocusManager.instance.primaryFocus;
+      return;
+    }
+    final node = _beforeDrawer;
+    _beforeDrawer = null;
+    if (node != null && node.context != null && node.canRequestFocus) node.requestFocus();
+  }
+
+  void _closeDrawer() {
+    final scaffold = _scaffold.currentState;
+    if (scaffold != null && scaffold.isDrawerOpen) scaffold.closeDrawer();
   }
 
   @override
@@ -140,6 +179,8 @@ class _HomeState extends State<Home> {
   /// the match into view and highlights it, with the search text in its find
   /// bar.
   Future<void> _openResult(SearchResultPage page, SearchResultBox? box) async {
+    // A result on the page that is already open changes nothing to close on.
+    _closeDrawer();
     try {
       await notebook.open(page.pageId);
     } on NotebookException catch (e) {
@@ -148,6 +189,7 @@ class _HomeState extends State<Home> {
       }
       return;
     }
+    if (!mounted) return;
     if (box == null) {
       // A title result: the title shows the match; the find bar stays shut.
       _titleHighlight.value = TitleHighlight(
@@ -169,17 +211,47 @@ class _HomeState extends State<Home> {
   /// up from the canvas, a note editor or the title field to here; only the
   /// commands that work while editing answer, and the rest is left alone.
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
-    final actions = _tree.currentState;
-    if (actions == null) return KeyEventResult.ignored;
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
     final k = HardwareKeyboard.instance;
     if (!k.isControlPressed && !k.isMetaPressed) return KeyEventResult.ignored;
+    final actions = _tree.currentState;
+    if (actions == null) {
+      // A narrow window with the drawer shut: the tree isn't there.
+      final search = _searchCommands.resolve(event, editing: true);
+      if (search != null) {
+        search.run();
+        return KeyEventResult.handled;
+      }
+      if (_newPageKeys.any((a) => a.accepts(event, k))) {
+        unawaited(_newPage());
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
     final command =
         pagesHeaderCommands(notebook, actions).resolve(event, editing: true) ??
         _searchCommands.resolve(event, editing: true);
     if (command == null) return KeyEventResult.ignored;
     command.run();
     return KeyEventResult.handled;
+  }
+
+  static const _newPageKeys = [
+    SingleActivator(LogicalKeyboardKey.keyN, control: true),
+    SingleActivator(LogicalKeyboardKey.keyN, meta: true),
+  ];
+
+  // Ctrl+N with no page tree on screen: the same as the tree's New page.
+  Future<void> _newPage() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      await notebook.createPage(focusTitle: true);
+    } on NotebookException catch (e) {
+      messenger?.hideCurrentSnackBar();
+      messenger?.showSnackBar(
+        SnackBar(content: Text(e.message), persist: e.needsAction, showCloseIcon: e.needsAction),
+      );
+    }
   }
 
   @override
@@ -190,12 +262,24 @@ class _HomeState extends State<Home> {
       onKeyEvent: _onKey,
       child: Scaffold(
         key: _scaffold,
+        onDrawerChanged: _drawerChanged,
         // On a narrow window the sidebar is a drawer (0129).
         drawer: isNarrowLayout(context)
             ? Drawer(
                 width: NotedMetrics.of(context).sidebarWidth,
                 shape: const RoundedRectangleBorder(),
-                child: _sidebar(NotedMetrics.of(context)),
+                // Escape shuts it (the search field clears itself first).
+                child: Focus(
+                  autofocus: true,
+                  onKeyEvent: (node, event) {
+                    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) {
+                      _closeDrawer();
+                      return KeyEventResult.handled;
+                    }
+                    return KeyEventResult.ignored;
+                  },
+                  child: _sidebar(NotedMetrics.of(context)),
+                ),
               )
             : null,
         body: _body(),
@@ -268,10 +352,14 @@ class _HomeState extends State<Home> {
 
   // The menu button over a view that has no title row.
   Widget _withMenu(bool narrow, NotedMetrics m, Widget child) => narrow
-      ? Stack(
+      ? Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Positioned.fill(child: child),
-            Positioned(left: m.space2, top: m.space2, child: _menuButton(m)),
+            Padding(
+              padding: EdgeInsets.fromLTRB(m.space2, m.space2, 0, 0),
+              child: Align(alignment: Alignment.centerLeft, child: _menuButton(m)),
+            ),
+            Expanded(child: child),
           ],
         )
       : child;
