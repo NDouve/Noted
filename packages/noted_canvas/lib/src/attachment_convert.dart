@@ -45,10 +45,11 @@ Future<AttachmentConversion> convertPageAttachments(
     for (final node in controller.page.nodes)
       if (node is BoxRecord) node.id,
   ];
-  // id -> (rev the conversion started from, converted data)
-  final next = <String, (String?, Object)>{};
-  // id -> files left in the folder for being over the limit
-  final overById = <String, List<String>>{};
+  // id -> (the box as the conversion started from it, converted data, files
+  // left in the folder for being over the limit)
+  final next = <String, (_Stamp, Object, List<String>)>{};
+  // Boxes that needed no change, with their over-limit files.
+  final unchanged = <String, List<String>>{};
   for (var attempt = 0; attempt < _maxAttempts && work.isNotEmpty; attempt++) {
     for (final id in work) {
       final node = controller.page.node(id);
@@ -61,36 +62,44 @@ Future<AttachmentConversion> convertPageAttachments(
       if (r is! LiveBox) continue;
       final over = <String>[];
       final data = await module.hostConvertAttachments(r.data, to, store, over);
-      overById[id] = over;
       if (data == null) {
         next.remove(id);
+        unchanged[id] = over;
       } else {
-        next[id] = (node.rev, data);
+        unchanged.remove(id);
+        next[id] = (_stampOf(node), data, over);
       }
     }
     // No await from here to the commit: a box edited (or replaced by sync)
     // while its files were read is converted again, never overwritten.
     work = [
       for (final e in next.entries)
-        if (_revOf(controller, e.key) != e.value.$1) e.key,
+        if (!_isCurrent(controller, e.key, e.value.$1)) e.key,
     ];
     for (final id in work) {
       next.remove(id);
     }
   }
-  // Boxes that were still changing after the last attempt, and not deleted.
+  // Boxes that were still changing after the last attempt (a deleted box is
+  // simply gone).
   final skipped = [
     for (final id in work)
       if (controller.page.node(id) is BoxRecord) id,
   ];
-  final live = <String, Object?>{
-    for (final e in next.entries)
-      if (_revOf(controller, e.key) != null) e.key: e.value.$2,
-  };
-  final changed = live.isEmpty ? 0 : controller.replaceBoxData(live);
+  final changed = next.isEmpty
+      ? 0
+      : controller.replaceBoxData({
+          for (final e in next.entries) e.key: e.value.$2,
+        });
   return AttachmentConversion(
     changed: changed,
-    overLimit: [for (final names in overById.values) ...names],
+    // Only boxes that were converted or needed nothing: not skipped or
+    // deleted ones.
+    overLimit: [
+      for (final e in next.entries) ...e.value.$3,
+      for (final e in unchanged.entries)
+        if (controller.page.node(e.key) is BoxRecord) ...e.value,
+    ],
     skipped: skipped,
   );
 }
@@ -98,8 +107,14 @@ Future<AttachmentConversion> convertPageAttachments(
 /// How often a box that changed during its conversion is converted again.
 const _maxAttempts = 3;
 
-/// The revision of box [id] now, or null if it is gone.
-String? _revOf(CanvasController controller, String id) {
+/// A box's revision and raw data: the revision alone can't tell edits apart
+/// on a box without one (a hand-edited page).
+typedef _Stamp = (String?, String?);
+
+_Stamp _stampOf(BoxRecord box) => (box.rev, box.data?.text);
+
+/// Whether box [id] is still the way [stamp] saw it.
+bool _isCurrent(CanvasController controller, String id, _Stamp stamp) {
   final node = controller.page.node(id);
-  return node is BoxRecord ? node.rev : null;
+  return node is BoxRecord && _stampOf(node) == stamp;
 }

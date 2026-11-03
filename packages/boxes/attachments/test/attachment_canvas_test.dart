@@ -488,6 +488,109 @@ void main() {
     final d = data(boxes().single) as ImageData;
     expect(d.alt, 'newer caption');
     expect(d.ref.isEmbedded, isTrue);
+    c.undo();
+    final back = data(boxes().single) as ImageData;
+    expect(back.alt, 'newer caption', reason: 'undo keeps the newer edit');
+    expect(back.ref.isEmbedded, isFalse, reason: 'one undo reverts the conversion');
+  });
+
+  // A box with no revision, as a hand-edited page can have.
+  BoxRecord noRev(BoxRecord b) {
+    final p = NotedPage.create(PageMeta.create(id: 'p', title: '', order: 0));
+    final text = writePage(p.insertNode(b)).replaceAll(RegExp(r'"rev":\s*"r",?'), '');
+    return readPage(text).nodes.whereType<BoxRecord>().single;
+  }
+
+  BoxRecord folderImage(String id) {
+    final hash = contentHash(redPng);
+    final file = attachmentFileName(hash, 'png');
+    store.folder[file] = redPng;
+    return noRev(
+      _box(
+        const ImageCodec(),
+        id,
+        ImageData(
+          ref: AttachmentRef(name: 'red.png', size: redPng.length, hash: hash, file: file),
+          width: 4,
+          height: 4,
+        ),
+        const Bounds(40, 40, 120, 148),
+      ),
+    );
+  }
+
+  testWidgets('a box without a revision converts', (t) async {
+    await pump(t, nodes: [folderImage('img')]);
+    expect(boxes().single.rev, isNull);
+    final r = await t.runAsync(
+      () => convertPageAttachments(c, store, AttachmentStorage.embedded),
+    );
+    expect(r!.changed, 1);
+    expect(r.skipped, isEmpty);
+    expect((data(boxes().single) as ImageData).ref.isEmbedded, isTrue);
+  });
+
+  testWidgets('a box without a revision, edited during the read, is converted '
+      'again', (t) async {
+    final gated = _HookStore();
+    store = gated;
+    await pump(t, nodes: [folderImage('img')]);
+    var reads = 0;
+    gated.onRead = () {
+      if (reads++ != 0) return;
+      final d = data(boxes().single) as ImageData;
+      c.editBox('img', d.copyWith(alt: 'newer caption'));
+    };
+    final r = await t.runAsync(
+      () => convertPageAttachments(c, store, AttachmentStorage.embedded),
+    );
+    expect(r!.skipped, isEmpty);
+    final d = data(boxes().single) as ImageData;
+    expect(d.alt, 'newer caption');
+    expect(d.ref.isEmbedded, isTrue);
+  });
+
+  testWidgets('a box deleted during the read is dropped, not reported', (t) async {
+    final gated = _HookStore();
+    store = gated;
+    await pump(t);
+    await t.runAsync(() async {
+      await canvas(t).insertFiles([
+        IncomingFile('red.png', redPng),
+        IncomingFile('Plan.pdf', pdf),
+      ], at: Offset.zero);
+    });
+    await t.pump();
+    final img = boxes().firstWhere((b) => b.typeId == const ImageCodec().typeId);
+    gated.onRead = () => c.delete(img.id);
+    final r = await t.runAsync(
+      () => convertPageAttachments(c, store, AttachmentStorage.embedded),
+    );
+    expect(r!.skipped, isEmpty);
+    expect(r.changed, 1);
+    expect(boxes(), hasLength(1));
+  });
+
+  testWidgets('over-limit files of a deleted box are not reported', (t) async {
+    final gated = _HookStore();
+    store = gated;
+    await pump(t);
+    await t.runAsync(
+      () => canvas(t).insertFiles([
+        IncomingFile('huge.zip', Uint8List(embedLimitBytes + 1)),
+        IncomingFile('small.pdf', pdf),
+      ], at: Offset.zero),
+    );
+    await t.pump();
+    final huge = boxes().firstWhere((b) => (data(b) as FileData).ref.name == 'huge.zip');
+    gated.onRead = () {
+      if (c.page.node(huge.id) != null) c.delete(huge.id);
+    };
+    final r = await t.runAsync(
+      () => convertPageAttachments(c, store, AttachmentStorage.embedded),
+    );
+    expect(r!.overLimit, isEmpty);
+    expect(r.changed, 1);
   });
 
   testWidgets('a box that keeps changing is skipped and reported', (t) async {
