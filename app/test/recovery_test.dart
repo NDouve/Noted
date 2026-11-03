@@ -1342,9 +1342,9 @@ void main() {
       File(rec.path).createSync(); // recovery can not be written now
       await nb.open(nb.tree.roots.firstWhere((p) => p.id != x).id); // fails again: held in memory only
       expect(nb.unsavedPageCount, 1);
+      await vanish(nb); // (its retries can't write recovery either)
       File(rec.path).deleteSync();
       aside.renameSync(rec.path); // the older entry is there again
-      await vanish(nb);
       es.failSave = false;
       await restore();
       await nb.checkFolders(); // back: replay runs
