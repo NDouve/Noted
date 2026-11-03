@@ -114,6 +114,42 @@ class _SaveRefused implements Exception {
   final AiLinkResponse response;
 }
 
+/// The edits of a page whose save failed with its folder still there. They are
+/// retried (merged into whatever is on disk by then), kept in the recovery
+/// folder, and kept in the editor ([controller]) while the page is not open.
+class _Unsaved {
+  _Unsaved(this.loc, this.folder, this.page, this.baseText);
+
+  /// The place the page was in when the save failed; a retry never writes
+  /// anywhere else.
+  String loc;
+
+  /// The normalized folder of that place, as the recovery entry names it.
+  String folder;
+
+  /// The page with the edits.
+  NotedPage page;
+
+  /// The page file the edits are made on: the base of every merge. It moves
+  /// forward with the open page's own base (what was merged into the edits);
+  /// null when it was never known.
+  String? baseText;
+
+  /// The base the recovery entry was written with.
+  String? keptBase;
+
+  /// The editor, while the page is left and its edits are not safe.
+  CanvasController? controller;
+
+  /// The texts written to the recovery folder for these edits; the last one is
+  /// the entry now there. Empty: the edits are in memory only.
+  final Set<String> keptTexts = {};
+  String? keptText;
+
+  /// Whether the user was told.
+  bool told = false;
+}
+
 /// A save failed because the page's folder isn't there.
 class FolderUnavailableException extends NotebookException {
   const FolderUnavailableException() : super('That folder was not found.');
@@ -781,7 +817,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_binders[_loc[id]]?.missing ?? false) {
       throw const NotebookException('That binder is not available.');
     }
-    await _closeCurrent();
+    await _closeCurrent(keepUnsaved: true);
     final st = _storeOf(_loc[id] ?? _standalone);
     // Read and set up inside the save queue, so a write to this page from an
     // AI (which goes through the same queue while the page is closed) lands
@@ -797,18 +833,42 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // A change reported by a controller that is no longer the open one (a
       // late callback after it was closed) is ignored: it would queue an
       // unchecked save of a closed page.
+      // Coming back to a page whose save failed shows its edits again.
+      final unsaved = _unsaved[id];
+      final retained = unsaved?.controller;
+      unsaved?.controller = null;
+      if (unsaved != null) {
+        // The file may have changed since the edits were made: they are
+        // merged into it below, from the page they were made on.
+        final baseText = unsaved.baseText;
+        _base = baseText == null ? NotedPage.create(unsaved.page.meta) : readPage(baseText);
+      }
       late final CanvasController controller;
-      controller = CanvasController(
-        page,
-        modules,
-        onChanged: (p) {
-          if (identical(_current, controller)) _pageChanged(p);
-        },
-        deviceName: deviceName,
-      );
+      controller =
+          retained ??
+          CanvasController(
+            unsaved?.page ?? page,
+            modules,
+            onChanged: (p) {
+              if (identical(_current, controller)) _pageChanged(p);
+            },
+            deviceName: deviceName,
+          );
       _current = controller;
       _attachments = _makeAttachments(id, _loc[id] ?? _standalone);
       _syncReadOnly();
+      if (unsaved != null) {
+        var time = DateTime.now().millisecondsSinceEpoch;
+        try {
+          time = (await File(st.pathFor(id)).lastModified()).millisecondsSinceEpoch;
+        } on Object {
+          // The time of the merge is only a tie-break.
+        }
+        _mergeOpen(page, text, time); // meta, title and conflicts come from the result
+        unsaved.baseText = text; // what is merged into the edits now
+        // Already in the file (it was saved by other means): nothing is left to keep.
+        if (writePage(controller.page) == text) await _retireUnsaved(st, controller.page);
+      }
       _rebuildTree();
     });
   }
@@ -1295,9 +1355,47 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final st = _storeOf(loc);
     final ids = [id, ..._treeOf(loc).descendantsOf(id)];
     final openId = ids.contains(currentId) ? currentId : null;
+    // From here no retry of a kept edit writes for these pages (one already
+    // writing is taken back by itself, see _retryClosed).
+    _structural.addAll(ids);
+    try {
+      return await _deleteMarked(loc, st, ids, openId);
+    } finally {
+      _structural.removeAll(ids);
+    }
+  }
+
+  Future<DeletedPages> _deleteMarked(String loc, PageStore st, List<String> ids, String? openId) async {
     // Closing saves the open page, so the copies read below are current.
     if (openId != null) await _closeCurrent();
-    final pages = [for (final p in ids) await st.load(p)];
+    // Deleting is the user's choice: edits kept after a failed save, their
+    // retries and their recovery entries must not bring the pages back. What
+    // was kept goes into the copy, so undo brings the edits back too.
+    final kept = {
+      for (final p in ids)
+        if (_unsaved[p] != null) p: _unsaved[p]!,
+    };
+    await _discardUnsaved(ids);
+    final pages = <NotedPage>[];
+    for (final p in ids) {
+      final onDisk = await st.load(p);
+      final u = kept[p];
+      if (u == null) {
+        pages.add(onDisk);
+        continue;
+      }
+      final baseText = u.baseText;
+      final base = baseText == null ? NotedPage.create(u.page.meta) : readPage(baseText);
+      pages.add(
+        mergePage(
+          base,
+          u.page,
+          onDisk,
+          modules.codecs,
+          theirsTime: DateTime.now().millisecondsSinceEpoch,
+        ).page,
+      );
+    }
     final previous = _lastDeleted;
     if (previous != null) discardDeleted(previous);
     // Each page's assets folder is set aside, so undo can bring it back.
@@ -1553,26 +1651,65 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Closing or flushing writes pending edits, so the copies read below are
     // current.
     if (reopen != null) {
-      await _closeCurrent();
+      await _closeCurrent(keepUnsaved: true);
     } else {
       await flush();
     }
+    // From here no retry of a kept edit writes for these pages; the move
+    // carries the edits itself.
+    _structural.addAll(ids);
     Object? pending; // what the move is failing with, for the reopen below
     var movedFully = false; // the pages are at the target; only placing is left
     try {
       final originals = [for (final p in ids) await fromStore.load(p)];
+      // Edits whose save failed (and could not be saved again just now) go
+      // with the page: the copy at the target is the file with them merged in.
+      final carried = <String, _Unsaved>{};
+      final sources = <NotedPage>[];
+      for (var i = 0; i < originals.length; i++) {
+        final u = _unsaved[ids[i]];
+        if (u == null || u.loc != fromLoc) {
+          sources.add(originals[i]);
+          continue;
+        }
+        carried[ids[i]] = u;
+        final baseText = u.baseText;
+        final base = baseText == null ? NotedPage.create(u.page.meta) : readPage(baseText);
+        sources.add(
+          mergePage(
+            base,
+            u.page,
+            originals[i],
+            modules.codecs,
+            theirsTime: DateTime.now().millisecondsSinceEpoch,
+          ).page,
+        );
+      }
+      // The edits are at the target once the pages are there.
+      Future<void> carriedLanded(String pageId) async {
+        final u = carried.remove(pageId);
+        if (u == null) return;
+        // Also when a retry dropped the state meanwhile: the edits are at the
+        // target all the same, and the old folder's entry must not replay.
+        final now = _unsaved[pageId];
+        if (now != null && !identical(now, u)) return;
+        _unsaved.remove(pageId);
+        u.controller?.dispose();
+        await _deleteEntriesOf(u);
+      }
+
       // Only the moved page's parent and order change; its subpages keep
       // theirs.
       final moved = [
-        for (var i = 0; i < originals.length; i++)
+        for (var i = 0; i < sources.length; i++)
           i == 0
-              ? originals[i].withMeta(
-                  originals[i].meta.withPlacement(
+              ? sources[i].withMeta(
+                  sources[i].meta.withPlacement(
                     parentId: parentId,
                     order: _treeOf(toLoc).nextOrder(parentId),
                   ),
                 )
-              : originals[i],
+              : sources[i],
       ];
 
       final written = <String>[];
@@ -1680,6 +1817,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         for (final i in movedIdx) {
           _metas[ids[i]] = moved[i].meta;
           _loc[ids[i]] = toLoc;
+          await carriedLanded(ids[i]);
         }
         // Standalone folders share one tree: a page whose parent is in the
         // other folder keeps it. A page kept in both places is not changed
@@ -1787,6 +1925,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final p in moved) {
         _metas[p.id] = p.meta;
         _loc[p.id] = toLoc;
+        await carriedLanded(p.id);
       }
       _touch(fromLoc);
       _touch(toLoc);
@@ -1804,6 +1943,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       pending = out;
       throw out;
     } finally {
+      _structural.removeAll(ids);
+      _scheduleRetry(); // what is still kept (a failed move) is tried again
       if (reopen != null && _current == null && _loc.containsKey(reopen)) {
         try {
           await open(reopen);
@@ -2050,6 +2191,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId) || _orphanLoc == path;
     if (openHere) await _closeCurrent();
+
+    _dropUnsavedMemory(ids); // their recovery entries stay
     for (final id in ids) {
       _metas.remove(id);
       _loc.remove(id);
@@ -2349,6 +2492,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
     if (openHere) await _closeCurrent();
+
+    _dropUnsavedMemory(ids); // their recovery entries stay
     for (final id in ids) {
       _metas.remove(id);
       _loc.remove(id);
@@ -3048,18 +3193,33 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final parts = <String>[
       if (_pendingSave != null) 'page ${_pendingSave!.id} waiting for the autosave timer',
       if (_saveTimer?.isActive ?? false) 'autosave timer running',
+      for (final id in _unsaved.keys) 'page $id kept after a failed save, to be tried again',
       for (final w in _unfinished) '$w started and not finished',
     ];
     return parts.isEmpty ? null : parts.join('; ');
   }
 
-  /// Writes any unsaved change now.
+  /// Writes any unsaved change now, and tries again the pages whose save
+  /// failed before.
   Future<void> flush() async {
     _saveTimer?.cancel();
     _saveTimer = null;
+    // The open page whose save failed is tried again too.
+    final open = _current;
+    if (open != null && _unsaved.containsKey(open.page.id)) _pendingSave ??= open.page;
     final p = _pendingSave;
     _pendingSave = null;
     if (p != null) _enqueueSave(p);
+    await _saving;
+    for (final id in _unsaved.keys.toList()) {
+      if (_current?.page.id == id) continue; // the open page is saved as above
+      _saving = _track(
+        'retry of page $id',
+        _saving.then((_) => _retryClosed(id)).catchError((Object e) {
+          debugPrint('Saving page $id again failed: $e');
+        }),
+      );
+    }
     await _saving;
   }
 
@@ -3081,6 +3241,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _saving = _track('save of page ${page.id}', _saving.then((_) async {
       final loc = _loc[page.id];
       if (loc == null || _isLocked(loc)) return;
+      // A page that is not open and whose save failed is saved from what was
+      // kept for it, merged into the file (see _retryClosed).
+      if (_current?.page.id != page.id && _unsaved.containsKey(page.id)) {
+        await _retryClosed(page.id);
+        return;
+      }
       final st = _storeOf(loc);
       var toSave = page;
       final path = st.pathFor(page.id);
@@ -3105,20 +3271,265 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _countSaveFailure(page.id);
         await _keepForRecovery(loc, st, toSave);
         return;
-      } on FileSystemException {
-        // The folder may have vanished during the write.
-        if (await st.directory.exists()) rethrow;
+      } on NotebookException {
+        rethrow;
+      } on Object catch (e) {
         _countSaveFailure(page.id);
-        await _keepForRecovery(loc, st, toSave);
+        // The folder may have vanished during the write: recovery replays it
+        // when the folder is back. Otherwise the folder is there and will not
+        // announce itself, so the edits are kept and tried again.
+        if (!await st.directory.exists()) {
+          await _keepForRecovery(loc, st, toSave);
+          return;
+        }
+        debugPrint('Saving page ${page.id} failed: $e');
+        await _keepUnsaved(loc, st, toSave);
         return;
       }
       if (_current?.page.id == toSave.id) _base = toSave;
       _touch(loc);
       await _dropBlockEntry(st, toSave);
+      await _retireUnsaved(st, toSave);
     }).catchError((Object e) {
       _countSaveFailure(page.id);
       debugPrint('Saving page ${page.id} failed: $e');
     }));
+  }
+
+  // Pages whose save failed with the folder still there, by page id. Separate
+  // from _pendingSave (one page), so editing another page never drops a retry.
+  final Map<String, _Unsaved> _unsaved = {};
+
+  /// How many pages have edits that are neither saved nor in the recovery
+  /// folder (see [pendingRecovery] for those that are).
+  int get unsavedPageCount => _unsaved.values.where((u) => u.keptText == null).length;
+
+  @visibleForTesting
+  bool hasRetainedController(String pageId) => _unsaved[pageId]?.controller != null;
+
+  static const Duration _maxRetryDelay = Duration(seconds: 30);
+  Duration? _retryDelay;
+  Timer? _retryTimer;
+
+  // Each retry waits twice as long as the one before, up to 30 s.
+  void _scheduleRetry() {
+    if (_disposed || _unsaved.isEmpty || (_retryTimer?.isActive ?? false)) return;
+    final next = (_retryDelay ?? saveDelay) * 2;
+    final cap = saveDelay > _maxRetryDelay ? saveDelay : _maxRetryDelay;
+    _retryDelay = next > cap ? cap : next;
+    _retryTimer = Timer(_retryDelay!, () => unawaited(_retryAll()));
+  }
+
+  Future<void> _retryAll() async {
+    _retryTimer = null;
+    if (_disposed) return;
+    await flush();
+  }
+
+  // Whether the recovery folder holds an entry of [id] in [folder] with [text].
+  Future<bool> _recoveryHolds(String folder, String id, String text) async {
+    final rec = _recovery;
+    if (rec == null) return false;
+    try {
+      return (await rec.list()).entries.any((e) => e.folder == folder && e.pageId == id && e.pageText == text);
+    } on Object {
+      return false;
+    }
+  }
+
+  // A save of [page] failed with its folder there: the edits are kept (in
+  // memory, in the recovery folder), told to the user once for the streak, and
+  // tried again later.
+  Future<void> _keepUnsaved(String loc, PageStore st, NotedPage page) async {
+    final id = page.id;
+    final folder = _normalizePath(st.directory.path);
+    var u = _unsaved[id];
+    // The open page's own base is what has been merged into the edits.
+    final b = _base;
+    final openBase = b != null && _current?.page.id == id ? writePage(b) : null;
+    if (u == null) {
+      u = _unsaved[id] = _Unsaved(loc, folder, page, openBase ?? _known[_key(st.pathFor(id))]);
+    } else {
+      u.page = page;
+      if (openBase != null) u.baseText = openBase;
+    }
+    final text = writePage(page);
+    // An entry that already holds exactly this is not written again.
+    final held = u.keptText == text && u.keptBase == u.baseText && await _recoveryHolds(folder, id, text);
+    if (held || await _keepForRecovery(loc, st, page, baseText: u.baseText)) {
+      u.keptBase = u.baseText;
+      u.keptText = text;
+      u.keptTexts.add(text);
+    } else {
+      u.keptText = null;
+      debugPrint('Page $id is neither saved nor in recovery; keeping it in memory.');
+    }
+    if (!u.told && !_disposed) {
+      u.told = true;
+      final title = page.meta.title.trim();
+      _notices.add(
+        "Couldn't save ${title.isEmpty ? 'this page' : '"$title"'}. "
+        'Your edits are kept and will be saved when it works again.',
+      );
+    }
+    _scheduleRetry();
+  }
+
+  // Tries again the edits kept for page [id], which is not open: they are
+  // merged into the file as it is now (with the page as it was when they were
+  // made as the base), never written over it.
+  Future<void> _retryClosed(String id) async {
+    final u = _unsaved[id];
+    // A delete or a move of the page is under way: it settles the edits itself.
+    if (u == null || _current?.page.id == id || _structural.contains(id)) return;
+    final loc = _loc[id];
+    if (loc == null || loc != u.loc) {
+      // Deleted or moved elsewhere (or its place taken out): nothing may be
+      // written for it. The recovery entry stays.
+      _noteGone(u);
+      _dropUnsavedMemory([id]);
+      return;
+    }
+    if (_isLocked(loc)) return;
+    final PageStore st;
+    try {
+      st = _storeOf(loc);
+    } on NotebookException {
+      _dropUnsavedMemory([id]);
+      return;
+    }
+    final baseText = u.baseText;
+    final base = baseText == null ? NotedPage.create(u.page.meta) : readPage(baseText);
+    var stopped = false;
+    try {
+      final merged = await _saveClosedPage(loc, st, base, u.page, (_) {
+        // Run just before the write: a delete or a move that began, or edits
+        // dropped, since this retry started stop it.
+        if (_structural.contains(id) || !identical(_unsaved[id], u) || _loc[id] != loc) {
+          stopped = true;
+          return AiLinkCode.noBox;
+        }
+        return null;
+      });
+      if (!identical(_unsaved[id], u) || _loc[id] != loc || _structural.contains(id)) {
+        // The page was deleted or moved while this was writing: what it wrote
+        // is taken away again, if it is still exactly that.
+        if (_loc[id] != loc) await _removeStray(loc, st, merged);
+        return;
+      }
+      _touch(loc);
+      _metas[id] = merged.meta;
+      _setConflict(id, hasConflicts(merged));
+      _rebuildTree();
+      await _retireUnsaved(st, merged);
+    } on _SaveRefused catch (r) {
+      final err = r.response;
+      if (err is AiLinkError && err.code == AiLinkCode.noBox) {
+        if (stopped) {
+          if (!_structural.contains(id)) _scheduleRetry();
+          return;
+        }
+        // The file is gone while the page is still listed: deleted on another
+        // device. The recovery entry stays; it is restored when Noted starts.
+        _noteGone(u);
+        _dropUnsavedMemory([id]);
+        return;
+      }
+      _countSaveFailure(id);
+      _scheduleRetry();
+    }
+  }
+
+  // Pages being deleted or moved to another place: retries of their kept edits
+  // wait, so nothing is written for a page while it goes.
+  final Set<String> _structural = {};
+
+  // A retry wrote [page] into [loc], and the page is not there any more (it
+  // was deleted or moved meanwhile): the file is removed again, but only if it
+  // still holds exactly what was written.
+  Future<void> _removeStray(String loc, PageStore st, NotedPage page) async {
+    try {
+      if (await st.readText(page.id) != writePage(page)) return;
+      await _delete(loc, page.id);
+    } on Object catch (e) {
+      debugPrint('Removing the stray file of page ${page.id} failed: $e');
+    }
+  }
+
+  // The page of [u] is gone from where it was (deleted or moved on another
+  // device) and its edits can no longer be saved there.
+  void _noteGone(_Unsaved u) {
+    if (_disposed) return;
+    final title = u.page.meta.title.trim();
+    _notices.add(
+      '${title.isEmpty ? 'A page' : '"$title"'} was deleted or moved on another device; '
+      '${u.keptText != null ? 'your unsaved edits are kept and it will be restored next time Noted starts' : 'your unsaved edits could not be kept'}.',
+    );
+  }
+
+  // The save of [saved] landed. If it is (or merges) the edits kept for the
+  // page and reads back as written, they are safe: the state, the editor kept
+  // for them and their recovery entry go.
+  Future<void> _retireUnsaved(PageStore st, NotedPage saved) async {
+    final u = _unsaved[saved.id];
+    if (u == null) return;
+    try {
+      if (await st.readText(saved.id) != writePage(saved)) {
+        _scheduleRetry(); // not what was written; the edits stay kept
+        return;
+      }
+    } on Object {
+      _scheduleRetry();
+      return;
+    }
+    if (!identical(_unsaved[saved.id], u)) return;
+    _unsaved.remove(saved.id);
+    u.controller?.dispose();
+    _retryDelay = null;
+    await _deleteEntriesOf(u, onlyKept: true);
+  }
+
+  // Deletes the recovery entries kept for [u] (all of the page's in its folder
+  // unless [onlyKept]).
+  Future<void> _deleteEntriesOf(_Unsaved u, {bool onlyKept = false}) async {
+    final rec = _recovery;
+    if (rec == null) return;
+    try {
+      for (final e in (await rec.list()).entries) {
+        if (e.folder == u.folder && e.pageId == u.page.id && (!onlyKept || u.keptTexts.contains(e.pageText))) {
+          await rec.delete(e);
+        }
+      }
+      await _landKeptAssets(rec);
+    } on Object catch (e) {
+      debugPrint('Dropping the recovery entry of page ${u.page.id} failed: $e');
+    }
+  }
+
+  // The pages are gone from this notebook's places (a binder or folder taken
+  // out, a file gone): the retries and editors kept for them go, so nothing is
+  // written into a place that is not theirs. The recovery entries stay: they
+  // are the only copy.
+  void _dropUnsavedMemory(Iterable<String> ids) {
+    for (final id in ids) {
+      _unsaved.remove(id)?.controller?.dispose();
+      if (_pendingSave?.id == id) _pendingSave = null;
+    }
+  }
+
+  // The user deleted the pages: their kept edits, retries and recovery entries
+  // go with them.
+  Future<void> _discardUnsaved(Iterable<String> ids) async {
+    final gone = <_Unsaved>[];
+    for (final id in ids) {
+      final u = _unsaved.remove(id);
+      if (u != null) gone.add(u);
+      u?.controller?.dispose();
+      if (_pendingSave?.id == id) _pendingSave = null;
+    }
+    for (final u in gone) {
+      await _deleteEntriesOf(u);
+    }
   }
 
   // Throws unless the pages of [loc] may be written. A folder that has gone
@@ -3135,15 +3546,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // A save couldn't land because the folder is gone: keep exactly what the
   // save would have written, so the edit survives quitting (0066).
-  Future<void> _keepForRecovery(
+  // True when the entry was written.
+  Future<bool> _keepForRecovery(
     String loc,
     PageStore st,
     NotedPage page, {
     NotedPage? base,
+    String? baseText,
   }) async {
     final rec = _recovery;
-    if (rec == null) return;
-    var baseText = base == null ? _known[_key(st.pathFor(page.id))] : writePage(base);
+    if (rec == null) return false;
+    baseText ??= base == null ? _known[_key(st.pathFor(page.id))] : writePage(base);
     final b = _base;
     if (baseText == null && b != null && _current?.page.id == page.id) baseText = writePage(b);
     try {
@@ -3153,8 +3566,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         baseText: baseText,
         time: DateTime.now(),
       );
+      return true;
     } on Object catch (e) {
       debugPrint('Keeping page ${page.id} for recovery failed: $e');
+      return false;
     }
   }
 
@@ -3823,6 +4238,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
     if (openHere) await _closeCurrent(); // saves while the store still works
+
+    _dropUnsavedMemory(ids); // their recovery entries stay
     for (final id in ids) {
       _metas.remove(id);
       _loc.remove(id);
@@ -3867,6 +4284,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Drops what the notebook knows of page [id] (not its file).
   void _forgetPage(String id) {
+    _dropUnsavedMemory([id]);
     _metas.remove(id);
     _loc.remove(id);
     _conflicts.remove(id);
@@ -4562,13 +4980,29 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  Future<void> _closeCurrent() async {
+  // [keepUnsaved]: a page whose save failed keeps its controller (see
+  // [_Unsaved.controller]) so its edits stay in the editor until they are safe.
+  Future<void> _closeCurrent({bool keepUnsaved = false}) async {
     // Leaving a page ends editing, so an empty new box is discarded, not saved.
     final c = _current;
     final editing = c?.editingId;
     if (c != null && editing != null) c.setEditing(editing, false);
     await flush();
-    _current?.dispose();
+    final left = _current;
+    final unsaved = left == null ? null : _unsaved[left.page.id];
+    // What was merged into the open page since is part of the edits' base now;
+    // the page in the state is what is on screen.
+    final base = _base;
+    if (unsaved != null && left != null) {
+      if (base != null) unsaved.baseText = writePage(base);
+      unsaved.page = left.page;
+    }
+    if (keepUnsaved && left != null && unsaved != null) {
+      if (!identical(unsaved.controller, left)) unsaved.controller?.dispose();
+      unsaved.controller = left;
+    } else {
+      left?.dispose();
+    }
     _current = null;
     _attachments?.dispose();
     _attachments = null;
@@ -4598,6 +5032,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _aiMerge?.dispose();
     _saveTimer?.cancel();
     _folderTimer?.cancel();
+    _retryTimer?.cancel();
+    for (final u in _unsaved.values) {
+      u.controller?.dispose();
+    }
+    _unsaved.clear();
     for (final t in _debounce.values) {
       t.cancel();
     }

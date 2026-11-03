@@ -12,6 +12,19 @@ import 'support/settle_saves.dart';
 import 'package:noted/src/recovery_notice.dart';
 import 'package:noted_core/noted_core.dart';
 
+/// A store whose saves fail while [fail] is set; the folder stays there.
+class _FailingStore extends PageStore {
+  _FailingStore(super.directory);
+
+  bool fail = false;
+
+  @override
+  Future<void> save(NotedPage page) {
+    if (fail) throw const FileSystemException('injected write failure');
+    return super.save(page);
+  }
+}
+
 void main() {
   // File access needs real time, so it all happens inside runAsync.
   Future<(Directory, Notebook)> setUpNotebook(WidgetTester tester, {required bool pending}) async {
@@ -92,6 +105,46 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
     await tester.runAsync(() => future);
+    await tearDownNotebook(tester, root, nb);
+  });
+
+  testWidgets('the quit notice says so when edits are neither saved nor kept', (tester) async {
+    final (root, failing, nb) = (await tester.runAsync(() async {
+      final root = await Directory.systemTemp.createTemp('noted_unkept');
+      final failing = _FailingStore(await Directory('${root.path}/pages').create());
+      // A file where the recovery folder should be: nothing can be kept.
+      await Directory('${root.path}/app').create();
+      await File('${root.path}/app/recovery').writeAsString('in the way');
+      final nb = Notebook(
+        failing,
+        buildModules(),
+        saveDelay: const Duration(hours: 1),
+        bindersFile: File('${root.path}/app/binders.json'),
+        folderCheckInterval: Duration.zero,
+      );
+      await nb.load();
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      failing.fail = true;
+      await nb.flush();
+      return (root, failing, nb);
+    }))!;
+    final key = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(MaterialApp(navigatorKey: key, home: const SizedBox()));
+    late Future<void> future;
+    await tester.runAsync(() async {
+      future = showRecoveryNoticeOnExit(nb, key);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    });
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('recovery-exit-notice')), findsOneWidget);
+    expect(find.textContaining("1 page couldn't be saved or kept"), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('recovery-exit-ok')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.runAsync(() => future);
+    failing.fail = false;
+    await tester.runAsync(nb.flush); // the kept edits land now
     await tearDownNotebook(tester, root, nb);
   });
 
