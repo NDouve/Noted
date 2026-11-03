@@ -501,7 +501,7 @@ void main() {
     return readPage(text).nodes.whereType<BoxRecord>().single;
   }
 
-  BoxRecord folderImage(String id) {
+  BoxRecord folderImage(String id, {String alt = ''}) {
     final hash = contentHash(redPng);
     final file = attachmentFileName(hash, 'png');
     store.folder[file] = redPng;
@@ -513,6 +513,7 @@ void main() {
           ref: AttachmentRef(name: 'red.png', size: redPng.length, hash: hash, file: file),
           width: 4,
           height: 4,
+          alt: alt,
         ),
         const Bounds(40, 40, 120, 148),
       ),
@@ -538,8 +539,8 @@ void main() {
     var reads = 0;
     gated.onRead = () {
       if (reads++ != 0) return;
-      final d = data(boxes().single) as ImageData;
-      c.editBox('img', d.copyWith(alt: 'newer caption'));
+      // A sync update: the same box, still without a revision.
+      c.applyExternal(c.page.replaceNode(folderImage('img', alt: 'newer caption')));
     };
     final r = await t.runAsync(
       () => convertPageAttachments(c, store, AttachmentStorage.embedded),
