@@ -378,6 +378,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // clean): the path and why. Cleared once the entry is replayed (0077).
   final Map<String, ({String path, String why})> _replayProblems = {};
 
+  // Pages whose recovered edits landed and were retired, but whose page was
+  // changed right after (or couldn't be read back), by page id. One-off: the
+  // entry is gone, so the next pass must not prune it; cleared when the user
+  // opens the page.
+  final Map<String, ({String path, String why})> _landedProblems = {};
+
   // Kept `<id>.assets` folders that couldn't be landed, or whose page isn't
   // there, by the folder's path: why (0098).
   final Map<String, String> _keptProblems = {};
@@ -394,6 +400,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   List<String> get recoveryProblems => [
     ..._recoveryProblems,
     for (final p in _replayProblems.values) '${p.path}: ${p.why}',
+    for (final p in _landedProblems.values) '${p.path}: ${p.why}',
     for (final p in _keptProblems.entries) '${p.key}: ${p.value}',
   ];
 
@@ -408,6 +415,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   List<UnreadablePage> get recoveryOwnDamaged => [
     for (final p in _replayProblems.values)
       UnreadablePage(p.path, "Recovery can't finish: ${p.why}${p.why.endsWith(')') ? '' : '.'}"),
+    for (final p in _landedProblems.values) UnreadablePage(p.path, '${p.why}.'),
     for (final p in _keptProblems.entries) UnreadablePage(p.key, p.value),
   ];
 
@@ -744,7 +752,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_tree.roots.isEmpty) {
       await _createFallbackPage();
     } else {
+      // The first page shown at start is not the user looking at a notice.
+      final notices = {..._landedProblems};
       await open(_tree.roots.first.id);
+      _landedProblems.addAll(notices);
     }
   }
 
@@ -772,6 +783,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<void> open(String id) async {
+    if (_landedProblems.remove(id) != null) notifyListeners();
     if (_coverPath != null) {
       _coverPath = null;
       notifyListeners();
@@ -3234,12 +3246,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Applies one entry. Returns true once it is replayed and retired, false if
   // it isn't due yet; throws a _ReplayFailure (or anything else) if it can't be
-  // applied, and then it stays. The entry is retired as soon as the page has
-  // landed, read back and verified: merging it again later, against a page the
-  // user has changed since, would bring back what they deleted. Its kept files
-  // are landed apart (_landKeptAssets, 0098); a re-replay after an
-  // interruption before the retire is harmless, since the merge of a page with
-  // itself changes nothing.
+  // applied, and then it stays. The entry is retired as soon as its page has
+  // landed (the publish went through over exactly what was merged against):
+  // merging it again later, against a page the user has changed since, would
+  // bring back what they deleted. So once it has landed it is retired whatever
+  // the read-back shows; if the read-back is not what landed, the entry's own
+  // edits are looked for in it, and if one is gone (or it can't be read) the
+  // user is told (_landedProblems). Only a page that landed and reads back as
+  // written, but fails the check, stays as an entry. Its kept files are landed
+  // apart (_landKeptAssets, 0098); a re-replay after an interruption before
+  // the retire is harmless, since the merge of a page with itself changes
+  // nothing.
   Future<bool> _recoverEntry(
     RecoveryStore rec,
     RecoveryEntry e,
@@ -3352,10 +3369,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             continue; // a lock may pass; a few tries
           }
           if (!wrote) rethrow;
-          // Landed but can't be read back to check: it is retired unchecked.
+          // Landed but can't be read back to check: retired, and listed.
           debugPrint('Recovered page $id landed but could not be read back to check');
           await _applyClosed(merged, loc, _key(path), path);
           await rec.delete(e);
+          _landedProblems[id] = (path: path, why: _landedThenChanged(label));
           return true;
         }
       }
@@ -3368,10 +3386,30 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             detail: 'the page file changed on every attempt to merge into it',
           );
         }
-        // Another writer is on top of what landed: not merged again; the
-        // external-change check picks their file up as it does any other.
-        await _applyClosed(merged, loc, _key(path), path);
+        // Another writer is on top of what landed: not merged again (that
+        // could bring back what they deleted), and the external-change check
+        // picks their file up as it does any other. The entry's own edits are
+        // looked for in what is there; if any is gone, or it can't be read,
+        // the user is told.
+        NotedPage? now;
+        String? lost;
+        try {
+          now = readPage(back);
+          if (now.id != id) {
+            now = null;
+            lost = 'it holds a different page';
+          } else {
+            lost = _ownEditsMissing(base, mine, now);
+          }
+        } on PageFormatException catch (ex) {
+          lost = ex.message;
+        }
+        await _applyClosed(now ?? merged, loc, _key(path), path);
         await rec.delete(e);
+        if (lost != null) {
+          debugPrint('Recovered page $id landed, then changed: $lost');
+          _landedProblems[id] = (path: path, why: _landedThenChanged(label));
+        }
         return true;
       }
       final why = verifyRecoveredPage(
@@ -3389,6 +3427,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       'the saved file of $label keeps changing',
       detail: 'the page file changed on every attempt to merge into it',
     );
+  }
+
+  static String _landedThenChanged(String label) =>
+      'The edits kept for $label were saved, but the page changed right after; check it';
+
+  // Why an edit of [mine] (a box it added or changed since [base]) is not in
+  // [result] at all, or null if each one is there (with its content, conflicted
+  // or changed again since: all fine). Boxes [mine] didn't touch aren't looked
+  // at, so what another writer deleted of those doesn't count.
+  static String? _ownEditsMissing(NotedPage base, NotedPage mine, NotedPage result) {
+    final baseById = {for (final n in base.nodes) n.id: n};
+    for (final m in mine.nodes) {
+      final b = baseById[m.id];
+      if (b != null && b.toRaw() == m.toRaw()) continue;
+      if (result.node(m.id) == null) return 'box ${m.id} is missing';
+    }
+    return null;
   }
 
   // Reads page text during a replay; a format problem becomes a plain

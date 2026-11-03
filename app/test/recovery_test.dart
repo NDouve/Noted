@@ -413,7 +413,7 @@ void main() {
       expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, isEmpty,
           reason: 'not merged again against the old base');
       expect(recFiles(), isEmpty, reason: 'it had landed, so it is retired (0124)');
-      expect(again.recoveryProblems, isEmpty);
+      expect(again.recoveryProblems, hasLength(1), reason: 'their deletion took the edit: the user is told');
 
       quit(again);
       final third = make();
@@ -424,7 +424,7 @@ void main() {
       expect((await third.pendingRecovery()).entries, isEmpty);
     });
 
-    test('a landed page that can never be read back is retired, not reported as unsaved', () async {
+    test('a landed page that can never be read back is retired, and listed as unchecked, not as unsaved', () async {
       final (nb, x, _) = await pendingEdit();
       await vanish(nb);
       quit(nb);
@@ -435,8 +435,8 @@ void main() {
       await again.load();
       expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, hasLength(1));
       expect(recFiles(), isEmpty);
-      expect(again.recoveryProblems, isEmpty);
-      expect(again.recoveryDamaged, isEmpty);
+      expect(again.recoveryProblems, hasLength(1), reason: 'landed but never checked: the user is told');
+      expect(again.recoveryProblems.single, contains('saved, but the page changed'));
     });
 
     test('a read-back that fails once is retried', () async {
@@ -550,9 +550,10 @@ void main() {
   });
   }
 
-  test('a write that reads back different (a lossy store looks like another writer) retires the entry', () async {
+  test('a landed write that lost the recovered edits retires the entry and tells the user once', () async {
     final nb = make();
     await nb.load();
+    final a = nb.currentId!;
     nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
     final moved = Directory('${root.path}/pages-away');
     await pages.rename(moved.path);
@@ -563,7 +564,13 @@ void main() {
 
     final again = make(store: _LossyStore(pages));
     await again.load();
-    expect((await again.pendingRecovery()).entries, isEmpty);
+    expect((await again.pendingRecovery()).entries, isEmpty, reason: 'it landed: retired, never merged again');
+    expect(again.recoveryProblems, hasLength(1));
+    expect(again.recoveryProblems.single, contains('saved, but the page changed right after'));
+    expect(again.recoveryOwnDamaged, hasLength(1), reason: 'listed in the sidebar and the quit notice');
+    await again.checkFolders(); // a following pass does not prune it
+    expect(again.recoveryProblems, hasLength(1));
+    await again.open(a); // looking at the page clears it
     expect(again.recoveryProblems, isEmpty);
   });
 
@@ -1056,7 +1063,7 @@ void main() {
       expect(nb.recoveryDamaged, isEmpty);
     });
 
-    test('a read-back that differs from what landed is another writer: retired, not merged again', () async {
+    test('a read-back that differs but keeps the edits: retired, nothing listed, not merged again', () async {
       final nb = make();
       await nb.load();
       nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
@@ -1070,6 +1077,7 @@ void main() {
       await again.load();
       expect((await again.pendingRecovery()).entries, isEmpty);
       expect(again.recoveryDamaged, isEmpty);
+      expect(again.recoveryProblems, isEmpty, reason: 'its own edits are all there: nothing to tell');
     });
   });
 
