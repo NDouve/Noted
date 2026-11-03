@@ -441,4 +441,33 @@ void main() {
     await a.up();
     await b.up();
   });
+
+  testWidgets('resting fingers do not stop the pen from inking again', (
+    t,
+  ) async {
+    await pump(t);
+    selection.select(tool);
+    await t.pump();
+    final before = view(t);
+    final a = await finger(t, 1, const Offset(200, 600));
+    final b = await finger(t, 2, const Offset(260, 620));
+    for (final id in [3, 4]) {
+      final pen = await t.startGesture(
+        bar + const Offset(500, 300),
+        pointer: id,
+        kind: PointerDeviceKind.stylus,
+      );
+      await pen.moveBy(const Offset(30, 0));
+      // The palm shifts while the pen is down.
+      await a.moveBy(const Offset(10, 5));
+      await b.moveBy(const Offset(10, 5));
+      await pen.up();
+      await t.pump();
+    }
+// The first finger's session was dropped by the second; both strokes    // were drawn.    expect(tool.started, 3);    expect(tool.cancelled, 1);
+    expect(tool.ended, 2);
+    expect(view(t), before);
+    await a.up();
+    await b.up();
+  });
 }

@@ -805,7 +805,7 @@ class PageCanvasState extends State<PageCanvas>
 
   /// Starts the two-finger gesture once two fingers are down and no pen or
   /// mouse session holds the input (a resting palm must not interrupt a
-  /// stroke; the pinch starts when the stroke ends, from a fresh pair).
+  /// stroke; the next finger to land starts the pinch).
   void _startPinch() {
     if (_touches.length < 2 || _multiTouch) {
       if (_multiTouch) _resetPair();
@@ -820,6 +820,14 @@ class PageCanvasState extends State<PageCanvas>
     _multiTouchActive.value = true;
     _cancelSession();
     _resetPair();
+  }
+
+  /// Ends the two-finger gesture without waiting for the fingers to lift.
+  void _endPinch() {
+    _multiTouch = false;
+    _multiTouchActive.value = false;
+    _touchFocal = null;
+    _touchSpan = null;
   }
 
   /// Takes the fingers' current centre and distance as the basis for the
@@ -1039,8 +1047,15 @@ class PageCanvasState extends State<PageCanvas>
                       _middlePointer = e.pointer;
                     } else {
                       _touchDown(e);
-                      // A second finger never starts a tool session.
-                      if (!_multiTouch) _toolDown(e);
+                      if (e.kind == PointerDeviceKind.touch) {
+                        // A second finger never starts a tool session.
+                        if (!_multiTouch) _toolDown(e);
+                      } else {
+                        // A pen or mouse takes the input over: resting
+                        // fingers stop panning and zooming.
+                        _endPinch();
+                        _toolDown(e);
+                      }
                     }
                   },
                   onPointerMove: (e) {
@@ -1054,13 +1069,11 @@ class PageCanvasState extends State<PageCanvas>
                     if (e.pointer == _middlePointer) _middlePointer = null;
                     _touchEnd(e);
                     _toolUp(e);
-                    _startPinch();
                   },
                   onPointerCancel: (e) {
                     if (e.pointer == _middlePointer) _middlePointer = null;
                     _touchEnd(e);
                     if (e.pointer == _sessionPointer) _cancelSession();
-                    _startPinch();
                   },
                   onPointerHover: (e) {
                     if (e.kind == PointerDeviceKind.mouse) {
