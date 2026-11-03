@@ -29,6 +29,9 @@ class _Host implements UnsavedEditsHost {
   String? open;
   bool keepFails = false;
 
+  /// Written saves lose the boxes (and report what they wrote).
+  bool lossy = false;
+
   /// What the next closed saves end with; empty: they are written.
   final List<ClosedSaveResult> plan = [];
 
@@ -76,7 +79,8 @@ class _Host implements UnsavedEditsHost {
     await gate?.future;
     final t = files[mine.id];
     final theirs = t == null ? null : readPage(t);
-    final page = theirs == null ? mine : merge(base, mine, theirs);
+    final merged = theirs == null ? mine : merge(base, mine, theirs);
+    final page = lossy ? NotedPage.create(merged.meta) : merged;
     files[mine.id] = writePage(page);
     saved.add(mine.id);
     return (result: ClosedSaveResult.saved, page: page, theirs: theirs, why: null);
@@ -313,6 +317,18 @@ void main() {
     await unsaved.onSaved(_loc, mine);
     expect(unsaved.has('a'), isFalse);
     expect(await entries(), isEmpty);
+  });
+
+  test('a retry whose result lacks an edit is not taken as landed, like a replay', () async {
+    await failed('a');
+    host.lossy = true;
+    await retry();
+    expect(host.saved, ['a']);
+    expect(unsaved.has('a'), isTrue, reason: 'verifyRecoveredPage refused it');
+    expect(await entries(), hasLength(1));
+    host.lossy = false;
+    await retry();
+    expect(unsaved.has('a'), isFalse);
   });
 
   test('an entry replayed by someone else ends the tracking', () async {
