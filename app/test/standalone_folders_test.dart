@@ -308,7 +308,8 @@ void main() {
       final id = nb.currentId!;
       pickAnswer = extra.path;
       await pageMenu(tester, 'Move to folder…');
-      await until(tester, () => !File('${pages.path}/$id.canvas').existsSync());
+      // The old file goes first; the move is over when the page is open again at the target.
+      await until(tester, () => !File('${pages.path}/$id.canvas').existsSync() && nb.currentId == id);
       expect(File('${extra.path}/$id.canvas').existsSync(), isTrue);
       expect(File('${pages.path}/$id.canvas').existsSync(), isFalse);
       expect(norm(nb.standaloneFolders.single.path), norm(extra.path));
