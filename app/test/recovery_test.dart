@@ -657,10 +657,14 @@ void main() {
         await nb.load();
         expect(recFiles(), isEmpty, reason: 'it landed: retired');
         expect(nb.tree[x], isNull);
-        expect(
-          nb.unreadable.where((u) => u.reason.contains('saved, but the page was then changed')),
-          hasLength(1),
-        );
+        final own = nb.recoveryOwnDamaged;
+        expect(own, hasLength(1), reason: 'counted by the quit notice and listed in Can\'t open');
+        expect(own.single.reason, contains('saved, but the page was then changed'));
+        expect(nb.hasLandedNotice(pageFile(extra, x).path), isTrue);
+        // A rescan of the file or the folder does not drop or double it.
+        await nb.checkFile(pageFile(extra, x).path);
+        await nb.checkFolders();
+        expect(nb.recoveryOwnDamaged, hasLength(1));
       });
     }
 
@@ -686,6 +690,23 @@ void main() {
       test('goes when its page is deleted', () async {
         final (nb, a) = await noticed();
         await nb.delete(a);
+        expect(nb.recoveryProblems, isEmpty);
+      });
+
+      test('survives its file being deleted and created again by a sync client', () async {
+        final (nb, a) = await noticed();
+        final b = await nb.createPage();
+        await nb.open(b);
+        final f = pageFile(pages, a);
+        final text = f.readAsStringSync();
+        f.deleteSync();
+        await nb.checkFile(f.path); // gone: the page leaves the tree
+        expect(nb.tree[a], isNull);
+        expect(nb.recoveryProblems, hasLength(1));
+        f.writeAsStringSync(text);
+        await nb.checkFile(f.path);
+        expect(nb.recoveryProblems, hasLength(1));
+        await nb.open(a);
         expect(nb.recoveryProblems, isEmpty);
       });
 

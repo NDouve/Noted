@@ -419,6 +419,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final p in _keptProblems.entries) UnreadablePage(p.key, p.value),
   ];
 
+  /// Whether the file at [path] has a notice of its own (a recovered page that
+  /// landed and was then changed); the sidebar lists that notice, not also the
+  /// file as unreadable.
+  bool hasLandedNotice(String path) {
+    final k = _key(path);
+    return _landedProblems.values.any((p) => _key(p.path) == k);
+  }
+
   /// The recovery entries and unreadable recovery files waiting now.
   Future<RecoveryListing> pendingRecovery() async =>
       await _recovery?.list() ?? const RecoveryListing([], []);
@@ -1336,6 +1344,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _lastDeleted = deleted;
     for (final p in ids) {
       await _delete(loc, p);
+      _landedProblems.remove(p); // the user deleted it
       _metas.remove(p);
       _loc.remove(p);
     }
@@ -2062,8 +2071,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   /// Takes the folder out of the list. Its files stay where they are.
+  // A notice of a page in the folder [loc] that the user removed from the app.
+  void _dropLandedIn(String loc) {
+    final k = _key(_normalizePath(loc));
+    _landedProblems.removeWhere((_, p) => _key(_normalizePath(File(p.path).parent.path)) == k);
+  }
+
   Future<void> removeStandaloneFolder(String path) async {
     final folder = _folders[path];
+    _dropLandedIn(path);
     if (folder == null) return;
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId) || _orphanLoc == path;
@@ -2363,6 +2379,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// Takes the binder out of the sidebar. Its folder and files stay.
   Future<void> removeBinder(String path) async {
     final section = _binders[path];
+    _dropLandedIn(path);
     if (section == null) return;
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
@@ -3411,12 +3428,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // Listed as a page that can't be opened, like any file that turns
           // unreadable.
           _known[key] = back;
+          final notice = 'The edits kept for $label were saved, but the page was then changed '
+              'and can no longer be read ($unreadable)';
+          _landedProblems[id] = (path: path, why: notice);
           _knownUnreadable(
             loc,
             key,
             path,
-            'The edits kept for $label were saved, but the page was then changed '
-            'and can no longer be read ($unreadable)',
+            notice,
           );
           return true;
         }
@@ -3738,8 +3757,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // each other.
   final Map<String, Future<void>> _folderLocks = {};
 
+  // The same folder under any spelling (trailing separator, case on Windows,
+  // symbolic links when it exists).
+  String _lockKey(Directory d) {
+    var p = _normalizePath(d.path);
+    try {
+      if (d.existsSync()) p = _normalizePath(d.resolveSymbolicLinksSync());
+    } on FileSystemException {
+      // Keep the normalised path.
+    }
+    return _key(p);
+  }
+
   Future<T> _underFolderLock<T>(PageStore st, Future<T> Function() job) {
-    final key = _key(st.directory.path);
+    final key = _lockKey(st.directory);
     final run = (_folderLocks[key] ?? Future<void>.value()).then((_) => job());
     final done = run.then<void>((_) {}, onError: (_) {});
     _folderLocks[key] = done;
@@ -3756,9 +3787,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Like [_write], for a page that must still hold exactly [expectedText] at
   // the moment of publishing: false, with nothing written, when it doesn't.
   Future<bool> _writeIfUnchanged(String loc, NotedPage page, String expectedText) async {
-    await _assertCanWrite(loc);
+    _assertWritable(loc);
     final st = _storeOf(loc);
-    final result = await _underFolderLock(st, () => st.saveIfUnchanged(page, expectedText));
+    // The check is made inside the lock, right before the replace.
+    final result = await _underFolderLock(st, () async {
+      await _assertCanWrite(loc);
+      return st.saveIfUnchanged(page, expectedText);
+    });
     if (!result.replaced) return false;
     final key = _key(st.pathFor(page.id));
     _known[key] = writePage(page);
@@ -4758,9 +4793,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   void _rebuildTree() {
-    // A notice for a page that is gone (deleted, binder closed) has no page to
-    // point at.
-    _landedProblems.removeWhere((id, _) => !_metas.containsKey(id));
     final groups = <String, List<PageMeta>>{};
     for (final e in _metas.entries) {
       (groups[_loc[e.key] ?? _standalone] ??= []).add(e.value);
