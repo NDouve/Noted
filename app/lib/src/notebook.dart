@@ -148,6 +148,14 @@ class _Unsaved {
 
   /// Whether the user was told.
   bool told = false;
+
+  /// The place was taken out of the notebook while the edits were only in
+  /// memory: they are kept (and counted) until the recovery folder takes them.
+  bool detached = false;
+
+  /// The store of the place, for naming its folder in the recovery entry once
+  /// [detached].
+  PageStore? store;
 }
 
 /// A save failed because the page's folder isn't there.
@@ -1360,22 +1368,37 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _structural.addAll(ids);
     try {
       return await _deleteMarked(loc, st, ids, openId);
+    } on Object {
+      // Nothing was lost: the page that was open is open again if it can be,
+      // else its editor stays kept with its edits.
+      if (openId != null && _current == null && _loc.containsKey(openId)) {
+        try {
+          await open(openId);
+        } on Object catch (e) {
+          debugPrint('Reopening page $openId after the delete failed: $e');
+        }
+      }
+      rethrow;
     } finally {
       _structural.removeAll(ids);
+      _scheduleRetry(); // what is still kept is tried again
     }
   }
 
   Future<DeletedPages> _deleteMarked(String loc, PageStore st, List<String> ids, String? openId) async {
     // Closing saves the open page, so the copies read below are current.
-    if (openId != null) await _closeCurrent();
+    // (An editor with edits that could not be saved stays kept until the
+    // delete has gone through.)
+    if (openId != null) await _closeCurrent(keepUnsaved: true);
     // Deleting is the user's choice: edits kept after a failed save, their
     // retries and their recovery entries must not bring the pages back. What
-    // was kept goes into the copy, so undo brings the edits back too.
+    // was kept goes into the copy, so undo brings the edits back too. They are
+    // let go only page by page, after the page's file is deleted: if preparing
+    // the copy or the delete fails, they are as they were.
     final kept = {
       for (final p in ids)
         if (_unsaved[p] != null) p: _unsaved[p]!,
     };
-    await _discardUnsaved(ids);
     final pages = <NotedPage>[];
     for (final p in ids) {
       final onDisk = await st.load(p);
@@ -1418,6 +1441,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await _delete(loc, p);
       _metas.remove(p);
       _loc.remove(p);
+      await _discardUnsaved([p]); // the delete has gone through for this page
     }
     _touch(loc);
     _rebuildTree();
@@ -2190,9 +2214,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (folder == null) return;
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId) || _orphanLoc == path;
-    if (openHere) await _closeCurrent();
-
-    _dropUnsavedMemory(ids); // their recovery entries stay
+    if (openHere) await _closeCurrent(keepUnsaved: true);
+    await _keepBeforeRemoval(ids);
+    _dropUnsavedMemory(ids); // kept ones stay in recovery; memory-only ones are held
     for (final id in ids) {
       _metas.remove(id);
       _loc.remove(id);
@@ -2491,9 +2515,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (section == null) return;
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
-    if (openHere) await _closeCurrent();
-
-    _dropUnsavedMemory(ids); // their recovery entries stay
+    if (openHere) await _closeCurrent(keepUnsaved: true);
+    await _keepBeforeRemoval(ids);
+    _dropUnsavedMemory(ids); // kept ones stay in recovery; memory-only ones are held
     for (final id in ids) {
       _metas.remove(id);
       _loc.remove(id);
@@ -3382,6 +3406,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final u = _unsaved[id];
     // A delete or a move of the page is under way: it settles the edits itself.
     if (u == null || _current?.page.id == id || _structural.contains(id)) return;
+    if (u.detached) {
+      // Its place was taken out of the notebook: nothing is written there any
+      // more, but the edits (kept in memory only) are tried again for recovery.
+      if (await _keepDetached(u) && identical(_unsaved[id], u)) {
+        _unsaved.remove(id);
+        u.controller?.dispose();
+      } else {
+        _scheduleRetry();
+      }
+      return;
+    }
     final loc = _loc[id];
     if (loc == null || loc != u.loc) {
       // Deleted or moved elsewhere (or its place taken out): nothing may be
@@ -3449,8 +3484,26 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // still holds exactly what was written.
   Future<void> _removeStray(String loc, PageStore st, NotedPage page) async {
     try {
-      if (await st.readText(page.id) != writePage(page)) return;
-      await _delete(loc, page.id);
+      // Moved aside first and compared there, so a file that another writer
+      // put at the path in the meantime is not deleted: it is put back.
+      final path = st.pathFor(page.id);
+      final aside = File('$path.stray-${DateTime.now().microsecondsSinceEpoch}');
+      try {
+        await File(path).rename(aside.path);
+      } on FileSystemException {
+        return; // already gone
+      }
+      if (await aside.readAsString() == writePage(page)) {
+        await aside.delete();
+        final key = _key(path);
+        _known.remove(key);
+        _pathId.remove(key);
+        _conflicts.remove(page.id);
+      } else if (!await File(path).exists()) {
+        await aside.rename(path);
+      } else {
+        debugPrint('A different file is now at $path; the one moved aside stays at ${aside.path}.');
+      }
     } on Object catch (e) {
       debugPrint('Removing the stray file of page ${page.id} failed: $e');
     }
@@ -3506,14 +3559,69 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  // Writes the edits of a detached [u] to the recovery folder; true when they
+  // are there.
+  Future<bool> _keepDetached(_Unsaved u) async {
+    final st = u.store;
+    if (st == null) return false;
+    final text = writePage(u.page);
+    if (!await _keepForRecovery(u.loc, st, u.page, baseText: u.baseText)) {
+      u.keptText = null;
+      return false;
+    }
+    u.keptBase = u.baseText;
+    u.keptText = text;
+    u.keptTexts.add(text);
+    return true;
+  }
+
   // The pages are gone from this notebook's places (a binder or folder taken
-  // out, a file gone): the retries and editors kept for them go, so nothing is
-  // written into a place that is not theirs. The recovery entries stay: they
-  // are the only copy.
+  // out, a file gone): nothing may be written into a place that is not theirs.
+  // Edits that are in the recovery folder are let go (that copy stays). Edits
+  // that exist only in memory are never dropped: they are detached from the
+  // place (their editor kept, the quit warning still counting them) and tried
+  // again for the recovery folder until that works.
   void _dropUnsavedMemory(Iterable<String> ids) {
     for (final id in ids) {
-      _unsaved.remove(id)?.controller?.dispose();
       if (_pendingSave?.id == id) _pendingSave = null;
+      final u = _unsaved[id];
+      if (u == null) continue;
+      if (u.keptText != null) {
+        _unsaved.remove(id);
+        u.controller?.dispose();
+        continue;
+      }
+      if (!u.detached) {
+        try {
+          u.store = _storeOf(u.loc);
+        } on Object {
+          // The store of the place is gone already; nothing to keep it with.
+        }
+        u.detached = true;
+      }
+      _scheduleRetry();
+    }
+  }
+
+  // Before pages leave the notebook: edits that are only in memory get one
+  // more try at the recovery folder.
+  Future<void> _keepBeforeRemoval(Iterable<String> ids) async {
+    for (final id in ids) {
+      final u = _unsaved[id];
+      if (u == null || u.keptText != null) continue;
+      try {
+        final st = _storeOf(u.loc);
+        u.store = st;
+        await _keepForRecovery(u.loc, st, u.page, baseText: u.baseText).then((ok) {
+          if (!ok) return;
+          final text = writePage(u.page);
+          u.keptBase = u.baseText;
+          u.keptText = text;
+          u.keptTexts.add(text);
+        });
+      } on Object catch (e) {
+        debugPrint('Keeping page $id before its place goes failed: $e');
+      }
     }
   }
 
@@ -4237,9 +4345,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final path = section.path;
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
-    if (openHere) await _closeCurrent(); // saves while the store still works
-
-    _dropUnsavedMemory(ids); // their recovery entries stay
+    if (openHere) await _closeCurrent(keepUnsaved: true); // saves while the store still works
+    await _keepBeforeRemoval(ids);
+    _dropUnsavedMemory(ids); // kept ones stay in recovery; memory-only ones are held
     for (final id in ids) {
       _metas.remove(id);
       _loc.remove(id);

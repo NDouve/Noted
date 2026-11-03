@@ -71,6 +71,15 @@ class _ToggleStore extends PageStore {
     await super.save(lossy ? NotedPage.create(page.meta) : page);
   }
 
+  /// A page whose [load] fails (its file stays).
+  String? failLoadOf;
+
+  @override
+  Future<NotedPage> load(String pageId) {
+    if (pageId == failLoadOf) throw const FileSystemException('injected load failure');
+    return super.load(pageId);
+  }
+
   @override
   Future<String> readText(String pageId) async {
     if (throwOnRead) throw const FileSystemException('injected read failure');
@@ -994,6 +1003,79 @@ void main() {
       await again.load();
       expect(readPage(pageFile(pages, a).readAsStringSync()).nodes, hasLength(1));
     });
+
+    test('a delete that fails while preparing leaves the kept edits as they were', () async {
+      final st = _ToggleStore(pages);
+      final nb = make(store: st);
+      await nb.load();
+      final a = nb.current!.page.id;
+      final child = await nb.createPage(parentId: a); // a subpage the delete has to read
+      await nb.flush();
+      await nb.open(a);
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      st.failSave = true;
+      await nb.flush();
+      expect((await nb.pendingRecovery()).entries, hasLength(1));
+
+      st.failLoadOf = child; // the copy for undo can not be made
+      await expectLater(nb.delete(a), throwsA(anything));
+      st.failLoadOf = null;
+      expect((await nb.pendingRecovery()).entries, hasLength(1), reason: 'the recovery entry is still there');
+      expect(nb.unsavedDescription, contains('page $a'), reason: 'still pending');
+      expect(nb.current?.page.id, a, reason: 'the page is open again');
+      expect(nb.current!.page.nodes, hasLength(1), reason: 'with its edits in the editor');
+      expect(pageFile(pages, a).existsSync(), isTrue);
+
+      st.failSave = false;
+      await nb.flush();
+      expect(readPage(pageFile(pages, a).readAsStringSync()).nodes, hasLength(1));
+      expect((await nb.pendingRecovery()).entries, isEmpty);
+    });
+
+    for (final binder in [false, true]) {
+      test('taking a ${binder ? 'binder' : 'folder'} out keeps edits that exist only in memory until recovery works', () async {
+        File(rec.path).createSync(recursive: true); // recovery can not be written
+        final es = _ToggleStore(extra);
+        String norm(String p) => p.replaceAll(r'\', '/').toLowerCase();
+        final nb = make(storeFactory: (d) => norm(d.path) == norm(extra.path) ? es : PageStore(d));
+        await nb.load();
+        late final String x;
+        if (binder) {
+          final section = await nb.addBinder(extra.path);
+          x = await nb.createPage(binderPath: section.path);
+        } else {
+          x = await nb.createPage(folderPath: extra.path);
+        }
+        await nb.flush();
+        await nb.open(x);
+        nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+        es.failSave = true;
+        await nb.flush();
+        expect(nb.unsavedPageCount, 1);
+        await nb.open(nb.tree.roots.firstWhere((p) => p.id != x).id);
+
+        if (binder) {
+          await nb.removeBinder(extra.path);
+        } else {
+          await nb.removeStandaloneFolder(extra.path);
+        }
+        expect(nb.unsavedPageCount, 1, reason: 'the only copy is still counted');
+        expect(nb.hasRetainedController(x), isTrue, reason: 'and still held');
+        es.failSave = false;
+        await nb.flush();
+        expect(nb.unsavedPageCount, 1);
+        expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, isEmpty, reason: 'nothing written into the removed place');
+
+        File(rec.path).deleteSync(); // recovery works again
+        await nb.flush();
+        expect(nb.unsavedPageCount, 0);
+        expect(nb.hasRetainedController(x), isFalse);
+        final entries = (await nb.pendingRecovery()).entries;
+        expect(entries, hasLength(1), reason: 'the edits reached recovery');
+        expect(entries.single.page.nodes, hasLength(1));
+        expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, isEmpty);
+      });
+    }
 
     test('a kept edit is retried by its timer, without anyone asking', () async {
       final st = _ToggleStore(pages);
