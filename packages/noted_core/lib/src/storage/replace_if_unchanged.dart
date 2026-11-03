@@ -301,3 +301,95 @@ Future<void> _putBack(File aside, String target, void Function()? hook) async {
     await _restore(aside, target, hook, ReplaceOutcome.changed);
   } catch (_) {}
 }
+
+/// What [deleteFileIfUnchanged] did.
+enum DeleteOutcome {
+  /// The target held exactly the expected bytes and is gone.
+  deleted,
+
+  /// There was no file at the target.
+  absent,
+
+  /// The target did not hold the expected bytes. It was not deleted (or was
+  /// put back, byte for byte).
+  changed,
+
+  /// As [changed], but while the file was set aside something new appeared at
+  /// the target. The new file is untouched, and the file that was set aside is
+  /// kept at [DeleteResult.keptPath] under an [asideSuffix] name, which the
+  /// next [PageStore.scan] turns into a page or a conflict copy.
+  changedKept,
+}
+
+class DeleteResult {
+  const DeleteResult(this.outcome, [this.keptPath]);
+
+  final DeleteOutcome outcome;
+  final String? keptPath;
+
+  bool get deleted => outcome == DeleteOutcome.deleted;
+
+  @override
+  String toString() => 'DeleteResult($outcome, $keptPath)';
+}
+
+/// Deletes the file at [target] only if it holds exactly [expected] at the
+/// moment of deleting. The file is first moved aside to a unique name (which
+/// captures exactly the file being deleted) and its bytes compared; only a
+/// file that is equal is deleted. One that differs is put back with
+/// [publishExclusive], never over anything; if a file appeared at [target] in
+/// the meantime, the set-aside file stays under its [asideSuffix] name
+/// ([DeleteResult.keptPath]). Limits and error behaviour are those of
+/// [replaceIfUnchanged]: target is briefly absent, and a [FileSystemException]
+/// means "retry later" with the original kept (see there).
+///
+/// Test seams: [beforeMoveAside], [afterRead] (the target is absent) and
+/// [beforeRestore], as in [replaceIfUnchanged].
+Future<DeleteResult> deleteFileIfUnchanged(
+  String target,
+  List<int> expected, {
+  void Function()? beforeMoveAside,
+  void Function()? afterRead,
+  void Function()? beforeRestore,
+}) async {
+  try {
+    if (!_same(await File(target).readAsBytes(), expected)) {
+      return const DeleteResult(DeleteOutcome.changed);
+    }
+  } on FileSystemException {
+    if (FileSystemEntity.typeSync(target, followLinks: false) ==
+        FileSystemEntityType.notFound) {
+      return const DeleteResult(DeleteOutcome.absent);
+    }
+    rethrow;
+  }
+  final aside = File(_asideName(target));
+  beforeMoveAside?.call();
+  try {
+    await File(target).rename(aside.path);
+  } on FileSystemException catch (e) {
+    if (_isNotFound(e)) return const DeleteResult(DeleteOutcome.absent);
+    rethrow;
+  }
+  final bool equal;
+  try {
+    equal = _same(await aside.readAsBytes(), expected);
+    afterRead?.call();
+  } catch (_) {
+    await _putBack(aside, target, beforeRestore);
+    rethrow;
+  }
+  if (!equal) {
+    final r = await _restore(aside, target, beforeRestore, ReplaceOutcome.changed);
+    return r.keptPath == null
+        ? const DeleteResult(DeleteOutcome.changed)
+        : DeleteResult(DeleteOutcome.changedKept, r.keptPath);
+  }
+  try {
+    await aside.delete();
+  } catch (_) {
+    await _putBack(aside, target, beforeRestore);
+    rethrow;
+  }
+  return const DeleteResult(DeleteOutcome.deleted);
+}

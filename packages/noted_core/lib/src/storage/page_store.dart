@@ -264,6 +264,26 @@ class PageStore {
     _paths.remove(pageId);
   }
 
+  /// Deletes the page's file only if it still holds exactly [expectedText]; see
+  /// [deleteFileIfUnchanged]. Like [saveIfUnchanged], serialise it with [scan].
+  Future<DeleteResult> deleteIfUnchanged(
+    String pageId,
+    String expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    void Function()? beforeRestore,
+  }) async {
+    final r = await deleteFileIfUnchanged(
+      _pathFor(pageId),
+      utf8.encode(expectedText),
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforeRestore: beforeRestore,
+    );
+    if (r.deleted || r.outcome == DeleteOutcome.absent) _paths.remove(pageId);
+    return r;
+  }
+
   /// The path of the file holding (or that will hold) page [pageId].
   String pathFor(String pageId) => _pathFor(pageId);
 
