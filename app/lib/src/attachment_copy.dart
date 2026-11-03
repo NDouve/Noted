@@ -75,6 +75,7 @@ const _chunk = 64 * 1024;
 /// an attachment.
 Future<String?> attachmentNameToTake(File f, String raw) async {
   if (!raw.endsWith('.tmp')) return raw;
+  if (raw.endsWith('.landing.tmp')) return null; // the landing code's own temp file
   final stripped = raw.substring(0, raw.length - '.tmp'.length);
   final m = _hashName.firstMatch(stripped);
   if (m != null && m.group(2) != null) {
@@ -90,7 +91,7 @@ final RegExp _uniqueTmp = RegExp(r'^(.+)\.\d+-\d+\.tmp$');
 /// temporary name in [dir]: a file that holds its hash goes back to its name
 /// if that is free, and a duplicate of a file already there is dropped. Any
 /// other leftover stays and is added to [AttachmentCopy.keptAside].
-Future<void> _sweepLeftovers(Directory dir, AttachmentCopy r) async {
+Future<void> sweepAttachmentLeftovers(Directory dir, AttachmentCopy r) async {
   final sep = Platform.pathSeparator;
   final found = <File>[];
   await for (final e in dir.list(followLinks: false)) {
@@ -168,7 +169,7 @@ Future<bool> sameContent(File a, File b) async {
 Future<void> copyAttachmentTree(Directory from, Directory to, AttachmentCopy r) async {
   if (!await from.exists()) return;
   r.sourceExisted = true;
-  await _sweepLeftovers(from, r);
+  await sweepAttachmentLeftovers(from, r);
   if (!await to.exists()) {
     await to.create(recursive: true);
     r.created.add(to.path);
@@ -197,6 +198,7 @@ Future<void> _copyFile(File src, String target, String name, AttachmentCopy r) a
   try {
     await _streamCopy(src, tmp);
     final written = await tmp.length();
+    final writtenHash = await contentHashOfStream(tmp.openRead());
     if (attachmentBeforePublishHook != null) await attachmentBeforePublishHook!(target);
     if (await _publish(tmp, target)) {
       r.created.add(target);
@@ -204,9 +206,12 @@ Future<void> _copyFile(File src, String target, String name, AttachmentCopy r) a
         // Ours, and wrong: take it away again and let the move fail.
         r.created.removeLast();
         try {
-          // Only while it is still what was written; a file somebody else put
-          // there since is not ours to remove.
-          if (await File(target).length() == written) await File(target).delete();
+          // Only while it is still what was written (size and hash); a file
+          // somebody else put there since is not ours to remove.
+          if (await File(target).length() == written &&
+              await contentHashOfStream(File(target).openRead()) == writtenHash) {
+            await File(target).delete();
+          }
         } on FileSystemException {
           // The rollback reports what is left.
         }

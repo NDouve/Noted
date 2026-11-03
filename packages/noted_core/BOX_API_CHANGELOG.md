@@ -14,8 +14,8 @@ Host-only (not the Box API), run 2026-11-01-04: `PageChange.landed(id, before)` 
 
 ## 0.11 — 2026-11-03
 - `StylusRole` (`none`, `pen`, `eraser`) and `CanvasTool.stylusRole` (default `StylusRole.none`) in noted_canvas. While Select and type is picked, the canvas sends a stylus to the enabled tool with role `pen` and the eraser end of a stylus to the one with role `eraser`; the box layer takes no click from those pointers (0033). A picked tool is kept, except that the eraser end erases while the pen is picked. The drawing module's pen and eraser set the roles; a tool that does not override `stylusRole` is unaffected.
-- `contentHashOfStream(Stream<List<int>>)` in noted_core: the same SHA-256 as `contentHash`, over a stream of chunks, so a module can hash an attachment file without reading it whole. Additive.
 - Additive. Decided by the PM under delegated authority; decision 0033, run 2026-11-02-04.
+- `contentHashOfStream(Stream<List<int>>)` in noted_core: the same SHA-256 as `contentHash`, over a stream of chunks, so a module can hash an attachment file without reading it whole. Additive. Streamed hashing for attachment moves (codex area-data-integrity-2 R-2), run 2026-11-02-04.
 
 ## 0.10 — 2026-11-01
 - `AiWriteMode.replaceAiText`: replace only the box's AI-written blocks (those whose AI mark still matches their text) and keep every user-written block in place. Every run of consecutive AI-written blocks is removed and the new blocks go where the first run was, or at the end if there was none.

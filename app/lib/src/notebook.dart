@@ -3876,11 +3876,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // file is never taken for the real one. A target named by its hash that
   // doesn't hold it is replaced (it is a partial copy); any other name that
   // differs is someone's file that only shares the name, and is never
-  // replaced. A complete `<hash name>.tmp` (an attachment write stopped before
-  // its rename) lands as `<hash name>`; other `.tmp` files are not landed.
-  // Every file that is in place with verified content is added to [done].
+  // replaced. Which names land is [attachmentNameToTake]'s rule (a `<hash>.tmp`
+  // attachment keeps its name; a complete `<hash>.<ext>.tmp` lands without
+  // `.tmp`). Leftover unique temp names of a stopped write
+  // (`<name>.<micros>-<n>.tmp`) are first put back, when complete, under their
+  // own name in [from] and land with the rest; the others stay and keep the
+  // folder. Every file that is in place with verified content is added to
+  // [done].
   static Future<void> _landFiles(Directory from, Directory to, List<_LandedFile> done) async {
     await to.create(recursive: true);
+    await sweepAttachmentLeftovers(from, AttachmentCopy());
     await for (final e in from.list()) {
       final raw = _baseName(e.path);
       final sep = Platform.pathSeparator;

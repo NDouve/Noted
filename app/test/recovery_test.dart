@@ -1168,7 +1168,24 @@ void main() {
       expect(keptDir().existsSync(), isFalse, reason: 'it counted as landed');
       expect(nb.recoveryDamaged, isEmpty);
     });
-    test('a complete kept temp file with no final file is landed under its hash name', () async {
+    test('a complete kept temp file (the writer\'s unique name) is landed under its hash name', () async {
+      await pageOnly();
+      keep(name: '$keptName.1700000000000-3.tmp');
+      await launch();
+      expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
+      expect(keptDir().existsSync(), isFalse, reason: 'nothing is left, so the notice clears');
+    });
+
+    test('an incomplete kept file with the writer\'s unique name stays and keeps the folder', () async {
+      await pageOnly();
+      keep(name: '$keptName.1700000000000-4.tmp', content: [1, 2]);
+      final nb = await launch();
+      expect(File('${assetsOf(id).path}/$keptName').existsSync(), isFalse);
+      expect(File('${keptDir().path}/$keptName.1700000000000-4.tmp').existsSync(), isTrue);
+      expect(nb.recoveryProblems, hasLength(1));
+    });
+
+    test('a complete kept <hash>.<ext>.tmp of the old writer is still landed', () async {
       await pageOnly();
       keep(name: '$keptName.tmp');
       await launch();

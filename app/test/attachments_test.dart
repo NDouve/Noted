@@ -328,6 +328,20 @@ void main() {
       expect(extra.listSync(recursive: true).where((f) => f.path.endsWith('.tmp')), isEmpty);
     });
 
+    test('an extensionless write never clobbers an existing <hash>.tmp attachment', () async {
+      final nb = make();
+      await nb.load();
+      final a = await nb.createPage();
+      await nb.open(a);
+      final store = nb.attachments!;
+      final real = await store.put(bytes, extension: 'tmp'); // a file called report.tmp
+      expect(real.fileName.endsWith('.tmp'), isTrue);
+      final plain = await store.put(bytes, extension: ''); // the same bytes, no extension
+      expect(plain.fileName, isNot(real.fileName));
+      expect(File('${assets(pages, a).path}/${real.fileName}').readAsBytesSync(), bytes);
+      expect(File('${assets(pages, a).path}/${plain.fileName}').readAsBytesSync(), bytes);
+    });
+
     test('a source attachment that changed after it was copied is kept', () async {
       final store = _HookedStore(pages);
       final (nb, a, binder) = await pageWithNotes(store: store);
