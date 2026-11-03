@@ -6,6 +6,7 @@ import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:pasteboard/pasteboard.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -68,22 +69,71 @@ String sniffImageExtension(Uint8List b) {
 
 /// The files on the clipboard: an image (copied from a browser or an image
 /// app), or files copied in the file manager.
-Future<List<IncomingFile>> readClipboardFiles() async {
+///
+/// On Android the pasteboard returns `content://` URIs, not paths; those are
+/// read through [readContentUri]. The three readers can be replaced (tests).
+Future<List<IncomingFile>> readClipboardFiles({
+  Future<Uint8List?> Function()? imageReader,
+  Future<List<String>> Function()? filesReader,
+  Future<IncomingFile?> Function(String uri)? contentReader,
+}) async {
   try {
-    final image = await Pasteboard.image;
+    final image = await (imageReader ?? () => Pasteboard.image)();
     if (image != null && image.isNotEmpty) {
       return [IncomingFile('Pasted image.${sniffImageExtension(image)}', image)];
     }
-    final paths = await Pasteboard.files();
+    final paths = await (filesReader ?? Pasteboard.files)();
     final out = <IncomingFile>[];
     for (final p in paths) {
-      final f = File(p);
-      if (!await f.exists()) continue;
-      out.add(IncomingFile(p.split(RegExp(r'[\\/]')).last, await f.readAsBytes()));
+      try {
+        if (isMobilePlatform && p.startsWith('content://')) {
+          final file = await (contentReader ?? readContentUri)(p);
+          if (file != null) out.add(file);
+          continue;
+        }
+        final f = File(p);
+        if (!await f.exists()) continue;
+        out.add(IncomingFile(p.split(RegExp(r'[\\/]')).last, await f.readAsBytes()));
+      } on Object catch (e) {
+        debugPrint('Reading a pasted file failed: $e');
+      }
     }
     return out;
   } on Object catch (e) {
     debugPrint('Reading the clipboard failed: $e');
     return const [];
   }
+}
+
+const MethodChannel _contentChannel = MethodChannel('noted/content');
+
+/// Reads a `content://` URI through the Android content resolver. Null when
+/// the platform refuses it (unreadable, or over the size limit).
+Future<IncomingFile?> readContentUri(String uri) async {
+  final r = await _contentChannel.invokeMapMethod<String, Object?>('read', {'uri': uri});
+  final bytes = r?['bytes'];
+  if (bytes is! Uint8List) return null;
+  return IncomingFile(safeAttachmentName(r?['name'] as String?), bytes);
+}
+
+/// A file name that is safe to store: no folders, no `..`, no control
+/// characters; a generic name when nothing usable is left.
+String safeAttachmentName(String? raw) {
+  var name = (raw ?? '').split(RegExp(r'[\\/]')).last;
+  name = name
+      .replaceAll(RegExp(r'[\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069<>:"|?*]'), '_')
+      .trim();
+  name = name.replaceAll(RegExp(r'[. ]+$'), '');
+  final lead = RegExp(r'^\.+').firstMatch(name);
+  if (lead != null) {
+    // ".pdf" keeps its extension; ".." leaves nothing.
+    final rest = name.substring(lead.end);
+    name = rest.isEmpty ? '' : 'Pasted file.$rest';
+  }
+  if (name.length > 255) {
+    final dot = name.lastIndexOf('.');
+    final ext = dot > 0 && name.length - dot <= 20 ? name.substring(dot) : '';
+    name = name.substring(0, 255 - ext.length) + ext;
+  }
+  return name.isEmpty ? 'Pasted file' : name;
 }
