@@ -16,6 +16,9 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_tree_view.dart';
 import 'package:noted/src/settings_panel.dart';
 import 'package:noted_box_ai/noted_box_ai.dart';
+import 'package:noted_box_attachments/noted_box_attachments.dart';
+import 'package:noted_box_note/noted_box_note.dart';
+import 'package:noted_box_template/noted_box_template.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -582,6 +585,53 @@ void main() {
     });
   });
 
+  group('Attachments', () {
+    var n = 0;
+    late Notebook churn;
+    late String boxId;
+
+    // A notebook with a box type whose conversion edits the box each time.
+    setUp(() async {
+      n = 0;
+      churn = Notebook(
+        PageStore(await Directory('${root.path}/churn').create()),
+        ModuleRegistry()
+          ..register(const NoteModule(), alwaysOn: true, isDefault: true)
+          ..register(
+            _Churning((d) => churn.current!.editBox(boxId, d.copyWith(text: 'edit ${n++}'))),
+          ),
+        saveDelay: Duration.zero,
+        bindersFile: File('${root.path}/app/churn-binders.json'),
+      );
+      await churn.load();
+      const codec = StickyLabelCodec();
+      final box = commitBox(createBox(codec, Bounds(10, 10, 100, 40)), codec, const StickyLabelData(text: 'x'));
+      boxId = box.id;
+      churn.current!.insertBox(box);
+    });
+
+    tearDown(() async {
+      await churn.flush();
+      churn.dispose();
+    });
+
+    testWidgets('a box that keeps changing is reported under the buttons', (t) async {
+      await pumpPanel(t, SettingsPanel.page(notebook: churn, pageId: churn.currentId!));
+      await tap(t, 'settings-att-embed');
+      final notice = t.widget<Text>(find.byKey(const ValueKey('settings-att-notice'))).data!;
+      expect(
+        notice,
+        'Embedded 0 attachments. 1 box changed while this ran and was left as it was; '
+        'press Embed attachments again.',
+      );
+      await tap(t, 'settings-att-to-folder');
+      expect(
+        t.widget<Text>(find.byKey(const ValueKey('settings-att-notice'))).data,
+        endsWith('press Move attachments to folder again.'),
+      );
+    });
+  });
+
   group('Background', () {
     testWidgets('a page that is not open shows its background and can be changed without opening it', (t) async {
       final other = await io(t, () => nb.createPage());
@@ -596,6 +646,7 @@ void main() {
       expect(selected(t, 'settings-bg-${PageBackground.plain.name}'), isTrue);
 
       await tap(t, 'settings-bg-${PageBackground.graph.name}');
+      await settleSaves(t, nb);
       expect(nb.currentId, a, reason: 'the open page stays open');
       expect(nb.backgroundOf(other), PageBackground.graph);
       expect(selected(t, 'settings-bg-${PageBackground.graph.name}'), isTrue);
@@ -610,3 +661,31 @@ void main() {
   });
 }
 
+
+/// A box type whose conversion edits the box while it runs, as sync would,
+/// so the conversion has to skip it.
+class _Churning extends BoxModule<StickyLabelData> {
+  const _Churning(this.edit);
+
+  final void Function(StickyLabelData data) edit;
+
+  @override
+  BoxCodec<StickyLabelData> get codec => const StickyLabelCodec();
+
+  @override
+  Widget buildEditor(BuildContext context, BoxContext<StickyLabelData> box) => const SizedBox();
+
+  @override
+  Widget buildView(BuildContext context, BoxContext<StickyLabelData> box) => const SizedBox();
+
+  @override
+  Future<StickyLabelData?> convertAttachments(
+    StickyLabelData data,
+    AttachmentStorage to,
+    AttachmentStore store,
+    List<String> overLimit,
+  ) async {
+    edit(data);
+    return data.copyWith(text: '${data.text}!');
+  }
+}
