@@ -343,16 +343,43 @@ void main() {
       expect(asset(pages, a).existsSync(), isFalse, reason: 'the unchanged file is removed');
     });
 
-    test('a complete <hash>.tmp in the source is copied as <hash>', () async {
+    test('a complete <hash>.<ext>.tmp (an unfinished write) in the source lands as <hash>.<ext>', () async {
       final (nb, a, binder) = await pageWithNotes();
       final other = Uint8List.fromList(utf8.encode('stopped before its rename'));
       final h = contentHash(other);
-      File('${assets(pages, a).path}/$h.tmp').writeAsBytesSync(other);
+      File('${assets(pages, a).path}/$h.txt.tmp').writeAsBytesSync(other);
       File('${assets(pages, a).path}/0000.tmp').writeAsBytesSync([1]); // not a hash name: skipped
       expect(await nb.moveToLocation(a, binderPath: binder.path), isTrue);
-      expect(File('${assets(extra, a).path}/$h').readAsBytesSync(), other);
+      expect(File('${assets(extra, a).path}/$h.txt').readAsBytesSync(), other);
       expect(File('${assets(extra, a).path}/0000.tmp').existsSync(), isFalse);
-      expect(File('${assets(pages, a).path}/$h.tmp').existsSync(), isFalse, reason: 'verified, so removed');
+      expect(File('${assets(pages, a).path}/$h.txt.tmp').existsSync(), isFalse, reason: 'verified, so removed');
+    });
+
+    test('an attachment called report.tmp (<hash>.tmp) keeps its name through a move', () async {
+      final (nb, a, binder) = await pageWithNotes();
+      final report = Uint8List.fromList(utf8.encode('a real file named report.tmp'));
+      final name = attachmentFileName(contentHash(report), 'tmp');
+      expect(name.endsWith('.tmp'), isTrue);
+      File('${assets(pages, a).path}/$name').writeAsBytesSync(report);
+      expect(await nb.moveToLocation(a, binderPath: binder.path), isTrue);
+      expect(File('${assets(extra, a).path}/$name').readAsBytesSync(), report);
+      expect(File('${assets(extra, a).path}/${contentHash(report)}').existsSync(), isFalse, reason: 'never renamed');
+      expect(File('${assets(pages, a).path}/$name').existsSync(), isFalse);
+    });
+
+    test('a broken hash-named target is replaced only when the source holds the hash', () async {
+      final (nb, a, binder) = await pageWithNotes();
+      // The source file does not hold the hash in its name either.
+      asset(pages, a).writeAsBytesSync([5, 5]);
+      asset(extra, a)
+        ..createSync(recursive: true)
+        ..writeAsBytesSync([1]);
+      await expectLater(
+        nb.moveToLocation(a, binderPath: binder.path),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains(hash))),
+      );
+      expect(asset(extra, a).readAsBytesSync(), [1]);
+      expect(asset(pages, a).readAsBytesSync(), [5, 5]);
     });
 
     test('a destination file with the same bytes (an earlier interrupted move) is trusted and the original goes', () async {

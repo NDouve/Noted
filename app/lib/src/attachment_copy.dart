@@ -29,6 +29,9 @@ class AttachmentCopy {
   /// Targets that were left as they are because they hold something else (a
   /// different file, a link, a folder). Their sources are not deleted.
   final List<String> differing = [];
+
+  /// Whether the source attachments folder existed when it was copied.
+  bool sourceExisted = false;
 }
 
 final RegExp _hashName = RegExp(r'^([0-9a-f]{64})(\.[a-z0-9]+)?$');
@@ -95,6 +98,7 @@ Future<bool> sameContent(File a, File b) async {
 /// `.tmp` files are skipped.
 Future<void> copyAttachmentTree(Directory from, Directory to, AttachmentCopy r) async {
   if (!await from.exists()) return;
+  r.sourceExisted = true;
   if (!await to.exists()) {
     await to.create(recursive: true);
     r.created.add(to.path);
@@ -109,9 +113,19 @@ Future<void> copyAttachmentTree(Directory from, Directory to, AttachmentCopy r) 
     if (e is! File) continue;
     var name = raw;
     if (raw.endsWith('.tmp')) {
-      name = raw.substring(0, raw.length - '.tmp'.length);
-      final m = _hashName.firstMatch(name);
-      if (m == null || contentHash(await e.readAsBytes()) != m.group(1)) continue;
+      // The writer's temporary name is `<attachment name>.tmp`. `<hash>.tmp`
+      // is also a real attachment (a file called report.tmp), so it is copied
+      // under its own name, never renamed. Only `<hash>.<ext>.tmp`, which no
+      // attachment is called, is an unfinished write: if it holds its hash it
+      // lands as `<hash>.<ext>`. Any other `.tmp` is not an attachment.
+      final stripped = raw.substring(0, raw.length - '.tmp'.length);
+      final m = _hashName.firstMatch(stripped);
+      if (m != null && m.group(2) != null) {
+        if (await contentHashOfStream(e.openRead()) != m.group(1)) continue;
+        name = stripped;
+      } else if (_hashName.firstMatch(raw) == null) {
+        continue;
+      }
     }
     await _copyFile(e, '${to.path}$sep$name', name, r);
   }
@@ -170,7 +184,11 @@ Future<void> _settleExisting(
     return;
   }
   final m = _hashName.firstMatch(name);
-  if (m != null && contentHash(await t.readAsBytes()) != m.group(1)) {
+  // Replaced only when the target is provably broken (it fails the hash in its
+  // name) and the source provably holds that hash; otherwise both are kept.
+  if (m != null &&
+      await contentHashOfStream(t.openRead()) != m.group(1) &&
+      await contentHashOfStream(src.openRead()) == m.group(1)) {
     // Named by its hash and not holding it: a partial copy. It is replaced
     // by a verified copy (renamed over it); the original is kept until then.
     final tmp = File('$target.${DateTime.now().microsecondsSinceEpoch}-${_counter++}.tmp');
@@ -212,9 +230,11 @@ Future<bool> _publish(File tmp, String target) async {
     return await (hook != null ? hook(tmp, target) : publishExclusive(tmp, target));
   } on FileSystemException {
     // A volume without hard links (exFAT/FAT, some SMB and FUSE mounts,
-    // Android shared storage), or no exclusive publish here: create the target
-    // exclusively and fill it. It is never replaced, and the caller compares
-    // it afterwards.
+    // Android shared storage): create the target exclusively and fill it. It
+    // is never replaced, and the caller compares it afterwards. On Windows the
+    // publish does not depend on hard links, so a failure there (a refused
+    // name, a locked file) is the caller's.
+    if (Platform.isWindows && attachmentPublishHook == null) rethrow;
     return _createExclusive(tmp, target);
   }
 }
@@ -229,15 +249,34 @@ Future<bool> _createExclusive(File tmp, String target) async {
     }
     rethrow;
   }
+  // Written through the file just created, appending after a check that it is
+  // still empty, so anything somebody else puts there is never truncated.
+  var written = 0;
+  RandomAccessFile? out;
   try {
-    await _streamCopy(tmp, f);
+    out = await f.open(mode: FileMode.writeOnlyAppend);
+    if (await out.length() != 0) {
+      await out.close();
+      out = null;
+      return false; // not ours
+    }
+    await for (final chunk in tmp.openRead()) {
+      await out.writeFrom(chunk);
+      written += chunk.length;
+    }
+    await out.flush();
   } catch (_) {
+    await out?.close();
+    out = null;
     try {
-      await f.delete(); // ours: it did not exist a moment ago
+      // Ours only while it still holds exactly what was written.
+      if (await f.length() == written) await f.delete();
     } on FileSystemException {
       // Left for the caller's verification to reject.
     }
     rethrow;
+  } finally {
+    await out?.close();
   }
   return true;
 }
@@ -254,7 +293,15 @@ Future<void> removeVerifiedSources(AttachmentCopy r, Directory root) async {
         debugPrint('Keeping ${c.source.path}: it changed after it was copied');
         continue;
       }
-      await c.source.delete();
+      // Moved aside first and compared there, so a file that replaces the
+      // source in between is never the one deleted.
+      final aside = File('${c.source.path}.${DateTime.now().microsecondsSinceEpoch}-${_counter++}.tmp');
+      await c.source.rename(aside.path);
+      if (await sameContent(aside, c.target)) {
+        await aside.delete();
+      } else if (!await publishExclusive(aside, c.source.path)) {
+        debugPrint('Keeping ${aside.path}: the original changed after it was copied');
+      }
     } on FileSystemException catch (e) {
       debugPrint('Removing ${c.source.path} failed: $e');
     }

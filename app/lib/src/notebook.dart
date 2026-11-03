@@ -93,6 +93,17 @@ class _ReplayFailure implements Exception {
 }
 
 // The kept files landed, but others stay in the kept folder.
+/// An attachments folder could not be moved because the target holds
+/// different files under some of its names; nothing was written over them.
+class _DifferingAttachments extends FileSystemException {
+  _DifferingAttachments(int count, String path)
+    : super(
+        '$count attachment ${count == 1 ? 'file differs' : 'files differ'} from the file(s) already at '
+        'the destination; the originals were kept',
+        path,
+      );
+}
+
 class _KeptFolderNotEmpty implements Exception {
   _KeptFolderNotEmpty(this.left);
 
@@ -1170,11 +1181,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final copy = AttachmentCopy();
       await _copyDir(from, to, into: copy);
       if (copy.differing.isNotEmpty) {
-        throw FileSystemException(
-          '${copy.differing.length} attachment file(s) differ from files already at the destination; '
-          'the originals were kept',
-          to.path,
-        );
+        throw _DifferingAttachments(copy.differing.length, to.path);
       }
       await removeVerifiedSources(copy, from);
     }
@@ -1394,13 +1401,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on NotebookException {
       return;
     }
-    var attachmentsLeft = 0;
+    final attachmentsLeft = <String>[]; // saved folders that could not be emptied
+    var knownCause = true; // every failure was a different file in the way
     for (final MapEntry(key: id, value: dir) in deleted._assets.entries) {
       try {
         await _moveDir(dir, _assetsDir(deleted._location, id));
       } on FileSystemException catch (e) {
         debugPrint('Restoring the attachments of page $id failed: $e');
-        attachmentsLeft++;
+        attachmentsLeft.add(dir.path);
+        if (e is! _DifferingAttachments) knownCause = false;
       }
     }
     for (final page in deleted.pages) {
@@ -1412,12 +1421,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
     final reopen = deleted.openId;
     if (reopen != null) await open(reopen);
-    if (attachmentsLeft > 0) {
+    if (attachmentsLeft.isNotEmpty) {
+      final n = attachmentsLeft.length;
       throw NotebookException(
         'The ${deleted.pages.length == 1 ? 'page was' : 'pages were'} brought back, but the '
-        'attachments of ${attachmentsLeft == 1 ? 'one page' : '$attachmentsLeft pages'} could not be restored '
-        'completely: a different file with the same name was already there and was left as it is. '
-        'The saved attachments are still in the app\'s deleted-attachments folder.',
+        'attachments of ${n == 1 ? 'one page' : '$n pages'} could not be restored completely'
+        '${knownCause ? ' (a different file with the same name was already there and was left as it is)' : ''}. '
+        'What could not be restored is still saved in ${attachmentsLeft.join(', ')}.',
         needsAction: true,
       );
     }
@@ -1720,6 +1730,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // there can be checked or removed, and the copies are then the only
         // ones. They are kept, and the pages count as being in the target.
         for (final p in moved) {
+          // The source files are gone from the app's view, as after a delete.
+          final key = _key(fromStore.pathFor(p.id));
+          _known.remove(key);
+          _pathId.remove(key);
+          _conflicts.remove(p.id);
           _metas[p.id] = p.meta;
           _loc[p.id] = toLoc;
         }
@@ -1727,11 +1742,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _touch(toLoc);
         _rebuildTree();
         final src = _placeName(fromLoc);
+        final withAssets = [for (final p in ids) if (copies[p]?.sourceExisted ?? false) p];
+        final stayed = [for (final c in copies.values) ...c.differing];
         throw NotebookException(
           '$src is not available right now, so the old ${ids.length == 1 ? 'file' : 'files'} could not be '
           'checked or removed. The ${ids.length == 1 ? 'page was' : 'pages were'} copied to '
-          '${_placeName(toLoc)} and kept there. If $src comes back with the old '
-          '${ids.length == 1 ? 'page' : 'pages'}, delete the ${ids.length == 1 ? 'one' : 'ones'} you do not need.',
+          '${_placeName(toLoc)} and kept there'
+          '${withAssets.isEmpty ? '' : ', with ${withAssets.length == 1 ? 'its attachments' : 'the attachments of ${withAssets.length} pages'}'}'
+          '${stayed.isEmpty ? '' : ' (${stayed.length == 1 ? 'one attachment file' : '${stayed.length} attachment files'} '
+              'could not be copied because ${_placeName(toLoc)} already has different ones)'}. '
+          'If $src comes back with the old ${ids.length == 1 ? 'page' : 'pages'}, delete the '
+          '${ids.length == 1 ? 'one' : 'ones'} you do not need.',
           needsAction: true,
         );
       }
