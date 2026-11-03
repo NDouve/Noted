@@ -162,6 +162,8 @@ void main() {
     test('on desktop: all three are on', () {
       debugDefaultTargetPlatformOverride = TargetPlatform.windows;
       final nb = build();
+      // Its access service polls on a timer: stop it with the test.
+      addTearDown(() => nb.aiAccess?.dispose());
       expect(nb.watchFiles, isTrue);
       expect(nb.aiAccess, isNotNull);
       expect(nb.pickFolder, isNotNull);
