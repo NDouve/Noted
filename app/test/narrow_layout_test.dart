@@ -202,4 +202,37 @@ void main() {
       await close(t);
     });
   }
+
+  testWidgets('phone width: tapping the open page closes the drawer', (t) async {
+    await open(t, const Size(400, 800));
+    await t.tap(find.byKey(const ValueKey('sidebar-menu')));
+    await t.pumpAndSettle();
+    await t.tap(find.descendant(of: find.byType(PageTreeView), matching: find.text('Alpha')));
+    await settleIo(t);
+    expect(nb.currentId, first);
+    expect(find.byType(PageTreeView), findsNothing);
+    await close(t);
+  });
+
+  testWidgets('phone width: folded binders stay folded when the drawer reopens', (t) async {
+    await open(t, const Size(400, 800));
+    await t.runAsync(() async {
+      final folder = await Directory('${dir.path}/Work').create();
+      binder = await nb.addBinder(folder.path);
+      await nb.createPage(binderPath: binder.path);
+    });
+    await t.pumpAndSettle();
+    await t.tap(find.byKey(const ValueKey('sidebar-menu')));
+    await t.pumpAndSettle();
+    await t.tap(find.byIcon(Icons.expand_more_rounded).first);
+    await t.pumpAndSettle();
+    expect(find.byIcon(Icons.chevron_right_rounded), findsOneWidget);
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await t.pumpAndSettle();
+    expect(find.byType(PageTreeView), findsNothing);
+    await t.tap(find.byKey(const ValueKey('sidebar-menu')));
+    await t.pumpAndSettle();
+    expect(find.byIcon(Icons.chevron_right_rounded), findsOneWidget);
+    await close(t);
+  });
 }

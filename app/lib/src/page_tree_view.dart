@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'package:flutter/gestures.dart' show PointerDeviceKind, kTouchSlop, ImmediateMultiDragGestureRecognizer, DelayedMultiDragGestureRecognizer, GestureMultiDragStartCallback;
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
@@ -31,9 +32,16 @@ enum DropZone {
 /// Rows can be dragged to reorder or nest them, and every row has a menu
 /// (the "⋯" button, or a right click) with the same actions.
 class PageTreeView extends StatefulWidget {
-  const PageTreeView({super.key, required this.notebook});
+  const PageTreeView({super.key, required this.notebook, this.collapsed, this.onPageChosen});
 
   final Notebook notebook;
+
+  /// Where the folded rows are kept. A host that rebuilds the tree (the
+  /// narrow-layout drawer) passes its own set so the folds outlast it.
+  final Set<String>? collapsed;
+
+  /// Called when a page row is tapped, whether or not it was already open.
+  final VoidCallback? onPageChosen;
 
   @override
   State<PageTreeView> createState() => PageTreeViewState();
@@ -42,7 +50,7 @@ class PageTreeView extends StatefulWidget {
 class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
 
   // Collapsed state lasts for the session only.
-  final Set<String> _collapsed = {};
+  late final Set<String> _collapsed = widget.collapsed ?? {};
   final Map<String, GlobalKey> _rowKeys = {};
 
   // The drop being previewed: a row and zone, or the empty area at the end.
@@ -325,7 +333,6 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
   }
 
   Widget _binderHeader(BuildContext context, BinderSection b) {
-    final theme = Theme.of(context);
     final color = binderSidebarColor(context, b.color);
     if (!b.available) {
       final unreadable = b.status == BinderStatus.unreadable;
@@ -368,11 +375,27 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         });
         _guard(() => _nb.moveToLocation(d.data, binderPath: b.path));
       },
-      builder: (context, _, _) => SidebarGroupHeader(
+      builder: (context, _, _) => _binderMenuOn(
+        context,
+        b,
+        _binderGroupHeader(context, b, color, collapsed, hover || shown),
+      ),
+    );
+  }
+
+  Widget _binderGroupHeader(
+    BuildContext context,
+    BinderSection b,
+    Color color,
+    bool collapsed,
+    bool filled,
+  ) {
+    final theme = Theme.of(context);
+    return SidebarGroupHeader(
         chipKey: ValueKey('binder-stripe-${b.path}'),
         title: b.title,
         chipColor: color,
-        fill: hover || shown ? theme.colorScheme.primaryContainer : null,
+        fill: filled ? theme.colorScheme.primaryContainer : null,
         onTap: () => _nb.showCover(b.path),
         chevron: SidebarChevron(
           collapsed: collapsed,
@@ -397,7 +420,6 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
             ),
           ],
         ),
-      ),
     );
   }
 
@@ -543,7 +565,12 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
               onSelected: (v) => pageCommands(_nb, p, this).invoke(v),
               itemBuilder: (_) => _menuItems(p),
             ),
-      onTap: () => _guard(() => _nb.open(p.id)),
+      onTap: () {
+        _guard(() async {
+          await _nb.open(p.id);
+          widget.onPageChosen?.call();
+        });
+      },
       onDoubleTap: locked ? null : () => _rename(context, p),
     );
 
@@ -620,8 +647,38 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     );
   }
 
-  /// Wraps a row so it can be dragged. Touch needs a long press so scrolling
-  /// the list still works; a mouse drags at once.
+  static const _fingerKinds = {
+    PointerDeviceKind.touch,
+    PointerDeviceKind.stylus,
+    PointerDeviceKind.invertedStylus,
+  };
+
+  /// Opens a binder header's menu on a touch or pen long press, at the press
+  /// point, and on a right click: the same menu as its options button. A slow
+  /// mouse click is still a tap.
+  Widget _binderMenuOn(BuildContext context, BinderSection b, Widget child) {
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onSecondaryTapDown: (d) => _binderContextMenu(context, b, d.globalPosition),
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        supportedDevices: _fingerKinds,
+        onLongPressStart: (d) => _binderContextMenu(context, b, d.globalPosition),
+        child: child,
+      ),
+    );
+  }
+
+  // The finger or pen press on each row (by page id): where it went down and
+  // whether it moved or was cancelled. Kept per row and per pointer, so a
+  // second finger elsewhere can't change it.
+  final Map<String, _Press> _presses = {};
+
+  /// Wraps a row so it can be dragged. A mouse drags at once (a sidebar list
+  /// doesn't scroll on mouse drag, so nothing competes with it). A finger or
+  /// pen uses one long-press recogniser: a quick swipe scrolls the list;
+  /// holding and then moving drags the page; holding and letting go without
+  /// moving opens the page menu at the press point.
   Widget _draggable(PageMeta p, String title, bool locked, Widget child) {
     if (locked) return child; // read-only pages can't be dragged
     final feedback = Material(
@@ -636,15 +693,52 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       ),
     );
     final ghost = Opacity(opacity: 0.4, child: child);
-    // Drags as soon as the mouse moves (desktop); a sidebar list doesn't
-    // scroll on mouse drag, so nothing competes with it.
-    return Draggable<String>(
+    final mouse = _MouseDraggable<String>(
       data: p.id,
       maxSimultaneousDrags: 1,
       dragAnchorStrategy: pointerDragAnchorStrategy,
       feedback: feedback,
       childWhenDragging: ghost,
       child: child,
+    );
+    return Listener(
+      onPointerDown: (e) {
+        if (!_fingerKinds.contains(e.kind)) return;
+        final old = _presses[p.id];
+        if (old != null && !old.ended) return; // a second finger on this row
+        _presses[p.id] = _Press(e.pointer, e.position);
+      },
+      onPointerMove: (e) {
+        final press = _presses[p.id];
+        if (press == null || press.pointer != e.pointer) return;
+        if ((e.position - press.at).distance > kTouchSlop) press.moved = true;
+      },
+      onPointerUp: (e) {
+        final press = _presses[p.id];
+        if (press != null && press.pointer == e.pointer) press.ended = true;
+      },
+      onPointerCancel: (e) {
+        final press = _presses[p.id];
+        if (press != null && press.pointer == e.pointer) {
+          press.ended = true;
+          press.cancelled = true;
+        }
+      },
+      child: _FingerDraggable<String>(
+        data: p.id,
+        maxSimultaneousDrags: 1,
+        dragAnchorStrategy: pointerDragAnchorStrategy,
+        feedback: feedback,
+        childWhenDragging: ghost,
+        onDragEnd: (d) {
+          final press = _presses.remove(p.id);
+          if (press == null || press.moved || press.cancelled || d.wasAccepted || !mounted) {
+            return;
+          }
+          _contextMenu(context, p, press.at);
+        },
+        child: mouse,
+      ),
     );
   }
 
@@ -704,13 +798,22 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
   Future<void> delete(PageMeta p) => _delete(context, p);
 
   Future<void> _contextMenu(BuildContext context, PageMeta p, Offset at) async {
+    final v = await _menuAt(context, at, _menuItems(p));
+    if (v != null && context.mounted) await pageCommands(_nb, p, this).invoke(v);
+  }
+
+  Future<String?> _menuAt(BuildContext context, Offset at, List<PopupMenuEntry<String>> items) {
     final overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
-    final v = await showMenu<String>(
+    return showMenu<String>(
       context: context,
       position: RelativeRect.fromRect(at & Size.zero, Offset.zero & overlay.size),
-      items: _menuItems(p),
+      items: items,
     );
-    if (v != null && context.mounted) await pageCommands(_nb, p, this).invoke(v);
+  }
+
+  Future<void> _binderContextMenu(BuildContext context, BinderSection b, Offset at) async {
+    final v = await _menuAt(context, at, _binderItems(b));
+    if (v != null && context.mounted) await binderCommands(_nb, b, this).invoke(v);
   }
 
   String? _aboveSibling(String id) {
@@ -808,5 +911,65 @@ class _RenameDialogState extends State<_RenameDialog> {
         ),
       ],
     );
+  }
+}
+
+/// A finger or pen press on a row.
+class _Press {
+  _Press(this.pointer, this.at);
+
+  final int pointer;
+  final Offset at;
+  bool moved = false;
+  bool ended = false;
+  bool cancelled = false;
+}
+
+/// A [Draggable] that only a mouse or trackpad starts, at once.
+class _MouseDraggable<T extends Object> extends Draggable<T> {
+  const _MouseDraggable({
+    super.key,
+    required super.child,
+    required super.feedback,
+    super.data,
+    super.childWhenDragging,
+    super.dragAnchorStrategy,
+    super.maxSimultaneousDrags,
+  });
+
+  @override
+  ImmediateMultiDragGestureRecognizer createRecognizer(GestureMultiDragStartCallback onStart) {
+    return ImmediateMultiDragGestureRecognizer(
+      supportedDevices: const {PointerDeviceKind.mouse, PointerDeviceKind.trackpad},
+      allowedButtonsFilter: allowedButtonsFilter,
+    )..onStart = onStart;
+  }
+}
+
+/// A [Draggable] that a finger or pen starts after a long press, so a quick
+/// swipe still scrolls.
+class _FingerDraggable<T extends Object> extends Draggable<T> {
+  const _FingerDraggable({
+    super.key,
+    required super.child,
+    required super.feedback,
+    super.data,
+    super.childWhenDragging,
+    super.dragAnchorStrategy,
+    super.maxSimultaneousDrags,
+    super.onDragUpdate,
+    super.onDragEnd,
+  });
+
+  @override
+  DelayedMultiDragGestureRecognizer createRecognizer(GestureMultiDragStartCallback onStart) {
+    return DelayedMultiDragGestureRecognizer(
+      supportedDevices: const {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.stylus,
+        PointerDeviceKind.invertedStylus,
+      },
+      allowedButtonsFilter: allowedButtonsFilter,
+    )..onStart = onStart;
   }
 }
