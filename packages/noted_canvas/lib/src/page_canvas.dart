@@ -799,20 +799,27 @@ class PageCanvasState extends State<PageCanvas>
   void _touchDown(PointerDownEvent e) {
     if (_touches.isEmpty) _multiTouch = false;
     if (e.kind != PointerDeviceKind.touch) return;
-    // A pen stroke or mouse drag in progress is not interrupted by touches
-    // (a resting palm): they are ignored until it ends.
+    _touches[e.pointer] = e.localPosition;
+    _startPinch();
+  }
+
+  /// Starts the two-finger gesture once two fingers are down and no pen or
+  /// mouse session holds the input (a resting palm must not interrupt a
+  /// stroke; the pinch starts when the stroke ends, from a fresh pair).
+  void _startPinch() {
+    if (_touches.length < 2 || _multiTouch) {
+      if (_multiTouch) _resetPair();
+      return;
+    }
     if (_session != null && _lastToolEvent?.kind != PointerDeviceKind.touch) {
       return;
     }
-    _touches[e.pointer] = e.localPosition;
-    if (_touches.length >= 2) {
-      // The first finger was only the start of a pinch: a tool session it
-      // began (an ink stroke) is dropped.
-      _multiTouch = true;
-      _multiTouchActive.value = true;
-      _cancelSession();
-      _resetPair();
-    }
+    // The first finger was only the start of a pinch: a tool session it
+    // began (an ink stroke) is dropped.
+    _multiTouch = true;
+    _multiTouchActive.value = true;
+    _cancelSession();
+    _resetPair();
   }
 
   /// Takes the fingers' current centre and distance as the basis for the
@@ -853,6 +860,9 @@ class PageCanvasState extends State<PageCanvas>
 
   void _onBackgroundTap(TapUpDetails d) {
     final v = _view;
+    // A tap with two fingers never gets here: the gesture arena (the
+    // InteractiveViewer's scale recognizer) suppresses it; the "pinch then
+    // lift" test guards that.
     if (v == null || _readOnly || _tools.active != null) return;
     final world = v.toWorld(d.localPosition);
     // A click that lands on a box's chrome or snapshot isn't a canvas click.
@@ -1044,11 +1054,13 @@ class PageCanvasState extends State<PageCanvas>
                     if (e.pointer == _middlePointer) _middlePointer = null;
                     _touchEnd(e);
                     _toolUp(e);
+                    _startPinch();
                   },
                   onPointerCancel: (e) {
                     if (e.pointer == _middlePointer) _middlePointer = null;
                     _touchEnd(e);
                     if (e.pointer == _sessionPointer) _cancelSession();
+                    _startPinch();
                   },
                   onPointerHover: (e) {
                     if (e.kind == PointerDeviceKind.mouse) {

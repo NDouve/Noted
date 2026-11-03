@@ -413,4 +413,32 @@ void main() {
     expect(t.takeException(), isNull);
     await g.up();
   });
+
+  testWidgets('fingers resting during a pen stroke pinch once the pen lifts', (
+    t,
+  ) async {
+    await pump(t);
+    selection.select(tool);
+    await t.pump();
+    final pen = await t.startGesture(
+      bar + const Offset(400, 400),
+      pointer: 1,
+      kind: PointerDeviceKind.stylus,
+    );
+    final a = await finger(t, 2, const Offset(500, 300));
+    await pen.moveBy(const Offset(30, 0));
+    await pen.up();
+    expect(tool.ended, 1);
+    final before = view(t);
+    final b = await finger(t, 3, const Offset(700, 300));
+    // No ink from the touches, and the pinch has the pair as its start.
+    expect(tool.started, 1);
+    await a.moveTo(bar + const Offset(400, 300));
+    await b.moveTo(bar + const Offset(800, 300));
+    await t.pump();
+    expect(view(t).scale, closeTo(before.scale * 2, 1e-6));
+    expect(tool.started, 1);
+    await a.up();
+    await b.up();
+  });
 }
