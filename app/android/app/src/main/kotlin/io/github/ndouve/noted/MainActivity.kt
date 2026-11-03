@@ -65,20 +65,9 @@ class MainActivity : FlutterActivity() {
         if (size > MAX_BYTES) return tooBig()
         val input = contentResolver.openInputStream(uri) ?: return null
         input.use { s ->
-            if (size >= 0) {
-                // Known size: one exact buffer, no copy.
-                val bytes = ByteArray(size.toInt())
-                var got = 0
-                while (got < bytes.size) {
-                    val n = s.read(bytes, got, bytes.size - got)
-                    if (n < 0) break
-                    got += n
-                }
-                if (got == bytes.size && s.read() >= 0) return tooBig()
-                val exact = if (got == bytes.size) bytes else bytes.copyOf(got)
-                return mapOf("name" to name, "bytes" to exact)
-            }
-            val out = ByteArrayOutputStream()
+            // A reported size only refuses early: some providers report 0 or a
+            // stale size, so the bytes are read up to the limit whatever it says.
+            val out = ByteArrayOutputStream(if (size in 1L..MAX_BYTES.toLong()) size.toInt() else 64 * 1024)
             val buf = ByteArray(64 * 1024)
             while (true) {
                 val n = s.read(buf)
