@@ -90,6 +90,53 @@ class _FlakyFile implements File {
       throw UnimplementedError('${invocation.memberName}');
 }
 
+/// A store that notes a scan and a compare-and-swap replace running at the
+/// same time. [trigger] runs when the replace starts; the replace then waits
+/// a moment, so whatever it started has time to reach a scan.
+class _OverlapStore extends PageStore {
+  _OverlapStore(super.directory);
+
+  void Function()? trigger;
+  var _replacing = false;
+  var _scanning = false;
+  var overlapped = false;
+  var scans = 0;
+
+  @override
+  Future<List<PageEntry>> scan() async {
+    scans++;
+    if (_replacing) overlapped = true;
+    _scanning = true;
+    try {
+      return await super.scan();
+    } finally {
+      _scanning = false;
+    }
+  }
+
+  @override
+  Future<ReplaceResult> saveIfUnchanged(
+    NotedPage page,
+    String? expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    void Function()? beforePublish,
+    void Function()? beforeRestore,
+  }) async {
+    if (_scanning) overlapped = true;
+    _replacing = true;
+    try {
+      final t = trigger;
+      trigger = null;
+      t?.call();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      return await super.saveIfUnchanged(page, expectedText);
+    } finally {
+      _replacing = false;
+    }
+  }
+}
+
 /// A store that runs [onPublish] just before a save, replace or new-file
 /// publish: a file changing between the replay's read and its write.
 class _RacingStore extends PageStore {
@@ -471,6 +518,33 @@ void main() {
       expect(failed, isTrue);
       expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, hasLength(1));
       expect(recFiles(), isEmpty);
+    });
+
+    test('a scan started by a watcher does not run during the replay\'s replace', () async {
+      final (nb, x, _) = await pendingEdit();
+      await vanish(nb);
+      quit(nb);
+      await restore();
+      final store = _OverlapStore(extra);
+      late final Notebook again;
+      final stray = '${extra.path}/stray-name.canvas';
+      store.trigger = () {
+        // A file the watcher reports, named other than its page id: looking at
+        // it makes the store scan the folder to find it.
+        File(stray).writeAsStringSync(
+          writePage(NotedPage.create(PageMeta.create(id: 'strayid', title: 's', order: 5))),
+        );
+        unawaited(again.checkFile(stray));
+      };
+      again = make(storeFactory: (d) => d.path == extra.path ? store : PageStore(d));
+      await again.load();
+      await again.checkFolders(); // the queued check is done
+      expect(store.scans, greaterThan(1), reason: 'the watcher check did scan');
+      expect(store.overlapped, isFalse);
+      expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, hasLength(1));
+      expect(recFiles(), isEmpty);
+      expect(extra.listSync().map((f) => f.path).where((p) => p.contains('recovered')), isEmpty);
+      expect(again.tree['strayid'], isNotNull);
     });
 
     test('the entry stays when the file keeps changing, and nothing newer is lost', () async {

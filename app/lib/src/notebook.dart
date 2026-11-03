@@ -725,7 +725,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   final Completer<void> _loaded = Completer<void>();
 
   Future<void> _load() async {
-    final entries = await store.scan();
+    final entries = await _scan(store);
     _metas.clear();
     _loc.clear();
     _binders.clear();
@@ -2098,7 +2098,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       if (await BinderStore(dir).file.exists()) return unavailable('This folder holds a binder.');
       final pages = storeFactory(dir);
-      final entries = await pages.scan();
+      final entries = await _scan(pages);
       _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
       final bad = <UnreadablePage>[...entries.whereType<UnreadablePage>()];
       for (final e in entries.whereType<ReadablePage>()) {
@@ -2452,7 +2452,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _binderText.remove(_key(path));
       }
       final pages = storeFactory(dir);
-      final entries = await pages.scan();
+      final entries = await _scan(pages);
       if (binder != null) {
         // Conflict copies are merged by writing, which a damaged binder forbids.
         _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
@@ -3731,12 +3731,35 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return true;
   }
 
+  // PageStore.scan puts back what an interrupted compare-and-swap replace
+  // left aside, so it must not run while one is in flight on the same folder
+  // (0128). Both go through _underFolderLock: one at a time per folder. The job
+  // is a single store call, never another locked call, so they can't wait on
+  // each other.
+  final Map<String, Future<void>> _folderLocks = {};
+
+  Future<T> _underFolderLock<T>(PageStore st, Future<T> Function() job) {
+    final key = _key(st.directory.path);
+    final run = (_folderLocks[key] ?? Future<void>.value()).then((_) => job());
+    final done = run.then<void>((_) {}, onError: (_) {});
+    _folderLocks[key] = done;
+    unawaited(
+      done.whenComplete(() {
+        if (identical(_folderLocks[key], done)) _folderLocks.remove(key);
+      }),
+    );
+    return run;
+  }
+
+  Future<List<PageEntry>> _scan(PageStore st) => _underFolderLock(st, st.scan);
+
   // Like [_write], for a page that must still hold exactly [expectedText] at
   // the moment of publishing: false, with nothing written, when it doesn't.
   Future<bool> _writeIfUnchanged(String loc, NotedPage page, String expectedText) async {
     await _assertCanWrite(loc);
     final st = _storeOf(loc);
-    if (!(await st.saveIfUnchanged(page, expectedText)).replaced) return false;
+    final result = await _underFolderLock(st, () => st.saveIfUnchanged(page, expectedText));
+    if (!result.replaced) return false;
     final key = _key(st.pathFor(page.id));
     _known[key] = writePage(page);
     _pathId[key] = page.id;
@@ -4318,11 +4341,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final out = writePage(merged);
       if (out != text) {
         // Make the store write to the file the original was read from.
-        if (_key(st.pathFor(id)) != _key(originalPath)) await st.scan();
-        // Replace the original only if it still holds what the merge read.
+        if (_key(st.pathFor(id)) != _key(originalPath)) await _scan(st);
+        // Replace the original only if it still holds exactly what the merge
+        // read, checked at the moment of replacing (0128); if not, merge again.
         await syncHook?.call('original-read', originalPath);
-        if (await File(originalPath).readAsString() != text) throw const _SourceChanged();
-        await _write(loc, merged);
+        if (!await _writeIfUnchanged(loc, merged, text)) throw const _SourceChanged();
         final back = await st.readText(id);
         if (back != out) throw const FormatException('the saved page differs from what was written');
         failure = verifyConflictCopyMerge(readPage(back), original, copy);
@@ -4439,7 +4462,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final st = _storeOf(loc);
       // Make the store find files whose names aren't the page id.
       // (Never when the folder is gone: a scan would create it.)
-      if (_key(st.pathFor(id)) != key && await st.directory.exists()) await st.scan();
+      if (_key(st.pathFor(id)) != key && await st.directory.exists()) await _scan(st);
     }
     _setConflict(id, hasConflicts(page));
     _touch(loc);
@@ -4612,7 +4635,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   Future<void> _folderBack(String loc) async {
     if (loc == _standalone) {
-      final entries = await store.scan();
+      final entries = await _scan(store);
       _defaultGone = false;
       _adoptDefault(entries);
     } else {
