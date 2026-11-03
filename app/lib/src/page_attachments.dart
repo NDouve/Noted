@@ -131,12 +131,16 @@ class PageAttachments extends ChangeNotifier implements AttachmentStore {
   // Writes [name] into the assets folder (atomically; an existing file has
   // the same content, so it is left alone), or into the recovery folder if
   // the page's folder can't be written.
+  static int _tmpCounter = 0;
+
   Future<void> _write(String name, Uint8List bytes) async {
     Future<void> into(Directory d) async {
       final target = _in(d, name);
       if (await target.exists()) return;
       await d.create(recursive: true);
-      final tmp = File('${target.path}.tmp');
+      // A unique name, so an extensionless write (`<hash>.tmp`) can never
+      // clobber a real attachment called `<hash>.tmp`.
+      final tmp = File('${target.path}.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
       await tmp.writeAsBytes(bytes, flush: true);
       await tmp.rename(target.path);
     }

@@ -97,4 +97,23 @@ void main() {
       expect(formatByteSize(42 * 1024 * 1024), '42 MB');
     });
   });
+
+  group('contentHashOfStream', () {
+    Uint8List data(int n) => Uint8List.fromList([for (var i = 0; i < n; i++) (i * 31 + 7) & 0xff]);
+
+    Stream<List<int>> chunked(Uint8List bytes, int size) async* {
+      for (var i = 0; i < bytes.length; i += size) {
+        yield bytes.sublist(i, i + size > bytes.length ? bytes.length : i + size);
+      }
+    }
+
+    test('equals contentHash for empty, small and chunk-boundary sizes', () async {
+      for (final n in [0, 1, 63, 64, 65, 65535, 65536, 65537, 200000]) {
+        final bytes = data(n);
+        for (final size in [1, 64, 65536, 100000]) {
+          expect(await contentHashOfStream(chunked(bytes, size)), contentHash(bytes), reason: '$n bytes in chunks of $size');
+        }
+      }
+    });
+  });
 }

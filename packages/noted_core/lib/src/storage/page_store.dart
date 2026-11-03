@@ -182,12 +182,21 @@ class PageStore {
   ///
   /// [beforePublish] runs after the temporary file is written and before it is
   /// published; it is a seam for tests.
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) =>
+      saveNewText(page, writePage(page), beforePublish: beforePublish);
+
+  /// As [saveNew], but writes [text] (the page's file text, for putting back a
+  /// file byte for byte); [page] is the page [text] holds.
+  Future<bool> saveNewText(
+    NotedPage page,
+    String text, {
+    Future<void> Function()? beforePublish,
+  }) async {
     final path = _pathFor(page.id);
     final tmp = File('$path.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
     final bool published;
     try {
-      await tmp.writeAsString(writePage(page), flush: true);
+      await tmp.writeAsString(text, flush: true);
       if (beforePublish != null) await beforePublish();
       published = await publishExclusive(tmp, path);
     } catch (_) {
@@ -262,6 +271,28 @@ class PageStore {
     final f = File(_pathFor(pageId));
     if (await f.exists()) await f.delete();
     _paths.remove(pageId);
+  }
+
+  /// Deletes the page's file only if it still holds exactly [expectedText]; see
+  /// [deleteFileIfUnchanged]. Like [saveIfUnchanged], serialise it with [scan].
+  Future<DeleteResult> deleteIfUnchanged(
+    String pageId,
+    String expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    Future<void> Function()? beforeDelete,
+    void Function()? beforeRestore,
+  }) async {
+    final r = await deleteFileIfUnchanged(
+      _pathFor(pageId),
+      utf8.encode(expectedText),
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforeDelete: beforeDelete,
+      beforeRestore: beforeRestore,
+    );
+    if (r.deleted || r.outcome == DeleteOutcome.absent) _paths.remove(pageId);
+    return r;
   }
 
   /// The path of the file holding (or that will hold) page [pageId].

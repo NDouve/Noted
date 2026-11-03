@@ -9,6 +9,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
 
 void main() {
+  deleteTests();
+  saveNewTextTests();
   late Directory dir;
 
   setUp(() async => dir = await Directory.systemTemp.createTemp('noted_cas'));
@@ -365,5 +367,91 @@ void main() {
       expect((await store.load('p1')).meta.title, 'New');
       expect(names(), ['p1.canvas']);
     });
+  });
+}
+
+void deleteTests() {
+  late Directory dir;
+  setUp(() async => dir = await Directory.systemTemp.createTemp('noted_cad'));
+  tearDown(() async => dir.delete(recursive: true));
+  String p(String n) => '${dir.path}${Platform.pathSeparator}$n';
+  List<String> names() =>
+      dir.listSync().map((f) => f.path.split(RegExp(r'[\\/]')).last).toList()..sort();
+
+  group('deleteFileIfUnchanged', () {
+    test('equal bytes: deleted, nothing left', () async {
+      File(p('a.bin')).writeAsBytesSync([1, 2, 3]);
+      final r = await deleteFileIfUnchanged(p('a.bin'), [1, 2, 3]);
+      expect(r.outcome, DeleteOutcome.deleted);
+      expect(names(), isEmpty);
+    });
+
+    test('no file: absent', () async {
+      expect((await deleteFileIfUnchanged(p('a.bin'), [1])).outcome, DeleteOutcome.absent);
+    });
+
+    test('different bytes: changed, file untouched', () async {
+      File(p('a.bin')).writeAsBytesSync([9]);
+      final r = await deleteFileIfUnchanged(p('a.bin'), [1]);
+      expect(r.outcome, DeleteOutcome.changed);
+      expect(File(p('a.bin')).readAsBytesSync(), [9]);
+    });
+
+    test('replaced between the check and the move-aside: put back, byte for byte', () async {
+      File(p('a.bin')).writeAsBytesSync([1, 2, 3]);
+      final r = await deleteFileIfUnchanged(
+        p('a.bin'),
+        [1, 2, 3],
+        beforeMoveAside: () => File(p('a.bin')).writeAsBytesSync([4, 5]),
+      );
+      expect(r.outcome, DeleteOutcome.changed);
+      expect(File(p('a.bin')).readAsBytesSync(), [4, 5]);
+      expect(names(), ['a.bin']);
+    });
+
+    test('a file appears while the changed one is set aside: both kept', () async {
+      File(p('a.bin')).writeAsBytesSync([1, 2, 3]);
+      final r = await deleteFileIfUnchanged(
+        p('a.bin'),
+        [1, 2, 3],
+        beforeMoveAside: () => File(p('a.bin')).writeAsBytesSync([4, 5]),
+        afterRead: () => File(p('a.bin')).writeAsBytesSync([7]),
+      );
+      expect(r.outcome, DeleteOutcome.changedKept);
+      expect(File(p('a.bin')).readAsBytesSync(), [7]);
+      expect(File(r.keptPath!).readAsBytesSync(), [4, 5]);
+      expect(r.keptPath!.endsWith(asideSuffix), isTrue);
+    });
+  });
+
+  test('PageStore.deleteIfUnchanged deletes only the expected text', () async {
+    final store = PageStore(dir);
+    final page = NotedPage.create(PageMeta.create(id: 'p1', title: 'A', order: 0));
+    await store.save(page);
+    final text = await store.readText('p1');
+    final changed = await store.deleteIfUnchanged(
+      'p1',
+      text,
+      beforeMoveAside: () => File(store.pathFor('p1')).writeAsStringSync('newer'),
+    );
+    expect(changed.outcome, DeleteOutcome.changed);
+    expect(File(store.pathFor('p1')).readAsStringSync(), 'newer');
+    File(store.pathFor('p1')).writeAsStringSync(text);
+    expect((await store.deleteIfUnchanged('p1', text)).deleted, isTrue);
+    expect(File(store.pathFor('p1')).existsSync(), isFalse);
+  });
+}
+
+void saveNewTextTests() {
+  test('PageStore.saveNewText writes the given text byte for byte, never over a file', () async {
+    final dir = await Directory.systemTemp.createTemp('noted_snt');
+    addTearDown(() => dir.delete(recursive: true));
+    final store = PageStore(dir);
+    final page = NotedPage.create(PageMeta.create(id: 'p1', title: 'A', order: 0));
+    final text = '${writePage(page)}\r\n';
+    expect(await store.saveNewText(page, text), isTrue);
+    expect(File(store.pathFor('p1')).readAsStringSync(), text);
+    expect(await store.saveNewText(page, 'other'), isFalse);
+    expect(File(store.pathFor('p1')).readAsStringSync(), text);
   });
 }

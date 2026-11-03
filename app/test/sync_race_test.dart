@@ -30,15 +30,39 @@ Map<String, Object?> doc(String text) => {
   },
 };
 
-// Counts the writes that reach the folder.
+// Counts the writes that reach the folder. [beforeWrite] runs once, just
+// before the next write or compare-and-swap replace: a sync client landing a
+// newer version of the file at that moment.
 class CountingStore extends PageStore {
   CountingStore(super.directory);
   int saves = 0;
+  void Function()? beforeWrite;
+
+  void _fire() {
+    final f = beforeWrite;
+    beforeWrite = null;
+    f?.call();
+  }
 
   @override
   Future<void> save(NotedPage page) {
     saves++;
+    _fire();
     return super.save(page);
+  }
+
+  @override
+  Future<ReplaceResult> saveIfUnchanged(
+    NotedPage page,
+    String? expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    void Function()? beforePublish,
+    void Function()? beforeRestore,
+  }) {
+    saves++;
+    _fire();
+    return super.saveIfUnchanged(page, expectedText);
   }
 }
 
@@ -382,6 +406,23 @@ void main() {
       await nb.checkFile(path);
 
       expect(fired, isTrue);
+      expect(File(path).existsSync(), isFalse);
+      expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, fromCopy.id, newer.id});
+    });
+
+    test('an original replaced at the moment of the merge write is not overwritten', () async {
+      final (id, box) = await closedPageWithBox();
+      final disk = await other.load(id);
+      final fromCopy = noteBox('from the copy', at: const Bounds(400, 10, 200, 40));
+      final newer = noteBox('newer on the original', at: const Bounds(400, 100, 200, 40));
+      final path = '${dir.path}$sep$id-DESKTOP-ABC.canvas';
+      File(path).writeAsStringSync(writePage(disk.insertNode(fromCopy)));
+      // After the reread, right before the write: only the compare-and-swap
+      // replace sees this.
+      counting.beforeWrite = () => File(pathOf(id)).writeAsStringSync(writePage(disk.insertNode(newer)));
+
+      await nb.checkFile(path);
+
       expect(File(path).existsSync(), isFalse);
       expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, fromCopy.id, newer.id});
     });

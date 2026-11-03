@@ -56,6 +56,10 @@ String assetsFolderName(String pageId) => '$pageId.assets';
 /// conflict.
 String contentHash(List<int> bytes) => sha256.convert(bytes).toString();
 
+/// The same hash of a stream of chunks, without holding the whole file.
+Future<String> contentHashOfStream(Stream<List<int>> chunks) async =>
+    (await sha256.bind(chunks).first).toString();
+
 /// The name an attachment is stored under in the assets folder:
 /// `<hash>.<ext>` (just `<hash>` without an extension). The extension is
 /// lowercased and limited to letters and digits.

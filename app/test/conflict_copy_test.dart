@@ -39,6 +39,19 @@ class FlakyStore extends PageStore {
   }
 
   @override
+  Future<ReplaceResult> saveIfUnchanged(
+    NotedPage page,
+    String? expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    void Function()? beforePublish,
+    void Function()? beforeRestore,
+  }) async {
+    if (dropSaves) return const ReplaceResult(ReplaceOutcome.replaced); // says so, keeps nothing
+    return super.saveIfUnchanged(page, expectedText);
+  }
+
+  @override
   Future<String> readText(String pageId) async {
     if (failReads) throw const FileSystemException('read failed');
     return super.readText(pageId);
