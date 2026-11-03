@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -29,6 +31,63 @@ class _LossyStore extends PageStore {
     void Function()? beforePublish,
     void Function()? beforeRestore,
   }) => super.saveIfUnchanged(NotedPage.create(page.meta), expectedText);
+}
+
+/// A store whose read-back throws while [fail] says so.
+class _FlakyReadStore extends PageStore {
+  _FlakyReadStore(super.directory, this.fail);
+
+  final bool Function() fail;
+
+  @override
+  Future<String> readText(String pageId) {
+    if (fail()) throw const FileSystemException('injected read failure');
+    return super.readText(pageId);
+  }
+}
+
+/// A file whose readAsBytes throws once when [fail] says so; the rest is the
+/// real file.
+class _FlakyFile implements File {
+  _FlakyFile(this._f, this.fail);
+
+  final File _f;
+  final bool Function() fail;
+
+  @override
+  Future<Uint8List> readAsBytes() {
+    if (fail()) throw const FileSystemException('injected lock');
+    return _f.readAsBytes();
+  }
+
+  @override
+  String get path => _f.path;
+
+  @override
+  File get absolute => _f.absolute;
+
+  @override
+  Future<bool> exists() => _f.exists();
+
+  @override
+  Future<FileSystemEntity> delete({bool recursive = false}) => _f.delete(recursive: recursive);
+
+  @override
+  Future<File> rename(String newPath) => _f.rename(newPath);
+
+  @override
+  Future<DateTime> lastModified() => _f.lastModified();
+
+  @override
+  Future<File> writeAsString(String contents, {FileMode mode = FileMode.write, Encoding encoding = utf8, bool flush = false}) =>
+      _f.writeAsString(contents, mode: mode, encoding: encoding, flush: flush);
+
+  @override
+  Future<String> readAsString({Encoding encoding = utf8}) => _f.readAsString(encoding: encoding);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnimplementedError('${invocation.memberName}');
 }
 
 /// A store that runs [onPublish] just before a save, replace or new-file
@@ -338,6 +397,55 @@ void main() {
       expect(disk.node('newgen'), isNotNull, reason: 'the file that appeared is merged, not replaced');
       expect(disk.nodes, hasLength(original.nodes.length + 2)); // the pending box and theirs
       expect(store.calls, 2);
+      expect(recFiles(), isEmpty);
+    });
+
+    test('a write landing after the publish keeps the entry and does not undo their deletion', () async {
+      final (again, x, _, _) = await setUp1((_, _, _) {});
+      again.syncHook = (point, path) async {
+        if (point != 'recover-published') return;
+        final f = File(path);
+        final cur = readPage(f.readAsStringSync());
+        expect(cur.nodes, hasLength(1));
+        f.writeAsStringSync(writePage(cur.removeNode(cur.nodes.single.id))); // they delete it
+      };
+      await again.load();
+      expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, isEmpty,
+          reason: 'not merged again against the old base');
+      expect(recFiles(), isNotEmpty);
+    });
+
+    test('a read-back that fails once is retried', () async {
+      var failures = 1;
+      final (nb, x, _) = await pendingEdit();
+      await vanish(nb);
+      quit(nb);
+      await restore();
+      final again = make(
+        storeFactory: (d) => d.path == extra.path ? _FlakyReadStore(d, () => failures-- > 0) : PageStore(d),
+      );
+      await again.load();
+      expect(failures, lessThan(0), reason: 'the read-back threw once');
+      expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, hasLength(1));
+      expect(recFiles(), isEmpty);
+    });
+
+    test('a reread that fails once is retried', () async {
+      final (nb, x, _) = await pendingEdit();
+      await vanish(nb);
+      quit(nb);
+      await restore();
+      final again = make();
+      var failed = false;
+      await IOOverrides.runZoned(
+        () => again.load(),
+        createFile: (p) => _FlakyFile(Zone.root.run(() => File(p)), () {
+          if (failed || !p.endsWith('$x.canvas')) return false;
+          return failed = true;
+        }),
+      );
+      expect(failed, isTrue);
+      expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, hasLength(1));
       expect(recFiles(), isEmpty);
     });
 

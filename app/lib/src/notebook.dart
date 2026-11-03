@@ -3302,11 +3302,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (await file.exists()) {
         try {
           theirsText = utf8.decode(await file.readAsBytes());
+          time = (await file.lastModified()).millisecondsSinceEpoch;
         } on FormatException catch (ex) {
           throw _ReplayFailure("the saved file of $label isn't a valid page file", detail: '$ex');
+        } on FileSystemException catch (ex) {
+          // Locked or gone since exists(): look again.
+          if (attempt < 4) continue;
+          throw _ReplayFailure(
+            "the saved file of $label can't be read just now",
+            detail: ex.message,
+          );
         }
         theirs = _readForReplay(theirsText, 'the saved file of $label');
-        time = (await file.lastModified()).millisecondsSinceEpoch;
         if (theirs.id != id) {
           throw _ReplayFailure(
             'the saved file for $label holds a different page',
@@ -3325,17 +3332,27 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             : await _writeIfUnchanged(loc, merged, theirsText);
         if (!published) continue; // the file changed since it was read
       }
-      final String back;
-      try {
-        back = await st.readText(id);
-      } on FileSystemException {
-        if (attempt < 4) continue;
-        rethrow;
+      final wrote = out != theirsText;
+      if (wrote) await syncHook?.call('recover-published', path);
+      String? back;
+      for (var read = 0; back == null; read++) {
+        try {
+          back = await st.readText(id);
+        } on FileSystemException {
+          if (read >= 2) rethrow; // a lock may pass; a few tries
+        }
       }
       if (back != out) {
-        if (attempt < 4) continue; // changed again after publishing: merge again
+        // Nothing of ours was written: the file changed since it was read.
+        if (!wrote && attempt < 4) continue;
+        // Someone wrote on top of what was published. Merging again against
+        // the old base could bring back what they deleted, so the entry stays
+        // for a later replay, which merges against the file as it is then.
         throw _ReplayFailure(
-          'the saved file of $label does not match what was written',
+          wrote
+              ? 'the page changed after the edits kept for $label were saved into it; '
+                    'they are kept for the next replay'
+              : 'the saved file of $label keeps changing',
           detail: 'the saved page differs from what was written',
         );
       }
