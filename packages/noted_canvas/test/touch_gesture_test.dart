@@ -464,7 +464,10 @@ void main() {
       await pen.up();
       await t.pump();
     }
-// The first finger's session was dropped by the second; both strokes    // were drawn.    expect(tool.started, 3);    expect(tool.cancelled, 1);
+    // The first finger's session was dropped by the second; both strokes
+    // were drawn.
+    expect(tool.started, 3);
+    expect(tool.cancelled, 1);
     expect(tool.ended, 2);
     expect(view(t), before);
     await a.up();
