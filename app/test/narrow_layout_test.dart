@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/binder_cover.dart';
 import 'package:noted/src/page_tree_view.dart';
 import 'package:noted/src/search_panel.dart';
 import 'package:noted_canvas/noted_canvas.dart';
@@ -177,6 +178,8 @@ void main() {
     final header = t.getRect(find.text('Binder cover'));
     expect(menu.overlaps(header), isFalse);
     expect(menu.bottom, lessThanOrEqualTo(header.top));
+    // Nor the cover as a whole (its colour bar is at the top).
+    expect(menu.overlaps(t.getRect(find.byType(BinderCover))), isFalse);
   });
 
   for (final style in ToolbarStyle.values) {
