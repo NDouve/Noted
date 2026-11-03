@@ -68,6 +68,7 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 - AI boxes, AI writing through the app, and per-box codes (Writer and Reader, with new-connection approval, ask before each write, an activity log and expiry); Privileged pages and binders use Reader codes
 - the Page settings and Binder settings panel (background, images and files, AI access, box types allowed)
 - module availability per page and binder (a disallowed box type behaves like a switched-off module)
+- iPad and Android test builds (sideloaded, notes stored on the device, no mobile sync yet)
 
 **Out of scope until the maintainer starts the next phase:**
 - binder passwords and encryption
