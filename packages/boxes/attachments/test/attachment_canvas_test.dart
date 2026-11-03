@@ -24,6 +24,19 @@ BoxRecord _box(BoxCodec<Object?> codec, String id, Object? data, Bounds at) =>
       rev: 'r',
     ).withFixedHeight(true);
 
+/// A store whose folder reads run [onRead] first (to edit the page while a
+/// conversion is waiting on a file).
+class _HookStore extends FakeStore {
+  void Function()? onRead;
+
+  @override
+  Future<Uint8List?> read(String fileName) async {
+    await Future<void>.value();
+    onRead?.call();
+    return super.read(fileName);
+  }
+}
+
 void main() {
   late CanvasController c;
   late FakeStore store;
@@ -447,6 +460,62 @@ void main() {
     );
     expect(back!.changed, 2);
     expect(store.folder, hasLength(2));
+  });
+
+  testWidgets('a box edited during conversion is converted again, not '
+      'overwritten with the old capture', (t) async {
+    final gated = _HookStore();
+    store = gated;
+    await pump(t);
+    await t.runAsync(() async {
+      await canvas(t).insertFiles([IncomingFile('red.png', redPng)], at: Offset.zero);
+    });
+    await t.pump();
+    final id = boxes().single.id;
+    var reads = 0;
+    gated.onRead = () {
+      // A sync update lands while the first read is outstanding.
+      if (reads++ != 0) return;
+      final d = data(boxes().single) as ImageData;
+      c.editBox(id, d.copyWith(alt: 'newer caption'));
+    };
+    final r = await t.runAsync(
+      () => convertPageAttachments(c, store, AttachmentStorage.embedded),
+    );
+    await t.pump();
+    expect(r!.changed, 1);
+    expect(r.skipped, isEmpty);
+    final d = data(boxes().single) as ImageData;
+    expect(d.alt, 'newer caption');
+    expect(d.ref.isEmbedded, isTrue);
+  });
+
+  testWidgets('a box that keeps changing is skipped and reported', (t) async {
+    final gated = _HookStore();
+    store = gated;
+    await pump(t);
+    await t.runAsync(() async {
+      await canvas(t).insertFiles([
+        IncomingFile('red.png', redPng),
+        IncomingFile('Plan.pdf', pdf),
+      ], at: Offset.zero);
+    });
+    await t.pump();
+    final img = boxes().firstWhere((b) => b.typeId == const ImageCodec().typeId);
+    var n = 0;
+    gated.onRead = () {
+      final d = data(c.page.node(img.id)! as BoxRecord) as ImageData;
+      c.editBox(img.id, d.copyWith(alt: 'edit ${n++}'));
+    };
+    final r = await t.runAsync(
+      () => convertPageAttachments(c, store, AttachmentStorage.embedded),
+    );
+    await t.pump();
+    expect(r!.skipped, [img.id]);
+    expect(r.changed, 1, reason: 'the file box still converts');
+    final d = data(c.page.node(img.id)! as BoxRecord) as ImageData;
+    expect(d.alt, startsWith('edit '));
+    expect(d.ref.isEmbedded, isFalse);
   });
 
   testWidgets(
