@@ -14,11 +14,8 @@ import 'ai/ai_access_service.dart';
 import 'ai/ai_link_authority.dart';
 import 'ai/ai_merge_service.dart';
 import 'app_settings.dart';
-<<<<<<< HEAD
 import 'attachment_copy.dart';
-=======
 import 'device_storage.dart';
->>>>>>> main
 import 'page_attachments.dart';
 import 'recovery_store.dart';
 import 'search_scope.dart';
