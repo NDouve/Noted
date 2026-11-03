@@ -7,12 +7,22 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart' as pp;
 
+/// Test-only: `flutter test` reports Android as the platform, which would run
+/// every test on the mobile path. `test/flutter_test_config.dart` sets this so
+/// tests run as desktop unless one picks a platform with
+/// [debugDefaultTargetPlatformOverride]. Only [isMobilePlatform] reads it.
+@visibleForTesting
+bool testsDefaultToDesktop = false;
+
 /// Whether this is a phone or tablet build (iOS, iPadOS, Android; 0129). The
 /// one test every mobile adaptation uses. It follows
 /// [debugDefaultTargetPlatformOverride], so a test can pick either side.
+/// With no override, tests count as desktop (see [testsDefaultToDesktop]).
 bool get isMobilePlatform {
   if (kIsWeb) return false;
-  final p = debugDefaultTargetPlatformOverride ?? defaultTargetPlatform;
+  final override = debugDefaultTargetPlatformOverride;
+  if (override == null && testsDefaultToDesktop) return false;
+  final p = override ?? defaultTargetPlatform;
   return p == TargetPlatform.iOS || p == TargetPlatform.android;
 }
 

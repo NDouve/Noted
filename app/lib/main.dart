@@ -78,23 +78,37 @@ Future<void> main() async {
   // read (0129).
   await initDeviceStorage();
   final settings = AppSettings(defaultSettingsFile());
-  final dataFolder = defaultSettingsFile().parent;
+  final notebook = buildAppNotebook(settings: settings);
+  FileClipboard.read = readClipboardFiles;
+  final services = await startAiServices(notebook, defaultSettingsFile().parent);
+  runApp(NotedApp(notebook: notebook, settings: settings, aiLink: services.link, runningLock: services.lock));
+  await notebook.load();
+  // After the first frame, so the window can show the questions.
+  WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(notebook.askPendingAiApprovals()));
+}
+
+/// The notebook with this build's platform wiring (0129): on mobile there is
+/// no AI access service (no MCP server), no folder watching and no folder
+/// picker (neither file_selector's iOS nor its Android folder picker gives
+/// a usable path). The folders default to the platform's; tests pass their
+/// own.
+Notebook buildAppNotebook({AppSettings? settings, Directory? pagesDirectory, File? bindersFile}) {
+  final binders = bindersFile ?? defaultBindersFile();
   late final Notebook notebook;
-  // No MCP server on mobile: AI boxes show their content, with no codes.
   final aiAccess = isMobilePlatform
       ? null
       : AiAccessService(
-          dataFolder: dataFolder,
+          dataFolder: binders.absolute.parent,
           pageOfBox: (id) => notebook.aiPageOfBox(id),
           // Another Noted may change the codes or the log: show it.
           pollInterval: const Duration(seconds: 3),
         );
-  notebook = Notebook(
-    PageStore(defaultPagesDirectory()),
+  return notebook = Notebook(
+    PageStore(pagesDirectory ?? defaultPagesDirectory()),
     buildModules(aiAccess: aiAccess),
-    bindersFile: defaultBindersFile(),
-    recoveryDirectory: defaultRecoveryDirectory(defaultBindersFile()),
-    pickFolder: () => getDirectoryPath(confirmButtonText: 'Use this folder'),
+    bindersFile: binders,
+    recoveryDirectory: defaultRecoveryDirectory(binders),
+    pickFolder: isMobilePlatform ? null : () => getDirectoryPath(confirmButtonText: 'Use this folder'),
     watchFiles: !isMobilePlatform,
     deviceName: computerName(),
     settings: settings,
@@ -103,12 +117,6 @@ Future<void> main() async {
     attachmentPicker: pickAttachments,
     attachmentOpener: openWithDefaultApp,
   );
-  FileClipboard.read = readClipboardFiles;
-  final services = await startAiServices(notebook, dataFolder);
-  runApp(NotedApp(notebook: notebook, settings: settings, aiLink: services.link, runningLock: services.lock));
-  await notebook.load();
-  // After the first frame, so the window can show the questions.
-  WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(notebook.askPendingAiApprovals()));
 }
 
 /// Starts what `noted_mcp` relies on: the running lock and the local link.

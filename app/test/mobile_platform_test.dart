@@ -141,6 +141,37 @@ void main() {
     });
   });
 
+  group('notebook wiring', () {
+    Notebook build() {
+      final nb = buildAppNotebook(
+        pagesDirectory: Directory('${root.path}/pages'),
+        bindersFile: binders(),
+      );
+      addTearDown(nb.dispose);
+      return nb;
+    }
+
+    test('on mobile: no folder watching, no AI access, no folder picker', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final nb = build();
+      expect(nb.watchFiles, isFalse);
+      expect(nb.aiAccess, isNull);
+      expect(nb.pickFolder, isNull);
+    });
+
+    test('on desktop: all three are on', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      final nb = build();
+      expect(nb.watchFiles, isTrue);
+      expect(nb.aiAccess, isNotNull);
+      expect(nb.pickFolder, isNotNull);
+    });
+
+    test('tests run as desktop unless one picks a platform', () {
+      expect(isMobilePlatform, isFalse);
+    });
+  });
+
   group('AI services', () {
     test('not started on mobile: no lock, no link, no files', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
