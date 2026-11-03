@@ -383,13 +383,10 @@ class UnsavedEdits {
           k.blocked = true;
           host.unreadable(k.loc, id, out.why ?? "it couldn't be read");
         case ClosedSaveResult.folderGone:
-          // The save wrote its own entry; that one holds the edits now.
+          // The save wrote its own entry, which the next retry reads; edits
+          // held in memory are kept there too.
           final page = k.page;
-          if (page != null) {
-            await _keep(id, k, page, k.baseText);
-          } else {
-            k.entryText = (await _entryOf(id, k))?.pageText ?? k.entryText;
-          }
+          if (page != null) await _keep(id, k, page, k.baseText);
           _schedule();
         case ClosedSaveResult.busy || ClosedSaveResult.failed:
           _schedule();
