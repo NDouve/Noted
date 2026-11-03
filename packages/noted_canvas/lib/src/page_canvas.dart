@@ -152,10 +152,9 @@ class PageCanvasState extends State<PageCanvas>
   double _pinchStartScale = 1;
   Offset _pinchPan = Offset.zero;
 
+  // Touch screens: the fingers down now (canvas-local, in the order they
   // landed), and whether the current touch gesture ever had two. Set until
-  // the next pointer goes down; it keeps a third or last finger from
-  // starting a tool session mid-gesture.
-  // (a new note) is not taken as a canvas click.
+  // the next pointer goes down; no tool session starts while it is set.
   final Map<int, Offset> _touches = {};
   bool _multiTouch = false;
   Offset? _touchFocal;
