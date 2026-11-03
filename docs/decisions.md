@@ -320,7 +320,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0033 — Tool-based input rules
 - **Date:** 2026-10-24
-- **Status:** Active (supersedes the input rules in 0016)
+- **Status:** Active (supersedes the input rules in 0016; stylus rule settled by 0130)
 - **Decision:** The action an input performs depends on the selected tool, not on the device, following OneNote's Draw model.
   - **Draw tool:** mouse, trackpad, finger and stylus all draw.
   - **Select or type tool:** mouse, trackpad and finger select or type.
@@ -1746,7 +1746,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0124 — Saves, moves and recovery never overwrite or delete what they can't verify
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106; amended by 0127)
+- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106; amended by 0127 and 0130)
 - **Decision:**
   - **The open page's file (0051):** before every save of the open page, its file is read again, found by path. If it is unreadable, from a newer format, holds a different page, or can't be read for any reason other than not existing, nothing is written: the file stays as it is, the edits go to recovery, and the page becomes read-only with a plain reason and a way out ("Put back a readable version, or open another page"). The block is rechecked by the watcher and the folder timer; when a readable version appears it is merged three-way and the page is editable again, and the block's recovery entry is removed once the merged save reads back. A folder that comes back while the open page waits for it is handled the same way, with or without a recovery entry: a file that is there but unreadable blocks the page, and a missing file puts the page back in place so a file that lands later is merged.
   - **Conflict copies (0053):** a copy is deleted only if its bytes still equal the ones that were merged, and the original is replaced only if it still equals what the merge read. Otherwise the merge is redone, up to five times; then the copy is kept and listed under "Can't open".
@@ -1796,7 +1796,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0128 — Mixed foreign and Noted nodes in merges; closed-app write eligibility; compare-and-swap replace
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer; amends 0051 and 0117)
+- **Status:** Active (approved by the maintainer; amends 0051 and 0117; amended by 0130: the app now uses compare-and-swap)
 - **Decision:**
   - **Merges (amends 0051):** when both sides changed the same node and one side's node is foreign while the other's is a box, nothing is dropped. With mine foreign, mine is kept as it is and theirs is kept under a new id: a box keeps all its data, and a foreign node that isn't a JSON object is kept unchanged. With mine a box, theirs is recorded in the box's conflicts byte for byte. A box kept under a new id that overlaps the other side's node gets the landed marker (0121), in the three-way merge and in the conflict-copy merge alike.
   - **Closed-app writes (amends 0117):** the MCP server checks whether the page allows the box's type against the exact page bytes it replaces, on every attempt. If the page's parent changed since the library was read, the write is tried again with the new parents. A file that now holds a different page is not written.
@@ -1806,7 +1806,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0129 — iPad and Android test builds
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer; extends 0018). The mobile adaptations listed below are decided but not yet built.
+- **Status:** Active (approved by the maintainer; extends 0018; amended by 0130). The mobile adaptations listed below are built (0130).
 - **Decision:**
   - **Scope:** iPad and Android test builds for testing pen, touch and layout: sideloaded, notes stored on the device, no mobile sync yet.
   - **Projects:** `app/ios` and `app/android`, id `io.github.ndouve.noted`, minimum iPadOS/iOS 15 (needed by `file_selector`) and Android 8 (API 26). iPad uses all four orientations. Android paste uses pasteboard's file provider, limited to the app's cache folder. Android library plugins that compile against an older SDK than the app (for example `keyboard_height_plugin`, through `appflowy_editor`) are raised to the app's compile SDK at build time.
@@ -1817,6 +1817,25 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Touch and pen (to build):** the tool-based input rules (0033) apply; two-finger pan and pinch zoom on the canvas; long-press opens the menus that right-click opens on desktop. Narrow windows show the sidebar as a drawer and the toolbar's More menu; an iPad in landscape keeps the desktop layout.
 - **Rationale:** Pen, touch and small-screen behaviour can only be judged on the devices. Sideloading needs no store account, and keeping notes on the device avoids a mobile sync design for now.
 - **Alternatives considered:** store or TestFlight distribution (needs a paid account); waiting for mobile sync (delays device testing); a signed `.ipa` (needs a team and certificate in CI).
+
+## 0130 — Mobile storage, pen and touch, compact toolbar; replay, moves and attachment copies that verify before they act
+- **Date:** 2026-11-03
+- **Status:** Active (mobile work and the stylus rule decided by the maintainer for this run; storage rules from the accepted Codex data-integrity findings; the replay rule after a landed write decided by the PM and awaiting the maintainer's confirmation; amends 0033, 0124, 0128 and 0129)
+- **Decision:**
+  - **Storage on mobile (0129):** pages and binders live in the app's documents folder (`Noted/`), `settings.json` and recovery in its support folder (`Noted/`), the attachment cache in its cache folder. `NOTED_PAGES_DIR` keeps the desktop layout. If the folders can't be found at launch, a plain screen names the failure. Desktop is unchanged.
+  - **Off on mobile (0129):** drag and drop, the AI link server and its running lock, folder watching beyond the app's storage, and the folder picker.
+  - **Stylus (settles 0033):** with Select or type picked, a stylus uses the tool whose `stylusRole` is `pen` and its eraser end the tool whose role is `eraser`; a tool the user picked is used as picked. A stylus tap inks a dot, and a stylus over a box inks without selecting it. Fingers, mouse and trackpad use the selected tool. A touch that lands during a pen stroke, or is down when the pen starts, is a resting hand: it doesn't select a box or create a note. On a read-only page, or where drawing isn't allowed, the stylus acts as the selected tool. Box API 0.11 adds `CanvasTool.stylusRole` (default none).
+  - **Touch:** two-finger pan and pinch zoom; a pinch stops a box drag. Sidebar rows on touch or pen: a quick swipe scrolls, hold and release opens the row's menu at the press point, hold then move drags. With a mouse, rows drag at once and right-click opens the menu on page rows and binder headers. Read-only rows have neither.
+  - **Small screens:** below 1000 px the sidebar is a drawer; folds are kept, and tapping the open page closes it. The toolbar is compact when the bar is narrower than 800 px: in Tabs the tabs take the row and Undo, Redo and Search join the command bar; in Contextual everything is one row with full-size buttons and the shaded section, and what doesn't fit goes into More. Because the bar's width decides, a window just over 1000 px with the sidebar inline also gets the compact bar. Settings chips wrap, and in a panel narrower than 360 px a box type's name sits above its chips.
+  - **Android paste:** `content://` files are read through the platform, up to 50 MB, with sanitized names.
+  - **Replay (amends 0124):** replay rereads the page right before publishing and merges again if it changed (up to five times); an absent page is written exclusively. Once replay's write has landed, the entry is retired, even if the file then reads back different (another writer wrote on top; replaying again would bring back what they deleted). If what reads back lacks the entry's own edits (a box it added or changed is missing or back as before, a box it deleted is back, its title change reverted) or can't be read, a one-off notice ("The edits kept for … were saved, but the page changed right after; check it") is listed under "Can't open" and in the quit notice. It is held in memory and cleared when the page is opened, or when the user deletes the page or removes its binder or folder.
+  - **Conflict copies (amends 0128):** the merge replaces the original with `saveIfUnchanged`.
+  - **One folder at a time:** every scan, compare-and-swap replace and compare-and-delete on a folder runs under that folder's lock, one store call per job, never two locks at once.
+  - **Moves (amends 0124):** destinations are written exclusively; if a file is already there, nothing is overwritten, the page stays and the user is told. Every source is checked against what was copied before any is deleted, and each is deleted with compare-and-delete (`PageStore.deleteIfUnchanged`: moved aside, compared, then deleted; a different version is put back or kept). A changed source stays and this move's copy is dropped; an unreadable source stops the move; a source that vanished while its folder is there stays moved; a missing source folder stops the move but keeps the copies already made. Undoing a failed move removes only what it created and puts sources back byte for byte.
+  - **Attachment copies (moves, templates, delete and undo):** each file is streamed into a unique temporary file, published exclusively (created exclusively where the volume has no hard links) and verified. A hash-named destination that fails its hash is replaced only if the source holds that hash; any other differing file is kept, its source stays, and the user is told. Only copied and verified source files are removed, each moved aside and compared first. `<hash>.tmp` is a real attachment name; only an unfinished `<hash>.<ext>.tmp` is promoted. The writer's temporary name is `<name>.<micros>-<n>.tmp`; leftovers are put back when complete or kept and reported when a folder is copied or a kept folder lands.
+  - **Attachment conversion:** a box that changes while it is converted is tried again up to three times, then left as it was and reported.
+- **Rationale:** Pen, touch and narrow screens need their own rules to be tested on the devices. Sync clients replace, lock and delete files at any moment, so every step that deletes or replaces checks the exact bytes first.
+- **Alternatives considered:** a stylus that inks only in Draw (makes writing in Select impossible); a touch drag that starts at once (blocks scrolling the sidebar); keeping the recovery entry after a landed write (brings back boxes another writer deleted); retiring it silently (a lossy drive loses recovered edits without a word); stopping a move when a source vanished (drops the only copy); deleting the whole source attachments folder (loses files that arrived after the copy).
 
 ---
 
