@@ -290,9 +290,33 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     ValueKey('folder-header-${f.path}'),
     f.name,
     f.reason ?? '',
-    remove: () => _guard(() => _nb.removeStandaloneFolder(f.path)),
+    remove: () => _guard(
+      () => _removePlace(({discardUnsaved = false}) => _nb.removeStandaloneFolder(f.path, discardUnsaved: discardUnsaved)),
+    ),
     menuKey: ValueKey('folder-menu-${f.path}'),
   );
+
+  // Takes a binder or folder out of the sidebar. If it has edits that couldn't
+  // be saved yet, the user chooses: discard them, or keep everything as it is.
+  Future<void> _removePlace(Future<void> Function({bool discardUnsaved}) remove) async {
+    try {
+      await remove();
+    } on UnsavedEditsException catch (e) {
+      if (!mounted) return;
+      final discard = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          key: const ValueKey('unsaved-edits-refusal'),
+          content: Text(e.message),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Discard them')),
+          ],
+        ),
+      );
+      if (discard ?? false) await remove(discardUnsaved: true);
+    }
+  }
 
   // A standalone folder that isn't there; [remove] is null for the default one.
   Widget _unavailableFolder(
@@ -448,7 +472,9 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         ],
       ),
     );
-    if (ok ?? false) await _nb.removeBinder(b.path);
+    if (ok ?? false) {
+      await _removePlace(({discardUnsaved = false}) => _nb.removeBinder(b.path, discardUnsaved: discardUnsaved));
+    }
   }
 
   Widget _endTarget(ThemeData theme) {

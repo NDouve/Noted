@@ -304,4 +304,88 @@ void main() {
     expect(File('${folder.path}/$b.canvas').existsSync(), isFalse);
     await finish(tester);
   });
+
+  testWidgets('removing a binder whose edits are neither saved nor kept asks: Cancel keeps it, Discard removes it', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final failing = _FailingStore(Directory('unused'));
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('noted_binder_ui');
+      pages = await Directory('${root.path}/pages').create();
+      folder = await Directory('${root.path}/Work').create();
+      failing.folder = folder;
+      File('${root.path}/recovery').writeAsStringSync('in the way'); // nothing can be kept
+      nb = Notebook(
+        PageStore(pages),
+        buildModules(),
+        saveDelay: Duration.zero,
+        bindersFile: File('${root.path}/binders.json'),
+        storeFactory: failing.factory,
+      );
+      await nb.load();
+      a = nb.currentId!;
+      binder = await nb.addBinder(folder.path);
+      inBinder = await nb.createPage(binderPath: binder.path);
+      await nb.open(inBinder);
+      failing.fail = true; // the autosave of the box below fails
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      await nb.open(a);
+    });
+    expect(nb.unsavedPageCount, 1);
+    await tester.pumpWidget(MaterialApp(home: Home(notebook: nb)));
+    await tester.pump();
+
+    Future<void> remove() async {
+      await tester.runAsync(() => tester.tap(find.byKey(ValueKey('binder-menu-${binder.path}'))));
+      await tester.pumpAndSettle();
+      await tester.runAsync(() => tester.tap(find.text('Remove from sidebar')));
+      await tester.pumpAndSettle();
+      await tester.runAsync(() => tester.tap(find.text('Remove')));
+      await until(tester, () => find.byKey(const ValueKey('unsaved-edits-refusal')).evaluate().isNotEmpty);
+      expect(find.textContaining("edits that couldn't be saved yet"), findsOneWidget);
+    }
+
+    await remove();
+    await tester.runAsync(() => tester.tap(find.text('Cancel')));
+    await settle(tester);
+    expect(nb.binders, hasLength(1));
+    expect(nb.unsavedPageCount, 1);
+
+    await remove();
+    await tester.runAsync(() => tester.tap(find.text('Discard them')));
+    await until(tester, () => nb.binders.isEmpty);
+    expect(nb.binders, isEmpty);
+    expect(nb.unsavedPageCount, 0);
+    expect(File('${folder.path}/$inBinder.canvas').existsSync(), isTrue, reason: 'its files stay');
+    await finish(tester);
+  });
+}
+
+/// Makes the stores of the binder folder; their saves fail while [fail] is set
+/// (the folder stays there).
+class _FailingStore {
+  _FailingStore(this.folder);
+
+  Directory folder;
+  bool fail = false;
+
+  PageStore factory(Directory d) =>
+      d.absolute.path.replaceAll(r'\', '/').toLowerCase() == folder.absolute.path.replaceAll(r'\', '/').toLowerCase()
+      ? _FailingPageStore(d, this)
+      : PageStore(d);
+}
+
+class _FailingPageStore extends PageStore {
+  _FailingPageStore(super.directory, this.owner);
+
+  final _FailingStore owner;
+
+  @override
+  Future<void> save(NotedPage page) {
+    if (owner.fail) throw const FileSystemException('injected write failure');
+    return super.save(page);
+  }
 }
