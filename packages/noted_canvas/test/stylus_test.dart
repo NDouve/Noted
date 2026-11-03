@@ -99,6 +99,7 @@ void main() {
   Future<void> pump(
     WidgetTester t, {
     bool withPen = true,
+    bool withEraser = true,
     bool readOnly = false,
     Set<String> disallowed = const {},
   }) async {
@@ -109,7 +110,7 @@ void main() {
     eraser = _Tool('draw.eraser', StylusRole.eraser);
     final modules = ModuleRegistry()
       ..register(_Module('test.text', const []), isDefault: true)
-      ..register(_Module('test.draw', withPen ? [pen, eraser] : const []));
+      ..register(_Module('test.draw', withPen ? [pen, if (withEraser) eraser] : const []));
     final page = NotedPage.create(
       PageMeta.create(id: 'p', title: '', order: 0),
     ).insertNode(
@@ -317,5 +318,81 @@ void main() {
     await tap(t, PointerDeviceKind.stylus, onBox(t));
     expect(pen.started, 0);
     expect(c.selectedId, 'b0');
+  });
+
+  testWidgets('a hand resting on a box during a stroke does not select it', (
+    t,
+  ) async {
+    await pump(t);
+    // The finger lands after the pen.
+    final s = await t.startGesture(
+      bar + const Offset(700, 500),
+      pointer: 1,
+      kind: PointerDeviceKind.stylus,
+    );
+    final palm = await t.startGesture(
+      onBox(t),
+      pointer: 2,
+      kind: PointerDeviceKind.touch,
+    );
+    await s.moveBy(const Offset(30, 0));
+    await palm.up();
+    await s.up();
+    await t.pumpAndSettle();
+    expect(c.selectedId, isNull);
+
+    // The finger was down before the pen.
+    final palm2 = await t.startGesture(
+      onBox(t),
+      pointer: 3,
+      kind: PointerDeviceKind.touch,
+    );
+    final s2 = await t.startGesture(
+      bar + const Offset(700, 500),
+      pointer: 4,
+      kind: PointerDeviceKind.stylus,
+    );
+    await s2.moveBy(const Offset(30, 0));
+    await palm2.up();
+    await s2.up();
+    await t.pumpAndSettle();
+    expect(c.selectedId, isNull);
+    // A plain finger tap on the box still selects it.
+    await tap(t, PointerDeviceKind.touch, onBox(t));
+    expect(c.selectedId, 'b0');
+  });
+
+  testWidgets('a finger landing mid-stroke and lifting makes no note', (
+    t,
+  ) async {
+    await pump(t);
+    final nodes = c.page.nodes.length;
+    final s = await t.startGesture(
+      bar + const Offset(600, 400),
+      pointer: 1,
+      kind: PointerDeviceKind.stylus,
+    );
+    final palm = await t.startGesture(
+      bar + const Offset(900, 600),
+      pointer: 2,
+      kind: PointerDeviceKind.touch,
+    );
+    await palm.up();
+    await s.moveBy(const Offset(30, 0));
+    await s.up();
+    await t.pumpAndSettle();
+    expect(pen.ended, 1);
+    expect(c.page.nodes.length, nodes);
+  });
+
+  testWidgets('without an eraser tool the eraser end is not claimed', (
+    t,
+  ) async {
+    await pump(t, withEraser: false);
+    // Not claimed, so a tap by the eraser end still makes a note.
+    final nodes = c.page.nodes.length;
+    await tap(t, PointerDeviceKind.invertedStylus, bar + const Offset(800, 500));
+    expect(pen.started, 0);
+    expect(c.page.nodes.length, nodes + 1);
   });
 }

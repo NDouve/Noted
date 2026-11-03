@@ -49,9 +49,9 @@ class BoxHost extends StatefulWidget {
     this.inkedBy,
   });
 
-  /// True for a pointer kind that goes to a tool here (a pen over Select):
-  /// the box then takes no click from it.
-  final bool Function(PointerDeviceKind kind)? inkedBy;
+  /// True for a pointer that takes no click on a box here: a pen going to a
+  /// tool (over Select), or a resting hand. The box then takes no click from it.
+  final bool Function(PointerEvent e)? inkedBy;
 
   /// True while a two-finger gesture is on the canvas: a box being moved or
   /// resized stops where it is, and none starts.
@@ -639,7 +639,7 @@ class _BoxHostState extends State<BoxHost> {
     // or menu keeps the note as it is).
     if (e.buttons != kPrimaryButton ||
         widget.controller.editingId == widget.node.id ||
-        (widget.inkedBy?.call(e.kind) ?? false)) {
+        (widget.inkedBy?.call(e) ?? false)) {
       _downAt = null;
       return;
     }
@@ -651,7 +651,7 @@ class _BoxHostState extends State<BoxHost> {
     final at = _downAt;
     final time = _downTime;
     _downAt = null;
-    if (at == null || time == null) return;
+    if (at == null || time == null || (widget.inkedBy?.call(e) ?? false)) return;
     if ((e.position - at).distance > kTouchSlop || e.timeStamp - time > kLongPressTimeout) return;
     void check() {
       final c = widget.controller;
