@@ -168,7 +168,7 @@ class UnsavedEdits {
     final k = _kept[id];
     if (k == null || k.loc != loc) return null;
     final e = await _edits(id, k);
-    if (e == null) _kept.remove(id); // its entry was replayed meanwhile
+    if (e == null) _remove(id); // its entry was replayed meanwhile
     return e;
   }
 
@@ -197,7 +197,7 @@ class UnsavedEdits {
   Future<void> drop(Iterable<String> ids) async {
     final rec = host.recovery;
     for (final id in ids) {
-      final k = _kept.remove(id);
+      final k = _remove(id);
       if (k == null || rec == null) continue;
       try {
         for (final e in (await rec.list()).entries) {
@@ -211,13 +211,36 @@ class UnsavedEdits {
 
   /// Page [id] is no longer tracked here; a recovery entry stays (and is
   /// replayed like any other).
-  void forget(String id) => _kept.remove(id);
+  void forget(String id) => _remove(id);
 
   /// [loc] leaves the notebook, or its replay takes over: edits in the
   /// recovery folder are left to it. Edits held only in memory stay unless
   /// [discard].
-  void forgetPlace(String loc, {bool discard = false}) =>
-      _kept.removeWhere((_, k) => k.loc == loc && (k.page == null || discard));
+  void forgetPlace(String loc, {bool discard = false}) {
+    _kept.removeWhere((_, k) => k.loc == loc && (k.page == null || discard));
+    _removed();
+  }
+
+  /// Whether page [id] of [folder] has newer edits held here than its recovery
+  /// entry: replay leaves that entry alone, the retry retires it.
+  bool holdsInMemory(String folder, String id) {
+    final k = _kept[id];
+    return k != null && k.page != null && k.folder == folder;
+  }
+
+  _Kept? _remove(String id) {
+    final k = _kept.remove(id);
+    _removed();
+    return k;
+  }
+
+  // Nothing is kept any more: the next failure starts from the first delay.
+  void _removed() {
+    if (_kept.isNotEmpty) return;
+    _timer?.cancel();
+    _timer = null;
+    _delay = null;
+  }
 
   /// The file of page [id] can be read again.
   void fileReadable(String id) {
@@ -310,8 +333,8 @@ class UnsavedEdits {
 
   // The edits are in the file: the entry that held them goes.
   Future<void> _retire(String id, _Kept k) async {
-    _kept.remove(id);
-    _delay = null;
+    _remove(id);
+    _delay = null; // a save landed: the next failure starts again from the first delay
     final rec = host.recovery;
     final text = k.entryText;
     if (rec == null || text == null) return;
@@ -329,7 +352,7 @@ class UnsavedEdits {
   Future<void> _gone(String id, _Kept k) async {
     final page = k.page;
     if (page != null && !await _keep(id, k, page, k.baseText)) return _schedule();
-    if (!identical(_kept.remove(id), k) || _disposed) return;
+    if (!identical(_remove(id), k) || _disposed) return;
     final title = k.title.trim();
     host.notify(
       '${title.isEmpty ? 'A page' : '"$title"'} was deleted or moved on another device; '
@@ -352,7 +375,7 @@ class UnsavedEdits {
       if (host.locOf(id) != k.loc) return await _gone(id, k);
       final e = await _edits(id, k);
       if (e == null) {
-        _kept.remove(id); // its entry was replayed meanwhile
+        _remove(id); // its entry was replayed meanwhile
         return;
       }
       var stopped = false;
@@ -373,8 +396,14 @@ class UnsavedEdits {
           if (!_structural.contains(id)) host.landed(k.loc, written);
           if (identical(_kept[id], k)) await _retire(id, k);
         case ClosedSaveResult.gone:
-          // A delete or a move stopped it: that takes the edits.
-          if (!stopped) await _gone(id, k);
+          // A delete or a move stopped it: that takes the edits. A place that
+          // became unusable meanwhile (its binder file went) is waited for.
+          if (stopped) break;
+          if (host.isLocked(k.loc)) {
+            _schedule();
+          } else {
+            await _gone(id, k);
+          }
         case ClosedSaveResult.unreadable:
           // Never written over: the edits stay in recovery until a readable
           // version is there (0124).

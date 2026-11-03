@@ -2108,10 +2108,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> removeStandaloneFolder(String path, {bool discardUnsaved = false}) async {
     final folder = _folders[path];
     if (folder == null) return;
-    await _refuseUnsaved(path, discardUnsaved);
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId) || _orphanLoc == path;
-    if (openHere) await _closeCurrent();
+    await _leavePlace(path, discardUnsaved, openHere);
     _unsaved.forgetPlace(path, discard: discardUnsaved); // what is in recovery stays there
     for (final id in ids) {
       _metas.remove(id);
@@ -2411,10 +2410,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> removeBinder(String path, {bool discardUnsaved = false}) async {
     final section = _binders[path];
     if (section == null) return;
-    await _refuseUnsaved(path, discardUnsaved);
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
-    if (openHere) await _closeCurrent();
+    await _leavePlace(path, discardUnsaved, openHere);
     _unsaved.forgetPlace(path, discard: discardUnsaved); // what is in recovery stays there
     for (final id in ids) {
       _metas.remove(id);
@@ -2432,10 +2430,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // A place whose edits exist only here is not taken out unless the user
-  // chose to discard them. Pending edits are tried first.
-  Future<void> _refuseUnsaved(String loc, bool discard) async {
+  // chose to discard them. Pending edits are tried first, then its open page
+  // is closed (its last save can fail too); if that leaves edits only here,
+  // the page is opened again and the removal refused.
+  Future<void> _leavePlace(String loc, bool discard, bool openHere) async {
     await flush();
     if (!discard && _unsaved.heldOnlyIn(loc)) throw const UnsavedEditsException();
+    final open = currentId;
+    if (openHere) await _closeCurrent();
+    if (discard || !_unsaved.heldOnlyIn(loc)) return;
+    if (open != null && _loc.containsKey(open)) {
+      try {
+        await this.open(open);
+      } on Object catch (e) {
+        debugPrint('Reopening page $open failed: $e');
+      }
+    }
+    throw const UnsavedEditsException();
   }
 
   /// Shows the cover of the available binder [path] instead of a page.
@@ -3034,14 +3045,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // once more just before the write. If it changed in between, the merge is
   // done again; after a few rounds the save is refused. A file this app can't
   // read is refused and left as it is. Returns the page written, and the file
-  // it was merged with (null: none).
+  // it was merged with (null: none). [markLanded] false: a recovery merge,
+  // which never marks boxes landed (0120).
   Future<({NotedPage page, NotedPage? theirs})> _saveClosedPage(
     String loc,
     PageStore st,
     NotedPage base,
     NotedPage mine,
-    AiLinkCode? Function(NotedPage merged) check,
-  ) async {
+    AiLinkCode? Function(NotedPage merged) check, {
+    bool markLanded = true,
+  }) async {
     final id = base.id;
     final path = st.pathFor(id);
     final baseText = writePage(base);
@@ -3068,7 +3081,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       var recoveryBase = base;
       final theirs = seen.page;
       if (theirs != null && writePage(theirs) != baseText) {
-        toSave = mergePage(base, mine, theirs, modules.codecs, theirsTime: seen.time).page;
+        toSave = mergePage(base, mine, theirs, modules.codecs, theirsTime: seen.time, markLanded: markLanded).page;
         recoveryBase = theirs;
       }
       await syncHook?.call('closed-before-write', path);
@@ -3193,16 +3206,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // Only I/O failures; anything else is a bug, not a failed save.
         if (e is! FolderUnavailableException && e is! IOException) rethrow;
         _countSaveFailure(page.id);
-        if (e is IOException && await st.directory.exists()) {
-          // The folder is there and won't announce itself coming back: the
-          // edits are kept and tried again (R-1).
-          debugPrint('Saving page ${page.id} failed: $e');
-          final folder = _normalizePath(st.directory.path);
-          await _unsaved.onSaveFailed(loc, folder, toSave, _baseTextOf(st, toSave.id));
+        // The folder vanished: recovery replays the edits when it is back.
+        final gone = e is! IOException || !await st.directory.exists();
+        if (gone && await _keepForRecovery(loc, st, toSave)) {
+          _unsaved.forget(toSave.id);
           return;
         }
-        // The folder vanished: recovery replays the edits when it is back.
-        if (await _keepForRecovery(loc, st, toSave)) _unsaved.forget(toSave.id);
+        // The folder is there and won't announce itself coming back, or not
+        // even recovery could keep them: the edits are kept here and tried
+        // again (R-1).
+        debugPrint('Saving page ${page.id} failed: $e');
+        final folder = _normalizePath(st.directory.path);
+        await _unsaved.onSaveFailed(loc, folder, toSave, _baseTextOf(st, toSave.id));
         return;
       }
       if (_current?.page.id == toSave.id) _base = toSave;
@@ -3288,6 +3303,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (_disposed) return;
       final loc = _locOfFolder(e.folder);
       if (loc == null || _isLocked(loc) || (onlyLoc != null && loc != onlyLoc)) continue;
+      // Newer edits of the page are held in memory and retried; that retry
+      // retires this older entry, which must not land over them.
+      if (_unsaved.holdsInMemory(e.folder, e.pageId)) continue;
       final key = _entryKey(e);
       final path = _entryPath(e);
       try {
@@ -4748,7 +4766,14 @@ class _UnsavedHost implements UnsavedEditsHost {
       return not(ClosedSaveResult.failed); // locked: tried again later
     }
     try {
-      final r = await nb._saveClosedPage(loc, st, base, mine, (_) => proceed() ? null : AiLinkCode.noBox);
+      final r = await nb._saveClosedPage(
+        loc,
+        st,
+        base,
+        mine,
+        (_) => proceed() ? null : AiLinkCode.noBox,
+        markLanded: false, // kept edits merge like a recovery (0120)
+      );
       return (result: ClosedSaveResult.saved, page: r.page, theirs: r.theirs, why: null);
     } on _SaveRefused catch (e) {
       final res = e.response;
@@ -4765,7 +4790,14 @@ class _UnsavedHost implements UnsavedEditsHost {
 
   @override
   NotedPage merge(NotedPage base, NotedPage mine, NotedPage theirs) =>
-      mergePage(base, mine, theirs, nb.modules.codecs, theirsTime: DateTime.now().millisecondsSinceEpoch).page;
+      mergePage(
+        base,
+        mine,
+        theirs,
+        nb.modules.codecs,
+        theirsTime: DateTime.now().millisecondsSinceEpoch,
+        markLanded: false,
+      ).page;
 
   @override
   void landed(String loc, NotedPage page) {
@@ -4778,6 +4810,8 @@ class _UnsavedHost implements UnsavedEditsHost {
   @override
   void unreadable(String loc, String id, String why) {
     final path = nb._storeOf(loc).pathFor(id);
+    // Forgotten, so a byte-identical readable file put back is noticed.
+    nb._known.remove(Notebook._key(path));
     nb._knownUnreadable(loc, Notebook._key(path), path, why);
   }
 

@@ -32,6 +32,9 @@ class _Host implements UnsavedEditsHost {
   /// Written saves lose the boxes (and report what they wrote).
   bool lossy = false;
 
+  /// Runs as a closed save starts.
+  void Function()? duringSave;
+
   /// What the next closed saves end with; empty: they are written.
   final List<ClosedSaveResult> plan = [];
 
@@ -71,6 +74,7 @@ class _Host implements UnsavedEditsHost {
   @override
   Future<ClosedSave> saveClosed(String loc, NotedPage base, NotedPage mine, bool Function() proceed) async {
     ClosedSave not(ClosedSaveResult r) => (result: r, page: null, theirs: null, why: 'why');
+    duringSave?.call();
     if (plan.isNotEmpty) return not(plan.removeAt(0));
     if (!proceed()) return not(ClosedSaveResult.gone);
     final w = writing;
@@ -329,6 +333,33 @@ void main() {
     host.lossy = false;
     await retry();
     expect(unsaved.has('a'), isFalse);
+  });
+
+  test('a page that left its place because the place became unusable meanwhile is waited for, not told gone', () async {
+    await failed('a');
+    host
+      ..plan.add(ClosedSaveResult.gone)
+      ..duringSave = () => host.locked.add(_loc); // its binder file went while the save ran
+    await retry();
+    expect(unsaved.has('a'), isTrue);
+    expect(host.notices.where((n) => n.contains('deleted or moved')), isEmpty);
+    host
+      ..duringSave = null
+      ..locked.clear();
+    await retry();
+    expect(host.saved, ['a']);
+  });
+
+  test('the retry delay starts again once nothing is kept, however the last page went', () async {
+    unsaved = UnsavedEdits(host, firstDelay: const Duration(hours: 1), maxDelay: const Duration(hours: 3));
+    await failed('a');
+    host.plan.add(ClosedSaveResult.failed);
+    await retry();
+    expect(unsaved.retryDelay, const Duration(hours: 2));
+    unsaved.forget('a');
+    expect(unsaved.retryDelay, isNull);
+    await failed('b');
+    expect(unsaved.retryDelay, const Duration(hours: 1));
   });
 
   test('an entry replayed by someone else ends the tracking', () async {

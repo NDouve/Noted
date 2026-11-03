@@ -84,6 +84,28 @@ class _ToggleStore extends PageStore {
     return super.delete(pageId);
   }
 
+  /// A load completes [loading], then waits for [loadGate].
+  Completer<void>? loadGate;
+  Completer<void>? loading;
+
+  @override
+  Future<NotedPage> load(String pageId) async {
+    final l = loading;
+    loading = null;
+    l?.complete();
+    await loadGate?.future;
+    return super.load(pageId);
+  }
+
+  /// Putting a page back with an exclusive save fails.
+  bool failRestore = false;
+
+  @override
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) {
+    if (failRestore) throw const FileSystemException('injected restore failure');
+    return super.saveNew(page, beforePublish: beforePublish);
+  }
+
   @override
   Future<String> readText(String pageId) async {
     if (throwOnRead) throw const FileSystemException('injected read failure');
@@ -932,10 +954,10 @@ void main() {
 
     // What a sync client does: another version of page [id] lands with one
     // more box.
-    Future<void> syncAddsBox(String id) async {
+    Future<void> syncAddsBox(String id, {Bounds at = const Bounds(300, 300, 0, 0)}) async {
       final disk = PageStore(pages);
       final other = CanvasController(await disk.load(id), buildModules());
-      other.createBoxAt(const Bounds(300, 300, 0, 0));
+      other.createBoxAt(at);
       await disk.save(other.page);
       other.dispose();
     }
@@ -1213,7 +1235,7 @@ void main() {
       expect(await entries(nb), hasLength(1));
       expect(nb.unsavedPageCount, 0);
 
-      file.writeAsStringSync('$old '); // a readable version again
+      file.writeAsStringSync(old); // the same readable bytes as before
       await nb.checkFile(file.path);
       await nb.flush();
       expect(boxes(file), 1);
@@ -1306,6 +1328,193 @@ void main() {
       await nb.flush();
       expect(boxes(pageFile(extra, x)), 1);
       expect(nb.unsavedPageCount, 0);
+    });
+
+    test('replay leaves an older entry alone while newer edits are held in memory, so it can not land over them', () async {
+      final (nb, es, x, _) = await inPlace(binder: false); // its entry holds box 1
+      await nb.open(x);
+      final first = nb.current!.page.nodes.single.id;
+      nb.current!.delete(first); // box 1 deleted on purpose
+      nb.current!.createBoxAt(const Bounds(300, 300, 0, 0));
+      final second = nb.current!.page.nodes.single.id;
+      final aside = Directory('${root.path}/rec-aside');
+      rec.renameSync(aside.path);
+      File(rec.path).createSync(); // recovery can not be written now
+      await nb.open(nb.tree.roots.firstWhere((p) => p.id != x).id); // fails again: held in memory only
+      expect(nb.unsavedPageCount, 1);
+      File(rec.path).deleteSync();
+      aside.renameSync(rec.path); // the older entry is there again
+      await vanish(nb);
+      es.failSave = false;
+      await restore();
+      await nb.checkFolders(); // back: replay runs
+      await nb.flush();
+      expect(readPage(pageFile(extra, x).readAsStringSync()).nodes.map((n) => n.id), [second]);
+      expect(await entries(nb), isEmpty, reason: 'the retry retired the older entry');
+    });
+
+    test('a retry started in the middle of a delete does not write the page being deleted', () async {
+      final (nb, st, a, b) = await editing();
+      st.failSave = true;
+      await nb.open(b);
+      st.loadGate = Completer<void>();
+      st.loading = Completer<void>();
+      final loading = st.loading!.future;
+      addTearDown(() {
+        if (!st.loadGate!.isCompleted) st.loadGate!.complete();
+        if (!(st.gate?.isCompleted ?? true)) st.gate!.complete();
+      });
+      final delete = nb.delete(a);
+      await loading; // the delete is reading its undo copy
+      st.failSave = false;
+      st.gate = Completer<void>();
+      st.writing = Completer<void>();
+      final retry = nb.flush();
+      await Future.any([st.writing!.future, Future<void>.delayed(const Duration(milliseconds: 200))]);
+      st.loadGate!.complete();
+      final deleted = await delete;
+      st.gate!.complete();
+      await retry;
+      expect(pageFile(pages, a).existsSync(), isFalse, reason: 'no stray file');
+      expect(deleted.pages.single.nodes, hasLength(1));
+      expect(await entries(nb), isEmpty);
+    });
+
+    test('a retry started in the middle of a move does not write the old place', () async {
+      final (nb, st, a, b) = await editing();
+      st.failSave = true;
+      await nb.addStandaloneFolder(extra.path);
+      await nb.open(b);
+      st.loadGate = Completer<void>();
+      st.loading = Completer<void>();
+      final loading = st.loading!.future;
+      addTearDown(() {
+        if (!st.loadGate!.isCompleted) st.loadGate!.complete();
+        if (!(st.gate?.isCompleted ?? true)) st.gate!.complete();
+      });
+      final move = nb.moveToFolder(a, extra.path);
+      await loading; // the move is reading what it copies
+      st.failSave = false;
+      st.gate = Completer<void>();
+      st.writing = Completer<void>();
+      final retry = nb.flush();
+      await Future.any([st.writing!.future, Future<void>.delayed(const Duration(milliseconds: 200))]);
+      st.loadGate!.complete();
+      expect(await move, isTrue);
+      st.gate!.complete();
+      await retry;
+      expect(pageFile(pages, a).existsSync(), isFalse, reason: 'no stray file');
+      expect(boxes(pageFile(extra, a)), 1);
+      expect(await entries(nb), isEmpty);
+    });
+
+    test('a partly done move drops the kept edits of a page that moved, so the old place is not restored', () async {
+      final st = _ToggleStore(pages);
+      final nb = make(store: st);
+      await nb.load();
+      final a = nb.current!.page.id;
+      final child = await nb.createPage(parentId: a);
+      await nb.flush();
+      await nb.open(a);
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      st.failSave = true;
+      await nb.open(child);
+      st
+        ..failDeleteOf = child // the parent's source goes, the child's can not
+        ..failRestore = true; // and the parent's can not be put back
+      await expectLater(nb.moveToFolder(a, extra.path), throwsA(isA<NotebookException>()));
+      st
+        ..failDeleteOf = null
+        ..failRestore = false
+        ..failSave = false;
+      expect(boxes(pageFile(extra, a)), 1, reason: 'the edits moved with it');
+      expect((await entries(nb)).where((e) => e.pageId == a), isEmpty);
+      expect(nb.unsavedDescription ?? '', isNot(contains('page $a')));
+      quit(nb);
+      final again = make();
+      await again.load();
+      expect(pageFile(pages, a).existsSync(), isFalse, reason: 'not brought back by recovery');
+    });
+
+    test('a page whose last save fails while its binder is being removed refuses the removal and stays open', () async {
+      File(rec.path).createSync(recursive: true); // recovery can not be written
+      final es = _ToggleStore(extra);
+      String norm(String p) => p.replaceAll(r'\', '/').toLowerCase();
+      final nb = make(storeFactory: (d) => norm(d.path) == norm(extra.path) ? es : PageStore(d));
+      await nb.load();
+      final loc = (await nb.addBinder(extra.path)).path;
+      final x = await nb.createPage(binderPath: loc);
+      await nb.flush();
+      await nb.open(x);
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      es
+        ..gate = Completer<void>()
+        ..writing = Completer<void>();
+      final writing = es.writing!.future;
+      final removal = nb.removeBinder(loc);
+      await writing; // its first save, which works, is writing
+      nb.current!.createBoxAt(const Bounds(300, 300, 0, 0)); // a new edit meanwhile
+      es.failSave = true; // the save when the page is closed fails
+      es.gate!.complete();
+      await expectLater(removal, throwsA(isA<UnsavedEditsException>()));
+      expect(nb.binders.any((b) => b.path == loc), isTrue);
+      expect(nb.unsavedPageCount, 1);
+      expect(nb.currentId, x, reason: 'open again');
+      expect(nb.current!.page.nodes, hasLength(2));
+      await nb.removeBinder(loc, discardUnsaved: true);
+      expect(nb.binders, isEmpty);
+      expect(nb.unsavedPageCount, 0);
+    });
+
+    test('removing a binder made unavailable by its file going is refused while edits are only in memory', () async {
+      File(rec.path).createSync(recursive: true); // recovery can not be written
+      final (nb, _, _, loc) = await inPlace(binder: true);
+      final binderFile = File('$loc/$binderFileName');
+      binderFile.deleteSync();
+      await nb.checkBinderFile(binderFile.path);
+      expect(nb.binders.single.status, BinderStatus.unavailable);
+      await expectLater(nb.removeBinder(loc), throwsA(isA<UnsavedEditsException>()));
+      expect(nb.binders, hasLength(1), reason: 'Cancel leaves it');
+      expect(nb.unsavedPageCount, 1);
+      await nb.removeBinder(loc, discardUnsaved: true);
+      expect(nb.binders, isEmpty);
+      expect(nb.unsavedPageCount, 0);
+    });
+
+    test('edits that neither a vanished folder nor recovery can take are held, counted, and land when it is back', () async {
+      File(rec.path).createSync(recursive: true); // recovery can not be written
+      final (nb, x, _) = await pendingEdit();
+      await vanish(nb);
+      expect(nb.unsavedPageCount, 1, reason: 'counted for the quit notice');
+      await restore();
+      await nb.checkFolders();
+      await nb.flush();
+      expect(boxes(pageFile(extra, x)), 1);
+      expect(nb.unsavedPageCount, 0);
+      expect(nb.unsavedDescription, isNull);
+    });
+
+    test('a retry merges like a recovery: a box synced on top of the kept edits is not marked landed', () async {
+      final (nb, st, a, b) = await editing();
+      st.failSave = true;
+      await nb.open(b);
+      await syncAddsBox(a, at: const Bounds(50, 50, 0, 0)); // overlaps the kept box
+      st.failSave = false;
+      await nb.flush();
+      final nodes = readPage(pageFile(pages, a).readAsStringSync()).nodes;
+      expect(nodes, hasLength(2));
+      expect(nodes.whereType<BoxRecord>().where((n) => n.landed != null), isEmpty);
+    });
+
+    test('the copy a delete keeps merges like a recovery: nothing is marked landed', () async {
+      final (nb, st, a, b) = await editing();
+      st.failSave = true;
+      await nb.open(b);
+      await syncAddsBox(a, at: const Bounds(50, 50, 0, 0));
+      final deleted = await nb.delete(a);
+      expect(deleted.pages.single.nodes, hasLength(2));
+      expect(deleted.pages.single.nodes.whereType<BoxRecord>().where((n) => n.landed != null), isEmpty);
+      st.failSave = false;
     });
   });
 }
