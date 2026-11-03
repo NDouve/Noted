@@ -76,16 +76,51 @@ Future<void> main() async {
   });
   // On a phone or tablet, finds the app's folders before any default path is
   // read (0129).
-  await initDeviceStorage();
+  try {
+    await initDeviceStorage();
+  } on Object catch (e) {
+    runApp(StorageErrorApp(error: e));
+    return;
+  }
   final settings = AppSettings(defaultSettingsFile());
   final notebook = buildAppNotebook(settings: settings);
   FileClipboard.read = readClipboardFiles;
-  final services = await startAiServices(notebook, defaultSettingsFile().parent);
+  final services = await startAiServices(notebook, defaultAiDataFolder());
   runApp(NotedApp(notebook: notebook, settings: settings, aiLink: services.link, runningLock: services.lock));
   await notebook.load();
   // After the first frame, so the window can show the questions.
   WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(notebook.askPendingAiApprovals()));
 }
+
+/// Shown instead of the app when the device's app folders can't be found, so
+/// the launch isn't blank.
+class StorageErrorApp extends StatelessWidget {
+  const StorageErrorApp({super.key, required this.error});
+
+  final Object error;
+
+  @override
+  Widget build(BuildContext context) => Directionality(
+    textDirection: TextDirection.ltr,
+    child: ColoredBox(
+      color: const Color(0xFFFFFFFF),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Center(
+          child: Text(
+            "Noted can't find its storage folders on this device.\n\n$error",
+            style: const TextStyle(color: Color(0xFF000000), fontSize: 16),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+/// The folder for `ai-access.json`, `ai-activity.json`, `ai-link.json` and the
+/// running lock: beside `binders.json` (and `settings.json`) on desktop. Mobile
+/// has no AI service, so nothing is written there.
+Directory defaultAiDataFolder([File? bindersFile]) => (bindersFile ?? defaultBindersFile()).absolute.parent;
 
 /// The notebook with this build's platform wiring (0129): on mobile there is
 /// no AI access service (no MCP server), no folder watching and no folder
@@ -98,7 +133,7 @@ Notebook buildAppNotebook({AppSettings? settings, Directory? pagesDirectory, Fil
   final aiAccess = isMobilePlatform
       ? null
       : AiAccessService(
-          dataFolder: binders.absolute.parent,
+          dataFolder: defaultAiDataFolder(binders),
           pageOfBox: (id) => notebook.aiPageOfBox(id),
           // Another Noted may change the codes or the log: show it.
           pollInterval: const Duration(seconds: 3),

@@ -28,18 +28,21 @@ bool get isMobilePlatform {
 
 Directory? _documents;
 Directory? _cache;
+Directory? _support;
 
 /// Finds the app's own folders on a device. Call once at startup, before
 /// anything reads a default path. On desktop it does nothing, so the
-/// defaults there are unchanged. [documents] and [cache] replace the
-/// platform lookups (for tests).
+/// defaults there are unchanged. [documents], [cache] and [support] replace
+/// the platform lookups (for tests).
 Future<void> initDeviceStorage({
   Future<Directory> Function()? documents,
   Future<Directory> Function()? cache,
+  Future<Directory> Function()? support,
 }) async {
   if (!isMobilePlatform) return;
   _documents = await (documents ?? pp.getApplicationDocumentsDirectory)();
   _cache = await (cache ?? pp.getApplicationCacheDirectory)();
+  _support = await (support ?? pp.getApplicationSupportDirectory)();
 }
 
 /// Forgets the folders found by [initDeviceStorage] (for tests).
@@ -47,17 +50,30 @@ Future<void> initDeviceStorage({
 void resetDeviceStorage() {
   _documents = null;
   _cache = null;
+  _support = null;
 }
 
 String get _sep => Platform.pathSeparator;
 
 /// The default pages folder on a device, `<documents>/Noted/pages`; null on
-/// desktop (or before [initDeviceStorage] has run). Binders, settings, AI
-/// data and recovery sit next to it, under `<documents>/Noted`.
+/// desktop (or before [initDeviceStorage] has run). Binders sit next to it,
+/// under `<documents>/Noted`; settings and recovery are in
+/// [deviceSupportDirectory].
 Directory? devicePagesDirectory() {
   final d = _documents;
   if (!isMobilePlatform || d == null) return null;
   return Directory('${d.path}${_sep}Noted${_sep}pages');
+}
+
+/// Where settings and recovery live on a device, `<support>/Noted` (0129);
+/// null on desktop, before [initDeviceStorage] has run, or when
+/// `NOTED_PAGES_DIR` moves the pages (then they stay next to the pages, as on
+/// desktop).
+Directory? deviceSupportDirectory() {
+  final s = _support;
+  if (!isMobilePlatform || s == null) return null;
+  if (const String.fromEnvironment('NOTED_PAGES_DIR').isNotEmpty) return null;
+  return Directory('${s.path}${_sep}Noted');
 }
 
 /// The default cache folder on a device, `<cache>/Noted`; null on desktop (or

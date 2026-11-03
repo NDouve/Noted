@@ -36,7 +36,7 @@ class AiLinkServer {
   final Duration recheckInterval;
   Timer? _recheck;
 
-  /// `ai-link.json`, in the data folder next to settings.json.
+  /// `ai-link.json`, in the data folder (beside binders.json and settings.json on desktop).
   final File file;
   final AiLinkHandler handler;
   final Duration readTimeout;
