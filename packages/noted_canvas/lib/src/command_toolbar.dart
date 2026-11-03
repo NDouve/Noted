@@ -162,8 +162,16 @@ class _CommandToolbarState extends State<CommandToolbar> {
 
   /// The units of [groups] for a row that can overflow into More: each
   /// command with its spacing, a separator before the first of a later group.
-  List<ToolbarUnit> _units(List<List<Command>> groups) {
+  /// [strip] wraps the units from index [stripFrom] up to [stripTo] (the shaded
+  /// section); the separator before the strip's first unit stays outside it.
+  List<ToolbarUnit> _units(
+    List<List<Command>> groups, {
+    int stripFrom = 0,
+    int stripTo = 0,
+    Widget Function(int index, Widget unit)? strip,
+  }) {
     final m = NotedMetrics.of(context);
+    var n = -1;
     return [
       for (final (gi, g) in groups.indexed)
         for (final (i, c) in g.indexed)
@@ -171,23 +179,35 @@ class _CommandToolbarState extends State<CommandToolbar> {
             command: c,
             group: gi,
             widget: () {
+              n++;
+              final index = n;
+              final inStrip =
+                  strip != null && index >= stripFrom && index < stripTo;
               final entry = ToolbarEntry(
                 key: ValueKey(c.id),
                 command: c,
                 registry: widget.registry,
               );
-              if (i > 0) {
-                return Padding(
-                  padding: EdgeInsets.only(left: m.space1),
-                  child: entry,
-                );
-              }
-              return gi > 0
-                  ? Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [const ToolbarSeparator(), entry],
+              final core = i > 0
+                  ? Padding(
+                      padding: EdgeInsets.only(left: m.space1),
+                      child: entry,
                     )
                   : entry;
+              final separated = i == 0 && gi > 0;
+              if (inStrip && separated && index == stripFrom) {
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [const ToolbarSeparator(), strip(index, core)],
+                );
+              }
+              final unit = separated
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [const ToolbarSeparator(), core],
+                    )
+                  : core;
+              return inStrip ? strip(index, unit) : unit;
             }(),
           ),
     ];
@@ -321,39 +341,32 @@ class _CommandToolbarState extends State<CommandToolbar> {
     if (compact) {
       final lead = _resolve(l.leading);
       final trail = _resolve(l.trailing);
-      final units = _units([...lead, ...groups, ...trail]);
       // The section's units keep its shading, joined into one strip.
       final from = lead.fold<int>(0, (n, g) => n + g.length);
       final to = from + groups.fold<int>(0, (n, g) => n + g.length);
-      return _bar(
-        middle: [
-          for (final (i, u) in units.indexed)
-            if (i < from || i >= to)
-              u
-            else
-              ToolbarUnit(
-                command: u.command,
-                group: u.group,
-                widget: Container(
-                  key: i == from ? CommandToolbar.sectionKey(shown!.id) : null,
-                  padding: EdgeInsets.fromLTRB(
-                    i == from ? m.space1 : 0,
-                    m.space1 / 2,
-                    i == to - 1 ? m.space1 : 0,
-                    m.space1 / 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: scheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.horizontal(
-                      left: i == from ? m.borderMd.topLeft : Radius.zero,
-                      right: i == to - 1 ? m.borderMd.topRight : Radius.zero,
-                    ),
-                  ),
-                  child: u.widget,
-                ),
-              ),
-        ],
+      final units = _units(
+        [...lead, ...groups, ...trail],
+        stripFrom: from,
+        stripTo: to,
+        strip: (i, unit) => Container(
+          key: i == from ? CommandToolbar.sectionKey(shown!.id) : null,
+          padding: EdgeInsets.fromLTRB(
+            i == from ? m.space1 : 0,
+            m.space1 / 2,
+            i == to - 1 ? m.space1 : 0,
+            m.space1 / 2,
+          ),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.horizontal(
+              left: i == from ? m.borderMd.topLeft : Radius.zero,
+              right: i == to - 1 ? m.borderMd.topRight : Radius.zero,
+            ),
+          ),
+          child: unit,
+        ),
       );
+      return _bar(middle: units);
     }
     return _bar(
       leading: _groups(_resolve(l.leading)),

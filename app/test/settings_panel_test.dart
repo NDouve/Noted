@@ -156,6 +156,38 @@ void main() {
       }
     });
 
+    testWidgets('at 400 px the box type chips grow with their label and rows keep apart', (t) async {
+      final b = await binder(t, 'Work');
+      // As inside the dialog at 400 px: the panel is about 300 px wide.
+      await pumpPanel(
+        t,
+        Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(width: 300, child: SettingsPanel.binder(notebook: nb, binderPath: b.path)),
+        ),
+        width: 400,
+      );
+      final types = nb.switchableBoxTypes;
+      expect(types.length, greaterThan(1));
+      Rect? previous;
+      for (final type in types) {
+        final row = t.getRect(find.byKey(ValueKey('settings-type-$type')));
+        if (previous != null) expect(row.top, greaterThanOrEqualTo(previous.bottom));
+        previous = row;
+        for (final suffix in ['allowed', 'off']) {
+          final chip = find.byKey(ValueKey('settings-type-$type-$suffix'));
+          final chipRect = t.getRect(chip);
+          final p = t.renderObject<RenderParagraph>(find.descendant(of: chip, matching: find.byType(Text)).first);
+          final text = t.getRect(find.descendant(of: chip, matching: find.byType(Text)).first);
+          expect(p.didExceedMaxLines, isFalse);
+          expect(text.top, greaterThanOrEqualTo(chipRect.top));
+          expect(text.bottom, lessThanOrEqualTo(chipRect.bottom));
+          expect(chipRect.bottom, lessThanOrEqualTo(row.bottom + 0.5));
+        }
+      }
+      expect(t.takeException(), isNull);
+    });
+
     testWidgets('a top-level standalone page may choose any value', (t) async {
       await pumpPanel(t, SettingsPanel.page(notebook: nb, pageId: a));
       for (final s in AiAccess.values) {

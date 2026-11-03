@@ -537,13 +537,27 @@ class _SettingsPanelState extends State<SettingsPanel> {
     }
     return Padding(
       padding: EdgeInsets.only(bottom: m.space2),
-      child: Row(
-        key: ValueKey('settings-type-$t'),
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          SizedBox(width: 130, child: Text(boxTypeName(t))),
-          Expanded(child: choices),
-        ],
+      // Beside the name when there is room for the chips; under it on a narrow
+      // panel, where chips squeezed next to the name would clip their labels.
+      child: LayoutBuilder(
+        builder: (context, c) => c.maxWidth < 360
+            ? Column(
+                key: ValueKey('settings-type-$t'),
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(boxTypeName(t)),
+                  SizedBox(height: m.space1),
+                  choices,
+                ],
+              )
+            : Row(
+                key: ValueKey('settings-type-$t'),
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  SizedBox(width: 130, child: Text(boxTypeName(t))),
+                  Expanded(child: choices),
+                ],
+              ),
       ),
     );
   }

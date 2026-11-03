@@ -292,6 +292,22 @@ void main() {
       expect(box.color, notedThemeData(Brightness.light).colorScheme.surfaceContainerHighest);
     });
 
+    testWidgets('contextual: the separator before the section is outside the shaded strip', (t) async {
+      await pump(t, contextualToolbarLayout, width: 700);
+      final first = find.byKey(CommandToolbar.sectionKey('insert'));
+      expect(first, findsOneWidget);
+      expect(find.descendant(of: first, matching: find.byType(ToolbarSeparator)), findsNothing);
+      final strip = t.getRect(first);
+      // Units hidden in More are in the tree but never positioned.
+      final seps = [
+        for (final s in find.byType(ToolbarSeparator).evaluate())
+          if (s.renderObject case final RenderBox b when b.hasSize && b.attached)
+            b.localToGlobal(Offset.zero) & b.size,
+      ];
+      expect(seps.any((r) => r.right <= strip.left + 0.5 && strip.left - r.right < 24), isTrue);
+      expect(t.takeException(), isNull);
+    });
+
     testWidgets('the bar width decides, not the window width', (t) async {
       t.view.physicalSize = const Size(2400, 600);
       t.view.devicePixelRatio = 1;
