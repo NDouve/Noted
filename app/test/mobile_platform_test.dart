@@ -41,35 +41,62 @@ void main() {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       final docs = await Directory('${root.path}/docs').create();
       final cache = await Directory('${root.path}/cache').create();
+      final support = await Directory('${root.path}/support').create();
       await initDeviceStorage(
         documents: () async => docs,
         cache: () async => cache,
+        support: () async => support,
       );
 
       expect(
         norm(devicePagesDirectory()!.path),
         '${norm(docs.path)}/Noted/pages',
       );
+      // Settings and recovery are in the support folder, not the documents.
       expect(
         norm(defaultSettingsFile().path),
-        '${norm(docs.path)}/Noted/settings.json',
+        '${norm(support.path)}/Noted/settings.json',
       );
       expect(norm(defaultCacheDirectory().path), '${norm(cache.path)}/Noted');
-      // Pages, binders and recovery all land in the app's documents folder.
+      expect(
+        norm(defaultRecoveryDirectory(defaultBindersFile()).absolute.path),
+        '${norm(support.absolute.path)}/Noted/recovery',
+      );
+      // Pages and binders land in the app's documents folder.
       final base = '${norm(docs.absolute.path)}/Noted';
       expect(norm(defaultPagesDirectory().absolute.path), '$base/pages');
       expect(norm(defaultBindersDirectory().absolute.path), '$base/binders');
       expect(norm(defaultBindersFile().absolute.path), '$base/binders.json');
-      expect(
-        norm(defaultRecoveryDirectory(defaultBindersFile()).absolute.path),
-        '$base/recovery',
-      );
     });
 
-    test('on desktop the default pages folder is not a device folder', () {
+    test('desktop defaults ignore folders found earlier on a device', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final fake = await Directory('${root.path}/fake').create();
+      await initDeviceStorage(
+        documents: () async => fake,
+        cache: () async => fake,
+        support: () async => fake,
+      );
       debugDefaultTargetPlatformOverride = TargetPlatform.windows;
-      final p = norm(defaultPagesDirectory().path);
-      expect(p.endsWith('/Noted/pages') || p.endsWith('/.noted/pages'), isTrue);
+      final fakePath = norm(fake.absolute.path);
+      for (final path in [
+        defaultPagesDirectory().absolute.path,
+        defaultBindersFile().absolute.path,
+        defaultSettingsFile().absolute.path,
+        defaultRecoveryDirectory(defaultBindersFile()).absolute.path,
+        defaultCacheDirectory().absolute.path,
+      ]) {
+        expect(norm(path).startsWith(fakePath), isFalse, reason: path);
+      }
+    });
+
+    testWidgets('a failed folder lookup shows the failure, not a blank app', (
+      t,
+    ) async {
+      await t.pumpWidget(
+        StorageErrorApp(error: Exception('no plugin')),
+      );
+      expect(find.textContaining('no plugin'), findsOneWidget);
     });
 
     test('iOS is mobile too', () async {
