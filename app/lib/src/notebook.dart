@@ -1378,6 +1378,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           debugPrint('Reopening page $openId after the delete failed: $e');
         }
       }
+      if (openId != null && _current == null) {
+        // A partial delete: some page must be open.
+        try {
+          await _openFallback(loc);
+        } on Object catch (e) {
+          debugPrint('Opening a page after the delete failed: $e');
+        }
+      }
       rethrow;
     } finally {
       _structural.removeAll(ids);
@@ -3407,6 +3415,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // A delete or a move of the page is under way: it settles the edits itself.
     if (u == null || _current?.page.id == id || _structural.contains(id)) return;
     if (u.detached) {
+      // The place is back (the page is listed in it again, its store works):
+      // the edits go back to the page file through the normal merge below.
+      final back = _loc[id];
+      if (back != null && back == u.loc && !_isLocked(back)) {
+        try {
+          _storeOf(back);
+          u.detached = false;
+          u.store = null;
+        } on NotebookException {
+          // Still not usable.
+        }
+      }
+    }
+    if (u.detached) {
       // Its place was taken out of the notebook: nothing is written there any
       // more, but the edits (kept in memory only) are tried again for recovery.
       if (await _keepDetached(u) && identical(_unsaved[id], u)) {
@@ -3493,16 +3515,25 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       } on FileSystemException {
         return; // already gone
       }
-      if (await aside.readAsString() == writePage(page)) {
+      var same = false;
+      try {
+        same = listEquals(await aside.readAsBytes(), utf8.encode(writePage(page)));
+      } finally {
+        if (!same) {
+          // Whatever went wrong, a file that is not known to be ours goes back.
+          if (!await File(path).exists()) {
+            await aside.rename(path);
+          } else {
+            debugPrint('A different file is now at $path; the one moved aside stays at ${aside.path}.');
+          }
+        }
+      }
+      if (same) {
         await aside.delete();
         final key = _key(path);
         _known.remove(key);
         _pathId.remove(key);
         _conflicts.remove(page.id);
-      } else if (!await File(path).exists()) {
-        await aside.rename(path);
-      } else {
-        debugPrint('A different file is now at $path; the one moved aside stays at ${aside.path}.');
       }
     } on Object catch (e) {
       debugPrint('Removing the stray file of page ${page.id} failed: $e');

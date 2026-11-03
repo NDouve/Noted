@@ -1077,6 +1077,31 @@ void main() {
       });
     }
 
+    test('edits held after their binder went away go back to the page file when the binder comes back', () async {
+      File(rec.path).createSync(recursive: true); // recovery can not be written
+      final es = _ToggleStore(extra);
+      String norm(String p) => p.replaceAll(r'\', '/').toLowerCase();
+      final nb = make(storeFactory: (d) => norm(d.path) == norm(extra.path) ? es : PageStore(d));
+      await nb.load();
+      final section = await nb.addBinder(extra.path);
+      final x = await nb.createPage(binderPath: section.path);
+      await nb.flush();
+      await nb.open(x);
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      es.failSave = true;
+      await nb.flush();
+      await nb.open(nb.tree.roots.firstWhere((p) => p.id != x).id);
+      await nb.removeBinder(section.path);
+      expect(nb.unsavedPageCount, 1);
+
+      es.failSave = false;
+      await nb.addBinder(extra.path); // it is back
+      await nb.flush();
+      expect(readPage(pageFile(extra, x).readAsStringSync()).nodes, hasLength(1), reason: 'the edits landed in the page file');
+      expect(nb.unsavedPageCount, 0);
+      expect(nb.unsavedDescription, isNull);
+    });
+
     test('a kept edit is retried by its timer, without anyone asking', () async {
       final st = _ToggleStore(pages);
       final nb = make(store: st, saveDelay: const Duration(milliseconds: 30));
