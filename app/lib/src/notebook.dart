@@ -1395,16 +1395,115 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     final keptIds = <String>{}; // changed since they were read: not deleted
-    for (var i = 0; i < ids.length; i++) {
-      final p = ids[i];
-      final r = await _deleteIfUnchanged(loc, p, texts[i]);
-      if (!r.deleted && r.outcome != DeleteOutcome.absent) {
-        keptIds.add(p);
-        continue;
+    final deletedNow = <int>[]; // deleted by this call, for putting back on a failure
+    try {
+      for (var i = 0; i < ids.length; i++) {
+        final p = ids[i];
+        final r = await _deleteIfUnchanged(loc, p, texts[i]);
+        if (!r.deleted && r.outcome != DeleteOutcome.absent) {
+          keptIds.add(p);
+          continue;
+        }
+        if (r.deleted) deletedNow.add(i);
+        _landedProblems.remove(p); // the user deleted it
+        _metas.remove(p);
+        _loc.remove(p);
       }
-      _landedProblems.remove(p); // the user deleted it
-      _metas.remove(p);
-      _loc.remove(p);
+    } on Object {
+      // No undo is offered for a delete that threw, so what it already
+      // deleted is put back, never over a file that has appeared since.
+      final stuck = <int>[]; // could not be put back: kept in recovery
+      for (final i in deletedNow) {
+        try {
+          if (await _restoreText(loc, pages[i], texts[i])) {
+            _metas[ids[i]] = pages[i].meta;
+            _loc[ids[i]] = loc;
+          } else {
+            // A file appeared at its path meanwhile: read it as any change.
+            await _checkFile(st.pathFor(ids[i]));
+          }
+        } on Object catch (e) {
+          debugPrint('Putting back page ${ids[i]} after a failed delete failed: $e');
+          stuck.add(i);
+        }
+      }
+
+      for (var i = 0; i < ids.length; i++) {
+        final dir = stash[ids[i]];
+        if (dir == null) continue;
+        try {
+          await _moveDir(dir, _assetsDir(loc, ids[i]));
+          stash.remove(ids[i]);
+        } on FileSystemException catch (e) {
+          debugPrint('Putting back the attachments of page ${ids[i]} failed: $e');
+        }
+      }
+      // Attachments that could not go back to their folder are handed to
+      // recovery's kept files (0098): they land beside the page when it does,
+      // and are out of reach of a later delete's clean-up of the trash.
+      final rec = _recovery;
+      if (rec != null) {
+        for (final id in stash.keys.toList()) {
+          try {
+            await _moveDir(
+              stash[id]!,
+              Directory('${rec.directory.path}${Platform.pathSeparator}${assetsFolderName(id)}'),
+            );
+            stash.remove(id);
+            // Land them as soon as the folder takes them, not only at the
+            // next start: the folder check retries kept files.
+            _keptRetry = true;
+          } on Object catch (e) {
+            debugPrint('Keeping the attachments of page $id for recovery failed: $e');
+          }
+        }
+      }
+      // Pages kept because a newer version landed: read like any change.
+      for (final p in keptIds) {
+        await _checkFile(st.pathFor(p));
+      }
+      if (stash.isEmpty) await _removeDir(trash);
+      _touch(loc);
+      _rebuildTree();
+      if (openId != null) {
+        try {
+          await open(openId);
+        } on Object catch (e) {
+          debugPrint('Reopening page $openId after a failed delete failed: $e');
+          if (_current == null) await _openFallback(loc);
+        }
+      }
+      if (stuck.isNotEmpty) {
+        // What could not be put back is kept in recovery, which writes a page
+        // file that is not there when it replays. Not offered as an undo: the
+        // next delete would clear its attachments away. An entry that is
+        // already there for the page is left alone: it recreates the page and
+        // holds the newer content.
+        final folder = _normalizePath(st.directory.path);
+        var waiting = const <RecoveryEntry>[];
+        if (rec != null) {
+          try {
+            waiting = (await rec.list()).entries;
+          } on Object catch (e) {
+            // Unlisted: treat it as no entry waiting, so the page is kept.
+            debugPrint('Listing recovery after a failed delete failed: $e');
+          }
+        }
+        for (final i in stuck) {
+          final has = waiting.any(
+            (e) => e.pageId == ids[i] && _key(_normalizePath(e.folder)) == _key(folder),
+          );
+          if (!has) await _keepForRecovery(loc, st, pages[i], base: pages[i]);
+        }
+        throw NotebookException(
+          '${stuck.length == 1 ? 'A page' : '${stuck.length} pages'} could not be deleted '
+          'completely and ${stuck.length == 1 ? 'was' : 'were'} not put back. The '
+          'content is kept and recovery will write ${stuck.length == 1 ? 'it' : 'them'} '
+          'back.',
+          needsAction: true,
+        );
+      }
+      rethrow;
     }
     for (final p in keptIds) {
       // Its attachments go back, and the version on disk is read like any
