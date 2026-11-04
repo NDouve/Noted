@@ -129,6 +129,8 @@ if (-not $NoCopy) {
   if ($copy) { $Exe = $copy } else {
     Write-Warning "Could not make the copy in %LOCALAPPDATA%\Noted\mcp, so '$Exe' is registered in place. A Claude session running it will block rebuilding the release zip. Run this script again when the copy can be made."
   }
+} else {
+  Write-Warning "-NoCopy: '$Exe' is registered in place. A Claude session running it holds that file, which blocks rebuilding the release zip, and a rebuild can replace it under the session. Run this script without -NoCopy to register a copy in %LOCALAPPDATA%\Noted\mcp."
 }
 
 if (-not $PrintOnly) {
