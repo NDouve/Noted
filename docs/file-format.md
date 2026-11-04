@@ -145,9 +145,9 @@ later is appended.
 ```json
 {"id":"e19b7a40c5d83f62","type":"text","x":420,"y":60,"width":300,"height":200,
  "text":"[image: A whiteboard]",
- "noted":{"type":"noted.image","v":1,"rev":"9d1c20b7e4a85f33","baseRev":"31ac5be90d27c648",
+ "noted":{"type":"noted.image","v":1,"rev":"9d1c20b7e4a85f33",
           "data":{"image":{"name":"board.png","size":48213,"hash":"9f86d081884c7d65...","file":"9f86d081884c7d65....png"},"width":1200,"height":800,"alt":"A whiteboard"},
-          "device":"LAPTOP-2","at":1793700123456,"fixedHeight":true}}
+          "device":"LAPTOP-2","at":1793700123456,"baseRev":"31ac5be90d27c648","fixedHeight":true}}
 ```
 
 (Wrapped here for reading; the file holds each node on one line.)
@@ -387,7 +387,8 @@ if either side has it.
   keys of `data` but re-encode them and write them after the known keys, and
   drop unknown keys inside an attachment reference (section 5). A node, a
   header or a binder file that the app changes is rewritten compactly (no
-  spaces between tokens).
+  spaces between the keys and values it writes; values kept verbatim keep
+  their own layout).
 - **Unsupported boxes** are shown read-only from their `text` snapshot, and
   their `data` and `text` are written back byte for byte (4.3). A box type
   being switched off, not allowed on the page, or newer than the app is not
