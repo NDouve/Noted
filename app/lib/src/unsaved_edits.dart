@@ -40,6 +40,10 @@ abstract interface class UnsavedEditsHost {
   /// entry of its own. True when it is there.
   Future<bool> keepHeld(String id);
 
+  /// Whether the open page [id] shows the copy held in memory of it (a save of it
+  /// lands that copy).
+  bool sessionHoldsHeld(String id);
+
   /// Queues a save of the open page.
   void saveOpen();
 
@@ -369,6 +373,9 @@ class UnsavedEdits {
       if (k.waiting.isNotEmpty) await host.retireWaiting(id);
       if (!identical(_kept[id], k)) return;
       if (host.isOpen(id)) {
+        // A copy held in memory that the open page does not show waits for the page
+        // to close or be replayed: saving the page again would change nothing.
+        if (k.held != null && !host.sessionHoldsHeld(id)) return;
         // The open page's own save lands the edits (and retires its entries).
         host.saveOpen();
         _schedule();

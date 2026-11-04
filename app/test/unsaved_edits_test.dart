@@ -39,6 +39,9 @@ class _Host implements UnsavedEditsHost {
   Future<void> retireWaiting(String id) async => waitingRetired.add(id);
 
   @override
+  bool sessionHoldsHeld(String id) => true;
+
+  @override
   void saveOpen() => saves.add('open');
 
   @override

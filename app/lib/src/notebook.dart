@@ -193,6 +193,9 @@ class _Session {
   // The page this session shows was made from the copy held in memory (or the
   // session made one): a save of it lands that copy.
   bool heldIn = false;
+
+  // Generations the held copy was built on that could not be listed at open.
+  final Set<String> pendingGens = {};
 }
 
 /// A save failed because the page's folder isn't there.
@@ -683,9 +686,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// [id] that recovery could not keep, as a failed save with an unwritable
   /// recovery folder would.
   @visibleForTesting
-  void debugHold(String id, NotedPage page, String? baseText) {
+  void debugHold(String id, NotedPage page, String? baseText, {List<String> supersedes = const []}) {
     final loc = _loc[id] ?? _standalone;
-    _unsaved.setHeld(id, loc, HeldCopy(page, baseText, const [], _folderOf(_storeOf(loc))));
+    _unsaved.setHeld(id, loc, HeldCopy(page, baseText, supersedes, _folderOf(_storeOf(loc))));
   }
 
   /// Test seam: makes the notebook think page [id] is in [loc] (null: in none),
@@ -985,9 +988,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       var foldedAny = false;
       final now = DateTime.now().millisecondsSinceEpoch;
       _Fold fold;
+      var listingFailed = false;
       try {
         fold = await _foldFor(loc, id, page, now);
       } on IOException catch (e) {
+        listingFailed = true;
         // The entries can't be listed: the copy held in memory is still folded in.
         debugPrint('Listing the recovery entries of page $id failed: $e');
         _notices.add(
@@ -1006,8 +1011,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // failed save writes it to recovery as soon as that works.
         sess.covered = fold.heldUsed ? null : writePage(seed);
         sess.heldIn = fold.heldUsed;
+        if (listingFailed && fold.heldUsed) sess.pendingGens.addAll(_unsaved.heldOf(id)?.supersedes ?? const []);
       }
       _noteUnfit(fold, id, seed);
+      // An unfit copy is written to recovery, where it shows as an unfit entry.
+      if (fold.heldUnfit && await _keepHeld(id)) _dropHeld(id);
       _base = page;
       _metas[id] = seed.meta;
       _setConflict(id, hasConflicts(seed));
@@ -1747,7 +1755,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (var i = 0; i < ids.length; i++) {
       if (keptIds.contains(ids[i])) continue;
       await _retireEntries(ids[i], loc, folds[i].toRetire);
-      if (folds[i].heldUsed) _unsaved.clearHeld(ids[i]);
+      if (folds[i].heldUsed) _dropHeld(ids[i]);
     }
     final deleted = DeletedPages._(
       [for (var i = 0; i < ids.length; i++) if (!keptIds.contains(ids[i])) pages[i]],
@@ -2378,7 +2386,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final movedIdx = gone.toSet();
         for (final i in movedIdx) {
           await _retireEntries(ids[i], fromLoc, folds[i].toRetire); // their edits are at the target
-          if (folds[i].heldUsed) _unsaved.clearHeld(ids[i]);
+          if (folds[i].heldUsed) _dropHeld(ids[i]);
         }
         final idIndex = {for (var i = 0; i < ids.length; i++) ids[i]: i};
         for (final i in movedIdx) {
@@ -2535,7 +2543,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _rebuildTree();
       for (var i = 0; i < ids.length; i++) {
         await _retireEntries(ids[i], fromLoc, folds[i].toRetire); // their edits are at the target
-        if (folds[i].heldUsed) _unsaved.clearHeld(ids[i]);
+        if (folds[i].heldUsed) _dropHeld(ids[i]);
       }
       movedFully = true;
       // Said together with a failed placement, so neither hides the other.
@@ -4081,8 +4089,27 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (rec != null) await _landKeptAssets(rec);
     }
     // The copy held in memory is let go only if this save was made from it.
-    final held = s?.heldIn ?? false;
-    s?.heldIn = false;
+    var held = s?.heldIn ?? false;
+    // Entries the held copy was built on, that could not be listed at open, are
+    // retired now; until they are, the copy stays held (it keeps them out of folds).
+    if (held && s!.pendingGens.isNotEmpty) {
+      try {
+        final listing = await _recovery!.list();
+        final old = [
+          for (final e in listing.entries)
+            if (e.pageId == saved.id && s.pendingGens.contains(e.gen)) e,
+        ];
+        await _retireEntries(saved.id, loc, old);
+        s.pendingGens.clear();
+      } on Object catch (e) {
+        debugPrint('Listing the recovery entries of page ${saved.id} failed: $e');
+        held = false;
+      }
+    }
+    if (held) {
+      _heldProblems.remove(saved.id);
+      s!.heldIn = false;
+    }
     _unsaved.succeeded(saved.id, clearHeld: held);
   }
 
@@ -4156,6 +4183,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         device: deviceName,
         supersedes: h.supersedes,
       );
+      _heldProblems.remove(id);
       return true;
     } on Object catch (e) {
       debugPrint('Keeping the held copy of page $id for recovery failed: $e');
@@ -4182,11 +4210,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final supersedes = s == null ? const <String>[] : _gensOf(s.entries.values);
     final entry = await _keepForRecovery(loc, st, page, supersedes: supersedes);
     if (entry == null) {
+      _heldProblems.remove(page.id);
       _unsaved.setHeld(page.id, loc, HeldCopy(page, _baseTextOf(st, page.id), supersedes, _folderOf(st)));
       if (s != null) s.heldIn = true;
       return false;
     }
-    _unsaved.clearHeld(page.id);
+    if (s != null && s.heldIn) {
+      _dropHeld(page.id);
+      s.heldIn = false;
+    }
     if (s == null) return true;
     final previous = s.own;
     s.own = entry;
@@ -4684,6 +4716,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       final fold = await _foldFor(loc, id, theirs, time, listing: listing);
       final merged = fold.page;
+      final heldCopy = fold.heldUsed ? _unsaved.heldOf(id) : null;
       if (merged == null) return ReplayOutcome.done;
       final out = writePage(merged);
       if (out != theirsText) {
@@ -4763,6 +4796,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           return _foldOutcome(id, fold, merged);
         }
         await _applyClosed(now, loc, key, path);
+        if (heldCopy != null) {
+          final lost = _ownEditsMissing(
+            heldCopy.baseText == null ? NotedPage.create(heldCopy.page.meta) : readPage(heldCopy.baseText!),
+            heldCopy.page,
+            now,
+          );
+          if (lost != null) {
+            debugPrint('Recovered page $id landed, then changed: $lost');
+            _landedProblems[id] = (path: path, why: _landedThenChanged(label));
+          }
+        }
         for (final e in fold.folded) {
           final lost = _ownEditsMissing(e.baseText == null ? NotedPage.create(e.page.meta) : readPage(e.baseText!), e.page, now);
           if (lost != null) {
@@ -4788,14 +4832,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // memory is let go: its edits are in the page.
   Future<void> _finishFold(String id, String loc, _Fold fold) async {
     await _retireEntries(id, loc, fold.toRetire);
-    if (fold.heldUsed) _unsaved.clearHeld(id);
+    if (fold.heldUsed) _dropHeld(id);
   }
 
-  // Entries that failed the check of their own edits stay on disk, listed.
-  ReplayOutcome _foldOutcome(String id, _Fold fold, NotedPage page) {
+  // Entries that failed the check of their own edits stay on disk, listed. A copy
+  // held in memory that failed it is written to recovery as an entry of its own,
+  // which then shows as an unfit entry.
+  Future<ReplayOutcome> _foldOutcome(String id, _Fold fold, NotedPage page) async {
     if (fold.unfit.isEmpty && !fold.heldUnfit) return ReplayOutcome.done;
     _noteUnfit(fold, id, page);
+    if (fold.heldUnfit && await _keepHeld(id)) _dropHeld(id);
     return ReplayOutcome.blocked;
+  }
+
+  // Lets go of the copy held in memory of page [id] and of what was said of it.
+  void _dropHeld(String id) {
+    _heldProblems.remove(id);
+    _unsaved.clearHeld(id);
   }
 
   static String _landedThenChanged(String label) =>
@@ -6251,6 +6304,9 @@ class _UnsavedHost implements UnsavedEditsHost {
 
   @override
   Future<bool> keepHeld(String id) => nb._keepHeld(id);
+
+  @override
+  bool sessionHoldsHeld(String id) => nb._sess?.id == id && nb._sess!.heldIn;
 
   @override
   void saveOpen() {

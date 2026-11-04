@@ -1174,4 +1174,94 @@ void main() {
       expect(recNames(), isEmpty);
     });
   });
+
+  group('review round 2: an unfit copy held in memory', () {
+    BoxRecord same(int n) => BoxRecord.create(
+      id: 'x1',
+      typeId: 'test.other',
+      dataVersion: 1,
+      bounds: const Bounds(500, 500, 100, 40),
+      data: RawJson.encode({'n': n}),
+      snapshotText: 's$n',
+      rev: 'same',
+    );
+
+    // An edit held for a that the fold rejects (see debugUnfit); recovery is a file.
+    Future<(Notebook, String, String)> unfitHeld({bool recoveryWorks = false}) async {
+      final (nb, a, b) = await twoPages();
+      await nb.open(b);
+      pageFile(a).writeAsStringSync(writePage(disk(a).insertNode(same(0))));
+      final base = pageFile(a).readAsStringSync();
+      nb.debugHold(a, readPage(base).replaceNode(same(1)), base);
+      nb.debugUnfit.add('held');
+      if (!recoveryWorks) File(rec.path).createSync(recursive: true);
+      return (nb, a, b);
+    }
+
+    test('(blocking 1) a session entry written without the unfit copy does not clear it', () async {
+      final (nb, a, _) = await unfitHeld();
+      await nb.open(a); // opens without the copy: it is unfit
+      expect(nb.unsavedPageCount, 1);
+      File(rec.path).deleteSync(); // recovery works now
+      flaky.failSave = true;
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      await nb.flush(); // the publish fails: a session entry, without the copy
+      expect(await entries(nb), hasLength(1));
+      expect(nb.unsavedPageCount, 1, reason: 'the copy is still only in memory');
+    });
+
+    test('(2) a save made without the unfit copy does not clear it', () async {
+      final (nb, a, _) = await unfitHeld();
+      await nb.open(a);
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      await nb.flush(); // saves work
+      expect(ids(disk(a)), ids(nb.current!.page));
+      expect(nb.unsavedPageCount, 1);
+    });
+
+    test('(3) an unfit copy whose page stays in place is written to recovery', () async {
+      final (nb, a, _) = await unfitHeld(recoveryWorks: true);
+      await nb.flush(); // the retry replays page a: the copy is unfit
+      expect(nb.unsavedPageCount, 0);
+      final kept = await entries(nb);
+      expect(kept.single.pageId, a);
+      expect((kept.single.page.node('x1')! as BoxRecord).snapshotText, 's1');
+      expect(nb.recoveryProblems, isEmpty, reason: 'the held-copy note goes with the copy');
+    });
+
+    test('(5) a held copy the open page does not show does not make it save on every retry', () async {
+      final (nb, a, _) = await unfitHeld();
+      await nb.open(a);
+      var saves = 0;
+      flaky.onSave = () => saves++;
+      await nb.flush();
+      await nb.flush();
+      expect(saves, 0);
+    });
+
+    test('(4) entries a held copy was built on are retired once the listing works again', () async {
+      var listFails = false;
+      final (nb, a, b) = await twoPages(
+        hook: (p) async {
+          if (p == 'list' && listFails) throw const FileSystemException('listing failed');
+        },
+      );
+      await nb.open(b);
+      final old = await entryAdding(a, [_box('e1', 1)]);
+      nb.debugHold(
+        a,
+        disk(a).insertNode(_box('e1', 1)),
+        pageFile(a).readAsStringSync(),
+        supersedes: [old.gen],
+      );
+      listFails = true;
+      await nb.open(a); // the listing fails: the copy is folded in, its ancestors not retired
+      listFails = false;
+      await nb.flush();
+      await nb.flush();
+      expect(nb.unsavedPageCount, 0);
+      expect(recNames(), isEmpty, reason: 'the superseded entry must not become live again');
+      expect(disk(a).node('e1'), isNotNull);
+    });
+  });
 }

@@ -767,7 +767,7 @@ class RecoveryStore {
       final jb = await json.readAsBytes();
       final cb = await canvas.readAsBytes();
       if ('v1-${contentHash([...jb, ...cb]).substring(0, 32)}' != e.gen) continue;
-      for (final (f, bytes) in [(json, jb), (canvas, cb)]) {
+      for (final (f, bytes) in [(canvas, cb), (json, jb)]) {
         final r = await deleteFileIfMatches(f.path, bytes: bytes);
         if (!r.deleted && r.outcome != DeleteOutcome.absent) return false;
       }
