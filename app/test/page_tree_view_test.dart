@@ -11,6 +11,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/app_commands.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_tree_view.dart';
+import 'package:noted/src/sidebar_row.dart';
 import 'package:noted_canvas/noted_canvas.dart' show NotedMenuItem, notedThemeData;
 import 'package:noted_core/noted_core.dart';
 import 'support/real_io.dart';
@@ -129,7 +130,17 @@ void main() {
     await settleSaves(tester, nb);
     await tester.runAsync(() async {
       nb.dispose();
-      await dir.delete(recursive: true);
+      // Closing a watcher is not awaited by dispose, so on Windows its handle
+      // can still be on the folder for a moment.
+      for (var i = 0;; i++) {
+        try {
+          await dir.delete(recursive: true);
+          break;
+        } on FileSystemException {
+          if (i >= 50) rethrow;
+          await realIoPause(30);
+        }
+      }
     });
   }
 
@@ -207,7 +218,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Indent'));
     await tester.pump();
-    await settle(tester);
+    // The move is saved through real file IO; wait for it, not a fixed time.
+    await until(tester, () => kids(a).isNotEmpty);
     expect(kids(a), [b]);
     expect(find.byTooltip('Collapse'), findsOneWidget);
     await finish(tester);
@@ -541,8 +553,17 @@ void main() {
         }
       }
     });
-    await until(tester, () => nb.isReadOnlyPage(page));
+    // The model turns read-only when the folder check notices the rename (a
+    // real timer), and the row follows on the next frame. Wait for the row
+    // itself, so the press never lands on a row still built as editable.
+    bool rowLocked() {
+      final rows = find.descendant(of: row(page), matching: find.byType(SidebarRow));
+      return nb.isReadOnlyPage(page) && rows.evaluate().isNotEmpty && tester.widget<SidebarRow>(rows).disabled;
+    }
+
+    await until(tester, rowLocked);
     expect(nb.isReadOnlyPage(page), isTrue);
+    expect(rowLocked(), isTrue);
     await longPress(tester, page, PointerDeviceKind.touch);
     expect(find.text('New subpage'), findsNothing);
     expect(find.byType(PopupMenuItem<String>), findsNothing);
