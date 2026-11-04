@@ -45,55 +45,81 @@ void main() {
   setUp(() => store = FakeStore());
 
   group('embedded data', () {
-    test('base64 that does not match its hash is not used, and is kept as it is', () {
-      final ref = AttachmentRef.fromJson(embeddedJson(damagedPdf))!;
-      expect(ref.bytes, isNull);
-      expect(ref.isEmbedded, isFalse);
-      expect(ref.isDamaged, isTrue);
-      expect(attachmentMissing(ref, store), isFalse, reason: 'damaged, not syncing');
-      expect(ref.toJson()['data'], base64Encode(damagedPdf), reason: 'the page keeps it');
-    });
+    test(
+      'base64 that does not match its hash is not used, and is kept as it is',
+      () {
+        final ref = AttachmentRef.fromJson(embeddedJson(damagedPdf))!;
+        expect(ref.bytes, isNull);
+        expect(ref.isEmbedded, isFalse);
+        expect(ref.isDamaged, isTrue);
+        expect(
+          attachmentMissing(ref, store),
+          isFalse,
+          reason: 'damaged, not syncing',
+        );
+        expect(
+          ref.toJson()['data'],
+          base64Encode(damagedPdf),
+          reason: 'the page keeps it',
+        );
+      },
+    );
 
-    test('with a folder file, the damaged data is ignored and the file is used', () {
-      final hash = contentHash(pdf);
-      final ref = AttachmentRef.fromJson({...embeddedJson(damagedPdf), 'file': '$hash.pdf'})!;
-      expect(ref.bytes, isNull);
-      expect(ref.file, '$hash.pdf');
-      expect(ref.isDamaged, isFalse);
-    });
+    test(
+      'with a folder file, the damaged data is ignored and the file is used',
+      () {
+        final hash = contentHash(pdf);
+        final ref = AttachmentRef.fromJson({
+          ...embeddedJson(damagedPdf),
+          'file': '$hash.pdf',
+        })!;
+        expect(ref.bytes, isNull);
+        expect(ref.file, '$hash.pdf');
+        expect(ref.isDamaged, isFalse);
+      },
+    );
 
     test('matching base64 is used', () {
       expect(AttachmentRef.fromJson(embeddedJson(pdf))!.bytes, pdf);
     });
 
-    test('reading a damaged embedded ref tells the user and gives no bytes', () async {
-      final ref = AttachmentRef.fromJson(embeddedJson(damagedPdf))!;
-      final r = await readAttachment(ref, store);
-      expect(r.state, AttachmentState.damaged);
-      expect(r.bytes, isNull);
-      expect(store.notices.single, contains('Plan.pdf'));
-      expect(store.notices.single, contains('damaged'));
-    });
+    test(
+      'reading a damaged embedded ref tells the user and gives no bytes',
+      () async {
+        final ref = AttachmentRef.fromJson(embeddedJson(damagedPdf))!;
+        final r = await readAttachment(ref, store);
+        expect(r.state, AttachmentState.damaged);
+        expect(r.bytes, isNull);
+        expect(store.notices.single, contains('Plan.pdf'));
+        expect(store.notices.single, contains('damaged'));
+      },
+    );
   });
 
   group('readAttachment', () {
-    test('a damaged folder file at full size is damaged and not returned', () async {
-      final ref = folderRef(pdf);
-      store.arrive(ref.file!, damagedPdf);
-      final r = await readAttachment(ref, store);
-      expect(r.state, AttachmentState.damaged);
-      expect(r.bytes, isNull);
-      expect(store.notices.single, contains('damaged'));
-    });
+    test(
+      'a damaged folder file at full size is damaged and not returned',
+      () async {
+        final ref = folderRef(pdf);
+        store.arrive(ref.file!, damagedPdf);
+        final r = await readAttachment(ref, store);
+        expect(r.state, AttachmentState.damaged);
+        expect(r.bytes, isNull);
+        expect(store.notices.single, contains('damaged'));
+      },
+    );
 
-    test('a file shorter than the recorded size is still syncing, not damaged', () async {
-      final ref = folderRef(pdf);
-      store.arrive(ref.file!, Uint8List.sublistView(pdf, 0, 5));
-      final r = await readAttachment(ref, store);
-      expect(r.state, AttachmentState.syncing);
-      expect(r.bytes, isNull);
-      expect(store.notices, isEmpty);
-    });
+    test(
+      'a file shorter than the recorded size is still syncing, not damaged',
+      () async {
+        final ref = folderRef(pdf);
+        store.arrive(ref.file!, Uint8List.sublistView(pdf, 0, 5));
+        final r = await readAttachment(ref, store);
+        expect(r.state, AttachmentState.syncing);
+        expect(r.bytes, isNull);
+        expect(store.notices, isEmpty);
+      },
+    );
 
     test('a missing file is syncing and a good file is read', () async {
       final ref = folderRef(pdf);
@@ -113,14 +139,22 @@ void main() {
     final r = await loadDisplayCopyChecked(ref, store);
     expect(r.state, AttachmentState.damaged);
     expect(r.bytes, isNull);
-    expect(displayCopyFile(store.cacheDirectory, ref.hash).existsSync(), isFalse);
+    expect(
+      displayCopyFile(store.cacheDirectory, ref.hash).existsSync(),
+      isFalse,
+    );
   });
 
   group('embedding', () {
     test('a damaged folder file is not embedded', () async {
       final ref = folderRef(pdf);
       store.arrive(ref.file!, damagedPdf);
-      final out = await convertAttachment(ref, AttachmentStorage.embedded, store, []);
+      final out = await convertAttachment(
+        ref,
+        AttachmentStorage.embedded,
+        store,
+        [],
+      );
       expect(out, isNull);
       expect(store.notices.single, contains('damaged'));
     });
@@ -128,15 +162,42 @@ void main() {
     test('a file still arriving is not embedded', () async {
       final ref = folderRef(pdf);
       store.arrive(ref.file!, Uint8List.sublistView(pdf, 0, 4));
-      final out = await convertAttachment(ref, AttachmentStorage.embedded, store, []);
+      final out = await convertAttachment(
+        ref,
+        AttachmentStorage.embedded,
+        store,
+        [],
+      );
       expect(out, isNull);
       expect(store.notices, isEmpty);
+    });
+
+    test('a box that holds damaged embedded data is not converted, so the data is not dropped', () async {
+      final hash = contentHash(pdf);
+      final ref = AttachmentRef.fromJson({
+        ...embeddedJson(damagedPdf),
+        'file': '$hash.pdf',
+      })!;
+      store.arrive('$hash.pdf', pdf);
+      final out = await convertAttachment(
+        ref,
+        AttachmentStorage.embedded,
+        store,
+        [],
+      );
+      expect(out, isNull);
+      expect(store.notices.single, contains('not embedded'));
     });
 
     test('a good folder file is embedded', () async {
       final ref = folderRef(pdf);
       store.arrive(ref.file!, pdf);
-      final out = await convertAttachment(ref, AttachmentStorage.embedded, store, []);
+      final out = await convertAttachment(
+        ref,
+        AttachmentStorage.embedded,
+        store,
+        [],
+      );
       expect(out!.bytes, pdf);
     });
   });
@@ -167,7 +228,10 @@ void main() {
         MaterialApp(
           theme: notedThemeData(Brightness.light),
           home: Scaffold(
-            body: PageCanvas(controller: CanvasController(page, modules), attachments: store),
+            body: PageCanvas(
+              controller: CanvasController(page, modules),
+              attachments: store,
+            ),
           ),
         ),
       );
@@ -206,5 +270,37 @@ void main() {
       await doubleTap(t);
       expect(store.opened.single.$2, ref.file);
     });
+  });
+
+  group('page format', () {
+    test(
+      'a page with damaged embedded data is saved byte for byte as it was read',
+      () {
+        const codec = ImageCodec();
+        final json = {
+          'image': embeddedJson(damagedPdf),
+          'width': 4,
+          'height': 4,
+          'alt': '',
+        };
+        final data = codec.decode(json, 1);
+        // Decoding then encoding gives the same JSON, damaged data included.
+        expect(jsonEncode(codec.encode(data)), jsonEncode(json));
+        final box = BoxRecord.create(
+          id: 'i',
+          typeId: codec.typeId,
+          dataVersion: codec.dataVersion,
+          bounds: const Bounds(0, 0, 100, 100),
+          data: RawJson.encode(json),
+          snapshotText: codec.snapshotText(data),
+          rev: 'r',
+        );
+        final page = NotedPage.create(
+          PageMeta.create(id: 'p', title: '', order: 0),
+        ).insertNode(box);
+        final text = writePage(page);
+        expect(writePage(readPage(text)), text);
+      },
+    );
   });
 }

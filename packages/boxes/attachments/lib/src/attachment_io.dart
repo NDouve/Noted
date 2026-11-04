@@ -102,6 +102,14 @@ Future<AttachmentRef?> convertAttachment(
     case AttachmentStorage.embedded:
       final file = ref.file;
       if (ref.isEmbedded || file == null) return null;
+      // Embedding would replace the ref and drop the damaged data the page
+      // still holds, so that box is left as it is and the user is told.
+      if (ref.damagedData != null) {
+        store.notify(
+          '"${ref.name}" was not embedded: the data stored in the page is damaged, and is kept as it is.',
+        );
+        return null;
+      }
       // Verified first: a damaged or still arriving file is never embedded.
       final read = await readAttachment(ref, store);
       final bytes = read.bytes;
