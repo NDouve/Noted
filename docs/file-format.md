@@ -138,7 +138,7 @@ kept in place.
 {"id":"e19b7a40c5d83f62","type":"text","x":420,"y":60,"width":300,"height":200,
  "text":"[image: A whiteboard]",
  "noted":{"type":"noted.image","v":1,"rev":"9d1c20b7e4a85f33","baseRev":"31ac5be90d27c648",
-          "data":{"name":"board.png","size":48213,"hash":"9f86d081884c7d65...","file":"9f86d081884c7d65....png","alt":"A whiteboard"},
+          "data":{"image":{"name":"board.png","size":48213,"hash":"9f86d081884c7d65...","file":"9f86d081884c7d65....png"},"width":1200,"height":800,"alt":"A whiteboard"},
           "device":"LAPTOP-2","at":1793700123456,"fixedHeight":true}}
 ```
 
@@ -176,7 +176,10 @@ described in the box's `data` and is stored in one of two ways, chosen by the
 `attachments` setting (page header, then parent pages, then the binder file,
 then `"folder"`). Every box reads both forms whatever the current setting is.
 
-Data fields:
+Where the reference sits: an image box's `data` is
+`{"image":<ref>,"width":<px>,"height":<px>,"alt":"<text>"}` and a file box's
+`data` is `{"file":<ref>}`. Other keys in `data` are kept. The reference
+(`<ref>`) has these fields:
 
 | Field | Meaning |
 |---|---|
@@ -186,10 +189,9 @@ Data fields:
 | `file` | Folder mode: the file name inside the page's assets folder. |
 | `data` | Embedded mode: the file's bytes, base64. |
 
-A box with both `file` and `data` is read from `data`. A box with neither, or
-with no `hash`, is not a readable attachment. Image boxes carry further data
-fields of their own (such as alt text); file boxes may too. Unknown data
-fields are kept.
+A reference with both `file` and `data` is read from `data`. One with neither,
+or with no `hash`, is not a readable attachment. A missing `name` defaults to
+the `file` value (or `"file"`) and a missing `size` to the embedded length.
 
 ### Folder mode
 
