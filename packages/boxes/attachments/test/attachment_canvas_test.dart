@@ -594,6 +594,73 @@ void main() {
     expect(r.changed, 1);
   });
 
+  testWidgets('a box whose conversion returned nothing, replaced during the '
+      'read, is converted again and the notice skips the old file', (t) async {
+    final gated = _HookStore();
+    store = gated;
+    await pump(t);
+    await t.runAsync(
+      () => canvas(t).insertFiles([
+        IncomingFile('huge.zip', Uint8List(embedLimitBytes + 1)),
+        IncomingFile('small.pdf', pdf),
+      ], at: Offset.zero),
+    );
+    await t.pump();
+    final huge = boxes().firstWhere((b) => (data(b) as FileData).ref.name == 'huge.zip');
+    final small = boxes().firstWhere((b) => (data(b) as FileData).ref.name == 'small.pdf');
+    final smallRef = (data(small) as FileData).ref;
+    gated.onRead = () {
+      final d = data(c.page.node(huge.id)! as BoxRecord) as FileData;
+      if (d.ref.name == 'huge.zip') c.editBox(huge.id, d.copyWith(ref: smallRef));
+    };
+    final r = await t.runAsync(
+      () => convertPageAttachments(c, store, AttachmentStorage.embedded),
+    );
+    await t.pump();
+    expect(r!.skipped, isEmpty);
+    expect(r.overLimit, isEmpty, reason: 'the box no longer has the huge file');
+    expect(r.changed, 2);
+    for (final b in boxes()) {
+      expect((data(b) as FileData).ref.isEmbedded, isTrue);
+    }
+  });
+
+  testWidgets('a box whose conversion returned nothing and keeps changing is '
+      'skipped, and the notice does not name its file', (t) async {
+    final gated = _HookStore();
+    store = gated;
+    await pump(t);
+    await t.runAsync(
+      () => canvas(t).insertFiles([
+        IncomingFile('huge.zip', Uint8List(embedLimitBytes + 1)),
+        IncomingFile('small.pdf', pdf),
+      ], at: Offset.zero),
+    );
+    await t.pump();
+    final huge = boxes().firstWhere((b) => (data(b) as FileData).ref.name == 'huge.zip');
+    var n = 0;
+    gated.onRead = () {
+      // Still over the limit, but a different edit every time.
+      final d = data(c.page.node(huge.id)! as BoxRecord) as FileData;
+      c.editBox(
+        huge.id,
+        d.copyWith(ref: AttachmentRef(
+          name: 'huge-${n++}.zip',
+          size: d.ref.size,
+          hash: d.ref.hash,
+          file: d.ref.file,
+        )),
+      );
+    };
+    final r = await t.runAsync(
+      () => convertPageAttachments(c, store, AttachmentStorage.embedded),
+    );
+    await t.pump();
+    expect(r!.skipped, [huge.id]);
+    expect(r.overLimit, isEmpty);
+    expect(r.changed, 1, reason: 'the small file still converts');
+  });
+
   testWidgets('a box that keeps changing is skipped and reported', (t) async {
     final gated = _HookStore();
     store = gated;
