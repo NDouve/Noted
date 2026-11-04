@@ -66,8 +66,12 @@ Future<T> busyRetry<T>(Future<T> Function() op) async {
   while (true) {
     try {
       return await op();
-    } on FileSystemException {
-      if (DateTime.now().isAfter(end)) rethrow;
+    } on FileSystemException catch (e) {
+      // Only "access denied" (5) and "in use" (32) on Windows are transient
+      // here; anything else is a real failure and is reported at once.
+      final code = e.osError?.errorCode;
+      final busy = Platform.isWindows && (code == 5 || code == 32);
+      if (!busy || DateTime.now().isAfter(end)) rethrow;
       await Future<void>.delayed(const Duration(milliseconds: 25));
     }
   }
