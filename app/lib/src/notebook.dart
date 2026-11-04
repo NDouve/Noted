@@ -1476,6 +1476,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // beside it as a conflict copy, which the per-box conflict-copy merge then
     // combines with the file (0053).
     final merged = <String>[]; // titles whose restored version was merged in
+    final kept = <String>[]; // titles whose restored version stays beside the file
     final notRestored = <String>[]; // titles that could not be put anywhere
     for (final page in deleted.pages) {
       if (await _writeNew(deleted._location, page)) {
@@ -1491,9 +1492,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         await _checkFile(st.pathFor(page.id));
         continue;
       }
-      merged.add(title);
       await _checkFile(st.pathFor(page.id)); // the file that is there
       await _checkFile(copy); // merged into it, and the copy removed
+      if (File(copy).existsSync()) {
+        kept.add(title); // the merge failed: the restored version stays beside it
+      } else {
+        merged.add(title);
+      }
     }
     if (notRestored.isNotEmpty) _lastDeleted = deleted; // Undo can be tried again
     _touch(deleted._location);
@@ -1505,6 +1510,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         'A newer file was already in the place of ${merged.map((t) => '"$t"').join(', ')}, so the '
             'restored ${merged.length == 1 ? 'version was' : 'versions were'} merged into it box by box '
             'and nothing was written over.',
+      if (kept.isNotEmpty)
+        'A newer file was already in the place of ${kept.map((t) => '"$t"').join(', ')}, so the '
+            'restored ${kept.length == 1 ? 'version was' : 'versions were'} kept beside it as a copy '
+            'that could not be merged yet; nothing was written over.',
       if (notRestored.isNotEmpty)
         'A file was in the place of ${notRestored.map((t) => '"$t"').join(', ')} and the restored '
             '${notRestored.length == 1 ? 'version' : 'versions'} could not be saved beside it; '
@@ -3543,8 +3552,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _countSaveFailure(page.id);
         await _keepForRecovery(loc, st, toSave); // against the text last seen
         await _checkFile(path);
-        // Merged into the saved page now, not at the next start.
-        if (!_disposed) unawaited(_recoverPending(onlyLoc: loc));
+        // Not merged here: the edits are in recovery, and the existing triggers
+        // (load, a folder coming back) replay them three-way.
         return;
       }
       if (_current?.page.id == toSave.id) _base = toSave;
@@ -4290,6 +4299,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return true;
   }
 
+  // External changes (0020) ---------------------------------------------------
 
   /// Whether the page [id] has a conflicted box, on screen or in its file.
   bool hasConflict(String id) => _conflicts.contains(id);

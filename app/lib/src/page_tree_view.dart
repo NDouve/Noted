@@ -858,14 +858,27 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     if (!(ok ?? false)) return;
     final deleted = await _nb.delete(p.id);
     if (messenger == null) return;
+    final title = p.title.isEmpty ? 'Untitled page' : p.title;
+    final keptNote = deleted.keptNote;
+    messenger.hideCurrentSnackBar();
+    if (deleted.pages.isEmpty) {
+      // Everything was kept (a newer version landed): nothing to undo.
+      messenger.showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 10),
+          content: Text(keptNote ?? 'Nothing was deleted.'),
+        ),
+      );
+      _nb.discardDeleted(deleted);
+      return;
+    }
     // The deleted pages stay in memory only as long as the snackbar (or until
     // the next delete); once it goes away without Undo they are dropped.
-    messenger.hideCurrentSnackBar();
     messenger
         .showSnackBar(
           SnackBar(
             duration: const Duration(seconds: 10),
-            content: Text('Deleted "${p.title.isEmpty ? 'Untitled page' : p.title}"'),
+            content: Text(keptNote == null ? 'Deleted "$title"' : 'Deleted some of "$title". $keptNote'),
             action: SnackBarAction(label: 'Undo', onPressed: () => _guard(() => _nb.undoDelete(deleted))),
           ),
         )

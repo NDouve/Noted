@@ -16,6 +16,36 @@ import 'package:noted_core/noted_core.dart';
 import 'support/real_io.dart';
 import 'support/settle_saves.dart';
 
+/// A store that runs [beforeDelete] once, right before the next
+/// compare-and-delete: a sync client landing a newer version of the file.
+class _ChangingStore extends PageStore {
+  _ChangingStore(super.directory);
+
+  void Function()? beforeDelete;
+
+  @override
+  Future<DeleteResult> deleteIfUnchanged(
+    String pageId,
+    String expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    Future<void> Function()? beforeDelete,
+    void Function()? beforeRestore,
+  }) {
+    final f = this.beforeDelete;
+    this.beforeDelete = null;
+    f?.call();
+    return super.deleteIfUnchanged(
+      pageId,
+      expectedText,
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforeDelete: beforeDelete,
+      beforeRestore: beforeRestore,
+    );
+  }
+}
+
 void main() {
   late Directory dir;
   late Notebook nb;
@@ -44,7 +74,14 @@ void main() {
     await settle(tester);
   }
 
-  Future<void> start(WidgetTester tester, {ThemeData? theme, bool watch = false}) async {
+  _ChangingStore? changing;
+
+  Future<void> start(
+    WidgetTester tester, {
+    ThemeData? theme,
+    bool watch = false,
+    PageStore Function(Directory)? store,
+  }) async {
     // Room for the whole page menu.
     if (tester.view.physicalSize.height / tester.view.devicePixelRatio < 1400) {
       tester.view.physicalSize = const Size(800, 1400);
@@ -54,7 +91,7 @@ void main() {
     await tester.runAsync(() async {
       dir = await Directory.systemTemp.createTemp('noted_tree_ui');
       nb = Notebook(
-        PageStore(dir),
+        store != null ? store(dir) : PageStore(dir),
         buildModules(),
         saveDelay: Duration.zero,
         watchFiles: watch,
@@ -246,6 +283,30 @@ void main() {
     await tester.runAsync(() => tester.tap(find.text('Undo')));
     await until(tester, () => rootIds().length == 3 && File('${dir.path}/$b.canvas').existsSync());
     expect(rootIds(), [a, b, c]);
+    expect(File('${dir.path}/$b.canvas').existsSync(), isTrue);
+    await finish(tester);
+  });
+
+  testWidgets('a page whose file changed before it was deleted is kept: the note shows, no Undo, not "Deleted"', (tester) async {
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await start(tester, store: (d) => changing = _ChangingStore(d));
+    await rightClick(tester, b);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete'));
+    await settle(tester);
+    // A newer version lands after the page was read, right before it is deleted.
+    changing!.beforeDelete = () {
+      final f = File('${dir.path}/$b.canvas');
+      f.writeAsStringSync(f.readAsStringSync().replaceFirst('"title":"', '"title":"Synced '));
+    };
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Delete'));
+    await tester.pump();
+    await until(tester, () => find.textContaining('not deleted').evaluate().isNotEmpty);
+    expect(find.textContaining('changed on another device'), findsOneWidget);
+    expect(find.text('Undo'), findsNothing);
+    expect(find.textContaining('Deleted "'), findsNothing);
     expect(File('${dir.path}/$b.canvas').existsSync(), isTrue);
     await finish(tester);
   });
