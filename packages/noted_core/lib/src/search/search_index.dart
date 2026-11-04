@@ -81,15 +81,6 @@ class _IndexedPage {
   final List<_IndexedBox> boxes;
 }
 
-/// An in-memory index of the text snapshots of the boxes of many pages.
-///
-/// It reads one thing from a box: [BoxRecord.snapshotText], the text the
-/// box's module produced for it through the Box API (0035). It never looks
-/// at a box's data, so a box of a type this build doesn't support, or an
-/// encrypted one, is searched (or not) exactly as its module made it, and
-/// is never parsed. A box with an empty snapshot (a drawing) is not
-/// indexed.
-///
 /// Boxes whose text a search has compared with a query since
 /// [resetSearchBoxesExamined], over all indexes. For tests only (exported by
 /// `testing.dart`, not the main library): they bound the work of a search.
@@ -100,6 +91,15 @@ int _searchBoxesExamined = 0;
 /// Sets [searchBoxesExamined] back to zero. For tests only.
 void resetSearchBoxesExamined() => _searchBoxesExamined = 0;
 
+/// An in-memory index of the text snapshots of the boxes of many pages.
+///
+/// It reads one thing from a box: [BoxRecord.snapshotText], the text the
+/// box's module produced for it through the Box API (0035). It never looks
+/// at a box's data, so a box of a type this build doesn't support, or an
+/// encrypted one, is searched (or not) exactly as its module made it, and
+/// is never parsed. A box with an empty snapshot (a drawing) is not
+/// indexed.
+///
 /// The index lives in memory only. It has no way to write itself anywhere,
 /// and nothing here logs.
 final class SearchIndex {

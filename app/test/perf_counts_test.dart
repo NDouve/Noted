@@ -171,7 +171,16 @@ void main() {
         await nb.flush();
         final page = c.page;
         final reportsAfterSave = contentReports;
-        await realWait(700); // the watcher reports our own write
+        // Wait for the watcher to report our own write, up to a deadline, so
+        // a slow runner doesn't fail the test.
+        for (
+          var waited = 0;
+          waited < 5000 && log.reads(pathOf(id)) < 2;
+          waited += 50
+        ) {
+          await realWait(50);
+        }
+        await realWait(200); // let a second report, if any, arrive
         // One read before the save (the outside-change check) and one from
         // the watcher, which compares the text with what was written; it is
         // never parsed and merged into the page. The watcher must have fired,
