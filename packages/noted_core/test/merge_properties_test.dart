@@ -236,7 +236,9 @@ void main() {
           reordered: true,
           sides: [m, t],
         );
-        // Side order. Mine is the side that reordered: its whole order is in
+        // Side order (a guard: the additions here are Place.front, so this
+        // passes on main too; the anchor case below is the one that fails
+        // there). Mine is the side that reordered: its whole order is in
         // the result whichever side is mine; the other side's own additions
         // follow the node they followed (0132).
         if (_unsafeIds(b, m, t)) {
@@ -399,10 +401,26 @@ void main() {
               i,
         ];
         if (own.length >= 2) {
-          final i = own[g.r.nextInt(own.length)];
-          final j = own[g.r.nextInt(own.length)];
-          final t = theirs[i];
-          theirs[i] = theirs[j];
+          // Prefer a swap that moves the anchor of one of mine's additions
+          // (a common node that is not the last one in mine).
+          final ownIds = {for (final i in own) idOfText(theirs[i])};
+          final mids = [for (final x in mine) idOfText(x)];
+          final lastCommon = mids.lastWhere(ownIds.contains, orElse: () => null);
+          final anchors = <String>{};
+          String? prev;
+          for (final id in mids) {
+            if (ownIds.contains(id)) {
+              prev = id;
+            } else if (prev != null && prev != lastCommon && !baseIds.contains(id)) {
+              anchors.add(prev);
+            }
+          }
+          final anchor = anchors.isEmpty ? null : anchors.elementAt(g.r.nextInt(anchors.length));
+          final from = anchor == null ? own[g.r.nextInt(own.length)] : own.firstWhere((i) => idOfText(theirs[i]) == anchor);
+          var j = own[g.r.nextInt(own.length)];
+          if (j == from) j = own[(own.indexOf(from) + 1) % own.length];
+          final t = theirs[from];
+          theirs[from] = theirs[j];
           theirs[j] = t;
         }
         final m = pageFrom(mine), t = pageFrom(theirs);
@@ -422,8 +440,19 @@ void main() {
           for (final n in p.nodes)
             if (common.contains(n.id)) n.id,
         ];
-        final added = m.nodes.any((n) => !baseIds.contains(n.id));
-        if (added && order(t).join() != order(b).join() && order(m).join() == order(b).join()) moved++;
+        // A node mine added, anchored to a common node that is not the last
+        // one in mine, whose slot in theirs holds a different node.
+        final om = order(m), ot = order(t);
+        String? prev;
+        var reached = false;
+        for (final n in m.nodes) {
+          if (common.contains(n.id)) {
+            prev = n.id;
+          } else if (prev != null && prev != om.last && !baseIds.contains(n.id) && ot[om.indexOf(prev)] != prev) {
+            reached = true;
+          }
+        }
+        if (reached) moved++;
         // The merge only reorders: put theirs' common nodes back in base order
         // and the page has the same content.
         final inBase = order(b);
@@ -436,6 +465,8 @@ void main() {
         }
         same(merged, three(b, m, pageFrom(fixed)).page, seed, pages, ordered: false);
       });
+      // ignore: avoid_print
+      print('anchor case: $moved of $runs seeds moved the anchor of an addition, $skipped skipped');
       expect(moved, greaterThan(20), reason: 'the generator rarely made theirs move a node before an addition');
       expect(skipped, lessThan(runs ~/ 2));
     });

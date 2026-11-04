@@ -274,6 +274,8 @@ void main() {
       expect(merged(['a', 'b'], ['a', 'x', 'z', 'b'], ['b', 'a']), ['b', 'a', 'x', 'z']);
     });
 
+    // Guards: the next test and the first expectation of the stacking test
+    // (`[a, b, c, x]`) pass on main too.
     test('an addition before the first common node stays first', () {
       expect(merged(['a', 'b'], ['x', 'a', 'b'], ['b', 'a']), ['x', 'b', 'a']);
     });
