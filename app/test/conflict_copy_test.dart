@@ -58,6 +58,25 @@ class FlakyStore extends PageStore {
   }
 }
 
+/// Runs [op], trying again while Windows reports the file as in use (the
+/// watching notebook reads these files at the same moment, and a rename or
+/// delete over a file being read is refused). Gives up after a deadline.
+Future<T> busyRetry<T>(Future<T> Function() op) async {
+  final end = DateTime.now().add(const Duration(seconds: 20));
+  while (true) {
+    try {
+      return await op();
+    } on FileSystemException catch (e) {
+      // Only "access denied" (5) and "in use" (32) on Windows are transient
+      // here; anything else is a real failure and is reported at once.
+      final code = e.osError?.errorCode;
+      final busy = Platform.isWindows && (code == 5 || code == 32);
+      if (!busy || DateTime.now().isAfter(end)) rethrow;
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+    }
+  }
+}
+
 void main() {
   late Directory dir;
   late Notebook nb;
@@ -82,7 +101,7 @@ void main() {
 
   tearDown(() async {
     nb.dispose();
-    await dir.delete(recursive: true);
+    await busyRetry(() => dir.delete(recursive: true));
   });
 
   BoxRecord noteBox(String text, {Bounds at = const Bounds(10, 10, 200, 40)}) {
@@ -99,8 +118,10 @@ void main() {
 
   String copyPath(String id, String suffix) => '${dir.path}$sep$id-$suffix.canvas';
 
+  Future<void> saveAsOther(NotedPage page) => busyRetry(() => other.save(page));
+
   Future<void> writeCopy(String path, NotedPage page) =>
-      File(path).writeAsString(writePage(page));
+      busyRetry(() => File(path).writeAsString(writePage(page)));
 
   NotedPage onDisk(String id) => readPage(File(pathOf(id)).readAsStringSync());
 
@@ -108,7 +129,7 @@ void main() {
   Future<(String, BoxRecord)> closedPageWithBox() async {
     final id = nb.currentId!;
     final box = noteBox('base');
-    await other.save((await other.load(id)).insertNode(box));
+    await saveAsOther((await other.load(id)).insertNode(box));
     await nb.createPage(); // opens another page; [id] is closed
     await nb.checkFile(pathOf(id));
     return (id, box);
@@ -211,7 +232,7 @@ void main() {
     final disk = await other.load(id);
     final mineEdit = withText(box, 'original side');
     final theirEdit = withText(box, 'copy side');
-    await other.save(disk.replaceNode(mineEdit));
+    await saveAsOther(disk.replaceNode(mineEdit));
     await nb.checkFile(pathOf(id));
     final path = copyPath(id, 'DESKTOP-4QK2N8L');
     await writeCopy(path, disk.replaceNode(theirEdit));
@@ -243,7 +264,7 @@ void main() {
     modules = buildModules();
     other = PageStore(dir);
     final page = NotedPage.create(PageMeta.create(id: 'aaaa1111', title: 'A', order: 0));
-    await other.save(page);
+    await saveAsOther(page);
     final added = noteBox('new');
     final path = copyPath('aaaa1111', 'DESKTOP-4QK2N8L');
     await writeCopy(path, page.insertNode(added));
