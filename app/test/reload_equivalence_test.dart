@@ -524,30 +524,33 @@ class _Run {
     _kind = null;
     final r = rng.nextInt(100);
     final String name;
-    if (r < 22) {
+    if (r < 20) {
       name = 'edit';
       await _opEdit();
-    } else if (r < 36) {
+    } else if (r < 31) {
       name = 'external';
       await _opExternal();
-    } else if (r < 48) {
+    } else if (r < 41) {
       name = 'copy';
       await _opCopy();
-    } else if (r < 60) {
+    } else if (r < 52) {
       name = 'move';
       await _opMove();
-    } else if (r < 72) {
+    } else if (r < 63) {
       name = 'delete';
       await _opDelete();
-    } else if (r < 80) {
+    } else if (r < 69) {
       name = 'rename';
       await _opRename();
-    } else if (r < 94) {
+    } else if (r < 79) {
       name = 'vanish';
       await _opVanish();
-    } else {
+    } else if (r < 82) {
       name = 'restart';
       await _opRestart();
+    } else {
+      name = 'recover';
+      await _opRecover();
     }
     trace.add('  ($name done)');
     await _settle();
@@ -609,6 +612,8 @@ class _Run {
       'externalBeforeFlush',
       'failOnce',
       'failAlways',
+      'failIoLeave',
+      'failIoRestart',
     ]);
     trace.add('edit ${_short(id)} in ${m.loc}: $variant');
     _kind = 'edit:$variant';
@@ -660,7 +665,170 @@ class _Run {
         st.publishFailures = 0;
         _addBox(m, c);
         await nb.flush();
+      case 'failIoLeave':
+        // The publish fails with the folder there; the user goes to another
+        // page. Leaving saves the page again, and the edit lands.
+        st.publishFailures = 50;
+        await nb.flush();
+        st.publishFailures = 0;
+        if (model.length > 1) await nb.open(_pickPage(where: (i, p) => i != id));
+        await nb.flush();
+      case 'failIoRestart':
+        // The publish fails and the app quits: the edit is in a recovery entry
+        // and lands at the next start.
+        st.publishFailures = 50;
+        await nb.flush();
+        st.publishFailures = 0;
+        _drop();
+        nb = _make();
+        _spare.add(nb);
+        await nb.load();
     }
+  }
+
+  /// A recovery entry for page [id] (in its place now) that adds [y] to the
+  /// file as it is, written the way an earlier session left it.
+  Future<RecoveryEntry> _entryFor(String id, BoxRecord y, {String kind = 'edit'}) {
+    final m = model[id]!;
+    final text = File(_pathOf(id)).readAsStringSync();
+    return RecoveryStore(rec).write(
+      folder: dirs[m.loc]!.path,
+      page: readPage(text).insertNode(y),
+      baseText: text,
+      time: DateTime.now(),
+      kind: kind,
+    );
+  }
+
+  // ---- recover: entries from earlier sessions, failed publishes, crashes ----
+
+  Future<void> _opRecover() async {
+    final variant = _pick([
+      'reopen:entryThenFailIo',
+      'ai:vanishWithEntry',
+      'recovery:listFails',
+      'retire:crash',
+    ]);
+    switch (variant) {
+      case 'reopen:entryThenFailIo':
+        await _recoverReopen(listFails: false);
+      case 'recovery:listFails':
+        await _recoverReopen(listFails: true);
+      case 'ai:vanishWithEntry':
+        await _recoverVanish();
+      default:
+        await _recoverCrash();
+    }
+  }
+
+  /// An entry waits for a closed page (its replay failed earlier). The user
+  /// opens the page (or, when [listFails], the page opens from its file because
+  /// the recovery listing fails), edits, the publish fails with the folder
+  /// there, the user goes to another page, and the app restarts: both edits
+  /// are in the file.
+  Future<void> _recoverReopen({required bool listFails}) async {
+    if (model.length < 2) return;
+    final id = _pickPage();
+    final m = model[id]!;
+    _kind = listFails ? 'recovery:listFails' : 'reopen:entryThenFailIo';
+    trace.add('$_kind on ${_short(id)} in ${m.loc}');
+    final other = _pickPage(where: (i, p) => i != id);
+    await nb.open(other);
+    final y = _newBox(_text('kept'));
+    await _entryFor(id, y);
+    m.boxes[y.id] = _val(y);
+    var failing = false;
+    if (listFails) {
+      nb.recoveryHook = (p) async {
+        if (failing && p == 'list') throw const FileSystemException('listing failed');
+      };
+      failing = true;
+    }
+    await nb.open(id);
+    failing = false;
+    nb.recoveryHook = null;
+    expect(
+      nb.current!.page.node(y.id) != null,
+      !listFails,
+      reason: listFails ? 'the page opens from its file' : 'the page shows the kept edit',
+    );
+    _addBox(m, nb.current!);
+    final st = storeOf(m.loc);
+    st.publishFailures = 50;
+    await nb.flush();
+    st.publishFailures = 0;
+    await nb.open(other);
+    _drop();
+    nb = _make();
+    _spare.add(nb);
+    await nb.load();
+  }
+
+  /// An AI entry and the open page's own edit are both kept while the folder is
+  /// away; both land when it returns.
+  Future<void> _recoverVanish() async {
+    final loc = _pick(['x', 'a']);
+    final inLoc = model.entries.where((e) => e.value.loc == loc).toList();
+    if (inLoc.isEmpty) return;
+    final id = inLoc[rng.nextInt(inLoc.length)].key;
+    final m = model[id]!;
+    _kind = 'ai:vanishWithEntry';
+    trace.add('$_kind on ${_short(id)} in $loc');
+    await nb.open(id);
+    final z = _newBox(_text('ai'));
+    await _entryFor(id, z, kind: 'ai');
+    m.boxes[z.id] = _val(z);
+    _addBox(m, nb.current!);
+    final dir = dirs[loc]!;
+    final awayDir = '${dir.path}-away';
+    await _busyRetry(() async => dir.renameSync(awayDir));
+    await nb.flush();
+    expect((await nb.pendingRecovery()).entries.map((e) => e.kind).toSet(), {
+      'ai',
+      'edit',
+    }, reason: 'the AI entry and the edit are two entries');
+    await nb.checkFolders();
+    await _busyRetry(() async => Directory(awayDir).renameSync(dir.path));
+    await nb.checkFolders();
+  }
+
+  /// The replay of an entry stops at a named point (the process is gone), the
+  /// other device may delete the landed box, and the next start settles it.
+  Future<void> _recoverCrash() async {
+    if (model.length < 2) return;
+    final id = _pickPage();
+    final m = model[id]!;
+    final point = _pick(['recover-landing', 'recover-published', 'recover-readback']);
+    final deletes = rng.nextBool();
+    _kind = 'retire:crash';
+    trace.add('$_kind on ${_short(id)} in ${m.loc} at $point${deletes ? ', then a delete elsewhere' : ''}');
+    await nb.open(_pickPage(where: (i, p) => i != id));
+    final y = _newBox(_text('kept'));
+    await _entryFor(id, y);
+    m.boxes[y.id] = _val(y);
+    _drop();
+    nb = _make();
+    _spare.add(nb);
+    final crashing = nb;
+    crashing.syncHook = (p, _) async {
+      if (p != point) return;
+      _gone.add(crashing);
+      crashing.dispose();
+      throw StateError('crash at $point');
+    };
+    try {
+      await crashing.load();
+    } on Object catch (_) {
+      // A notebook that was disposed under its own load.
+    }
+    if (deletes && File(_pathOf(id)).existsSync()) {
+      // Another device deletes the box the replay may have landed.
+      final page = _disk(id);
+      if (page.node(y.id) != null) await _externalWrite(id, page.removeNode(y.id));
+    }
+    nb = _make();
+    _spare.add(nb);
+    await nb.load();
   }
 
   String _short(String id) => id.substring(0, 4);
@@ -832,6 +1000,7 @@ class _Run {
       'failDestination',
       'failSourceDelete',
       'syncAtSource',
+      'withEntry',
     ]);
     // A fault on the last page of a subtree is the one that needs a rollback.
     final parents = [
@@ -856,6 +1025,11 @@ class _Run {
         // An edit not saved yet goes with the page.
         await nb.open(id);
         _localEdit(m, nb.current!);
+      case 'withEntry':
+        // An entry kept by an earlier session goes with the page.
+        final y = _newBox(_text('kept'));
+        await _entryFor(id, y);
+        m.boxes[y.id] = _val(y);
       case 'failDestination':
         storeOf(to).failNew.add(subtree.last);
         mustFail = true;
@@ -897,7 +1071,7 @@ class _Run {
   // ---- delete, with undo ------------------------------------------------------
 
   Future<void> _opDelete() async {
-    final variant = _pick(['undo', 'undo', 'keep', 'syncAtDelete', 'failDelete', 'failDelete']);
+    final variant = _pick(['undo', 'undo', 'keep', 'syncAtDelete', 'failDelete', 'failDelete', 'withEntry']);
     // A fault on the last page of a subtree is the one that needs a put-back.
     final parents = [
       for (final e in model.entries)
@@ -922,6 +1096,11 @@ class _Run {
       sync = base.insertNode(y);
       syncId = y.id;
       st.beforeDeleteOnce = () => _externalWriteSync(id, sync!);
+    } else if (variant == 'withEntry') {
+      // An entry kept by an earlier session: the undo copy holds its edit.
+      final y = _newBox(_text('kept'));
+      await _entryFor(id, y);
+      model[id]!.boxes[y.id] = _val(y);
     } else if (variant == 'failDelete') {
       // The last page of the subtree: the ones before it are already deleted.
       st.failDelete.add(gone.last);
@@ -950,7 +1129,7 @@ class _Run {
     for (final p in removed) {
       model.remove(p);
     }
-    if (variant == 'undo' || variant == 'syncAtDelete') {
+    if (variant == 'undo' || variant == 'syncAtDelete' || variant == 'withEntry') {
       await nb.undoDelete(deleted!);
       model.addAll(snapshot);
     } else if (variant == 'keep') {
@@ -1167,7 +1346,8 @@ class _Run {
 /// change to the generator can't quietly stop exercising one.
 const _expectedKinds = {
   'edit:plain', 'edit:syncAtPublish', 'edit:syncBeforeWrite', 'edit:externalBeforeFlush',
-  'edit:failOnce', 'edit:failAlways', //
+  'edit:failOnce', 'edit:failAlways', 'edit:failIoLeave', 'edit:failIoRestart', 'reopen:entryThenFailIo', //
+  'ai:vanishWithEntry', 'recovery:listFails', 'retire:crash', 'delete:withEntry', 'move:withEntry', //
   'external', 'rename:plain', 'rename:syncAtPublish', 'rename:syncBeforeWrite',
   'conflict:plain', 'conflict:replacedMidMerge', 'conflict:originalChanged',
   'conflict:stealPublish', 'conflict:scan', //
@@ -1179,9 +1359,6 @@ const _expectedKinds = {
   'vanish:restart/deletedWhileAway', 'vanish:live/replayFails',
   'vanish:restart/replayFails', 'restart', //
 };
-
-/// Run the parked probes too: --dart-define=RELOAD_PARKED=true.
-const bool _runParked = bool.fromEnvironment('RELOAD_PARKED');
 
 final Set<String> _seen = {};
 int _started = 0;
@@ -1253,11 +1430,6 @@ void main() {
         run._drop();
         await run._verifyDisk('after leaving');
       },
-      skip: _runParked
-          ? null
-          : 'Found by D6: a write error that is not a missing folder is only logged. The edit stays '
-                'on the screen but is in no file and no recovery entry, so leaving the page or quitting '
-                'loses it. Minimal seed: any page, one added box, a failing publish, then open another page.',
     );
 
     test(
@@ -1317,12 +1489,13 @@ void main() {
       // An entry for the page is waiting, with an edit that is not in the file.
       final y = run._newBox('pending edit');
       final disk = run._disk(parent);
-      await RecoveryStore(run.rec).write(
+      final waiting = await RecoveryStore(run.rec).write(
         folder: run.dirs['pages']!.path,
         page: disk.insertNode(y),
         baseText: writePage(disk),
         time: DateTime.now(),
       );
+      final waitingBytes = waiting.file.readAsBytesSync();
       m.boxes[y.id] = _val(y);
       final st = run.storeOf('pages');
       final assets = Directory('${run.dirs['pages']!.path}${run.sep}${assetsFolderName(parent)}');
@@ -1342,10 +1515,12 @@ void main() {
       st.failDelete.clear();
       st.failNew.clear();
       expect(error, isA<NotebookException>());
-      // The waiting entry is still the only one, and still has its edit.
+      // The waiting entry is unchanged, and the page has one entry of its own
+      // (kind delete) beside it.
       final entries = (await run.nb.pendingRecovery()).entries;
-      expect(entries.map((e) => e.pageId), [parent]);
-      expect(entries.single.page.node(y.id), isNotNull, reason: 'the pending edit was replaced');
+      expect(entries.map((e) => e.pageId), [parent, parent]);
+      expect(entries.map((e) => e.kind).toSet(), {'edit', 'delete'});
+      expect(waiting.file.readAsBytesSync(), waitingBytes, reason: 'the pending edit was replaced');
       // The attachments are out of reach of the trash clean-up.
       expect(run.trashChildren(), isEmpty);
       // The user deletes another page meanwhile.
@@ -1363,6 +1538,80 @@ void main() {
         'attachment of $parent',
         reason: 'the attachment did not come back',
       );
+    });
+
+    test('retire completes, the user deletes a recovered box, a restart: the box stays deleted', () async {
+      final id = run.model.keys.first;
+      final m = run.model[id]!;
+      final y = run._newBox('kept');
+      await run._entryFor(id, y);
+      await run._opRestart(); // the launch replays it and retires it
+      expect((await run.nb.pendingRecovery()).entries, isEmpty);
+      m.boxes[y.id] = _val(y);
+      await run.nb.open(id);
+      run.nb.current!.delete(y.id);
+      m.boxes.remove(y.id);
+      await run.nb.flush();
+      await run._opRestart();
+      await run.verify('after the restart', fresh: true);
+    });
+
+    test('a crash after a conflicted publish: the restart publishes nothing new and keeps one conflict', () async {
+      final id = run.model.keys.last;
+      final m = run.model[id]!;
+      await run.nb.open(run.model.keys.first);
+      // An unregistered box has no codec to merge it: two versions conflict.
+      final x = BoxRecord.create(
+        id: '000000000000a1',
+        typeId: 'x.unregistered',
+        dataVersion: 1,
+        bounds: const Bounds(500, 500, 100, 40),
+        data: RawJson.encode({'n': 0}),
+        snapshotText: 's0',
+        rev: 'r0',
+      );
+      BoxRecord version(int n) => BoxRecord.create(
+        id: x.id,
+        typeId: x.typeId,
+        dataVersion: 1,
+        bounds: x.bounds,
+        data: RawJson.encode({'n': n}),
+        snapshotText: 's$n',
+        rev: 'r$n',
+      );
+      await run._externalWrite(id, run._disk(id).insertNode(x));
+      final base = File(run._pathOf(id)).readAsStringSync();
+      await RecoveryStore(run.rec).write(
+        folder: run.dirs[m.loc]!.path,
+        page: run._disk(id).replaceNode(version(1)),
+        baseText: base,
+        time: DateTime.now(),
+      );
+      await run._externalWrite(id, run._disk(id).replaceNode(version(2))); // the other version
+      run._drop();
+      run.nb = run._make();
+      run._spare.add(run.nb);
+      final crashing = run.nb;
+      crashing.syncHook = (p, _) async {
+        if (p != 'recover-readback') return;
+        run._gone.add(crashing);
+        crashing.dispose();
+        throw StateError('crash before the retire');
+      };
+      try {
+        await crashing.load();
+      } on Object catch (_) {
+        // A notebook that was disposed under its own load.
+      }
+      final published = File(run._pathOf(id)).readAsStringSync();
+      final conflicts = (readPage(published).node(x.id)! as BoxRecord).conflicts.length;
+      expect(conflicts, 1);
+      run.nb = run._make();
+      run._spare.add(run.nb);
+      await run.nb.load();
+      expect(File(run._pathOf(id)).readAsStringSync(), published);
+      expect((readPage(published).node(x.id)! as BoxRecord).conflicts, hasLength(conflicts));
+      expect((await run.nb.pendingRecovery()).entries, isEmpty);
     });
   });
 }

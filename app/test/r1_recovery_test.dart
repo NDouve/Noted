@@ -517,25 +517,30 @@ void main() {
       },
     );
 
-    test('(10) a replay queued before a delete does not write the deleted page again', () async {
-      final (nb0, a, b) = await twoPages();
-      await nb0.open(b);
-      await entryAdding(a, [_box('e1', 1)]);
+    test('(10) a replay that is running when a delete starts is waited for: the deleted page is not written again', () async {
+      final (nb0, _, b) = await twoPages();
+      await entryAdding(b, [_box('e1', 1)]);
       quit(nb0);
       flaky.failSave = true;
       final nb = make();
-      await nb.load();
+      await nb.load(); // the replay of page b fails; it is tracked, and page a is open
       flaky.failSave = false;
-      await nb.open(b);
-      unawaited(nb.flush()); // retry of page a queued
-      final deleted = await nb.delete(a);
+      final reached = Completer<void>();
+      final gate = Completer<void>();
+      nb.syncHook = (p, _) async {
+        if (p != 'recover-reread' || reached.isCompleted) return;
+        reached.complete();
+        await gate.future;
+      };
+      unawaited(nb.flush()); // the retry of page b starts and stops at the reread
+      await reached.future;
+      final deleting = nb.delete(b);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      gate.complete();
+      final deleted = await deleting;
       await nb.flush();
-      expect(pageFile(a).existsSync(), isFalse);
-      expect(
-        deleted.pages.single.node('e1'),
-        isNotNull,
-        reason: 'the undo copy holds the kept edit',
-      );
+      expect(pageFile(b).existsSync(), isFalse);
+      expect(deleted.pages.single.node('e1'), isNotNull, reason: 'the undo copy holds the kept edit');
       expect(recNames(), isEmpty);
     });
 

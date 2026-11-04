@@ -12,6 +12,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/ai/ai_access_service.dart';
 import 'package:noted/src/ai/ai_link_authority.dart';
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/recovery_store.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -1178,6 +1179,41 @@ void main() {
         final entry = (await nb.pendingRecovery()).entries.single;
         expect(entry.pageId, a);
         expect(entry.baseText, before);
+      });
+
+      test('the folder vanishing at the reread while recovery holds kept edits: two entries, and the replay lands both', () async {
+        final rec = Directory('${root.path}/rec');
+        final nb = make(recovery: rec);
+        await nb.load();
+        nb.current!.insertBox(box('bb', text: 'old'));
+        await nb.flush();
+        final code = await issue('bb');
+        final a = nb.currentId!;
+        final text = File('${pages.path}/$a.canvas').readAsStringSync();
+        await nb.createPage();
+        // Edits kept earlier wait for the page.
+        await RecoveryStore(rec).write(
+          folder: pages.path,
+          page: readPage(text).insertNode(box('kk', text: 'kept')),
+          baseText: text,
+          time: DateTime.now(),
+        );
+        nb.syncHook = (p, _) async {
+          if (p == 'closed-reread' && pages.existsSync()) pages.deleteSync(recursive: true);
+        };
+        final r = await nb.handleAiLink(req('bb', code, content: 'new'));
+        expect((r as AiLinkError).code, AiLinkCode.saveFailed);
+        nb.syncHook = null;
+        final kept = (await nb.pendingRecovery()).entries;
+        expect(kept.map((e) => e.kind).toSet(), {'edit', 'ai'}, reason: 'the AI write did not replace the kept edits');
+        expect(kept, hasLength(2));
+        await nb.checkFolders(); // notices the folder is gone
+        pages.createSync();
+        await nb.checkFolders();
+        final landed = readPage(File('${pages.path}/$a.canvas').readAsStringSync());
+        expect(landed.node('kk'), isNotNull, reason: 'the kept edit landed');
+        expect(((landed.node('bb')! as BoxRecord).data!.decode()! as Map)['text'], 'new');
+        expect((await nb.pendingRecovery()).entries, isEmpty);
       });
 
       test('the page forgotten with its vanishing folder at the reread: recovery, not noBox', () async {
