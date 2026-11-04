@@ -1,0 +1,78 @@
+# Nightly macOS and iOS build of main. GitHub often has no Mac runner free
+# during US daytime and cancels the Mac jobs of CI; this run happens when
+# runners are plentiful, so main always has a recent unsigned macOS app and
+# .ipa. Build steps match the macOS job in ci.yml.
+name: macOS nightly
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: 3.47.8
+
+jobs:
+  macos-nightly:
+    name: macOS and iOS build (main)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Get dependencies (workspace root)
+        run: flutter pub get
+
+      # Unsigned: no team or certificate is configured.
+      - name: Build macOS
+        working-directory: app
+        run: flutter build macos --release
+
+      - name: Zip Noted.app
+        working-directory: app/build/macos/Build/Products/Release
+        run: ditto -c -k --keepParent Noted.app "$GITHUB_WORKSPACE/Noted-macos.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Noted-macos-nightly
+          path: Noted-macos.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build iOS (unsigned)
+        working-directory: app
+        run: flutter build ipa --release --no-codesign
+
+      # flutter build ipa --no-codesign leaves an .xcarchive; the app is the
+      # one .app inside it.
+      - name: Package unsigned .ipa
+        working-directory: app
+        run: |
+          set -e
+          apps=(build/ios/archive/Runner.xcarchive/Products/Applications/*.app)
+          if [ "${#apps[@]}" -ne 1 ] || [ ! -d "${apps[0]}" ]; then
+            echo "::error::Expected exactly one .app in the Runner.xcarchive, found: ${apps[*]}"
+            exit 1
+          fi
+          rm -rf Payload Noted-unsigned.ipa
+          mkdir Payload
+          ditto "${apps[0]}" "Payload/$(basename "${apps[0]}")"
+          zip -qry Noted-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Noted-unsigned-ipa-nightly
+          path: app/Noted-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
