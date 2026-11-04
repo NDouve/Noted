@@ -266,7 +266,9 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
   /// missing or can't be read.
   List<AiMcpLogEntry> mcpLogEntries() {
     try {
-      return parseAiMcpLog(mcpLog.readAsStringSync());
+      // As bytes, decoded leniently: a multi-byte character cut by a crash
+      // mid-write must not hide the other entries.
+      return parseAiMcpLog(utf8.decode(mcpLog.readAsBytesSync(), allowMalformed: true));
     } on Object {
       return const [];
     }
@@ -341,7 +343,7 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
   // it exists but can't be read (then nothing is pruned).
   String? _rawLog(File f) {
     try {
-      return f.readAsStringSync();
+      return utf8.decode(f.readAsBytesSync(), allowMalformed: true);
     } on Object {
       return FileSystemEntity.typeSync(f.path) == FileSystemEntityType.notFound ? '' : null;
     }
