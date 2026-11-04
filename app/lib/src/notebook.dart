@@ -3453,27 +3453,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
         if (landed) break;
         // The file is not what was last seen. The open page takes it in at the
-        // top of the next round (_checkFile merges it); a page that is not
-        // open is merged here, three-way, against the text last seen.
+        // top of the next round (_checkFile merges it). A page that is not open
+        // has nothing to merge against here: it is never written over; its
+        // edits are kept in recovery, which merges them three-way later.
         if (isOpen && _current?.page.id == page.id) continue;
+        _countSaveFailure(page.id);
+        await _keepForRecovery(loc, st, toSave); // against the text last seen
         await _checkFile(path);
-        final now = _known[key];
-        if (now == known) continue;
-        try {
-          if (known == null) throw const PageFormatException('no earlier version to merge against');
-          toSave = mergePage(
-            readPage(known),
-            toSave,
-            readPage(now!),
-            modules.codecs,
-            theirsTime: DateTime.now().millisecondsSinceEpoch,
-          ).page;
-        } on Object catch (e) {
-          debugPrint('Merging page ${page.id} before saving failed: $e');
-          _countSaveFailure(page.id);
-          await _keepForRecovery(loc, st, toSave);
-          return;
-        }
+        return;
       }
       if (_current?.page.id == toSave.id) _base = toSave;
       _touch(loc);

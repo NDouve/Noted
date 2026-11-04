@@ -513,23 +513,6 @@ void main() {
       expect(idsOnDisk(id), {mine.id, theirs.id});
     });
 
-    test('autosave of a page that is no longer open: merged against the text last seen', () async {
-      await start();
-      final id = nb.currentId!;
-      nb.current!.createBoxAt(const Bounds(10, 10, 0, 0));
-      final base = onDisk(id);
-      final theirs = noteBox('from the other device', at: const Bounds(400, 10, 200, 40));
-      // The page closes with its edit still waiting for the autosave timer;
-      // the other device's version lands before that save is written.
-      counting.beforeWrite = () => File(pathOf(id)).writeAsStringSync(writePage(base.insertNode(theirs)));
-      await nb.createPage();
-      await nb.flush();
-
-      final ids = idsOnDisk(id);
-      expect(ids, contains(theirs.id));
-      expect(ids.length, 2, reason: 'the edit and the other device\'s box');
-    });
-
     test('a closed page renamed: the file replaced before the write', () async {
       await start();
       final id = nb.currentId!;
