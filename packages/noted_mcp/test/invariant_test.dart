@@ -22,6 +22,9 @@ void main() {
 
   /// Every library reachable from [entry], as `package:` or file URIs, with
   /// the `dart:` libraries it uses.
+  // Every library in the graph, third-party included, that imports dart:ffi.
+  final ffiImporters = <String>{};
+
   Set<String> reachable(Uri entry) {
     final seen = <String>{};
     final todo = <Uri>[entry];
@@ -35,6 +38,7 @@ void main() {
           : File.fromUri(uri);
       for (final m in directive.allMatches(file.readAsStringSync())) {
         final target = Uri.parse(m.group(1)!);
+        if (target.toString() == 'dart:ffi') ffiImporters.add(uri.toString());
         todo.add(target.hasScheme ? target : (uri.scheme == 'package' ? uri.resolveUri(target) : file.uri.resolveUri(target)));
       }
     }
@@ -43,6 +47,10 @@ void main() {
 
   final entry = File('bin/noted_mcp.dart').absolute.uri;
   final graph = reachable(entry);
+
+  test('dart:ffi is imported by the exclusive publisher and by no other library in the whole graph', () {
+    expect(ffiImporters, {'package:noted_core/src/storage/exclusive_publish.dart'});
+  });
 
   test('the walk sees the server and the read-only core', () {
     expect(graph, contains('package:noted_mcp/noted_mcp.dart'));
@@ -58,7 +66,6 @@ void main() {
         // package:crypto is allowed (its use is checked in the SHA-256 test).
         if (!lib.startsWith('package:crypto/') &&
             (forbiddenPackages.hasMatch(lib) ||
-            // dart:ffi is for the exclusive publisher only (checked in the writer test).
             lib == 'dart:ui' ||
             forbiddenWords.hasMatch(lib.split('/').skip(1).join('/'))))
           lib,
@@ -232,8 +239,11 @@ void main() {
     expect(count(writes['rename']!), 1, reason: 'the one move aside');
     expect(src, contains('await file.rename(aside.path);'));
     expect(RegExp(r'\bpublishExclusive\s*\(').hasMatch(src), isFalse, reason: 'only through the `publish` seam, defaulting to it');
-    expect(src, contains('publish = publishExclusive;'));
-    expect(count(RegExp(r'\bpublish\(')), 2, reason: 'publish the new text; put the aside back');
+    expect(src, contains('publish = publish ?? publishExclusive'));
+    expect(count(RegExp(r'\bpublish\(')), 3, reason: 'the exclusivity probe; publish the new text; put the aside back');
+    expect(src, contains('if (!await publish(tmp, probe.path)) return PageReplace.refused;'));
+    // The exclusivity probe comes before anything moves.
+    expect(src.indexOf('publish(tmp, probe.path)'), lessThan(src.indexOf('await file.rename(aside.path);')));
     expect(src, contains('published = await publish(tmp, file.path);'));
     expect(src, contains('return await publish(aside, file.path);'));
     // Deletes: the temporary file and the aside, nothing else.
@@ -269,7 +279,8 @@ void main() {
     for (final e in sources.entries) {
       if (e.key == exclusivePublish || e.key == closedWriter) continue;
       expect(e.value.contains('publishExclusive'), isFalse, reason: e.key);
-      if (e.key != exclusivePublish) expect(e.value.contains('dart:ffi'), isFalse, reason: e.key);
+      // The publish stand-in is a test-only constructor parameter.
+      expect(RegExp(r'\bpublish\s*:').hasMatch(e.value), isFalse, reason: e.key);
     }
     expect(src, contains('endsWith(pageExtension)'), reason: 'only page files');
     expect(src, contains('followLinks: false'), reason: 'never through a link');

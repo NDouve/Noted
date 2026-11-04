@@ -896,9 +896,31 @@ void main() {
     final old = utf8.encode('old');
     final fresh = utf8.encode('new');
 
+    // A writer whose publisher is [fake] for the page's path. The temporary
+    // names (the exclusivity probe) always go to the real publisher.
+    ClosedWriter writerWith(Future<bool> Function(File tmp, String target) fake) => ClosedWriter(
+      dataDir: data,
+      folders: [folder.path],
+      publish: (tmp, target) => target.endsWith('.tmp') ? publishExclusive(tmp, target) : fake(tmp, target),
+    );
+
+    test('a volume that cannot publish exclusively: refused, page untouched, no stray page or temporary file', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      final broken = ClosedWriter(
+        dataDir: data,
+        folders: [folder.path],
+        publish: (tmp, target) => throw const FileSystemException('no hard links on this volume'),
+      );
+      for (var i = 0; i < 2; i++) {
+        expect(await broken.replacePage(f.path, expected: old, text: fresh), PageReplace.refused);
+        expect(f.readAsStringSync(), 'old');
+        expect(names(), ['p.canvas']);
+      }
+    });
+
     test('a sync replacement while the new text is being published is never truncated or overwritten', () async {
       final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
-      w.publish = (tmp, target) => publishAfter((t) => File(t).writeAsStringSync('from sync'), tmp, target);
+      w = writerWith((tmp, target) => publishAfter((t) => File(t).writeAsStringSync('from sync'), tmp, target));
       expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.busy);
       expect(f.readAsStringSync(), 'from sync');
       final kept = names().where((n) => n != 'p.canvas').toList();
@@ -917,8 +939,8 @@ void main() {
 
     test('the put back finds something at the page path: it stays, and the aside is kept (busy)', () async {
       final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      w = writerWith((tmp, target) => publishAfter((t) => File(t).writeAsStringSync('from sync'), tmp, target));
       w.beforeAside = () async => f.writeAsStringSync('edited');
-      w.publish = (tmp, target) => publishAfter((t) => File(t).writeAsStringSync('from sync'), tmp, target);
       expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.busy);
       expect(f.readAsStringSync(), 'from sync');
       final kept = names().where((n) => n != 'p.canvas').toList();
@@ -929,13 +951,13 @@ void main() {
     test('publishing that throws puts the page back, removes the temporary file and refuses', () async {
       final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
       var first = true;
-      w.publish = (tmp, target) {
+      w = writerWith((tmp, target) {
         if (first) {
           first = false;
           throw const FileSystemException('no hard links here');
         }
         return publishExclusive(tmp, target);
-      };
+      });
       expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.refused);
       expect(f.readAsStringSync(), 'old');
       expect(names(), ['p.canvas']);
@@ -944,14 +966,14 @@ void main() {
     test('publishing that throws with the put back impossible keeps the aside and the other file', () async {
       final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
       var first = true;
-      w.publish = (tmp, target) {
+      w = writerWith((tmp, target) {
         if (first) {
           first = false;
           File(target).writeAsStringSync('from sync');
           throw const FileSystemException('failed');
         }
         return publishExclusive(tmp, target);
-      };
+      });
       expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.refused);
       expect(f.readAsStringSync(), 'from sync');
       final kept = names().where((n) => n != 'p.canvas').toList();

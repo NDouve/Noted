@@ -50,7 +50,15 @@ enum PageReplace {
 final class ClosedWriter {
   /// [dataDir] is the app's data folder (where the log goes); [folders] are
   /// the page folders the server's library lists.
-  ClosedWriter({required this.dataDir, required Iterable<String> folders}) : folders = List.unmodifiable(folders);
+  ///
+  /// [publish] is for tests only (the invariant test checks that no code
+  /// outside the tests passes it): it stands in for [publishExclusive].
+  ClosedWriter({
+    required this.dataDir,
+    required Iterable<String> folders,
+    Future<bool> Function(File tmp, String target)? publish,
+  }) : folders = List.unmodifiable(folders),
+       publish = publish ?? publishExclusive;
 
   final Directory dataDir;
   final List<String> folders;
@@ -61,8 +69,8 @@ final class ClosedWriter {
   Future<void> Function()? beforePublish;
   Future<void> Function(File aside)? beforeAsideDelete;
 
-  /// Publishes a finished file at a path without replacing; a seam for tests.
-  Future<bool> Function(File tmp, String target) publish = publishExclusive;
+  /// Publishes a finished file at a path without replacing.
+  final Future<bool> Function(File tmp, String target) publish;
 
   /// A test seam: called after the first look at the page, before it is moved aside.
   Future<void> Function()? beforeAside;
@@ -164,6 +172,14 @@ final class ClosedWriter {
       await made.create(exclusive: true);
       tmp = made;
       await tmp.writeAsBytes(text, flush: true);
+      // Probe: can this volume publish exclusively at all (hard links on
+      // POSIX)? Publishing the finished file to a second temporary name finds
+      // out with the page untouched; if it throws, the answer is `refused`
+      // (the outer handler) and nothing has moved. The probed name is then
+      // the file to publish.
+      final probe = File('${file.parent.path}$_sep.$name.noted_mcp-$pid-${_suffix()}.tmp');
+      if (!await publish(tmp, probe.path)) return PageReplace.refused;
+      tmp = probe;
       final aside = File('${file.parent.path}$_sep$stem-NOTED-MCP-${_suffix()}$pageExtension');
       if (beforeAside != null) await beforeAside!();
       await file.rename(aside.path);
