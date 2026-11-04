@@ -36,6 +36,21 @@ class CorruptingStore extends PageStore {
   }
 }
 
+/// A binder page store that runs [onSaveNew] before each new page file it is
+/// asked to publish (with the count so far), and may throw there.
+class DestStore extends PageStore {
+  DestStore(super.directory);
+
+  int fresh = 0;
+  void Function(int n)? onSaveNew;
+
+  @override
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) {
+    onSaveNew?.call(fresh++);
+    return super.saveNew(page, beforePublish: beforePublish);
+  }
+}
+
 /// A binder page store whose deletes of [failDelete] and (when [failSave]) all
 /// writes fail, like a source drive that went away.
 class FlakyStore extends PageStore {
@@ -79,6 +94,31 @@ class FlakyStore extends PageStore {
     final ok = await super.saveNewText(page, text, beforePublish: beforePublish);
     if (ok) saves.update(page.id, (n) => n + 1, ifAbsent: () => 1);
     return ok;
+  }
+
+  @override
+  Future<ReplaceResult> saveIfUnchanged(
+    NotedPage page,
+    String? expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    void Function()? beforePublish,
+    void Function()? beforeRestore,
+  }) async {
+    if (failSave || failSaveIds.contains(page.id)) {
+      onFailedSave?.call(page.id);
+      throw const FileSystemException('drive gone');
+    }
+    final r = await super.saveIfUnchanged(
+      page,
+      expectedText,
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforePublish: beforePublish,
+      beforeRestore: beforeRestore,
+    );
+    if (r.replaced) saves.update(page.id, (n) => n + 1, ifAbsent: () => 1);
+    return r;
   }
 
   /// How often each page was written.
@@ -477,19 +517,61 @@ void main() {
       await expectLater(
         bad.moveToLocation(p, binderPath: target.path),
         throwsA(
-          isA<NotebookException>().having((e) => e.message, 'message', contains('not copied')),
+          isA<NotebookException>().having((e) => e.message, 'message', allOf(contains('not copied'), contains('were kept'))),
         ),
       );
       // Sources are untouched, nothing is left in the target.
       for (final id in [p, c, g]) {
         expect(read(pages, id), before[id]);
       }
-      expect(canvasFiles(folder), isEmpty);
+      expect(canvasFiles(folder), hasLength(1), reason: 'the copy that is not what was published is kept');
       expect(target.tree.roots, isEmpty);
       expect(bad.tree.descendantsOf(p), [c, g]);
       expect(bad.binderOfPage(p), isNull);
       // The open page is still open.
       expect(bad.currentId, g);
+    });
+  });
+
+  group('a move that fails while it copies', () {
+    test('R-1: a copy that changed at the destination is kept, not deleted', () async {
+      late DestStore dest;
+      final nb = make(
+        factory: (d) {
+          final st = DestStore(d);
+          if (d.path == folder.path) dest = st;
+          return st;
+        },
+      );
+      await nb.load();
+      final s = await nb.addBinder(folder.path);
+      final p = await nb.createPage();
+      final c = await nb.createPage(parentId: p);
+      await nb.flush();
+      final before = read(pages, p);
+      late String synced;
+      dest.fresh = 0;
+      dest.onSaveNew = (n) {
+        if (n != 1) return;
+        // The first copy was published; a sync client changes it, then the
+        // second copy fails.
+        synced = read(folder, p).replaceFirst('"title":"', '"title":"Synced ');
+        File('${folder.path}/$p.canvas').writeAsStringSync(synced);
+        throw const FileSystemException('disk full');
+      };
+
+      await expectLater(
+        nb.moveToLocation(p, binderPath: s.path),
+        throwsA(
+          isA<NotebookException>()
+              .having((e) => e.message, 'message', allOf(contains('Could not move'), contains('were kept')))
+              .having((e) => e.needsAction, 'needsAction', isTrue),
+        ),
+      );
+      expect(read(folder, p), synced, reason: 'the changed copy is not deleted');
+      expect(File('${folder.path}/$c.canvas').existsSync(), isFalse);
+      expect(read(pages, p), before, reason: 'the source stays');
+      expect(folder.listSync().where((f) => f.path.contains('.cas-')), isEmpty);
     });
   });
 
@@ -665,6 +747,28 @@ void main() {
       expect(File('${pages.path}/$a.canvas').existsSync(), isFalse);
       expect(File('${pages.path}/$b.canvas').existsSync(), isFalse, reason: "this move's own copies are dropped");
       expect(nb.binderOfPage(b), s.path);
+    });
+
+    test('R-1: a copy that changed at the destination is kept, not deleted, when the sources are put back', () async {
+      source.failDelete.add(b);
+      late String synced;
+      source.onFailedDelete = (_) {
+        // The deletion of b fails; meanwhile a sync client changes a's copy.
+        synced = read(pages, a).replaceFirst('"title":"', '"title":"Synced ');
+        File('${pages.path}/$a.canvas').writeAsStringSync(synced);
+      };
+
+      await expectLater(
+        nb.moveToLocation(a),
+        throwsA(
+          isA<NotebookException>()
+              .having((e) => e.message, 'message', contains('kept in both places'))
+              .having((e) => e.needsAction, 'needsAction', isTrue),
+        ),
+      );
+      expect(read(pages, a), synced, reason: 'the changed copy is not deleted');
+      expect(File('${pages.path}/$b.canvas').existsSync(), isFalse, reason: 'the unchanged copy goes');
+      expect(read(folder, a), contains('"pageId":"$a"'), reason: 'the source was put back');
     });
 
     test('a source replaced between the check and its delete is kept; the earlier delete is put back', () async {

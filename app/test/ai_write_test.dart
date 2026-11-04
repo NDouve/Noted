@@ -80,6 +80,36 @@ class _VanishingStore extends PageStore {
   }
 }
 
+/// A store that runs [beforeWrite] once, right before the next compare-and-swap
+/// replace: a sync client landing a newer version of the file at that moment.
+class _SyncingStore extends PageStore {
+  _SyncingStore(super.directory);
+
+  void Function()? beforeWrite;
+
+  @override
+  Future<ReplaceResult> saveIfUnchanged(
+    NotedPage page,
+    String? expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    void Function()? beforePublish,
+    void Function()? beforeRestore,
+  }) {
+    final f = beforeWrite;
+    beforeWrite = null;
+    f?.call();
+    return super.saveIfUnchanged(
+      page,
+      expectedText,
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforePublish: beforePublish,
+      beforeRestore: beforeRestore,
+    );
+  }
+}
+
 void main() {
   late Directory root;
   late Directory pages;
@@ -916,6 +946,31 @@ void main() {
       expect((r as AiLinkError).code, AiLinkCode.saveFailed);
       expect(r.message, contains("don't retry an append"));
       expect(rec.existsSync() && rec.listSync().isNotEmpty, isTrue, reason: 'kept for recovery');
+    });
+
+    test('R-1: the file replaced at the replace itself is merged, not overwritten', () async {
+      final store = _SyncingStore(pages);
+      final nb = make(store: store);
+      await nb.load();
+      final a = nb.currentId!;
+      nb.current!.insertBox(box('ba', text: 'old'));
+      await nb.flush();
+      final code = await issue('ba');
+      await nb.createPage(); // a is closed now
+      final file = File('${pages.path}/$a.canvas');
+      // After the last reread and the rules, right before the file is replaced.
+      store.beforeWrite = () {
+        final disk = readPage(file.readAsStringSync());
+        file.writeAsStringSync(writePage(disk.insertNode(box('bx', text: 'sync'))));
+      };
+
+      final r = await nb.handleAiLink(req('ba', code, content: 'ai'));
+
+      expect(r.ok, isTrue);
+      final saved = readPage(file.readAsStringSync());
+      String text(String id) => ((saved.node(id)! as BoxRecord).data!.decode()! as Map)['text']! as String;
+      expect(text('ba'), 'ai');
+      expect(text('bx'), 'sync');
     });
 
     group('a closed page whose file changes while the write is made', () {

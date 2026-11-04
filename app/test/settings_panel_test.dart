@@ -678,6 +678,7 @@ void main() {
 
       await tap(t, 'settings-bg-${PageBackground.graph.name}');
       await settleSaves(t, nb);
+      await t.pump();
       expect(nb.currentId, a, reason: 'the open page stays open');
       expect(nb.backgroundOf(other), PageBackground.graph);
       expect(selected(t, 'settings-bg-${PageBackground.graph.name}'), isTrue);

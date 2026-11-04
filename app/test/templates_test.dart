@@ -36,6 +36,21 @@ List<String> tplFiles(Directory d) => d.existsSync()
       ]
     : [];
 
+/// A store that runs [onSaveNew] (with the count so far and the page) before
+/// each new page file it is asked to publish, and may throw there.
+class _FailingStore extends PageStore {
+  _FailingStore(super.directory);
+
+  int count = 0;
+  void Function(int n, NotedPage page)? onSaveNew;
+
+  @override
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) {
+    onSaveNew?.call(count++, page);
+    return super.saveNew(page, beforePublish: beforePublish);
+  }
+}
+
 void main() {
   late Directory root;
   late Directory pages;
@@ -205,6 +220,50 @@ void main() {
       final id = await nb.createPageFromTemplate(t, folderPath: other.path);
       expect(File('${other.path}/$id.canvas').existsSync(), isTrue);
       expect(nb.standaloneFolders, hasLength(1));
+    });
+
+    test('R-1: a binder that fails to be created keeps what changed since it was written, in plain words', () async {
+      void Function(int n, NotedPage page)? hook;
+      final freshDir = await Directory('${root.path}/Copy').create();
+      final nb = Notebook(
+        PageStore(pages),
+        buildModules(),
+        saveDelay: Duration.zero,
+        bindersFile: settings,
+        storeFactory: (d) {
+          return _FailingStore(d)..onSaveNew = (n, page) => hook?.call(n, page);
+        },
+      );
+      opened.add(nb);
+      await nb.load();
+      final binder = await nb.addBinder(binderDir.path);
+      final root1 = await nb.createPage(binderPath: binder.path);
+      await nb.createPage(parentId: root1);
+      final t = await nb.saveBinderAsTemplate(binder.path, name: 'T');
+
+      late String firstPath;
+      hook = (n, page) {
+        if (n == 0) {
+          firstPath = '${freshDir.path}/${page.id}.canvas';
+          return;
+        }
+        // The first page was written; a sync client changes it, then the second fails.
+        File(firstPath).writeAsStringSync(File(firstPath).readAsStringSync().replaceFirst('"title":"', '"title":"Synced '));
+        throw FileSystemException('disk full', freshDir.path);
+      };
+
+      await expectLater(
+        nb.createBinderFromTemplate(t, freshDir.path),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            allOf(startsWith('Could not create the binder'), isNot(contains(freshDir.path)), isNot(contains('Exception'))),
+          ),
+        ),
+      );
+      expect(File(firstPath).readAsStringSync(), contains('Synced '), reason: 'the changed page is kept');
+      expect(File('${freshDir.path}/$binderFileName').existsSync(), isFalse, reason: 'the binder file we wrote goes');
     });
 
     test('save a binder as a template and make a binder from it', () async {

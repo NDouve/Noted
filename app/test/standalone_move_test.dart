@@ -168,12 +168,13 @@ void main() {
 
       await expectLater(
         nb.move(a, parentId: x),
-        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('not copied'))),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', allOf(contains('not copied'), contains('were kept')))),
       );
       for (final id in [a, ca]) {
         expect(read(pages, id), before[id]);
-        expect(has(extra, id), isFalse);
       }
+      expect(has(extra, a), isFalse, reason: 'the copy that is what was published goes');
+      expect(has(extra, ca), isTrue, reason: 'the copy that is not what was published is kept');
       expect(nb.tree.descendantsOf(a), [ca]);
       expect(nb.tree.childrenOf(x), isEmpty);
     });
