@@ -256,6 +256,43 @@ void main() {
       expect(count, 3);
     });
 
+    // Merges [copy] into [original] up to three times as a retry would; returns
+    // the page after the first merge and checks the later ones add nothing.
+    NotedPage mergeRetried(NotedPage original, NotedPage copy) {
+      var cur = original;
+      NotedPage? first;
+      for (var i = 0; i < 3; i++) {
+        final next = readPage(writePage(merge(cur, copy).page));
+        expect(verifyConflictCopyMerge(next, cur, copy), isNull, reason: 'round $i');
+        first ??= next;
+        expect(next.nodes.length, first.nodes.length, reason: 'round $i changed the count');
+        cur = next;
+      }
+      return first!;
+    }
+
+    test('equal content under another id does not account for a different node', () {
+      final original = pageOf([raw(obj('x', 'A'), 'x'), raw(obj('y', 'B'), 'y')]);
+      final copy = pageOf([raw(obj('x', 'B'), 'x'), raw(obj('y', 'B'), 'y')]);
+      final m = mergeRetried(original, copy);
+      expect(m.nodes, hasLength(3));
+      expect(m.nodes.map((n) => n.toRaw().text).join(), contains('"text":"B"'));
+      expect(m.nodes.where((n) => n.toRaw().text.contains('"text":"B"')), hasLength(2));
+      // A page holding only the original's two nodes lost the copy's x.
+      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+    });
+
+    test('equal non-object nodes in the copy are all kept', () {
+      final r1 = mergeRetried(pageOf([raw('1', '#node0')]), pageOf([raw('1', '#node0'), raw('1', '#node1')]));
+      expect(r1.nodes.map((n) => n.toRaw().text), ['1', '1']);
+      final a = raw(obj('a', 'A'), 'a');
+      final r2 = mergeRetried(pageOf([a]), readPage(
+        '{"nodes":[${obj('a', 'A')},${obj('a', 'A')},${obj('a', 'A')}],'
+        '"noted":{"format":1,"pageId":"p","parentId":null,"title":"T","order":0}}',
+      ));
+      expect(r2.nodes, hasLength(3));
+    });
+
     test('a copy-only node with a made-up id gets a real new id', () {
       final original = pageOf([raw(obj('g', 'A'), 'g')]);
       final copy = fileOf([obj('g', 'B'), obj('g', 'C')]);

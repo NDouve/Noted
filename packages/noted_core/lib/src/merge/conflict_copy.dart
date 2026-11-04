@@ -89,6 +89,7 @@ PageMerge mergeConflictCopy(
   final copyById = {for (final n in copy.nodes) n.id: n};
   final originalIds = {for (final n in original.nodes) n.id};
   final conflicted = <String>{};
+  final held = _heldCopyNodes(original, copy);
   final out = <CanvasNode>[];
 
   for (final o in original.nodes) {
@@ -109,7 +110,7 @@ PageMerge mergeConflictCopy(
       // A node Noted doesn't own differs: keep both, nothing is dropped.
       out.add(o);
       // Not again if an earlier merge of this copy already kept this version.
-      if (!_hasVersion(original.nodes, c)) {
+      if (!held.contains(c)) {
         out.add(switch (c) {
           // A node that isn't a JSON object can't take an id: kept as it is.
           ForeignNode() => c.copyWithId(newId()) ?? c,
@@ -132,7 +133,7 @@ PageMerge mergeConflictCopy(
       // Its id came from its position or a repeat: on read-back it could take
       // over a node with the same real id, so a JSON object gets a new id.
       // Not again if an earlier merge of this copy already kept it.
-      if (_hasVersion(original.nodes, c)) continue;
+      if (held.contains(c)) continue;
       c = c.copyWithId(newId()) ?? c;
     }
     var at = 0;
@@ -200,17 +201,50 @@ bool _synthetic(ForeignNode n) {
   }
 }
 
-/// Whether [nodes] already hold [c], as it is, or (a node of a JSON object)
-/// with another id, or (a box) by revision or content.
-bool _hasVersion(List<CanvasNode> nodes, CanvasNode c) {
-  for (final n in nodes) {
-    if (c is BoxRecord) {
-      if (n is BoxRecord && (c.rev != null ? n.rev == c.rev : _sameContent(n, c))) return true;
-    } else if (c is ForeignNode && _sameModuloId(n, c)) {
+/// The copy's nodes that an earlier merge of this copy already kept in
+/// [original], so the next merge adds nothing for them: a node that differs
+/// from the original's foreign node at its id, or has a made-up id (see
+/// [_synthetic]), and that [original] holds as it is, with another id (a node
+/// of a JSON object), or (a box) by revision or content.
+///
+/// Counted, not just looked for: a node of [original] that the copy has at the
+/// same id is already accounted for, and each other node accounts for at most
+/// one copy node, so a copy with more equal nodes than the original keeps the
+/// rest. The set holds the nodes themselves (by identity).
+Set<CanvasNode> _heldCopyNodes(NotedPage original, NotedPage copy) {
+  final nodes = original.nodes;
+  final copyById = {for (final n in copy.nodes) n.id: n};
+  final originalIds = {for (final n in nodes) n.id};
+  final claimed = <int>{
+    for (var i = 0; i < nodes.length; i++)
+      if (_pairedAt(nodes[i], copyById)) i,
+  };
+  final held = Set<CanvasNode>.identity();
+  bool find(CanvasNode c) {
+    for (var i = 0; i < nodes.length; i++) {
+      if (claimed.contains(i)) continue;
+      final n = nodes[i];
+      final same = switch (c) {
+        BoxRecord() => n is BoxRecord && (c.rev != null ? n.rev == c.rev : _sameContent(n, c)),
+        ForeignNode() => _sameModuloId(n, c),
+      };
+      if (!same) continue;
+      claimed.add(i);
       return true;
     }
+    return false;
   }
-  return false;
+
+  for (final o in nodes) {
+    final c = copyById[o.id];
+    if (c == null || o is BoxRecord || o.toRaw() == c.toRaw()) continue;
+    if (find(c)) held.add(c);
+  }
+  for (final c in copy.nodes) {
+    if (originalIds.contains(c.id) || c is! ForeignNode || !_synthetic(c)) continue;
+    if (find(c)) held.add(c);
+  }
+  return held;
 }
 
 bool _sameModuloId(CanvasNode n, ForeignNode c) =>
@@ -240,6 +274,7 @@ bool _sameContent(BoxRecord x, BoxRecord y) =>
 String? verifyConflictCopyMerge(NotedPage onDisk, NotedPage original, NotedPage copy) {
   final copyById = {for (final n in copy.nodes) n.id: n};
   final originalById = {for (final n in original.nodes) n.id: n};
+  final held = _heldCopyNodes(original, copy); // need no node of their own
   final disk = onDisk.nodes;
   final used = <int>{};
   // Claims the first disk node not yet claimed that passes [test].
@@ -265,10 +300,6 @@ String? verifyConflictCopyMerge(NotedPage onDisk, NotedPage original, NotedPage 
       return 'foreign node ${o.id} is missing or changed';
     }
   }
-  // A copy node the original already holds in another form (an earlier merge
-  // of this copy kept it) needs no node of its own.
-  bool held(CanvasNode c, CanvasNode? o) =>
-      (o != null || (c is ForeignNode && _synthetic(c))) && _hasVersion(original.nodes, c);
   final boxes = <BoxRecord>[];
   for (final c in copy.nodes) {
     final o = originalById[c.id];
@@ -280,7 +311,7 @@ String? verifyConflictCopyMerge(NotedPage onDisk, NotedPage original, NotedPage 
         if (d is! BoxRecord || !d.conflicts.any((k) => k.node == c.toRaw())) {
           return 'foreign node ${c.id} is missing or changed';
         }
-      } else if (!held(c, o) && !take((d) => _sameModuloId(d, c))) {
+      } else if (!held.contains(c) && !take((d) => _sameModuloId(d, c))) {
         return 'foreign node ${c.id} is missing or changed';
       }
     } else if (c is BoxRecord && o is! BoxRecord) {
@@ -295,7 +326,7 @@ String? verifyConflictCopyMerge(NotedPage onDisk, NotedPage original, NotedPage 
     for (final c in boxes) {
       if ((c.rev != null) != byRev) continue;
       if (!take((d) => d is BoxRecord && (byRev ? d.rev == c.rev : _sameContent(d, c))) &&
-          !held(c, originalById[c.id])) {
+          !held.contains(c)) {
         return 'box ${c.id} is missing';
       }
     }
@@ -315,4 +346,13 @@ String? verifyConflictCopyMerge(NotedPage onDisk, NotedPage original, NotedPage 
     if (!covered(o) || !covered(c)) return 'a version of box ${o.id} was lost';
   }
   return null;
+}
+
+/// Whether [o] is accounted for by the copy's node at its id. Not for a node
+/// whose id is made up from its position and whose copy differs: the match is
+/// by chance, and another copy node may be its equal.
+bool _pairedAt(CanvasNode o, Map<String, CanvasNode> copyById) {
+  final c = copyById[o.id];
+  if (c == null) return false;
+  return o.toRaw() == c.toRaw() || !(o is ForeignNode && _synthetic(o));
 }
