@@ -3414,6 +3414,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         page,
         next,
         (merged) => _aiGate(merged, loc, false, code, req, recheck),
+        mergeEntry: true, // the AI's page joins the edits recovery already holds, it does not replace them
       )).page;
     } on _SaveRefused catch (e) {
       return e.response;
@@ -3466,7 +3467,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // done again; after a few rounds the save is refused. A file this app can't
   // read is refused and left as it is. Returns the page written, and the file
   // it was merged with (null: none). [markLanded] false: a recovery merge,
-  // which never marks boxes landed (0120).
+  // which never marks boxes landed (0120). [mergeEntry]: if the folder is gone,
+  // the page is merged into the recovery entry of the page that is there, not
+  // put in its place.
   Future<({NotedPage page, NotedPage? theirs})> _saveClosedPage(
     String loc,
     PageStore st,
@@ -3474,6 +3477,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     NotedPage mine,
     AiLinkCode? Function(NotedPage merged) check, {
     bool markLanded = true,
+    bool mergeEntry = false,
   }) async {
     final id = base.id;
     final path = st.pathFor(id);
@@ -3518,7 +3522,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // moment of replacing (0128); a file that changed since is merged again.
         if (!await _writeIfUnchanged(loc, toSave, again.text)) continue;
       } on FolderUnavailableException {
-        await _keepForRecovery(loc, st, toSave, base: recoveryBase);
+        await _keepForRecovery(loc, st, toSave, base: recoveryBase, mergeEntry: mergeEntry);
         throw _SaveRefused(AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage));
       } on NotebookException {
         throw _SaveRefused(AiLinkResponse.error(AiLinkCode.locked));
@@ -3526,7 +3530,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (await st.directory.exists()) {
           throw _SaveRefused(AiLinkResponse.error(AiLinkCode.saveFailed));
         }
-        await _keepForRecovery(loc, st, toSave, base: recoveryBase);
+        await _keepForRecovery(loc, st, toSave, base: recoveryBase, mergeEntry: mergeEntry);
         throw _SaveRefused(AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage));
       }
       return (page: toSave, theirs: theirs);
@@ -3693,10 +3697,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // A save couldn't land because the folder is gone: keep exactly what the
   // save would have written, so the edit survives quitting (0066). True when
   // the entry was written.
-  Future<bool> _keepForRecovery(String loc, PageStore st, NotedPage page, {NotedPage? base}) => _keepIn(
+  Future<bool> _keepForRecovery(String loc, PageStore st, NotedPage page, {NotedPage? base, bool mergeEntry = false}) => _keepIn(
     _normalizePath(st.directory.path),
     page,
     base == null ? _baseTextOf(st, page.id) : writePage(base),
+    mergeEntry: mergeEntry,
   );
 
   // Reads the kept edits of a page for [read] (open, delete, move). If the
@@ -3714,11 +3719,46 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // Writes the recovery entry of [page] for [folder]; true when it is there.
-  Future<bool> _keepIn(String folder, NotedPage page, String? baseText) async {
+  // There is one entry per folder and page, so a plain write replaces what is
+  // there. [mergeEntry]: for a page that was made from the file, not from the
+  // edits the entry holds (an AI's write to a closed page): those are merged
+  // with it (three-way, from the entry's own base), so neither is lost. If the
+  // entries can't be read, nothing is written.
+  Future<bool> _keepIn(String folder, NotedPage page, String? baseText, {bool mergeEntry = false}) async {
     final rec = _recovery;
     if (rec == null) return false;
     try {
-      await rec.write(folder: folder, page: page, baseText: baseText, time: DateTime.now());
+      var toKeep = page;
+      var base = baseText;
+      final merged = <String>{};
+      if (mergeEntry) {
+        final held = (await rec.list()).entries.where((e) => e.folder == folder && e.pageId == page.id).toList()
+          ..sort((x, y) => x.time.compareTo(y.time));
+        for (final e in held) {
+          if (e.pageText == writePage(toKeep)) continue;
+          final eBase = e.baseText == null ? NotedPage.create(e.page.meta) : readPage(e.baseText!);
+          toKeep = mergePage(
+            eBase,
+            e.page,
+            toKeep,
+            modules.codecs,
+            theirsTime: DateTime.now().millisecondsSinceEpoch,
+            markLanded: false,
+          ).page;
+          base = e.baseText ?? base;
+          merged.add(e.pageText);
+        }
+      }
+      await rec.write(folder: folder, page: toKeep, baseText: base, time: DateTime.now());
+      if (merged.isNotEmpty) {
+        // An entry of another slot that was merged in is not needed any more.
+        final text = writePage(toKeep);
+        for (final e in (await rec.list()).entries) {
+          if (e.folder == folder && e.pageId == page.id && e.pageText != text && merged.contains(e.pageText)) {
+            await rec.delete(e);
+          }
+        }
+      }
       return true;
     } on Object catch (e) {
       debugPrint('Keeping page ${page.id} for recovery failed: $e');

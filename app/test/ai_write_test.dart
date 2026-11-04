@@ -1039,6 +1039,41 @@ void main() {
       expect(((landed.node('ba')! as BoxRecord).data!.decode()! as Map)['text'], 'new');
     });
 
+    test('a closed page write whose folder vanishes is merged into the edits only recovery holds, not put in their place', () async {
+      final rec = Directory('${root.path}/rec');
+      final store = _VanishingStore(pages);
+      final nb = make(store: store, recovery: rec);
+      await nb.load();
+      final a = nb.currentId!;
+      nb.current!.insertBox(box('ba', text: 'old'));
+      await nb.flush();
+      final code = await issue('ba');
+      store.failSaveOf = a;
+      nb.current!.insertBox(box('mine', text: 'typed by the user'));
+      await nb.createPage(); // leaving page a: its save fails, the edits are in recovery
+      expect(nb.unsavedPageCount, 0);
+      expect((await nb.pendingRecovery()).entries.single.page.node('mine'), isNotNull);
+      nb.syncHook = (p, _) async {
+        if (p == 'closed-reread' && pages.existsSync()) pages.deleteSync(recursive: true);
+      };
+      final r = await nb.handleAiLink(req('ba', code, content: 'new'));
+      expect((r as AiLinkError).code, AiLinkCode.saveFailed); // the AI's page went to recovery
+      nb.syncHook = null;
+      final entry = (await nb.pendingRecovery()).entries.single;
+      expect(entry.page.node('mine'), isNotNull, reason: "the user's edits are kept");
+      expect(((entry.page.node('ba')! as BoxRecord).data!.decode()! as Map)['text'], 'new', reason: "and the AI's write");
+
+      // The folder is back at the next start: the page lands with both.
+      nb.dispose();
+      opened.remove(nb);
+      pages.createSync(recursive: true);
+      final again = make(recovery: rec);
+      await again.load();
+      final landed = readPage(File('${pages.path}/$a.canvas').readAsStringSync());
+      expect(landed.node('mine'), isNotNull);
+      expect(((landed.node('ba')! as BoxRecord).data!.decode()! as Map)['text'], 'new');
+    });
+
     group('a closed page whose file changes while the write is made', () {
       late ({Notebook nb, String a, String code}) t;
       late File file;
