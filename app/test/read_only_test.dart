@@ -43,11 +43,24 @@ void main() {
 
   Future<void> cleanUp() async {
     for (final nb in opened) {
+      // Closed-page updates and retries are tracked, not queued; let them end.
+      for (var i = 0; i < 200 && nb.unsavedDescription != null; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
       await nb.flush();
       nb.dispose();
     }
     opened.clear();
-    if (root.existsSync()) await root.delete(recursive: true);
+    // On Windows a folder watcher's handle is released a moment after the
+    // subscription is cancelled; a delete in that moment fails with errno 32.
+    for (var attempt = 1; root.existsSync(); attempt++) {
+      try {
+        await root.delete(recursive: true);
+      } on FileSystemException {
+        if (attempt >= 20) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+    }
   }
 
   File binderFile() => File('${folder.path}/$binderFileName');

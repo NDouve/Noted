@@ -114,8 +114,11 @@ void main() {
         // The delay restarts with each change, so the burst is one save; a
         // second only if a pause between two keystrokes outlasted the delay
         // on a slow machine. Never one per keystroke.
-        expect(log.renamesTo(path), inInclusiveRange(1, 2));
-        expect(log.writes('.tmp'), log.renamesTo(path));
+        // Each save writes one temporary file, which is then published
+        // exclusively (on Windows through the OS, which IOOverrides doesn't
+        // see, so publishes are counted by their temporary files).
+        expect(log.writes('.tmp'), inInclusiveRange(1, 2));
+        expect(File(path).readAsStringSync(), contains('typed ${'x' * 59}'));
       });
     });
 
