@@ -50,6 +50,10 @@ jobs:
       - name: Analyze
         run: flutter analyze
 
+      - name: Test the annotation script
+        shell: bash
+        run: dart .github/scripts/test/test_annotations_test.dart
+
       # Every package that has a test/ directory: app, packages/* and
       # packages/boxes/*. All of them depend on Flutter's test framework, so
       # flutter test runs them all. A failing package does not stop the rest.
@@ -57,12 +61,17 @@ jobs:
       # stuck in a synchronous loop never lets that timer run. So a package
       # gets 15 minutes in all; then its test process is killed and the last
       # tests it started are reported. Failed tests are reported by name, with
-      # the start of their error message.
+      # their own error message (.github/scripts/test_annotations.dart).
       # (Annotations can be read without signing in; the log can't.)
       - name: Test
         shell: bash
         run: |
           failed=""
+          # GitHub shows only 10 error annotations per step. So the summary and
+          # the timeouts are printed first, then the failed tests (4 in all).
+          first="$RUNNER_TEMP/annotations-first.txt"
+          per_test="$RUNNER_TEMP/annotations-tests.txt"
+          : > "$first"; : > "$per_test"
           for dir in app packages/* packages/boxes/*; do
             if [ -d "$dir/test" ]; then
               echo "::group::flutter test $dir"
@@ -71,38 +80,32 @@ jobs:
               # timeout would keep a pipe open.
               # (The step's shell stops at the first failing command, hence
               # the || here.)
+              json="$RUNNER_TEMP/test-$(echo "$dir" | tr '/' '-').json"
+              # The Windows flutter needs a Windows path for the file reporter.
+              jsonarg="$json"
+              if command -v cygpath > /dev/null; then jsonarg=$(cygpath -m "$json"); fi
               code=0
-              (cd "$dir" && timeout 900 flutter test --reporter expanded > "$log" 2>&1) || code=$?
+              (cd "$dir" && timeout 900 flutter test --reporter expanded --file-reporter "json:$jsonarg" > "$log" 2>&1) || code=$?
               cat "$log"
               if [ "$code" -ne 0 ]; then
                 failed="$failed $dir"
                 if [ "$code" -eq 124 ]; then
                   taskkill //F //IM flutter_tester.exe > /dev/null 2>&1 || pkill -f flutter_tester > /dev/null 2>&1 || true
                   last=$(grep -E '^[0-9]+:[0-9]+ \+' "$log" | tail -n 3 | tr '\n' ' ' || true)
-                  echo "::error title=Timed out in $dir::Still running after 15 minutes. Last tests: $last"
+                  echo "::error title=Timed out in $dir::Still running after 15 minutes. Last tests: $last" >> "$first"
                 fi
-                # Each failed test as one annotation: its name, the start of
-                # the exception Flutter printed before it, and the lines after
-                # it (%0A is a line break there; % is escaped first).
-                { awk '
-                  function out() { if (msg != "") print msg; msg = ""; n = 0 }
-                  { gsub(/\r/, ""); gsub(/%/, "%25") }
-                  /^[0-9]+:[0-9]+ \+/ && !/\[E\]$/ { out(); exc = ""; e = -1 }
-                  /EXCEPTION CAUGHT BY/ { exc = ""; e = 0; next }
-                  e >= 0 && e < 4 && $0 !~ /^[[:space:]]*$/ && !/^When the exception/ { exc = exc "%0A" $0; e++; next }
-                  e >= 0 && /^When the exception/ { e = 4 }
-                  /\[E\]$/ { out(); msg = $0 exc; exc = ""; e = -1; next }
-                  msg != "" && n < 6 && $0 !~ /^[[:space:]]*$/ { msg = msg "%0A" $0; n++ }
-                  END { out() }
-                ' "$log" || true; } | head -n 10 | while read -r line; do
-                  echo "::error title=Test failed in $dir::$line"
-                done
+                # Each failed test as one annotation: its name, its own error,
+                # stack trace and printed output (from the JSON event stream,
+                # keyed by test), and its file and line.
+                dart "$GITHUB_WORKSPACE/.github/scripts/test_annotations.dart" "$json" "$dir" >> "$per_test" || true
               fi
               echo "::endgroup::"
             fi
           done
           if [ -n "$failed" ]; then
             echo "::error::Tests failed in:$failed"
+            head -n 5 "$first"
+            head -n 4 "$per_test"
             exit 1
           fi
 
