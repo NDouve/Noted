@@ -102,3 +102,44 @@ abstract interface class AttachmentStore {
 abstract final class FileClipboard {
   static Future<List<IncomingFile>> Function() read = () async => const [];
 }
+
+/// What checking a folder file against its content hash found.
+enum AttachmentState {
+  /// The file is there and holds the bytes its hash names.
+  ok,
+
+  /// The file isn't there yet, is shorter than the size the box recorded, or
+  /// was still changing while it was checked ("Still syncing").
+  syncing,
+
+  /// The file is at its full size but does not hold the bytes its hash names.
+  damaged,
+}
+
+/// The result of [VerifyingAttachmentStore.readVerified].
+@immutable
+final class VerifiedAttachment {
+  const VerifiedAttachment(this.state, [this.bytes]);
+
+  final AttachmentState state;
+
+  /// The bytes, when [state] is [AttachmentState.ok].
+  final Uint8List? bytes;
+}
+
+/// An [AttachmentStore] that can check a folder file against the hash in its
+/// name (the notebook side names every attachment by its hash) before anyone
+/// trusts it, and that keeps a damaged file aside instead of using or
+/// deleting it. Optional: modules use it when the store has it, and check the
+/// bytes against the hash stored in the box themselves when it doesn't.
+abstract interface class VerifyingAttachmentStore implements AttachmentStore {
+  /// Reads the folder file [fileName] (the page's folder, then the recovery
+  /// folder) and checks it. [size] is the size the box recorded: a shorter
+  /// file is [AttachmentState.syncing], never damaged. Streams the file once;
+  /// call it when a file is loaded, never per frame.
+  Future<VerifiedAttachment> readVerified(String fileName, {required int size});
+
+  /// The same check without keeping the bytes (for a large file that is only
+  /// handed to another program).
+  Future<AttachmentState> verify(String fileName, {required int size});
+}

@@ -11,6 +11,8 @@ import 'package:flutter/foundation.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'attachment_copy.dart';
+
 /// Asks the user for files (only images when [imagesOnly]).
 typedef FilePicker = Future<List<IncomingFile>> Function({required bool imagesOnly});
 
@@ -28,7 +30,7 @@ const String overLimitNotice =
 /// kept in [recoveryDirectory] instead, under `<page id>.assets/`, and read
 /// from there until the notebook moves it into place with the recovered
 /// page.
-class PageAttachments extends ChangeNotifier implements AttachmentStore {
+class PageAttachments extends ChangeNotifier implements VerifyingAttachmentStore {
   PageAttachments({
     required this.pageFolder,
     required this.pageId,
@@ -124,20 +126,35 @@ class PageAttachments extends ChangeNotifier implements AttachmentStore {
       }
       onNotice?.call(overLimitNotice);
     }
-    await _write(name, bytes);
+    await _write(name, hash, bytes);
     return StoredAttachment(hash: hash, fileName: name, overLimit: want == AttachmentStorage.embedded);
   }
 
-  // Writes [name] into the assets folder (atomically; an existing file has
-  // the same content, so it is left alone), or into the recovery folder if
-  // the page's folder can't be written.
+  // Writes [name] (the file for [bytes], whose hash is [hash]) into the assets
+  // folder, atomically, or into the recovery folder if the page's folder can't
+  // be written. A file already under that name is trusted only if it holds
+  // [hash]: a shorter one is still syncing and is left alone; a damaged one is
+  // kept aside (see [setAsideDamaged]) and the good bytes are written under the
+  // name, so both copies stay.
   static int _tmpCounter = 0;
 
-  Future<void> _write(String name, Uint8List bytes) async {
+  Future<void> _write(String name, String hash, Uint8List bytes) async {
     Future<void> into(Directory d) async {
       final target = _in(d, name);
-      if (await target.exists()) return;
       await d.create(recursive: true);
+      if (FileSystemEntity.typeSync(target.path, followLinks: false) != FileSystemEntityType.notFound) {
+        if (FileSystemEntity.typeSync(target.path, followLinks: false) != FileSystemEntityType.file) {
+          return; // a link or a folder is never touched
+        }
+        final c = await checkAttachmentFile(target, hash, bytes.length);
+        if (c.state != AttachmentState.damaged) return; // good, or still syncing
+        final kept = await setAsideDamaged(target, c.found!);
+        if (kept == null) {
+          notify('A damaged copy of a file is in this page\'s folder and could not be set aside, so it was not replaced.');
+          return;
+        }
+        notify('A damaged copy of a file was found in this page\'s folder. It was kept as "$kept" and the good copy was saved.');
+      }
       // A unique name, so an extensionless write (`<hash>.tmp`) can never
       // clobber a real attachment called `<hash>.tmp`.
       final tmp = File('${target.path}.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
@@ -159,6 +176,50 @@ class PageAttachments extends ChangeNotifier implements AttachmentStore {
     }
     filesChanged();
   }
+
+  /// Checks the folder file [fileName] against the hash in its name, in the
+  /// page's folder and then the recovery folder. A damaged file is kept aside
+  /// beside it (see [setAsideDamaged]) and the user is told.
+  Future<VerifiedAttachment> _check(String fileName, int size, {required bool keepBytes}) async {
+    final hash = attachmentNameHash(fileName);
+    for (final d in [folder, ?recoveryFolder]) {
+      final f = _in(d, fileName);
+      if (FileSystemEntity.typeSync(f.path, followLinks: false) == FileSystemEntityType.notFound) continue;
+      if (hash == null) {
+        // Not named by a hash: nothing to check it against.
+        try {
+          return VerifiedAttachment(AttachmentState.ok, keepBytes ? await f.readAsBytes() : null);
+        } on FileSystemException {
+          return const VerifiedAttachment(AttachmentState.syncing);
+        }
+      }
+      final c = await checkAttachmentFile(f, hash, size, keepBytes: keepBytes);
+      switch (c.state) {
+        case AttachmentState.ok:
+          return VerifiedAttachment(AttachmentState.ok, c.bytes);
+        case AttachmentState.syncing:
+          return const VerifiedAttachment(AttachmentState.syncing);
+        case AttachmentState.damaged:
+          final kept = await setAsideDamaged(f, c.found!);
+          notify(
+            kept == null
+                ? 'A file in this page\'s folder is damaged, so it was not used. It could not be moved aside and stays where it is.'
+                : 'A file in this page\'s folder is damaged, so it was not used. The damaged copy was kept as "$kept" beside it.',
+          );
+          if (kept != null) filesChanged();
+          return const VerifiedAttachment(AttachmentState.damaged);
+      }
+    }
+    return const VerifiedAttachment(AttachmentState.syncing);
+  }
+
+  @override
+  Future<VerifiedAttachment> readVerified(String fileName, {required int size}) =>
+      _check(fileName, size, keepBytes: true);
+
+  @override
+  Future<AttachmentState> verify(String fileName, {required int size}) async =>
+      (await _check(fileName, size, keepBytes: false)).state;
 
   @override
   Future<Uint8List?> read(String fileName) async {
@@ -189,7 +250,12 @@ class PageAttachments extends ChangeNotifier implements AttachmentStore {
       await dir.create(recursive: true);
       final safe = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
       file = _in(dir, safe.isEmpty ? 'file' : safe);
-      if (!await file.exists()) await file.writeAsBytes(bytes, flush: true);
+      // A copy left by an earlier open is reused only if it still holds these
+      // bytes (a damaged or half-written one is rewritten: it is only a copy).
+      final want = contentHash(bytes);
+      if (!await file.exists() || await contentHashOfStream(file.openRead()) != want) {
+        await file.writeAsBytes(bytes, flush: true);
+      }
     } else if (fileName != null) {
       for (final d in [folder, ?recoveryFolder]) {
         final f = _in(d, fileName);
