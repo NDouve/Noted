@@ -362,18 +362,6 @@ void main() {
     expect(unsaved.retryDelay, const Duration(hours: 1));
   });
 
-  test('a copy held in memory that lands retires older entries of the page it never wrote', () async {
-    // An older entry of the page is already there (one replay could not land).
-    final (base, older) = page('a', boxes: 2);
-    await host.recovery!.write(folder: _folder, page: older, baseText: writePage(base), time: DateTime.now());
-    host.keepFails = true;
-    await failed('a'); // newer edits, held in memory only
-    host.keepFails = false;
-    await retry();
-    expect(unsaved.has('a'), isFalse);
-    expect(await entries(), isEmpty, reason: 'a later replay would bring back what was deleted since');
-  });
-
   test('an entry written after the copy in memory was taken (an AI write, without that copy) is merged with it, never replaced', () async {
     host.keepFails = true;
     final held = await failed('a'); // box 1, held in memory only
@@ -446,18 +434,33 @@ void main() {
     expect(unsaved.has('a'), isFalse);
   });
 
-  test('the open page saved retires every entry of the page, also one it did not write', () async {
+  test('the open page saved retires the entry it was made from, not one written since that it never merged', () async {
     final mine = await failed('a');
-    final (base, other) = page('a', boxes: 2);
-    await Future<void>.delayed(const Duration(milliseconds: 5));
-    await host.recovery!.write(folder: _folder, page: other, baseText: writePage(base), time: DateTime.now());
+    expect(await unsaved.edits('a', _loc), isNotNull); // the page opens with the entry's edits
     host
       ..open = 'a'
       ..files['a'] = writePage(mine);
+    // Another entry of the page lands (a save whose folder vanished).
+    final (base, other) = page('a', boxes: 2);
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    await host.recovery!.write(folder: _folder, page: other, baseText: writePage(base), time: DateTime.now());
     await unsaved.onSaved(_loc, mine);
     expect(unsaved.has('a'), isFalse);
-    expect(await entries(), isEmpty);
+    expect((await entries()).single.pageText, writePage(other), reason: 'the open page never held its edits');
   });
+
+  test('a copy held in memory that lands leaves an older entry it never merged', () async {
+    // An older entry of the page is already there (one replay could not land).
+    final (base, older) = page('a', boxes: 2);
+    await host.recovery!.write(folder: _folder, page: older, baseText: writePage(base), time: DateTime.now());
+    host.keepFails = true;
+    await failed('a'); // newer edits, held in memory only
+    host.keepFails = false;
+    await retry();
+    expect(unsaved.has('a'), isFalse);
+    expect((await entries()).single.pageText, writePage(older), reason: 'its edits were never merged; a replay lands them');
+  });
+
 
   test('the open page written to recovery owns the edits: a box deleted since is not merged back from the copy in memory', () async {
     host.keepFails = true;
@@ -479,6 +482,17 @@ void main() {
     await retry();
     expect(readPage(host.files['a']!).nodes.map((n) => n.id), [open.nodes.single.id], reason: 'the deleted box stays deleted');
     expect(await entries(), isEmpty);
+  });
+
+  test('a newer entry merged into a copy that recovery can not take goes with it when it lands', () async {
+    host.keepFails = true;
+    await failed('a'); // box 1, held in memory only
+    final (base, newer) = page('a', boxes: 2);
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    await host.recovery!.write(folder: _folder, page: newer, baseText: writePage(base), time: DateTime.now());
+    await retry(); // merged with the entry; the merge can not be written
+    expect(readPage(host.files['a']!).nodes, hasLength(3), reason: 'both landed');
+    expect(await entries(), isEmpty, reason: 'its edits are in the file now');
   });
 
   test('an entry replayed by someone else ends the tracking', () async {
