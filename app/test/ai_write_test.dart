@@ -174,11 +174,11 @@ void main() {
     if (root.existsSync()) await root.delete(recursive: true);
   });
 
-  Notebook make({PageStore? store, Directory? recovery}) {
+  Notebook make({PageStore? store, Directory? recovery, Duration saveDelay = Duration.zero}) {
     final nb = Notebook(
       store ?? PageStore(pages),
       modules,
-      saveDelay: Duration.zero,
+      saveDelay: saveDelay,
       bindersFile: File('${root.path}/app/binders.json'),
       deviceName: 'TestPC',
       aiAccess: service,
@@ -1005,7 +1005,8 @@ void main() {
     test('a closed page write whose folder vanishes is merged with edits held in memory, not put in their place', () async {
       final rec = Directory('${root.path}/rec');
       final store = _VanishingStore(pages);
-      final nb = make(store: store, recovery: rec);
+      // No autosave timer: a retry of the kept page must not run in the middle of the steps below.
+      final nb = make(store: store, recovery: rec, saveDelay: const Duration(hours: 1));
       await nb.load();
       final a = nb.currentId!;
       nb.current!.insertBox(box('ba', text: 'old'));
@@ -1042,7 +1043,8 @@ void main() {
     test('a closed page write whose folder vanishes is merged into the edits only recovery holds, not put in their place', () async {
       final rec = Directory('${root.path}/rec');
       final store = _VanishingStore(pages);
-      final nb = make(store: store, recovery: rec);
+      // No autosave timer: a retry of the kept page must not run in the middle of the steps below.
+      final nb = make(store: store, recovery: rec, saveDelay: const Duration(hours: 1));
       await nb.load();
       final a = nb.currentId!;
       nb.current!.insertBox(box('ba', text: 'old'));
