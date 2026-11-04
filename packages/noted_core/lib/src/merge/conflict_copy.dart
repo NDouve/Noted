@@ -5,6 +5,7 @@
 import 'dart:math';
 
 import '../box_api/codec_registry.dart';
+import '../json/raw_json.dart';
 import '../model/ids.dart';
 import '../model/page.dart';
 import 'page_issues.dart';
@@ -75,7 +76,9 @@ final Random _nameRandom = Random.secure();
 /// follows the content choice. A box only the copy has that overlaps a box
 /// the copy doesn't have in that place is marked landed; a landed marker on
 /// either side's version is kept. The page header and other top-level fields are
-/// the original's. [codecs] is unused for now and kept so the signature can
+/// the original's. A node that isn't a JSON object can't take an id, so when
+/// it differs from the other side's at the same place both are kept as they
+/// are. [codecs] is unused for now and kept so the signature can
 /// grow a codec-level merge.
 PageMerge mergeConflictCopy(
   NotedPage original,
@@ -86,6 +89,7 @@ PageMerge mergeConflictCopy(
   final copyById = {for (final n in copy.nodes) n.id: n};
   final originalIds = {for (final n in original.nodes) n.id};
   final conflicted = <String>{};
+  final held = _heldCopyNodes(original, copy);
   final out = <CanvasNode>[];
 
   for (final o in original.nodes) {
@@ -105,11 +109,14 @@ PageMerge mergeConflictCopy(
     } else {
       // A node Noted doesn't own differs: keep both, nothing is dropped.
       out.add(o);
-      final extra = switch (c) {
-        ForeignNode() => c.copyWithId(newId()),
-        BoxRecord() => markLandedIfOverlapping(c.withId(newId()), [o], mergeTime: copyTime),
-      };
-      if (extra != null) out.add(extra);
+      // Not again if an earlier merge of this copy already kept this version.
+      if (!held.contains(c)) {
+        out.add(switch (c) {
+          // A node that isn't a JSON object can't take an id: kept as it is.
+          ForeignNode() => c.copyWithId(newId()) ?? c,
+          BoxRecord() => markLandedIfOverlapping(c.withId(newId()), [o], mergeTime: copyTime),
+        });
+      }
     }
   }
 
@@ -122,6 +129,13 @@ PageMerge mergeConflictCopy(
     var c = copy.nodes[i];
     if (originalIds.contains(c.id)) continue;
     if (c is BoxRecord) c = markLandedIfOverlapping(c, existing, mergeTime: copyTime);
+    if (c is ForeignNode && _synthetic(c)) {
+      // Its id came from its position or a repeat: on read-back it could take
+      // over a node with the same real id, so a JSON object gets a new id.
+      // Not again if an earlier merge of this copy already kept it.
+      if (held.contains(c)) continue;
+      c = c.copyWithId(newId()) ?? c;
+    }
     var at = 0;
     for (var j = i - 1; j >= 0; j--) {
       final k = out.indexWhere((n) => n.id == copy.nodes[j].id);
@@ -176,6 +190,67 @@ PageMerge mergeConflictCopy(
   return (r, isConflict);
 }
 
+/// Whether [n] has an id the page reader made up (from its position, or
+/// because the id repeats) rather than one in its own `id` field.
+bool _synthetic(ForeignNode n) {
+  if (!n.raw.isObject) return true;
+  try {
+    return RawObject.parse(n.raw.text).string('id') != n.id;
+  } on FormatException {
+    return true;
+  }
+}
+
+/// The copy's nodes that an earlier merge of this copy already kept in
+/// [original], so the next merge adds nothing for them: a node that differs
+/// from the original's foreign node at its id, or has a made-up id (see
+/// [_synthetic]), and that [original] holds as it is, with another id (a node
+/// of a JSON object), or (a box) by revision or content.
+///
+/// Counted, not just looked for: a node of [original] that the copy has at the
+/// same id is already accounted for, and each other node accounts for at most
+/// one copy node, so a copy with more equal nodes than the original keeps the
+/// rest. The set holds the nodes themselves (by identity).
+Set<CanvasNode> _heldCopyNodes(NotedPage original, NotedPage copy) {
+  final nodes = original.nodes;
+  final copyById = {for (final n in copy.nodes) n.id: n};
+  final originalIds = {for (final n in nodes) n.id};
+  final claimed = <int>{
+    for (var i = 0; i < nodes.length; i++)
+      if (_pairedAt(nodes[i], copyById)) i,
+  };
+  final held = Set<CanvasNode>.identity();
+  bool find(CanvasNode c) {
+    for (var i = 0; i < nodes.length; i++) {
+      if (claimed.contains(i)) continue;
+      final n = nodes[i];
+      final same = switch (c) {
+        BoxRecord() => n is BoxRecord && (c.rev != null ? n.rev == c.rev : _sameContent(n, c)),
+        ForeignNode() => _sameModuloId(n, c),
+      };
+      if (!same) continue;
+      claimed.add(i);
+      return true;
+    }
+    return false;
+  }
+
+  for (final o in nodes) {
+    final c = copyById[o.id];
+    if (c == null || o is BoxRecord || o.toRaw() == c.toRaw()) continue;
+    if (find(c)) held.add(c);
+  }
+  for (final c in copy.nodes) {
+    if (originalIds.contains(c.id) || c is! ForeignNode || !_synthetic(c)) continue;
+    if (find(c)) held.add(c);
+  }
+  return held;
+}
+
+bool _sameModuloId(CanvasNode n, ForeignNode c) =>
+    n.toRaw() == c.toRaw() ||
+    (c.raw.isObject && n.toRaw().isObject && c.copyWithId(n.id)?.toRaw() == n.toRaw());
+
 bool _sameContent(BoxRecord x, BoxRecord y) =>
     x.typeId == y.typeId &&
     x.dataVersion == y.dataVersion &&
@@ -183,16 +258,77 @@ bool _sameContent(BoxRecord x, BoxRecord y) =>
     x.snapshotText == y.snapshotText;
 
 /// Checks, on the page read back from disk, that the merge of [copy] into
-/// [original] lost nothing: every node id of both sides is there, and for each
-/// box both sides have, the saved content is one side's version and the other
-/// is either its ancestor (by revision) or recorded in the box's `conflicts`.
+/// [original] lost nothing: every node of both sides is there, each matched to
+/// its own node on disk, and for each box both sides have, the saved content is
+/// one side's version and the other is either its ancestor (by revision) or
+/// recorded in the box's `conflicts`.
+///
+/// A node Noted doesn't own is matched by its raw text, since its id may be
+/// synthetic (from its position): the original's must be there byte for byte,
+/// the copy's may also have a new id written into its `id` field, or be
+/// recorded in the `conflicts` of the box that has its id. A box only the copy
+/// has (or one the original has as a foreign node) is matched by revision or
+/// content, as it may have taken a new id.
 ///
 /// Returns null if all is well, otherwise what is missing.
 String? verifyConflictCopyMerge(NotedPage onDisk, NotedPage original, NotedPage copy) {
   final copyById = {for (final n in copy.nodes) n.id: n};
-  for (final side in [original, copy]) {
-    for (final n in side.nodes) {
-      if (onDisk.node(n.id) == null) return 'node ${n.id} is missing';
+  final originalById = {for (final n in original.nodes) n.id: n};
+  final held = _heldCopyNodes(original, copy); // need no node of their own
+  final disk = onDisk.nodes;
+  final used = <int>{};
+  // Claims the first disk node not yet claimed that passes [test].
+  bool take(bool Function(CanvasNode d) test) {
+    for (var i = 0; i < disk.length; i++) {
+      if (used.contains(i) || !test(disk[i])) continue;
+      used.add(i);
+      return true;
+    }
+    return false;
+  }
+
+  // Boxes first, by id; a node Noted doesn't own is matched by raw text against
+  // a disk node of either kind (a repeated box id reads as a foreign node, but
+  // once the merge gave it a new id it reads back as a box).
+  for (final o in original.nodes) {
+    if (o is! ForeignNode && !take((d) => d is BoxRecord && d.id == o.id)) {
+      return 'node ${o.id} is missing';
+    }
+  }
+  for (final o in original.nodes) {
+    if (o is ForeignNode && !take((d) => d.toRaw() == o.toRaw())) {
+      return 'foreign node ${o.id} is missing or changed';
+    }
+  }
+  final boxes = <BoxRecord>[];
+  for (final c in copy.nodes) {
+    final o = originalById[c.id];
+    if (o != null && o.toRaw() == c.toRaw()) continue; // the original's node
+    if (c is ForeignNode) {
+      if (o is BoxRecord) {
+        // Recorded as a conflicting version of the box with its id.
+        final d = onDisk.node(o.id);
+        if (d is! BoxRecord || !d.conflicts.any((k) => k.node == c.toRaw())) {
+          return 'foreign node ${c.id} is missing or changed';
+        }
+      } else if (!held.contains(c) && !take((d) => _sameModuloId(d, c))) {
+        return 'foreign node ${c.id} is missing or changed';
+      }
+    } else if (c is BoxRecord && o is! BoxRecord) {
+      // Only the copy has this box, or the original has a foreign node by its
+      // id and the box took a new id.
+      boxes.add(c);
+    }
+  }
+  // Matched by revision first, so a content match can't take a node a later
+  // revision match needs.
+  for (final byRev in [true, false]) {
+    for (final c in boxes) {
+      if ((c.rev != null) != byRev) continue;
+      if (!take((d) => d is BoxRecord && (byRev ? d.rev == c.rev : _sameContent(d, c))) &&
+          !held.contains(c)) {
+        return 'box ${c.id} is missing';
+      }
     }
   }
   for (final o in original.nodes) {
@@ -210,4 +346,13 @@ String? verifyConflictCopyMerge(NotedPage onDisk, NotedPage original, NotedPage 
     if (!covered(o) || !covered(c)) return 'a version of box ${o.id} was lost';
   }
   return null;
+}
+
+/// Whether [o] is accounted for by the copy's node at its id. Not for a node
+/// whose id is made up from its position and whose copy differs: the match is
+/// by chance, and another copy node may be its equal.
+bool _pairedAt(CanvasNode o, Map<String, CanvasNode> copyById) {
+  final c = copyById[o.id];
+  if (c == null) return false;
+  return o.toRaw() == c.toRaw() || !(o is ForeignNode && _synthetic(o));
 }

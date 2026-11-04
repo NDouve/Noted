@@ -169,6 +169,158 @@ void main() {
     expect((r.page.nodes.last as ForeignNode).text, 'B');
   });
 
+  ForeignNode raw(String text, String id) =>
+      ForeignNode.read(RawJson.trusted(text), fallbackId: id);
+
+  test('differing non-object nodes at the same position are both kept', () {
+    final one = raw('1', '#node0');
+    final two = raw('2', '#node0');
+    final r = merge(pageOf([one]), pageOf([two]));
+    expect(r.page.nodes.map((n) => n.toRaw().text), ['1', '2']);
+  });
+
+  group('verifyConflictCopyMerge foreign content', () {
+    const a = '{"id":"f","type":"text","x":0,"y":0,"width":5,"height":5,"text":"A"}';
+    const b = '{"id":"f","type":"text","x":0,"y":0,"width":5,"height":5,"text":"B"}';
+
+    test('rejects a result that dropped a same-id foreign node with other content', () {
+      final original = pageOf([raw(a, 'f')]);
+      final copy = pageOf([raw(b, 'f')]);
+      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+    });
+
+    test('rejects a result that dropped a non-object node', () {
+      final original = pageOf([raw('1', '#node0')]);
+      final copy = pageOf([raw('2', '#node0')]);
+      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+    });
+
+    String obj(String id, String text) =>
+        '{"id":"$id","type":"text","x":0,"y":0,"width":5,"height":5,"text":"$text"}';
+
+    test('accepts a foreign copy node recorded in the conflicts of a box with its id', () {
+      final original = pageOf([box('b', 'mine')]);
+      final copy = pageOf([raw(a.replaceFirst('"f"', '"b"'), 'b')]);
+      final m = merge(original, copy).page;
+      expect((m.node('b')! as BoxRecord).conflicts, hasLength(1));
+      expect(verifyConflictCopyMerge(readPage(writePage(m)), original, copy), isNull);
+      // Without the record it is lost.
+      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+    });
+
+    test('matches nodes one to one', () {
+      final x = raw(obj('x', 'one'), 'x');
+      final g = raw(obj('g', 'one'), 'g');
+      expect(verifyConflictCopyMerge(pageOf([x]), pageOf([x]), pageOf([g])), isNotNull);
+      final one = raw('1', '#node0');
+      final two = raw('1', '#node1');
+      final both = pageOf([one, two]);
+      expect(verifyConflictCopyMerge(pageOf([one]), both, both), isNotNull);
+      expect(verifyConflictCopyMerge(both, both, both), isNull);
+    });
+
+    test('the original foreign node must be there with its own id', () {
+      final original = pageOf([raw(a, 'f')]);
+      final moved = pageOf([raw(obj('z', 'A'), 'z')]);
+      expect(verifyConflictCopyMerge(moved, original, pageOf([])), isNotNull);
+    });
+
+    test('checks a box the copy has against a foreign node of the original', () {
+      final original = pageOf([raw(obj('b', 'A'), 'b')]);
+      final copy = pageOf([box('b', 'theirs')]);
+      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+      final m = merge(original, copy).page;
+      expect(verifyConflictCopyMerge(readPage(writePage(m)), original, copy), isNull);
+    });
+
+    String boxText(String data, String rev) =>
+        '{"id":"b","x":0,"y":0,"width":50,"height":50,"text":"snap:$data",'
+        '"noted":{"type":"test.plain","v":1,"rev":"$rev","data":"$data"}}';
+    NotedPage fileOf(List<String> nodes) => readPage(
+      '{"nodes":[${nodes.join(',')}],'
+      '"noted":{"format":1,"pageId":"p","parentId":null,"title":"T","order":0}}',
+    );
+
+    test('a repeated box id: the merge is accepted and a retry adds nothing', () {
+      final original = fileOf([boxText('one', 'r1'), boxText('two', 'r2')]);
+      final copy = fileOf([boxText('one', 'r1'), boxText('three', 'r3')]);
+      var cur = original;
+      var count = -1;
+      for (var i = 0; i < 3; i++) {
+        final next = readPage(writePage(merge(cur, copy).page));
+        expect(verifyConflictCopyMerge(next, cur, copy), isNull, reason: 'round $i');
+        if (i > 0) expect(next.nodes.length, count, reason: 'round $i grew');
+        count = next.nodes.length;
+        cur = next;
+      }
+      expect(count, 3);
+    });
+
+    // Merges [copy] into [original] up to three times as a retry would; returns
+    // the page after the first merge and checks the later ones add nothing.
+    NotedPage mergeRetried(NotedPage original, NotedPage copy) {
+      var cur = original;
+      NotedPage? first;
+      for (var i = 0; i < 3; i++) {
+        final next = readPage(writePage(merge(cur, copy).page));
+        expect(verifyConflictCopyMerge(next, cur, copy), isNull, reason: 'round $i');
+        first ??= next;
+        expect(next.nodes.length, first.nodes.length, reason: 'round $i changed the count');
+        cur = next;
+      }
+      return first!;
+    }
+
+    test('equal content under another id does not account for a different node', () {
+      final original = pageOf([raw(obj('x', 'A'), 'x'), raw(obj('y', 'B'), 'y')]);
+      final copy = pageOf([raw(obj('x', 'B'), 'x'), raw(obj('y', 'B'), 'y')]);
+      final m = mergeRetried(original, copy);
+      expect(m.nodes, hasLength(3));
+      expect(m.nodes.map((n) => n.toRaw().text).join(), contains('"text":"B"'));
+      expect(m.nodes.where((n) => n.toRaw().text.contains('"text":"B"')), hasLength(2));
+      // A page holding only the original's two nodes lost the copy's x.
+      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+    });
+
+    test('equal non-object nodes in the copy are all kept', () {
+      final r1 = mergeRetried(pageOf([raw('1', '#node0')]), pageOf([raw('1', '#node0'), raw('1', '#node1')]));
+      expect(r1.nodes.map((n) => n.toRaw().text), ['1', '1']);
+      final a = raw(obj('a', 'A'), 'a');
+      final r2 = mergeRetried(pageOf([a]), readPage(
+        '{"nodes":[${obj('a', 'A')},${obj('a', 'A')},${obj('a', 'A')}],'
+        '"noted":{"format":1,"pageId":"p","parentId":null,"title":"T","order":0}}',
+      ));
+      expect(r2.nodes, hasLength(3));
+    });
+
+    test('a copy-only node with a made-up id gets a real new id', () {
+      final original = pageOf([raw(obj('g', 'A'), 'g')]);
+      final copy = fileOf([obj('g', 'B'), obj('g', 'C')]);
+      final m = merge(original, copy).page;
+      final withG = m.nodes.where((n) => n.toRaw().text.contains('"id":"g"'));
+      expect(withG, hasLength(1));
+      expect(m.nodes, hasLength(3));
+      final back = readPage(writePage(m));
+      expect(back.node('g')!.toRaw(), original.node('g')!.toRaw());
+    });
+
+    test('boxes are matched by revision before content', () {
+      String text(String id, String? rev) =>
+          '{"id":"$id","x":0,"y":0,"width":50,"height":50,"text":"snap:k",'
+          '"noted":{"type":"test.plain","v":1,${rev == null ? '' : '"rev":"$rev",'}"data":"k"}}';
+      final copy = fileOf([text('b', null), text('a', 'ra')]);
+      final disk = fileOf([text('a', 'ra'), text('b', null)]);
+      expect(verifyConflictCopyMerge(disk, pageOf([]), copy), isNull);
+    });
+
+    test('accepts the merge, including a copy moved to a new id', () {
+      final original = pageOf([raw(a, 'f'), raw('1', '#node1')]);
+      final copy = pageOf([raw(b, 'f'), raw('2', '#node1')]);
+      final m = merge(original, copy).page;
+      expect(verifyConflictCopyMerge(readPage(writePage(m)), original, copy), isNull);
+    });
+  });
+
   group('verifyConflictCopyMerge', () {
     test('accepts what the merge wrote', () {
       final original = base.replaceNode(edit(a, 'mine')).insertNode(box('x', 'x'));
