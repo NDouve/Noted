@@ -14,7 +14,9 @@ import 'exclusive_publish.dart';
 const String asideSuffix = '.cas-old';
 
 /// The ending of the aside file once its bytes were verified equal to what the
-/// caller expected: it holds nothing the caller doesn't already have.
+/// caller expected. Such a file is still never deleted because the target is
+/// occupied: it may be the only durable copy of that version, so it is kept as a
+/// conflict copy (see [sweepAsideFiles]).
 const String verifiedSuffix = '.cas-verified';
 
 /// What [replaceIfUnchanged] did.
@@ -47,9 +49,12 @@ class ReplaceResult {
 
   final ReplaceOutcome outcome;
 
-  /// A file left behind under its own name (it ends in [asideSuffix], so the
-  /// next [PageStore.scan] turns it back into a page or a conflict copy). Null
-  /// when nothing was left behind.
+  /// A file left behind under its own name. After [ReplaceOutcome.supersededKept]
+  /// that is usually a conflict copy of the target (`<stem>-conflict-<hex><ext>`,
+  /// see [conflictCopyName]); otherwise it ends in [asideSuffix] (or
+  /// [verifiedSuffix] if no conflict copy could be made), and the next
+  /// [PageStore.scan] turns it back into a page or a conflict copy. Null when
+  /// nothing was left behind.
   final String? keptPath;
 
   bool get replaced => outcome == ReplaceOutcome.replaced;
@@ -81,13 +86,29 @@ Future<String?> _keepAsConflictCopy(File file, String target, String label) asyn
   for (var attempt = 0; attempt < 8; attempt++) {
     final path = '$dir$sep${conflictCopyName(name, label: label, extension: ext, random: _random)}';
     try {
-      if (await publishExclusive(file, path)) return path;
+      if (await publishExclusive(file, path)) {
+        await _dropLeftoverLink(file, path);
+        return path;
+      }
     } on FileSystemException {
       if (attempt >= 3) return null;
       await Future<void>.delayed(Duration(milliseconds: 25 * (attempt + 1)));
     }
   }
   return null;
+}
+
+/// On POSIX [publishExclusive] can rarely leave the source as a second hard link
+/// to the published file. Remove it, but only if it still holds the same bytes
+/// (so it is our link, not something that took the name since).
+Future<void> _dropLeftoverLink(File source, String published) async {
+  try {
+    if (!await source.exists()) return;
+    final a = await source.readAsBytes();
+    if (_same(a, await File(published).readAsBytes())) await source.delete();
+  } on FileSystemException {
+    // Leave it; the sweep treats it as a leftover and finds the target taken.
+  }
 }
 
 String _asideName(String target) =>
@@ -176,10 +197,13 @@ Future<ReplaceResult> replaceIfUnchanged(
     return _restore(aside, target, beforeRestore, ReplaceOutcome.changed);
   }
 
-  // Mark it verified (a unique name, so this never replaces). From here a
-  // leftover holds only the version the caller already has, so the sweep may
-  // delete it when the target is occupied, and a crash after a successful
-  // publish doesn't bring deleted content back as a recovered copy. If the
+  // Mark it verified (a unique name, so this never replaces). The mark records
+  // that the bytes equal what the caller held; it does not make the file
+  // disposable. The sweep keeps a verified leftover as a conflict copy when the
+  // target is occupied. Trade-off: a crash after our own publish succeeded
+  // leaves the verified aside beside our new file, and the sweep turns it into a
+  // conflict copy of the older version, so a box deleted in that save can come
+  // back after the merge. That is preferred to losing the only copy. If the
   // rename fails the original is put back and the error is the caller's.
   try {
     final base = aside.path.substring(0, aside.path.length - asideSuffix.length);
@@ -431,12 +455,15 @@ Future<DeleteResult> deleteFileIfUnchanged(
 /// [FileSystemException] means "retry later" with the original kept (see
 /// there). If the set-aside file can't be put back after an error, the thrown
 /// [FileSystemException] names the path it is kept at; a file that isn't a page
-/// is brought back by [sweepAsideFiles] with `extension: ''`.
+/// is brought back only when the caller sweeps its folder with
+/// [sweepAsideFiles] and `extension: ''`: [PageStore.scan] sweeps `.canvas`
+/// files only and does not look inside assets folders, so whoever deletes
+/// attachments must sweep them (the app does not do so yet).
 ///
 /// Crash window: the file is only set aside, not yet deleted, between the
 /// move-aside and the final delete. A crash there leaves it under its
-/// [asideSuffix] name; the next [sweepAsideFiles] (run by [PageStore.scan])
-/// puts it back, so the page reappears (a duplicate of what the caller meant
+/// [asideSuffix] name; the next [sweepAsideFiles] of the folder (run by [PageStore.scan] for
+/// pages; the caller's job for other files) puts it back, so the page reappears (a duplicate of what the caller meant
 /// to delete). Nothing is lost.
 ///
 /// Test seams: [beforeMoveAside], [afterRead] (the target is absent), the
