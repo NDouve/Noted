@@ -66,6 +66,11 @@ function Update-McpCopy([string]$Source, [string]$Root = $env:LOCALAPPDATA) {
     New-Item -ItemType Directory -Force $dir | Out-Null
     # A leftover from an interrupted run.
     Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    # Replace renames a running exe aside as noted_mcp.exe~RF<hex>.TMP; drop
+    # those left by earlier runs, skipping any still held.
+    foreach ($old in @(Get-ChildItem -LiteralPath $dir -Filter 'noted_mcp.exe~RF*.TMP' -ErrorAction SilentlyContinue)) {
+      try { Remove-Item -LiteralPath $old.FullName -Force } catch { }
+    }
     $hash = (Get-FileHash $Source).Hash
     if (Test-Path $dest) {
       if ((Get-FileHash $dest).Hash -eq $hash) {
@@ -121,7 +126,9 @@ if (-not $Exe) {
 $Exe = (Resolve-Path $Exe).Path
 if (-not $NoCopy) {
   $copy = Update-McpCopy $Exe
-  if ($copy) { $Exe = $copy } else { Write-Host "Using $Exe in place." }
+  if ($copy) { $Exe = $copy } else {
+    Write-Warning "Could not make the copy in %LOCALAPPDATA%\Noted\mcp, so '$Exe' is registered in place. A Claude session running it will block rebuilding the release zip. Run this script again when the copy can be made."
+  }
 }
 
 if (-not $PrintOnly) {
