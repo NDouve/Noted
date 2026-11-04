@@ -1442,6 +1442,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // recovery's kept files (0098): they land beside the page when it does,
       // and are out of reach of a later delete's clean-up of the trash.
       final rec = _recovery;
+      var handedOff = false;
       if (rec != null) {
         for (final id in stash.keys.toList()) {
           try {
@@ -1450,9 +1451,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               Directory('${rec.directory.path}${Platform.pathSeparator}${assetsFolderName(id)}'),
             );
             stash.remove(id);
-            // Land them as soon as the folder takes them, not only at the
-            // next start: the folder check retries kept files.
-            _keptRetry = true;
+            handedOff = true;
           } on Object catch (e) {
             debugPrint('Keeping the attachments of page $id for recovery failed: $e');
           }
@@ -1495,6 +1494,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           );
           if (!has) await _keepForRecovery(loc, st, pages[i], base: pages[i]);
         }
+        // Land kept attachments as soon as the folder takes them, not only at
+        // the next start; raised only now, so a stuck page's entry exists
+        // before the folder check looks for the page its files go with.
+        if (handedOff) _keptRetry = true;
         throw NotebookException(
           '${stuck.length == 1 ? 'A page' : '${stuck.length} pages'} could not be deleted '
           'completely and ${stuck.length == 1 ? 'was' : 'were'} not put back. The '
@@ -1503,6 +1506,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           needsAction: true,
         );
       }
+      if (handedOff) _keptRetry = true;
       rethrow;
     }
     for (final p in keptIds) {
