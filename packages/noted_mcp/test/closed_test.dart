@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:noted_core/noted_core.dart' show conflictCopyOriginalNames;
 import 'package:noted_core/noted_core_read.dart';
 import 'package:noted_mcp/noted_mcp.dart';
 
@@ -862,6 +863,29 @@ void main() {
       expect(folder.listSync().map((e) => e.path.split(RegExp(r'[\\/]')).last), ['p.canvas']);
     });
 
+    List<String> names() => folder.listSync().map((e) => e.path.split(RegExp(r'[\\/]')).last).toList()..sort();
+
+    test('a sync replacement between the final comparison and publishing is not destroyed; the old bytes are kept as a conflict copy', () async {
+      final f = File('${folder.path}/3f2a-b1.canvas')..writeAsStringSync('old');
+      w.beforePublish = () async => f.writeAsStringSync('from sync');
+      expect(await w.replacePage(f.path, expected: utf8.encode('old'), text: utf8.encode('new')), PageReplace.busy);
+      expect(f.readAsStringSync(), 'from sync');
+      final copies = names().where((n) => n != '3f2a-b1.canvas').toList();
+      expect(copies, hasLength(1));
+      expect(File('${folder.path}/${copies.single}').readAsStringSync(), 'old');
+      // noted_core's scanner reads the kept copy as a copy of the page.
+      expect(conflictCopyOriginalNames(copies.single), contains('3f2a-b1.canvas'));
+    });
+
+    test('a page changed after the first look is put back as it was', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      // Changed between the first comparison and the move aside.
+      w.beforeAside = () async => f.writeAsStringSync('edited');
+      expect(await w.replacePage(f.path, expected: utf8.encode('old'), text: utf8.encode('new')), PageReplace.changed);
+      expect(f.readAsStringSync(), 'edited');
+      expect(names(), ['p.canvas']);
+    });
+
     test('changed bytes: nothing is written', () async {
       final f = File('${folder.path}/p.canvas')..writeAsStringSync('someone else');
       expect(await w.replacePage(f.path, expected: utf8.encode('old'), text: utf8.encode('new')), PageReplace.changed);
@@ -930,6 +954,19 @@ void main() {
       expect(await append, isTrue);
       expect(DateTime.now().difference(started).inMilliseconds, greaterThanOrEqualTo(550));
       expect(log.readAsStringSync(), 'first\n{"late":1}\n');
+    });
+
+    test('appendLog after a torn last line starts a new line, and only appends', () async {
+      final log = File('${data.path}/$aiMcpLogFileName');
+      // A multi-byte character cut in half, no newline.
+      log.writeAsBytesSync([...utf8.encode('{"a":1}\n{"t":"'), 0xE2, 0x82]);
+      final before = log.readAsBytesSync();
+      expect(await w.appendLog('{"b":2}'), isTrue);
+      final after = log.readAsBytesSync();
+      expect(after.sublist(0, before.length), before);
+      expect(utf8.decode(after.sublist(before.length)), '\n{"b":2}\n');
+      expect(await w.appendLog('{"c":3}'), isTrue);
+      expect(utf8.decode(log.readAsBytesSync(), allowMalformed: true).split('\n').where((l) => l.isNotEmpty).last, '{"c":3}');
     });
 
     test('appendLog refuses a log that is a link', () async {

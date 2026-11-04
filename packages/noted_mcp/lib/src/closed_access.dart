@@ -341,6 +341,8 @@ final class ClosedAccess {
         return AiLinkWritten(box: boxId);
       case PageReplace.changed:
         return attempt == 0 ? null : done(AiLinkCode.busy, page);
+      case PageReplace.busy:
+        return done(AiLinkCode.busy, page);
       case PageReplace.refused:
         return done(AiLinkCode.saveFailed, page);
     }

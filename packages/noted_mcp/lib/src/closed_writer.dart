@@ -19,6 +19,11 @@ enum PageReplace {
   /// The path is not a page file in a folder the writer was given, or the
   /// file could not be read or written. Nothing was changed.
   refused,
+
+  /// Another writer put a file at the page's path while the replacement was
+  /// under way. That file is untouched; the page's previous bytes are kept as
+  /// a conflict copy beside it. The caller may retry later.
+  busy,
 }
 
 /// The narrow writer (invariant 4, wording of run 2026-11-01-03): the only
@@ -27,12 +32,13 @@ enum PageReplace {
 /// 1. append one line to the server's own access log, `ai-mcp-log.jsonl`
 ///    beside `ai-access.json` ([appendLog]); and
 /// 2. replace a page file (`*.canvas`) that is directly inside one of the
-///    folders it was given, atomically: the new text goes to a temporary file
-///    in the same folder and is then renamed over the page file
-///    ([replacePage]).
+///    folders it was given, by move-aside publication: the page file is moved
+///    to a conflict-copy-named file beside it and the new text is published
+///    exclusively at the page's path ([replacePage]). If another writer got
+///    there first, the aside is kept as a conflict copy, never deleted.
 ///
-/// It never creates a folder, never deletes or renames anything but its own
-/// temporary file, and never follows a link out of the folders: the page file
+/// It never creates a folder, never deletes or renames anything but the
+/// aside it made itself, and never follows a link out of the folders: the page file
 /// must itself be a plain file (not a link) whose real folder is one of the
 /// given folders' real paths. The invariant test checks that no other file in
 /// the server (or the core it imports) calls a file-writing API.
@@ -43,6 +49,13 @@ final class ClosedWriter {
 
   final Directory dataDir;
   final List<String> folders;
+
+  /// A test seam: called after the previous bytes are verified and before the
+  /// new file is published, where a sync writer could get in.
+  Future<void> Function()? beforePublish;
+
+  /// A test seam: called after the first look at the page, before it is moved aside.
+  Future<void> Function()? beforeAside;
 
   /// The extension of a page file.
   static const String pageExtension = '.canvas';
@@ -73,8 +86,16 @@ final class ClosedWriter {
           await raf.lock(FileLock.exclusive);
           // The app may have shortened the file between the open and the
           // lock: write at its end now, not where it ended at open time.
-          await raf.setPosition(await raf.length());
-          await raf.writeString('$line\n');
+          final length = await raf.length();
+          // A torn last line (a crash mid-write) has no newline: start a new
+          // line first so this entry never joins it. Only ever appends.
+          var lead = '';
+          if (length > 0) {
+            await raf.setPosition(length - 1);
+            if (await raf.readByte() != 0x0A) lead = '\n';
+          }
+          await raf.setPosition(length);
+          await raf.writeString('$lead$line\n');
           await raf.flush();
           await raf.unlock();
         } finally {
@@ -104,37 +125,60 @@ final class ClosedWriter {
   /// [expected] (what the caller read), atomically. Returns [PageReplace.done],
   /// [PageReplace.changed] if the file differs from [expected] (nothing
   /// written), or [PageReplace.refused].
+  ///
+  /// Move-aside publication (run 2026-11-03-01): the page file is moved to a
+  /// unique name beside it with the shape of a sync client's conflict copy
+  /// (`<page>-NOTED-MCP-<random>.canvas`, which the app's scanner reads); its
+  /// bytes there are checked against [expected]; the new text is then
+  /// published to the page's path exclusively, never replacing a file. If the
+  /// page file is not there any more at that point (another writer, such as a
+  /// sync client, put one there), the aside stays as a conflict copy holding
+  /// the page's previous bytes, nothing of the other writer's is touched, and
+  /// the answer is [PageReplace.busy]. The server never deletes a kept copy.
   Future<PageReplace> replacePage(String path, {required List<int> expected, required List<int> text}) async {
-    File? tmp;
     try {
       final file = await _checked(path);
       if (file == null) return PageReplace.refused;
       if (!_same(await file.readAsBytes(), expected)) return PageReplace.changed;
       final name = path.split(RegExp(r'[\\/]')).last;
-      // A random name, created exclusively: two writers never share a file.
-      final made = File('${file.parent.path}$_sep.$name.noted_mcp-$pid-${_suffix()}.tmp');
-      await made.create(exclusive: true);
-      tmp = made;
-      await tmp.writeAsBytes(text, flush: true);
-      // Looked at again just before the rename, to keep the window small.
-      if (!_same(await file.readAsBytes(), expected)) {
-        await tmp.delete();
-        return PageReplace.changed;
+      final stem = name.substring(0, name.length - pageExtension.length);
+      final aside = File('${file.parent.path}$_sep$stem-NOTED-MCP-${_suffix()}$pageExtension');
+      if (beforeAside != null) await beforeAside!();
+      await file.rename(aside.path);
+      // From here the aside holds the page's previous bytes: it is only ever
+      // removed after the new text is published (it is then the same as
+      // [expected]), and otherwise kept or put back.
+      if (!_same(await aside.readAsBytes(), expected)) {
+        // The page changed after the first look: put it back, as it was.
+        return await _putBack(aside, file) ? PageReplace.changed : PageReplace.busy;
       }
-      await tmp.rename(file.path);
-      tmp = null;
+      if (beforePublish != null) await beforePublish!();
+      try {
+        // Exclusive: fails if anything is at the page's path now.
+        await file.create(exclusive: true);
+      } on FileSystemException {
+        return PageReplace.busy; // The aside stays, as a conflict copy.
+      }
+      try {
+        await file.writeAsBytes(text, flush: true);
+      } on Object {
+        // Our own half-written file: the previous bytes go back over it.
+        await aside.rename(file.path);
+        return PageReplace.refused;
+      }
+      await aside.delete();
       return PageReplace.done;
     } on Object {
       return PageReplace.refused;
-    } finally {
-      if (tmp != null) {
-        try {
-          if (await tmp.exists()) await tmp.delete();
-        } on Object {
-          // Left behind at worst; it is not a page file.
-        }
-      }
     }
+  }
+
+  // Puts [aside] back as [file] if nothing is there. False if something is:
+  // then the aside stays beside it as a conflict copy.
+  Future<bool> _putBack(File aside, File file) async {
+    if (await FileSystemEntity.type(file.path, followLinks: false) != FileSystemEntityType.notFound) return false;
+    await aside.rename(file.path);
+    return true;
   }
 
   // The file at [path] if it may be replaced: a page file name, a plain file

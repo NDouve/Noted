@@ -210,16 +210,22 @@ void main() {
       'delete',
       'create/copy',
     };
-    expect(count(writes['create/copy']!), 1, reason: 'the exclusive temporary file');
+    expect(count(writes['create/copy']!), 1, reason: 'the exclusive publication of the new page file');
     expect(src, contains('create(exclusive: true)'));
     expect([for (final w in writes.entries) if (!allowedHere.contains(w.key) && w.value.hasMatch(src)) w.key], isEmpty);
     expect(count(writes['open']!), 1, reason: 'one open: the log, for appending');
     expect(count(RegExp(r'\bFileMode\.append\b')), 1);
     expect(count(RegExp(r'\bFileMode\.(write|writeOnly|writeOnlyAppend)\b')), 0);
     expect(count(writes['RandomAccessFile write']!), 1, reason: 'the log line');
-    expect(count(writes['writeAsBytes']!), 1, reason: 'the temporary file');
-    expect(count(writes['rename']!), 1, reason: 'the temporary file over the page file');
-    expect(count(writes['delete']!), 2, reason: 'only its own temporary file');
+    expect(count(writes['writeAsBytes']!), 1, reason: 'the new page file, created exclusively');
+    // Move-aside publication: the page file to its aside; the aside back to
+    // the page's path (a failed write, or a put-back of a changed page).
+    expect(count(writes['rename']!), 3, reason: 'the page aside, and the aside back');
+    expect(count(writes['delete']!), 1, reason: 'only its own aside, after the new file is published');
+    final deleteAt = RegExp(r'\.delete\s*\(').firstMatch(src)!.start;
+    expect(src.substring(src.lastIndexOf('\n', deleteAt - 1) + 1, deleteAt).trim(), 'await aside', reason: 'never anything but the aside');
+    // A kept copy is a conflict-copy name the core's scanner reads.
+    expect(src, contains(r'$stem-NOTED-MCP-'));
     expect(src, contains('endsWith(pageExtension)'), reason: 'only page files');
     expect(src, contains('followLinks: false'), reason: 'never through a link');
     expect(src, contains('resolveSymbolicLinks'), reason: 'inside a listed folder, by real path');
