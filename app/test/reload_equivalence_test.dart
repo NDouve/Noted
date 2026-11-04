@@ -1283,6 +1283,41 @@ void main() {
       },
     );
 
+    test('theirs reorders the nodes while mine has an unsaved addition after the first: it follows it (0132)', () async {
+      final id = run.model.keys.first;
+      final a = run._newBox('first'), b = run._newBox('second'), x = run._newBox('added here');
+      var disk = run._disk(id);
+      for (final n in disk.nodes.toList()) {
+        disk = disk.removeNode(n.id);
+      }
+      disk = disk.insertNode(a).insertNode(b);
+      await run._externalWrite(id, disk);
+      await run.nb.checkFile(run._pathOf(id));
+      await run.nb.open(id);
+      expect(run.nb.current!.page.nodes.map((n) => n.id), [a.id, b.id]);
+      // The open page has x after a, not yet saved.
+      final mine = run.nb.current!.page.insertNode(x, 1);
+      run.nb.current!.applyExternal(mine);
+      // The file becomes [b, a]: only the other writer reordered.
+      final theirs = disk.removeNode(a.id).insertNode(a);
+      await run._externalWrite(id, theirs);
+      await run.nb.checkFile(run._pathOf(id));
+      await run.nb.flush();
+      final fresh = Notebook(
+        PageStore(run.dirs['pages']!),
+        run.modules,
+        saveDelay: const Duration(hours: 1),
+        bindersFile: run.settings,
+        recoveryDirectory: run.rec,
+        folderCheckInterval: Duration.zero,
+      );
+      run._spare.add(fresh);
+      run._gone.add(fresh);
+      await fresh.load();
+      await fresh.open(id);
+      expect(fresh.current!.page.nodes.map((n) => n.id), [b.id, a.id, x.id]);
+    });
+
     test('a delete whose put-back also fails keeps the pages in recovery', () async {
       final parent = run.model.keys.first;
       final sub = run.model.entries.firstWhere((e) => e.value.parent == parent).key;
