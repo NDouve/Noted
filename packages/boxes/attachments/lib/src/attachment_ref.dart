@@ -76,6 +76,7 @@ final class AttachmentRef {
         bytes = base64Decode(data);
       } on FormatException {
         bytes = null;
+        damaged = data; // not base64: kept as it is, like damaged data
       }
     }
     // Embedded bytes are used only if they hold the hash recorded with them;

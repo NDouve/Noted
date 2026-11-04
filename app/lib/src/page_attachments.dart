@@ -133,27 +133,46 @@ class PageAttachments extends ChangeNotifier implements VerifyingAttachmentStore
   // Writes [name] (the file for [bytes], whose hash is [hash]) into the assets
   // folder, atomically, or into the recovery folder if the page's folder can't
   // be written. A file already under that name is trusted only if it holds
-  // [hash]: a shorter one is still syncing and is left alone; a damaged one is
-  // kept aside (see [setAsideDamaged]) and the good bytes are written under the
-  // name, so both copies stay.
+  // [hash]: a damaged one is kept aside (see [setAsideDamaged]) and the good
+  // bytes are written under the name, so both copies stay. When the existing
+  // file can't be replaced (it is shorter than [bytes], still changing, a
+  // link, or could not be set aside), the good bytes are kept beside it under
+  // `<name>.kept-<n>` and the user is told; nothing is ever overwritten.
   static int _tmpCounter = 0;
 
   Future<void> _write(String name, String hash, Uint8List bytes) async {
+    Future<void> keepBeside(Directory d, String why) async {
+      final kept = await keepGoodCopy(d, name, bytes);
+      notify(
+        kept == null
+            ? 'A file in this page\'s folder $why, and a good copy could not be saved.'
+            : 'A file in this page\'s folder $why. A good copy was kept as "$kept" beside it.',
+      );
+    }
+
     Future<void> into(Directory d) async {
       final target = _in(d, name);
       await d.create(recursive: true);
-      if (FileSystemEntity.typeSync(target.path, followLinks: false) != FileSystemEntityType.notFound) {
-        if (FileSystemEntity.typeSync(target.path, followLinks: false) != FileSystemEntityType.file) {
-          return; // a link or a folder is never touched
-        }
-        final c = await checkAttachmentFile(target, hash, bytes.length);
-        if (c.state != AttachmentState.damaged) return; // good, or still syncing
-        final kept = await setAsideDamaged(target, c.found!);
-        if (kept == null) {
-          notify('A damaged copy of a file is in this page\'s folder and could not be set aside, so it was not replaced.');
+      final type = FileSystemEntity.typeSync(target.path, followLinks: false);
+      if (type != FileSystemEntityType.notFound) {
+        if (type != FileSystemEntityType.file) {
+          await keepBeside(d, 'is not a plain file');
           return;
         }
-        notify('A damaged copy of a file was found in this page\'s folder. It was kept as "$kept" and the good copy was saved.');
+        final c = await checkAttachmentFile(target, hash, bytes.length);
+        if (c.state == AttachmentState.ok) return;
+        if (c.state == AttachmentState.syncing) {
+          await keepBeside(d, 'is incomplete or still changing');
+          return;
+        }
+        final r = await setAsideDamaged(target, c.found!);
+        if (r.name == null) {
+          await keepBeside(d, 'is damaged and could not be set aside (it is at "${r.leftAt}")');
+          return;
+        }
+        notify(
+          'A damaged copy of a file was found in this page\'s folder. It was kept as "${r.name}" and the good copy was saved.',
+        );
       }
       // A unique name, so an extensionless write (`<hash>.tmp`) can never
       // clobber a real attachment called `<hash>.tmp`.
@@ -179,16 +198,25 @@ class PageAttachments extends ChangeNotifier implements VerifyingAttachmentStore
 
   /// Checks the folder file [fileName] against the hash in its name, in the
   /// page's folder and then the recovery folder. A damaged file is kept aside
-  /// beside it (see [setAsideDamaged]) and the user is told.
+  /// beside it (see [setAsideDamaged]); the caller tells the user, who knows
+  /// the file by its own name. A missing file is looked for among the kept
+  /// copies first (see [restoreKeptCopy]).
   Future<VerifiedAttachment> _check(String fileName, int size, {required bool keepBytes}) async {
     final hash = attachmentNameHash(fileName);
     for (final d in [folder, ?recoveryFolder]) {
       final f = _in(d, fileName);
-      if (FileSystemEntity.typeSync(f.path, followLinks: false) == FileSystemEntityType.notFound) continue;
+      var type = FileSystemEntity.typeSync(f.path, followLinks: false);
+      if (type == FileSystemEntityType.notFound && hash != null && await restoreKeptCopy(d, fileName, hash, size)) {
+        type = FileSystemEntity.typeSync(f.path, followLinks: false);
+        filesChanged();
+      }
+      if (type == FileSystemEntityType.notFound) continue;
+      // A link or a folder is never trusted (the same rule as in the writer).
+      if (type != FileSystemEntityType.file) return const VerifiedAttachment(AttachmentState.syncing);
       if (hash == null) {
         // Not named by a hash: nothing to check it against.
         try {
-          return VerifiedAttachment(AttachmentState.ok, keepBytes ? await f.readAsBytes() : null);
+          return VerifiedAttachment(AttachmentState.ok, bytes: keepBytes ? await f.readAsBytes() : null);
         } on FileSystemException {
           return const VerifiedAttachment(AttachmentState.syncing);
         }
@@ -196,18 +224,13 @@ class PageAttachments extends ChangeNotifier implements VerifyingAttachmentStore
       final c = await checkAttachmentFile(f, hash, size, keepBytes: keepBytes);
       switch (c.state) {
         case AttachmentState.ok:
-          return VerifiedAttachment(AttachmentState.ok, c.bytes);
+          return VerifiedAttachment(AttachmentState.ok, bytes: c.bytes);
         case AttachmentState.syncing:
           return const VerifiedAttachment(AttachmentState.syncing);
         case AttachmentState.damaged:
-          final kept = await setAsideDamaged(f, c.found!);
-          notify(
-            kept == null
-                ? 'A file in this page\'s folder is damaged, so it was not used. It could not be moved aside and stays where it is.'
-                : 'A file in this page\'s folder is damaged, so it was not used. The damaged copy was kept as "$kept" beside it.',
-          );
-          if (kept != null) filesChanged();
-          return const VerifiedAttachment(AttachmentState.damaged);
+          final r = await setAsideDamaged(f, c.found!);
+          if (r.leftAt != fileName) filesChanged();
+          return VerifiedAttachment(AttachmentState.damaged, keptAs: r.name, leftAt: r.leftAt);
       }
     }
     return const VerifiedAttachment(AttachmentState.syncing);
@@ -218,8 +241,8 @@ class PageAttachments extends ChangeNotifier implements VerifyingAttachmentStore
       _check(fileName, size, keepBytes: true);
 
   @override
-  Future<AttachmentState> verify(String fileName, {required int size}) async =>
-      (await _check(fileName, size, keepBytes: false)).state;
+  Future<VerifiedAttachment> verify(String fileName, {required int size}) =>
+      _check(fileName, size, keepBytes: false);
 
   @override
   Future<Uint8List?> read(String fileName) async {

@@ -11,6 +11,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/attachment_copy.dart';
+import 'package:noted/src/home.dart';
 import 'package:noted/src/page_attachments.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
@@ -66,12 +67,33 @@ void main() {
       expect(notices.single, contains(damagedName(name, badHash)));
     });
 
-    test('a shorter file is still syncing: left alone, nothing set aside', () async {
+    test('a shorter file is still syncing: left alone, the good bytes kept beside it', () async {
       plant(Uint8List.sublistView(good, 0, 50));
       await store.put(good, extension: 'bin');
       expect(asset(name).lengthSync(), 50);
-      expect(Directory('${pages.path}/p.assets').listSync().length, 1);
-      expect(notices, isEmpty);
+      final kept = Directory('${pages.path}/p.assets').listSync().map((e) => e.path.split(RegExp(r'[\\/]')).last).where((n) => n.contains('.kept-')).single;
+      expect(File('${pages.path}/p.assets/$kept').readAsBytesSync(), good);
+      expect(notices.single, contains(kept));
+    });
+
+    test('when the damaged file cannot be set aside, the good bytes are kept beside it', () async {
+      plant(bad);
+      attachmentAfterSetAsideHook = (_) => throw const FileSystemException('injected');
+      addTearDown(() => attachmentAfterSetAsideHook = null);
+      await store.put(good, extension: 'bin');
+      final names = Directory('${pages.path}/p.assets').listSync().map((e) => e.path.split(RegExp(r'[\\/]')).last).toList();
+      final kept = names.where((n) => n.contains('.kept-')).single;
+      expect(File('${pages.path}/p.assets/$kept').readAsBytesSync(), good);
+      expect(File('${pages.path}/p.assets/${damagedName(name, badHash)}').readAsBytesSync(), bad, reason: 'it moved before the failure');
+      expect(notices.single, contains('could not be set aside'));
+      expect(notices.single, contains(damagedName(name, badHash)), reason: 'says where it is');
+    });
+
+    test('a folder at the target is not touched; the good bytes are kept beside it', () async {
+      Directory('${pages.path}/p.assets/$name').createSync(recursive: true);
+      await store.put(good, extension: 'bin');
+      expect(Directory('${pages.path}/p.assets/$name').existsSync(), isTrue);
+      expect(Directory('${pages.path}/p.assets').listSync().any((e) => e.path.contains('.kept-')), isTrue);
     });
 
     test('a good file is left alone', () async {
@@ -102,7 +124,8 @@ void main() {
       expect(r.bytes, isNull);
       expect(asset(name).existsSync(), isFalse);
       expect(asset(damagedName(name, badHash)).readAsBytesSync(), bad);
-      expect(notices.single, contains(damagedName(name, badHash)));
+      expect(r.keptAs, damagedName(name, badHash));
+      expect(notices, isEmpty, reason: 'the module tells the user, by the box name');
     });
 
     test('a file shorter than the recorded size is still syncing and stays', () async {
@@ -123,7 +146,9 @@ void main() {
 
     test('verify finds a damaged file without keeping bytes', () async {
       plant(bad);
-      expect(await store.verify(name, size: good.length), AttachmentState.damaged);
+      final v = await store.verify(name, size: good.length);
+      expect(v.state, AttachmentState.damaged);
+      expect(v.keptAs, damagedName(name, badHash));
       expect(asset(damagedName(name, badHash)).existsSync(), isTrue);
     });
 
@@ -133,6 +158,89 @@ void main() {
       copy.writeAsBytesSync(bad);
       await store.open('Report.pdf', bytes: good);
       expect(opened.last.readAsBytesSync(), good);
+    });
+  });
+
+  test('a long attachment notice stays longer and can be closed', () {
+    final long = attachmentNoticeBar('x' * 120);
+    expect(long.duration, greaterThanOrEqualTo(const Duration(seconds: 15)));
+    expect(long.showCloseIcon, isTrue);
+    final short = attachmentNoticeBar(overLimitNotice);
+    expect(short.duration, const Duration(milliseconds: 4000));
+    expect(short.showCloseIcon, isFalse);
+    expect(
+      'A file in this page\'s folder is damaged, so it was not used. The damaged copy was kept as "x.damaged-0123456789ab" beside it.'.length,
+      greaterThan(90),
+    );
+  });
+
+  group('kept copies and the checks', () {
+    test('a kept copy that was finished by its writer is put back when the file is missing', () async {
+      plant(bad);
+      final first = await store.readVerified(name, size: good.length);
+      expect(first.state, AttachmentState.damaged);
+      // The in-place writer that was mid-write when the file moved aside
+      // finishes the job into the file it still holds open.
+      asset(damagedName(name, badHash)).writeAsBytesSync(good);
+      final again = await store.readVerified(name, size: good.length);
+      expect(again.state, AttachmentState.ok);
+      expect(again.bytes, good);
+      expect(asset(name).readAsBytesSync(), good);
+      expect(asset(damagedName(name, badHash)).existsSync(), isFalse);
+    });
+
+    test('a kept copy that is still damaged is not put back', () async {
+      plant(bad);
+      await store.readVerified(name, size: good.length);
+      final again = await store.readVerified(name, size: good.length);
+      expect(again.state, AttachmentState.syncing);
+      expect(asset(name).existsSync(), isFalse);
+    });
+
+    test('a folder or link in place of the file is never trusted: syncing', () async {
+      Directory('${pages.path}/p.assets/$name').createSync(recursive: true);
+      final r = await store.readVerified(name, size: good.length);
+      expect(r.state, AttachmentState.syncing);
+    });
+
+    test('a link in place of the file is never trusted, even to a good file', () async {
+      final real = File('${root.path}/elsewhere.bin')..writeAsBytesSync(good);
+      Directory('${pages.path}/p.assets').createSync(recursive: true);
+      try {
+        Link('${pages.path}/p.assets/$name').createSync(real.path);
+      } on FileSystemException {
+        return; // links need a privilege on some systems
+      }
+      final r = await store.readVerified(name, size: good.length);
+      expect(r.state, AttachmentState.syncing);
+      expect(r.bytes, isNull);
+    });
+
+    test('a file that changes while it is hashed is syncing, not damaged', () async {
+      plant(bad);
+      attachmentAfterHashHook = (f) async => f.writeAsBytesSync([...bad, 1]);
+      addTearDown(() => attachmentAfterHashHook = null);
+      final c = await checkAttachmentFile(asset(name), hash, good.length, keepBytes: true);
+      expect(c.state, AttachmentState.syncing);
+    });
+
+    test('a file that is not what was checked when it is moved is put back, not renamed', () async {
+      plant(good);
+      // The check saw something else (as if the file was replaced since).
+      final r = await setAsideDamaged(asset(name), ContentIdentity(good.length, badHash));
+      expect(r.name, isNull);
+      expect(r.leftAt, name);
+      expect(asset(name).readAsBytesSync(), good);
+      expect(Directory('${pages.path}/p.assets').listSync().length, 1);
+    });
+
+    test('a failure after the move says where the file is', () async {
+      plant(bad);
+      attachmentAfterSetAsideHook = (_) => throw const FileSystemException('injected');
+      addTearDown(() => attachmentAfterSetAsideHook = null);
+      final r = await setAsideDamaged(asset(name), ContentIdentity(bad.length, badHash));
+      expect(r.name, isNull);
+      expect(r.leftAt, damagedName(name, badHash));
     });
   });
 

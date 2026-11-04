@@ -183,6 +183,13 @@ Future<AttachmentRead> loadDisplayCopyChecked(
   AttachmentRef ref,
   AttachmentStore? store,
 ) async {
+  // The hash becomes part of a cache path: only a real SHA-256 may.
+  if (!isContentHash(ref.hash)) {
+    store?.notify(
+      "\"${ref.name}\" can't be shown: its hash is not valid."
+    );
+    return (state: AttachmentState.damaged, bytes: null);
+  }
   final cache = store == null
       ? null
       : displayCopyFile(store.cacheDirectory, ref.hash);
@@ -226,7 +233,8 @@ class _ImageBoxState extends State<_ImageBox> {
   String? _loadedHash;
   bool _loading = false;
   bool _retry = false;
-  bool _failed = false;
+  AttachmentState? _state;
+  String? _stateHash;
   final FocusNode _altFocus = FocusNode();
   late final TextEditingController _alt = TextEditingController(
     text: widget.box.data?.alt ?? '',
@@ -278,17 +286,27 @@ class _ImageBoxState extends State<_ImageBox> {
     final pixels = read.bytes;
     _loading = false;
     if (!mounted) return;
+    // A damaged file stays "damaged" while it is missing (it was set aside):
+    // "Still syncing" would suggest it will mend itself. A good file
+    // arriving replaces it.
+    var state = read.state;
+    if (state == AttachmentState.syncing &&
+        _state == AttachmentState.damaged &&
+        _stateHash == hash) {
+      state = AttachmentState.damaged;
+    }
     setState(() {
       _pixels = pixels;
-      _failed =
-          pixels == null &&
-          (read.state == AttachmentState.damaged ||
-              !attachmentMissing(data.ref, widget.box.attachments));
-      _loadedHash = pixels == null ? null : hash;
+      _state = state;
+      _stateHash = hash;
+      // A damaged file is not looked at again until the folder changes, so a
+      // rebuild (hover, drag) does not hash and report it again.
+      _loadedHash = pixels == null && state != AttachmentState.damaged ? null : hash;
     });
+    // The change that a set-aside caused is not a reason to look again.
     if (_retry && pixels == null) {
       _retry = false;
-      unawaited(_load());
+      if (state != AttachmentState.damaged) unawaited(_load());
     }
   }
 
@@ -329,13 +347,21 @@ class _ImageBoxState extends State<_ImageBox> {
         filterQuality: FilterQuality.medium,
         semanticLabel: data.alt.isEmpty ? null : data.alt,
       );
-    } else if (_failed) {
+    } else if (_state == AttachmentState.damaged) {
       picture = _note(
         context,
         Icons.broken_image_rounded,
-        'This image can\'t be shown',
+        'This image is damaged',
       );
-    } else if (attachmentMissing(data.ref, widget.box.attachments)) {
+    } else if (_state == AttachmentState.ok) {
+      // Read fine but does not decode.
+      picture = _note(
+        context,
+        Icons.broken_image_rounded,
+        "This image can't be shown",
+      );
+    } else if (_state == AttachmentState.syncing ||
+        attachmentMissing(data.ref, widget.box.attachments)) {
       picture = ColoredBox(
         color: scheme.surfaceContainerHighest,
         child: StillSyncing(name: data.ref.name),

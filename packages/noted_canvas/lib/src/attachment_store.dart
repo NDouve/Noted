@@ -116,15 +116,23 @@ enum AttachmentState {
   damaged,
 }
 
-/// The result of [VerifyingAttachmentStore.readVerified].
+/// The result of [VerifyingAttachmentStore.readVerified] and [VerifyingAttachmentStore.verify].
 @immutable
 final class VerifiedAttachment {
-  const VerifiedAttachment(this.state, [this.bytes]);
+  const VerifiedAttachment(this.state, {this.bytes, this.keptAs, this.leftAt});
 
   final AttachmentState state;
 
   /// The bytes, when [state] is [AttachmentState.ok].
   final Uint8List? bytes;
+
+  /// When [state] is [AttachmentState.damaged]: the name the damaged copy was
+  /// kept under beside the file, or null if it could not be set aside.
+  final String? keptAs;
+
+  /// When [state] is [AttachmentState.damaged] and [keptAs] is null: the name
+  /// of the file it was left under (it may have moved part-way).
+  final String? leftAt;
 }
 
 /// An [AttachmentStore] that can check a folder file against the hash in its
@@ -141,5 +149,5 @@ abstract interface class VerifyingAttachmentStore implements AttachmentStore {
 
   /// The same check without keeping the bytes (for a large file that is only
   /// handed to another program).
-  Future<AttachmentState> verify(String fileName, {required int size});
+  Future<VerifiedAttachment> verify(String fileName, {required int size});
 }
