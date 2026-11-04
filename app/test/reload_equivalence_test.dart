@@ -1048,9 +1048,9 @@ void main() {
       }
       await run.nb.flush();
       await run.verify('end', fresh: true);
-      _record(run.trace);
       if (const bool.fromEnvironment('RELOAD_TRACE')) debugPrint(run.trace.join('\n'));
     } finally {
+      _record(run.trace);
       await run.stop();
     }
   }
