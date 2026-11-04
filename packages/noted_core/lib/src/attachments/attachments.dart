@@ -68,6 +68,15 @@ String attachmentFileName(String hash, String extension) {
   return ext.isEmpty ? hash : '$hash.$ext';
 }
 
+final RegExp _attachmentFileName = RegExp(r'^[0-9a-f]{64}(\.[a-z0-9]{1,10})?$');
+
+/// Whether [fileName] (a box's `file` value) is a name this app writes:
+/// `<64 lowercase hex>` or `<64 lowercase hex>.<1-10 lowercase letters or
+/// digits>`. It is the only form that may be joined onto the assets folder;
+/// anything else (a path, `..`, a drive letter, a UNC path) is treated as a
+/// missing file and never read, opened, copied or deleted.
+bool isAttachmentFileName(String fileName) => _attachmentFileName.hasMatch(fileName);
+
 /// [name]'s extension without the dot, lowercase, letters and digits only
 /// (at most 10); empty if it has none.
 String normalizedExtension(String name) {

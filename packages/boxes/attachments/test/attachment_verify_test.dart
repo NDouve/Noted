@@ -313,7 +313,7 @@ void main() {
         name: 'x.png',
         size: 1,
         hash: '../../x',
-        file: 'x.png',
+        file: '${contentHash(redPng)}.png',
       );
       final r = await loadDisplayCopyChecked(ref, vs);
       expect(r.state, AttachmentState.damaged);

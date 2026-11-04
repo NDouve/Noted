@@ -63,11 +63,13 @@ Future<AttachmentRead> readAttachment(AttachmentRef ref, AttachmentStore? store)
   }
   final file = ref.file;
   if (file == null || store == null) return syncing;
+  // Not a name this app writes: a missing file, never looked for.
+  if (!isAttachmentFileName(file)) return syncing;
   if (_namedByOtherHash(ref)) {
     store.notify(_otherFileNotice(ref));
     return damaged;
   }
-  if (store is VerifyingAttachmentStore && _hashFileName.hasMatch(file)) {
+  if (store is VerifyingAttachmentStore) {
     final v = await store.readVerified(file, size: ref.size);
     if (v.state == AttachmentState.damaged) store.notify(_folderDamagedNotice(ref, v));
     return (state: v.state, bytes: v.bytes);
@@ -88,7 +90,7 @@ Future<AttachmentState> verifyAttachment(AttachmentRef ref, AttachmentStore? sto
   if (ref.isEmbedded ||
       file == null ||
       store is! VerifyingAttachmentStore ||
-      !_hashFileName.hasMatch(file) ||
+      !isAttachmentFileName(file) ||
       _namedByOtherHash(ref)) {
     return (await readAttachment(ref, store)).state;
   }
@@ -116,12 +118,20 @@ String _folderDamagedNotice(AttachmentRef ref, VerifiedAttachment? v) {
 Future<Uint8List?> loadAttachment(AttachmentRef ref, AttachmentStore? store) async =>
     (await readAttachment(ref, store)).bytes;
 
+/// Whether [ref] points at a folder file by a name that is not an attachment
+/// name ([isAttachmentFileName]): a file that can't be found and never will
+/// be. The box says so; it is not "still syncing".
+bool attachmentNameInvalid(AttachmentRef ref) {
+  final file = ref.file;
+  return !ref.isEmbedded && file != null && !isAttachmentFileName(file);
+}
+
 /// Whether [ref]'s file is in the folder but not there yet, for example
 /// still syncing from another device.
 bool attachmentMissing(AttachmentRef ref, AttachmentStore? store) {
   if (ref.isEmbedded || ref.isDamaged) return false;
   final file = ref.file;
-  return file == null || store == null || !store.exists(file);
+  return file == null || store == null || !isAttachmentFileName(file) || !store.exists(file);
 }
 
 /// [ref] kept the [to] way, or null if it stays as it is: already that way,
@@ -136,7 +146,7 @@ Future<AttachmentRef?> convertAttachment(
   switch (to) {
     case AttachmentStorage.embedded:
       final file = ref.file;
-      if (ref.isEmbedded || file == null) return null;
+      if (ref.isEmbedded || file == null || !isAttachmentFileName(file)) return null;
       // Too large to embed: not read at all.
       if (ref.size > embedLimitBytes) {
         overLimit.add(ref.name);

@@ -137,6 +137,19 @@ class _FileBoxState extends State<_FileBox> {
       );
     }
     final ref = data.ref;
+    // A name that is not an attachment name never finds a file: say so, and
+    // offer nothing to open.
+    if (attachmentNameInvalid(ref)) {
+      return Center(
+        child: Text(
+          'File not found: ${ref.name}',
+          key: const ValueKey('file-box-not-found'),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: type.small,
+        ),
+      );
+    }
     final missing = attachmentMissing(ref, store);
     Future<void> open() async {
       if (store == null || missing) return;

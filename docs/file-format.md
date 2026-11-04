@@ -223,6 +223,12 @@ left alone.
 {"name":"Plan.pdf","size":48213,"hash":"9f86d081884c7d65...","file":"9f86d081884c7d65....pdf"}
 ```
 
+A `file` value is used only if it is exactly `<64 lowercase hex>` or
+`<64 lowercase hex>.<1 to 10 lowercase letters or digits>`. Any other value (a
+path, `..`, a drive letter, a UNC path, an uppercase extension, an empty
+string) is treated as a missing file: the box shows it as not found, and the
+app never reads, opens, copies or deletes anything for it.
+
 If the file has not arrived yet (for example the sync client has not
 delivered it), the box shows a waiting state until it appears.
 
