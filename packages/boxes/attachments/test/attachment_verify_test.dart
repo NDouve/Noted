@@ -436,6 +436,68 @@ void main() {
         expect(vs.readCalls, 1);
       },
     );
+
+    testWidgets(
+      'an image still syncing is checked once, not on every rebuild, until the '
+      'folder changes',
+      (t) async {
+        t.view.physicalSize = const Size(1200, 800);
+        t.view.devicePixelRatio = 1;
+        addTearDown(t.view.reset);
+        vs.result = (name) => const VerifiedAttachment(AttachmentState.syncing);
+        const codec = ImageCodec();
+        final data = ImageData(ref: pngRef(), width: 4, height: 4);
+        final box = BoxRecord.create(
+          id: 'i',
+          typeId: codec.typeId,
+          dataVersion: codec.dataVersion,
+          bounds: const Bounds(40, 40, 200, 200),
+          data: RawJson.encode(codec.encode(data)),
+          snapshotText: codec.snapshotText(data),
+          rev: 'r',
+        ).withFixedHeight(true);
+        final modules = ModuleRegistry()
+          ..register(const ImageModule())
+          ..register(const FileModule(), isDefault: true);
+        final page = NotedPage.create(
+          PageMeta.create(id: 'p', title: '', order: 0),
+        ).insertNode(box);
+        final controller = CanvasController(page, modules);
+        await t.pumpWidget(
+          MaterialApp(
+            theme: notedThemeData(Brightness.light),
+            home: Scaffold(
+              body: PageCanvas(controller: controller, attachments: vs),
+            ),
+          ),
+        );
+        for (var i = 0; i < 3; i++) {
+          await t.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 30)),
+          );
+          await t.pump();
+        }
+        expect(vs.readCalls, 1);
+        for (var i = 0; i < 3; i++) {
+          controller.editBox('i', data.copyWith(alt: 'edit $i'));
+          await t.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 80)),
+          );
+          await t.pump();
+        }
+        await t.pump(const Duration(milliseconds: 100));
+        expect(vs.readCalls, 1, reason: 'rebuilds do not check again');
+        // The folder changing is what makes it look again.
+        vs.arrive('$pngHash.png', png);
+        for (var i = 0; i < 3; i++) {
+          await t.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 30)),
+          );
+          await t.pump();
+        }
+        expect(vs.readCalls, greaterThan(1));
+      },
+    );
   });
 
   group('what an image box says', () {

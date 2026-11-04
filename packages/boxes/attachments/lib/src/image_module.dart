@@ -299,9 +299,12 @@ class _ImageBoxState extends State<_ImageBox> {
       _pixels = pixels;
       _state = state;
       _stateHash = hash;
-      // A damaged file is not looked at again until the folder changes, so a
-      // rebuild (hover, drag) does not hash and report it again.
-      _loadedHash = pixels == null && state != AttachmentState.damaged ? null : hash;
+      // A file is not looked at again until the folder changes, so a rebuild
+      // (hover, drag) does not hash and report it again. Only a store that
+      // doesn't report changes is asked again on a rebuild while waiting.
+      _loadedHash = pixels == null && state != AttachmentState.damaged && _changes == null
+          ? null
+          : hash;
     });
     // The change that a set-aside caused is not a reason to look again.
     if (_retry && pixels == null) {
