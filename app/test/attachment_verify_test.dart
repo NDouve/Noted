@@ -397,7 +397,7 @@ void main() {
       expect(names().where((n) => n.endsWith('.tmp')), isEmpty);
     });
 
-    test('with no hard links the copy is published, checked by hash, and no .tmp is left', () async {
+    test('with no hard links the copy is published and no .tmp is left', () async {
       attachmentPublishHook = (tmp, target) async => throw const FileSystemException('no hard links');
       addTearDown(() => attachmentPublishHook = null);
       await store.put(good, extension: 'bin');
@@ -450,4 +450,73 @@ void main() {
       expect(v.bytes, good);
     });
   });
+  group('a file another writer put at the name is never deleted', () {
+    test('a fill that throws part way, with the target replaced meanwhile: the other file survives', () async {
+      Directory('${pages.path}/p.assets').createSync(recursive: true);
+      final inner = File('${root.path}/src.bin')..writeAsBytesSync([1, 2, 3]);
+      final target = asset(name);
+      attachmentPublishHook = (tmp, t) async => throw const FileSystemException('no hard links');
+      addTearDown(() => attachmentPublishHook = null);
+      final flaky = _FlakyFile(inner, () => target.writeAsBytesSync([9, 9, 9]));
+      await expectLater(publishAttachment(flaky, target.path), throwsA(isA<FileSystemException>()));
+      expect(target.readAsBytesSync(), [9, 9, 9], reason: 'same length, other bytes: not ours');
+    });
+
+    test('a fill that throws part way removes the partial file it wrote', () async {
+      Directory('${pages.path}/p.assets').createSync(recursive: true);
+      final inner = File('${root.path}/src.bin')..writeAsBytesSync([1, 2, 3]);
+      final target = asset(name);
+      attachmentPublishHook = (tmp, t) async => throw const FileSystemException('no hard links');
+      addTearDown(() => attachmentPublishHook = null);
+      await expectLater(publishAttachment(_FlakyFile(inner, () {}), target.path), throwsA(isA<FileSystemException>()));
+      expect(target.existsSync(), isFalse);
+    });
+
+    test('a target that changes between the fill and the hash check survives', () async {
+      var armed = true;
+      attachmentPublishHook = (tmp, t) async {
+        if (!armed) return publishExclusive(tmp, t);
+        throw const FileSystemException('no hard links');
+      };
+      attachmentAfterFillHook = (t) async {
+        armed = false;
+        File(t).writeAsBytesSync(Uint8List.fromList(bad));
+      };
+      addTearDown(() {
+        attachmentPublishHook = null;
+        attachmentAfterFillHook = null;
+      });
+      await store.put(good, extension: 'bin');
+      // The other writer's (damaged) file is not deleted: it is set aside by
+      // the next check, never by the writer that lost the race.
+      expect(asset(name).readAsBytesSync(), bad);
+      final kept = Directory('${pages.path}/p.assets').listSync().map((e) => e.path.split(RegExp(r'[\/]')).last).where((n) => n.contains('.kept-'));
+      expect(kept, isNotEmpty);
+    });
+  });
+}
+
+/// A file whose stream yields three bytes, runs [onChunk], then fails. A ranged
+/// read (the writer hashing what it wrote) reads the real file.
+class _FlakyFile implements File {
+  _FlakyFile(this.inner, this.onChunk);
+
+  final File inner;
+  final void Function() onChunk;
+
+  @override
+  Stream<List<int>> openRead([int? start, int? end]) {
+    if (start != null) return inner.openRead(start, end);
+    return () async* {
+      yield [1, 2, 3];
+      onChunk();
+      throw const FileSystemException('injected');
+    }();
+  }
+
+  @override
+  String get path => inner.path;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }

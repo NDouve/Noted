@@ -53,6 +53,8 @@ String conversionNotice(AttachmentConversion r, AttachmentStorage to) {
   };
   final s = r.skipped.length;
   final parts = [
+    // Nothing changed and something failed: the failure is the news.
+    if (n > 0 || r.failed == 0)
     switch (to) {
       AttachmentStorage.embedded => 'Embedded $n ${n == 1 ? 'attachment' : 'attachments'}',
       AttachmentStorage.folder => 'Moved $n ${n == 1 ? 'attachment' : 'attachments'} to the folder',

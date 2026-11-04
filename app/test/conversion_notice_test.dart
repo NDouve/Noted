@@ -53,12 +53,12 @@ void main() {
     const one = AttachmentConversion(changed: 0, overLimit: [], failed: 1);
     expect(
       conversionNotice(one, AttachmentStorage.folder),
-      'Moved 0 attachments to the folder. 1 attachment could not be moved to the folder and stays in the page. '
+      '1 attachment could not be moved to the folder and stays in the page. '
       'Try Move attachments to folder again later.',
     );
     expect(
       conversionNotice(one, AttachmentStorage.embedded),
-      'Embedded 0 attachments. 1 attachment could not be embedded and stays in the folder. '
+      '1 attachment could not be embedded and stays in the folder. '
       'Try Embed attachments again later.',
     );
     const two = AttachmentConversion(changed: 1, overLimit: [], failed: 2);

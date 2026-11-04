@@ -180,6 +180,11 @@ const String keptMarker = '.kept-';
 @visibleForTesting
 void Function(String path)? attachmentBeforeCreateHook;
 
+/// Runs in [writeNewAttachmentFile] after a no-hard-link publish filled the
+/// target and before it is checked by hash. For tests.
+@visibleForTesting
+Future<void> Function(String target)? attachmentAfterFillHook;
+
 /// Writes [bytes] (whose SHA-256 is [hash]) to the new file [target], never
 /// over anything: they go to a unique temporary file that is published with
 /// [publishAttachment]. Returns true when this call created [target], false
@@ -197,15 +202,12 @@ Future<bool> writeNewAttachmentFile(File target, Uint8List bytes, String hash) a
     final res = await _publishDetailed(tmp, target.path);
     if (!res.published) return false;
     if (res.copied) {
+      await attachmentAfterFillHook?.call(target.path);
+      // Whatever is there but not these bytes is not ours to delete (another
+      // writer may have replaced it): it is left alone and counts as a
+      // refused publish for the caller.
       final id = await ContentIdentity.ofFile(target.path);
-      if (id.length != bytes.length || id.sha256 != hash) {
-        try {
-          await deleteFileIfMatches(target.path, identity: id);
-        } on FileSystemException {
-          // Left as it is; the caller treats the name as taken.
-        }
-        return false;
-      }
+      if (id.length != bytes.length || id.sha256 != hash) return false;
     }
     return true;
   } finally {
@@ -614,8 +616,10 @@ Future<bool> _createExclusive(File tmp, String target) async {
     await out?.close();
     out = null;
     try {
-      // Ours only while it still holds exactly what was written.
-      if (await f.length() == written) await f.delete();
+      // Ours only while it still holds exactly the bytes written so far (their
+      // size and hash), checked at the moment of deleting.
+      final prefix = ContentIdentity(written, await contentHashOfStream(tmp.openRead(0, written)));
+      await deleteFileIfMatches(target, identity: prefix);
     } on FileSystemException {
       // Left for the caller's verification to reject.
     }

@@ -202,6 +202,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     Future<void> into(Directory d) async {
       final target = _in(d, name);
       await d.create(recursive: true);
+      String? damagedKeptAs;
       final type = FileSystemEntity.typeSync(target.path, followLinks: false);
       if (type != FileSystemEntityType.notFound) {
         if (type != FileSystemEntityType.file) {
@@ -223,14 +224,31 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
           );
           return;
         }
-        notify(
-          'A damaged copy of a file was found in this page\'s folder. It was kept as "${r.name}" and the good copy was saved.',
-        );
+        damagedKeptAs = r.name;
       }
       // Published without replacing anything (a unique temporary name, so an
       // extensionless write can never clobber a real attachment called
       // `<hash>.tmp`).
-      if (await writeNewAttachmentFile(target, bytes, hash)) return;
+      bool wrote;
+      try {
+        wrote = await writeNewAttachmentFile(target, bytes, hash);
+      } on FileSystemException {
+        if (damagedKeptAs != null) {
+          notify('A damaged copy of a file in this page\'s folder was kept as "$damagedKeptAs".');
+        }
+        rethrow;
+      }
+      if (wrote) {
+        if (damagedKeptAs != null) {
+          notify(
+            'A damaged copy of a file was found in this page\'s folder. It was kept as "$damagedKeptAs" and the good copy was saved.',
+          );
+        }
+        return;
+      }
+      if (damagedKeptAs != null) {
+        notify('A damaged copy of a file in this page\'s folder was kept as "$damagedKeptAs".');
+      }
       // Something appeared at the name meanwhile: fine if it is the file.
       final now = FileSystemEntity.typeSync(target.path, followLinks: false);
       if (now == FileSystemEntityType.notFound) {

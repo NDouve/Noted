@@ -1311,6 +1311,7 @@ void main() {
           final b = fresh.current!.page.nodes.whereType<BoxRecord>().firstWhere((n) => n.id == box.id);
           final ref = ((fresh.current!.modules.codecs.resolve(b) as LiveBox).data as FileData).ref;
           expect(ref.bytes, data, reason: 'a fresh notebook still holds the embedded bytes');
+          expect(b.snapshotText, box.snapshotText, reason: 'the box text is unchanged');
         },
       );
     }
