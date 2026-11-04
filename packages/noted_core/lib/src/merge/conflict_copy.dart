@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:math';
+
 import '../box_api/codec_registry.dart';
 import '../model/ids.dart';
 import '../model/page.dart';
@@ -30,6 +32,28 @@ List<String> conflictCopyOriginalNames(String fileName, {String extension = '.ca
   }
   return out;
 }
+
+/// A file name for a conflict copy of [fileName], in the shape
+/// [conflictCopyOriginalNames] recognises: `<stem>-<label>-<unique><extension>`
+/// (e.g. `3f2a-conflict-9c1d07ab.canvas`). [fileName] has no folder part.
+/// [extension] is the ending kept after the added part ('' for none); it is
+/// split off [fileName] first when it ends with it. [label] holds letters and
+/// digits only. The result is not checked against existing files: publish it
+/// exclusively and ask again (a new random part) when it is taken.
+String conflictCopyName(
+  String fileName, {
+  String label = 'conflict',
+  String extension = '.canvas',
+  Random? random,
+}) {
+  assert(RegExp(r'^[A-Za-z0-9]+$').hasMatch(label));
+  final hasExt = extension.isNotEmpty && fileName.endsWith(extension);
+  final stem = hasExt ? fileName.substring(0, fileName.length - extension.length) : fileName;
+  final unique = (random ?? _nameRandom).nextInt(1 << 32).toRadixString(16).padLeft(8, '0');
+  return '$stem-$label-$unique${hasExt ? extension : ''}';
+}
+
+final Random _nameRandom = Random.secure();
 
 /// Merges a sync client's conflict copy of a page into the [original] page
 /// file (same page id), box by box.

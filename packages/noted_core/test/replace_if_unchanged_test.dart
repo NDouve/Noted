@@ -74,6 +74,7 @@ void main() {
       expect(r.outcome, ReplaceOutcome.supersededKept);
       expect(File(p('a.bin')).readAsBytesSync(), [9, 9]);
       expect(File(r.keptPath!).readAsBytesSync(), [1, 2, 3]);
+      expect(conflictCopyOriginalNames(File(r.keptPath!).uri.pathSegments.last, extension: '.bin'), contains('a.bin'));
       expect(tmp.readAsBytesSync(), [7]);
     });
 
@@ -237,15 +238,32 @@ void main() {
       expect(names(), ['p1.canvas']);
     });
 
-    test('a stale verified file is deleted when the target is occupied', () async {
+    test('a stale verified file is kept as a conflict copy when the target is occupied', () async {
       final store = PageStore(dir);
       final theirs = writePage(page('Theirs'));
+      final old = writePage(page('Old'));
       File(p('p1.canvas')).writeAsStringSync(theirs);
-      File(p('p1.canvas.1-a-b$verifiedSuffix')).writeAsStringSync(writePage(page('Old')));
+      File(p('p1.canvas.1-a-b$verifiedSuffix')).writeAsStringSync(old);
       final entries = await store.scan();
-      expect(entries.single, isA<ReadablePage>());
+      expect(entries.whereType<ReadablePage>(), hasLength(1));
+      final copy = entries.whereType<ConflictCopyPage>().single;
+      expect(copy.originalPath, p('p1.canvas'));
+      expect(File(copy.path).readAsStringSync(), old);
       expect(File(p('p1.canvas')).readAsStringSync(), theirs);
-      expect(names(), ['p1.canvas']);
+      expect(names(), hasLength(2));
+    });
+
+    test('with extension empty, a non-page leftover is put back or kept as a copy', () async {
+      File(p('x.bin.1-a-b$asideSuffix')).writeAsBytesSync([1]);
+      File(p('y.bin')).writeAsBytesSync([9]);
+      File(p('y.bin.1-a-b$verifiedSuffix')).writeAsBytesSync([2]);
+      final out = await sweepAsideFiles(dir, extension: '');
+      expect(out, hasLength(2));
+      expect(File(p('x.bin')).readAsBytesSync(), [1]);
+      expect(File(p('y.bin')).readAsBytesSync(), [9]);
+      final copy = names().singleWhere((n) => n.startsWith('y.bin-') || n.startsWith('y-'));
+      expect(File(p(copy)).readAsBytesSync(), [2]);
+      expect(names(), hasLength(3));
     });
 
     test('a non-page leftover is left alone and listed', () async {
@@ -291,7 +309,7 @@ void main() {
     NotedPage page(String title) =>
         NotedPage.create(PageMeta.create(id: 'p1', title: title, order: 0));
 
-    test('supersededKept removes the verified-equal leftover', () async {
+    test('supersededKept keeps the original as a conflict copy that the scan finds', () async {
       final store = PageStore(dir);
       await store.save(page('Old'));
       final text = await store.readText('p1');
@@ -302,9 +320,53 @@ void main() {
         beforePublish: () => File(store.pathFor('p1')).writeAsStringSync(theirs),
       );
       expect(r.outcome, ReplaceOutcome.supersededKept);
-      expect(r.keptPath, isNull);
       expect(await store.readText('p1'), theirs);
-      expect(names(), ['p1.canvas']);
+      // The original-only content survives, under a recognised conflict-copy name.
+      expect(File(r.keptPath!).readAsStringSync(), text);
+      expect(names(), hasLength(2));
+      final entries = await store.scan();
+      final copy = entries.whereType<ConflictCopyPage>().single;
+      expect(copy.path, r.keptPath);
+      expect(copy.originalPath, store.pathFor('p1'));
+    });
+
+    test('supersededKept keeps the original even when it equals the written text', () async {
+      final store = PageStore(dir);
+      await store.save(page('Same'));
+      final text = await store.readText('p1');
+      final r = await store.saveIfUnchanged(
+        page('Same'),
+        text,
+        beforePublish: () => File(store.pathFor('p1')).writeAsStringSync(writePage(page('T'))),
+      );
+      expect(r.outcome, ReplaceOutcome.supersededKept);
+      expect(File(r.keptPath!).readAsStringSync(), text);
+    });
+
+    test('a crash after the verify leaves a leftover the scan keeps as a conflict copy', () async {
+      final store = PageStore(dir);
+      await store.save(page('Old'));
+      final text = await store.readText('p1');
+      final theirs = writePage(page('Theirs'));
+      // Simulate the crash: the hook throws after the original was set aside and
+      // verified, and a sync writer has taken the target; the restore also fails.
+      await expectLater(
+        store.saveIfUnchanged(
+          page('Mine'),
+          text,
+          beforePublish: () {
+            File(store.pathFor('p1')).writeAsStringSync(theirs);
+            throw StateError('crash');
+          },
+          beforeRestore: () => throw StateError('crash'),
+        ),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(names().where((n) => n.endsWith(verifiedSuffix)), hasLength(1));
+      final entries = await store.scan();
+      final copy = entries.whereType<ConflictCopyPage>().single;
+      expect(File(copy.path).readAsStringSync(), text);
+      expect(await store.readText('p1'), theirs);
     });
 
     test('changedKept keeps a leftover that is not verified equal', () async {
@@ -422,6 +484,92 @@ void deleteTests() {
       expect(File(r.keptPath!).readAsBytesSync(), [4, 5]);
       expect(r.keptPath!.endsWith(asideSuffix), isTrue);
     });
+  });
+
+  group('deleteFileIfMatches', () {
+    test('a matching content identity: deleted', () async {
+      File(p('a.png')).writeAsBytesSync([1, 2, 3]);
+      final id = ContentIdentity.ofBytes([1, 2, 3]);
+      expect(await ContentIdentity.ofFile(p('a.png')), id);
+      final r = await deleteFileIfMatches(p('a.png'), identity: id);
+      expect(r.outcome, DeleteOutcome.deleted);
+      expect(names(), isEmpty);
+    });
+
+    test('same length, different content: kept, byte for byte', () async {
+      File(p('a.png')).writeAsBytesSync([1, 2, 4]);
+      final r = await deleteFileIfMatches(p('a.png'), identity: ContentIdentity.ofBytes([1, 2, 3]));
+      expect(r.outcome, DeleteOutcome.changed);
+      expect(File(p('a.png')).readAsBytesSync(), [1, 2, 4]);
+      expect(names(), ['a.png']);
+    });
+
+    test('replaced before the move-aside: the newer file is put back', () async {
+      File(p('a.png')).writeAsBytesSync([1, 2, 3]);
+      final r = await deleteFileIfMatches(
+        p('a.png'),
+        identity: ContentIdentity.ofBytes([1, 2, 3]),
+        beforeMoveAside: () => File(p('a.png')).writeAsBytesSync([8, 8]),
+      );
+      expect(r.outcome, DeleteOutcome.changed);
+      expect(File(p('a.png')).readAsBytesSync(), [8, 8]);
+      expect(names(), ['a.png']);
+    });
+
+    test('a file appearing while a changed one is set aside: both kept and reported', () async {
+      File(p('a.png')).writeAsBytesSync([1, 2, 3]);
+      final r = await deleteFileIfMatches(
+        p('a.png'),
+        identity: ContentIdentity.ofBytes([1, 2, 3]),
+        beforeMoveAside: () => File(p('a.png')).writeAsBytesSync([8, 8]),
+        afterRead: () => File(p('a.png')).writeAsBytesSync([7]),
+      );
+      expect(r.outcome, DeleteOutcome.changedKept);
+      expect(File(p('a.png')).readAsBytesSync(), [7]);
+      expect(File(r.keptPath!).readAsBytesSync(), [8, 8]);
+    });
+
+    test('a failed delete whose put-back is blocked names the kept file', () async {
+      File(p('a.png')).writeAsBytesSync([1, 2, 3]);
+      Object? error;
+      try {
+        await deleteFileIfMatches(
+          p('a.png'),
+          bytes: [1, 2, 3],
+          beforeDelete: () async {
+            File(p('a.png')).writeAsBytesSync([5]);
+            throw StateError('boom');
+          },
+        );
+      } on FileSystemException catch (e) {
+        error = e;
+      }
+      expect(error.toString(), contains('kept as'));
+      expect(File(p('a.png')).readAsBytesSync(), [5]);
+      final kept = names().singleWhere((n) => n.endsWith(asideSuffix));
+      expect(File(p(kept)).readAsBytesSync(), [1, 2, 3]);
+      // A non-page leftover comes back through the sweep with no extension.
+      File(p('a.png')).deleteSync();
+      await sweepAsideFiles(dir, extension: '');
+      expect(File(p('a.png')).readAsBytesSync(), [1, 2, 3]);
+    });
+
+    test('exactly one of bytes and identity is required', () async {
+      expect(() => deleteFileIfMatches(p('a')), throwsArgumentError);
+      expect(
+        () => deleteFileIfMatches(p('a'), bytes: [1], identity: ContentIdentity.ofBytes([1])),
+        throwsArgumentError,
+      );
+    });
+  });
+
+  test('conflictCopyName is recognised by conflictCopyOriginalNames', () {
+    final n = conflictCopyName('3f2a-b1.canvas');
+    expect(conflictCopyOriginalNames(n), contains('3f2a-b1.canvas'));
+    expect(n, startsWith('3f2a-b1-conflict-'));
+    final a = conflictCopyName('x.png', extension: '.png');
+    expect(a, matches(RegExp(r'^x-conflict-[0-9a-f]{8}\.png$')));
+    expect(conflictCopyName('noext', extension: ''), startsWith('noext-conflict-'));
   });
 
   test('PageStore.deleteIfUnchanged deletes only the expected text', () async {

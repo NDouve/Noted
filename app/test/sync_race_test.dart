@@ -37,6 +37,9 @@ class CountingStore extends PageStore {
   CountingStore(super.directory);
   int saves = 0;
   void Function()? beforeWrite;
+  // Runs once, between the compare-and-swap replace reading the set-aside
+  // original and publishing the new file.
+  void Function()? beforePublishOnce;
 
   void _fire() {
     final f = beforeWrite;
@@ -62,7 +65,9 @@ class CountingStore extends PageStore {
   }) {
     saves++;
     _fire();
-    return super.saveIfUnchanged(page, expectedText);
+    final hook = beforePublishOnce;
+    beforePublishOnce = null;
+    return super.saveIfUnchanged(page, expectedText, beforePublish: hook ?? beforePublish);
   }
 }
 
@@ -425,6 +430,42 @@ void main() {
 
       expect(File(path).existsSync(), isFalse);
       expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, fromCopy.id, newer.id});
+    });
+
+    test('R-3: a sync writer taking the target at the publish keeps the original-only box', () async {
+      final (id, box) = await closedPageWithBox(); // the original holds box A
+      final disk = await other.load(id);
+      final fromCopy = noteBox('from the copy', at: const Bounds(400, 10, 200, 40));
+      final newer = noteBox('from the other device', at: const Bounds(400, 100, 200, 40));
+      final path = '${dir.path}$sep$id-DESKTOP-ABC.canvas';
+      // The copy does not have box A; the other device's newer version does not either.
+      final withoutA = disk.removeNode(box.id);
+      File(path).writeAsStringSync(writePage(withoutA.insertNode(fromCopy)));
+      var fired = false;
+      // After the original was set aside and verified, right before the merged
+      // page is published: the sync writer publishes its own version.
+      counting.beforePublishOnce = () {
+        fired = true;
+        File(pathOf(id)).writeAsStringSync(writePage(withoutA.insertNode(newer)));
+      };
+
+      await nb.checkFile(path);
+      // Settle: merge every conflict copy that is left, as the folder scan would.
+      for (var i = 0; i < 4; i++) {
+        final copies = dir
+            .listSync()
+            .map((f) => f.path)
+            .where((f) => f.endsWith('.canvas') && f != pathOf(id))
+            .toList();
+        if (copies.isEmpty) break;
+        for (final c in copies) {
+          await nb.checkFile(c);
+        }
+      }
+
+      expect(fired, isTrue);
+      final ids = onDisk(id).nodes.map((n) => n.id).toSet();
+      expect(ids, containsAll({box.id, fromCopy.id, newer.id}));
     });
   });
 }
