@@ -14,6 +14,7 @@ import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart' show CommandToolbar;
 import 'package:noted_core/noted_core.dart';
+import 'support/busy_retry.dart';
 
 /// Records which UI actions the commands asked for.
 class _Actions implements PageTreeActions {
@@ -67,7 +68,7 @@ void main() {
 
   tearDown(() async {
     nb.dispose();
-    await dir.delete(recursive: true);
+    await busyRetry(() => dir.delete(recursive: true));
   });
 
   group('page commands', () {

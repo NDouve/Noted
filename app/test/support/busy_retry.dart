@@ -13,10 +13,12 @@ Future<T> busyRetry<T>(Future<T> Function() op) async {
     try {
       return await op();
     } on FileSystemException catch (e) {
-      // Only "access denied" (5) and "in use" (32) on Windows are transient
-      // here; anything else is a real failure and is reported at once.
+      // Only "access denied" (5), "in use" (32) and "directory not empty"
+      // (145, a save that was still finishing wrote into a folder being
+      // deleted) on Windows are transient here; anything else is a real
+      // failure and is reported at once.
       final code = e.osError?.errorCode;
-      final busy = Platform.isWindows && (code == 5 || code == 32);
+      final busy = Platform.isWindows && (code == 5 || code == 32 || code == 145);
       if (!busy || DateTime.now().isAfter(end)) rethrow;
       await Future<void>.delayed(const Duration(milliseconds: 25));
     }
