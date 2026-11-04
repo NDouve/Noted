@@ -487,8 +487,8 @@ void main() {
         attachmentAfterFillHook = null;
       });
       await store.put(good, extension: 'bin');
-      // The other writer's (damaged) file is not deleted: it is set aside by
-      // the next check, never by the writer that lost the race.
+      // The other writer's file is not deleted and stays at the name; the good
+      // bytes go to a .kept- copy beside it.
       expect(asset(name).readAsBytesSync(), bad);
       final kept = Directory('${pages.path}/p.assets').listSync().map((e) => e.path.split(RegExp(r'[\/]')).last).where((n) => n.contains('.kept-'));
       expect(kept, isNotEmpty);

@@ -192,8 +192,8 @@ Future<void> Function(String target)? attachmentAfterFillHook;
 /// [FileSystemException] when the file could not be written. This call's own
 /// temporary file is always removed. After the no-hard-link publish (which
 /// copies and leaves the temporary file) the target is checked by hash; one
-/// that does not hold [hash] is removed again, only while it still holds what
-/// this call read from it, and counts as refused.
+/// that does not hold [hash] is left alone (it may be another writer's file)
+/// and counts as refused.
 Future<bool> writeNewAttachmentFile(File target, Uint8List bytes, String hash) async {
   final tmp = File('${target.path}.${DateTime.now().microsecondsSinceEpoch}-${_counter++}.tmp');
   try {
