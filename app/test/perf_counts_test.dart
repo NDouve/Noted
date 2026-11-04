@@ -82,7 +82,16 @@ void main() {
 
   tearDown(() async {
     nb.dispose();
-    await Directory(dir.path).delete(recursive: true);
+    // On Windows a watcher's handle, or a check that was already reading, is
+    // released a moment after dispose; a delete then fails with errno 32.
+    for (var attempt = 1; Directory(dir.path).existsSync(); attempt++) {
+      try {
+        await Directory(dir.path).delete(recursive: true);
+      } on FileSystemException {
+        if (attempt >= 20) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+    }
   });
 
   String pathOf(String id) => other.pathFor(id);
@@ -174,27 +183,31 @@ void main() {
         await nb.flush();
         final page = c.page;
         final reportsAfterSave = contentReports;
+        // The save's own reads (the outside-change check and the
+        // compare-and-swap's look at the target) are the baseline.
+        final base = log.reads(pathOf(id));
         // Wait for the watcher to report our own write, up to a deadline, so
         // a slow runner doesn't fail the test.
         for (
           var waited = 0;
-          waited < 5000 && log.reads(pathOf(id)) < 2;
+          waited < 5000 && log.reads(pathOf(id)) <= base;
           waited += 50
         ) {
           await realWait(50);
         }
         await realWait(200); // let a second report, if any, arrive
-        // One read before the save (the outside-change check) and one from
-        // the watcher, which compares the text with what was written; it is
-        // never parsed and merged into the page. The watcher must have fired,
-        // or this would pass without testing the compare path.
+        // The watcher compares the text with what was written (once, or
+        // twice if the debounce split the move-aside and the publish); it is
+        // never parsed and merged into the page. It must have fired, or this
+        // would pass without testing the compare path.
         expect(
-          log.reads(pathOf(id)),
-          inInclusiveRange(2, 3),
+          log.reads(pathOf(id)) - base,
+          inInclusiveRange(1, 2),
           reason: 'the watcher read the file',
         );
+        final beforeCheck = log.reads(pathOf(id));
         await nb.checkFile(pathOf(id)); // and a check by hand finds the same
-        expect(log.reads(pathOf(id)), lessThanOrEqualTo(4));
+        expect(log.reads(pathOf(id)) - beforeCheck, 1);
         expect(pageParseCount, 0, reason: 'our own write is not parsed again');
         expect(contentReports, reportsAfterSave, reason: 'no page read in');
         expect(identical(c.page, page), isTrue, reason: 'no merge');

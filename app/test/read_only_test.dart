@@ -43,11 +43,8 @@ void main() {
 
   Future<void> cleanUp() async {
     for (final nb in opened) {
-      // Closed-page updates and retries are tracked, not queued; let them end.
-      for (var i = 0; i < 200 && nb.unsavedDescription != null; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-      }
       await nb.flush();
+      expect(nb.unsavedDescription, isNull, reason: 'a save is still running');
       nb.dispose();
     }
     opened.clear();
