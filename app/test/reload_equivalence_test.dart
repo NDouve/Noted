@@ -266,7 +266,8 @@ class _MPage {
   String loc; // 'pages', 'x', 'a' or 'b'
   String? parent;
   String title = 'Untitled page';
-  final Map<String, String> boxes = {};
+  String? assetText; // the one file in the page's attachments folder, if any
+  final Map<String, _BoxVal> boxes = {};
 }
 
 /// Box text, whatever its nesting: every `insert` string of the note document.
@@ -290,15 +291,48 @@ String _textOf(BoxRecord b) {
   return out.toString();
 }
 
-/// The boxes of [page] as id to text; fails on anything that is not a note box
-/// or is conflicted.
-Map<String, String> _boxesOf(NotedPage page, String where) {
-  final out = <String, String>{};
+/// What the model keeps of a note box: its text and its bounds.
+typedef _BoxVal = ({String text, Bounds bounds});
+
+_BoxVal _val(BoxRecord b) => (text: _textOf(b), bounds: b.bounds);
+
+/// Every page also holds one box of a type no module registers (invariant 2).
+/// Its data is odd on purpose (spacing, key order, an escape) and must come
+/// back byte for byte from every save, merge, move, undo and replay.
+const String _opaqueType = 'x.unregistered';
+const String _opaqueId = '00000000000000f1';
+const String _opaqueData = r'{"b":1,  "z":"caf\u00e9", "a":[1, 2 ,3],"n":null}';
+const Bounds _opaqueBounds = Bounds(900, 900, 100, 50);
+
+BoxRecord _opaqueBox() => BoxRecord.create(
+  id: _opaqueId,
+  typeId: _opaqueType,
+  dataVersion: 3,
+  bounds: _opaqueBounds,
+  data: const RawJson.trusted(_opaqueData),
+  snapshotText: 'snapshot',
+  rev: 'opaquerev',
+);
+
+/// The note boxes of [page] as id to text and bounds. Fails on anything that
+/// is not a note box, on a conflicted box, and unless the page holds exactly
+/// one unregistered box with its data and bounds as they were made.
+Map<String, _BoxVal> _boxesOf(NotedPage page, String where) {
+  final out = <String, _BoxVal>{};
+  var opaque = 0;
   for (final n in page.nodes) {
     if (n is! BoxRecord) fail('$where: a node that is not a box: ${n.id}');
     if (n.isConflicted) fail('$where: box ${n.id} is conflicted (${_textOf(n)})');
-    out[n.id] = _textOf(n);
+    if (n.typeId == _opaqueType) {
+      opaque++;
+      expect(n.id, _opaqueId, reason: '$where: the unregistered box');
+      expect(n.data?.text, _opaqueData, reason: '$where: data of the unregistered box');
+      expect(n.bounds, _opaqueBounds, reason: '$where: bounds of the unregistered box');
+      continue;
+    }
+    out[n.id] = _val(n);
   }
+  expect(opaque, 1, reason: '$where: the unregistered box is missing or repeated');
   return out;
 }
 
@@ -313,6 +347,11 @@ class _Run {
   final int seed;
   final Random rng;
   final List<String> trace = [];
+
+  /// The kind of the step being made, and the kinds of the steps that finished
+  /// (a step that did nothing, for want of a page to act on, has none).
+  String? _kind;
+  final List<String> kinds = [];
   final Map<String, _MPage> model = {};
   final Map<String, _Chaos> _stores = {};
   late final ModuleRegistry modules = buildModules();
@@ -365,6 +404,7 @@ class _Run {
     model[sub] = _MPage('pages', parent: first);
     for (final id in model.keys.toList()) {
       await nb.open(id);
+      nb.current!.insertBox(_opaqueBox());
       _addBox(model[id]!, nb.current!);
       if (rng.nextBool()) _addBox(model[id]!, nb.current!);
       await nb.flush();
@@ -409,7 +449,7 @@ class _Run {
   void _addBox(_MPage m, CanvasController c) {
     final b = _newBox(_text('local'));
     c.insertBox(b);
-    m.boxes[b.id] = _textOf(b);
+    m.boxes[b.id] = _val(b);
   }
 
   /// A local edit on the open page [c]: adds, retexts or deletes a box.
@@ -422,7 +462,7 @@ class _Run {
       final codec = modules.codecs.codecFor('noted.note')!;
       final text = _text('edited');
       c.editBox(id, codec.decode(_doc(text), 1));
-      m.boxes[id] = text;
+      m.boxes[id] = (text: text, bounds: m.boxes[id]!.bounds);
     } else {
       final id = m.boxes.keys.elementAt(rng.nextInt(m.boxes.length));
       c.delete(id);
@@ -467,6 +507,7 @@ class _Run {
   }
 
   Future<void> _step(int n) async {
+    _kind = null;
     final r = rng.nextInt(100);
     final String name;
     if (r < 22) {
@@ -497,6 +538,7 @@ class _Run {
     trace.add('  ($name done)');
     await _settle();
     await verify('step $n ($name)');
+    if (_kind != null) kinds.add(_kind!);
   }
 
   /// The watcher's job: look at every conflict copy (and set-aside file) left
@@ -555,6 +597,7 @@ class _Run {
       'failAlways',
     ]);
     trace.add('edit ${_short(id)} in ${m.loc}: $variant');
+    _kind = 'edit:$variant';
     await nb.open(id);
     final c = nb.current!;
     final st = storeOf(m.loc);
@@ -582,13 +625,13 @@ class _Run {
         }
         await nb.flush();
         expect(fired, isTrue, reason: 'the sync writer never got its turn');
-        m.boxes[y.id] = _textOf(y);
+        m.boxes[y.id] = _val(y);
       case 'externalBeforeFlush':
         // The file changes and no watcher event has run yet.
         final y = _newBox(_text('sync'));
         await _externalWrite(id, _disk(id).insertNode(y));
         await nb.flush();
-        m.boxes[y.id] = _textOf(y);
+        m.boxes[y.id] = _val(y);
       case 'failOnce':
         // One failed publish: the replace tries again.
         st.publishFailures = 1;
@@ -614,6 +657,7 @@ class _Run {
     final id = _pickPage();
     final m = model[id]!;
     trace.add('external edit of ${_short(id)} in ${m.loc}');
+    _kind = 'external';
     final page = _disk(id);
     NotedPage next;
     if (m.boxes.isNotEmpty && rng.nextInt(3) == 0) {
@@ -622,11 +666,11 @@ class _Run {
       final text = _text('theirs');
       final old = page.node(target)! as BoxRecord;
       next = page.replaceNode(commitBox(old, codec, codec.decode(_doc(text), 1)));
-      m.boxes[target] = text;
+      m.boxes[target] = (text: text, bounds: m.boxes[target]!.bounds);
     } else {
       final y = _newBox(_text('sync'));
       next = page.insertNode(y);
-      m.boxes[y.id] = _textOf(y);
+      m.boxes[y.id] = _val(y);
     }
     await _externalWrite(id, next);
     await nb.checkFile(_pathOf(id)); // the watcher's event
@@ -646,6 +690,7 @@ class _Run {
       'scan',
     ]);
     trace.add('conflict copy of ${_short(id)} in ${m.loc}: $variant');
+    _kind = 'conflict:$variant';
     // The merge hooks belong to the closed-page merge: close the page.
     if (variant == 'replacedMidMerge' || variant == 'originalChanged') {
       await nb.open(_pickPage(where: (i, p) => i != id));
@@ -654,7 +699,10 @@ class _Run {
     final z = _newBox(_text('copy'));
     final path = '${dirs[m.loc]!.path}$sep$id-DESKTOP-${++_copyCounter}.canvas';
     if (variant == 'stealPublish') {
-      if (m.boxes.isEmpty) return;
+      if (m.boxes.isEmpty) {
+        _kind = null;
+        return;
+      }
       // R-3 as it happens in a run: the copy and the other device's newer file
       // both lack a box the original has, and the other device's file lands at
       // the publish. The original's own box must survive.
@@ -666,12 +714,12 @@ class _Run {
       storeOf(m.loc).beforePublishOnce = () => _externalWriteSync(id, without.insertNode(w));
       await nb.checkFile(path);
       await _settle();
-      m.boxes[z.id] = _textOf(z);
-      m.boxes[w.id] = _textOf(w);
+      m.boxes[z.id] = _val(z);
+      m.boxes[w.id] = _val(w);
       return;
     }
     File(path).writeAsStringSync(writePage(disk.insertNode(z)));
-    m.boxes[z.id] = _textOf(z);
+    m.boxes[z.id] = _val(z);
     switch (variant) {
       case 'plain':
         await nb.checkFile(path);
@@ -689,7 +737,7 @@ class _Run {
         await nb.checkFile(path);
         nb.syncHook = null;
         expect(fired, isTrue);
-        m.boxes[later.id] = _textOf(later);
+        m.boxes[later.id] = _val(later);
       case 'originalChanged':
         // The other device's edit lands on the original after it was read.
         final newer = _newBox(_text('newer'));
@@ -702,7 +750,7 @@ class _Run {
         await nb.checkFile(path);
         nb.syncHook = null;
         expect(fired, isTrue);
-        m.boxes[newer.id] = _textOf(newer);
+        m.boxes[newer.id] = _val(newer);
     }
   }
 
@@ -713,6 +761,7 @@ class _Run {
     final m = model[id]!;
     final variant = _pick(['plain', 'syncAtPublish', 'syncBeforeWrite']);
     trace.add('rename ${_short(id)} in ${m.loc}: $variant');
+    _kind = 'rename:$variant';
     // Close it: open another page.
     if (model.length > 1) await nb.open(_pickPage(where: (i, p) => i != id));
     final st = storeOf(m.loc);
@@ -733,7 +782,7 @@ class _Run {
       }
       await nb.rename(id, title);
       expect(fired, isTrue);
-      m.boxes[y.id] = _textOf(y);
+      m.boxes[y.id] = _val(y);
     } else {
       await nb.rename(id, title);
     }
@@ -780,9 +829,13 @@ class _Run {
     final m = model[id]!;
     final to = _pick(_locs.where((l) => l != m.loc).toList());
     trace.add('move ${_short(id)} ${m.loc} -> $to: $variant');
+    _kind = 'move:$variant';
     final from = m.loc;
     final subtree = _subtree(id);
-    if (_standaloneLeft(subtree, to: to) < 1) return; // a notebook always keeps a standalone page
+    if (_standaloneLeft(subtree, to: to) < 1) {
+      _kind = null;
+      return; // a notebook always keeps a standalone page
+    }
     var mustFail = false;
     switch (variant) {
       case 'pendingEdit':
@@ -803,7 +856,7 @@ class _Run {
         await nb.flush();
         final base = _disk(id);
         storeOf(from).beforeDeleteOnce = () => _externalWriteSync(id, base.insertNode(y));
-        m.boxes[y.id] = _textOf(y);
+        m.boxes[y.id] = _val(y);
         mustFail = true;
     }
     Object? error;
@@ -836,6 +889,7 @@ class _Run {
     final m = model[id]!;
     final variant = _pick(['undo', 'undo', 'keep', 'syncAtDelete', 'failDelete']);
     trace.add('delete ${_short(id)} (${gone.length} pages) in ${m.loc}: $variant');
+    _kind = 'delete:$variant';
     final st = storeOf(m.loc);
     NotedPage? sync;
     String? syncId;
@@ -848,7 +902,8 @@ class _Run {
       syncId = y.id;
       st.beforeDeleteOnce = () => _externalWriteSync(id, sync!);
     } else if (variant == 'failDelete') {
-      st.failDelete.add(gone[rng.nextInt(gone.length)]); // the page or one of its subpages
+      // The last page of the subtree: the ones before it are already deleted.
+      st.failDelete.add(gone.last);
     }
     Object? error;
     DeletedPages? deleted;
@@ -867,7 +922,7 @@ class _Run {
     final kept = <String>{if (variant == 'syncAtDelete') id};
     if (kept.isNotEmpty) {
       expect(deleted!.keptNote, isNotNull);
-      model[id]!.boxes[syncId!] = _textOf(sync!.node(syncId)! as BoxRecord);
+      model[id]!.boxes[syncId!] = _val(sync!.node(syncId)! as BoxRecord);
     }
     final removed = gone.where((p) => !kept.contains(p)).toList();
     final snapshot = {for (final p in removed) p: model[p]!};
@@ -898,6 +953,7 @@ class _Run {
     final away = _pick(['plain', 'plain', 'syncWhileAway', 'deletedWhileAway', 'replayFails']);
     final how = '${restart ? 'restart' : 'live'}/$away';
     trace.add('vanish $loc with an edit pending on ${_short(id)}: $how');
+    _kind = 'vanish:$how';
     await nb.open(id);
     final c = nb.current!;
     _addBox(m, c);
@@ -914,7 +970,7 @@ class _Run {
       final f = File('$awayDir$sep$id.canvas');
       final page = readPage(f.readAsStringSync());
       await _busyRetry(() => PageStore(Directory(awayDir)).save(page.insertNode(y)));
-      m.boxes[y.id] = _textOf(y);
+      m.boxes[y.id] = _val(y);
     } else if (away == 'deletedWhileAway') {
       File('$awayDir$sep$id.canvas').deleteSync();
     }
@@ -950,11 +1006,21 @@ class _Run {
 
   Future<void> _opRestart() async {
     trace.add('restart');
+    _kind = 'restart';
     await nb.flush();
     _drop();
     nb = _make();
     _spare.add(nb);
     await nb.load();
+  }
+
+  /// Gives page [id] an attachments folder with a file in it (the probes use
+  /// it; the sequences leave attachments alone).
+  void _giveAssets(String id) {
+    final m = model[id]!;
+    m.assetText = 'attachment of $id';
+    final d = Directory('${dirs[m.loc]!.path}$sep${assetsFolderName(id)}')..createSync();
+    File('${d.path}${sep}a.txt').writeAsStringSync(m.assetText!);
   }
 
   // -- checks -----------------------------------------------------------------
@@ -979,6 +1045,8 @@ class _Run {
         if (loc == 'a' || loc == 'b') binderFileName,
         for (final e in model.entries)
           if (e.value.loc == loc) '${e.key}.canvas',
+        for (final e in model.entries)
+          if (e.value.loc == loc && e.value.assetText != null) assetsFolderName(e.key),
       };
       final actual = <String>{for (final f in d.listSync()) f.path.split(RegExp(r'[\\/]')).last};
       expect(actual, expected, reason: '$where: the files in $loc');
@@ -987,6 +1055,13 @@ class _Run {
       final id = e.key;
       final m = e.value;
       final page = _disk(id);
+      if (m.assetText != null) {
+        expect(
+          File('${dirs[m.loc]!.path}$sep${assetsFolderName(id)}${sep}a.txt').readAsStringSync(),
+          m.assetText,
+          reason: '$where: the attachment of page ${_short(id)}',
+        );
+      }
       expect(
         _boxesOf(page, '$where: ${_short(id)} on disk'),
         m.boxes,
@@ -1081,20 +1156,11 @@ const _expectedKinds = {
 const bool _runParked = bool.fromEnvironment('RELOAD_PARKED');
 
 final Set<String> _seen = {};
-
-void _record(List<String> trace) {
-  for (final line in trace) {
-    if (line.startsWith(' ')) continue;
-    final word = line.split(' ').first;
-    final colon = line.lastIndexOf(': ');
-    _seen.add(
-      colon < 0 ? word : '${word == 'conflict' ? 'conflict' : word}:${line.substring(colon + 2)}',
-    );
-  }
-}
+int _started = 0;
 
 void main() {
   Future<void> sequence(int seed) async {
+    _started++;
     final run = _Run(seed);
     try {
       await run.start();
@@ -1105,7 +1171,7 @@ void main() {
       await run.verify('end', fresh: true);
       if (const bool.fromEnvironment('RELOAD_TRACE')) debugPrint(run.trace.join('\n'));
     } finally {
-      _record(run.trace);
+      _seen.addAll(run.kinds);
       await run.stop();
     }
   }
@@ -1127,6 +1193,10 @@ void main() {
   }
 
   test('the seeds reach every kind of step', () {
+    if (_started < _seeds.length + _extraSeeds) {
+      markTestSkipped('only some of the seeds ran (a filtered run)');
+      return;
+    }
     final missing = _expectedKinds.difference(_seen);
     expect(missing, isEmpty, reason: 'steps the seeds never made (reached: $_seen)');
   });
@@ -1167,6 +1237,8 @@ void main() {
       () async {
         final parent = run.model.keys.first;
         final sub = run.model.entries.firstWhere((e) => e.value.parent == parent).key;
+        run._giveAssets(parent);
+        run._giveAssets(sub);
         run.storeOf('pages').failDelete.add(sub);
         Object? error;
         try {
@@ -1176,9 +1248,39 @@ void main() {
         }
         run.storeOf('pages').failDelete.clear();
         expect(error, isNotNull);
-        // Either everything is deleted and can be undone, or nothing is.
-        await run._verifyDisk('after the failed delete');
+        // Nothing is deleted: both files, both attachment folders, and a fresh
+        // notebook agrees.
+        await run.verify('after the failed delete', fresh: true);
+        expect(
+          Directory('${run.dirs['pages']!.path}${run.sep}deleted-attachments').existsSync(),
+          isFalse,
+        );
       },
     );
+
+    test('a delete whose put-back also fails keeps the pages in recovery', () async {
+      final parent = run.model.keys.first;
+      final sub = run.model.entries.firstWhere((e) => e.value.parent == parent).key;
+      run._giveAssets(parent);
+      run._giveAssets(sub);
+      final st = run.storeOf('pages');
+      st.failDelete.add(sub);
+      st.failNew.add(parent); // the put-back of the parent fails as well
+      Object? error;
+      try {
+        await run.nb.delete(parent);
+      } on Object catch (e) {
+        error = e;
+      }
+      st.failDelete.clear();
+      st.failNew.clear();
+      expect(error, isA<NotebookException>());
+      expect((error! as NotebookException).message, contains('recovery'));
+      expect((await run.nb.pendingRecovery()).entries.map((e) => e.pageId), [parent]);
+      expect(File(run._pathOf(parent)).existsSync(), isFalse);
+      // The next start writes the page back.
+      await run._opRestart();
+      await run.verify('after the recovery', fresh: true);
+    });
   });
 }

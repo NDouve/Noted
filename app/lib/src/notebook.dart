@@ -1412,31 +1412,69 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on Object {
       // No undo is offered for a delete that threw, so what it already
       // deleted is put back, never over a file that has appeared since.
+      final stuck = <int>[]; // could not be put back: kept for undo
       for (final i in deletedNow) {
         try {
-          await _restoreText(loc, pages[i], texts[i]);
-          _metas[ids[i]] = pages[i].meta;
-          _loc[ids[i]] = loc;
+          if (await _restoreText(loc, pages[i], texts[i])) {
+            _metas[ids[i]] = pages[i].meta;
+            _loc[ids[i]] = loc;
+          } else {
+            // A file appeared at its path meanwhile: read it as any change.
+            await _checkFile(st.pathFor(ids[i]));
+          }
         } on Object catch (e) {
           debugPrint('Putting back page ${ids[i]} after a failed delete failed: $e');
+          stuck.add(i);
         }
       }
+      var assetsBack = true;
       for (var i = 0; i < ids.length; i++) {
         final dir = stash[ids[i]];
         if (dir == null) continue;
         try {
           await _moveDir(dir, _assetsDir(loc, ids[i]));
+          stash.remove(ids[i]);
         } on FileSystemException catch (e) {
+          assetsBack = false;
           debugPrint('Putting back the attachments of page ${ids[i]} failed: $e');
         }
       }
+      // Pages kept because a newer version landed: read like any change.
+      for (final p in keptIds) {
+        await _checkFile(st.pathFor(p));
+      }
+      if (stuck.isEmpty && assetsBack && stash.isEmpty) {
+        await _removeDir(trash);
+      }
+      _touch(loc);
       _rebuildTree();
       if (openId != null) {
         try {
           await open(openId);
         } on Object catch (e) {
           debugPrint('Reopening page $openId after a failed delete failed: $e');
+          if (_current == null) await _openFallback(loc);
         }
+      }
+      if (stuck.isNotEmpty) {
+        // What could not be put back is kept for undo and in recovery, which
+        // writes a page file that is not there when it replays.
+        _lastDeleted = DeletedPages._(
+          [for (final i in stuck) pages[i]],
+          null,
+          loc,
+          {for (final i in stuck) if (stash[ids[i]] != null) ids[i]: stash[ids[i]]!}, // any left
+        );
+        for (final i in stuck) {
+          await _keepForRecovery(loc, st, pages[i], base: pages[i]);
+        }
+        throw NotebookException(
+          '${stuck.length == 1 ? 'A page' : '${stuck.length} pages'} could not be deleted '
+          'completely and ${stuck.length == 1 ? 'was' : 'were'} not put back. The '
+          'content is kept and recovery will write ${stuck.length == 1 ? 'it' : 'them'} '
+          'back.',
+          needsAction: true,
+        );
       }
       rethrow;
     }
