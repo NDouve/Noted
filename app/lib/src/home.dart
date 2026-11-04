@@ -23,6 +23,18 @@ import 'settings_panel.dart';
 import 'page_tree_view.dart';
 import 'settings_menu.dart';
 
+/// The snack bar for an attachment notice. A long one (it names a file and
+/// says where a copy went) stays 20 seconds and can be closed; a short one
+/// keeps the default time.
+SnackBar attachmentNoticeBar(String message) {
+  final long = message.length > 90;
+  return SnackBar(
+    content: Text(message),
+    duration: long ? const Duration(seconds: 20) : const Duration(milliseconds: 4000),
+    showCloseIcon: long,
+  );
+}
+
 /// Sidebar with the page tree, and the open page's canvas.
 class Home extends StatefulWidget {
   const Home({super.key, required this.notebook, this.settings, this.search});
@@ -95,7 +107,7 @@ class _HomeState extends State<Home> {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.maybeOf(context);
     messenger?.hideCurrentSnackBar();
-    messenger?.showSnackBar(SnackBar(content: Text(message)));
+    messenger?.showSnackBar(attachmentNoticeBar(message));
   }
 
   // A new canvas (and key) for each page, as the page id key gave before.

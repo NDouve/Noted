@@ -88,10 +88,13 @@ void main() {
         isNull,
         reason: 'neither',
       );
-      expect(
-        AttachmentRef.fromJson({'name': 'x', 'hash': hash, 'data': '%%%'}),
-        isNull,
-      );
+      final undecodable = AttachmentRef.fromJson({
+        'name': 'x',
+        'hash': hash,
+        'data': '%%%',
+      })!;
+      expect(undecodable.isDamaged, isTrue, reason: 'kept, not dropped');
+      expect(undecodable.toJson()['data'], '%%%');
     });
 
     test('fields of a newer version are kept', () {

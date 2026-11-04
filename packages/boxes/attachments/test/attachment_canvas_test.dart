@@ -638,6 +638,11 @@ void main() {
     );
     await t.pump();
     final huge = boxes().firstWhere((b) => (data(b) as FileData).ref.name == 'huge.zip');
+    // The box records a size under the limit (a hand-edited page), so the
+    // file is read and found too big; a recorded size over the limit is
+    // skipped without reading it.
+    final hd = data(c.page.node(huge.id)! as BoxRecord) as FileData;
+    c.editBox(huge.id, hd.copyWith(ref: AttachmentRef(name: hd.ref.name, size: 10, hash: hd.ref.hash, file: hd.ref.file)));
     var n = 0;
     gated.onRead = () {
       // Still over the limit, but a different edit every time.

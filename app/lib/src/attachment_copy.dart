@@ -6,6 +6,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:noted_canvas/noted_canvas.dart' show AttachmentState;
 import 'package:noted_core/noted_core.dart';
 
 /// A source attachment file and the copy that was verified equal to it.
@@ -41,6 +42,185 @@ class AttachmentCopy {
   /// checked, and set-aside originals that could not be put back. They stay
   /// where they are and are reported to the user.
   final List<String> keptAside = [];
+}
+
+/// The marker of a damaged attachment kept aside: `<name>.damaged-<12 hex>`,
+/// the first 12 characters of the hash of its actual bytes. Such a file is not an
+/// attachment (its name is not a hash name), is never promoted by the leftover
+/// sweeps (they look for `.tmp`, `.cas-old` and `.cas-verified` only), and is
+/// copied along with the folder like any other file that is not a hash name.
+const String damagedMarker = '.damaged-';
+
+/// The name a damaged copy of [name] is kept under, given the SHA-256 [hash]
+/// of its actual bytes.
+String damagedCopyName(String name, String hash) => '$name$damagedMarker${hash.substring(0, 12)}';
+
+final RegExp _damagedName = RegExp(r'\.damaged-[0-9a-f]{12}$');
+
+/// Whether [name] is a damaged copy kept aside (see [damagedMarker]).
+bool isDamagedCopyName(String name) => _damagedName.hasMatch(name);
+
+/// The hash an attachment file name stands for (`<64 hex>` or
+/// `<64 hex>.<ext>`), or null for any other name.
+String? attachmentNameHash(String fileName) => _hashName.firstMatch(fileName)?.group(1);
+
+/// What [checkAttachmentFile] found.
+class FileCheck {
+  const FileCheck(this.state, {this.found, this.bytes});
+
+  final AttachmentState state;
+
+  /// The length and hash of what was read, when [state] is damaged.
+  final ContentIdentity? found;
+
+  /// The bytes, when asked for and the file is fine.
+  final Uint8List? bytes;
+}
+
+/// Runs in [checkAttachmentFile] after the file was hashed and before its
+/// size and time are checked again. For tests.
+@visibleForTesting
+Future<void> Function(File file)? attachmentAfterHashHook;
+
+/// Runs in [setAsideDamaged] after the file was moved and before it is
+/// checked there. For tests.
+@visibleForTesting
+void Function(String aside)? attachmentAfterSetAsideHook;
+
+/// Hashes [file] (streamed, once) and compares it with [expectedHash]. A file
+/// shorter than [size] (the size the box recorded), one that changes while it
+/// is read, or one that can't be read now is still syncing; only a file of at
+/// least [size] bytes with another hash is damaged. With [keepBytes] the bytes
+/// are collected while they are hashed (still chunk by chunk) and returned, so
+/// what was checked is what the caller gets.
+Future<FileCheck> checkAttachmentFile(
+  File file,
+  String expectedHash,
+  int size, {
+  bool keepBytes = false,
+}) async {
+  try {
+    final before = await file.stat();
+    if (before.type != FileSystemEntityType.file || before.size < size) {
+      return const FileCheck(AttachmentState.syncing);
+    }
+    final builder = keepBytes ? BytesBuilder(copy: false) : null;
+    final hash = await contentHashOfStream(
+      builder == null
+          ? file.openRead()
+          : file.openRead().map((c) {
+              builder.add(c);
+              return c;
+            }),
+    );
+    await attachmentAfterHashHook?.call(file);
+    final after = await file.stat();
+    if (after.size != before.size || after.modified != before.modified) {
+      return const FileCheck(AttachmentState.syncing);
+    }
+    final bytes = builder?.takeBytes();
+    if (bytes != null && bytes.length != before.size) {
+      return const FileCheck(AttachmentState.syncing);
+    }
+    if (hash == expectedHash) return FileCheck(AttachmentState.ok, bytes: bytes);
+    return FileCheck(AttachmentState.damaged, found: ContentIdentity(before.size, hash));
+  } on FileSystemException {
+    return const FileCheck(AttachmentState.syncing);
+  }
+}
+
+/// What [setAsideDamaged] did: [name] is the new name when the damaged file
+/// was set aside; otherwise null, and [leftAt] says which file name it is
+/// under now (it may have moved part-way).
+typedef SetAside = ({String? name, String leftAt});
+
+/// Keeps the damaged [file] aside, in its own folder, as [damagedCopyName],
+/// never over anything: it is moved with [publishExclusive] and checked there.
+/// [found] is what the check read. A file that changed between the check and
+/// the move is put back, not renamed.
+Future<SetAside> setAsideDamaged(File file, ContentIdentity found) async {
+  final sep = Platform.pathSeparator;
+  final name = _baseName(file.path);
+  final asideName = damagedCopyName(name, found.sha256);
+  final aside = '${file.parent.path}$sep$asideName';
+  var leftAt = name;
+  try {
+    if (await publishExclusive(file, aside)) {
+      leftAt = asideName;
+      attachmentAfterSetAsideHook?.call(aside);
+      if (await ContentIdentity.ofFile(aside) == found) return (name: asideName, leftAt: asideName);
+      // Something else was at the path when it was moved: not the file that
+      // was checked. Put it back where it was if that is free.
+      if (FileSystemEntity.typeSync(file.path, followLinks: false) == FileSystemEntityType.notFound &&
+          await publishExclusive(File(aside), file.path)) {
+        leftAt = name;
+      }
+      return (name: null, leftAt: leftAt);
+    }
+    // The same damaged bytes were kept before: this one is a duplicate, and
+    // goes only while it still holds exactly what was seen.
+    if (FileSystemEntity.typeSync(aside, followLinks: false) == FileSystemEntityType.file &&
+        await ContentIdentity.ofFile(aside) == found) {
+      final del = await deleteFileIfMatches(file.path, identity: found);
+      if (del.deleted || del.outcome == DeleteOutcome.absent) return (name: asideName, leftAt: asideName);
+    }
+  } on FileSystemException catch (e) {
+    debugPrint('Keeping the damaged ${file.path} aside failed: $e');
+  }
+  return (name: null, leftAt: leftAt);
+}
+
+/// The marker of a good copy kept beside a file that could not be replaced
+/// (`<name>.kept-<n>`). Like [damagedMarker] it is not an attachment name.
+const String keptMarker = '.kept-';
+
+/// Writes [bytes] to a new file `<name>.kept-<n>` in [dir], never over
+/// anything (the file is published with [publishExclusive]). Returns the new
+/// name, or null if it could not be written.
+Future<String?> keepGoodCopy(Directory dir, String name, Uint8List bytes) async {
+  final sep = Platform.pathSeparator;
+  final id = '${DateTime.now().microsecondsSinceEpoch}-${_counter++}';
+  final keptName = '$name$keptMarker$id';
+  final tmp = File('${dir.path}$sep$keptName.tmp');
+  try {
+    await tmp.writeAsBytes(bytes, flush: true);
+    if (await publishExclusive(tmp, '${dir.path}$sep$keptName')) return keptName;
+  } on FileSystemException catch (e) {
+    debugPrint('Keeping a good copy of $name failed: $e');
+  }
+  try {
+    if (await tmp.exists()) await tmp.delete();
+  } on FileSystemException {
+    // Only a leftover with this call's own name.
+  }
+  return null;
+}
+
+/// Puts a kept copy back when the attachment [fileName] is missing from [dir]
+/// but a `<fileName>.damaged-…` or `<fileName>.kept-…` file now holds
+/// [hash] at [size] bytes (for instance an in-place writer that was
+/// mid-write when the file was set aside, and finished). The copy is moved
+/// with [publishExclusive], never over anything. Returns whether one was put
+/// back.
+Future<bool> restoreKeptCopy(Directory dir, String fileName, String hash, int size) async {
+  final sep = Platform.pathSeparator;
+  final target = '${dir.path}$sep$fileName';
+  try {
+    if (FileSystemEntity.typeSync(target, followLinks: false) != FileSystemEntityType.notFound) return false;
+    if (!await dir.exists()) return false;
+    await for (final e in dir.list(followLinks: false)) {
+      final n = _baseName(e.path);
+      if (e is! File || !n.startsWith('$fileName.')) continue;
+      final rest = n.substring(fileName.length);
+      if (!rest.startsWith(damagedMarker) && !rest.startsWith(keptMarker)) continue;
+      if (rest.endsWith('.tmp')) continue;
+      final c = await checkAttachmentFile(e, hash, size);
+      if (c.state == AttachmentState.ok && await publishExclusive(e, target)) return true;
+    }
+  } on FileSystemException catch (e) {
+    debugPrint('Looking for a kept copy of $fileName failed: $e');
+  }
+  return false;
 }
 
 final RegExp _hashName = RegExp(r'^([0-9a-f]{64})(\.[a-z0-9]+)?$');

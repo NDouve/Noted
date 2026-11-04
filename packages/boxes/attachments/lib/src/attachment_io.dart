@@ -26,22 +26,100 @@ Future<AttachmentRef> storeIncoming(
   return embedded != null ? ref.embedded(embedded) : ref.inFolder(s.fileName);
 }
 
-/// The bytes of [ref], or null if its folder file isn't there (yet).
-Future<Uint8List?> loadAttachment(
-  AttachmentRef ref,
-  AttachmentStore? store,
-) async {
-  final bytes = ref.bytes;
-  if (bytes != null) return bytes;
-  final file = ref.file;
-  if (file == null || store == null) return null;
-  return store.read(file);
+/// What reading an attachment found: its [bytes] when [state] is
+/// [AttachmentState.ok].
+typedef AttachmentRead = ({AttachmentState state, Uint8List? bytes});
+
+final RegExp _hashFileName = RegExp(r'^([0-9a-f]{64})(\.[a-z0-9]+)?$');
+
+/// Whether [hash] is a SHA-256 in lowercase hex: the only form that may be
+/// used in a file name or cache path.
+bool isContentHash(String hash) => RegExp(r'^[0-9a-f]{64}$').hasMatch(hash);
+
+/// Whether [ref]'s folder file is named by another hash than the box
+/// records: the file is then not the one the box means, whatever it holds.
+bool _namedByOtherHash(AttachmentRef ref) {
+  final m = _hashFileName.firstMatch(ref.file ?? '');
+  return m != null && m.group(1) != ref.hash;
 }
+
+/// Reads [ref]'s bytes and checks them against the hash stored in the box
+/// (once; callers load a file, never per frame). Embedded bytes were checked
+/// when the ref was read. A folder file shorter than the box's recorded size,
+/// or one still changing, is [AttachmentState.syncing]; one at its full size
+/// with another hash is [AttachmentState.damaged] and the user is told, with
+/// the file's name from the box. A [VerifyingAttachmentStore] does the check
+/// and keeps the damaged file aside; for any other store it is done here and
+/// the file stays where it is. A file whose name carries another hash than
+/// the box's is never read as this attachment.
+Future<AttachmentRead> readAttachment(AttachmentRef ref, AttachmentStore? store) async {
+  const syncing = (state: AttachmentState.syncing, bytes: null);
+  const damaged = (state: AttachmentState.damaged, bytes: null);
+  final embedded = ref.bytes;
+  if (embedded != null) return (state: AttachmentState.ok, bytes: embedded);
+  if (ref.isDamaged) {
+    store?.notify(_embeddedDamagedNotice(ref));
+    return damaged;
+  }
+  final file = ref.file;
+  if (file == null || store == null) return syncing;
+  if (_namedByOtherHash(ref)) {
+    store.notify(_otherFileNotice(ref));
+    return damaged;
+  }
+  if (store is VerifyingAttachmentStore && _hashFileName.hasMatch(file)) {
+    final v = await store.readVerified(file, size: ref.size);
+    if (v.state == AttachmentState.damaged) store.notify(_folderDamagedNotice(ref, v));
+    return (state: v.state, bytes: v.bytes);
+  }
+  final bytes = await store.read(file);
+  if (bytes == null || bytes.length < ref.size) return syncing;
+  if (contentHash(bytes) != ref.hash) {
+    store.notify(_folderDamagedNotice(ref, null));
+    return damaged;
+  }
+  return (state: AttachmentState.ok, bytes: bytes);
+}
+
+/// The same check as [readAttachment] without keeping the bytes, before a
+/// file is handed to another program.
+Future<AttachmentState> verifyAttachment(AttachmentRef ref, AttachmentStore? store) async {
+  final file = ref.file;
+  if (ref.isEmbedded ||
+      file == null ||
+      store is! VerifyingAttachmentStore ||
+      !_hashFileName.hasMatch(file) ||
+      _namedByOtherHash(ref)) {
+    return (await readAttachment(ref, store)).state;
+  }
+  final v = await store.verify(file, size: ref.size);
+  if (v.state == AttachmentState.damaged) store.notify(_folderDamagedNotice(ref, v));
+  return v.state;
+}
+
+String _embeddedDamagedNotice(AttachmentRef ref) =>
+    '"${ref.name}" is damaged: the data stored in the page does not match its hash, so it was not used. The page still holds it unchanged.';
+
+String _otherFileNotice(AttachmentRef ref) =>
+    '"${ref.name}" was not shown: the file it points to belongs to different content, so it was not used.';
+
+String _folderDamagedNotice(AttachmentRef ref, VerifiedAttachment? v) {
+  final head = '"${ref.name}" is damaged: the file in the page\'s folder does not match its hash, so it was not used.';
+  if (v == null) return '$head It was left where it is.';
+  final kept = v.keptAs;
+  if (kept != null) return '$head The damaged copy was kept as "$kept" beside it.';
+  return '$head It could not be moved aside; it is at "${v.leftAt}".';
+}
+
+/// The bytes of [ref], or null if its folder file isn't there (yet), is
+/// still arriving or is damaged (see [readAttachment]).
+Future<Uint8List?> loadAttachment(AttachmentRef ref, AttachmentStore? store) async =>
+    (await readAttachment(ref, store)).bytes;
 
 /// Whether [ref]'s file is in the folder but not there yet, for example
 /// still syncing from another device.
 bool attachmentMissing(AttachmentRef ref, AttachmentStore? store) {
-  if (ref.isEmbedded) return false;
+  if (ref.isEmbedded || ref.isDamaged) return false;
   final file = ref.file;
   return file == null || store == null || !store.exists(file);
 }
@@ -59,7 +137,22 @@ Future<AttachmentRef?> convertAttachment(
     case AttachmentStorage.embedded:
       final file = ref.file;
       if (ref.isEmbedded || file == null) return null;
-      final bytes = await store.read(file);
+      // Too large to embed: not read at all.
+      if (ref.size > embedLimitBytes) {
+        overLimit.add(ref.name);
+        return null;
+      }
+      // Embedding would replace the ref and drop the damaged data the page
+      // still holds, so that box is left as it is and the user is told.
+      if (ref.damagedData != null) {
+        store.notify(
+          '"${ref.name}" was not embedded: the data stored in the page is damaged, and is kept as it is.',
+        );
+        return null;
+      }
+      // Verified first: a damaged or still arriving file is never embedded.
+      final read = await readAttachment(ref, store);
+      final bytes = read.bytes;
       if (bytes == null) return null;
       if (!canEmbed(bytes)) {
         overLimit.add(ref.name);

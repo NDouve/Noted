@@ -11,6 +11,8 @@ import 'package:flutter/foundation.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'attachment_copy.dart';
+
 /// Asks the user for files (only images when [imagesOnly]).
 typedef FilePicker = Future<List<IncomingFile>> Function({required bool imagesOnly});
 
@@ -28,7 +30,7 @@ const String overLimitNotice =
 /// kept in [recoveryDirectory] instead, under `<page id>.assets/`, and read
 /// from there until the notebook moves it into place with the recovered
 /// page.
-class PageAttachments extends ChangeNotifier implements AttachmentStore {
+class PageAttachments extends ChangeNotifier implements VerifyingAttachmentStore {
   PageAttachments({
     required this.pageFolder,
     required this.pageId,
@@ -124,20 +126,54 @@ class PageAttachments extends ChangeNotifier implements AttachmentStore {
       }
       onNotice?.call(overLimitNotice);
     }
-    await _write(name, bytes);
+    await _write(name, hash, bytes);
     return StoredAttachment(hash: hash, fileName: name, overLimit: want == AttachmentStorage.embedded);
   }
 
-  // Writes [name] into the assets folder (atomically; an existing file has
-  // the same content, so it is left alone), or into the recovery folder if
-  // the page's folder can't be written.
+  // Writes [name] (the file for [bytes], whose hash is [hash]) into the assets
+  // folder, atomically, or into the recovery folder if the page's folder can't
+  // be written. A file already under that name is trusted only if it holds
+  // [hash]: a damaged one is kept aside (see [setAsideDamaged]) and the good
+  // bytes are written under the name, so both copies stay. When the existing
+  // file can't be replaced (it is shorter than [bytes], still changing, a
+  // link, or could not be set aside), the good bytes are kept beside it under
+  // `<name>.kept-<n>` and the user is told; nothing is ever overwritten.
   static int _tmpCounter = 0;
 
-  Future<void> _write(String name, Uint8List bytes) async {
+  Future<void> _write(String name, String hash, Uint8List bytes) async {
+    Future<void> keepBeside(Directory d, String why) async {
+      final kept = await keepGoodCopy(d, name, bytes);
+      notify(
+        kept == null
+            ? 'A file in this page\'s folder $why, and a good copy could not be saved.'
+            : 'A file in this page\'s folder $why. A good copy was kept as "$kept" beside it.',
+      );
+    }
+
     Future<void> into(Directory d) async {
       final target = _in(d, name);
-      if (await target.exists()) return;
       await d.create(recursive: true);
+      final type = FileSystemEntity.typeSync(target.path, followLinks: false);
+      if (type != FileSystemEntityType.notFound) {
+        if (type != FileSystemEntityType.file) {
+          await keepBeside(d, 'is not a plain file');
+          return;
+        }
+        final c = await checkAttachmentFile(target, hash, bytes.length);
+        if (c.state == AttachmentState.ok) return;
+        if (c.state == AttachmentState.syncing) {
+          await keepBeside(d, 'is incomplete or still changing');
+          return;
+        }
+        final r = await setAsideDamaged(target, c.found!);
+        if (r.name == null) {
+          await keepBeside(d, 'is damaged and could not be set aside (it is at "${r.leftAt}")');
+          return;
+        }
+        notify(
+          'A damaged copy of a file was found in this page\'s folder. It was kept as "${r.name}" and the good copy was saved.',
+        );
+      }
       // A unique name, so an extensionless write (`<hash>.tmp`) can never
       // clobber a real attachment called `<hash>.tmp`.
       final tmp = File('${target.path}.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
@@ -159,6 +195,54 @@ class PageAttachments extends ChangeNotifier implements AttachmentStore {
     }
     filesChanged();
   }
+
+  /// Checks the folder file [fileName] against the hash in its name, in the
+  /// page's folder and then the recovery folder. A damaged file is kept aside
+  /// beside it (see [setAsideDamaged]); the caller tells the user, who knows
+  /// the file by its own name. A missing file is looked for among the kept
+  /// copies first (see [restoreKeptCopy]).
+  Future<VerifiedAttachment> _check(String fileName, int size, {required bool keepBytes}) async {
+    final hash = attachmentNameHash(fileName);
+    for (final d in [folder, ?recoveryFolder]) {
+      final f = _in(d, fileName);
+      var type = FileSystemEntity.typeSync(f.path, followLinks: false);
+      if (type == FileSystemEntityType.notFound && hash != null && await restoreKeptCopy(d, fileName, hash, size)) {
+        type = FileSystemEntity.typeSync(f.path, followLinks: false);
+        filesChanged();
+      }
+      if (type == FileSystemEntityType.notFound) continue;
+      // A link or a folder is never trusted (the same rule as in the writer).
+      if (type != FileSystemEntityType.file) return const VerifiedAttachment(AttachmentState.syncing);
+      if (hash == null) {
+        // Not named by a hash: nothing to check it against.
+        try {
+          return VerifiedAttachment(AttachmentState.ok, bytes: keepBytes ? await f.readAsBytes() : null);
+        } on FileSystemException {
+          return const VerifiedAttachment(AttachmentState.syncing);
+        }
+      }
+      final c = await checkAttachmentFile(f, hash, size, keepBytes: keepBytes);
+      switch (c.state) {
+        case AttachmentState.ok:
+          return VerifiedAttachment(AttachmentState.ok, bytes: c.bytes);
+        case AttachmentState.syncing:
+          return const VerifiedAttachment(AttachmentState.syncing);
+        case AttachmentState.damaged:
+          final r = await setAsideDamaged(f, c.found!);
+          if (r.leftAt != fileName) filesChanged();
+          return VerifiedAttachment(AttachmentState.damaged, keptAs: r.name, leftAt: r.leftAt);
+      }
+    }
+    return const VerifiedAttachment(AttachmentState.syncing);
+  }
+
+  @override
+  Future<VerifiedAttachment> readVerified(String fileName, {required int size}) =>
+      _check(fileName, size, keepBytes: true);
+
+  @override
+  Future<VerifiedAttachment> verify(String fileName, {required int size}) =>
+      _check(fileName, size, keepBytes: false);
 
   @override
   Future<Uint8List?> read(String fileName) async {
@@ -189,7 +273,12 @@ class PageAttachments extends ChangeNotifier implements AttachmentStore {
       await dir.create(recursive: true);
       final safe = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
       file = _in(dir, safe.isEmpty ? 'file' : safe);
-      if (!await file.exists()) await file.writeAsBytes(bytes, flush: true);
+      // A copy left by an earlier open is reused only if it still holds these
+      // bytes (a damaged or half-written one is rewritten: it is only a copy).
+      final want = contentHash(bytes);
+      if (!await file.exists() || await contentHashOfStream(file.openRead()) != want) {
+        await file.writeAsBytes(bytes, flush: true);
+      }
     } else if (fileName != null) {
       for (final d in [folder, ?recoveryFolder]) {
         final f = _in(d, fileName);
