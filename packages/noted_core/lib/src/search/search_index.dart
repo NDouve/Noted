@@ -95,6 +95,15 @@ class _IndexedPage {
 final class SearchIndex {
   final Map<String, _IndexedPage> _pages = {};
 
+  /// Boxes whose text [search] has compared with a query since
+  /// [resetBoxesExamined], over all indexes. For tests only: they bound the
+  /// work of a search. Cheap (an int).
+  static int get boxesExamined => _boxesExamined;
+  static int _boxesExamined = 0;
+
+  /// Sets [boxesExamined] back to zero. For tests only.
+  static void resetBoxesExamined() => _boxesExamined = 0;
+
   /// Page ids in the index.
   Iterable<String> get pageIds => _pages.keys;
 
@@ -146,6 +155,7 @@ final class SearchIndex {
       }
       List<BoxHit>? hits;
       for (final box in entry.value.boxes) {
+        _boxesExamined++;
         if (!query.matchesFolded(box.folded.text)) continue;
         final ranges = query.rangesInFolded(box.folded);
         if (ranges == null || ranges.isEmpty) continue;

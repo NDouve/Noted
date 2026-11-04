@@ -24,8 +24,17 @@ final class UnsupportedPageFormatException extends PageFormatException {
   final int format;
 }
 
+/// How many times [readPage] has parsed a page since [resetPageParseCount].
+/// For tests only: they assert how often a page is parsed. Cheap (an int).
+int get pageParseCount => _pageParseCount;
+int _pageParseCount = 0;
+
+/// Sets [pageParseCount] back to zero. For tests only.
+void resetPageParseCount() => _pageParseCount = 0;
+
 /// Reads a page file (JSON Canvas 1.0 with Noted extra fields, 0006).
 NotedPage readPage(String source) {
+  _pageParseCount++;
   const bom = 0xFEFF;
   if (source.isNotEmpty && source.codeUnitAt(0) == bom) {
     source = source.substring(1);

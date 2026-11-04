@@ -139,9 +139,11 @@ void main() {
     test('opening a page reads its file once', () async {
       await countingIo(log, () async {
         final ids = await start(pages: 3);
+        resetPageParseCount();
         await nb.open(ids[2]);
         expect(nb.currentId, ids[2]);
         expect(log.reads(pathOf(ids[2])), 1);
+        expect(pageParseCount, 1, reason: 'parsed once');
         expect(log.reads(pathOf(ids[1])), 0, reason: 'other pages untouched');
         expect(log.reads(pathOf(ids[0])), 0);
       });
@@ -162,6 +164,7 @@ void main() {
         c.commit(box.id, codec.decode(doc('mine'), 1));
         notified = 0;
         log.clear();
+        resetPageParseCount();
         await nb.flush();
         final page = c.page;
         final reportsAfterSave = contentReports;
@@ -170,6 +173,7 @@ void main() {
         // one from the watcher, which compares the text with what was
         // written; it is never parsed and merged into the page.
         expect(log.reads(pathOf(id)), lessThanOrEqualTo(2));
+        expect(pageParseCount, 0, reason: 'our own write is not parsed again');
         expect(contentReports, reportsAfterSave, reason: 'no page read in');
         expect(identical(c.page, page), isTrue, reason: 'no merge');
         expect(notified, 0);
