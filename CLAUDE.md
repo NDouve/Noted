@@ -44,7 +44,7 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 4. **The MCP server is a separate executable with no key access and no decryption code.**
    - AI-facing output is built from saved data only, never the live screen. Encrypted content is never readable.
    - It may verify AI codes by hash (no keys, no decryption).
-   - It writes only two things: (1) its own access log, append only; (2) an AI box's own data in a page file, and only when Noted isn't running and that box allows writes while Noted is closed, within the Writer permission the box grants. It never writes anything else.
+   - It writes only two things: (1) its own access log, append only; (2) an AI box's own data in a page file, and only when Noted isn't running and that box allows writes while Noted is closed, within the Writer permission the box grants. If another writer replaces that page file during the write, the page's previous bytes are kept as a conflict copy beside it; the server never deletes them. It never writes anything else.
    - While Noted is running, every write goes to the app over the local link, and the app decides and saves through its normal path.
 5. **There is no developer-run backend.** All data stays on the user's devices and in their chosen storage.
 

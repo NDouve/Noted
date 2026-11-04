@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -128,6 +129,25 @@ void main() {
       expect(service.activity('b1'), isEmpty);
     });
 
+    test('a torn multi-byte last line hides no other entry, a pending approval included', () {
+      service.mcpLog.writeAsBytesSync([
+        ...utf8.encode('${entry(1).encode()}\n${entry(2, target: const AiCodeTarget.page('pg'), result: 'pending_approval').encode()}\n'),
+        ...utf8.encode('{"time":"2026-11-01T10:00:03Z","app":"'),
+        0xE2,
+        0x82, // the first two bytes of a three-byte character
+      ]);
+      expect(service.mcpLogEntries().map((e) => e.result), ['ok', 'pending_approval']);
+      expect(service.mcpLogEntries().where((e) => e.isPendingApproval), hasLength(1));
+      expect(service.activity('b1'), hasLength(1));
+    });
+
+    test('pruning revoked codes still works with a torn multi-byte last line', () {
+      service.mcpLog.writeAsBytesSync([...utf8.encode('${entry(1).encode()}\n{"app":"'), 0xE2, 0x82]);
+      service.store.revoke(codes['other']!);
+      expect(service.pruneRevokedCodes(), 1);
+      expect(service.store.codes().any((r) => r.id == codes['b1']), isTrue, reason: 'still has activity');
+    });
+
     test('listeners are told when the log file changes', () async {
       final polled = AiAccessService(dataFolder: data, pollInterval: const Duration(milliseconds: 50));
       addTearDown(polled.dispose);
@@ -193,6 +213,17 @@ void main() {
       // The appender finishes its line and appends the next after trimming.
       service.mcpLog.writeAsStringSync('de":"x"}\n${entry(2, op: 'after').encode()}\n', mode: FileMode.append);
       expect(parseAiMcpLog(service.mcpLog.readAsStringSync()).last.op, 'after');
+    });
+
+    test('trimming with a torn multi-byte last line keeps the whole lines and the torn bytes', () {
+      append([for (var i = 0; i < 12; i++) entry(1, op: 'op$i')]);
+      final torn = [0xE2, 0x82];
+      service.mcpLog.writeAsBytesSync(torn, mode: FileMode.append);
+      expect(service.trimMcpLog(keep: 5), isTrue);
+      final bytes = service.mcpLog.readAsBytesSync();
+      expect(bytes.sublist(bytes.length - 2), torn);
+      final entries = parseAiMcpLog(utf8.decode(bytes, allowMalformed: true));
+      expect(entries.map((e) => e.op), ['op8', 'op9', 'op10', 'op11']);
     });
 
     test('a log that cannot be opened is not touched', () {
