@@ -156,6 +156,17 @@ Future<void> _launch(String url) async {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
       return;
     }
+    // A bare word or address (cmd, example.com) is a web address, as the editor
+    // treats it; never handed to the system as it is.
+    if (scheme.isEmpty && !_looksLikePath(text)) {
+      final web = Uri.tryParse('http://$text');
+      if (text.isEmpty || web == null || _controlChars.hasMatch(text)) {
+        _notice(messenger);
+        return;
+      }
+      await launchUrl(web, mode: LaunchMode.externalApplication);
+      return;
+    }
     final String path;
     final Uri target;
     if (uri != null && scheme == 'file') {
@@ -163,11 +174,11 @@ Future<void> _launch(String url) async {
       target = uri;
     } else {
       path = text;
-      target = scheme.isEmpty && uri != null && !_looksLikePath(text) ? uri : Uri.file(text);
+      target = Uri.file(text);
     }
     // A name with a control character (NUL, a line break) is not opened: the
     // system may read it differently from what was checked.
-    if (_controlChars.hasMatch(path) || _controlChars.hasMatch(Uri.decodeFull(text))) {
+    if (_controlChars.hasMatch(path) || _controlChars.hasMatch(_decoded(text))) {
       _notice(messenger);
       return;
     }
@@ -180,6 +191,16 @@ Future<void> _launch(String url) async {
   } on Object catch (e) {
     debugPrint('Opening $url failed: $e');
     _notice(messenger);
+  }
+}
+
+// The text with percent escapes decoded; as it is if it does not decode (a
+// literal % in a path).
+String _decoded(String s) {
+  try {
+    return Uri.decodeFull(s);
+  } on Object {
+    return s;
   }
 }
 

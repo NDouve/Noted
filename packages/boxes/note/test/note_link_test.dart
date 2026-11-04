@@ -310,7 +310,7 @@ void main() {
     });
 
     // Links that are paths without a file: scheme.
-    for (final path in [r'C:\tools\path1.jar', 'C:/tools/path2.jar', r'\host\share\path3.jar', '//host/share/path4.jar']) {
+    for (final path in [r'C:\tools\path1.jar', 'C:/tools/path2.jar', r'\\host\share\path3.jar', '//host/share/path4.jar']) {
       testWidgets('the path $path asks first', (t) async {
         await pump(t, [
           {'insert': 'plain'},
@@ -324,6 +324,26 @@ void main() {
         expect(launched, isEmpty);
       });
     }
+
+    for (final word in ['cmd', 'example.com']) {
+      testWidgets('the bare address $word opens as http://, never as it is', (t) async {
+        await pump(t, [
+          {'insert': 'plain'},
+        ]);
+        await t.runAsync(() => linkOpener(word));
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+        expect(launched, ['http://$word']);
+      });
+    }
+
+    testWidgets('a path with a literal percent sign is not refused', (t) async {
+      await pump(t, [
+        {'insert': 'plain'},
+      ]);
+      await t.runAsync(() => linkOpener(r'C:\docs\100%.txt'));
+      expect(find.text("This link can't be opened."), findsNothing);
+      expect(launched, hasLength(1));
+    });
 
     testWidgets('a name with a control character is refused with a notice', (t) async {
       await pump(t, [
