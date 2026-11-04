@@ -5,6 +5,7 @@
 import 'dart:math';
 
 import '../box_api/codec_registry.dart';
+import '../json/raw_json.dart';
 import '../model/ids.dart';
 import '../model/page.dart';
 import 'page_issues.dart';
@@ -107,11 +108,14 @@ PageMerge mergeConflictCopy(
     } else {
       // A node Noted doesn't own differs: keep both, nothing is dropped.
       out.add(o);
-      out.add(switch (c) {
-        // A node that isn't a JSON object can't take an id: kept as it is.
-        ForeignNode() => c.copyWithId(newId()) ?? c,
-        BoxRecord() => markLandedIfOverlapping(c.withId(newId()), [o], mergeTime: copyTime),
-      });
+      // Not again if an earlier merge of this copy already kept this version.
+      if (!_hasVersion(original.nodes, c)) {
+        out.add(switch (c) {
+          // A node that isn't a JSON object can't take an id: kept as it is.
+          ForeignNode() => c.copyWithId(newId()) ?? c,
+          BoxRecord() => markLandedIfOverlapping(c.withId(newId()), [o], mergeTime: copyTime),
+        });
+      }
     }
   }
 
@@ -124,6 +128,13 @@ PageMerge mergeConflictCopy(
     var c = copy.nodes[i];
     if (originalIds.contains(c.id)) continue;
     if (c is BoxRecord) c = markLandedIfOverlapping(c, existing, mergeTime: copyTime);
+    if (c is ForeignNode && _synthetic(c)) {
+      // Its id came from its position or a repeat: on read-back it could take
+      // over a node with the same real id, so a JSON object gets a new id.
+      // Not again if an earlier merge of this copy already kept it.
+      if (_hasVersion(original.nodes, c)) continue;
+      c = c.copyWithId(newId()) ?? c;
+    }
     var at = 0;
     for (var j = i - 1; j >= 0; j--) {
       final k = out.indexWhere((n) => n.id == copy.nodes[j].id);
@@ -178,6 +189,34 @@ PageMerge mergeConflictCopy(
   return (r, isConflict);
 }
 
+/// Whether [n] has an id the page reader made up (from its position, or
+/// because the id repeats) rather than one in its own `id` field.
+bool _synthetic(ForeignNode n) {
+  if (!n.raw.isObject) return true;
+  try {
+    return RawObject.parse(n.raw.text).string('id') != n.id;
+  } on FormatException {
+    return true;
+  }
+}
+
+/// Whether [nodes] already hold [c], as it is, or (a node of a JSON object)
+/// with another id, or (a box) by revision or content.
+bool _hasVersion(List<CanvasNode> nodes, CanvasNode c) {
+  for (final n in nodes) {
+    if (c is BoxRecord) {
+      if (n is BoxRecord && (c.rev != null ? n.rev == c.rev : _sameContent(n, c))) return true;
+    } else if (c is ForeignNode && _sameModuloId(n, c)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool _sameModuloId(CanvasNode n, ForeignNode c) =>
+    n.toRaw() == c.toRaw() ||
+    (c.raw.isObject && n.toRaw().isObject && c.copyWithId(n.id)?.toRaw() == n.toRaw());
+
 bool _sameContent(BoxRecord x, BoxRecord y) =>
     x.typeId == y.typeId &&
     x.dataVersion == y.dataVersion &&
@@ -213,15 +252,24 @@ String? verifyConflictCopyMerge(NotedPage onDisk, NotedPage original, NotedPage 
     return false;
   }
 
+  // Boxes first, by id; a node Noted doesn't own is matched by raw text against
+  // a disk node of either kind (a repeated box id reads as a foreign node, but
+  // once the merge gave it a new id it reads back as a box).
   for (final o in original.nodes) {
-    if (o is ForeignNode) {
-      if (!take((d) => d is ForeignNode && d.toRaw() == o.toRaw())) {
-        return 'foreign node ${o.id} is missing or changed';
-      }
-    } else if (!take((d) => d is BoxRecord && d.id == o.id)) {
+    if (o is! ForeignNode && !take((d) => d is BoxRecord && d.id == o.id)) {
       return 'node ${o.id} is missing';
     }
   }
+  for (final o in original.nodes) {
+    if (o is ForeignNode && !take((d) => d.toRaw() == o.toRaw())) {
+      return 'foreign node ${o.id} is missing or changed';
+    }
+  }
+  // A copy node the original already holds in another form (an earlier merge
+  // of this copy kept it) needs no node of its own.
+  bool held(CanvasNode c, CanvasNode? o) =>
+      (o != null || (c is ForeignNode && _synthetic(c))) && _hasVersion(original.nodes, c);
+  final boxes = <BoxRecord>[];
   for (final c in copy.nodes) {
     final o = originalById[c.id];
     if (o != null && o.toRaw() == c.toRaw()) continue; // the original's node
@@ -232,18 +280,22 @@ String? verifyConflictCopyMerge(NotedPage onDisk, NotedPage original, NotedPage 
         if (d is! BoxRecord || !d.conflicts.any((k) => k.node == c.toRaw())) {
           return 'foreign node ${c.id} is missing or changed';
         }
-      } else if (!take(
-        (d) =>
-            d is ForeignNode &&
-            (d.toRaw() == c.toRaw() ||
-                (c.raw.isObject && d.raw.isObject && c.copyWithId(d.id)?.toRaw() == d.toRaw())),
-      )) {
+      } else if (!held(c, o) && !take((d) => _sameModuloId(d, c))) {
         return 'foreign node ${c.id} is missing or changed';
       }
     } else if (c is BoxRecord && o is! BoxRecord) {
       // Only the copy has this box, or the original has a foreign node by its
       // id and the box took a new id.
-      if (!take((d) => d is BoxRecord && (c.rev != null ? d.rev == c.rev : _sameContent(d, c)))) {
+      boxes.add(c);
+    }
+  }
+  // Matched by revision first, so a content match can't take a node a later
+  // revision match needs.
+  for (final byRev in [true, false]) {
+    for (final c in boxes) {
+      if ((c.rev != null) != byRev) continue;
+      if (!take((d) => d is BoxRecord && (byRev ? d.rev == c.rev : _sameContent(d, c))) &&
+          !held(c, originalById[c.id])) {
         return 'box ${c.id} is missing';
       }
     }
