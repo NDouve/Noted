@@ -48,4 +48,24 @@ void main() {
       '1 box changed while this ran and was left as it was; press Move attachments to folder again.',
     );
   });
+
+  test('boxes that could not be converted are reported, by direction', () {
+    const one = AttachmentConversion(changed: 0, overLimit: [], failed: 1);
+    expect(
+      conversionNotice(one, AttachmentStorage.folder),
+      'Moved 0 attachments to the folder. 1 attachment could not be moved to the folder and stays in the page. '
+      'Try Move attachments to folder again later.',
+    );
+    expect(
+      conversionNotice(one, AttachmentStorage.embedded),
+      'Embedded 0 attachments. 1 attachment could not be embedded and stays in the folder. '
+      'Try Embed attachments again later.',
+    );
+    const two = AttachmentConversion(changed: 1, overLimit: [], failed: 2);
+    expect(
+      conversionNotice(two, AttachmentStorage.folder),
+      'Moved 1 attachment to the folder. 2 attachments could not be moved to the folder and stay in the page. '
+      'Try Move attachments to folder again later.',
+    );
+  });
 }

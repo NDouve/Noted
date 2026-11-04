@@ -13,7 +13,13 @@ final class AttachmentConversion {
     required this.changed,
     required this.overLimit,
     this.skipped = const [],
+    this.failed = 0,
   });
+
+  /// How many boxes (by id, still on the page) could not be converted because
+  /// their conversion threw, for example a file that could not be stored. They
+  /// are left as they were; the other boxes are converted. Host only.
+  final int failed;
 
   /// How many boxes changed.
   final int changed;
@@ -52,6 +58,8 @@ Future<AttachmentConversion> convertPageAttachments(
   // files; revalidated like [next], so a notice never names a file the box
   // no longer references.
   final unchanged = <String, (_Stamp, List<String>)>{};
+  // Boxes whose conversion threw (a retry that succeeds removes the id).
+  final failedIds = <String>{};
   for (var attempt = 0; attempt < _maxAttempts && work.isNotEmpty; attempt++) {
     for (final id in work) {
       final node = controller.page.node(id);
@@ -64,7 +72,17 @@ Future<AttachmentConversion> convertPageAttachments(
       if (r is! LiveBox) continue;
       final stamp = _stampOf(node);
       final over = <String>[];
-      final data = await module.hostConvertAttachments(r.data, to, store, over);
+      Object? data;
+      try {
+        data = await module.hostConvertAttachments(r.data, to, store, over);
+      } on Exception {
+        // This box is left as it is; the others still convert.
+        failedIds.add(id);
+        next.remove(id);
+        unchanged.remove(id);
+        continue;
+      }
+      failedIds.remove(id);
       if (data == null) {
         next.remove(id);
         unchanged[id] = (stamp, over);
@@ -107,6 +125,7 @@ Future<AttachmentConversion> convertPageAttachments(
         if (controller.page.node(e.key) is BoxRecord) ...e.value.$2,
     ],
     skipped: skipped,
+    failed: failedIds.where((id) => controller.page.node(id) is BoxRecord).length,
   );
 }
 

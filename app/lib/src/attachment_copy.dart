@@ -174,24 +174,74 @@ Future<SetAside> setAsideDamaged(File file, ContentIdentity found) async {
 /// (`<name>.kept-<n>`). Like [damagedMarker] it is not an attachment name.
 const String keptMarker = '.kept-';
 
+/// Called before this module creates a new file (a temporary file, the
+/// exclusive publish of a kept copy or an attachment). A test makes it throw a
+/// [FileSystemException] to simulate a folder that rejects new files.
+@visibleForTesting
+void Function(String path)? attachmentBeforeCreateHook;
+
+/// Writes [bytes] (whose SHA-256 is [hash]) to the new file [target], never
+/// over anything: they go to a unique temporary file that is published with
+/// [publishAttachment]. Returns true when this call created [target], false
+/// when something was there already (it is left alone). Throws a
+/// [FileSystemException] when the file could not be written. This call's own
+/// temporary file is always removed. After the no-hard-link publish (which
+/// copies and leaves the temporary file) the target is checked by hash; one
+/// that does not hold [hash] is removed again, only while it still holds what
+/// this call read from it, and counts as refused.
+Future<bool> writeNewAttachmentFile(File target, Uint8List bytes, String hash) async {
+  final tmp = File('${target.path}.${DateTime.now().microsecondsSinceEpoch}-${_counter++}.tmp');
+  try {
+    attachmentBeforeCreateHook?.call(tmp.path);
+    await tmp.writeAsBytes(bytes, flush: true);
+    final res = await _publishDetailed(tmp, target.path);
+    if (!res.published) return false;
+    if (res.copied) {
+      final id = await ContentIdentity.ofFile(target.path);
+      if (id.length != bytes.length || id.sha256 != hash) {
+        try {
+          await deleteFileIfMatches(target.path, identity: id);
+        } on FileSystemException {
+          // Left as it is; the caller treats the name as taken.
+        }
+        return false;
+      }
+    }
+    return true;
+  } finally {
+    try {
+      if (await tmp.exists()) await tmp.delete();
+    } on FileSystemException {
+      // Only a leftover with this call's own name.
+    }
+  }
+}
+
 /// Writes [bytes] to a new file `<name>.kept-<n>` in [dir], never over
-/// anything (the file is published with [publishExclusive]). Returns the new
-/// name, or null if it could not be written.
+/// anything (see [writeNewAttachmentFile]). A kept copy that already holds
+/// these bytes (a complete `<name>.kept-<n>`, never a `.tmp`) is returned
+/// instead of writing another. Returns the name, or null if no copy could be
+/// written.
 Future<String?> keepGoodCopy(Directory dir, String name, Uint8List bytes) async {
   final sep = Platform.pathSeparator;
-  final id = '${DateTime.now().microsecondsSinceEpoch}-${_counter++}';
-  final keptName = '$name$keptMarker$id';
-  final tmp = File('${dir.path}$sep$keptName.tmp');
+  final hash = contentHash(bytes);
   try {
-    await tmp.writeAsBytes(bytes, flush: true);
-    if (await publishExclusive(tmp, '${dir.path}$sep$keptName')) return keptName;
+    if (await dir.exists()) {
+      await for (final e in dir.list(followLinks: false)) {
+        final n = _baseName(e.path);
+        if (e is! File || !n.startsWith('$name$keptMarker') || n.endsWith('.tmp')) continue;
+        final c = await checkAttachmentFile(e, hash, bytes.length);
+        if (c.state == AttachmentState.ok) return n;
+      }
+    }
+  } on FileSystemException catch (e) {
+    debugPrint('Looking for a kept copy of $name failed: $e');
+  }
+  final keptName = '$name$keptMarker${DateTime.now().microsecondsSinceEpoch}-${_counter++}';
+  try {
+    if (await writeNewAttachmentFile(File('${dir.path}$sep$keptName'), bytes, hash)) return keptName;
   } on FileSystemException catch (e) {
     debugPrint('Keeping a good copy of $name failed: $e');
-  }
-  try {
-    if (await tmp.exists()) await tmp.delete();
-  } on FileSystemException {
-    // Only a leftover with this call's own name.
   }
   return null;
 }
@@ -507,10 +557,22 @@ Future<void> _streamCopy(File src, File dst) async {
   }
 }
 
-Future<bool> _publish(File tmp, String target) async {
+/// Publishes [tmp] as [target], never over anything: a hard link (or the
+/// platform's exclusive move), and where the volume has no hard links the
+/// target is created exclusively and filled from [tmp], which is then left
+/// where it is (the caller removes it). Returns false when something is at
+/// [target] already.
+Future<bool> publishAttachment(File tmp, String target) async => (await _publishDetailed(tmp, target)).published;
+
+typedef _Published = ({bool published, bool copied});
+
+Future<bool> _publish(File tmp, String target) => publishAttachment(tmp, target);
+
+Future<_Published> _publishDetailed(File tmp, String target) async {
+  attachmentBeforeCreateHook?.call(target);
   try {
     final hook = attachmentPublishHook;
-    return await (hook != null ? hook(tmp, target) : publishExclusive(tmp, target));
+    return (published: await (hook != null ? hook(tmp, target) : publishExclusive(tmp, target)), copied: false);
   } on FileSystemException {
     // A volume without hard links (exFAT/FAT, some SMB and FUSE mounts,
     // Android shared storage): create the target exclusively and fill it. It
@@ -518,7 +580,7 @@ Future<bool> _publish(File tmp, String target) async {
     // publish does not depend on hard links, so a failure there (a refused
     // name, a locked file) is the caller's.
     if (Platform.isWindows && attachmentPublishHook == null) rethrow;
-    return _createExclusive(tmp, target);
+    return (published: await _createExclusive(tmp, target), copied: true);
   }
 }
 

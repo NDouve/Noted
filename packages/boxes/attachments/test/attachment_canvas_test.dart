@@ -65,7 +65,7 @@ void main() {
     await t.pump();
   }
 
-  setUp(() => store = FakeStore());
+  setUp(() => store = PageFolderFakeStore());
   tearDown(() => FileClipboard.read = () async => const []);
 
   PageCanvasState canvas(WidgetTester t) =>
@@ -460,6 +460,49 @@ void main() {
     );
     expect(back!.changed, 2);
     expect(store.folder, hasLength(2));
+  });
+
+  testWidgets('a file that cannot be stored makes no box on paste or drop, and the others still go in', (t) async {
+    final s = PageFolderFakeStore()..failWhen = (b) => b.length == pdf.length;
+    store = s;
+    await pump(t);
+    await t.runAsync(() async {
+      await canvas(t).insertFiles([
+        IncomingFile('Plan.pdf', pdf),
+        IncomingFile('red.png', redPng),
+      ], at: Offset.zero);
+    });
+    await t.pump();
+    expect(boxes().map((b) => b.typeId), [ImageCodec.id]);
+    expect(s.notices, ['"Plan.pdf" could not be added: the page\x27s folder could not be written.']);
+  });
+
+  testWidgets('one box that cannot be moved to the folder is left embedded and the other still converts', (t) async {
+    final s = PageFolderFakeStore(storage: AttachmentStorage.embedded);
+    store = s;
+    await pump(t);
+    await t.runAsync(() async {
+      await canvas(t).insertFiles([
+        IncomingFile('Plan.pdf', pdf),
+        IncomingFile('red.png', redPng),
+      ], at: Offset.zero);
+    });
+    await t.pump();
+    s.failWhen = (b) => b.length == pdf.length;
+    final r = await t.runAsync(() => convertPageAttachments(c, s, AttachmentStorage.folder));
+    await t.pump();
+    expect(r!.changed, 1);
+    expect(r.failed, 1);
+    final refs = [
+      for (final b in boxes())
+        switch (data(b)) {
+          final ImageData d => d.ref,
+          final FileData d => d.ref,
+          _ => null,
+        },
+    ];
+    expect(refs.where((e) => e!.isEmbedded), hasLength(1));
+    expect(refs.where((e) => !e!.isEmbedded), hasLength(1));
   });
 
   testWidgets('a box edited during conversion is converted again, not '

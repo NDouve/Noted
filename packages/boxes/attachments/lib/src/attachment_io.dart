@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -71,7 +72,7 @@ Future<AttachmentRead> readAttachment(AttachmentRef ref, AttachmentStore? store)
   }
   if (store is VerifyingAttachmentStore) {
     final v = await store.readVerified(file, size: ref.size);
-    if (v.state == AttachmentState.damaged) store.notify(_folderDamagedNotice(ref, v));
+    if (v.state == AttachmentState.damaged || _keptAside(v)) store.notify(_folderDamagedNotice(ref, v));
     return (state: v.state, bytes: v.bytes);
   }
   final bytes = await store.read(file);
@@ -95,9 +96,14 @@ Future<AttachmentState> verifyAttachment(AttachmentRef ref, AttachmentStore? sto
     return (await readAttachment(ref, store)).state;
   }
   final v = await store.verify(file, size: ref.size);
-  if (v.state == AttachmentState.damaged) store.notify(_folderDamagedNotice(ref, v));
+  if (v.state == AttachmentState.damaged || _keptAside(v)) store.notify(_folderDamagedNotice(ref, v));
   return v.state;
 }
+
+/// Whether a check that came out fine still set a damaged copy aside (the
+/// store then served a verified copy from the recovery folder).
+bool _keptAside(VerifiedAttachment v) =>
+    v.state == AttachmentState.ok && (v.keptAs != null || v.leftAt != null);
 
 String _embeddedDamagedNotice(AttachmentRef ref) =>
     '"${ref.name}" is damaged: the data stored in the page does not match its hash, so it was not used. The page still holds it unchanged.';
@@ -106,7 +112,9 @@ String _otherFileNotice(AttachmentRef ref) =>
     '"${ref.name}" was not shown: the file it points to belongs to different content, so it was not used.';
 
 String _folderDamagedNotice(AttachmentRef ref, VerifiedAttachment? v) {
-  final head = '"${ref.name}" is damaged: the file in the page\'s folder does not match its hash, so it was not used.';
+  final head = v != null && v.state == AttachmentState.ok
+      ? '"${ref.name}": the file in the page\'s folder does not match its hash, so the copy kept for recovery was used.'
+      : '"${ref.name}" is damaged: the file in the page\'s folder does not match its hash, so it was not used.';
   if (v == null) return '$head It was left where it is.';
   final kept = v.keptAs;
   if (kept != null) return '$head The damaged copy was kept as "$kept" beside it.';
@@ -172,11 +180,22 @@ Future<AttachmentRef?> convertAttachment(
     case AttachmentStorage.folder:
       final bytes = ref.bytes;
       if (bytes == null) return null;
-      final s = await store.put(
+      // The embedded copy is dropped only for a file that is stored and
+      // verified by hash in the page's own assets folder (never a copy that
+      // only reached the recovery folder). A store that cannot prove that is
+      // refused: the box keeps its data.
+      if (store is! PageFolderAttachmentStore) {
+        throw FileSystemException('This store cannot confirm a file in the page folder', ref.name);
+      }
+      final s = await store.putInPageFolder(
         bytes,
         extension: ref.extension,
         storage: AttachmentStorage.folder,
       );
+      final v = await store.verifyInPageFolder(s.fileName, size: ref.size);
+      if (v.state != AttachmentState.ok) {
+        throw FileSystemException('"${ref.name}" was not stored in the page folder', s.fileName);
+      }
       return ref.inFolder(s.fileName);
   }
 }
