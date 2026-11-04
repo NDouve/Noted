@@ -6,6 +6,7 @@ import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/testing.dart';
 
 const _words = [
   'meeting', 'project', 'budget', 'schedule', 'review', 'design', 'notes',
@@ -76,7 +77,7 @@ void main() {
     var hitCount = 0;
     for (var round = 0; round < 3; round++) {
       for (final q in queries.entries) {
-        SearchIndex.resetBoxesExamined();
+        resetSearchBoxesExamined();
         final sw = Stopwatch()..start();
         final hits = index.search(SearchQuery.parse(q.key));
         sw.stop();
@@ -86,11 +87,11 @@ void main() {
         // pruning, so a query examines every indexed box; the bound catches a
         // search that repeats work, such as a second pass over the boxes.)
         expect(
-          SearchIndex.boxesExamined,
+          searchBoxesExamined,
           lessThanOrEqualTo(index.boxCount),
           reason: 'boxes examined for "${q.key}"',
         );
-        expect(SearchIndex.boxesExamined, greaterThan(0));
+        expect(searchBoxesExamined, greaterThan(0));
         // The counts a scan of every box gives: the pages with a match, and
         // the boxes with one. A search that skipped or repeated work would
         // differ; the time is printed below, not asserted.

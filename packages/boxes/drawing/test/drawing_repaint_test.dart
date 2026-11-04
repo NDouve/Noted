@@ -93,6 +93,12 @@ void main() {
     final painters = inkPainters(t);
     final ids = painters.keys.toList();
     final counts = <RenderObject, int>{};
+    final joinBefore = <String, int>{};
+    final joinAfter = <String, int>{};
+    final newAfter = <String, int>{};
+    var boxCount = 0;
+    var newBoxCount = 0;
+    var remounted = <String>[];
     // The binding requires render debug variables to be unset when the test
     // ends, so the hook is removed in the body and the checks come after.
     debugOnProfilePaint = (o) => counts[o] = (counts[o] ?? 0) + 1;
@@ -102,20 +108,38 @@ void main() {
 
     // A stroke that joins the middle box.
     final r = boxes().firstWhere((b) => b.id == ids[1]).bounds.rect;
-    final joinBefore = paints();
-    await draw(t, [
-      r.center,
-      r.center + const Offset(30, 15),
-      r.center + const Offset(60, -5),
-    ]);
-    final boxCount = boxes().length;
-    final joinAfter = paints();
+    // Boxes whose ink painter was replaced (a remount) are listed: a
+    // remounted box paints fresh and would hide a repaint.
+    void checkMounted() {
+      final now = inkPainters(t);
+      remounted = [
+        ...remounted,
+        for (final id in ids)
+          if (!identical(now[id], painters[id])) id,
+      ];
+    }
 
-    // A stroke far from every box starts a new box.
-    await draw(t, zigzag(const Offset(400, 500), 20));
-    final newBoxCount = boxes().length;
-    final newAfter = paints();
-    debugOnProfilePaint = null;
+    try {
+      joinBefore.addAll(paints());
+      await draw(t, [
+        r.center,
+        r.center + const Offset(30, 15),
+        r.center + const Offset(60, -5),
+      ]);
+      boxCount = boxes().length;
+      checkMounted();
+      joinAfter.addAll(paints());
+
+      // A stroke far from every box starts a new box.
+      await draw(t, zigzag(const Offset(400, 500), 20));
+      newBoxCount = boxes().length;
+      checkMounted();
+      newAfter.addAll(paints());
+    } finally {
+      debugOnProfilePaint = null;
+    }
+
+    expect(remounted, isEmpty, reason: 'no box was remounted');
 
     expect(boxCount, 3, reason: 'the stroke joined a box');
     expect(

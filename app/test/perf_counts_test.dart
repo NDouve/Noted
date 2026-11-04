@@ -14,6 +14,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted/src/notebook_search.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/testing.dart';
 
 import 'support/counting_io.dart';
 
@@ -100,7 +101,8 @@ void main() {
         await nb.flush();
         log.clear();
 
-        // 60 keystrokes in about 60 ms, all inside one autosave delay.
+        // 60 keystrokes, each restarting the autosave delay, so the save
+        // waits until the typing pauses.
         for (var i = 0; i < 60; i++) {
           c.commit(box.id, codec.decode(doc('typed ${'x' * i}'), 1));
           await realWait(1);
@@ -109,7 +111,8 @@ void main() {
           await realWait(20);
         }
         await nb.flush();
-        // One save for the burst; a second only if the timer fired mid-burst
+        // The delay restarts with each change, so the burst is one save; a
+        // second only if a pause between two keystrokes outlasted the delay
         // on a slow machine. Never one per keystroke.
         expect(log.renamesTo(path), inInclusiveRange(1, 2));
         expect(log.writes('.tmp'), log.renamesTo(path));
@@ -169,10 +172,17 @@ void main() {
         final page = c.page;
         final reportsAfterSave = contentReports;
         await realWait(700); // the watcher reports our own write
-        // One read before the save (the outside-change check) and at most
-        // one from the watcher, which compares the text with what was
-        // written; it is never parsed and merged into the page.
-        expect(log.reads(pathOf(id)), lessThanOrEqualTo(2));
+        // One read before the save (the outside-change check) and one from
+        // the watcher, which compares the text with what was written; it is
+        // never parsed and merged into the page. The watcher must have fired,
+        // or this would pass without testing the compare path.
+        expect(
+          log.reads(pathOf(id)),
+          inInclusiveRange(2, 3),
+          reason: 'the watcher read the file',
+        );
+        await nb.checkFile(pathOf(id)); // and a check by hand finds the same
+        expect(log.reads(pathOf(id)), lessThanOrEqualTo(4));
         expect(pageParseCount, 0, reason: 'our own write is not parsed again');
         expect(contentReports, reportsAfterSave, reason: 'no page read in');
         expect(identical(c.page, page), isTrue, reason: 'no merge');
