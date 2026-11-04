@@ -154,7 +154,7 @@ void main() {
         );
         await t.pump();
 
-        expect(find.text('Plan.pdf: file not found'), findsOneWidget);
+        expect(find.text('File not found: Plan.pdf'), findsOneWidget);
         expect(find.byKey(const ValueKey('still-syncing')), findsNothing);
         expect(find.byKey(const ValueKey('file-box')), findsNothing, reason: 'nothing to open');
         expect(store.opened, isEmpty);
@@ -206,11 +206,57 @@ void main() {
           await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
           await t.pump();
         }
-        expect(find.text('red.png: file not found'), findsOneWidget);
+        expect(find.text('File not found: red.png'), findsOneWidget);
         expect(find.byKey(const ValueKey('image-box-picture')), findsNothing);
         expect(find.byKey(const ValueKey('still-syncing')), findsNothing);
         expect(store.asked, isEmpty);
       });
     }
+
+    testWidgets('a corrected file name with the same hash loads the image', (t) async {
+      final pngHash = contentHash(redPng);
+      final store = _Trip(redPng);
+      addTearDown(() => store.cacheDirectory.deleteSync(recursive: true));
+      t.view.physicalSize = const Size(1200, 800);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      const codec = ImageCodec();
+      ImageData data(String file) => ImageData(
+        ref: AttachmentRef(name: 'red.png', size: redPng.length, hash: pngHash, file: file),
+        width: 4,
+        height: 4,
+      );
+      final box = BoxRecord.create(
+        id: 'img',
+        typeId: codec.typeId,
+        dataVersion: codec.dataVersion,
+        bounds: const Bounds(40, 40, 120, 148),
+        data: RawJson.encode(codec.encode(data('../red.png'))),
+        snapshotText: '[image: ]',
+        rev: 'r',
+      ).withFixedHeight(true);
+      final modules = ModuleRegistry()..register(const ImageModule());
+      final c = CanvasController(NotedPage.create(PageMeta.create(id: 'p', title: '', order: 0)).insertNode(box), modules);
+      await t.pumpWidget(
+        MaterialApp(
+          theme: notedThemeData(Brightness.light),
+          home: Scaffold(body: PageCanvas(controller: c, attachments: store)),
+        ),
+      );
+      Future<void> settle() async {
+        for (var i = 0; i < 12; i++) {
+          await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+          await t.pump();
+        }
+      }
+
+      await settle();
+      expect(find.text('File not found: red.png'), findsOneWidget);
+
+      c.replaceBoxData({'img': data('$pngHash.png')});
+      await settle();
+      expect(find.text('File not found: red.png'), findsNothing);
+      expect(find.byKey(const ValueKey('image-box-picture')), findsOneWidget);
+    });
   });
 }

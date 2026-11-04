@@ -277,11 +277,15 @@ class _ImageBoxState extends State<_ImageBox> {
     }
   }
 
+  // What a load is for: the hash and the folder file the box names, so a
+  // corrected file name with the same hash is loaded again.
+  String _loadKey(AttachmentRef ref) => '${ref.hash}|${ref.file}';
+
   Future<void> _load() async {
     final data = widget.box.data;
-    if (data == null || _loading || _loadedHash == data.ref.hash) return;
+    if (data == null || _loading || _loadedHash == _loadKey(data.ref)) return;
     _loading = true;
-    final hash = data.ref.hash;
+    final hash = _loadKey(data.ref);
     final read = await loadDisplayCopyChecked(data.ref, widget.box.attachments);
     final pixels = read.bytes;
     _loading = false;
@@ -349,7 +353,7 @@ class _ImageBoxState extends State<_ImageBox> {
       picture = _note(
         context,
         Icons.broken_image_rounded,
-        '${data.ref.name}: file not found',
+        'File not found: ${data.ref.name}',
       );
     } else if (pixels != null) {
       picture = Image.memory(
@@ -449,6 +453,7 @@ class _ImageBoxState extends State<_ImageBox> {
             Flexible(
               child: Text(
                 text,
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: NotedTypography.of(context).small
                     .copyWith(color: scheme.onSurfaceVariant),

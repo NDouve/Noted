@@ -142,7 +142,7 @@ class _FileBoxState extends State<_FileBox> {
     if (attachmentNameInvalid(ref)) {
       return Center(
         child: Text(
-          '${ref.name}: file not found',
+          'File not found: ${ref.name}',
           key: const ValueKey('file-box-not-found'),
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
