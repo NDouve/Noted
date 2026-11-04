@@ -5,6 +5,7 @@
 // Attachments are re-hashed where they are trusted: reading for display,
 // embedding, opening, and decoding embedded data (0098, 0131).
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -498,6 +499,65 @@ void main() {
         expect(vs.readCalls, greaterThan(1));
       },
     );
+
+    testWidgets('a file arriving while the first check runs is checked again', (
+      t,
+    ) async {
+      t.view.physicalSize = const Size(1200, 800);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      final c = Completer<void>();
+      vs.gate = c.future;
+      var n = 0;
+      vs.result = (name) => n++ == 0
+          ? const VerifiedAttachment(AttachmentState.syncing)
+          : VerifiedAttachment(AttachmentState.ok, bytes: png);
+      const codec = ImageCodec();
+      final data = ImageData(ref: pngRef(), width: 4, height: 4);
+      final box = BoxRecord.create(
+        id: 'i',
+        typeId: codec.typeId,
+        dataVersion: codec.dataVersion,
+        bounds: const Bounds(40, 40, 200, 200),
+        data: RawJson.encode(codec.encode(data)),
+        snapshotText: codec.snapshotText(data),
+        rev: 'r',
+      ).withFixedHeight(true);
+      final modules = ModuleRegistry()
+        ..register(const ImageModule())
+        ..register(const FileModule(), isDefault: true);
+      final page = NotedPage.create(
+        PageMeta.create(id: 'p', title: '', order: 0),
+      ).insertNode(box);
+      final controller = CanvasController(page, modules);
+      await t.pumpWidget(
+        MaterialApp(
+          theme: notedThemeData(Brightness.light),
+          home: Scaffold(
+            body: PageCanvas(controller: controller, attachments: vs),
+          ),
+        ),
+      );
+      await t.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await t.pump();
+      expect(vs.readCalls, 1);
+      vs.arrive('$pngHash.png', png);
+      vs.gate = null;
+      c.complete();
+      for (var i = 0; i < 5; i++) {
+        await t.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 30)),
+        );
+        await t.pump();
+      }
+      expect(
+        vs.readCalls,
+        2,
+        reason: 'the arrival during the check must cause a second check',
+      );
+    });
   });
 
   group('what an image box says', () {
@@ -679,6 +739,7 @@ void main() {
 /// A [FakeStore] that checks the hash in the file name, as the app's does.
 class _VerifyingStore extends FakeStore implements VerifyingAttachmentStore {
   int readCalls = 0;
+  Future<void>? gate;
 
   /// Replaces the check when set.
   VerifiedAttachment Function(String fileName)? result;
@@ -689,6 +750,8 @@ class _VerifyingStore extends FakeStore implements VerifyingAttachmentStore {
     required int size,
   }) async {
     readCalls++;
+    final g = gate;
+    if (g != null) await g;
     final r = result;
     if (r != null) return r(fileName);
     final bytes = folder[fileName];
