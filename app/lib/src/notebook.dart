@@ -4816,7 +4816,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Already blocked: the page is read-only, so its entry is still current.
     if (_diskBlockId != openId && text != _known[key]) {
       final st = _storeOf(loc);
-      await _keepForRecovery(loc, st, c.page);
+      if (await _keepForRecovery(loc, st, c.page)) {
+        // The open page holds every edit kept for it; that entry owns them now.
+        _unsaved.openPageKept(openId, _normalizePath(st.directory.path), c.page);
+      }
       _blockEntry = (
         folder: _normalizePath(st.directory.path),
         pageId: openId,

@@ -167,6 +167,20 @@ class UnsavedEdits {
     if (identical(_kept[saved.id], k)) await _retire(saved.id, k, all: true);
   }
 
+  /// The open page [page], which holds every edit kept for it, was written to
+  /// the recovery entry of [folder] (its file can't be read). That entry now
+  /// owns the edits and a copy held in memory is older: it goes. (It must not
+  /// be merged with the entry: a box deleted since would come back.)
+  void openPageKept(String id, String folder, NotedPage page) {
+    final k = _kept[id];
+    if (k == null || k.folder != folder) return;
+    k
+      ..page = null
+      ..baseText = null
+      ..heldAt = null
+      ..entryText = writePage(page);
+  }
+
   /// The kept edits of page [id] in [loc], to show when it is opened: the page
   /// and the page it was made on. Null if there are none.
   Future<({NotedPage mine, NotedPage base})?> edits(String id, String loc) async {

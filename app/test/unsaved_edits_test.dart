@@ -418,6 +418,28 @@ void main() {
     expect(await entries(), isEmpty);
   });
 
+  test('the open page written to recovery owns the edits: a box deleted since is not merged back from the copy in memory', () async {
+    host.keepFails = true;
+    final held = await failed('a', boxes: 2); // two boxes, held in memory only
+    host.keepFails = false;
+    // The page is opened from the held copy, a box is deleted on purpose, and
+    // its file turns unreadable: the open page goes to recovery.
+    expect(await unsaved.edits('a', _loc), isNotNull);
+    host.open = 'a';
+    final c = CanvasController(held, buildModules())..delete(held.nodes.first.id);
+    final open = c.page;
+    c.dispose();
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    final base = NotedPage.create(held.meta);
+    await host.recovery!.write(folder: _folder, page: open, baseText: writePage(base), time: DateTime.now());
+    unsaved.openPageKept('a', _folder, open);
+
+    host.open = null; // left; the file is readable again
+    await retry();
+    expect(readPage(host.files['a']!).nodes.map((n) => n.id), [open.nodes.single.id], reason: 'the deleted box stays deleted');
+    expect(await entries(), isEmpty);
+  });
+
   test('an entry replayed by someone else ends the tracking', () async {
     await failed('a');
     for (final e in await entries()) {

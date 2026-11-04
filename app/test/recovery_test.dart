@@ -2106,12 +2106,13 @@ void main() {
     // edited again (box 2); then recovery works, its file turns unreadable
     // (the open page's block keeps box 1 and 2 in a newer entry), and page b
     // is opened. Returns the file, its readable text, and the ids of the boxes.
-    Future<(Notebook, _ToggleStore, File, String, List<String>)> heldThenBlocked() async {
+    Future<(Notebook, _ToggleStore, File, String, List<String>)> heldThenBlocked({bool deleteFirst = false}) async {
       File(rec.path).createSync(recursive: true); // recovery can not be written
       final (nb, st, a, b) = await editing();
       st.failSave = true;
       await nb.open(b); // box 1 is held in memory only
       await nb.open(a); // a fresh editor from the held copy
+      if (deleteFirst) nb.current!.delete(nb.current!.page.nodes.single.id); // box 1 deleted on purpose
       nb.current!.createBoxAt(const Bounds(300, 300, 0, 0)); // box 2
       final ids = [for (final n in nb.current!.page.nodes) n.id];
       File(rec.path).deleteSync(); // recovery works again
@@ -2120,7 +2121,7 @@ void main() {
       file.writeAsStringSync(readable.replaceFirst(RegExp(r'"format"\s*:\s*1'), '"format":99'));
       await nb.checkFile(file.path); // blocked: box 1 and 2 go to recovery
       expect(nb.readOnlyReason, isNotNull);
-      expect((await entries(nb)).single.page.nodes, hasLength(2));
+      expect((await entries(nb)).single.page.nodes, hasLength(ids.length));
       await nb.open(b); // the blocked page is left; its save does not run
       return (nb, st, file, readable, ids);
     }
@@ -2133,6 +2134,16 @@ void main() {
       expect(readPage(file.readAsStringSync()).nodes.map((n) => n.id), unorderedEquals(ids));
       expect(await entries(nb), isEmpty);
       expect(nb.unsavedDescription, isNull);
+    });
+
+    test('a box deleted from the reopened page before its file turned unreadable is not merged back from the copy in memory', () async {
+      final (nb, st, file, readable, ids) = await heldThenBlocked(deleteFirst: true);
+      file.writeAsStringSync(readable); // a readable version is back
+      st.failSave = false;
+      await nb.flush();
+      expect(ids, hasLength(1));
+      expect(readPage(file.readAsStringSync()).nodes.map((n) => n.id), ids, reason: 'box 1 stays deleted');
+      expect(await entries(nb), isEmpty);
     });
 
     test('a retry that finds the file still unreadable never writes the older copy over the newer entry', () async {
