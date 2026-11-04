@@ -333,31 +333,33 @@ class UnsavedEdits {
   // Writes the copy held in memory to recovery (merged with a newer entry
   // first). True when recovery holds them.
   Future<bool> _keepHeld(String id, _Kept k) async {
-    await _mergeNewer(id, k);
+    try {
+      await _mergeNewer(id, k);
+    } on IOException catch (e) {
+      // A newer entry could be there, and writing the copy would replace it.
+      debugPrint('Listing the recovery entries of page $id failed: $e');
+      return false;
+    }
     final page = k.page;
     return page == null || await _keep(id, k, page, k.baseText);
   }
 
   // An entry of the page written after the copy in memory was taken holds
-  // other edits: the open page's (made on that copy) or a save's whose folder
-  // vanished (an AI write, made on the file without that copy). Neither may
-  // replace the copy: the two are merged and kept as the entry, which is
-  // never written over with the copy alone. If listing fails, the copy in
-  // memory stays as it is.
+  // other edits: a save's whose folder vanished (an AI write, made on the file
+  // without that copy). It must not be replaced by the copy: the two are
+  // merged and kept as the entry, which is never written over with the copy
+  // alone. (The open page's own entry is different: see [openPageKept].) If the
+  // folder can't be listed, this
+  // throws: whether a newer entry is there is not known, and writing the copy
+  // could replace it.
   Future<void> _mergeNewer(String id, _Kept k) async {
     final at = k.heldAt;
     final held = k.page;
     final rec = host.recovery;
     if (held == null || at == null || rec == null) return;
-    final RecoveryEntry? newer;
-    try {
-      newer = (await rec.list()).entries
-          .where((e) => e.folder == k.folder && e.pageId == id && e.time.isAfter(at))
-          .fold<RecoveryEntry?>(null, (a, e) => a == null || e.time.isAfter(a.time) ? e : a);
-    } on Object catch (e) {
-      debugPrint('Listing the recovery entries of page $id failed: $e');
-      return;
-    }
+    final newer = (await rec.list()).entries
+        .where((e) => e.folder == k.folder && e.pageId == id && e.time.isAfter(at))
+        .fold<RecoveryEntry?>(null, (a, e) => a == null || e.time.isAfter(a.time) ? e : a);
     if (newer == null || !identical(_kept[id], k)) return;
     final merged = host.merge(_baseOf(k.baseText, held), held, newer.page);
     await _keep(id, k, merged, newer.baseText);

@@ -853,7 +853,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _known[_key(st.pathFor(id))] = text;
       // Edits whose save failed are shown again, merged below into the file
       // from the page they were made on.
-      final kept = await _unsaved.edits(id, _loc[id] ?? _standalone);
+      final kept = await _readKept(() => _unsaved.edits(id, _loc[id] ?? _standalone));
       _base = kept?.base ?? page;
       _metas[id] = page.meta;
       _setConflict(id, hasConflicts(page));
@@ -1426,7 +1426,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final texts = [for (final p in ids) await st.readText(p)];
     // Edits kept after a failed save go into the copy, so undo brings them
     // back too; they are let go page by page, once its file is deleted.
-    final pages = [for (var i = 0; i < ids.length; i++) await _unsaved.foldInto(ids[i], loc, readPage(texts[i]))];
+    final pages = [
+      for (var i = 0; i < ids.length; i++) await _readKept(() => _unsaved.foldInto(ids[i], loc, readPage(texts[i]))),
+    ];
     final previous = _lastDeleted;
     if (previous != null) discardDeleted(previous);
     // Each page's assets folder is set aside, so undo can bring it back.
@@ -1816,7 +1818,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         originals.add(page);
       }
       // Edits whose save failed go with the page, merged into its copy.
-      final sources = [for (var i = 0; i < ids.length; i++) await _unsaved.foldInto(ids[i], fromLoc, originals[i])];
+      final sources = [
+        for (var i = 0; i < ids.length; i++) await _readKept(() => _unsaved.foldInto(ids[i], fromLoc, originals[i])),
+      ];
       // Only the moved page's parent and order change; its subpages keep
       // theirs.
       final moved = [
@@ -3694,6 +3698,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     page,
     base == null ? _baseTextOf(st, page.id) : writePage(base),
   );
+
+  // Reads the kept edits of a page for [read] (open, delete, move). If the
+  // recovery folder can't be read, nothing proceeds: it could hold edits that
+  // would be left out, and a delete or move would then drop them.
+  Future<T> _readKept<T>(Future<T> Function() read) async {
+    try {
+      return await read();
+    } on IOException catch (e) {
+      debugPrint('Reading the kept edits failed: $e');
+      throw const NotebookException(
+        "The edits kept for this page couldn't be read from the recovery folder, so nothing was changed.",
+      );
+    }
+  }
 
   // Writes the recovery entry of [page] for [folder]; true when it is there.
   Future<bool> _keepIn(String folder, NotedPage page, String? baseText) async {

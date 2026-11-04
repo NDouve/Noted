@@ -393,13 +393,54 @@ void main() {
     expect(await entries(), isEmpty);
   });
 
-  test('a recovery folder that can not be listed leaves the copy in memory to land', () async {
+  test('a recovery folder that can not be listed: the copy in memory is not written over a newer entry', () async {
+    host = _Host(_UnlistableStore(Directory('${root.path}/rec')));
+    unsaved = UnsavedEdits(host, firstDelay: const Duration(hours: 1));
+    host.keepFails = true;
+    await failed('a'); // box 1, held in memory only
+    host.keepFails = false;
+    // A save whose folder vanished (an AI write) kept another version.
+    final (base, newer) = page('a', boxes: 2);
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    await host.recovery!.write(folder: _folder, page: newer, baseText: writePage(base), time: DateTime.now());
+    final store = host.recovery! as _UnlistableStore;
+    store.fail = true;
+    host.locked.add(_loc); // the retry keeps the copy: it must not replace the entry
+    await retry();
+    store.fail = false;
+    expect((await entries()).single.pageText, writePage(newer), reason: 'the AI entry is untouched');
+    expect(unsaved.unsavedPageCount, 1, reason: 'the copy is still held in memory');
+
+    host.locked.clear();
+    await retry(); // listing works: both land
+    expect(readPage(host.files['a']!).nodes, hasLength(3));
+    expect(await entries(), isEmpty);
+  });
+
+  test('a recovery folder that can not be listed: a delete or a move does not fold in a stale copy', () async {
     host = _Host(_UnlistableStore(Directory('${root.path}/rec')));
     unsaved = UnsavedEdits(host, firstDelay: const Duration(hours: 1));
     host.keepFails = true;
     await failed('a');
     host.keepFails = false;
     (host.recovery! as _UnlistableStore).fail = true;
+    final (_, theirs) = page('a', boxes: 2);
+    await expectLater(unsaved.foldInto('a', _loc, theirs), throwsA(isA<FileSystemException>()));
+    await expectLater(unsaved.edits('a', _loc), throwsA(isA<FileSystemException>()));
+    expect(unsaved.has('a'), isTrue, reason: 'nothing is forgotten');
+  });
+
+  test('a recovery folder that can not be listed holds the retry of a copy in memory, which lands once it can', () async {
+    host = _Host(_UnlistableStore(Directory('${root.path}/rec')));
+    unsaved = UnsavedEdits(host, firstDelay: const Duration(hours: 1));
+    host.keepFails = true;
+    await failed('a');
+    host.keepFails = false;
+    (host.recovery! as _UnlistableStore).fail = true;
+    await retry();
+    expect(host.saved, isEmpty, reason: 'a newer entry could be there');
+    expect(unsaved.has('a'), isTrue);
+    (host.recovery! as _UnlistableStore).fail = false;
     await retry();
     expect(readPage(host.files['a']!).nodes, hasLength(1));
     expect(unsaved.has('a'), isFalse);
