@@ -53,11 +53,22 @@ String conversionNotice(AttachmentConversion r, AttachmentStorage to) {
   };
   final s = r.skipped.length;
   final parts = [
+    // Nothing changed and something failed: the failure is the news.
+    if (n > 0 || r.failed == 0)
     switch (to) {
       AttachmentStorage.embedded => 'Embedded $n ${n == 1 ? 'attachment' : 'attachments'}',
       AttachmentStorage.folder => 'Moved $n ${n == 1 ? 'attachment' : 'attachments'} to the folder',
     },
     if (r.overLimit.isNotEmpty) 'Kept in the folder (over 5 MB): ${r.overLimit.join(', ')}',
+    if (r.failed > 0)
+      switch (to) {
+        AttachmentStorage.embedded =>
+          '${r.failed == 1 ? '1 attachment' : '${r.failed} attachments'} could not be embedded and '
+              '${r.failed == 1 ? 'stays' : 'stay'} in the folder. Try Embed attachments again later',
+        AttachmentStorage.folder =>
+          '${r.failed == 1 ? '1 attachment' : '${r.failed} attachments'} could not be moved to the folder and '
+              '${r.failed == 1 ? 'stays' : 'stay'} in the page. Try Move attachments to folder again later',
+      },
     if (s > 0)
       '${s == 1 ? '1 box' : '$s boxes'} changed while this ran and ${s == 1 ? 'was' : 'were'} '
           'left as ${s == 1 ? 'it was' : 'they were'}; press $again again',

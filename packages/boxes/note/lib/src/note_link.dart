@@ -126,19 +126,88 @@ Future<void> editLinkIn(BuildContext context, EditorState editor) async {
 }
 
 /// Opens [url] in the system's browser or default app ([linkOpener]).
-Future<void> openLink(String url) => linkOpener(url);
+Future<void> openLink(String url, {BuildContext? context}) {
+  _askContext = context;
+  return linkOpener(url);
+}
+
+// The context for a question before opening; [_launch] takes it at once.
+BuildContext? _askContext;
 
 /// What opens a link; tests replace it.
 Future<void> Function(String url) linkOpener = _launch;
 
+final RegExp _controlChars = RegExp(r'[\x00-\x1f\x7f-\x9f]');
+
 Future<void> _launch(String url) async {
-  final uri = Uri.tryParse(url);
-  if (uri == null) return;
+  final context = _askContext ?? _navigatorContext();
+  _askContext = null;
+  final messenger = context == null ? null : ScaffoldMessenger.maybeOf(context);
+  final text = url.trim();
+  final uri = Uri.tryParse(text);
+  final scheme = uri?.scheme.toLowerCase() ?? '';
   try {
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
+    // Web and mail links, and schemes of other programs, go to the system as
+    // before. Everything else is a local or network path (a file: link, a
+    // drive letter, a share, a bare path): one the system would run is opened
+    // only after the user says so.
+    final isPath = scheme.isEmpty || scheme == 'file' || scheme.length == 1;
+    if (uri != null && !isPath) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+      return;
+    }
+    // A bare word or address (cmd, example.com) is a web address, as the editor
+    // treats it; never handed to the system as it is.
+    if (scheme.isEmpty && !_looksLikePath(text)) {
+      final web = Uri.tryParse('http://$text');
+      if (text.isEmpty || web == null || _controlChars.hasMatch(text)) {
+        _notice(messenger);
+        return;
+      }
+      await launchUrl(web, mode: LaunchMode.externalApplication);
+      return;
+    }
+    final String path;
+    final Uri target;
+    if (uri != null && scheme == 'file') {
+      path = uri.toFilePath();
+      target = uri;
+    } else {
+      path = text;
+      target = Uri.file(text);
+    }
+    // A name with a control character (NUL, a line break) is not opened: the
+    // system may read it differently from what was checked.
+    if (_controlChars.hasMatch(path) || _controlChars.hasMatch(_decoded(text))) {
+      _notice(messenger);
+      return;
+    }
+    if (needsOpenConfirmation(displayName: path)) {
+      if (context == null || !context.mounted) return;
+      final shown = path.replaceAll(RegExp(r'[\/]+$'), '').split(RegExp(r'[\/]')).last;
+      if (!await confirmOpenRunnable(context, shown)) return;
+    }
+    await launchUrl(target, mode: LaunchMode.externalApplication);
   } on Object catch (e) {
     debugPrint('Opening $url failed: $e');
+    _notice(messenger);
   }
+}
+
+// The text with percent escapes decoded; as it is if it does not decode (a
+// literal % in a path).
+String _decoded(String s) {
+  try {
+    return Uri.decodeFull(s);
+  } on Object {
+    return s;
+  }
+}
+
+bool _looksLikePath(String s) => s.startsWith(r'\') || s.startsWith('//') || s.contains(r'\') || s.startsWith('/');
+
+void _notice(ScaffoldMessengerState? messenger) {
+  messenger?.showSnackBar(const SnackBar(content: Text("This link can't be opened.")));
 }
 
 /// Asks for a link address. Returns null if cancelled.
@@ -228,4 +297,34 @@ Future<List<IncomingFile>> clipboardImages() async {
   } on Object {
     return const [];
   }
+}
+
+/// Routes the editor's own link opening (a click on a link in the editor or in
+/// the light view) through [openLink], so a link to a program asks first too.
+void installLinkGuard() {
+  editorLaunchUrl = (href) async {
+    if (href == null) return false;
+    final trimmed = href.trim();
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) return false;
+    // A link without a scheme is a web address, as the editor treats it.
+    await openLink(uri.scheme.isNotEmpty ? trimmed : 'http://$trimmed');
+    return true;
+  };
+}
+
+// A context under a Navigator, for a question when the caller has none.
+BuildContext? _navigatorContext() {
+  BuildContext? found;
+  void visit(Element e) {
+    if (found != null) return;
+    if (e is StatefulElement && e.state is NavigatorState) {
+      found = e;
+      return;
+    }
+    e.visitChildren(visit);
+  }
+
+  WidgetsBinding.instance.rootElement?.visitChildren(visit);
+  return found;
 }

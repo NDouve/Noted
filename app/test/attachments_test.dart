@@ -197,6 +197,74 @@ void main() {
     });
   });
 
+  // R-1 (area-data-integrity-2): moving a box to the folder dropped its
+  // embedded data although the good copy was never stored.
+  group('Move attachments to folder when the copy cannot be stored', () {
+    AttachmentRef refOf(Notebook nb) {
+      final c = nb.current!;
+      final b = c.page.nodes.whereType<BoxRecord>().single;
+      return ((c.modules.codecs.resolve(b) as LiveBox).data as FileData).ref;
+    }
+
+    // An embedded file box whose file is, in the folder, only a prefix of
+    // its bytes (a sync client mid-write).
+    Future<(Notebook, String)> embeddedWithPrefix() async {
+      final nb = make();
+      await nb.load();
+      final a = nb.currentId!;
+      await attach(nb);
+      expect((await nb.convertAttachments(a, AttachmentStorage.embedded)).changed, 1);
+      await nb.flush();
+      asset(pages, a).writeAsBytesSync(bytes.sublist(0, 3));
+      return (nb, a);
+    }
+
+    void rejectNew({required bool recoveryToo}) {
+      attachmentBeforeCreateHook = (path) {
+        final inRec = path.replaceAll('\\', '/').contains('/rec/');
+        if (path.contains('.assets') && (recoveryToo || !inRec)) throw const FileSystemException('injected');
+      };
+      addTearDown(() => attachmentBeforeCreateHook = null);
+    }
+
+    bool recHoldsAssets() => rec.existsSync() && rec.listSync(recursive: true).any((e) => e is File);
+
+    for (final recoveryToo in [true, false]) {
+      test('an incomplete file at the name, recovery ${recoveryToo ? 'read-only' : 'writable'}: the box stays embedded, also after a restart', () async {
+        final (nb, a) = await embeddedWithPrefix();
+        rejectNew(recoveryToo: recoveryToo);
+        final r = await nb.convertAttachments(a, AttachmentStorage.folder);
+        expect(r.changed, 0);
+        expect(r.failed, 1);
+        expect(refOf(nb).bytes, bytes);
+        await nb.flush();
+        expect(recHoldsAssets(), isFalse, reason: 'nothing hash-named waits in recovery');
+        expect(asset(pages, a).lengthSync(), 3, reason: 'the incomplete file is left alone');
+
+        final fresh = make();
+        await fresh.load();
+        await fresh.open(a);
+        expect(refOf(fresh).bytes, bytes);
+      });
+    }
+
+    test('the folder rejects new files and nothing is at the name: the box stays embedded and nothing waits in recovery', () async {
+      final nb = make();
+      await nb.load();
+      final a = nb.currentId!;
+      await attach(nb);
+      expect((await nb.convertAttachments(a, AttachmentStorage.embedded)).changed, 1);
+      asset(pages, a).deleteSync();
+      rejectNew(recoveryToo: false);
+      final r = await nb.convertAttachments(a, AttachmentStorage.folder);
+      expect(r.changed, 0);
+      expect(r.failed, 1);
+      expect(refOf(nb).bytes, bytes);
+      expect(recHoldsAssets(), isFalse);
+      expect(rec.existsSync() && rec.listSync().isNotEmpty, isFalse, reason: 'no kept assets folder waits to land');
+    });
+  });
+
   group('the assets folder follows its page', () {
     test('delete removes it; undo brings it back', () async {
       final nb = make();

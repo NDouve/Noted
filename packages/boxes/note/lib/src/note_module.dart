@@ -168,6 +168,7 @@ class _NoteEditorState extends State<_NoteEditor>
   void initState() {
     super.initState();
     installMathSlicing();
+    installLinkGuard();
     _focus.addListener(_focusChanged);
     widget.box.find.addListener(_findChanged);
     _shown = widget.box.data;
@@ -272,19 +273,6 @@ class _NoteEditorState extends State<_NoteEditor>
 
   @override
   void insertFilesBeside(List<IncomingFile> files) => widget.box.insertFilesBeside(files);
-
-  // Ctrl+click on a link opens it. The click has already put the caret
-  // there by the time the pointer goes up.
-  void _maybeOpenLink(PointerUpEvent e) {
-    if (!linkModifierPressed) return;
-    SchedulerBinding.instance.addPostFrameCallback((_) {
-      final editor = _editor;
-      final sel = editor?.selection;
-      if (editor == null || sel == null || !sel.isCollapsed) return;
-      final link = linkAt(editor, sel.start);
-      if (link != null) unawaited(openLink(link.href));
-    });
-  }
 
   @override
   Future<void> insertTable() async {
@@ -811,9 +799,7 @@ class _NoteEditorState extends State<_NoteEditor>
 
   Widget _editorWidget(ColorScheme scheme) {
     final editor = _editor!;
-    return Listener(
-      onPointerUp: _maybeOpenLink,
-      child: AppFlowyEditor(
+    return AppFlowyEditor(
         editorState: editor,
         editorScrollController: _scroll,
         editable: widget.editable,
@@ -839,7 +825,6 @@ class _NoteEditorState extends State<_NoteEditor>
           selectionColor: scheme.primary.withValues(alpha: 0.25),
           textStyleConfiguration: noteTextStyles(scheme),
         ),
-      ),
     );
   }
 }

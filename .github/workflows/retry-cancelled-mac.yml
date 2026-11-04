@@ -1,0 +1,113 @@
+# Re-runs a CI run whose only problem is that GitHub had no Mac runner free
+# (the macOS/iOS jobs show as cancelled). Never re-runs a run with a real
+# failure, a cancelled non-Mac job, or one a newer push has replaced. At most
+# three automatic retries per run (run_attempt 1..3 may retry; 4 may not).
+#
+# workflow_run only fires for workflow files on the default branch.
+name: Retry cancelled Mac jobs
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: write
+
+concurrency:
+  group: retry-mac-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    name: Decide and re-run
+    if: >-
+      github.event.workflow_run.conclusion == 'cancelled' ||
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Decide and re-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          echo "Run $RUN_ID, attempt $RUN_ATTEMPT, event $EVENT, conclusion $CONCLUSION"
+
+          if [ "$RUN_ATTEMPT" -ge 4 ]; then
+            echo "Decision: no retry. Attempt $RUN_ATTEMPT; three automatic retries are used up."
+            exit 0
+          fi
+
+          # Jobs of the latest attempt: "name<TAB>conclusion<TAB>runner<TAB>steps"
+          # per job. "-" stands for no runner, so read never sees an empty
+          # field (tab is whitespace to read and would collapse it).
+          jobs=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?filter=latest" \
+            --jq '.jobs[] | [.name, (.conclusion // "none"), ((.runner_name // "") | if . == "" then "-" else . end), (.steps | length)] | @tsv')
+          echo "Jobs:"
+          echo "$jobs"
+
+          mac_cancelled=0
+          while IFS=$'\t' read -r name conclusion runner steps; do
+            [ -z "$name" ] && continue
+            case "$conclusion" in
+              success|skipped|neutral) continue ;;
+            esac
+            case "$name" in
+              macOS*|iOS*)
+                if [ "$conclusion" = "cancelled" ]; then
+                  # A timeout or a hand cancel also ends cancelled. Only a
+                  # job that never got a runner is a runner shortage.
+                  if [ "$runner" = "-" ] || [ "${steps:-0}" -eq 0 ]; then
+                    mac_cancelled=$((mac_cancelled + 1))
+                  else
+                    echo "Decision: no retry. Mac job '$name' started then cancelled (runner '$runner', $steps steps): not a runner shortage."
+                    exit 0
+                  fi
+                else
+                  echo "Decision: no retry. Mac job '$name' ended '$conclusion', not cancelled."
+                  exit 0
+                fi
+                ;;
+              *)
+                echo "Decision: no retry. Non-Mac job '$name' ended '$conclusion'."
+                exit 0
+                ;;
+            esac
+          done <<< "$jobs"
+
+          if [ "$mac_cancelled" -eq 0 ]; then
+            echo "Decision: no retry. No cancelled Mac job found."
+            exit 0
+          fi
+
+          # Superseded: CI's concurrency group cancels an older run when a newer
+          # one starts on the same ref, whatever the event (push and
+          # workflow_dispatch share the group). If a newer run of CI exists on
+          # this branch, this one was replaced, not starved of runners.
+          newer=$(gh api -X GET "repos/$REPO/actions/workflows/$WORKFLOW_ID/runs" \
+            -f branch="$HEAD_BRANCH" -F per_page=30 \
+            --jq "[.workflow_runs[] | select(.id > $RUN_ID)] | length")
+          if [ "$newer" -gt 0 ]; then
+            echo "Decision: no retry. $newer newer CI run(s) exist on this branch; this run was superseded."
+            exit 0
+          fi
+
+          branch_sha=$(gh api "repos/$REPO/branches/$HEAD_BRANCH" --jq .commit.sha || echo "")
+          if [ "$branch_sha" != "$HEAD_SHA" ]; then
+            echo "Decision: no retry. Run is for $HEAD_SHA but the branch head is '$branch_sha'."
+            exit 0
+          fi
+
+          # Note: a re-run made with GITHUB_TOKEN may not trigger workflow_run
+          # again, so in practice the cap may be one automatic retry.
+          echo "Decision: re-run. $mac_cancelled Mac job(s) cancelled, nothing else unsuccessful, not superseded."
+          gh run rerun "$RUN_ID" --failed --repo "$REPO"

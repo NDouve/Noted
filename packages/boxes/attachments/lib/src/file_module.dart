@@ -137,12 +137,14 @@ class _FileBoxState extends State<_FileBox> {
       );
     }
     final ref = data.ref;
+    // The name as shown: no characters that reorder text.
+    final label = cleanNameForDisplay(ref.name, maxLength: 1 << 20);
     // A name that is not an attachment name never finds a file: say so, and
     // offer nothing to open.
     if (attachmentNameInvalid(ref)) {
       return Center(
         child: Text(
-          'File not found: ${ref.name}',
+          'File not found: $label',
           key: const ValueKey('file-box-not-found'),
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
@@ -153,7 +155,13 @@ class _FileBoxState extends State<_FileBox> {
     final missing = attachmentMissing(ref, store);
     Future<void> open() async {
       if (store == null || missing) return;
-      // Verified first: a damaged file is not handed to another program.
+      // A file the system would run is opened only after the user says so;
+      // asked first, so nothing can change between the check and the open.
+      if (needsOpenConfirmation(displayName: ref.name, storedName: ref.file)) {
+        if (!context.mounted) return;
+        if (!await confirmOpenRunnable(context, ref.name, storedName: ref.file)) return;
+      }
+      // Verified next: a damaged file is not handed to another program.
       if (await verifyAttachment(ref, store) != AttachmentState.ok) return;
       await store.open(
         ref.name,
@@ -164,8 +172,8 @@ class _FileBoxState extends State<_FileBox> {
 
     return Tooltip(
       message: missing
-          ? '${ref.name}: still syncing'
-          : 'Double-click to open ${ref.name}',
+          ? '$label: still syncing'
+          : 'Double-click to open $label',
       // A click selects the box (the canvas does that); two open the file.
       child: Focus(
         canRequestFocus: false,
@@ -192,7 +200,7 @@ class _FileBoxState extends State<_FileBox> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        ref.name,
+                        label,
                         key: const ValueKey('file-box-name'),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,

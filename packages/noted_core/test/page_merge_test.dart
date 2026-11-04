@@ -259,6 +259,60 @@ void main() {
     });
   });
 
+  group('order when only theirs reordered', () {
+    // A page of boxes with these ids (0132).
+    NotedPage ids(List<String> l) => pageOf([for (final id in l) box(id, 'test.plain', id)]);
+    List<String> order(NotedPage p) => [for (final n in p.nodes) n.id];
+    List<String> merged(List<String> b, List<String> m, List<String> t) =>
+        order(merge(ids(b), ids(m), ids(t)).page);
+
+    test('an addition follows its predecessor when that moves', () {
+      expect(merged(['a', 'b'], ['a', 'x', 'b'], ['b', 'a']), ['b', 'a', 'x']);
+    });
+
+    test('a chain of additions moves together, in order', () {
+      expect(merged(['a', 'b'], ['a', 'x', 'z', 'b'], ['b', 'a']), ['b', 'a', 'x', 'z']);
+    });
+
+    // Guards: the next test and the first expectation of the stacking test
+    // (`[a, b, c, x]`) pass on main too.
+    test('an addition before the first common node stays first', () {
+      expect(merged(['a', 'b'], ['x', 'a', 'b'], ['b', 'a']), ['x', 'b', 'a']);
+    });
+
+    test('an addition after the last common node stays last, on top', () {
+      expect(merged(['a', 'b', 'c'], ['a', 'b', 'c', 'x'], ['c', 'a', 'b']), ['c', 'a', 'b', 'x']);
+      expect(merged(['a', 'b', 'c'], ['a', 'x', 'b', 'c'], ['c', 'a', 'b']), ['c', 'a', 'x', 'b']);
+    });
+
+    test('a conflict copy stays right after its original', () {
+      final f = ForeignNode.read(
+        const RawJson.trusted('{"id":"f","type":"text","x":0,"y":0,"width":9,"height":9,"text":"a"}'),
+        fallbackId: '#0',
+      );
+      ForeignNode changed(String t) => ForeignNode.read(
+        RawJson.trusted('{"id":"f","type":"text","x":0,"y":0,"width":9,"height":9,"text":"$t"}'),
+        fallbackId: '#0',
+      );
+      final bb = box('b', 'test.plain', 'b');
+      final r = merge(
+        pageOf([f, bb]),
+        pageOf([changed('m'), bb]),
+        pageOf([bb, changed('t')]),
+      );
+      final got = r.page.nodes;
+      expect(got, hasLength(3));
+      expect([got[0].id, got[1].id], ['b', 'f']);
+      expect(got[2].toRaw().text, contains('"t"')); // the copy of theirs
+    });
+
+    test('a node mine kept that theirs deleted moves with its predecessor', () {
+      final mine = ids(['a', 'b', 'c']).replaceNode(edit(box('b', 'test.plain', 'b'), 'mine'));
+      final r = merge(ids(['a', 'b', 'c']), mine, ids(['c', 'a']));
+      expect(order(r.page), ['c', 'a', 'b']);
+    });
+  });
+
   group('page header', () {
     test('per field: theirs when mine is unchanged, else mine', () {
       final mine = base.withMeta(base.meta.withTitle('Mine'));

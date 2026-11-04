@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -239,7 +240,7 @@ void main() {
     test(
       'converting both ways; over-limit files stay and are reported',
       () async {
-        final store = FakeStore();
+        final store = PageFolderFakeStore();
         final small = await storeIncoming(IncomingFile('a.txt', bytes), store);
         final over = <String>[];
         final embedded = (await convertAttachment(
@@ -302,6 +303,30 @@ void main() {
         expect(attachmentMissing(embedded, null), isFalse);
       },
     );
+
+    test('converting to the folder throws when the stored file does not verify', () async {
+      final embedded = AttachmentRef(name: 'a.txt', size: bytes.length, hash: hash).embedded(bytes);
+      final store = PageFolderFakeStore()..corruptOnPut = true;
+      await expectLater(
+        convertAttachment(embedded, AttachmentStorage.folder, store, []),
+        throwsA(isA<FileSystemException>()),
+      );
+      final failing = PageFolderFakeStore()..failPut = true;
+      await expectLater(
+        convertAttachment(embedded, AttachmentStorage.folder, failing, []),
+        throwsA(isA<FileSystemException>()),
+      );
+    });
+
+    test('a store that cannot confirm a page-folder file never converts to the folder', () async {
+      final embedded = AttachmentRef(name: 'a.txt', size: bytes.length, hash: hash).embedded(bytes);
+      final store = FakeStore();
+      await expectLater(
+        convertAttachment(embedded, AttachmentStorage.folder, store, []),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(store.folder, isEmpty);
+    });
   });
 
   test('module file affinity: images to the image box, anything else to the file box', () {

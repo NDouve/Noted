@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
+import 'dart:io' show FileSystemException;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -219,7 +220,15 @@ class PageCanvasState extends State<PageCanvas>
     for (final f in files) {
       final module = _c.modules.moduleForFile(f, exclude: _off);
       if (module == null) continue;
-      final made = await module.hostCreateFromFile(f, store);
+      (Object?, Size)? made;
+      try {
+        made = await module.hostCreateFromFile(f, store);
+      } on FileSystemException {
+        // No copy could be stored: no box, so none points at a missing file.
+        // The other files still go in.
+        store.notify('"${f.name}" could not be added: the page\'s folder could not be written.');
+        continue;
+      }
       if (made == null || !mounted || _readOnly) continue;
       final (data, size) = made;
       final codec = module.codec;

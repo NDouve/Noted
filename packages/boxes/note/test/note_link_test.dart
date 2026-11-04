@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
+
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -195,5 +197,163 @@ void main() {
     await frames(t);
     await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
     expect(opened, ['https://open.example']);
+  });
+
+  group('opening a link with the real opener', () {
+    final launched = <String>[];
+
+    setUp(() {
+      launched.clear();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('plugins.flutter.io/url_launcher'),
+        (call) async {
+          if (call.method == 'launch') launched.add((call.arguments as Map)['url'] as String);
+          return true;
+        },
+      );
+    });
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('plugins.flutter.io/url_launcher'),
+        null,
+      );
+    });
+
+    Future<void> ctrlClick(WidgetTester t, String href) async {
+      await pump(t, [
+        {
+          'insert': 'linked words here',
+          'attributes': {'href': href},
+        },
+      ]);
+      await focusNote(t, dx: 40);
+      await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      final b = c.page.node('n')!.bounds!;
+      await t.tapAt(canvas(t).view!.toScreen(Offset(b.x + 60, b.y + 14)) + const Offset(0, CommandToolbar.height));
+      await frames(t);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await frames(t);
+    }
+
+    testWidgets('a file: link to a program asks first; Cancel opens nothing', (t) async {
+      await ctrlClick(t, 'file:///C:/tools/setup1.jar');
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+      expect(launched, isEmpty);
+      await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+      await frames(t);
+      expect(launched, isEmpty);
+    });
+
+    testWidgets('a file: link to a program opens after Open', (t) async {
+      await ctrlClick(t, 'file:///C:/tools/setup2.jar');
+      await t.tap(find.byKey(const ValueKey('open-confirm-open')));
+      await frames(t);
+      expect(launched, hasLength(1));
+    });
+
+    testWidgets('a file: link to a document opens without asking', (t) async {
+      await ctrlClick(t, 'file:///C:/docs/plan.pdf');
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+      expect(launched, hasLength(1));
+    });
+
+    testWidgets('an https: link opens without asking', (t) async {
+      await ctrlClick(t, 'https://open.example/setup.jar');
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+      expect(launched, hasLength(1));
+    });
+
+    Future<void> lightCtrlClick(WidgetTester t, String href) async {
+      await pump(t, [
+        {
+          'insert': 'linked words here',
+          'attributes': {'href': href},
+        },
+      ]);
+      await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      final b = c.page.node('n')!.bounds!;
+      await t.tapAt(canvas(t).view!.toScreen(Offset(b.x + 60, b.y + 14)) + const Offset(0, CommandToolbar.height));
+      await frames(t);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await frames(t);
+    }
+
+    testWidgets('a Ctrl+click on a link in the light view asks too', (t) async {
+      await lightCtrlClick(t, 'file:///C:/tools/light.jar');
+      expect(c.editingId, isNull);
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+      expect(launched, isEmpty);
+      await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+      await frames(t);
+      expect(launched, isEmpty);
+    });
+
+    testWidgets('Alt+Shift+Enter on a selected link asks too', (t) async {
+      await pump(t, [
+        {
+          'insert': 'linked words here',
+          'attributes': {'href': 'file:///C:/tools/keys.jar'},
+        },
+      ]);
+      final editor = await focusNote(t, dx: 40);
+      final node = editor.document.root.children.first;
+      editor.selection = Selection.single(path: node.path, startOffset: 0, endOffset: 10);
+      await frames(t);
+      await t.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await t.sendKeyEvent(LogicalKeyboardKey.enter);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+      await frames(t);
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+      expect(launched, isEmpty);
+    });
+
+    // Links that are paths without a file: scheme.
+    for (final path in [r'C:\tools\path1.jar', 'C:/tools/path2.jar', r'\\host\share\path3.jar', '//host/share/path4.jar']) {
+      testWidgets('the path $path asks first', (t) async {
+        await pump(t, [
+          {'insert': 'plain'},
+        ]);
+        unawaited(linkOpener(path));
+        await frames(t);
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+        expect(launched, isEmpty);
+        await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+        await frames(t);
+        expect(launched, isEmpty);
+      });
+    }
+
+    for (final word in ['cmd', 'example.com']) {
+      testWidgets('the bare address $word opens as http://, never as it is', (t) async {
+        await pump(t, [
+          {'insert': 'plain'},
+        ]);
+        await t.runAsync(() => linkOpener(word));
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+        expect(launched, ['http://$word']);
+      });
+    }
+
+    testWidgets('a path with a literal percent sign is not refused', (t) async {
+      await pump(t, [
+        {'insert': 'plain'},
+      ]);
+      await t.runAsync(() => linkOpener(r'C:\docs\100%.txt'));
+      expect(find.text("This link can't be opened."), findsNothing);
+      expect(launched, hasLength(1));
+    });
+
+    testWidgets('a name with a control character is refused with a notice', (t) async {
+      await pump(t, [
+        {'insert': 'plain'},
+      ]);
+      unawaited(linkOpener('file:///C:/tools/evil.jar%00.pdf'));
+      await frames(t);
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+      expect(launched, isEmpty);
+      expect(find.text("This link can't be opened."), findsOneWidget);
+    });
   });
 }
