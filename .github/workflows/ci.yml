@@ -54,6 +54,16 @@ jobs:
         shell: bash
         run: dart .github/scripts/test/test_annotations_test.dart
 
+      # The PowerShell scripts that package the app and register the MCP
+      # server. Windows PowerShell 5.1 with the Pester 3 it ships.
+      - name: Test the Windows scripts
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Import-Module Pester -MaximumVersion 3.99 -Force
+          $r = Invoke-Pester app/scripts/test/register-mcp.tests.ps1 -PassThru
+          if ($r.FailedCount -gt 0) { exit 1 }
+
       # Every package that has a test/ directory: app, packages/* and
       # packages/boxes/*. All of them depend on Flutter's test framework, so
       # flutter test runs them all. A failing package does not stop the rest.

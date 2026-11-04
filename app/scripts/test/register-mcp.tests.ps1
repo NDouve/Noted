@@ -4,16 +4,16 @@
 
 <#
 .SYNOPSIS
-  Pester tests (written for Pester 3.4, which Windows PowerShell 5.1 ships;
-  they also run on 5.x) for the MCP copy in register-mcp.ps1 and
-  package-windows.ps1.
+  Pester tests (written for Pester 3.4, which Windows PowerShell 5.1 ships)
+  for the MCP copy in register-mcp.ps1 and package-windows.ps1.
 
 .DESCRIPTION
   Everything runs under $TestDrive: the scripts are copied into a fake app
   folder, $env:LOCALAPPDATA points into $TestDrive, and flutter and dart are
   replaced by functions. The real `claude` CLI is never called
-  (register-mcp.ps1 runs with -PrintOnly). A held file is one opened with an
-  exclusive FileStream.
+  (register-mcp.ps1 runs with -PrintOnly). A held file is one opened with a
+  FileStream that shares Read and Delete, like a running exe: it can be read
+  and renamed, so only the script's write probe stops a refresh.
 
   Run: Invoke-Pester app\scripts\test\register-mcp.tests.ps1
 #>
@@ -34,7 +34,13 @@ function New-Exe([string]$Path, [string]$Content) {
 }
 
 function Hold([string]$Path) {
-  New-Object IO.FileStream($Path, 'Open', 'Read', 'Read')
+  New-Object IO.FileStream($Path, 'Open', 'Read', ([IO.FileShare]'Read, Delete'))
+}
+
+# The "command" the script printed for Claude desktop.
+function Get-PrintedCommand([string]$Out) {
+  if ($Out -notmatch '"command":\s+"([^"]+)"') { throw "no command in: $Out" }
+  $Matches[1].Replace('\\', '\')
 }
 
 function Read-Text([string]$Path) { [IO.File]::ReadAllText($Path) }
@@ -44,6 +50,7 @@ foreach ($name in 'register-mcp.ps1', 'package-windows.ps1') {
     . (Get-UpdateMcpCopy (Join-Path $scripts $name))
 
     BeforeEach {
+      $ErrorActionPreference = 'Stop'  # as the scripts run
       $script:root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
       $script:src = Join-Path $script:root 'src\noted_mcp.exe'
       $script:dest = Join-Path $script:root 'local\Noted\mcp\noted_mcp.exe'
@@ -52,6 +59,24 @@ foreach ($name in 'register-mcp.ps1', 'package-windows.ps1') {
 
     It 'returns null without a LOCALAPPDATA root' {
       Update-McpCopy $script:src '' 6>$null | Should BeNullOrEmpty
+    }
+
+    It 'is the same function in both scripts' {
+      $a = (Get-UpdateMcpCopy (Join-Path $scripts 'register-mcp.ps1')).ToString() -replace "`r`n", "`n"
+      $b = (Get-UpdateMcpCopy (Join-Path $scripts 'package-windows.ps1')).ToString() -replace "`r`n", "`n"
+      $a | Should BeExactly $b
+    }
+
+    It 'leaves an up-to-date copy alone, even when a process holds it' {
+      New-Exe $script:dest 'new'
+      $h = Hold $script:dest
+      try {
+        $out = Update-McpCopy $script:src (Join-Path $script:root 'local') 2>$null 6>&1
+      } finally { $h.Dispose() }
+      ($out | Where-Object { $_ -is [string] }) | Should Be $script:dest
+      ($out | Out-String) | Should Match 'up to date'
+      ($out | Out-String) | Should Not Match 'NOT refreshed'
+      Test-Path "$($script:dest).tmp" | Should Be $false
     }
 
     It 'makes the first copy' {
@@ -108,13 +133,13 @@ foreach ($name in 'register-mcp.ps1', 'package-windows.ps1') {
 
 Describe 'register-mcp.ps1' {
   BeforeEach {
+    $script:oldLocal = $env:LOCALAPPDATA
     $script:app = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force (Join-Path $script:app 'scripts') | Out-Null
     $script:reg = Join-Path $script:app 'scripts\register-mcp.ps1'
     Copy-Item (Join-Path $scripts 'register-mcp.ps1') $script:reg
     $script:release = Join-Path $script:app 'build\windows\x64\runner\Release\noted_mcp.exe'
     $script:held = Join-Path $script:app 'build\noted_mcp.new.exe'
-    $script:oldLocal = $env:LOCALAPPDATA
     $env:LOCALAPPDATA = Join-Path $script:app 'local'
   }
   AfterEach { $env:LOCALAPPDATA = $script:oldLocal }
@@ -138,7 +163,19 @@ Describe 'register-mcp.ps1' {
     $out = Run-Register
     $out | Should Not Match '-NoCopy'
     $out | Should Match 'Copied noted_mcp.exe'
-    Read-Text (Join-Path $env:LOCALAPPDATA 'Noted\mcp\noted_mcp.exe') | Should Be 'exe'
+    $dest = Join-Path $env:LOCALAPPDATA 'Noted\mcp\noted_mcp.exe'
+    Read-Text $dest | Should Be 'exe'
+    Get-PrintedCommand $out | Should Be $dest
+  }
+
+  It 'registers the exe beside the script, not a newer fallback' {
+    $beside = Join-Path $script:app 'scripts\noted_mcp.exe'
+    New-Exe $beside 'beside'
+    New-Exe $script:held 'fallback'
+    (Get-Item $beside).LastWriteTime = (Get-Date).AddHours(-2)
+    (Get-Item $script:held).LastWriteTime = (Get-Date).AddHours(-1)
+    $out = Run-Register @{ NoCopy = $true }
+    Get-PrintedCommand $out | Should Be $beside
   }
 
   It 'takes the newer held-fallback exe over the release exe' {
@@ -170,13 +207,15 @@ Describe 'register-mcp.ps1' {
     try { $out = Run-Register } finally { $h.Dispose() }
     $out | Should Match 'NOT refreshed because a process holds it'
     Read-Text $dest | Should Be 'old'
+    Get-PrintedCommand $out | Should Be $dest
   }
 }
 
 Describe 'package-windows.ps1' {
   BeforeEach {
+    $script:oldLocal = $env:LOCALAPPDATA
     $script:app = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
-    $s = Join-Path $script:app 'scripts'
+    $s =Join-Path $script:app 'scripts'
     New-Item -ItemType Directory -Force $s | Out-Null
     Copy-Item (Join-Path $scripts 'package-windows.ps1') $s
     Set-Content (Join-Path $s 'install-shortcuts.ps1') '# fake'
@@ -186,9 +225,9 @@ Describe 'package-windows.ps1' {
     $script:release = Join-Path $script:app 'build\windows\x64\runner\Release'
     New-Exe (Join-Path $script:release 'noted.exe') 'app'
     $script:local = Join-Path $script:app 'local'
-    $script:oldLocal = $env:LOCALAPPDATA
     $env:LOCALAPPDATA = $script:local
     $global:FakeDartArgs = $null
+    $global:FakeDartContent = 'compiled'
     function global:git { 'abc1234' }
     # Visible to the script run below (PowerShell scopes are dynamic).
     function global:flutter { throw 'flutter must not run in tests' }
@@ -196,13 +235,15 @@ Describe 'package-windows.ps1' {
       $global:FakeDartArgs = $args
       $out = $args[$args.IndexOf('-o') + 1]
       New-Item -ItemType Directory -Force (Split-Path -Parent $out) | Out-Null
-      [IO.File]::WriteAllText($out, 'compiled')
+      [IO.File]::WriteAllText($out, $global:FakeDartContent)
       $global:LASTEXITCODE = 0
     }
   }
   AfterEach {
     $env:LOCALAPPDATA = $script:oldLocal
-    Remove-Item function:\dart, function:\flutter, function:\git -Force
+    # The fakes this Describe defines.
+    Remove-Item function:\dart, function:\flutter, function:\git -Force -ErrorAction SilentlyContinue
+    Remove-Variable FakeDartArgs, FakeDartContent -Scope Global -ErrorAction SilentlyContinue
   }
 
   It 'builds the zip and refreshes the copy' {
@@ -231,10 +272,13 @@ Describe 'package-windows.ps1' {
   It 'compiles to noted_mcp.new.exe when a process holds the release exe' {
     $rel = Join-Path $script:release 'noted_mcp.exe'
     New-Exe $rel 'running'
+    $global:FakeDartContent = 'fresh'
     $h = Hold $rel
     try { & $script:pkg -SkipBuild *>&1 | Out-Null } finally { $h.Dispose() }
     $global:FakeDartArgs[$global:FakeDartArgs.IndexOf('-o') + 1] | Should Be (Join-Path $script:app 'build\noted_mcp.new.exe')
     Read-Text $rel | Should Be 'running'
+    Read-Text (Join-Path $script:app 'build\package\Noted\noted_mcp.exe') | Should Be 'fresh'
+    Read-Text (Join-Path $script:local 'Noted\mcp\noted_mcp.exe') | Should Be 'fresh'
     Test-Path (Join-Path $script:app 'build\Noted-windows-x64.zip') | Should Be $true
   }
 }
