@@ -720,6 +720,9 @@ class RecoveryStore {
   /// caller keeps the entry waiting to be retired and calls again.
   Future<bool> retire(RecoveryEntry e) => _serial(() async {
     try {
+      // An entry converted from a format 1 pair: its pair goes first, or the next
+      // listing would convert it again.
+      if (e.gen.startsWith('v1-') && !await _dropLegacyPair(e)) return false;
       final names = await _namesOf(e);
       int order(File f) {
         final n = _fileName(f.path);
@@ -744,6 +747,33 @@ class RecoveryStore {
       return false;
     }
   });
+
+  // Deletes the old two-file pair that [e] (generation `v1-<hash of the two
+  // files>`) was converted from, each file only while it holds what was read.
+  // True when none is left.
+  Future<bool> _dropLegacyPair(RecoveryEntry e) async {
+    final legacy = _legacyName(e.folder, e.pageId);
+    final bases = <String>{};
+    await for (final f in directory.list()) {
+      if (f is! File) continue;
+      final n = _fileName(f.path);
+      final m = RegExp('^(${RegExp.escape(legacy)}(?:_dup\\d+)?)\\.(?:json|canvas)\$').firstMatch(n);
+      if (m != null) bases.add(m.group(1)!);
+    }
+    for (final b in bases) {
+      final json = File(_path(b, 'json'));
+      final canvas = File(_path(b, 'canvas'));
+      if (!await json.exists() || !await canvas.exists()) continue;
+      final jb = await json.readAsBytes();
+      final cb = await canvas.readAsBytes();
+      if ('v1-${contentHash([...jb, ...cb]).substring(0, 32)}' != e.gen) continue;
+      for (final (f, bytes) in [(json, jb), (canvas, cb)]) {
+        final r = await deleteFileIfMatches(f.path, bytes: bytes);
+        if (!r.deleted && r.outcome != DeleteOutcome.absent) return false;
+      }
+    }
+    return true;
+  }
 
   // Removes the files of an old entry. After it was converted, the metadata
   // goes first, so that what is left after an interruption is a page file

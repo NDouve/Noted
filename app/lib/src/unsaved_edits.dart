@@ -36,6 +36,10 @@ abstract interface class UnsavedEditsHost {
   /// be retired. Runs on the page's queue.
   Future<void> retireWaiting(String id);
 
+  /// Writes the copy held in memory of page [id] to the recovery folder as an
+  /// entry of its own. True when it is there.
+  Future<bool> keepHeld(String id);
+
   /// Queues a save of the open page.
   void saveOpen();
 
@@ -46,9 +50,12 @@ abstract interface class UnsavedEditsHost {
 /// The edits of a page that recovery could not keep, held in memory until a
 /// write of the page file (or of recovery) takes them.
 class HeldCopy {
-  const HeldCopy(this.page, this.baseText, this.supersedes);
+  const HeldCopy(this.page, this.baseText, this.supersedes, [this.folder]);
 
   final NotedPage page;
+
+  /// The folder the page belongs in, as recovery entries name it.
+  final String? folder;
   final String? baseText;
 
   /// The generations the copy was built on.
@@ -263,14 +270,15 @@ class UnsavedEdits {
     gens.forEach(k.waiting.remove);
   }
 
-  /// A save or a replay of page [id] landed everything: tracking ends unless
-  /// something is still held or waiting.
-  void succeeded(String id) {
+  /// A save or a replay of page [id] landed everything it had: tracking ends
+  /// unless something is still held or waiting. The copy held in memory is let
+  /// go only if [clearHeld]: the save that landed was made from it.
+  void succeeded(String id, {bool clearHeld = false}) {
     final k = _kept[id];
     if (k == null) return;
     k.told = false;
     k.blocked = false;
-    k.held = null;
+    if (clearHeld) k.held = null;
     _delay = null; // a save landed: the next failure starts again from the first delay
     _settled(id, k);
   }
@@ -292,7 +300,10 @@ class UnsavedEdits {
     _removed();
   }
 
+  // A page with a copy held in memory is never let go: only [clearHeld] or a
+  // discard ends that.
   _Kept? _remove(String id) {
+    if (_kept[id]?.held != null) return null;
     final k = _kept.remove(id);
     _removed();
     return k;
@@ -363,7 +374,6 @@ class UnsavedEdits {
         _schedule();
         return;
       }
-      if (k.blocked) return;
       if (host.isLocked(k.loc)) {
         // Its place can't be written now; wait for it.
         _schedule();
@@ -371,10 +381,21 @@ class UnsavedEdits {
       }
       if (host.locOf(id) != k.loc) {
         // Gone from its place (deleted or moved on another device): its entries
-        // stay, and bring the page back at the next start (0070).
+        // stay, and bring the page back at the next start (0070). A copy held in
+        // memory is written to recovery as an entry of its own, or, while that
+        // fails, stays held and counted.
+        if (k.held != null) {
+          if (await host.keepHeld(id) && identical(_kept[id], k)) {
+            k.held = null;
+          } else {
+            _schedule();
+            return;
+          }
+        }
         _remove(id);
         return;
       }
+      if (k.blocked) return;
       switch (await host.replayPage(k.loc, id)) {
         case ReplayOutcome.done:
           if (identical(_kept[id], k)) succeeded(id);

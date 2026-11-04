@@ -348,6 +348,18 @@ void main() {
       expect(files('.entry'), hasLength(1));
     });
 
+    test('retiring a converted entry removes the pair it came from, so it is not converted again', () async {
+      legacy('/n', _page('p1', 'one'));
+      // The conversion stops after publishing, before the old files are removed.
+      final listed = await store(hook: _failAt('envelope-published')).list();
+      expect(listed.entries, hasLength(1));
+      expect(files('.canvas'), hasLength(1));
+      expect(await store().retire(listed.entries.single), isTrue);
+      expect(files('.canvas'), isEmpty);
+      expect(files('.json'), isEmpty);
+      expect((await store().list()).entries, isEmpty);
+    });
+
     test('a lone old metadata file that an entry holds is removed, one that none holds is kept and reported', () async {
       final seed = await store().write(folder: '/n', page: _page('p1', 'x'), baseText: null, time: t);
       expect(seed.baseText, isNull);

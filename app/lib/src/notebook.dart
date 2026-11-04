@@ -144,7 +144,7 @@ class UnsavedEditsException extends NotebookException {
 // once it has landed), and the entries that did not pass the check of their own
 // edits (they stay on disk).
 class _Fold {
-  _Fold(this.page, this.folded, this.ancestors, this.unfit, this.heldUsed);
+  _Fold(this.page, this.folded, this.ancestors, this.unfit, this.heldUsed, [this.heldUnfit = false]);
 
   // Null: there is nothing to fold and no file.
   final NotedPage? page;
@@ -152,6 +152,10 @@ class _Fold {
   final List<RecoveryEntry> ancestors;
   final List<RecoveryEntry> unfit;
   final bool heldUsed;
+
+  // The copy held in memory did not pass the check of its own edits: it stays
+  // held and is listed under "Can't open".
+  final bool heldUnfit;
 
   List<RecoveryEntry> get toRetire => [...ancestors, ...folded];
 }
@@ -185,6 +189,10 @@ class _Session {
   // The page text the entries on disk cover: a failed save of the same text
   // needs no new generation.
   String? covered;
+
+  // The page this session shows was made from the copy held in memory (or the
+  // session made one): a save of it lands that copy.
+  bool heldIn = false;
 }
 
 /// A save failed because the page's folder isn't there.
@@ -469,6 +477,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // opens the page.
   final Map<String, ({String path, String why})> _landedProblems = {};
 
+  // Copies held in memory that did not pass the check of their own edits, by
+  // page id: listed while the copy is held.
+  final Map<String, ({String path, String why})> _heldProblems = {};
+
   // Kept `<id>.assets` folders that couldn't be landed, or whose page isn't
   // there, by the folder's path: why (0098).
   final Map<String, String> _keptProblems = {};
@@ -486,6 +498,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     ..._recoveryProblems,
     for (final p in _replayProblems.values) '${p.path}: ${p.why}',
     for (final p in _landedProblems.values) '${p.path}: ${p.why}',
+    for (final e in _heldProblems.entries)
+      if (_unsaved.heldOf(e.key) != null) '${e.value.path}: ${e.value.why}',
     for (final p in _keptProblems.entries) '${p.key}: ${p.value}',
   ];
 
@@ -501,6 +515,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final p in _replayProblems.values)
       UnreadablePage(p.path, "Recovery can't finish: ${p.why}${p.why.endsWith(')') ? '' : '.'}"),
     for (final p in _landedProblems.values) UnreadablePage(p.path, '${p.why}.'),
+    for (final e in _heldProblems.entries)
+      if (_unsaved.heldOf(e.key) != null) UnreadablePage(e.value.path, "Recovery can't finish: ${e.value.why}."),
     for (final p in _keptProblems.entries) UnreadablePage(p.key, p.value),
   ];
 
@@ -657,6 +673,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// moment.
   @visibleForTesting
   Future<void> Function(String point, String path)? syncHook;
+
+  /// Test seam: generations (`held` is the copy held in memory) whose fold fails
+  /// the check of their own edits, whatever they hold.
+  @visibleForTesting
+  final Set<String> debugUnfit = {};
+
+  /// Test seam: holds [page] (made on [baseText]) in memory as the edits of page
+  /// [id] that recovery could not keep, as a failed save with an unwritable
+  /// recovery folder would.
+  @visibleForTesting
+  void debugHold(String id, NotedPage page, String? baseText) {
+    final loc = _loc[id] ?? _standalone;
+    _unsaved.setHeld(id, loc, HeldCopy(page, baseText, const [], _folderOf(_storeOf(loc))));
+  }
 
   /// Test seam: makes the notebook think page [id] is in [loc] (null: in none),
   /// as a move or a vanished folder would, without touching any file.
@@ -953,24 +983,31 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final sess = _Session(id);
       var seed = page;
       var foldedAny = false;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      _Fold fold;
       try {
-        final fold = await _foldFor(loc, id, page, DateTime.now().millisecondsSinceEpoch);
-        if (fold.page != null && (fold.folded.isNotEmpty || fold.heldUsed)) {
-          seed = fold.page!;
-          foldedAny = true;
-          for (final e in fold.toRetire) {
-            sess.entries[e.gen] = e;
-          }
-          sess.covered = writePage(seed);
-        }
-        _noteUnfit(fold, seed);
+        fold = await _foldFor(loc, id, page, now);
       } on IOException catch (e) {
+        // The entries can't be listed: the copy held in memory is still folded in.
         debugPrint('Listing the recovery entries of page $id failed: $e');
         _notices.add(
           "The edits kept for this page couldn't be read, so it was opened as it was saved. "
           'They are still kept and will not be lost.',
         );
+        fold = await _foldFor(loc, id, page, now, listing: const RecoveryListing([], []));
       }
+      if (fold.page != null && (fold.folded.isNotEmpty || fold.heldUsed)) {
+        seed = fold.page!;
+        foldedAny = true;
+        for (final e in fold.toRetire) {
+          sess.entries[e.gen] = e;
+        }
+        // A seed that came from the copy held in memory is not on disk yet: a
+        // failed save writes it to recovery as soon as that works.
+        sess.covered = fold.heldUsed ? null : writePage(seed);
+        sess.heldIn = fold.heldUsed;
+      }
+      _noteUnfit(fold, id, seed);
       _base = page;
       _metas[id] = seed.meta;
       _setConflict(id, hasConflicts(seed));
@@ -998,9 +1035,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Entries that did not pass the check of their own edits stay on disk and
   // are listed under "Can't open".
-  void _noteUnfit(_Fold fold, NotedPage page) {
-    if (fold.unfit.isEmpty) return;
+  void _noteUnfit(_Fold fold, String id, NotedPage page) {
     final label = '"${_titleOrUntitled(page.meta.title)}"';
+    if (fold.heldUnfit) {
+      var path = id;
+      try {
+        path = _storeOf(_loc[id] ?? _standalone).pathFor(id);
+      } on Object {
+        // The id will do.
+      }
+      _heldProblems[id] = (path: path, why: _notAllKept(label));
+    }
+    if (fold.unfit.isEmpty) return;
     final e = fold.unfit.first;
     _replayProblems[_entryKey(e)] = (path: _entryPath(e), why: _notAllKept(label));
   }
@@ -1556,6 +1602,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         await _readKept(() => _foldFor(loc, ids[i], readPage(texts[i]), DateTime.now().millisecondsSinceEpoch)),
     ];
     final pages = [for (var i = 0; i < ids.length; i++) folds[i].page ?? readPage(texts[i])];
+    for (var i = 0; i < ids.length; i++) {
+      if (folds[i].heldUnfit) _noteUnfit(folds[i], ids[i], pages[i]);
+    }
     final previous = _lastDeleted;
     if (previous != null) discardDeleted(previous);
     // Each page's assets folder is set aside, so undo can bring it back.
@@ -2066,6 +2115,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           await _readKept(() => _foldFor(fromLoc, ids[i], originals[i], DateTime.now().millisecondsSinceEpoch)),
       ];
       final sources = [for (var i = 0; i < ids.length; i++) folds[i].page ?? originals[i]];
+      for (var i = 0; i < ids.length; i++) {
+        if (folds[i].heldUnfit) _noteUnfit(folds[i], ids[i], sources[i]);
+      }
       // Only the moved page's parent and order change; its subpages keep
       // theirs.
       final moved = [
@@ -3913,10 +3965,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       final known = _known[key];
       final entries = held();
+      // Only the entries no other one supersedes are renamed.
+      final named = {for (final e in entries) ...e.supersedes};
+      final live = [
+        for (final e in entries)
+          if (!named.contains(e.gen)) e,
+      ];
       LandingMark? mark;
       try {
         if (entries.isNotEmpty) {
-          mark = await _recovery?.markLanding(entries);
+          mark = await _recovery?.markLanding(live);
           if (mark != null && !mark.ok) {
             throw const FileSystemException('The recovery entries could not be marked as landing');
           }
@@ -4022,7 +4080,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Files kept for the page beside those entries have a page now.
       if (rec != null) await _landKeptAssets(rec);
     }
-    _unsaved.succeeded(saved.id);
+    // The copy held in memory is let go only if this save was made from it.
+    final held = s?.heldIn ?? false;
+    s?.heldIn = false;
+    _unsaved.succeeded(saved.id, clearHeld: held);
   }
 
   // Throws unless the pages of [loc] may be written. A folder that has gone
@@ -4077,6 +4138,31 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  // Writes the copy held in memory of page [id] as an entry of its own. True when
+  // recovery holds it.
+  Future<bool> _keepHeld(String id) async {
+    final h = _unsaved.heldOf(id);
+    if (h == null) return true;
+    final rec = _recovery;
+    final folder = h.folder;
+    if (rec == null || folder == null) return false;
+    try {
+      await rec.write(
+        folder: folder,
+        page: h.page,
+        baseText: h.baseText,
+        time: DateTime.now(),
+        session: _sessionId,
+        device: deviceName,
+        supersedes: h.supersedes,
+      );
+      return true;
+    } on Object catch (e) {
+      debugPrint('Keeping the held copy of page $id for recovery failed: $e');
+      return false;
+    }
+  }
+
   // The generations of [entries] and, transitively, of the entries they were
   // built on.
   static List<String> _gensOf(Iterable<RecoveryEntry> entries) => {
@@ -4096,7 +4182,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final supersedes = s == null ? const <String>[] : _gensOf(s.entries.values);
     final entry = await _keepForRecovery(loc, st, page, supersedes: supersedes);
     if (entry == null) {
-      _unsaved.setHeld(page.id, loc, HeldCopy(page, _baseTextOf(st, page.id), supersedes));
+      _unsaved.setHeld(page.id, loc, HeldCopy(page, _baseTextOf(st, page.id), supersedes, _folderOf(st)));
+      if (s != null) s.heldIn = true;
       return false;
     }
     _unsaved.clearHeld(page.id);
@@ -4207,6 +4294,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           if (u.entry != null) u.entry!,
       ],
       heldUsed,
+      r.unfit.any((u) => u.entry == null),
     );
   }
 
@@ -4271,14 +4359,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           markLanded: false,
         ).page;
         if (e.landing) acc = _markResurrected(acc, base, e.page, before, theirsTime);
-        if (_ownEditsMissing(base, e.page, acc) != null) {
+        if (debugUnfit.contains(e.gen) || _ownEditsMissing(base, e.page, acc) != null) {
           bad = e;
           break;
         }
       }
       if (bad == null) {
         for (final e in active) {
-          if (_ownEditsMissing(e.base ?? NotedPage.create(e.page.meta), e.page, acc) != null) {
+          if (debugUnfit.contains(e.gen) || _ownEditsMissing(e.base ?? NotedPage.create(e.page.meta), e.page, acc) != null) {
             bad = e;
             break;
           }
@@ -4637,7 +4725,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           await _applyClosed(merged, loc, _key(path), path);
           await _finishFold(id, loc, fold);
           _landedProblems[id] = (path: path, why: _landedThenChanged(label));
-          return _foldOutcome(fold, merged);
+          return _foldOutcome(id, fold, merged);
         }
       }
       if (back != out) {
@@ -4672,7 +4760,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               'and can no longer be read ($unreadable)';
           _landedProblems[id] = (path: path, why: notice);
           _knownUnreadable(loc, key, path, notice);
-          return _foldOutcome(fold, merged);
+          return _foldOutcome(id, fold, merged);
         }
         await _applyClosed(now, loc, key, path);
         for (final e in fold.folded) {
@@ -4683,12 +4771,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             break;
           }
         }
-        return _foldOutcome(fold, merged);
+        return _foldOutcome(id, fold, merged);
       }
       await _applyClosed(readPage(back), loc, _key(path), path);
       await syncHook?.call('recover-readback', path);
       await _finishFold(id, loc, fold);
-      return _foldOutcome(fold, merged);
+      return _foldOutcome(id, fold, merged);
     }
     throw _ReplayFailure(
       'the saved file of $label keeps changing',
@@ -4704,9 +4792,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // Entries that failed the check of their own edits stay on disk, listed.
-  ReplayOutcome _foldOutcome(_Fold fold, NotedPage page) {
-    if (fold.unfit.isEmpty) return ReplayOutcome.done;
-    _noteUnfit(fold, page);
+  ReplayOutcome _foldOutcome(String id, _Fold fold, NotedPage page) {
+    if (fold.unfit.isEmpty && !fold.heldUnfit) return ReplayOutcome.done;
+    _noteUnfit(fold, id, page);
     return ReplayOutcome.blocked;
   }
 
@@ -6160,6 +6248,9 @@ class _UnsavedHost implements UnsavedEditsHost {
 
   @override
   Future<void> retireWaiting(String id) => nb._retryWaiting(id);
+
+  @override
+  Future<bool> keepHeld(String id) => nb._keepHeld(id);
 
   @override
   void saveOpen() {

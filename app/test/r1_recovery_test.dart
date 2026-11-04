@@ -23,6 +23,12 @@ class _FlakyStore extends PageStore {
 
   bool failSave = false;
 
+  /// Runs just before every compare-and-swap save.
+  void Function()? onSave;
+
+  /// Held up in the next compare-and-delete until it completes.
+  Future<void>? deleteGate;
+
   @override
   Future<ReplaceResult> saveIfUnchanged(
     NotedPage page,
@@ -32,6 +38,7 @@ class _FlakyStore extends PageStore {
     void Function()? beforePublish,
     void Function()? beforeRestore,
   }) {
+    onSave?.call();
     if (failSave) throw const FileSystemException('disk error');
     return super.saveIfUnchanged(
       page,
@@ -39,6 +46,28 @@ class _FlakyStore extends PageStore {
       beforeMoveAside: beforeMoveAside,
       afterRead: afterRead,
       beforePublish: beforePublish,
+      beforeRestore: beforeRestore,
+    );
+  }
+
+  @override
+  Future<DeleteResult> deleteIfUnchanged(
+    String pageId,
+    String expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    Future<void> Function()? beforeDelete,
+    void Function()? beforeRestore,
+  }) async {
+    final gate = deleteGate;
+    deleteGate = null;
+    if (gate != null) await gate;
+    return super.deleteIfUnchanged(
+      pageId,
+      expectedText,
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforeDelete: beforeDelete,
       beforeRestore: beforeRestore,
     );
   }
@@ -847,5 +876,302 @@ void main() {
         expect(await nb.pendingRecoveryPages(), 1);
       },
     );
+  });
+
+  group('review round: copies held in memory and the order of things', () {
+    BoxRecord same(int n) => BoxRecord.create(
+      id: 'x1',
+      typeId: 'test.other',
+      dataVersion: 1,
+      bounds: const Bounds(500, 500, 100, 40),
+      data: RawJson.encode({'n': n}),
+      snapshotText: 's$n',
+      rev: 'same',
+    );
+
+    // Page a holds an edit in memory only: recovery is a file.
+    Future<(Notebook, String, String, Set<String>)> held() async {
+      final (nb, a, b) = await twoPages();
+      File(rec.path).createSync(recursive: true);
+      flaky.failSave = true;
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      final mine = ids(nb.current!.page);
+      await nb.flush();
+      expect(nb.unsavedPageCount, 1);
+      await nb.open(b);
+      return (nb, a, b, mine);
+    }
+
+    // An edit held for a that the fold rejects (see debugUnfit).
+    void holdUnfit(Notebook nb, String a) {
+      pageFile(a).writeAsStringSync(writePage(disk(a).insertNode(same(0))));
+      final base = pageFile(a).readAsStringSync();
+      nb.debugHold(a, readPage(base).replaceNode(same(1)), base);
+    }
+
+    test('(blocking 1) a held copy is folded in when the page opens although the listing fails, and is not lost', () async {
+      var listFails = false;
+      final (nb, a, b) = await twoPages(
+        hook: (p) async {
+          if (p == 'list' && listFails) throw const FileSystemException('listing failed');
+        },
+      );
+      File(rec.path).createSync(recursive: true);
+      flaky.failSave = true;
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      final mine = ids(nb.current!.page);
+      await nb.flush();
+      expect(nb.unsavedPageCount, 1);
+      await nb.open(b);
+      listFails = true;
+      await nb.open(a); // the listing fails: opens from the file, with the held copy
+      expect(ids(nb.current!.page), containsAll(mine));
+      flaky.failSave = false;
+      await nb.flush();
+      expect(ids(disk(a)), containsAll(mine), reason: 'the edit landed');
+      expect(nb.unsavedPageCount, 0);
+    });
+
+    test('a closed page\'s held copy is folded in by the retry and lands', () async {
+      final (nb, a, _, mine) = await held();
+      flaky.failSave = false;
+      File(rec.path).deleteSync();
+      await nb.flush();
+      expect(ids(disk(a)), containsAll(mine));
+      expect(nb.unsavedPageCount, 0);
+    });
+
+    test('(6) a seed made from a held copy is written to recovery by a failed save once recovery works', () async {
+      final (nb, a, _, mine) = await held();
+      await nb.open(a); // folds the held copy
+      File(rec.path).deleteSync(); // recovery works now
+      await nb.flush(); // the save still fails
+      final kept = await entries(nb);
+      expect(kept, hasLength(1));
+      expect(ids(kept.single.page), containsAll(mine));
+      expect(nb.unsavedPageCount, 0);
+    });
+
+    for (final how in ['deleted elsewhere', 'unreadable']) {
+      test('(blocking 2) a held copy outlives its page ($how): kept and counted, then written to recovery', () async {
+        final (nb, a, _, mine) = await held();
+        if (how == 'unreadable') {
+          await unreadable(nb, a);
+        } else {
+          pageFile(a).deleteSync();
+          await nb.checkFile(pageFile(a).path);
+        }
+        await nb.flush();
+        await nb.flush();
+        expect(nb.unsavedPageCount, 1, reason: 'still held and counted');
+        File(rec.path).deleteSync();
+        await nb.flush();
+        expect(nb.unsavedPageCount, 0);
+        final kept = await entries(nb);
+        expect(kept.single.pageId, a);
+        expect(ids(kept.single.page), containsAll(mine));
+        quit(nb);
+        if (how == 'unreadable') {
+          pageFile(a).writeAsStringSync(pageFile(a).readAsStringSync().replaceFirst('"format":99', '"format":1'));
+        }
+        flaky.failSave = false;
+        final again = make();
+        await again.load();
+        expect(ids(disk(a)), containsAll(mine));
+        expect(await entries(again), isEmpty);
+      });
+    }
+
+    test('(blocking 2) a delete with an unfit held copy keeps it held and lists it', () async {
+      final (nb, a, b) = await twoPages();
+      await nb.open(b);
+      holdUnfit(nb, a);
+      nb.debugUnfit.add('held');
+      File(rec.path).createSync(recursive: true);
+      await nb.delete(a);
+      expect(nb.unsavedPageCount, 1);
+      expect(nb.recoveryProblems.join(), contains('did not make it into the saved page'));
+      expect(nb.recoveryDamaged, isNotEmpty);
+      await nb.flush();
+      expect(nb.unsavedPageCount, 1, reason: 'recovery can not take it yet');
+      File(rec.path).deleteSync();
+      await nb.flush();
+      expect(nb.unsavedPageCount, 0);
+      expect((await entries(nb)).single.page.node('x1'), isNotNull);
+      expect(nb.recoveryProblems, isEmpty);
+    });
+
+    test('(blocking 2) a move with an unfit held copy keeps it held and lists it', () async {
+      final (nb, a, b) = await twoPages();
+      final extra = await Directory('${root.path}/Elsewhere').create();
+      await nb.addStandaloneFolder(extra.path);
+      await nb.open(b);
+      holdUnfit(nb, a);
+      nb.debugUnfit.add('held');
+      File(rec.path).createSync(recursive: true);
+      await nb.moveToFolder(a, extra.path);
+      expect(nb.unsavedPageCount, 1);
+      expect(nb.recoveryProblems.join(), contains('did not make it into the saved page'));
+      await nb.flush();
+      expect(nb.unsavedPageCount, 1);
+      File(rec.path).deleteSync();
+      await nb.flush();
+      expect(nb.unsavedPageCount, 0);
+    });
+
+    test('(3) a replay that starts while a delete holds the page does not touch it', () async {
+      final (nb0, _, b) = await twoPages();
+      await entryAdding(b, [_box('e1', 1)]);
+      quit(nb0);
+      var failRetire = true;
+      Completer<void>? atRetire;
+      final release = Completer<void>();
+      final nb = make(
+        hook: (p) async {
+          if (p != 'retire-before-delete') return;
+          if (failRetire) throw const FileSystemException('locked');
+          final reached = atRetire;
+          if (reached != null && !reached.isCompleted) {
+            reached.complete();
+            await release.future;
+          }
+        },
+      );
+      await nb.load(); // e1 lands; its entry waits to be retired
+      failRetire = false;
+      await entryAdding(b, [_box('e2', 2)]); // a live entry the delete will fold
+      atRetire = Completer<void>();
+      unawaited(nb.flush()); // the retry of page b stops while retiring the waiting entry
+      await atRetire.future;
+      final gate = Completer<void>();
+      flaky.deleteGate = gate.future;
+      final deleting = nb.delete(b); // holds b, folds e2, stops before deleting the file
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      release.complete(); // the retry goes on: it must see the hold
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      gate.complete();
+      final deleted = await deleting;
+      await nb.flush();
+      expect(pageFile(b).existsSync(), isFalse, reason: 'the replay did not write the page');
+      expect(deleted.pages.single.node('e2'), isNotNull);
+      expect(recNames(), isEmpty);
+    });
+
+    test('(4) equal times fold in generation order, not in the order the listing reads the files', () async {
+      final (nb0, a, _) = await twoPages();
+      quit(nb0);
+      final base = disk(a).insertNode(_other('x1', 0));
+      pageFile(a).writeAsStringSync(writePage(base));
+      final baseText = writePage(base);
+      final at = DateTime.utc(2026, 11, 4, 12);
+      final v3 = await store().write(
+        folder: pages.path,
+        page: base.replaceNode(_other('x1', 1)),
+        baseText: baseText,
+        time: at,
+      );
+      // A format 2 file: its generation sorts after every hex one, while its file
+      // name sorts before every format 3 name.
+      final stem = v3.file.path.split(RegExp(r'[\\/]')).last.split('.g').first;
+      File('${rec.path}/$stem.entry').writeAsStringSync(
+        jsonEncode({
+          'format': 2,
+          'folder': pages.path,
+          'pageId': a,
+          'time': at.toIso8601String(),
+          'base': baseText,
+          'page': writePage(base.replaceNode(_other('x1', 2))),
+        }),
+      );
+      final again = make();
+      await again.load();
+      final box = disk(a).node('x1')! as BoxRecord;
+      expect(box.snapshotText, 's2', reason: 'the format 2 entry is folded last: its generation is the greater');
+    });
+
+    test('ancestors are retired first: a retire that stops after one leaves the superseding entry', () async {
+      final (nb0, a, _) = await twoPages();
+      final e = await entryAdding(a, [_box('e1', 1)]);
+      final text = pageFile(a).readAsStringSync();
+      final e2 = await store().write(
+        folder: pages.path,
+        page: disk(a).insertNode(_box('e2', 2)),
+        baseText: text,
+        time: DateTime.now().add(const Duration(seconds: 1)),
+        supersedes: [e.gen],
+      );
+      quit(nb0);
+      var retires = 0;
+      final nb = make(
+        hook: (p) async {
+          if (p == 'retire-before-delete' && ++retires >= 2) throw const FileSystemException('locked');
+        },
+      );
+      await nb.load();
+      expect(recNames(), hasLength(1));
+      expect(recNames().single, contains(e2.gen), reason: 'the ancestor went first');
+    });
+
+    test('(2) the listing fails during a failed save: the AI entry stays byte for byte, and both edits land', () async {
+      var listFails = false;
+      final (nb, a, _) = await twoPages(
+        hook: (p) async {
+          if (p == 'list' && listFails) throw const FileSystemException('listing failed');
+        },
+      );
+      final ai = await entryAdding(a, [_box('ai1', 1)], kind: 'ai');
+      final before = ai.file.readAsBytesSync();
+      flaky.failSave = true;
+      listFails = true;
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      final mine = ids(nb.current!.page);
+      await nb.flush();
+      listFails = false;
+      expect(ai.file.readAsBytesSync(), before);
+      quit(nb);
+      flaky.failSave = false;
+      final again = make();
+      await again.load();
+      expect(ids(disk(a)), containsAll({...mine, 'ai1'}));
+    });
+
+    test('(14) the replay of the open page while its autosave is pending completes', () async {
+      final (nb, a, _) = await twoPages();
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      final moved = Directory('${root.path}/pages-away');
+      await pages.rename(moved.path);
+      await nb.checkFolders(); // the folder is gone: the edit goes to an entry
+      expect(await entries(nb), hasLength(1));
+      // The other device adds a box meanwhile; merging it makes the page save.
+      final away = File('${moved.path}/$a.canvas');
+      away.writeAsStringSync(writePage(readPage(away.readAsStringSync()).insertNode(_box('theirs', 3))));
+      await moved.rename(pages.path);
+      await nb.checkFolders().timeout(const Duration(seconds: 30));
+      await nb.flush().timeout(const Duration(seconds: 30));
+      expect(disk(a).node('theirs'), isNotNull);
+      expect(ids(disk(a)), containsAll(ids(nb.current!.page)));
+      expect(await entries(nb), isEmpty);
+    });
+
+    test('(8) only the entries no other one supersedes are marked landing', () async {
+      final (nb0, a, b) = await twoPages();
+      await nb0.open(b);
+      final e = await entryAdding(a, [_box('e1', 1)]);
+      quit(nb0);
+      flaky.failSave = true;
+      final nb = make();
+      await nb.load(); // the replay fails; the open page folds the entry
+      await nb.open(a);
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      await nb.flush(); // fails: a generation that supersedes the entry
+      expect(await entries(nb), hasLength(2));
+      flaky.failSave = false;
+      List<String>? seen;
+      flaky.onSave = () => seen = recNames().where((n) => n.endsWith('.landing')).toList();
+      await nb.flush();
+      expect(seen, hasLength(1), reason: 'the superseded entry keeps its name');
+      expect(seen!.single, isNot(contains(e.gen)));
+      expect(recNames(), isEmpty);
+    });
   });
 }

@@ -42,6 +42,9 @@ class _Host implements UnsavedEditsHost {
   void saveOpen() => saves.add('open');
 
   @override
+  Future<bool> keepHeld(String id) async => true;
+
+  @override
   void notify(String message) => notices.add(message);
 }
 
