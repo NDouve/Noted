@@ -140,6 +140,8 @@ class _FileBoxState extends State<_FileBox> {
     final missing = attachmentMissing(ref, store);
     Future<void> open() async {
       if (store == null || missing) return;
+      // Verified first: a damaged file is not handed to another program.
+      if (await verifyAttachment(ref, store) != AttachmentState.ok) return;
       await store.open(
         ref.name,
         fileName: ref.isEmbedded ? null : ref.file,

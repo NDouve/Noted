@@ -29,6 +29,7 @@ final class AttachmentRef {
     required this.hash,
     this.file,
     this.bytes,
+    this.damagedData,
   });
 
   /// The name the user sees, with its extension.
@@ -46,7 +47,16 @@ final class AttachmentRef {
   /// The embedded bytes, or null if in the folder.
   final Uint8List? bytes;
 
+  /// The base64 of embedded data that did not match [hash] when it was read,
+  /// or null. It is not used, but written back unchanged so the damaged copy
+  /// is kept in the page (invariant 2: the hash is the identity).
+  final String? damagedData;
+
   bool get isEmbedded => bytes != null;
+
+  /// Embedded data that does not match its hash and no folder file to use
+  /// instead.
+  bool get isDamaged => damagedData != null && file == null;
 
   /// The extension of [name], lowercase.
   String get extension => normalizedExtension(name);
@@ -60,6 +70,7 @@ final class AttachmentRef {
     final file = json['file'];
     final data = json['data'];
     Uint8List? bytes;
+    String? damaged;
     if (data is String) {
       try {
         bytes = base64Decode(data);
@@ -67,13 +78,21 @@ final class AttachmentRef {
         bytes = null;
       }
     }
-    if (hash is! String || (file is! String && bytes == null)) return null;
+    // Embedded bytes are used only if they hold the hash recorded with them;
+    // otherwise they are kept aside, unused (see [damagedData]).
+    final decodedLength = bytes?.length;
+    if (hash is String && bytes != null && contentHash(bytes) != hash) {
+      bytes = null;
+      damaged = data as String;
+    }
+    if (hash is! String || (file is! String && bytes == null && damaged == null)) return null;
     return AttachmentRef(
       name: name is String ? name : (file is String ? file : 'file'),
-      size: size is int ? size : (bytes?.length ?? 0),
+      size: size is int ? size : (decodedLength ?? 0),
       hash: hash,
       file: file is String ? file : null,
       bytes: bytes,
+      damagedData: damaged,
     );
   }
 
@@ -82,7 +101,7 @@ final class AttachmentRef {
     'size': size,
     'hash': hash,
     'file': ?file,
-    if (bytes != null) 'data': base64Encode(bytes!),
+    if (bytes != null) 'data': base64Encode(bytes!) else 'data': ?damagedData,
   };
 
   /// The same file kept in the assets folder as [fileName].
@@ -100,10 +119,11 @@ final class AttachmentRef {
       other.size == size &&
       other.hash == hash &&
       other.file == file &&
-      other.isEmbedded == isEmbedded;
+      other.isEmbedded == isEmbedded &&
+      other.damagedData == damagedData;
 
   @override
-  int get hashCode => Object.hash(name, size, hash, file, isEmbedded);
+  int get hashCode => Object.hash(name, size, hash, file, isEmbedded, damagedData);
 }
 
 /// The merged value of one field, or null if both sides changed it

@@ -170,8 +170,16 @@ File displayCopyFile(Directory cache, String hash) => File(
 );
 
 /// The display copy of [ref]: from the cache, or made from the original and
-/// cached. Null while the original isn't there or doesn't decode.
+/// cached. Null while the original isn't there, isn't verified or doesn't
+/// decode. The cache is keyed by the hash, so the original is checked against
+/// that hash before anything is cached (see [readAttachment]).
 Future<Uint8List?> loadDisplayCopy(
+  AttachmentRef ref,
+  AttachmentStore? store,
+) async => (await loadDisplayCopyChecked(ref, store)).bytes;
+
+/// [loadDisplayCopy] with what the check of the original found.
+Future<AttachmentRead> loadDisplayCopyChecked(
   AttachmentRef ref,
   AttachmentStore? store,
 ) async {
@@ -180,15 +188,18 @@ Future<Uint8List?> loadDisplayCopy(
       : displayCopyFile(store.cacheDirectory, ref.hash);
   if (cache != null) {
     try {
-      if (await cache.exists()) return await cache.readAsBytes();
+      if (await cache.exists()) {
+        return (state: AttachmentState.ok, bytes: await cache.readAsBytes());
+      }
     } on FileSystemException {
       // Fall through and make it again.
     }
   }
-  final original = await loadAttachment(ref, store);
-  if (original == null) return null;
+  final read = await readAttachment(ref, store);
+  final original = read.bytes;
+  if (original == null) return read;
   final copy = await makeDisplayCopy(original);
-  if (copy == null || cache == null) return copy;
+  if (copy == null || cache == null) return (state: read.state, bytes: copy);
   try {
     await cache.parent.create(recursive: true);
     final tmp = File('${cache.path}.tmp');
@@ -197,7 +208,7 @@ Future<Uint8List?> loadDisplayCopy(
   } on FileSystemException catch (e) {
     debugPrint('Caching the display copy of ${ref.name} failed: $e');
   }
-  return copy;
+  return (state: read.state, bytes: copy);
 }
 
 class _ImageBox extends StatefulWidget {
@@ -263,14 +274,16 @@ class _ImageBoxState extends State<_ImageBox> {
     if (data == null || _loading || _loadedHash == data.ref.hash) return;
     _loading = true;
     final hash = data.ref.hash;
-    final pixels = await loadDisplayCopy(data.ref, widget.box.attachments);
+    final read = await loadDisplayCopyChecked(data.ref, widget.box.attachments);
+    final pixels = read.bytes;
     _loading = false;
     if (!mounted) return;
     setState(() {
       _pixels = pixels;
       _failed =
           pixels == null &&
-          !attachmentMissing(data.ref, widget.box.attachments);
+          (read.state == AttachmentState.damaged ||
+              !attachmentMissing(data.ref, widget.box.attachments));
       _loadedHash = pixels == null ? null : hash;
     });
     if (_retry && pixels == null) {
