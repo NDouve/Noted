@@ -74,7 +74,16 @@ class PageAttachments extends ChangeNotifier implements VerifyingAttachmentStore
     return r == null ? null : Directory('${r.path}${Platform.pathSeparator}${assetsFolderName(pageId)}');
   }
 
-  File _in(Directory d, String fileName) => File('${d.path}${Platform.pathSeparator}$fileName');
+  // Joins [fileName] onto [d]. Callers that take a name from a box check it
+  // with [isAttachmentFileName] first; this refuses any other name, so none can
+  // reach a path outside the folder. (The temporary copy of an embedded file
+  // for opening uses [_inTemp].)
+  File _in(Directory d, String fileName) {
+    if (!isAttachmentFileName(fileName)) throw ArgumentError.value(fileName, 'fileName', 'not an attachment name');
+    return File('${d.path}${Platform.pathSeparator}$fileName');
+  }
+
+  File _inTemp(Directory d, String fileName) => File('${d.path}${Platform.pathSeparator}$fileName');
 
   @override
   AttachmentStorage get storage => _storage();
@@ -202,6 +211,7 @@ class PageAttachments extends ChangeNotifier implements VerifyingAttachmentStore
   /// the file by its own name. A missing file is looked for among the kept
   /// copies first (see [restoreKeptCopy]).
   Future<VerifiedAttachment> _check(String fileName, int size, {required bool keepBytes}) async {
+    if (!isAttachmentFileName(fileName)) return const VerifiedAttachment(AttachmentState.syncing);
     final hash = attachmentNameHash(fileName);
     for (final d in [folder, ?recoveryFolder]) {
       final f = _in(d, fileName);
@@ -246,6 +256,7 @@ class PageAttachments extends ChangeNotifier implements VerifyingAttachmentStore
 
   @override
   Future<Uint8List?> read(String fileName) async {
+    if (!isAttachmentFileName(fileName)) return null;
     for (final d in [folder, ?recoveryFolder]) {
       final f = _in(d, fileName);
       try {
@@ -259,7 +270,9 @@ class PageAttachments extends ChangeNotifier implements VerifyingAttachmentStore
 
   @override
   bool exists(String fileName) =>
-      _in(folder, fileName).existsSync() || (recoveryFolder != null && _in(recoveryFolder!, fileName).existsSync());
+      isAttachmentFileName(fileName) &&
+      (_in(folder, fileName).existsSync() ||
+          (recoveryFolder != null && _in(recoveryFolder!, fileName).existsSync()));
 
   @override
   void notify(String message) => onNotice?.call(message);
@@ -272,14 +285,14 @@ class PageAttachments extends ChangeNotifier implements VerifyingAttachmentStore
       final dir = Directory('${Directory.systemTemp.path}${Platform.pathSeparator}noted-open${Platform.pathSeparator}${contentHash(bytes).substring(0, 16)}');
       await dir.create(recursive: true);
       final safe = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-      file = _in(dir, safe.isEmpty ? 'file' : safe);
+      file = _inTemp(dir, safe.isEmpty ? 'file' : safe);
       // A copy left by an earlier open is reused only if it still holds these
       // bytes (a damaged or half-written one is rewritten: it is only a copy).
       final want = contentHash(bytes);
       if (!await file.exists() || await contentHashOfStream(file.openRead()) != want) {
         await file.writeAsBytes(bytes, flush: true);
       }
-    } else if (fileName != null) {
+    } else if (fileName != null && isAttachmentFileName(fileName)) {
       for (final d in [folder, ?recoveryFolder]) {
         final f = _in(d, fileName);
         if (await f.exists()) {

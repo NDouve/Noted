@@ -233,8 +233,8 @@ void main() {
           ref: AttachmentRef(
             name: 'Plan.pdf',
             size: pdf.length,
-            hash: 'h',
-            file: 'h.pdf',
+            hash: contentHash(pdf),
+            file: '${contentHash(pdf)}.pdf',
           ),
         ),
         const Bounds(300, 40, 280, 64),
@@ -247,7 +247,7 @@ void main() {
       // Real time: the box reads the file and decodes it.
       await t.runAsync(() async {
         store.arrive('$hash.png', redPng);
-        store.arrive('h.pdf', pdf);
+        store.arrive('${contentHash(pdf)}.pdf', pdf);
         await Future<void>.delayed(const Duration(milliseconds: 300));
       });
       await settleReal(t);

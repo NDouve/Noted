@@ -11,6 +11,34 @@ import 'package:noted_core/noted_core.dart';
 PageMeta _meta(String id, {String? parentId}) => PageMeta.create(id: id, title: id, order: 0, parentId: parentId);
 
 void main() {
+  group('isAttachmentFileName', () {
+    final h = contentHash([1, 2, 3]);
+    test('accepts only <64 lowercase hex>[.<1-10 lowercase letters or digits>]', () {
+      for (final ok in [h, '$h.png', '$h.7z', '$h.abcdefghij', attachmentFileName(h, 'PNG')]) {
+        expect(isAttachmentFileName(ok), isTrue, reason: ok);
+      }
+      for (final bad in [
+        '',
+        '../$h',
+        '..\\$h',
+        '/etc/passwd',
+        'C:\\x',
+        'C:$h',
+        '\\\\s\\x\\$h',
+        '$h.PNG',
+        '$h.abcdefghijk',
+        '$h.',
+        '${h.toUpperCase()}.png',
+        '${h.substring(1)}.png',
+        '${h}0',
+        '$h.png\n',
+        '$h/x',
+      ]) {
+        expect(isAttachmentFileName(bad), isFalse, reason: bad);
+      }
+    });
+  });
+
   group('the setting in a page header', () {
     test('absent means the page follows its parent; the default is folder', () {
       final m = _meta('p');
