@@ -1,0 +1,13 @@
+{"protocolVersion":"0.1.1","runnerVersion":"1.0.0","pid":1,"type":"start","time":0}
+{"test":{"id":1,"name":"loading test/a_test.dart","suiteID":0,"groupIDs":[],"metadata":{"skip":false,"skipReason":null},"line":null,"column":null,"url":null},"type":"testStart","time":1}
+{"testID":1,"result":"success","skipped":false,"hidden":true,"type":"testDone","time":2}
+{"test":{"id":2,"name":"group fails one","suiteID":0,"groupIDs":[],"metadata":{"skip":false,"skipReason":null},"line":12,"column":3,"url":"file:///work/noted/app/test/a_test.dart"},"type":"testStart","time":3}
+{"testID":2,"message":"hello from test two","messageType":"print","type":"print","time":4}
+{"test":{"id":3,"name":"passes","suiteID":0,"groupIDs":[],"metadata":{"skip":false,"skipReason":null},"line":20,"column":3,"url":"file:///work/noted/app/test/a_test.dart"},"type":"testStart","time":5}
+{"testID":3,"message":"stray","messageType":"print","type":"print","time":5}
+{"testID":3,"result":"success","skipped":false,"hidden":false,"type":"testDone","time":6}
+{"test":{"id":4,"name":"fails two","suiteID":0,"groupIDs":[],"metadata":{"skip":false,"skipReason":null},"line":30,"column":3,"url":"file:///work/noted/app/test/a_test.dart"},"type":"testStart","time":7}
+{"testID":4,"error":"Expected: <2>\r\n  Actual: <3>\n100% wrong","stackTrace":"package:x a_test.dart 31:5","isFailure":true,"type":"error","time":8}
+{"testID":4,"result":"failure","skipped":false,"hidden":false,"type":"testDone","time":9}
+{"testID":2,"error":"Bad state: first problem","stackTrace":"package:x a_test.dart 13:5","isFailure":false,"type":"error","time":10}
+{"testID":2,"result":"error","skipped":false,"hidden":false,"type":"testDone","time":11}
