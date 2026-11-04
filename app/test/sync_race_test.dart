@@ -67,7 +67,14 @@ class CountingStore extends PageStore {
     _fire();
     final hook = beforePublishOnce;
     beforePublishOnce = null;
-    return super.saveIfUnchanged(page, expectedText, beforePublish: hook ?? beforePublish);
+    return super.saveIfUnchanged(
+      page,
+      expectedText,
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforePublish: hook ?? beforePublish,
+      beforeRestore: beforeRestore,
+    );
   }
 }
 
@@ -466,6 +473,119 @@ void main() {
       expect(fired, isTrue);
       final ids = onDisk(id).nodes.map((n) => n.id).toSet();
       expect(ids, containsAll({box.id, fromCopy.id, newer.id}));
+    });
+  });
+
+  // Area R-1: every write of a page file is a compare-and-swap, so a version a
+  // sync client lands during the write is merged, never overwritten.
+  group('a sync replacement during a write is merged, not overwritten', () {
+    Set<String> idsOnDisk(String id) => onDisk(id).nodes.map((n) => n.id).toSet();
+
+    test('autosave: the file replaced before the write', () async {
+      await start();
+      final id = nb.currentId!;
+      final mine = nb.current!.createBoxAt(const Bounds(10, 10, 0, 0));
+      final theirs = noteBox('from the other device', at: const Bounds(400, 10, 200, 40));
+      final base = onDisk(id);
+      counting.beforeWrite = () => File(pathOf(id)).writeAsStringSync(writePage(base.insertNode(theirs)));
+
+      await nb.flush();
+
+      expect(idsOnDisk(id), {mine.id, theirs.id});
+      expect(nb.current!.page.node(theirs.id), isNotNull);
+    });
+
+    test('autosave: the file replaced during the publication', () async {
+      await start();
+      final id = nb.currentId!;
+      final mine = nb.current!.createBoxAt(const Bounds(10, 10, 0, 0));
+      final theirs = noteBox('from the other device', at: const Bounds(400, 10, 200, 40));
+      final base = onDisk(id);
+      var fired = false;
+      counting.beforePublishOnce = () {
+        fired = true;
+        File(pathOf(id)).writeAsStringSync(writePage(base.insertNode(theirs)));
+      };
+
+      await nb.flush();
+
+      expect(fired, isTrue);
+      expect(idsOnDisk(id), {mine.id, theirs.id});
+    });
+
+    test('autosave of a page that is no longer open: merged against the text last seen', () async {
+      await start();
+      final id = nb.currentId!;
+      nb.current!.createBoxAt(const Bounds(10, 10, 0, 0));
+      final base = onDisk(id);
+      final theirs = noteBox('from the other device', at: const Bounds(400, 10, 200, 40));
+      // The page closes with its edit still waiting for the autosave timer;
+      // the other device's version lands before that save is written.
+      counting.beforeWrite = () => File(pathOf(id)).writeAsStringSync(writePage(base.insertNode(theirs)));
+      await nb.createPage();
+      await nb.flush();
+
+      final ids = idsOnDisk(id);
+      expect(ids, contains(theirs.id));
+      expect(ids.length, 2, reason: 'the edit and the other device\'s box');
+    });
+
+    test('a closed page renamed: the file replaced before the write', () async {
+      await start();
+      final id = nb.currentId!;
+      await nb.createPage(); // id is closed now
+      final theirs = noteBox('from the other device', at: const Bounds(400, 10, 200, 40));
+      final base = onDisk(id);
+      counting.beforeWrite = () => File(pathOf(id)).writeAsStringSync(writePage(base.insertNode(theirs)));
+
+      await nb.rename(id, 'Renamed');
+
+      expect(onDisk(id).meta.title, 'Renamed');
+      expect(idsOnDisk(id), {theirs.id});
+    });
+
+    test('a closed page renamed: the file replaced during the publication', () async {
+      await start();
+      final id = nb.currentId!;
+      await nb.createPage();
+      final theirs = noteBox('from the other device', at: const Bounds(400, 10, 200, 40));
+      final base = onDisk(id);
+      var fired = false;
+      counting.beforePublishOnce = () {
+        fired = true;
+        File(pathOf(id)).writeAsStringSync(writePage(base.insertNode(theirs)));
+      };
+
+      await nb.rename(id, 'Renamed');
+
+      expect(fired, isTrue);
+      expect(onDisk(id).meta.title, 'Renamed');
+      expect(idsOnDisk(id), {theirs.id});
+    });
+
+    test('a closed page changed by a setting: a file that keeps changing is not written over', () async {
+      await start();
+      final id = nb.currentId!;
+      await nb.createPage();
+      final base = onDisk(id);
+      var n = 0;
+      late String last;
+      void change() {
+        last = writePage(base.insertNode(noteBox('sync $n', at: Bounds(400.0 + n++, 10, 200, 40))));
+        File(pathOf(id)).writeAsStringSync(last);
+      }
+
+      // Every attempt finds a newer file at the moment of replacing.
+      var rounds = 0;
+      void again() {
+        change();
+        if (++rounds < 100) counting.beforeWrite = again;
+      }
+
+      counting.beforeWrite = again;
+
+      await expectLater(nb.rename(id, 'Renamed'), throwsA(isA<NotebookException>()));
+      expect(File(pathOf(id)).readAsStringSync(), last, reason: 'the other device\'s file stays');
     });
   });
 }

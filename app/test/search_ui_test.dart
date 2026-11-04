@@ -125,6 +125,7 @@ void main() {
       ),
     );
     await settle(t);
+    await settleSaves(t, nb);
   }
 
   Future<void> finish(WidgetTester t) async {

@@ -22,6 +22,10 @@ class AttachmentCopy {
   /// a rollback can remove just those (see [removeCreated]).
   final List<String> created = [];
 
+  /// The content identity of each file in [created] as it was published, so a
+  /// rollback deletes it only while it still holds that (see [removeCreated]).
+  final Map<String, ContentIdentity> createdIdentity = {};
+
   /// Source files whose target holds exactly their bytes: the only ones
   /// [removeVerifiedSources] may delete.
   final List<CopiedFile> verified = [];
@@ -59,10 +63,10 @@ Future<void> Function(String target)? attachmentBeforePublishHook;
 @visibleForTesting
 Future<void> Function(File source)? attachmentBeforeRemoveHook;
 
-/// Run in [removeVerifiedSources] just after a source was moved aside. For
-/// tests.
+/// Run in [removeVerifiedSources] after a source was moved aside and its bytes
+/// were compared: the source path is free then. For tests.
 @visibleForTesting
-Future<void> Function(File aside)? attachmentAfterAsideHook;
+void Function(File source)? attachmentAfterAsideHook;
 
 const _chunk = 64 * 1024;
 
@@ -74,6 +78,9 @@ const _chunk = 64 * 1024;
 /// when it holds its hash it lands as `<hash>.<ext>`. Any other `.tmp` is not
 /// an attachment.
 Future<String?> attachmentNameToTake(File f, String raw) async {
+  // A file a compare-and-delete set aside and never finished with: not an
+  // attachment to take along; the sweep puts it back (sweepAttachmentLeftovers).
+  if (raw.endsWith(asideSuffix) || raw.endsWith(verifiedSuffix)) return null;
   if (!raw.endsWith('.tmp')) return raw;
   if (raw.endsWith('.landing.tmp')) return null; // the landing code's own temp file
   final stripped = raw.substring(0, raw.length - '.tmp'.length);
@@ -90,9 +97,19 @@ final RegExp _uniqueTmp = RegExp(r'^(.+)\.\d+-\d+\.tmp$');
 /// Puts back what an interrupted write or removal left under a unique
 /// temporary name in [dir]: a file that holds its hash goes back to its name
 /// if that is free, and a duplicate of a file already there is dropped. Any
-/// other leftover stays and is added to [AttachmentCopy.keptAside].
+/// other leftover stays and is added to [AttachmentCopy.keptAside]. Files that
+/// [deleteFileIfMatches] or [replaceIfUnchanged] set aside and never finished
+/// with (a crash) are put back first, never over anything: [sweepAsideFiles]
+/// does that, and PageStore.scan does not look inside attachments folders.
 Future<void> sweepAttachmentLeftovers(Directory dir, AttachmentCopy r) async {
   final sep = Platform.pathSeparator;
+  if (await dir.exists()) {
+    try {
+      await sweepAsideFiles(dir, extension: '');
+    } on FileSystemException catch (e) {
+      debugPrint('Sweeping ${dir.path} failed: $e');
+    }
+  }
   final found = <File>[];
   await for (final e in dir.list(followLinks: false)) {
     if (e is File && _uniqueTmp.hasMatch(_baseName(e.path))) found.add(e);
@@ -109,8 +126,13 @@ Future<void> sweepAttachmentLeftovers(Directory dir, AttachmentCopy r) async {
         }
         if (FileSystemEntity.typeSync(target, followLinks: false) == FileSystemEntityType.file &&
             await sameContent(f, File(target))) {
-          await f.delete(); // a duplicate of what is there
-          continue;
+          // A duplicate of what is there: deleted only while it still holds
+          // what the target holds.
+          final del = await deleteFileIfMatches(
+            f.path,
+            identity: await ContentIdentity.ofFile(target),
+          );
+          if (del.deleted || del.outcome == DeleteOutcome.absent) continue;
         }
       }
     } on FileSystemException catch (e) {
@@ -202,16 +224,15 @@ Future<void> _copyFile(File src, String target, String name, AttachmentCopy r) a
     if (attachmentBeforePublishHook != null) await attachmentBeforePublishHook!(target);
     if (await _publish(tmp, target)) {
       r.created.add(target);
+      r.createdIdentity[target] = ContentIdentity(written, writtenHash);
       if (!await sameContent(src, File(target))) {
         // Ours, and wrong: take it away again and let the move fail.
         r.created.removeLast();
+        r.createdIdentity.remove(target);
         try {
           // Only while it is still what was written (size and hash); a file
           // somebody else put there since is not ours to remove.
-          if (await File(target).length() == written &&
-              await contentHashOfStream(File(target).openRead()) == writtenHash) {
-            await File(target).delete();
-          }
+          await deleteFileIfMatches(target, identity: ContentIdentity(written, writtenHash));
         } on FileSystemException {
           // The rollback reports what is left.
         }
@@ -357,21 +378,32 @@ Future<void> removeVerifiedSources(AttachmentCopy r, Directory root) async {
         debugPrint('Keeping ${c.source.path}: it changed after it was copied');
         continue;
       }
-      // Moved aside first and compared there, so a file that replaces the
-      // source in between is never the one deleted.
+      // Deleted by the shared compare-and-delete: the source is moved aside,
+      // compared there with the copy's identity and only then removed, so a
+      // file that replaces the source in between is never the one deleted.
+      final identity = await ContentIdentity.ofFile(c.target.path);
       await attachmentBeforeRemoveHook?.call(c.source);
-      final aside = File('${c.source.path}.${DateTime.now().microsecondsSinceEpoch}-${_counter++}.tmp');
-      await c.source.rename(aside.path);
       try {
-        await attachmentAfterAsideHook?.call(aside);
-        if (await sameContent(aside, c.target)) {
-          await aside.delete();
-        } else if (!await publishExclusive(aside, c.source.path)) {
-          r.keptAside.add(aside.path); // something new is at the path: both stay
+        final res = await deleteFileIfMatches(
+          c.source.path,
+          identity: identity,
+          afterRead: () => attachmentAfterAsideHook?.call(c.source),
+        );
+        if (res.outcome == DeleteOutcome.changed) {
+          debugPrint('Keeping ${c.source.path}: it changed after it was copied');
+        } else if (res.keptPath != null) {
+          r.keptAside.add(res.keptPath!); // something new is at the path: both stay
         }
       } on FileSystemException catch (e) {
         debugPrint('Putting back ${c.source.path} failed: $e');
-        if (aside.existsSync()) r.keptAside.add(aside.path);
+        // Whatever was set aside stays under its own name; say where.
+        final name = _baseName(c.source.path);
+        await for (final f in c.source.parent.list(followLinks: false)) {
+          final n = _baseName(f.path);
+          if (f is File && n.startsWith('$name.') && (n.endsWith(asideSuffix) || n.endsWith(verifiedSuffix))) {
+            r.keptAside.add(f.path);
+          }
+        }
       }
     } on FileSystemException catch (e) {
       debugPrint('Removing ${c.source.path} failed: $e');
@@ -394,15 +426,29 @@ Future<void> removeVerifiedSources(AttachmentCopy r, Directory root) async {
 
 /// Removes what [copyAttachmentTree] recorded in `created`: the files, then
 /// the folders it made (deepest first), each only if it is empty by then.
-/// Returns whether everything was removed.
-Future<bool> removeCreated(List<String> created) async {
+/// A file goes only while it still holds the content identity it was published
+/// with ([AttachmentCopy.createdIdentity]), checked at the moment of deleting;
+/// one that changed since is kept (0124). Returns whether everything was
+/// removed; false means something was kept (or could not be removed).
+Future<bool> removeCreated(AttachmentCopy? copy) async {
+  if (copy == null) return true;
   var all = true;
-  for (final p in created.reversed) {
+  for (final p in copy.created.reversed) {
     try {
       final type = FileSystemEntity.typeSync(p, followLinks: false);
       if (type == FileSystemEntityType.notFound) continue;
       if (type == FileSystemEntityType.file) {
-        await File(p).delete();
+        final identity = copy.createdIdentity[p];
+        if (identity == null) {
+          all = false;
+          debugPrint('Keeping $p: what it held when it was published is not known');
+          continue;
+        }
+        final res = await deleteFileIfMatches(p, identity: identity);
+        if (!res.deleted && res.outcome != DeleteOutcome.absent) {
+          all = false;
+          debugPrint('Keeping $p: it changed after it was copied');
+        }
       } else {
         await Directory(p).delete();
       }

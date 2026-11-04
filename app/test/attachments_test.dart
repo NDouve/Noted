@@ -368,28 +368,49 @@ void main() {
       expect(assets(pages, a).listSync().where((f) => f.path.endsWith('.tmp')), isEmpty);
     });
 
-    test('a file that takes the source path while it is set aside: both stay and it is reported', () async {
+    test('a file that takes the source path while it is set aside is never deleted, nothing is left over', () async {
       final (nb, a, binder) = await pageWithNotes();
-      attachmentAfterAsideHook = (aside) async {
-        if (!aside.path.contains('notes.txt')) return;
-        File(aside.path.replaceFirst(RegExp(r'\.\d+-\d+\.tmp$'), '')).writeAsStringSync('arrived');
-        // The aside file now differs from the copy.
-        aside.writeAsStringSync('different');
+      attachmentAfterAsideHook = (source) {
+        if (!source.path.endsWith('notes.txt')) return;
+        // A sync client puts a new file at the source path while the old one is set aside.
+        source.writeAsStringSync('arrived');
       };
       addTearDown(() => attachmentAfterAsideHook = null);
+      expect(await nb.moveToLocation(a, binderPath: binder.path), isTrue);
+      expect(File('${assets(pages, a).path}/notes.txt').readAsStringSync(), 'arrived');
+      expect(File('${assets(extra, a).path}/notes.txt').readAsStringSync(), 'mine');
+      final left = assets(pages, a).listSync().whereType<File>().where((f) => f.path.contains('.cas-')).toList();
+      expect(left, isEmpty, reason: 'the verified set-aside original is deleted, not kept');
+    });
+
+    test('R-1: an attachment that changed at the destination is kept when the move is rolled back', () async {
+      final store = _HookedStore(pages);
+      final (nb, a, binder) = await pageWithNotes(store: store);
+      var fired = false;
+      store.onRead = () {
+        final copied = File('${assets(extra, a).path}/notes.txt');
+        if (fired || !copied.existsSync()) return;
+        fired = true;
+        // The copy is made. A sync client changes the copied attachment, and the
+        // source page changes too, so the move is rolled back.
+        copied.writeAsStringSync('changed at the destination');
+        final page = File('${pages.path}/$a.canvas');
+        page.writeAsStringSync(page.readAsStringSync().replaceFirst('"title":"', '"title":"Synced '));
+      };
       await expectLater(
         nb.moveToLocation(a, binderPath: binder.path),
         throwsA(
           isA<NotebookException>().having(
             (e) => e.message,
             'message',
-            allOf(contains('The page was moved'), contains('leftover temporary file')),
+            allOf(contains('Nothing was moved'), contains('were kept')),
           ),
         ),
       );
-      final left = assets(pages, a).listSync().whereType<File>().where((f) => f.path.endsWith('.tmp')).toList();
-      expect(left, hasLength(1), reason: 'the set-aside original is kept');
-      expect(File('${assets(pages, a).path}/notes.txt').readAsStringSync(), 'arrived');
+      expect(fired, isTrue);
+      expect(File('${assets(extra, a).path}/notes.txt').readAsStringSync(), 'changed at the destination');
+      expect(File('${assets(pages, a).path}/notes.txt').readAsStringSync(), 'mine');
+      expect(File('${extra.path}/$a.canvas').existsSync(), isFalse, reason: 'the unchanged page copy goes');
     });
 
     test('leftover unique temporary files in the source: a complete one is put back, an incomplete one is kept and reported', () async {

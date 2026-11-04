@@ -207,6 +207,23 @@ class _ToggleStore extends PageStore {
   Future<void> save(NotedPage page) => super.save(lossy ? NotedPage.create(page.meta) : page);
 
   @override
+  Future<ReplaceResult> saveIfUnchanged(
+    NotedPage page,
+    String? expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    void Function()? beforePublish,
+    void Function()? beforeRestore,
+  }) => super.saveIfUnchanged(
+    lossy ? NotedPage.create(page.meta) : page,
+    expectedText,
+    beforeMoveAside: beforeMoveAside,
+    afterRead: afterRead,
+    beforePublish: beforePublish,
+    beforeRestore: beforeRestore,
+  );
+
+  @override
   Future<String> readText(String pageId) async {
     if (throwOnRead) throw const FileSystemException('injected read failure');
     final t = await super.readText(pageId);
