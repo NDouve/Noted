@@ -6,6 +6,10 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:noted_core/noted_core_read.dart';
+// The core's read-only barrel leaves out storage code; this one file is
+// imported directly (invariant_test.dart allows exactly it).
+// ignore: implementation_imports
+import 'package:noted_core/src/storage/exclusive_publish.dart' show publishExclusive;
 
 /// What happened to a page file given to [ClosedWriter.replacePage].
 enum PageReplace {
@@ -32,13 +36,14 @@ enum PageReplace {
 /// 1. append one line to the server's own access log, `ai-mcp-log.jsonl`
 ///    beside `ai-access.json` ([appendLog]); and
 /// 2. replace a page file (`*.canvas`) that is directly inside one of the
-///    folders it was given, by move-aside publication: the page file is moved
-///    to a conflict-copy-named file beside it and the new text is published
-///    exclusively at the page's path ([replacePage]). If another writer got
-///    there first, the aside is kept as a conflict copy, never deleted.
+///    folders it was given, by move-aside publication: the new text goes to a
+///    temporary file, the page file is moved to a conflict-copy-named file
+///    beside it and the temporary file is published exclusively at the page's
+///    path ([replacePage]). If another writer got there first, the aside is
+///    kept as a conflict copy, never deleted.
 ///
-/// It never creates a folder, never deletes or renames anything but the
-/// aside it made itself, and never follows a link out of the folders: the page file
+/// It never creates a folder, never deletes or renames anything but its own
+/// temporary file and aside, and never follows a link out of the folders: the page file
 /// must itself be a plain file (not a link) whose real folder is one of the
 /// given folders' real paths. The invariant test checks that no other file in
 /// the server (or the core it imports) calls a file-writing API.
@@ -50,9 +55,14 @@ final class ClosedWriter {
   final Directory dataDir;
   final List<String> folders;
 
-  /// A test seam: called after the previous bytes are verified and before the
-  /// new file is published, where a sync writer could get in.
+  /// Test seams: called after the previous bytes are verified and before the
+  /// new file is published (where a sync writer could get in); and before the
+  /// aside is deleted after publishing.
   Future<void> Function()? beforePublish;
+  Future<void> Function(File aside)? beforeAsideDelete;
+
+  /// Publishes a finished file at a path without replacing; a seam for tests.
+  Future<bool> Function(File tmp, String target) publish = publishExclusive;
 
   /// A test seam: called after the first look at the page, before it is moved aside.
   Future<void> Function()? beforeAside;
@@ -122,63 +132,87 @@ final class ClosedWriter {
   }
 
   /// Replaces the page file [path] with [text] if its bytes are still
-  /// [expected] (what the caller read), atomically. Returns [PageReplace.done],
+  /// [expected] (what the caller read). Returns [PageReplace.done],
   /// [PageReplace.changed] if the file differs from [expected] (nothing
-  /// written), or [PageReplace.refused].
+  /// written), [PageReplace.busy] or [PageReplace.refused].
   ///
-  /// Move-aside publication (run 2026-11-03-01): the page file is moved to a
-  /// unique name beside it with the shape of a sync client's conflict copy
-  /// (`<page>-NOTED-MCP-<random>.canvas`, which the app's scanner reads); its
-  /// bytes there are checked against [expected]; the new text is then
-  /// published to the page's path exclusively, never replacing a file. If the
-  /// page file is not there any more at that point (another writer, such as a
-  /// sync client, put one there), the aside stays as a conflict copy holding
-  /// the page's previous bytes, nothing of the other writer's is touched, and
-  /// the answer is [PageReplace.busy]. The server never deletes a kept copy.
+  /// Move-aside publication (run 2026-11-03-01): the full text is written
+  /// first to a temporary file beside the page (not a `.canvas` name). The page
+  /// file is then moved to a unique aside name with the shape of a sync
+  /// client's conflict copy (`<page>-NOTED-MCP-<random>.canvas`, which the
+  /// app's scanner reads) and its bytes there are checked against [expected].
+  /// The temporary file is published at the page's path with
+  /// [publishExclusive], which never replaces a file. Nothing is ever written
+  /// at the page's path after the move aside.
+  ///
+  /// If a file is at the page's path at that point (another writer, such as a
+  /// sync client, put one there), it is untouched, the aside stays as a
+  /// conflict copy holding the page's previous bytes, and the answer is
+  /// [PageReplace.busy]. The server never deletes a kept copy. If publishing
+  /// fails, the aside is put back the same exclusive way (kept as a conflict
+  /// copy if that is not possible) and the answer is [PageReplace.refused].
   Future<PageReplace> replacePage(String path, {required List<int> expected, required List<int> text}) async {
+    File? tmp;
     try {
       final file = await _checked(path);
       if (file == null) return PageReplace.refused;
       if (!_same(await file.readAsBytes(), expected)) return PageReplace.changed;
       final name = path.split(RegExp(r'[\\/]')).last;
       final stem = name.substring(0, name.length - pageExtension.length);
+      // A random name, created exclusively: two writers never share a file.
+      final made = File('${file.parent.path}$_sep.$name.noted_mcp-$pid-${_suffix()}.tmp');
+      await made.create(exclusive: true);
+      tmp = made;
+      await tmp.writeAsBytes(text, flush: true);
       final aside = File('${file.parent.path}$_sep$stem-NOTED-MCP-${_suffix()}$pageExtension');
       if (beforeAside != null) await beforeAside!();
       await file.rename(aside.path);
-      // From here the aside holds the page's previous bytes: it is only ever
-      // removed after the new text is published (it is then the same as
-      // [expected]), and otherwise kept or put back.
+      // From here the aside holds the page's previous bytes: it is removed
+      // only after the new text is published, and otherwise put back or kept.
       if (!_same(await aside.readAsBytes(), expected)) {
         // The page changed after the first look: put it back, as it was.
         return await _putBack(aside, file) ? PageReplace.changed : PageReplace.busy;
       }
       if (beforePublish != null) await beforePublish!();
+      final bool published;
       try {
-        // Exclusive: fails if anything is at the page's path now.
-        await file.create(exclusive: true);
-      } on FileSystemException {
-        return PageReplace.busy; // The aside stays, as a conflict copy.
-      }
-      try {
-        await file.writeAsBytes(text, flush: true);
+        published = await publish(tmp, file.path);
       } on Object {
-        // Our own half-written file: the previous bytes go back over it.
-        await aside.rename(file.path);
+        await _putBack(aside, file);
         return PageReplace.refused;
       }
-      await aside.delete();
+      // A file is at the page's path: it stays, and so does the aside.
+      if (!published) return PageReplace.busy;
+      tmp = null;
+      try {
+        if (beforeAsideDelete != null) await beforeAsideDelete!(aside);
+        await aside.delete();
+      } on Object {
+        // Published; the aside stays as a conflict copy.
+      }
       return PageReplace.done;
     } on Object {
       return PageReplace.refused;
+    } finally {
+      if (tmp != null) {
+        try {
+          if (await tmp.exists()) await tmp.delete();
+        } on Object {
+          // Left behind at worst; it is not a page file.
+        }
+      }
     }
   }
 
-  // Puts [aside] back as [file] if nothing is there. False if something is:
-  // then the aside stays beside it as a conflict copy.
+  // Puts [aside] back as [file] without replacing anything. False if it could
+  // not be (a file is at the path, or the move failed): the aside then stays
+  // beside the page as a conflict copy.
   Future<bool> _putBack(File aside, File file) async {
-    if (await FileSystemEntity.type(file.path, followLinks: false) != FileSystemEntityType.notFound) return false;
-    await aside.rename(file.path);
-    return true;
+    try {
+      return await publish(aside, file.path);
+    } on Object {
+      return false;
+    }
   }
 
   // The file at [path] if it may be replaced: a page file name, a plain file

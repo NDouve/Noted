@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart' show conflictCopyOriginalNames;
 import 'package:noted_core/noted_core_read.dart';
+import 'package:noted_core/src/storage/exclusive_publish.dart' show publishExclusive;
 import 'package:noted_mcp/noted_mcp.dart';
 
 import 'ai_test.dart' show FakeNoted;
@@ -884,6 +885,94 @@ void main() {
       expect(await w.replacePage(f.path, expected: utf8.encode('old'), text: utf8.encode('new')), PageReplace.changed);
       expect(f.readAsStringSync(), 'edited');
       expect(names(), ['p.canvas']);
+    });
+
+    // The real publisher, after [before] ran: a sync writer landing at the path.
+    Future<bool> publishAfter(void Function(String target) before, File tmp, String target) {
+      before(target);
+      return publishExclusive(tmp, target);
+    }
+
+    final old = utf8.encode('old');
+    final fresh = utf8.encode('new');
+
+    test('a sync replacement while the new text is being published is never truncated or overwritten', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      w.publish = (tmp, target) => publishAfter((t) => File(t).writeAsStringSync('from sync'), tmp, target);
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.busy);
+      expect(f.readAsStringSync(), 'from sync');
+      final kept = names().where((n) => n != 'p.canvas').toList();
+      expect(kept, hasLength(1), reason: 'only the aside is left: no temporary file');
+      expect(File('${folder.path}/${kept.single}').readAsStringSync(), 'old');
+      expect(conflictCopyOriginalNames(kept.single), contains('p.canvas'));
+    });
+
+    test('a sync replacement before the move aside: the page is not touched, nothing is left over', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      w.beforeAside = () async => f.writeAsStringSync('from sync');
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.changed);
+      expect(f.readAsStringSync(), 'from sync');
+      expect(names(), ['p.canvas']);
+    });
+
+    test('the put back finds something at the page path: it stays, and the aside is kept (busy)', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      w.beforeAside = () async => f.writeAsStringSync('edited');
+      w.publish = (tmp, target) => publishAfter((t) => File(t).writeAsStringSync('from sync'), tmp, target);
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.busy);
+      expect(f.readAsStringSync(), 'from sync');
+      final kept = names().where((n) => n != 'p.canvas').toList();
+      expect(kept, hasLength(1));
+      expect(File('${folder.path}/${kept.single}').readAsStringSync(), 'edited');
+    });
+
+    test('publishing that throws puts the page back, removes the temporary file and refuses', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      var first = true;
+      w.publish = (tmp, target) {
+        if (first) {
+          first = false;
+          throw const FileSystemException('no hard links here');
+        }
+        return publishExclusive(tmp, target);
+      };
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.refused);
+      expect(f.readAsStringSync(), 'old');
+      expect(names(), ['p.canvas']);
+    });
+
+    test('publishing that throws with the put back impossible keeps the aside and the other file', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      var first = true;
+      w.publish = (tmp, target) {
+        if (first) {
+          first = false;
+          File(target).writeAsStringSync('from sync');
+          throw const FileSystemException('failed');
+        }
+        return publishExclusive(tmp, target);
+      };
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.refused);
+      expect(f.readAsStringSync(), 'from sync');
+      final kept = names().where((n) => n != 'p.canvas').toList();
+      expect(kept, hasLength(1), reason: 'the temporary file is removed');
+      expect(File('${folder.path}/${kept.single}').readAsStringSync(), 'old');
+    });
+
+    test('an aside that cannot be deleted after publishing still answers done, and stays', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      late String asidePath;
+      w.beforeAsideDelete = (aside) async {
+        // A non-empty folder at the aside's name: deleting it as a file throws.
+        asidePath = aside.path;
+        aside.deleteSync();
+        Directory(asidePath).createSync();
+        File('$asidePath/x').writeAsStringSync('x');
+      };
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.done);
+      expect(f.readAsStringSync(), 'new');
+      expect(FileSystemEntity.typeSync(asidePath), isNot(FileSystemEntityType.notFound));
+      expect(names(), hasLength(2), reason: 'the page and the aside only');
     });
 
     test('changed bytes: nothing is written', () async {
