@@ -1358,4 +1358,120 @@ void main() {
       expect(nb.recoveryProblems.join(), contains('page changed right after'));
     });
   });
+
+  group('review round 4: the ancestors of a held copy are on disk before they are retired', () {
+    // Page a holds x1 in memory only; entry A on disk added x1 and is superseded
+    // by the held copy. The listing fails when a opens; the user then deletes x1.
+    Future<(Notebook, String, String, BoxRecord)> setUp4(
+      bool Function() listFails, {
+      Future<void> Function(String)? extra,
+    }) async {
+      final (nb, a, b) = await twoPages(
+        hook: (p) async {
+          if (p == 'list' && listFails()) throw const FileSystemException('listing failed');
+          await extra?.call(p);
+        },
+      );
+      await nb.open(b);
+      final x = _box('x1', 1);
+      final text = pageFile(a).readAsStringSync();
+      final old = await store().write(
+        folder: pages.path,
+        page: readPage(text).insertNode(x),
+        baseText: text,
+        time: DateTime.now(),
+      );
+      nb.debugHold(a, readPage(text).insertNode(x), text, supersedes: [old.gen]);
+      return (nb, a, b, x);
+    }
+
+    test('(blocking 1a) a listing that still fails after the save lands: a restart does not bring the box back unseen', () async {
+      var listFails = false;
+      var ready = false;
+      final (nb, a, _, _) = await setUp4(() => ready && listFails);
+      ready = true;
+      listFails = true;
+      await nb.open(a); // the seed is written as an entry that supersedes the ancestor
+      nb.current!.delete('x1');
+      await nb.flush(); // lands without x1; the ancestor can't be listed, so nothing is retired
+      expect(disk(a).node('x1'), isNull);
+      quit(nb);
+      listFails = false;
+      final again = make();
+      await again.load();
+      final x = disk(a).node('x1');
+      expect(x, isNotNull);
+      expect((x! as BoxRecord).landed, isNotNull, reason: 'it comes back marked, not silently');
+      expect(recNames(), isEmpty);
+    });
+
+    test('(blocking 1b) a retire of the ancestor that fails: a restart does not bring the box back unseen', () async {
+      var listFails = false;
+      var ready = false;
+      var failRetire = false;
+      final (nb, a, _, _) = await setUp4(
+        () => ready && listFails,
+        extra: (p) async {
+          if (failRetire && p == 'retire-before-delete') throw const FileSystemException('locked');
+        },
+      );
+      ready = true;
+      listFails = true;
+      await nb.open(a);
+      listFails = false;
+      failRetire = true;
+      nb.current!.delete('x1');
+      await nb.flush(); // lands without x1; the ancestor and the entry can't be retired
+      expect(disk(a).node('x1'), isNull);
+      quit(nb);
+      final again = make();
+      await again.load();
+      final x = disk(a).node('x1');
+      expect(x, isNotNull);
+      expect((x! as BoxRecord).landed, isNotNull, reason: 'it comes back marked, not silently');
+      expect(recNames(), isEmpty);
+    });
+
+    test('(2) a newer held copy that arrives while the older one is being written is not cleared', () async {
+      Completer<void>? reached;
+      Completer<void>? gate;
+      final (nb, a, b) = await twoPages(
+        hook: (p) async {
+          if (p == 'tmp-written' && gate != null && !reached!.isCompleted) {
+            reached.complete();
+            await gate.future;
+          }
+        },
+      );
+      await nb.open(b);
+      final text = pageFile(a).readAsStringSync();
+      nb.debugHold(a, readPage(text).insertNode(_box('h1', 1)), text);
+      nb.debugUnfit.add('held');
+      File(rec.path).createSync(recursive: true);
+      await nb.open(a); // the copy is unfit: the page opens without it
+      File(rec.path).deleteSync();
+      reached = Completer<void>();
+      gate = Completer<void>();
+      final flushing = nb.flush(); // the retry writes the copy; stopped at the write
+      await reached.future;
+      nb.debugHold(a, readPage(text).insertNode(_box('h2', 2)), text); // a newer copy
+      gate.complete();
+      await flushing;
+      expect(nb.unsavedPageCount, 1, reason: 'the newer copy is not the one that was written');
+    });
+
+    test('(3) a save of a text the file already holds writes nothing', () async {
+      final (nb, a, _) = await twoPages();
+      final box = _box('t1', 1);
+      nb.current!.insertBox(box);
+      await nb.flush();
+      nb.current!.delete('t1');
+      nb.current!.insertBox(box);
+      var saves = 0;
+      flaky.onSave = () => saves++;
+      await nb.flush();
+      expect(saves, 0);
+      expect(disk(a).node('t1'), isNotNull);
+    });
+  });
 }

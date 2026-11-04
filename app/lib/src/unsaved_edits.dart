@@ -376,7 +376,8 @@ class UnsavedEdits {
         // A copy held in memory that the open page does not show waits for the page
         // to close or be replayed: saving the page again would change nothing.
         if (k.held != null && !host.sessionHoldsHeld(id)) {
-          if (await host.keepHeld(id) && identical(_kept[id], k)) {
+          final captured = k.held; // a newer copy may arrive meanwhile
+          if (await host.keepHeld(id) && identical(_kept[id], k) && identical(k.held, captured)) {
             k.held = null;
             _settled(id, k);
           } else {
@@ -400,7 +401,8 @@ class UnsavedEdits {
         // memory is written to recovery as an entry of its own, or, while that
         // fails, stays held and counted.
         if (k.held != null) {
-          if (await host.keepHeld(id) && identical(_kept[id], k)) {
+          final captured = k.held; // a newer copy may arrive meanwhile
+          if (await host.keepHeld(id) && identical(_kept[id], k) && identical(k.held, captured)) {
             k.held = null;
           } else {
             _schedule();
@@ -414,7 +416,8 @@ class UnsavedEdits {
         // Nothing to replay until the file can be read, but a copy held in memory
         // is still written to recovery as soon as that works.
         if (k.held != null) {
-          if (await host.keepHeld(id) && identical(_kept[id], k)) {
+          final captured = k.held; // a newer copy may arrive meanwhile
+          if (await host.keepHeld(id) && identical(_kept[id], k) && identical(k.held, captured)) {
             k.held = null;
             _settled(id, k);
           } else {

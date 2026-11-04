@@ -641,6 +641,9 @@ class RecoveryStore {
     for (final e in entries) {
       if (e.landing) continue;
       try {
+        // Marked by an earlier save of the same session: it stays as it is, and a
+        // failed publish does not put it back.
+        if (await File(_path(e._stem, 'landing')).exists()) continue;
         if (!await _toLanding(e)) throw FileSystemException('The landing name is taken', _path(e._stem, 'landing'));
         renamed.add(e);
         await hook?.call('landing-renamed');

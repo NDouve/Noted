@@ -1011,7 +1011,29 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // failed save writes it to recovery as soon as that works.
         sess.covered = fold.heldUsed ? null : writePage(seed);
         sess.heldIn = fold.heldUsed;
-        if (listingFailed && fold.heldUsed) sess.pendingGens.addAll(_unsaved.heldOf(id)?.supersedes ?? const []);
+        if (listingFailed && fold.heldUsed) {
+          final held = _unsaved.heldOf(id);
+          sess.pendingGens.addAll(held?.supersedes ?? const []);
+          if (sess.pendingGens.isNotEmpty && held != null) {
+            // Its ancestors are known only here: the seed goes to disk as an entry
+            // that supersedes them, so no restart can bring them back. If it can't
+            // be written the copy stays held, as it is.
+            final entry = await _keepForRecovery(
+              loc,
+              st,
+              seed,
+              base: held.baseText == null ? null : readPage(held.baseText!),
+              supersedes: [..._gensOf(sess.entries.values), ...sess.pendingGens],
+            );
+            if (entry != null) {
+              sess.entries[entry.gen] = entry;
+              sess.own = entry;
+              sess.covered = writePage(seed);
+              sess.heldIn = false;
+              _dropHeld(id);
+            }
+          }
+        }
       }
       _noteUnfit(fold, id, seed);
       // An unfit copy is written to recovery, where it shows as an unfit entry.
@@ -3987,7 +4009,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             throw const FileSystemException('The recovery entries could not be marked as landing');
           }
         }
-        if (entries.isNotEmpty && known != null && writePage(toSave) == known) {
+        if (isOpen && known != null && writePage(toSave) == known) {
           // The file holds the page already (the entries' edits are in it).
           landed = true;
         } else {
@@ -4051,15 +4073,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // retired first (ancestors first). While they can't be, nothing else is: a
     // survivor of the session would expose them.
     var pendingDone = true;
+    var old = <RecoveryEntry>[];
     if (s != null && s.pendingGens.isNotEmpty) {
       try {
         final listing = await _recovery!.list();
-        final old = [
+        old = [
           for (final e in listing.entries)
             if (e.pageId == saved.id && s.pendingGens.contains(e.gen)) e,
         ];
-        await _retireEntries(saved.id, loc, old);
-        s.pendingGens.clear();
       } on Object catch (e) {
         debugPrint('Listing the recovery entries of page ${saved.id} failed: $e');
         pendingDone = false;
@@ -4106,7 +4127,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       s
         ..own = null
         ..covered = null;
-      await _retireEntries(saved.id, loc, entries);
+      // The ancestors and the entries go in one call: ancestors first, and nothing
+      // after one that can't be retired (it would expose that one).
+      await _retireEntries(saved.id, loc, [...old, ...entries]);
+      old = const [];
       for (final e in entries) {
         _replayProblems.remove(_entryKey(e));
       }
@@ -4114,6 +4138,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Files kept for the page beside those entries have a page now.
       if (rec != null) await _landKeptAssets(rec);
     }
+    if (old.isNotEmpty) await _retireEntries(saved.id, loc, old);
+    if (pendingDone) s?.pendingGens.clear();
     // The copy held in memory is let go only if this save was made from it.
     final held = (s?.heldIn ?? false) && pendingDone;
     if (held) {
