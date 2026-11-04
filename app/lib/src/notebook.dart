@@ -1412,7 +1412,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on Object {
       // No undo is offered for a delete that threw, so what it already
       // deleted is put back, never over a file that has appeared since.
-      final stuck = <int>[]; // could not be put back: kept for undo
+      final stuck = <int>[]; // could not be put back: kept in recovery
       for (final i in deletedNow) {
         try {
           if (await _restoreText(loc, pages[i], texts[i])) {
@@ -1450,6 +1450,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               Directory('${rec.directory.path}${Platform.pathSeparator}${assetsFolderName(id)}'),
             );
             stash.remove(id);
+            // Land them as soon as the folder takes them, not only at the
+            // next start: the folder check retries kept files.
+            _keptRetry = true;
           } on Object catch (e) {
             debugPrint('Keeping the attachments of page $id for recovery failed: $e');
           }
@@ -1477,7 +1480,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // already there for the page is left alone: it recreates the page and
         // holds the newer content.
         final folder = _normalizePath(st.directory.path);
-        final waiting = rec == null ? const <RecoveryEntry>[] : (await rec.list()).entries;
+        var waiting = const <RecoveryEntry>[];
+        if (rec != null) {
+          try {
+            waiting = (await rec.list()).entries;
+          } on Object catch (e) {
+            // Unlisted: treat it as no entry waiting, so the page is kept.
+            debugPrint('Listing recovery after a failed delete failed: $e');
+          }
+        }
         for (final i in stuck) {
           final has = waiting.any(
             (e) => e.pageId == ids[i] && _key(_normalizePath(e.folder)) == _key(folder),
