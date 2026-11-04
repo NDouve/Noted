@@ -8,6 +8,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'attachment_codecs.dart';
 import 'attachment_io.dart';
+import 'open_confirm.dart';
 
 /// Ids of the file module's commands.
 abstract final class FileCommands {
@@ -155,6 +156,11 @@ class _FileBoxState extends State<_FileBox> {
       if (store == null || missing) return;
       // Verified first: a damaged file is not handed to another program.
       if (await verifyAttachment(ref, store) != AttachmentState.ok) return;
+      // A file the system would run is opened only after the user says so.
+      if (needsOpenConfirmation(displayName: ref.name, storedName: ref.file)) {
+        if (!context.mounted) return;
+        if (!await confirmOpenRunnable(context, ref.name)) return;
+      }
       await store.open(
         ref.name,
         fileName: ref.isEmbedded ? null : ref.file,
