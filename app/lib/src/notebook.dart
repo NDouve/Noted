@@ -4046,7 +4046,26 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> _savedOpen(String loc, PageStore st, NotedPage saved) async {
     final s = _sess?.id == saved.id ? _sess : null;
     final entries = [...?s?.entries.values];
-    if (entries.isNotEmpty) {
+    final heldCopy = (s?.heldIn ?? false) ? _unsaved.heldOf(saved.id) : null;
+    // Entries the held copy was built on, that could not be listed at open, are
+    // retired first (ancestors first). While they can't be, nothing else is: a
+    // survivor of the session would expose them.
+    var pendingDone = true;
+    if (s != null && s.pendingGens.isNotEmpty) {
+      try {
+        final listing = await _recovery!.list();
+        final old = [
+          for (final e in listing.entries)
+            if (e.pageId == saved.id && s.pendingGens.contains(e.gen)) e,
+        ];
+        await _retireEntries(saved.id, loc, old);
+        s.pendingGens.clear();
+      } on Object catch (e) {
+        debugPrint('Listing the recovery entries of page ${saved.id} failed: $e');
+        pendingDone = false;
+      }
+    }
+    if ((entries.isNotEmpty || heldCopy != null) && pendingDone) {
       var back = '';
       try {
         back = await st.readText(saved.id);
@@ -4064,6 +4083,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             lost ??= _ownEditsMissing(
               e.baseText == null ? NotedPage.create(e.page.meta) : readPage(e.baseText!),
               e.page,
+              now,
+            );
+          }
+          if (heldCopy != null) {
+            lost ??= _ownEditsMissing(
+              heldCopy.baseText == null ? NotedPage.create(heldCopy.page.meta) : readPage(heldCopy.baseText!),
+              heldCopy.page,
               now,
             );
           }
@@ -4089,23 +4115,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (rec != null) await _landKeptAssets(rec);
     }
     // The copy held in memory is let go only if this save was made from it.
-    var held = s?.heldIn ?? false;
-    // Entries the held copy was built on, that could not be listed at open, are
-    // retired now; until they are, the copy stays held (it keeps them out of folds).
-    if (held && s!.pendingGens.isNotEmpty) {
-      try {
-        final listing = await _recovery!.list();
-        final old = [
-          for (final e in listing.entries)
-            if (e.pageId == saved.id && s.pendingGens.contains(e.gen)) e,
-        ];
-        await _retireEntries(saved.id, loc, old);
-        s.pendingGens.clear();
-      } on Object catch (e) {
-        debugPrint('Listing the recovery entries of page ${saved.id} failed: $e');
-        held = false;
-      }
-    }
+    final held = (s?.heldIn ?? false) && pendingDone;
     if (held) {
       _heldProblems.remove(saved.id);
       s!.heldIn = false;
@@ -4207,7 +4217,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final s = _sess?.id == page.id ? _sess : null;
     final text = writePage(page);
     if (s != null && s.covered == text) return true;
-    final supersedes = s == null ? const <String>[] : _gensOf(s.entries.values);
+    final supersedes = s == null ? const <String>[] : [..._gensOf(s.entries.values), ...s.pendingGens];
     final entry = await _keepForRecovery(loc, st, page, supersedes: supersedes);
     if (entry == null) {
       _heldProblems.remove(page.id);

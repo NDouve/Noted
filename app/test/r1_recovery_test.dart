@@ -1264,4 +1264,98 @@ void main() {
       expect(disk(a).node('e1'), isNotNull);
     });
   });
+
+  group('review round 3: ancestors of a held copy, backoff writes of held copies', () {
+    BoxRecord same(int n) => BoxRecord.create(
+      id: 'x1',
+      typeId: 'test.other',
+      dataVersion: 1,
+      bounds: const Bounds(500, 500, 100, 40),
+      data: RawJson.encode({'n': n}),
+      snapshotText: 's$n',
+      rev: 'same',
+    );
+
+    Future<(Notebook, String, String)> unfitHeld() async {
+      final (nb, a, b) = await twoPages();
+      await nb.open(b);
+      pageFile(a).writeAsStringSync(writePage(disk(a).insertNode(same(0))));
+      final base = pageFile(a).readAsStringSync();
+      nb.debugHold(a, readPage(base).replaceNode(same(1)), base);
+      nb.debugUnfit.add('held');
+      File(rec.path).createSync(recursive: true);
+      return (nb, a, b);
+    }
+
+    test('(blocking 1) entries a held copy was built on stay superseded and are retired after a listing that failed at open', () async {
+      var listFails = false;
+      final (nb, a, b) = await twoPages(
+        hook: (p) async {
+          if (p == 'list' && listFails) throw const FileSystemException('listing failed');
+        },
+      );
+      await nb.open(b);
+      final e1 = _box('e1', 1);
+      final text = pageFile(a).readAsStringSync();
+      final old = await store().write(
+        folder: pages.path,
+        page: readPage(text).insertNode(e1),
+        baseText: text,
+        time: DateTime.now(),
+      );
+      nb.debugHold(a, readPage(text).insertNode(e1), text, supersedes: [old.gen]);
+      listFails = true;
+      flaky.failSave = true;
+      await nb.open(a); // opens with the held copy; its ancestor can't be listed
+      expect(nb.current!.page.node('e1'), isNotNull);
+      await nb.flush(); // the save failed: a session entry that supersedes the ancestor
+      nb.current!.delete('e1'); // the user deletes the box
+      await nb.flush();
+      listFails = false;
+      flaky.failSave = false;
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      await nb.flush();
+      await nb.flush();
+      await nb.open(b);
+      await nb.open(a);
+      expect(nb.current!.page.node('e1'), isNull, reason: 'the ancestor did not come back');
+      expect(disk(a).node('e1'), isNull);
+      expect(recNames(), isEmpty, reason: 'the ancestor is retired');
+    });
+
+    test('(2) a held copy the open page does not show is written to recovery on backoff', () async {
+      final (nb, a, _) = await unfitHeld();
+      await nb.open(a);
+      expect(nb.unsavedPageCount, 1);
+      File(rec.path).deleteSync(); // recovery works now
+      await nb.flush();
+      expect(nb.unsavedPageCount, 0);
+      expect((await entries(nb)).single.page.node('x1'), isNotNull);
+    });
+
+    test('(3) a blocked replay still writes its unfit copy to recovery once that works', () async {
+      final (nb, _, _) = await unfitHeld();
+      await nb.flush(); // the replay is blocked by the unfit copy; recovery can not take it
+      expect(nb.unsavedPageCount, 1);
+      File(rec.path).deleteSync();
+      await nb.flush();
+      expect(nb.unsavedPageCount, 0);
+      expect(await entries(nb), hasLength(1));
+    });
+
+    test('(4) a held copy whose page is overwritten right after it lands gives a notice', () async {
+      final (nb, a, b) = await twoPages();
+      await nb.open(b);
+      final text = pageFile(a).readAsStringSync();
+      nb.debugHold(a, readPage(text).insertNode(_box('h1', 1)), text);
+      nb.syncHook = (p, _) async {
+        if (p == 'recover-published') {
+          pageFile(a).writeAsStringSync(writePage(disk(a).removeNode('h1')));
+        }
+      };
+      await nb.flush();
+      expect(nb.unsavedPageCount, 0);
+      expect(nb.recoveryProblems.join(), contains('page changed right after'));
+    });
+  });
 }

@@ -375,7 +375,15 @@ class UnsavedEdits {
       if (host.isOpen(id)) {
         // A copy held in memory that the open page does not show waits for the page
         // to close or be replayed: saving the page again would change nothing.
-        if (k.held != null && !host.sessionHoldsHeld(id)) return;
+        if (k.held != null && !host.sessionHoldsHeld(id)) {
+          if (await host.keepHeld(id) && identical(_kept[id], k)) {
+            k.held = null;
+            _settled(id, k);
+          } else {
+            _schedule();
+          }
+          return;
+        }
         // The open page's own save lands the edits (and retires its entries).
         host.saveOpen();
         _schedule();
@@ -402,7 +410,19 @@ class UnsavedEdits {
         _remove(id);
         return;
       }
-      if (k.blocked) return;
+      if (k.blocked) {
+        // Nothing to replay until the file can be read, but a copy held in memory
+        // is still written to recovery as soon as that works.
+        if (k.held != null) {
+          if (await host.keepHeld(id) && identical(_kept[id], k)) {
+            k.held = null;
+            _settled(id, k);
+          } else {
+            _schedule();
+          }
+        }
+        return;
+      }
       switch (await host.replayPage(k.loc, id)) {
         case ReplayOutcome.done:
           if (identical(_kept[id], k)) succeeded(id);

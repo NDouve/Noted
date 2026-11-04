@@ -763,6 +763,21 @@ class RecoveryStore {
     for (final b in bases) {
       final json = File(_path(b, 'json'));
       final canvas = File(_path(b, 'canvas'));
+      if (!await canvas.exists() && await json.exists()) {
+        // A retire stopped between the two deletes: the lone metadata file that
+        // says what this entry says goes too.
+        try {
+          final m = _legacyMeta(jsonDecode(await json.readAsString()));
+          if (_key(m.folder) == _key(e.folder) && m.id == e.pageId && m.base == e.baseText && m.time == e.time) {
+            await _dropWhole(json);
+          }
+        } on FormatException {
+          // Not ours.
+        } on Object catch (_) {
+          return false;
+        }
+        continue;
+      }
       if (!await json.exists() || !await canvas.exists()) continue;
       final jb = await json.readAsBytes();
       final cb = await canvas.readAsBytes();
@@ -770,6 +785,7 @@ class RecoveryStore {
       for (final (f, bytes) in [(canvas, cb), (json, jb)]) {
         final r = await deleteFileIfMatches(f.path, bytes: bytes);
         if (!r.deleted && r.outcome != DeleteOutcome.absent) return false;
+        await hook?.call('legacy-pair-file-deleted');
       }
     }
     return true;

@@ -360,6 +360,26 @@ void main() {
       expect((await store().list()).entries, isEmpty);
     });
 
+    test('a retire stopped between the two files of a converted pair leaves no lone .canvas, and finishes later', () async {
+      legacy('/n', _page('p1', 'one'));
+      final listed = await store(hook: _failAt('envelope-published')).list();
+      var once = true;
+      final stopping = store(
+        hook: (p) async {
+          if (p == 'legacy-pair-file-deleted' && once) {
+            once = false;
+            throw const FileSystemException('injected');
+          }
+        },
+      );
+      expect(await stopping.retire(listed.entries.single), isFalse);
+      expect(files('.canvas'), isEmpty);
+      expect(files('.json'), hasLength(1));
+      expect(await store().retire(listed.entries.single), isTrue);
+      expect(files('.json'), isEmpty);
+      expect((await store().list()).entries, isEmpty);
+    });
+
     test('a lone old metadata file that an entry holds is removed, one that none holds is kept and reported', () async {
       final seed = await store().write(folder: '/n', page: _page('p1', 'x'), baseText: null, time: t);
       expect(seed.baseText, isNull);
