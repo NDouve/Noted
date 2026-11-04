@@ -9,6 +9,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/busy_retry.dart';
 
 Map<String, Object?> doc(String text) => {
   'document': {
@@ -55,25 +56,6 @@ class FlakyStore extends PageStore {
   Future<String> readText(String pageId) async {
     if (failReads) throw const FileSystemException('read failed');
     return super.readText(pageId);
-  }
-}
-
-/// Runs [op], trying again while Windows reports the file as in use (the
-/// watching notebook reads these files at the same moment, and a rename or
-/// delete over a file being read is refused). Gives up after a deadline.
-Future<T> busyRetry<T>(Future<T> Function() op) async {
-  final end = DateTime.now().add(const Duration(seconds: 20));
-  while (true) {
-    try {
-      return await op();
-    } on FileSystemException catch (e) {
-      // Only "access denied" (5) and "in use" (32) on Windows are transient
-      // here; anything else is a real failure and is reported at once.
-      final code = e.osError?.errorCode;
-      final busy = Platform.isWindows && (code == 5 || code == 32);
-      if (!busy || DateTime.now().isAfter(end)) rethrow;
-      await Future<void>.delayed(const Duration(milliseconds: 25));
-    }
   }
 }
 

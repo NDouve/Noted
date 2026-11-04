@@ -11,8 +11,10 @@ import 'package:noted/main.dart';
 import 'package:noted/src/app_commands.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_tree_view.dart';
+import 'package:noted/src/sidebar_row.dart';
 import 'package:noted_canvas/noted_canvas.dart' show NotedMenuItem, notedThemeData;
 import 'package:noted_core/noted_core.dart';
+import 'support/busy_retry.dart';
 import 'support/real_io.dart';
 import 'support/settle_saves.dart';
 
@@ -64,13 +66,15 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// Alternates the test clock and real IO until [done] (at most about 9 s
-  /// of real time, for a slow CI runner), then settles.
-  Future<void> until(WidgetTester tester, bool Function() done) async {
+  /// Alternates the test clock and real IO until [done] (at most 300 rounds,
+  /// each with a real pause of 30 ms, 120 ms on CI: about 9 s, or 36 s on
+  /// CI), then settles. Fails, naming [what], if [done] never becomes true.
+  Future<void> until(WidgetTester tester, bool Function() done, {String what = 'the condition'}) async {
     for (var i = 0; i < 300 && !done(); i++) {
       await tester.pump(const Duration(milliseconds: 50));
       await tester.runAsync(() => realIoPause(30));
     }
+    if (!done()) fail('Gave up waiting for $what.');
     await settle(tester);
   }
 
@@ -129,7 +133,9 @@ void main() {
     await settleSaves(tester, nb);
     await tester.runAsync(() async {
       nb.dispose();
-      await dir.delete(recursive: true);
+      // dispose does not await closing a watcher, so on Windows its handle
+      // can still be on the folder for a moment.
+      await busyRetry(() => dir.delete(recursive: true));
     });
   }
 
@@ -207,7 +213,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Indent'));
     await tester.pump();
-    await settle(tester);
+    // The move is saved through real file IO; wait for it, not a fixed time.
+    await until(tester, () => kids(a).isNotEmpty);
     expect(kids(a), [b]);
     expect(find.byTooltip('Collapse'), findsOneWidget);
     await finish(tester);
@@ -532,17 +539,23 @@ void main() {
       final binder = await nb.addBinder(folder.path);
       page = await nb.createPage(binderPath: binder.path);
       await nb.flush();
-      for (var i = 0; i < 100; i++) {
-        try {
-          folder.renameSync('${dir.path}/Away-gone');
-          break;
-        } on FileSystemException {
-          await realIoPause(30); // a file in it is open for a moment
-        }
+      try {
+        // A file in it can be open for a moment.
+        await busyRetry(() async => folder.renameSync('${dir.path}/Away-gone'));
+      } on FileSystemException catch (e) {
+        fail('the folder could not be renamed: $e');
       }
     });
-    await until(tester, () => nb.isReadOnlyPage(page));
+    // An added check: the row itself is asserted locked before the press, as
+    // well as the model.
+    bool rowLocked() {
+      final rows = find.descendant(of: row(page), matching: find.byType(SidebarRow));
+      return nb.isReadOnlyPage(page) && rows.evaluate().isNotEmpty && tester.widget<SidebarRow>(rows).disabled;
+    }
+
+    await until(tester, rowLocked, what: 'the renamed binder folder to make its row read-only');
     expect(nb.isReadOnlyPage(page), isTrue);
+    expect(rowLocked(), isTrue);
     await longPress(tester, page, PointerDeviceKind.touch);
     expect(find.text('New subpage'), findsNothing);
     expect(find.byType(PopupMenuItem<String>), findsNothing);
