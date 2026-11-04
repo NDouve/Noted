@@ -151,11 +151,10 @@ PageMerge mergePage(
 /// The order of the nodes (their stacking) is a change too: when only theirs
 /// reordered the nodes both sides still have from [base], [out] takes theirs'
 /// order for them. When mine reordered them (also when both did), mine's
-/// order stays: its next save is the later write. Ids that repeat are left
-/// alone, since a repeated id can't say which node it means.
+/// order stays: its next save is the later write. Positional ids (a node with
+/// no id of its own, or a repeated one) are matched by position like everywhere
+/// else in the merge.
 void _takeTheirOrder(NotedPage base, NotedPage mine, NotedPage theirs, List<CanvasNode> out) {
-  List<String> idsOf(Iterable<CanvasNode> nodes) => [for (final n in nodes) n.id];
-  bool unique(List<String> ids) => ids.length == ids.toSet().length;
   final inMine = {for (final n in mine.nodes) n.id};
   final inTheirs = {for (final n in theirs.nodes) n.id};
   final inOut = {for (final n in out) n.id};
@@ -171,8 +170,7 @@ void _takeTheirOrder(NotedPage base, NotedPage mine, NotedPage theirs, List<Canv
   final m = only(mine.nodes);
   final t = only(theirs.nodes);
   final o = only(out);
-  if (!unique(idsOf(base.nodes)) || !unique(idsOf(mine.nodes)) || !unique(idsOf(theirs.nodes))) return;
-  if (!unique(o) || o.length != common.length) return;
+  if (o.length != common.length) return;
   if (_sameIds(m, b) && !_sameIds(t, b)) {
     final byId = {for (final n in out) n.id: n};
     var k = 0;

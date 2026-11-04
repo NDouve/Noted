@@ -24,6 +24,7 @@ import 'support/page_gen.dart';
 //   three-way, identical boxes reported conflicted  self
 //   three-way, identical foreign node kept twice  self; unchanged base; swap; foreign-both
 //   three-way, theirs' order not taken            unchanged base; swap (reorder); order
+//   three-way, theirs' order applied even when mine reordered  mine reordered; order
 //   copy, concurrent edit keeps the copy          copy swap
 //   copy, copy-only nodes dropped                 copy swap
 //   copy, original newer takes the copy           older version; copy swap
@@ -77,10 +78,12 @@ void same(
       if (p != q) lines.add('line $i\n    $p\n    $q');
     }
   } else {
-    for (final p in x.where((l) => !y.contains(l))) {
-      lines.add('only in the first\n    $p');
+    // Both lists are sorted, so a node that comes twice is counted twice.
+    final rest = [...y];
+    for (final p in x) {
+      if (!rest.remove(p)) lines.add('only in the first\n    $p');
     }
-    for (final q in y.where((l) => !x.contains(l))) {
+    for (final q in rest) {
       lines.add('only in the second\n    $q');
     }
   }
@@ -191,6 +194,31 @@ void main() {
           sides: [m, t],
         );
       });
+    });
+
+    test('when mine reordered the nodes, mine\'s relative order of the common nodes stays', () {
+      var reordered = 0;
+      forSeeds((seed, g) {
+        final base = g.nodes();
+        final moved = <int>{}, foreign = <int>{}, changed = <int>{};
+        final mine = g.mutate(base, prefix: 'm', movedBy: moved, foreignBy: foreign, changedBy: changed);
+        final theirs = g.mutate(base, prefix: 't', noMove: moved, noForeign: foreign, noFlip: changed);
+        final b = pageFrom(base), m = pageFrom(mine), t = pageFrom(theirs);
+        final merged = three(b, m, t).page;
+        final common = {
+          for (final n in b.nodes)
+            if (m.node(n.id) != null && t.node(n.id) != null && merged.node(n.id) != null) n.id,
+        };
+        List<String> order(NotedPage p) => [
+          for (final n in p.nodes)
+            if (common.contains(n.id)) n.id,
+        ];
+        if (order(m).join() == order(b).join()) return; // mine did not reorder
+        reordered++;
+        // Whether or not theirs reordered too, mine's order is kept.
+        expect(order(merged), order(m), reason: 'seed $seed\n${dump({'base': base, 'mine': mine, 'theirs': theirs})}');
+      });
+      expect(reordered, greaterThan(20));
     });
 
     test('both changing a node Noted does not own keeps both versions either way', () {

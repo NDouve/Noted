@@ -186,7 +186,7 @@ class PageGen {
   ///   other way (0128), is kept either as a conflict record on the box or as
   ///   a copy under a new id, by which side is mine: it counts as a foreign
   ///   edit ([foreignBy], [noForeign], [foreignEdits]); the side that did not
-  ///   turn it must not have changed the node in any way ([changedBy], [noFlip]),
+  ///   turn it must not have changed the node, other than deleting it ([changedBy], [noFlip]),
   ///   or the merge would see a box edit against a node Noted does not own; and [flips] false
   ///   leaves it out;
   /// - a conflict-copy merge keeps the original's position whichever side moved
@@ -228,11 +228,11 @@ class PageGen {
       if (pinned(i)) {
         out.add(t);
         lastPinned = out.length - 1;
-      } else if (noForeign.contains(i)) {
-        out.add(t); // the other side changed what kind of node it is, or its foreign content
       } else if (op == 0 && deletes) {
         changedBy?.add(i);
-        // deleted
+        // deleted: also a node the other side changed (a delete against an edit)
+      } else if (noForeign.contains(i)) {
+        out.add(t); // the other side changed what kind of node it is, or its foreign content
       } else if (op <= 4 && !isBoxText(t)) {
         if (foreignEdits && !noForeign.contains(i)) {
           if (flips && !noFlip.contains(i) && chance(1, 3)) {
