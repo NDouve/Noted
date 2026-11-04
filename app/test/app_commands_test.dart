@@ -15,6 +15,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart' show CommandToolbar;
 import 'package:noted_core/noted_core.dart';
 import 'support/busy_retry.dart';
+import 'support/settle_saves.dart';
 
 /// Records which UI actions the commands asked for.
 class _Actions implements PageTreeActions {
@@ -67,6 +68,10 @@ void main() {
   });
 
   tearDown(() async {
+    // Let the last save finish first: dispose doesn't wait for it, and a save
+    // still writing into the folder makes the delete fail on every platform.
+    // (The widget test settles its saves before it ends, so this returns at once.)
+    await nb.flush();
     nb.dispose();
     await busyRetry(() => dir.delete(recursive: true));
   });
@@ -252,6 +257,7 @@ void main() {
       isNotNull,
     );
 
+    await settleSaves(t, nb);
     await t.pumpWidget(const SizedBox());
   });
 }

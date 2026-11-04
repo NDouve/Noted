@@ -6,7 +6,9 @@ import 'dart:io';
 
 /// Runs [op], trying again while Windows reports the file as in use (the
 /// watching notebook reads these files at the same moment, and a rename or
-/// delete over a file being read is refused). Gives up after a deadline.
+/// delete over a file being read is refused), or reports a folder being deleted
+/// as not empty (a save that was still finishing wrote into it). Gives up after
+/// a deadline.
 Future<T> busyRetry<T>(Future<T> Function() op) async {
   final end = DateTime.now().add(const Duration(seconds: 20));
   while (true) {
