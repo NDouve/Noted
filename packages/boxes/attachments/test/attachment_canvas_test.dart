@@ -661,6 +661,49 @@ void main() {
     expect(r.changed, 1, reason: 'the small file still converts');
   });
 
+  testWidgets('a box converted once whose retry returns nothing is not '
+      'committed with the old data', (t) async {
+    final gated = _HookStore();
+    store = gated;
+    await pump(t);
+    await t.runAsync(
+      () => canvas(t).insertFiles([
+        IncomingFile('small.pdf', pdf),
+        IncomingFile('huge.zip', Uint8List(embedLimitBytes + 1)),
+      ], at: Offset.zero),
+    );
+    await t.pump();
+    final small = boxes().firstWhere((b) => (data(b) as FileData).ref.name == 'small.pdf');
+    final huge = boxes().firstWhere((b) => (data(b) as FileData).ref.name == 'huge.zip');
+    final hugeRef = (data(huge) as FileData).ref;
+    var reads = 0;
+    gated.onRead = () {
+      // While the small file is read, its box is pointed at an oversized one.
+      if (reads++ != 0) return;
+      c.editBox(
+        small.id,
+        FileData(
+          ref: AttachmentRef(
+            name: 'other.zip',
+            size: hugeRef.size,
+            hash: hugeRef.hash,
+            file: hugeRef.file,
+          ),
+        ),
+      );
+    };
+    final r = await t.runAsync(
+      () => convertPageAttachments(c, store, AttachmentStorage.embedded),
+    );
+    await t.pump();
+    expect(r!.skipped, isEmpty);
+    expect(r.changed, 0, reason: 'the old capture is not committed');
+    expect(r.overLimit, containsAll(['other.zip', 'huge.zip']));
+    final d = data(c.page.node(small.id)! as BoxRecord) as FileData;
+    expect(d.ref.name, 'other.zip');
+    expect(d.ref.isEmbedded, isFalse);
+  });
+
   testWidgets('a box that keeps changing is skipped and reported', (t) async {
     final gated = _HookStore();
     store = gated;
