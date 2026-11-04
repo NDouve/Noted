@@ -8,7 +8,8 @@ this document should be corrected.
 It covers page files (`<page id>.canvas`), binder files (`noted-binder.json`),
 attachment files (`<page id>.assets/`) and the way a sync client's conflict
 copies of page files are recognised and merged. It does not cover recovery
-entries or the files the AI integration keeps.
+entries, template files (`.notedtemplate`), `binders.json`, `settings.json`
+or the files the AI integration keeps.
 
 Source: `packages/noted_core` (`model/page.dart`, `format/page_format.dart`,
 `attachments/attachments.dart`, `binder/binder.dart`, `binder/binder_store.dart`,
@@ -28,14 +29,17 @@ Source: `packages/noted_core` (`model/page.dart`, `format/page_format.dart`,
 
 ## 1. Principles
 
-- All files are UTF-8 JSON. A leading byte order mark is accepted when
+- Page and binder files are UTF-8 JSON; attachment files are raw bytes. A leading byte order mark is accepted when
   reading and never written. Line endings written are `\n`; readers must
   accept `\r\n` as ordinary JSON whitespace (a sync client or editor may
   have changed them).
-- Noted keeps every value it does not need to change as the exact text it
-  read, and writes that text back unchanged: key order, spacing inside a
-  node, number formatting and unknown fields all survive a load and save.
-  Only the values Noted edits are re-encoded.
+- In the structures the core owns (the page's top level, nodes, the page
+  header, a box's `noted` object and the binder file), Noted keeps every
+  value it does not need to change as the exact text it read and writes it
+  back unchanged, including unknown fields. A node, header or binder file
+  that Noted changes is rewritten compactly. The `data` and `text` of a box
+  whose type the app cannot run pass through byte for byte; for a box it can
+  run, the box's module re-encodes `data` (section 8).
 - Ids (page ids, box ids, revisions) are random 64-bit values written as 16
   lowercase hex digits. Readers must treat them as opaque strings.
 - Times are integers: milliseconds since the Unix epoch.
@@ -60,14 +64,16 @@ Not used by Noted: `color`, `label`, edge fields, node `file`/`url`/`subpath`
 fields on its own boxes. They are kept untouched on nodes Noted does not own.
 
 Layout as written: two-space indent, one top-level key per line, each node
-on its own line (four-space indent), the `noted` header on one line. Top-level
-keys keep their order; a missing `nodes` is added first and a missing `noted`
-last.
+on its own line (four-space indent), the `noted` header on one line. Nodes
+that Noted writes are one line; nodes it keeps verbatim keep the layout they
+were read with. Top-level keys keep their order; a missing `nodes` is added
+first and a missing `noted` last. If a top-level `nodes` or `noted` key is
+repeated in a file, only the first is written back.
 
 ```json
 {
   "nodes": [
-    {"id":"a41f0c9e22b7d035","type":"text","x":40,"y":40,"width":320,"height":120,"text":"Shopping list\n- milk","noted":{"type":"noted.note","v":1,"rev":"5c0d9e11a3f2b4c8","data":{"blocks":[]},"device":"DESK-1","at":1793700000000}}
+    {"id":"a41f0c9e22b7d035","type":"text","x":40,"y":40,"width":320,"height":120,"text":"Shopping list\n- milk","noted":{"type":"noted.note","v":1,"rev":"5c0d9e11a3f2b4c8","data":{"document":{"type":"page","children":["..."]}},"device":"DESK-1","at":1793700000000}}
   ],
   "edges": [],
   "noted": {"format":1,"pageId":"7b3e55d0a91c4f26","parentId":null,"title":"Groceries","order":0}
@@ -87,7 +93,7 @@ The top-level `noted` object. Required to be readable: `format` (integer) and
 | Field | Type | Meaning |
 |---|---|---|
 | `format` | integer | Page format version. Currently `1`. |
-| `pageId` | string | The page's id; equals the file name stem. |
+| `pageId` | string | The page's id. New files are named `<pageId>.canvas`, but readers must not rely on the name: it is not checked against `pageId`. |
 | `parentId` | string or null | The parent page's id; `null` for a top-level page. |
 | `title` | string | Page title; `""` if absent. |
 | `order` | integer | Position among siblings, ascending; `0` if absent. |
@@ -132,7 +138,9 @@ describes older content. Moving or resizing a box changes `x`, `y`, `width`
 or `height` only; `rev` is unchanged.
 
 Fields Noted does not know, at either the node level or inside `noted`, are
-kept in place.
+kept in place. The order of keys is not significant; a new box is written in
+the order `type`, `v`, `rev`, `data`, `device`, `at`, and a `baseRev` added
+later is appended.
 
 ```json
 {"id":"e19b7a40c5d83f62","type":"text","x":420,"y":60,"width":300,"height":200,
@@ -149,17 +157,22 @@ kept in place.
 `text` holds a read-only text rendering of the box's content, written by the
 box type each time it saves (for example `[image: <alt text>]`,
 `[file: <name>]`, a note's text). It exists so the page stays readable in
-other JSON Canvas apps, and so Noted can show a box it cannot run. A drawing
-has no text snapshot. Editing `text` outside Noted has no effect on the box's
+other JSON Canvas apps, and so Noted can show a box it cannot run. A
+drawing's snapshot is the empty string. Editing `text` outside Noted has no effect on the box's
 data and is overwritten at the next content write.
 
 ### 4.3 Unsupported boxes
 
 If a box's type has no installed module, the module is switched off, the
 type is not allowed on the page (`boxTypes`), `v` is newer than the module
-understands, or the module cannot decode `data`, the box is shown from `text`
-read-only. Its node is written back exactly as read, including `data`, so
-the box survives load, save and merge byte for byte.
+understands, or the module's decoder throws on `data`, the box is shown from
+`text` read-only. Its `data` and `text` are written back byte for byte. Other
+parts of the node can still change while it is unsupported: geometry,
+`fixedHeight`, `conflicts` and `landed`.
+
+Not every bad `data` makes a box unsupported. The image and file modules
+return nothing for a missing or malformed reference and the box is still run
+live, showing a message such as "This file can't be shown".
 
 ### 4.4 Foreign nodes
 
@@ -178,7 +191,9 @@ then `"folder"`). Every box reads both forms whatever the current setting is.
 
 Where the reference sits: an image box's `data` is
 `{"image":<ref>,"width":<px>,"height":<px>,"alt":"<text>"}` and a file box's
-`data` is `{"file":<ref>}`. Other keys in `data` are kept. The reference
+`data` is `{"file":<ref>}`. Other keys in `data` are kept, but re-encoded and written after the known
+keys when the box is saved; unknown keys inside the reference are dropped
+when it is saved. The reference
 (`<ref>`) has these fields:
 
 | Field | Meaning |
@@ -186,7 +201,7 @@ Where the reference sits: an image box's `data` is
 | `name` | Display name, with extension. |
 | `size` | Size in bytes. |
 | `hash` | Lowercase hex SHA-256 of the file's bytes. |
-| `file` | Folder mode: the file name inside the page's assets folder. |
+| `file` | Folder mode: the file's name; the app joins it onto the page's assets folder to find the file. New files are written as `<hash>[.<ext>]` (see Folder mode). |
 | `data` | Embedded mode: the file's bytes, base64. |
 
 A reference with both `file` and `data` is read from `data`. One with neither,
@@ -246,7 +261,7 @@ by `\n`.
 | `color` | string | `#AARRGGBB`. A new binder takes the next colour of a built-in palette; if absent, the first palette colour is shown. A stored colour that is not in the palette is kept. |
 | `created` | integer | When the binder was created. Optional. |
 | `attachments` | string | `"folder"` or `"embedded"`: the default for pages in the binder (section 5). |
-| `boxTypes` | object | `{"<type id>": true\|false}`, as in the page header. A binder can also allow a type that a top-level page then inherits; pages below can only disallow. |
+| `boxTypes` | object | `{"<type id>": true\|false}`, as in the page header. Only `false` restricts a type; `true` is stored but has no effect. |
 | `ai` | string | The binder's AI access setting, as in the page header. |
 
 Other fields are kept in order and written back unchanged.
@@ -256,7 +271,8 @@ Other fields are kept in order and written back unchanged.
 ```
 
 The file is written to `noted-binder.json.tmp` and then renamed over the old
-file. A new binder file is never written over an existing one.
+file. Creating a binder file first checks that none exists, and does not
+write if one does; the check and the write are separate steps.
 
 The file is not valid, and is never written to, when the JSON is invalid,
 `binderId` is missing or empty, `format` is missing or not an integer, or
@@ -280,12 +296,13 @@ A file `<stem>-<suffix>.canvas` is treated as a conflict copy of
   stem, shortest stem first) consists of letters, digits, `_` and `-`, starting
   with a letter or digit (page ids and computer names can both contain
   hyphens, so every hyphen is tried);
-- `<stem>.canvas` exists in the same folder;
+- `<stem>.canvas` exists in the same folder and can be read as a page;
 - both files hold the same `pageId`.
 
 A copy of a copy belongs to the file at the end of the chain. A file with a
 hyphenated name that does not satisfy these is an ordinary page file (and, if
-it repeats an existing page id, is reported as a duplicate).
+it repeats an existing page id, is reported as a duplicate; which of the two
+is reported is not defined).
 
 ### 7.2 Merge
 
@@ -305,10 +322,16 @@ sides:
   recorded in `conflicts`.
 
 A box only one side has is kept (without a base there is no telling it was
-deleted). The page header and other top-level fields are the original's. If
-a node differs and one side is a foreign node, nothing is dropped: the
-original's node is kept and the copy's node is added beside it under a new
-id.
+deleted). The page header and other top-level fields are the original's.
+
+When the same node id differs and one side is a foreign node:
+
+- the original is a box and the copy's node is foreign: the copy's node is
+  recorded in the box's `conflicts` (as a `node` entry, 7.3);
+- the original is foreign: the original is kept, and the copy's node is added
+  beside it under a new id (a box added this way may get a `landed` marker,
+  7.4). When the copy's node is not a JSON object it cannot take an id; at
+  present it is not added.
 
 ### 7.3 `conflicts`
 
@@ -325,8 +348,9 @@ object, in the order recorded. Entries are either of:
 ```
 
 `node` is the other version's whole node, kept as raw text; `device` is
-present when that version's box says which computer wrote it; `at` is when
-the other version was saved or detected. `deleted` records that the other
+present when the merge recorded it from that version's box (the in-app
+three-way merge does; a conflict-copy merge writes entries without `device`);
+`at` is when the other version was saved or detected. `deleted` records that the other
 side deleted the box while this one was edited. Conflict records of both
 sides are combined, without duplicates. The field is removed when the last
 entry is settled. A device that cannot run the box carries the field
@@ -352,16 +376,22 @@ if either side has it.
   holds for a binder file with a newer `format`.
 - **Unreadable files.** A page file with invalid JSON, no `noted` header, or
   a header without `format` and `pageId`, or a `nodes` value that is not an
-  array, is unreadable and is never overwritten. Two files with the same
-  `pageId` that are not conflict copies of each other: the second is
-  reported as a duplicate and not used.
+  array, is unreadable and is never overwritten. When two files hold the same
+  `pageId` and neither is a conflict copy of the other, one is used and the
+  other is reported as a duplicate and not used; which one is reported is
+  not defined.
 - **Unknown fields are kept.** At the top level, in the page header, in each
-  node, in a box's `noted` object, in a box's `data`, and in the binder
-  file. They are written back in place with their original text.
-- **Unknown or unsupported boxes** are shown read-only from their `text`
-  snapshot and written back exactly as read (4.3). A box type being switched
-  off, not allowed on the page, or newer than the app is not an error and
-  deletes nothing.
+  node, in a box's `noted` object, and in the binder file, unknown fields
+  keep their position and original text. Inside the `data` of a box the app
+  can run, the box module decides: the image and file modules keep unknown
+  keys of `data` but re-encode them and write them after the known keys, and
+  drop unknown keys inside an attachment reference (section 5). A node, a
+  header or a binder file that the app changes is rewritten compactly (no
+  spaces between tokens).
+- **Unsupported boxes** are shown read-only from their `text` snapshot, and
+  their `data` and `text` are written back byte for byte (4.3). A box type
+  being switched off, not allowed on the page, or newer than the app is not
+  an error and deletes nothing.
 - **Foreign nodes** are kept and written back exactly (4.4).
 - **Missing optional header values** read as their defaults: no parent, empty
   title, order `0`, plain background, attachments follow the parent. Unknown
