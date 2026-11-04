@@ -723,10 +723,13 @@ class _Run {
   }
 
   Future<void> _opMove() async {
-    final id = _pickPage();
+    final variant = _pick(['plain', 'plain', 'plain', 'pendingEdit', 'failDestination', 'failSourceDelete', 'syncAtSource']);
+    // A fault on the last page of a subtree is the one that needs a rollback.
+    final parents = [for (final e in model.entries) if (e.value.parent != null) e.value.parent!];
+    final fails = variant == 'failDestination' || variant == 'failSourceDelete';
+    final id = fails && parents.isNotEmpty ? parents[rng.nextInt(parents.length)] : _pickPage();
     final m = model[id]!;
     final to = _pick(_locs.where((l) => l != m.loc).toList());
-    final variant = _pick(['plain', 'plain', 'plain', 'pendingEdit', 'failDestination', 'failSourceDelete', 'syncAtSource']);
     trace.add('move ${_short(id)} ${m.loc} -> $to: $variant');
     final from = m.loc;
     final subtree = _subtree(id);
@@ -738,12 +741,10 @@ class _Run {
         await nb.open(id);
         _localEdit(m, nb.current!);
       case 'failDestination':
-        for (final p in subtree) {
-          storeOf(to).failNew.add(p);
-        }
+        storeOf(to).failNew.add(subtree.last);
         mustFail = true;
       case 'failSourceDelete':
-        storeOf(from).failDelete.add(id);
+        storeOf(from).failDelete.add(subtree.last);
         mustFail = true;
       case 'syncAtSource':
         // A newer version lands on the source after the move read it.
@@ -763,10 +764,8 @@ class _Run {
     } on Object catch (e) {
       error = e;
     }
-    for (final p in subtree) {
-      storeOf(to).failNew.remove(p);
-    }
-    storeOf(from).failDelete.remove(id);
+    storeOf(to).failNew.clear();
+    storeOf(from).failDelete.clear();
     if (mustFail) {
       expect(error, isNotNull, reason: 'the move should have been refused');
       return; // everything stays where it was
