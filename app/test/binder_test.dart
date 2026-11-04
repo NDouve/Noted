@@ -517,14 +517,14 @@ void main() {
       await expectLater(
         bad.moveToLocation(p, binderPath: target.path),
         throwsA(
-          isA<NotebookException>().having((e) => e.message, 'message', contains('not copied')),
+          isA<NotebookException>().having((e) => e.message, 'message', allOf(contains('not copied'), contains('were kept'))),
         ),
       );
       // Sources are untouched, nothing is left in the target.
       for (final id in [p, c, g]) {
         expect(read(pages, id), before[id]);
       }
-      expect(canvasFiles(folder), isEmpty);
+      expect(canvasFiles(folder), hasLength(1), reason: 'the copy that is not what was published is kept');
       expect(target.tree.roots, isEmpty);
       expect(bad.tree.descendantsOf(p), [c, g]);
       expect(bad.binderOfPage(p), isNull);

@@ -68,6 +68,16 @@ Future<void> Function(File source)? attachmentBeforeRemoveHook;
 @visibleForTesting
 void Function(File source)? attachmentAfterAsideHook;
 
+/// Run in [removeVerifiedSources] just before a source is moved aside, inside
+/// the compare-and-delete (after its first check). For tests.
+@visibleForTesting
+void Function(File source)? attachmentMoveAsideHook;
+
+/// Run in [removeVerifiedSources] just before a set-aside source that no longer
+/// matches is put back (its path is free). For tests.
+@visibleForTesting
+void Function(File source)? attachmentBeforeRestoreHook;
+
 const _chunk = 64 * 1024;
 
 /// The name a file of an attachments folder is copied or landed under, or
@@ -105,7 +115,15 @@ Future<void> sweepAttachmentLeftovers(Directory dir, AttachmentCopy r) async {
   final sep = Platform.pathSeparator;
   if (await dir.exists()) {
     try {
-      await sweepAsideFiles(dir, extension: '');
+      // What was put back is not a loss; what was kept under another name (a
+      // newer file was in the way) or could not be moved is reported.
+      for (final p in await sweepAsideFiles(dir, extension: '')) {
+        if (p.contains('-recovered-') || p.contains('-conflict-')) r.keptAside.add(p);
+      }
+      await for (final e in dir.list(followLinks: false)) {
+        final n = _baseName(e.path);
+        if (e is File && (n.endsWith(asideSuffix) || n.endsWith(verifiedSuffix))) r.keptAside.add(e.path);
+      }
     } on FileSystemException catch (e) {
       debugPrint('Sweeping ${dir.path} failed: $e');
     }
@@ -387,7 +405,9 @@ Future<void> removeVerifiedSources(AttachmentCopy r, Directory root) async {
         final res = await deleteFileIfMatches(
           c.source.path,
           identity: identity,
+          beforeMoveAside: () => attachmentMoveAsideHook?.call(c.source),
           afterRead: () => attachmentAfterAsideHook?.call(c.source),
+          beforeRestore: () => attachmentBeforeRestoreHook?.call(c.source),
         );
         if (res.outcome == DeleteOutcome.changed) {
           debugPrint('Keeping ${c.source.path}: it changed after it was copied');

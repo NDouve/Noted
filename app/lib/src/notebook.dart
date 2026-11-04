@@ -136,7 +136,11 @@ class FolderUnavailableException extends NotebookException {
 
 /// Pages removed by one delete, held in full so the delete can be undone.
 class DeletedPages {
-  DeletedPages._(this.pages, this.openId, this._location, this._assets);
+  DeletedPages._(this.pages, this.openId, this._location, this._assets, {this.keptNote});
+
+  /// What to tell the user when pages were not deleted because their files
+  /// changed after they were read (they stay as they are), or null.
+  final String? keptNote;
 
   /// The deleted page and its subpages, parents before children.
   final List<NotedPage> pages;
@@ -1370,7 +1374,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final openId = ids.contains(currentId) ? currentId : null;
     // Closing saves the open page, so the copies read below are current.
     if (openId != null) await _closeCurrent();
-    final pages = [for (final p in ids) await st.load(p)];
+    // The text each page was read with: the file is deleted only while it still
+    // holds exactly that (a version a sync client landed since is kept).
+    final texts = [for (final p in ids) await st.readText(p)];
+    final pages = [for (final t in texts) readPage(t)];
     final previous = _lastDeleted;
     if (previous != null) discardDeleted(previous);
     // Each page's assets folder is set aside, so undo can bring it back.
@@ -1387,14 +1394,43 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         debugPrint('Setting aside ${dir.path} failed: $e');
       }
     }
-    final deleted = DeletedPages._(pages, openId, loc, stash);
-    _lastDeleted = deleted;
-    for (final p in ids) {
-      await _delete(loc, p);
+    final keptIds = <String>{}; // changed since they were read: not deleted
+    for (var i = 0; i < ids.length; i++) {
+      final p = ids[i];
+      final r = await _deleteIfUnchanged(loc, p, texts[i]);
+      if (!r.deleted && r.outcome != DeleteOutcome.absent) {
+        keptIds.add(p);
+        continue;
+      }
       _landedProblems.remove(p); // the user deleted it
       _metas.remove(p);
       _loc.remove(p);
     }
+    for (final p in keptIds) {
+      // Its attachments go back, and the version on disk is read like any
+      // external change.
+      final dir = stash.remove(p);
+      if (dir != null) {
+        try {
+          await _moveDir(dir, _assetsDir(loc, p));
+        } on FileSystemException catch (e) {
+          debugPrint('Putting back the attachments of page $p failed: $e');
+        }
+      }
+      await _checkFile(st.pathFor(p));
+    }
+    final deleted = DeletedPages._(
+      [for (var i = 0; i < ids.length; i++) if (!keptIds.contains(ids[i])) pages[i]],
+      openId,
+      loc,
+      stash,
+      keptNote: keptIds.isEmpty
+          ? null
+          : '${keptIds.length == 1 ? 'A page was' : '${keptIds.length} pages were'} changed on '
+                'another device after it was read, so ${keptIds.length == 1 ? 'it was' : 'they were'} '
+                'not deleted.',
+    );
+    _lastDeleted = deleted;
     _touch(loc);
     _rebuildTree();
     if (_current == null) await _openFallback(loc);
@@ -1436,39 +1472,75 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     // A file that is at a page's path now (a sync client put one there) is not
-    // written over: it is left as it is and read like any external change.
-    var inTheWay = 0;
+    // written over. The restored version, which only exists in memory, is put
+    // beside it as a conflict copy, which the per-box conflict-copy merge then
+    // combines with the file (0053).
+    final merged = <String>[]; // titles whose restored version was merged in
+    final notRestored = <String>[]; // titles that could not be put anywhere
     for (final page in deleted.pages) {
-      if (!await _writeNew(deleted._location, page)) {
-        inTheWay++;
-        await _checkFile(_storeOf(deleted._location).pathFor(page.id));
+      if (await _writeNew(deleted._location, page)) {
+        _metas[page.id] = page.meta;
+        _loc[page.id] = deleted._location;
         continue;
       }
-      _metas[page.id] = page.meta;
-      _loc[page.id] = deleted._location;
+      final st = _storeOf(deleted._location);
+      final title = _titleOrUntitled(page.meta.title);
+      final copy = await _publishConflictCopy(st, page);
+      if (copy == null) {
+        notRestored.add(title);
+        await _checkFile(st.pathFor(page.id));
+        continue;
+      }
+      merged.add(title);
+      await _checkFile(st.pathFor(page.id)); // the file that is there
+      await _checkFile(copy); // merged into it, and the copy removed
     }
+    if (notRestored.isNotEmpty) _lastDeleted = deleted; // Undo can be tried again
     _touch(deleted._location);
     _rebuildTree();
     final reopen = deleted.openId;
     if (reopen != null && _loc.containsKey(reopen)) await open(reopen);
-    if (inTheWay > 0) {
-      throw NotebookException(
-        '${inTheWay == 1 ? 'A file was' : '$inTheWay files were'} already in the place of a page that '
-        'was brought back, so ${inTheWay == 1 ? 'it was' : 'they were'} left as '
-        '${inTheWay == 1 ? 'it is' : 'they are'} and not written over.',
-        needsAction: true,
-      );
-    }
-    if (attachmentsLeft.isNotEmpty) {
-      final n = attachmentsLeft.length;
-      throw NotebookException(
+    final notes = <String>[
+      if (merged.isNotEmpty)
+        'A newer file was already in the place of ${merged.map((t) => '"$t"').join(', ')}, so the '
+            'restored ${merged.length == 1 ? 'version was' : 'versions were'} merged into it box by box '
+            'and nothing was written over.',
+      if (notRestored.isNotEmpty)
+        'A file was in the place of ${notRestored.map((t) => '"$t"').join(', ')} and the restored '
+            '${notRestored.length == 1 ? 'version' : 'versions'} could not be saved beside it; '
+            'it is still available to Undo.',
+      if (attachmentsLeft.isNotEmpty)
         'The ${deleted.pages.length == 1 ? 'page was' : 'pages were'} brought back, but the '
-        'attachments of ${n == 1 ? 'one page' : '$n pages'} could not be restored completely'
-        '${knownCause ? ' (a different file with the same name was already there and was left as it is)' : ''}. '
-        'What could not be restored is still saved in ${attachmentsLeft.join(', ')}.',
-        needsAction: true,
-      );
+            'attachments of ${attachmentsLeft.length == 1 ? 'one page' : '${attachmentsLeft.length} pages'} could not be restored completely'
+            '${knownCause ? ' (a different file with the same name was already there and was left as it is)' : ''}. '
+            'What could not be restored is still saved in ${attachmentsLeft.join(', ')}.',
+    ];
+    if (notes.isNotEmpty) throw NotebookException(notes.join(' '), needsAction: true);
+  }
+
+  // Publishes [page] beside its file as a conflict copy (never over anything)
+  // and returns its path, or null if that failed.
+  Future<String?> _publishConflictCopy(PageStore st, NotedPage page) async {
+    final sep = Platform.pathSeparator;
+    final name = '${page.id}${PageStore.extension}';
+    final text = writePage(page);
+    for (var attempt = 0; attempt < 8; attempt++) {
+      final path = '${st.directory.path}$sep${conflictCopyName(name, label: 'undo')}';
+      final tmp = File('$path.${DateTime.now().microsecondsSinceEpoch}-$attempt.tmp');
+      try {
+        await tmp.writeAsString(text, flush: true);
+        if (await publishExclusive(tmp, path)) return path;
+      } on FileSystemException catch (e) {
+        debugPrint('Saving the restored page beside its file failed: $e');
+      } finally {
+        try {
+          if (await tmp.exists()) await tmp.delete();
+        } on FileSystemException {
+          // A leftover with a unique name of its own.
+        }
+      }
     }
+    return null;
   }
 
   /// Drops the in-memory copy of [deleted] (its snackbar went away).
@@ -1741,9 +1813,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           writtenText[p.id] = writePage(p);
           final readBack = await toStore.readText(p.id);
           if (readBack != writePage(p)) {
-            // What is there is what the rollback may remove, and only while it
-            // still is.
-            writtenText[p.id] = readBack;
             throw const NotebookException(
               'A page was not copied correctly, so nothing was moved.',
             );
@@ -1959,7 +2028,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           final fixed = moved[i].withMeta(
             moved[i].meta.withPlacement(parentId: null, order: _treeOf(loc).nextOrder(null)),
           );
-          _metas[ids[i]] = fixed.meta;
           // Saved too, unless the file is one whose content wasn't verified.
           if (movedIdx.contains(i) || intact.contains(i)) {
             try {
@@ -1969,7 +2037,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
                   ? {writtenText[ids[i]]}
                   : {copiedText[i], writePage(originals[i])};
               final now = await _storeOf(loc).readText(ids[i]);
-              if (!known.contains(now) || !await _writeIfUnchanged(loc, fixed, now)) {
+              if (known.contains(now) && await _writeIfUnchanged(loc, fixed, now)) {
+                _metas[ids[i]] = fixed.meta; // only when it landed
+              } else {
                 debugPrint('Moving page ${ids[i]} to the top level: its file changed, left as it is');
               }
             } on Object catch (e2) {
@@ -2624,15 +2694,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await flush();
     final made = template.instantiateBinder();
     final pages = storeFactory(dir);
-    final written = <String>[];
+    final written = <NotedPage>[];
+    var binderWritten = false;
     try {
       await binders.create(made.binder);
+      binderWritten = true;
       for (final p in made.pages) {
         // New ids in a new binder folder: a file already there is not ours.
         if (!await pages.saveNew(p)) {
-          throw FileSystemException('A file for page ${p.id} already exists', dir.path);
+          throw const NotebookException(
+            'A file for one of the new pages already exists, so the binder was not created. '
+            'The existing file was left as it is.',
+          );
         }
-        written.add(p.id);
+        written.add(p);
       }
       // Binder templates are app-wide; their pages' images and files follow
       // the new page ids.
@@ -2644,19 +2719,27 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         );
       }
     } on Object catch (e) {
-      for (final id in written) {
+      // Only what was published here goes, and only while it still holds what
+      // was written; anything that changed since is kept.
+      for (final p in written) {
         try {
-          await pages.delete(id);
+          final r = await pages.deleteIfUnchanged(p.id, writePage(p));
+          if (!r.deleted && r.outcome != DeleteOutcome.absent) debugPrint('Keeping page ${p.id}: it changed');
         } on Object catch (e2) {
-          debugPrint('Removing page $id failed: $e2');
+          debugPrint('Removing page ${p.id} failed: $e2');
         }
       }
-      try {
-        await binders.file.delete();
-      } on Object catch (e2) {
-        debugPrint('Removing binder file failed: $e2');
+      if (binderWritten) {
+        try {
+          final r = await deleteFileIfUnchanged(binders.file.path, utf8.encode(made.binder.write()));
+          if (!r.deleted && r.outcome != DeleteOutcome.absent) debugPrint('Keeping the binder file: it changed');
+        } on Object catch (e2) {
+          debugPrint('Removing binder file failed: $e2');
+        }
       }
-      throw NotebookException('Could not create the binder: $e');
+      if (e is NotebookException) rethrow;
+      debugPrint('Creating the binder failed: $e');
+      throw NotebookException('Could not create the binder.${_osReason(e)}');
     }
     final section = await addBinder(path);
     if (openCover && section.available) showCover(section.path);
@@ -3460,6 +3543,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _countSaveFailure(page.id);
         await _keepForRecovery(loc, st, toSave); // against the text last seen
         await _checkFile(path);
+        // Merged into the saved page now, not at the next start.
+        if (!_disposed) unawaited(_recoverPending(onlyLoc: loc));
         return;
       }
       if (_current?.page.id == toSave.id) _base = toSave;
@@ -4103,9 +4188,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final st = _storeOf(loc);
     for (var attempt = 0; attempt < _maxWriteTries; attempt++) {
       final text = await st.readText(id);
+      await syncHook?.call('closed-update-read', st.pathFor(id));
       final next = change(readPage(text));
       if (next == null) return null;
-      if (await _writeIfUnchanged(loc, next, text)) return next;
+      if (!await _writeIfUnchanged(loc, next, text)) continue;
+      // The page may have been opened meanwhile, from the file as it was before
+      // this write: its editor takes the change too, or its next autosave would
+      // put the old header back.
+      final c = _current;
+      if (c != null && c.page.id == id && c.page.meta != next.meta) c.updateMeta(next.meta);
+      return next;
     }
     throw const NotebookException(
       'The page file keeps changing, so the change was not saved. Try again in a moment.',
@@ -4191,17 +4283,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return true;
   }
 
-  Future<void> _delete(String loc, String id) async {
-    _assertWritable(loc);
-    final st = _storeOf(loc);
-    final key = _key(st.pathFor(id));
-    await st.delete(id);
-    _known.remove(key);
-    _pathId.remove(key);
-    _conflicts.remove(id);
-  }
-
-  // External changes (0020) ---------------------------------------------------
 
   /// Whether the page [id] has a conflicted box, on screen or in its file.
   bool hasConflict(String id) => _conflicts.contains(id);
