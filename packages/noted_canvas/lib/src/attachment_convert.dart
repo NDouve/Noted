@@ -48,8 +48,10 @@ Future<AttachmentConversion> convertPageAttachments(
   // id -> (the box as the conversion started from it, converted data, files
   // left in the folder for being over the limit)
   final next = <String, (_Stamp, Object, List<String>)>{};
-  // Boxes that needed no change, with their over-limit files.
-  final unchanged = <String, List<String>>{};
+  // Boxes that needed no change, with the same start stamp and over-limit
+  // files; revalidated like [next], so a notice never names a file the box
+  // no longer references.
+  final unchanged = <String, (_Stamp, List<String>)>{};
   for (var attempt = 0; attempt < _maxAttempts && work.isNotEmpty; attempt++) {
     for (final id in work) {
       final node = controller.page.node(id);
@@ -60,14 +62,15 @@ Future<AttachmentConversion> convertPageAttachments(
       if (module == null) continue;
       final r = controller.modules.codecs.resolve(node);
       if (r is! LiveBox) continue;
+      final stamp = _stampOf(node);
       final over = <String>[];
       final data = await module.hostConvertAttachments(r.data, to, store, over);
       if (data == null) {
         next.remove(id);
-        unchanged[id] = over;
+        unchanged[id] = (stamp, over);
       } else {
         unchanged.remove(id);
-        next[id] = (_stampOf(node), data, over);
+        next[id] = (stamp, data, over);
       }
     }
     // No await from here to the commit: a box edited (or replaced by sync)
@@ -75,9 +78,12 @@ Future<AttachmentConversion> convertPageAttachments(
     work = [
       for (final e in next.entries)
         if (!_isCurrent(controller, e.key, e.value.$1)) e.key,
+      for (final e in unchanged.entries)
+        if (!_isCurrent(controller, e.key, e.value.$1)) e.key,
     ];
     for (final id in work) {
       next.remove(id);
+      unchanged.remove(id);
     }
   }
   // Boxes that were still changing after the last attempt (a deleted box is
@@ -98,7 +104,7 @@ Future<AttachmentConversion> convertPageAttachments(
     overLimit: [
       for (final e in next.entries) ...e.value.$3,
       for (final e in unchanged.entries)
-        if (controller.page.node(e.key) is BoxRecord) ...e.value,
+        if (controller.page.node(e.key) is BoxRecord) ...e.value.$2,
     ],
     skipped: skipped,
   );
