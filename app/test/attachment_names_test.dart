@@ -15,6 +15,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 void main() {
+  temporaryNameTests();
   late Directory root;
   late Directory pages;
   late Directory recovery;
@@ -109,5 +110,26 @@ void main() {
     // A bare 64-hex name is accepted by the rule (no extension).
     File('${pages.path}/p.assets/$hash').writeAsBytesSync(secret);
     expect(await store.read(hash), secret);
+  });
+}
+
+// The temporary copy of an embedded file is opened from a name made from the
+// box's display name.
+void temporaryNameTests() {
+  group('the name of the temporary copy of an embedded file', () {
+    test('keeps an ordinary name and replaces path characters', () {
+      expect(safeOpenFileName('Plan.pdf'), 'Plan.pdf');
+      expect(safeOpenFileName(r'a/b\c:d.txt'), 'a_b_c_d.txt');
+    });
+
+    test('a dot name, a device name, or a trailing dot or space falls back', () {
+      for (final n in ['.', '..', 'CON', 'con.txt', 'Nul.tar', 'COM1.pdf', 'lpt9', 'AUX.', 'report.', 'report ', '']) {
+        expect(safeOpenFileName(n), isNot(n), reason: n);
+        expect(safeOpenFileName(n), anyOf('file', startsWith('file.')), reason: n);
+      }
+      expect(safeOpenFileName('CON.txt'), 'file.txt');
+      expect(safeOpenFileName('..'), 'file');
+      expect(safeOpenFileName('COM10.pdf'), 'COM10.pdf');
+    });
   });
 }

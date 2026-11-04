@@ -154,14 +154,62 @@ void main() {
         );
         await t.pump();
 
-        final finder = find.byKey(const ValueKey('file-box'));
-        expect(find.byTooltip('Plan.pdf: still syncing'), findsOneWidget);
-        await t.tap(finder);
-        await t.pump(const Duration(milliseconds: 50));
-        await t.tap(finder);
-        await t.pump(const Duration(milliseconds: 400));
+        expect(find.text('Plan.pdf: file not found'), findsOneWidget);
+        expect(find.byKey(const ValueKey('still-syncing')), findsNothing);
+        expect(find.byKey(const ValueKey('file-box')), findsNothing, reason: 'nothing to open');
         expect(store.opened, isEmpty);
-        expect(store.asked.where((a) => a.startsWith('open') || a.startsWith('read')), isEmpty);
+        expect(store.asked, isEmpty);
+      });
+    }
+  });
+
+  group('the image box', () {
+    for (final file in [r'..\..\secret.png', '../secret.png', 'C:secret.png', '$hash.PNG']) {
+      testWidgets('$file: shows file not found, even with a cached display copy', (t) async {
+        final png = redPng;
+        final pngHash = contentHash(png);
+        final store = _Trip(png);
+        // A display copy for this hash is already cached.
+        final cache = displayCopyFile(store.cacheDirectory, pngHash)..parent.createSync(recursive: true);
+        cache.writeAsBytesSync(png);
+        addTearDown(() => store.cacheDirectory.deleteSync(recursive: true));
+        t.view.physicalSize = const Size(1200, 800);
+        t.view.devicePixelRatio = 1;
+        addTearDown(t.view.reset);
+        const codec = ImageCodec();
+        final box = BoxRecord.create(
+          id: 'img',
+          typeId: codec.typeId,
+          dataVersion: codec.dataVersion,
+          bounds: const Bounds(40, 40, 120, 148),
+          data: RawJson.encode(
+            codec.encode(
+              ImageData(
+                ref: AttachmentRef(name: 'red.png', size: png.length, hash: pngHash, file: file),
+                width: 4,
+                height: 4,
+              ),
+            ),
+          ),
+          snapshotText: '[image: ]',
+          rev: 'r',
+        ).withFixedHeight(true);
+        final modules = ModuleRegistry()..register(const ImageModule());
+        final c = CanvasController(NotedPage.create(PageMeta.create(id: 'p', title: '', order: 0)).insertNode(box), modules);
+        await t.pumpWidget(
+          MaterialApp(
+            theme: notedThemeData(Brightness.light),
+            home: Scaffold(body: PageCanvas(controller: c, attachments: store)),
+          ),
+        );
+        for (var i = 0; i < 4; i++) {
+          await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+          await t.pump();
+        }
+        expect(find.text('red.png: file not found'), findsOneWidget);
+        expect(find.byKey(const ValueKey('image-box-picture')), findsNothing);
+        expect(find.byKey(const ValueKey('still-syncing')), findsNothing);
+        expect(store.asked, isEmpty);
       });
     }
   });

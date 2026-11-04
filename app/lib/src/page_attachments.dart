@@ -19,6 +19,26 @@ typedef FilePicker = Future<List<IncomingFile>> Function({required bool imagesOn
 /// Opens a file with the system's default app.
 typedef FileOpener = Future<void> Function(File file);
 
+final RegExp _reservedDeviceName = RegExp(r'^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$', caseSensitive: false);
+
+/// The name of the temporary copy an embedded file is opened from: [name]
+/// with path and reserved characters replaced. A name that would still be a
+/// dot name, a Windows device name (CON, NUL, COM1, ... with or without an
+/// extension), or end in a dot or space falls back to `file.<extension>`.
+String safeOpenFileName(String name) {
+  final safe = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+  if (safe.isEmpty ||
+      safe == '.' ||
+      safe == '..' ||
+      safe.endsWith('.') ||
+      safe.endsWith(' ') ||
+      _reservedDeviceName.hasMatch(safe)) {
+    final ext = normalizedExtension(name);
+    return ext.isEmpty ? 'file' : 'file.$ext';
+  }
+  return safe;
+}
+
 /// The notice shown when a file too large to embed goes to the folder.
 const String overLimitNotice =
     'Files over 5 MB are kept in the folder beside the page, not in the page file.';
@@ -212,25 +232,18 @@ class PageAttachments extends ChangeNotifier implements VerifyingAttachmentStore
   /// copies first (see [restoreKeptCopy]).
   Future<VerifiedAttachment> _check(String fileName, int size, {required bool keepBytes}) async {
     if (!isAttachmentFileName(fileName)) return const VerifiedAttachment(AttachmentState.syncing);
-    final hash = attachmentNameHash(fileName);
+    // The name was checked above, so it is a hash name.
+    final hash = attachmentNameHash(fileName)!;
     for (final d in [folder, ?recoveryFolder]) {
       final f = _in(d, fileName);
       var type = FileSystemEntity.typeSync(f.path, followLinks: false);
-      if (type == FileSystemEntityType.notFound && hash != null && await restoreKeptCopy(d, fileName, hash, size)) {
+      if (type == FileSystemEntityType.notFound && await restoreKeptCopy(d, fileName, hash, size)) {
         type = FileSystemEntity.typeSync(f.path, followLinks: false);
         filesChanged();
       }
       if (type == FileSystemEntityType.notFound) continue;
       // A link or a folder is never trusted (the same rule as in the writer).
       if (type != FileSystemEntityType.file) return const VerifiedAttachment(AttachmentState.syncing);
-      if (hash == null) {
-        // Not named by a hash: nothing to check it against.
-        try {
-          return VerifiedAttachment(AttachmentState.ok, bytes: keepBytes ? await f.readAsBytes() : null);
-        } on FileSystemException {
-          return const VerifiedAttachment(AttachmentState.syncing);
-        }
-      }
       final c = await checkAttachmentFile(f, hash, size, keepBytes: keepBytes);
       switch (c.state) {
         case AttachmentState.ok:
@@ -284,8 +297,8 @@ class PageAttachments extends ChangeNotifier implements VerifyingAttachmentStore
       // An embedded file: open a temporary copy with its own name.
       final dir = Directory('${Directory.systemTemp.path}${Platform.pathSeparator}noted-open${Platform.pathSeparator}${contentHash(bytes).substring(0, 16)}');
       await dir.create(recursive: true);
-      final safe = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-      file = _inTemp(dir, safe.isEmpty ? 'file' : safe);
+      final safe = safeOpenFileName(name);
+      file = _inTemp(dir, safe);
       // A copy left by an earlier open is reused only if it still holds these
       // bytes (a damaged or half-written one is rewritten: it is only a copy).
       final want = contentHash(bytes);

@@ -183,6 +183,8 @@ Future<AttachmentRead> loadDisplayCopyChecked(
   AttachmentRef ref,
   AttachmentStore? store,
 ) async {
+  // A file that can't be found is not shown from the cache either.
+  if (attachmentNameInvalid(ref)) return (state: AttachmentState.syncing, bytes: null);
   // The hash becomes part of a cache path: only a real SHA-256 may.
   if (!isContentHash(ref.hash)) {
     store?.notify("\"${ref.name}\" can't be shown: its hash is not valid.");
@@ -342,6 +344,12 @@ class _ImageBoxState extends State<_ImageBox> {
         context,
         Icons.broken_image_rounded,
         'This image can\'t be shown',
+      );
+    } else if (attachmentNameInvalid(data.ref)) {
+      picture = _note(
+        context,
+        Icons.broken_image_rounded,
+        '${data.ref.name}: file not found',
       );
     } else if (pixels != null) {
       picture = Image.memory(
