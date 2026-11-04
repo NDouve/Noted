@@ -1395,16 +1395,50 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     final keptIds = <String>{}; // changed since they were read: not deleted
-    for (var i = 0; i < ids.length; i++) {
-      final p = ids[i];
-      final r = await _deleteIfUnchanged(loc, p, texts[i]);
-      if (!r.deleted && r.outcome != DeleteOutcome.absent) {
-        keptIds.add(p);
-        continue;
+    final deletedNow = <int>[]; // deleted by this call, for putting back on a failure
+    try {
+      for (var i = 0; i < ids.length; i++) {
+        final p = ids[i];
+        final r = await _deleteIfUnchanged(loc, p, texts[i]);
+        if (!r.deleted && r.outcome != DeleteOutcome.absent) {
+          keptIds.add(p);
+          continue;
+        }
+        if (r.deleted) deletedNow.add(i);
+        _landedProblems.remove(p); // the user deleted it
+        _metas.remove(p);
+        _loc.remove(p);
       }
-      _landedProblems.remove(p); // the user deleted it
-      _metas.remove(p);
-      _loc.remove(p);
+    } on Object {
+      // No undo is offered for a delete that threw, so what it already
+      // deleted is put back, never over a file that has appeared since.
+      for (final i in deletedNow) {
+        try {
+          await _restoreText(loc, pages[i], texts[i]);
+          _metas[ids[i]] = pages[i].meta;
+          _loc[ids[i]] = loc;
+        } on Object catch (e) {
+          debugPrint('Putting back page ${ids[i]} after a failed delete failed: $e');
+        }
+      }
+      for (var i = 0; i < ids.length; i++) {
+        final dir = stash[ids[i]];
+        if (dir == null) continue;
+        try {
+          await _moveDir(dir, _assetsDir(loc, ids[i]));
+        } on FileSystemException catch (e) {
+          debugPrint('Putting back the attachments of page ${ids[i]} failed: $e');
+        }
+      }
+      _rebuildTree();
+      if (openId != null) {
+        try {
+          await open(openId);
+        } on Object catch (e) {
+          debugPrint('Reopening page $openId after a failed delete failed: $e');
+        }
+      }
+      rethrow;
     }
     for (final p in keptIds) {
       // Its attachments go back, and the version on disk is read like any
