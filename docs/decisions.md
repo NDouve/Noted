@@ -738,7 +738,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0063 — Second-machine package and shortcut script
 - **Date:** 2026-10-26
-- **Status:** Active (extends 0054)
+- **Status:** Active (extends 0054); the MCP copy amended by 0133
 - **Decision:**
   - `app/scripts/package-windows.ps1` builds the release and writes `app/build/Noted-windows-x64.zip`. The zip holds:
     - the release folder
@@ -1341,7 +1341,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0098 — Image and file boxes, and where their files are stored
 - **Date:** 2026-10-31
-- **Status:** Active (page format change approved by the maintainer; Box API 0.7 and the attachments package approved retroactively); amended by 0102 (Delete, alt text below the picture); landing kept files amended by 0124; verification and damaged copies amended by 0132
+- **Status:** Active (page format change approved by the maintainer; Box API 0.7 and the attachments package approved retroactively); amended by 0102 (Delete, alt text below the picture); landing kept files amended by 0124; verification and damaged copies amended by 0132; attachment names checked before use, 0133
 - **Decision:**
   - **Setting "Store images and files":** on pages and binders, either *In a folder beside the page* (the default) or *In the page file*.
     - It is stored as `"attachments":"folder"|"embedded"` in the page header's `noted` object or in the binder file. An absent value means the page follows its parent.
@@ -1570,7 +1570,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0110 — How code checks work: ai-link/2 and MCP server 0.3.0
 - **Date:** 2026-11-01
-- **Status:** Active, amended by 0116 (closed-app reads, the running lock, the server log) and 0117 (closed-app writes) and 0122 (merge_requests and propose_merge) (approved by the maintainer; amends 0101 and 0106; implements invariant 4 for codes)
+- **Status:** Active, amended by 0116 (closed-app reads, the running lock, the server log) and 0117 (closed-app writes) and 0122 (merge_requests and propose_merge) and 0133 (registering a copy) (approved by the maintainer; amends 0101 and 0106; implements invariant 4 for codes)
 - **Decision:**
   - **Open pages** are read by `noted_mcp` from saved files, as before; this works with Noted closed.
   - **Anything that needs a code** (box reads and writes, Privileged pages) goes through the running app over the link, so the app checks the code, its expiry, its role and target, and the session's approval, and logs the request. With Noted closed, code-based access fails with "This needs Noted running: codes are checked by the app. Open Noted and try again."
@@ -1861,6 +1861,27 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **The file format document:** `docs/file-format.md` describes what Noted writes today, from the code; where it and a decision disagree, the maintainer decides.
 - **Rationale:** A file that synced with the wrong content must not be shown, embedded or opened as if it were right, and neither version should be lost to the check. A reorder made on another device is a change like any other. Verification that counts only by presence can approve a merge that dropped a version.
 - **Alternatives considered:** deleting a damaged file (loses what might be the only copy); trusting the box's hash on the notebook side (the core never reads box data, invariant 2); re-hashing on every frame (slow for large files); always keeping this side's node order (drops reorders from other editors); verifying conflict copies by presence only (accepted dropped duplicates).
+
+## 0133 — Attachment names are checked before use; the MCP server runs from a copy
+- **Date:** 2026-11-04
+- **Status:** Active (the attachment name rule and the MCP copy approved by the maintainer for this run; the Box API 0.12 additions decided by the PM under delegated authority; amends 0063, 0098 and 0110)
+- **Decision:**
+  - **Attachment names (amends 0098):** a box's `file` value is used as a file name only when it is `<64 lowercase hex>` or `<64 lowercase hex>.<1–10 lowercase letters or digits>`, the only names Noted writes.
+    - Every place that turns a box's `file` value into a path checks this first: reading, verifying, display copies (before the cache is looked up), opening, embedding and converting, and the recovery folder's copy.
+    - Any other value is a missing file. It is never read, opened, copied or deleted. The box shows *File not found: <name>*, not *Still syncing*, which would fill in by itself. A file box with such a value can't be opened.
+    - Copying, moving, deleting and undoing pages, templates and recovery handle the assets folder by listing it and by page id, never by a box's value.
+    - The temporary copy that opens an embedded file is named `file.<extension>` when the box's display name is `.`, `..`, empty, ends in a dot or a space, or is a Windows device name (CON, PRN, AUX, NUL, COM1–9, LPT1–9).
+    - **Box API 0.12, additive:** `isAttachmentFileName` in noted_core and `attachmentNameInvalid` in the attachments package. There is no version bump, as with `contentHashOfStream` in 0.11.
+    - The rule is in `docs/file-format.md`.
+  - **The MCP server runs from a copy (amends 0063 and 0110):**
+    - `app/scripts/register-mcp.ps1` copies `noted_mcp.exe` to `%LOCALAPPDATA%\Noted\mcp` and registers that copy with Claude Code at user scope. `-NoCopy` registers the exe in place, with a warning that this blocks rebuilding the zip.
+    - The copy is refreshed only when no process holds it. It is written to a temporary file, its hash is checked, and it is swapped in atomically. The working copy is never deleted. A held copy is kept, and the script says so.
+    - `app/scripts/package-windows.ps1` refreshes the same copy and never fails the zip because of it. When the build-output `noted_mcp.exe` is held, it compiles the server to `app\build\noted_mcp.new.exe` and packages that.
+- **Rationale:** A synced page is input the app didn't write. A `file` value with `..`, a drive or an absolute path would otherwise let a page read, show or open any file the user can reach. Claude sessions running the server from the build folder held it, which blocked rebuilding the release.
+- **Alternatives considered:**
+  - Cleaning up names instead of rejecting them: path rules differ by platform, and the hash form is all Noted writes.
+  - A new "not found" attachment state in the canvas API: a Box API change for a display the modules can make themselves.
+  - Registering the build output, as before: it blocks rebuilds.
 
 ---
 
