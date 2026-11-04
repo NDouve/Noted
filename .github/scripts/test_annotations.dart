@@ -15,7 +15,7 @@ import 'dart:io';
 
 const int maxLines = 30;
 const int maxChars = 4000;
-const int maxAnnotations = 10;
+const int maxAnnotations = 5;
 
 class _Test {
   _Test(this.name, this.url, this.line);
@@ -65,6 +65,17 @@ List<String> annotations(Iterable<String> jsonLines, String dir) {
       continue;
     }
     if (event is! Map<String, dynamic>) continue;
+    try {
+      _apply(event, tests);
+    } on TypeError {
+      continue; // a malformed event: skip it
+    }
+  }
+  return _render(tests, dir);
+}
+
+void _apply(Map<String, dynamic> event, Map<int, _Test> tests) {
+  {
     switch (event['type']) {
       case 'testStart':
         final t = event['test'] as Map<String, dynamic>;
@@ -92,6 +103,9 @@ List<String> annotations(Iterable<String> jsonLines, String dir) {
         }
     }
   }
+}
+
+List<String> _render(Map<int, _Test> tests, String dir) {
   final out = <String>[];
   for (final t in tests.values) {
     if (!t.failed) continue;
@@ -108,7 +122,11 @@ List<String> annotations(Iterable<String> jsonLines, String dir) {
     final props = StringBuffer(
       'title=${escapeProperty('Test failed in $dir')}',
     );
-    final file = _repoFile(t.url, dir);
+    var file = _repoFile(t.url, dir);
+    // A load failure has no url; its name is "loading <path>".
+    if (file == null && t.url == null && t.name.startsWith('loading ')) {
+      file = _loadFile(t.name.substring('loading '.length), dir);
+    }
     if (file != null) {
       props.write(',file=${escapeProperty(file)}');
       if (t.line != null) props.write(',line=${t.line}');
@@ -127,6 +145,19 @@ String? _repoFile(String? url, String dir) {
   final i = path.lastIndexOf(marker);
   if (i < 0) return null;
   return path.substring(i + 1);
+}
+
+/// The repository-relative file of a "loading <path>" test name. The path is
+/// absolute or relative to the package directory.
+String? _loadFile(String path, String dir) {
+  path = path.trim().replaceAll('\\', '/');
+  if (path.isEmpty) return null;
+  final i = path.lastIndexOf('/$dir/');
+  if (i >= 0) return path.substring(i + 1);
+  if (path.startsWith('/') || RegExp(r'^[A-Za-z]:/').hasMatch(path)) {
+    return null;
+  }
+  return '$dir/$path';
 }
 
 void main(List<String> args) {

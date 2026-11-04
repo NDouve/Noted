@@ -50,6 +50,10 @@ jobs:
       - name: Analyze
         run: flutter analyze
 
+      - name: Test the annotation script
+        shell: bash
+        run: dart .github/scripts/test/test_annotations_test.dart
+
       # Every package that has a test/ directory: app, packages/* and
       # packages/boxes/*. All of them depend on Flutter's test framework, so
       # flutter test runs them all. A failing package does not stop the rest.
@@ -63,6 +67,11 @@ jobs:
         shell: bash
         run: |
           failed=""
+          # GitHub shows only 10 error annotations per step. So the summary and
+          # the timeouts are printed first, then the failed tests (4 in all).
+          first="$RUNNER_TEMP/annotations-first.txt"
+          per_test="$RUNNER_TEMP/annotations-tests.txt"
+          : > "$first"; : > "$per_test"
           for dir in app packages/* packages/boxes/*; do
             if [ -d "$dir/test" ]; then
               echo "::group::flutter test $dir"
@@ -83,18 +92,20 @@ jobs:
                 if [ "$code" -eq 124 ]; then
                   taskkill //F //IM flutter_tester.exe > /dev/null 2>&1 || pkill -f flutter_tester > /dev/null 2>&1 || true
                   last=$(grep -E '^[0-9]+:[0-9]+ \+' "$log" | tail -n 3 | tr '\n' ' ' || true)
-                  echo "::error title=Timed out in $dir::Still running after 15 minutes. Last tests: $last"
+                  echo "::error title=Timed out in $dir::Still running after 15 minutes. Last tests: $last" >> "$first"
                 fi
                 # Each failed test as one annotation: its name, its own error,
                 # stack trace and printed output (from the JSON event stream,
                 # keyed by test), and its file and line.
-                dart "$GITHUB_WORKSPACE/.github/scripts/test_annotations.dart" "$json" "$dir" || true
+                dart "$GITHUB_WORKSPACE/.github/scripts/test_annotations.dart" "$json" "$dir" >> "$per_test" || true
               fi
               echo "::endgroup::"
             fi
           done
           if [ -n "$failed" ]; then
             echo "::error::Tests failed in:$failed"
+            head -n 5 "$first"
+            head -n 4 "$per_test"
             exit 1
           fi
 

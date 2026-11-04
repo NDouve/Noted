@@ -11,3 +11,14 @@
 {"testID":4,"result":"failure","skipped":false,"hidden":false,"type":"testDone","time":9}
 {"testID":2,"error":"Bad state: first problem","stackTrace":"package:x a_test.dart 13:5","isFailure":false,"type":"error","time":10}
 {"testID":2,"result":"error","skipped":false,"hidden":false,"type":"testDone","time":11}
+{"type":"testStart","test":{"id":"x"}}
+{"type":"error","testID":"x","error":5}
+{"test":{"id":5,"name":"late error","suiteID":0,"groupIDs":[],"metadata":{"skip":false,"skipReason":null},"line":40,"column":3,"url":"file:///work/noted/app/test/a_test.dart"},"type":"testStart","time":12}
+{"testID":5,"result":"success","skipped":false,"hidden":false,"type":"testDone","time":13}
+{"testID":5,"error":"late async failure","stackTrace":"","isFailure":false,"type":"error","time":14}
+{"test":{"id":6,"name":"loading test/broken_test.dart","suiteID":0,"groupIDs":[],"metadata":{"skip":false,"skipReason":null},"line":null,"column":null,"url":null},"type":"testStart","time":15}
+{"testID":6,"error":"Failed to load: compile error","stackTrace":"","isFailure":false,"type":"error","time":16}
+{"testID":6,"result":"error","skipped":false,"hidden":true,"type":"testDone","time":17}
+{"test":{"id":7,"name":"odd :: name, 100%","suiteID":0,"groupIDs":[],"metadata":{"skip":false,"skipReason":null},"line":50,"column":3,"url":"file:///work/noted/app/test/a_test.dart"},"type":"testStart","time":18}
+{"testID":7,"error":"odd failure","stackTrace":"","isFailure":true,"type":"error","time":19}
+{"testID":7,"result":"failure","skipped":false,"hidden":false,"type":"testDone","time":20}
