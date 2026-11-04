@@ -81,6 +81,16 @@ class _IndexedPage {
   final List<_IndexedBox> boxes;
 }
 
+/// Boxes whose text a search has compared with a query since
+/// [resetSearchBoxesExamined], over all indexes. For tests only (exported by
+/// `testing.dart`, not the main library): they bound the work of a search.
+/// Cheap (an int).
+int get searchBoxesExamined => _searchBoxesExamined;
+int _searchBoxesExamined = 0;
+
+/// Sets [searchBoxesExamined] back to zero. For tests only.
+void resetSearchBoxesExamined() => _searchBoxesExamined = 0;
+
 /// An in-memory index of the text snapshots of the boxes of many pages.
 ///
 /// It reads one thing from a box: [BoxRecord.snapshotText], the text the
@@ -146,6 +156,7 @@ final class SearchIndex {
       }
       List<BoxHit>? hits;
       for (final box in entry.value.boxes) {
+        _searchBoxesExamined++;
         if (!query.matchesFolded(box.folded.text)) continue;
         final ranges = query.rangesInFolded(box.folded);
         if (ranges == null || ranges.isEmpty) continue;

@@ -25,7 +25,8 @@ export 'src/box_api/codec_registry.dart';
 export 'src/edit/page_history.dart';
 export 'src/format/note_markdown.dart';
 export 'src/format/note_markdown_import.dart';
-export 'src/format/page_format.dart';
+export 'src/format/page_format.dart'
+    hide pageParseCount, resetPageParseCount;
 export 'src/format/page_splice.dart';
 export 'src/json/raw_json.dart';
 export 'src/merge/conflict_copy.dart';
@@ -36,7 +37,8 @@ export 'src/model/box_types.dart';
 export 'src/model/config_source.dart';
 export 'src/model/ids.dart';
 export 'src/model/page.dart';
-export 'src/search/search_index.dart';
+export 'src/search/search_index.dart'
+    hide searchBoxesExamined, resetSearchBoxesExamined;
 export 'src/search/search_query.dart';
 export 'src/search/text_folding.dart';
 export 'src/storage/exclusive_publish.dart';
