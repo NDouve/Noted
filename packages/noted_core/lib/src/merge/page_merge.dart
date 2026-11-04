@@ -172,11 +172,32 @@ void _takeTheirOrder(NotedPage base, NotedPage mine, NotedPage theirs, List<Canv
   final o = only(out);
   if (o.length != common.length) return;
   if (_sameIds(m, b) && !_sameIds(t, b)) {
+    // Each node that isn't common follows the nearest common node before it
+    // in [out] (its anchor) and moves with it; nodes before the first common
+    // node stay first. The nodes after the last common node (the newest boxes,
+    // on top) stay last, after every common node (0132).
     final byId = {for (final n in out) n.id: n};
-    var k = 0;
-    for (var i = 0; i < out.length; i++) {
-      if (common.contains(out[i].id)) out[i] = byId[t[k++]]!;
+    final atStart = <CanvasNode>[];
+    final after = <String, List<CanvasNode>>{};
+    String? anchor;
+    for (final n in out) {
+      if (common.contains(n.id)) {
+        anchor = n.id;
+      } else if (anchor == null) {
+        atStart.add(n);
+      } else {
+        (after[anchor] ??= []).add(n);
+      }
     }
+    final last = anchor;
+    out
+      ..clear()
+      ..addAll(atStart);
+    for (final id in t) {
+      out.add(byId[id]!);
+      if (id != last) out.addAll(after[id] ?? const []);
+    }
+    if (last != null) out.addAll(after[last] ?? const []);
   }
 }
 
