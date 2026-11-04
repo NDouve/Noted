@@ -954,13 +954,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       var seed = page;
       var foldedAny = false;
       try {
-        var time = DateTime.now().millisecondsSinceEpoch;
-        try {
-          time = (await File(st.pathFor(id)).lastModified()).millisecondsSinceEpoch;
-        } on FileSystemException {
-          // Now will do.
-        }
-        final fold = await _foldFor(loc, id, page, time);
+        final fold = await _foldFor(loc, id, page, DateTime.now().millisecondsSinceEpoch);
         if (fold.page != null && (fold.folded.isNotEmpty || fold.heldUsed)) {
           seed = fold.page!;
           foldedAny = true;
@@ -3814,6 +3808,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Waits until the writes that aren't tied to a page and every page's queue
   // are empty, also for jobs that were queued meanwhile.
   Future<void> _drain() async {
+    // Nothing pending: no wait at all (every queued job is tracked in _unfinished).
+    if (_unfinished.isEmpty && _pageJobs.isEmpty && !_unsaved.busy) return;
     do {
       await _saving;
       await _unsaved.idle();
