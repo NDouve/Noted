@@ -572,7 +572,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0051 — External file changes and per-box merging
 - **Date:** 2026-10-25
-- **Status:** Active (implements 0020); refined by 0120 (the manual-edit merge view is removed; the issue sequence replaces the badge) and 0121; unreadable replacements of the open page amended by 0124; mixed foreign and Noted nodes amended by 0128
+- **Status:** Active (implements 0020); refined by 0120 (the manual-edit merge view is removed; the issue sequence replaces the badge) and 0121; unreadable replacements of the open page amended by 0124; mixed foreign and Noted nodes amended by 0128; node order amended by 0132
 - **Decision:**
   - **Watching:** every storage folder is watched. A changed page file is checked after 300 ms.
     - The app recognises its own writes by their exact text and ignores them.
@@ -602,7 +602,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0053 — Cloud conflict-copy files (OneDrive)
 - **Date:** 2026-10-25
-- **Status:** Active; extended by 0120 (landed boxes); deletion of a copy amended by 0124
+- **Status:** Active; extended by 0120 (landed boxes); deletion of a copy amended by 0124; verification amended by 0132
 - **Decision:**
   - **Detection:** a file `<stem>-<suffix>.canvas` is a conflict copy when `<stem>.canvas` exists in the same folder and both have the same page id. OneDrive appends `-<COMPUTERNAME>`, then `-<COMPUTERNAME>-<n>`. This naming is *unverified*, so a broader suffix pattern is accepted.
   - **Merge**, box by box into the original. There is no common base, so revisions decide:
@@ -1341,7 +1341,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0098 — Image and file boxes, and where their files are stored
 - **Date:** 2026-10-31
-- **Status:** Active (page format change approved by the maintainer; Box API 0.7 and the attachments package approved retroactively); amended by 0102 (Delete, alt text below the picture); landing kept files amended by 0124
+- **Status:** Active (page format change approved by the maintainer; Box API 0.7 and the attachments package approved retroactively); amended by 0102 (Delete, alt text below the picture); landing kept files amended by 0124; verification and damaged copies amended by 0132
 - **Decision:**
   - **Setting "Store images and files":** on pages and binders, either *In a folder beside the page* (the default) or *In the page file*.
     - It is stored as `"attachments":"folder"|"embedded"` in the page header's `noted` object or in the binder file. An absent value means the page follows its parent.
@@ -1796,7 +1796,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0128 — Mixed foreign and Noted nodes in merges; closed-app write eligibility; compare-and-swap replace
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer; amends 0051 and 0117; amended by 0130: the app now uses compare-and-swap); compare-and-swap leftovers superseded by 0131
+- **Status:** Active (approved by the maintainer; amends 0051 and 0117; amended by 0130: the app now uses compare-and-swap); compare-and-swap leftovers superseded by 0131; conflict-copy verification amended by 0132
 - **Decision:**
   - **Merges (amends 0051):** when both sides changed the same node and one side's node is foreign while the other's is a box, nothing is dropped. With mine foreign, mine is kept as it is and theirs is kept under a new id: a box keeps all its data, and a foreign node that isn't a JSON object is kept unchanged. With mine a box, theirs is recorded in the box's conflicts byte for byte. A box kept under a new id that overlaps the other side's node gets the landed marker (0121), in the three-way merge and in the conflict-copy merge alike.
   - **Closed-app writes (amends 0117):** the MCP server checks whether the page allows the box's type against the exact page bytes it replaces, on every attempt. If the page's parent changed since the library was read, the write is tried again with the new parents. A file that now holds a different page is not written.
@@ -1849,6 +1849,18 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **The MCP log.** The app reads `ai-mcp-log.jsonl` as bytes decoded leniently, so a torn character never hides other entries or pending approvals. The server, under its lock, starts a new line first when the log doesn't end with one; the log stays append only.
 - **Rationale:** Every audit since 2026-11-01 found a writer that checked a file and wrote it in a separate step. One mechanism that never replaces and never deletes what it hasn't just verified closes that class of loss, and a collision is better shown as a conflict copy than settled by deleting a version.
 - **Alternatives considered:** per-writer checks (each new writer reopened the window); deleting a verified aside on a collision because its bytes are "known" (the in-memory copy isn't durable, and the merge may never include it); the MCP server answering `busy` and deleting its aside (loses the page's previous bytes); writing the MCP's new file in place after an exclusive create (a sync rename in between is truncated); a byte-for-byte fast path that skips the move aside when nothing changed (leaves the window open).
+
+## 0132 — Damaged attachments are kept; node order in merges; conflict-copy verification; deletes that fail part way; file format document
+- **Date:** 2026-11-03
+- **Status:** Active (the damaged-copy rule and its normalisations approved by the maintainer for this run; Box API 0.12 decided by the PM under delegated authority; the node-order rule decided by the PM and awaiting the maintainer's confirmation; amends 0051, 0053, 0098 and 0128)
+- **Decision:**
+  - **Attachments are checked wherever they are trusted (amends 0098):** before a file is used for display, embedding or opening, and when a file with the same name is already there as one is written, its bytes are hashed (streamed) and compared: on the notebook side with the hash in the file's name, in the box module with the hash the box stores, and the two must agree. Embedded data is compared with its hash when it is decoded. A file smaller than the box's recorded size, or still changing, is "Still syncing". At full size with the wrong hash it is **damaged**: both copies are kept. The damaged file is renamed beside it as `<name>.damaged-<first 12 hex of its actual hash>`, never over anything; the good copy is written under the hash name when its bytes are at hand (or kept as `<name>.kept-<n>` if the name can't be freed); and the user is told by the box's own file name. A missing hash-named file is first looked for among its kept copies and put back if one now holds the right hash. Damaged embedded data is kept in the page byte for byte and is never converted. The box shows that the file is damaged, not "Still syncing", while it is open. A file still syncing is checked again when the folder changes, not on every redraw. Older readers ignore the extra names: they are not hash names and not temporary files. **Box API 0.12** adds the optional `VerifyingAttachmentStore` for this; `AttachmentStore` is unchanged.
+  - **Node order (amends 0051):** the three-way merge takes the other side's order of the nodes both sides kept when only the other side changed it; when this side changed it, or both did, this side's order stays. Nodes either side added are placed after their predecessor, as before.
+  - **Conflict-copy verification (amends 0053, 0128):** the copy's version of a node is never dropped. A node that can't be given an id is kept as it is; nodes are matched one to one, so a version the original holds once and the copy twice is kept twice; a copy node that is recorded in a box's conflicts counts as kept. The merge and the check that allows the copy to be deleted use the same counting, so merging the same copy again adds nothing.
+  - **A delete that fails part way:** pages it already deleted are put back exclusively, never over a file that has appeared since, together with their attachments. A page that can't be put back is kept in recovery (an entry already waiting for it is left alone), and attachments that can't go back to their folder land with it.
+  - **The file format document:** `docs/file-format.md` describes what Noted writes today, from the code; where it and a decision disagree, the maintainer decides.
+- **Rationale:** A file that synced with the wrong content must not be shown, embedded or opened as if it were right, and neither version should be lost to the check. A reorder made on another device is a change like any other. Verification that counts only by presence can approve a merge that dropped a version.
+- **Alternatives considered:** deleting a damaged file (loses what might be the only copy); trusting the box's hash on the notebook side (the core never reads box data, invariant 2); re-hashing on every frame (slow for large files); always keeping this side's node order (drops reorders from other editors); verifying conflict copies by presence only (accepted dropped duplicates).
 
 ---
 
