@@ -1473,5 +1473,44 @@ void main() {
       expect(saves, 0);
       expect(disk(a).node('t1'), isNotNull);
     });
+
+    test('(blocking 1) the seed write fails at open: the ancestor is marked landing before its retire, which then fails', () async {
+      var listFails = false;
+      var ready = false;
+      var failWrite = false;
+      var failRetire = false;
+      final (nb, a, _, _) = await setUp4(
+        () => ready && listFails,
+        extra: (p) async {
+          if (failWrite && p == 'tmp-written') {
+            // The write fails and leaves nothing behind.
+            for (final f in rec.listSync().whereType<File>().where((f) => f.path.endsWith('.tmp'))) {
+              f.deleteSync();
+            }
+            throw const FileSystemException('no space');
+          }
+          if (failRetire && p == 'retire-before-delete') throw const FileSystemException('locked');
+        },
+      );
+      ready = true;
+      listFails = true;
+      failWrite = true;
+      await nb.open(a); // opens from the held copy; neither the listing nor the seed write works
+      expect(nb.unsavedPageCount, 1);
+      nb.current!.delete('x1'); // the user deletes the box
+      listFails = false;
+      failWrite = false;
+      failRetire = true;
+      await nb.flush(); // lands without x1; the ancestor is marked, its retire fails
+      expect(disk(a).node('x1'), isNull);
+      expect(recNames().where((n) => n.endsWith('.landing')), hasLength(1));
+      quit(nb);
+      final again = make();
+      await again.load();
+      final x = disk(a).node('x1');
+      expect(x, isNotNull);
+      expect((x! as BoxRecord).landed, isNotNull, reason: 'it comes back marked, not silently');
+      expect(recNames(), isEmpty);
+    });
   });
 }

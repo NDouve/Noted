@@ -1022,7 +1022,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               loc,
               st,
               seed,
-              base: held.baseText == null ? null : readPage(held.baseText!),
+              base: held.baseText == null ? NotedPage.create(seed.meta) : readPage(held.baseText!),
               supersedes: [..._gensOf(sess.entries.values), ...sess.pendingGens],
             );
             if (entry != null) {
@@ -4081,9 +4081,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           for (final e in listing.entries)
             if (e.pageId == saved.id && s.pendingGens.contains(e.gen)) e,
         ];
+        // They may have landed with this save: marked so, before anything is retired,
+        // a failed retire leaves them `.landing` and a fold gives what they bring
+        // back the landed marker.
+        if (old.isNotEmpty && !(await _recovery!.markLanding(old)).ok) pendingDone = false;
       } on Object catch (e) {
         debugPrint('Listing the recovery entries of page ${saved.id} failed: $e');
         pendingDone = false;
+      }
+      if (!pendingDone && entries.isNotEmpty) {
+        // The session's entries are retired later in this run, not folded again.
+        _unsaved.addWaiting(saved.id, loc, entries);
       }
     }
     if ((entries.isNotEmpty || heldCopy != null) && pendingDone) {
@@ -4303,10 +4311,24 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final rec = _recovery;
     final waiting = _unsaved.waitingOf(id);
     if (rec == null || waiting.isEmpty) return;
+    // Entries they supersede that are still on disk go first: retiring a survivor
+    // alone would expose them.
+    final RecoveryListing listing;
+    try {
+      listing = await rec.list();
+    } on Object catch (e) {
+      debugPrint('Listing the recovery entries of page $id failed: $e');
+      return;
+    }
+    final gens = {for (final e in waiting) e.gen};
+    final ancestors = [
+      for (final a in _ancestorsOf(waiting, const [], [for (final e in listing.entries) if (e.pageId == id) e], const {}))
+        if (!gens.contains(a.gen)) a,
+    ];
     final done = <String>[];
-    for (final e in _ancestorsFirst(waiting)) {
+    for (final e in _ancestorsFirst([...ancestors, ...waiting])) {
       if (!await rec.retire(e)) break;
-      done.add(e.gen);
+      if (gens.contains(e.gen)) done.add(e.gen);
     }
     _unsaved.removeWaiting(id, done);
   }
