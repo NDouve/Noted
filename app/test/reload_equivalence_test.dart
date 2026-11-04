@@ -76,12 +76,18 @@
 //     "the files in" (a `.cas-verified` file where the page was) after
 //     `edit:failAlways`.
 // 13. `Notebook.delete` does not put back what a failed delete already deleted
-//     (the fix of this task): 8 fail; "the files in pages" after
+//     (the fix of this task): 5 of the 24 sequences (seeds 3, 10, 13, 19, 20) and
+//     the regression probes fail; "the files in pages" after
 //     `delete:failDelete` on a page with subpages, and the regression probe.
 //     The generator aims the fault at the last page of the subtree for this.
 // 14. A merge re-serialises the data of the unregistered box (invariant 2): all
 //     24 fail; "data of the unregistered box" on disk, first after `vanish`
 //     and `copy` steps.
+// 15. A page that could not be put back overwrites the recovery entry already
+//     waiting for it: the probe "a failed put-back with a recovery entry
+//     waiting ..." fails ("the pending edit was replaced"). The same probe
+//     checks that attachments which cannot go back are handed to recovery's
+//     kept files and come back after a later delete and a restart.
 //
 // Wait for watchers: none is used. The notebook runs with `watchFiles` off,
 // and the steps call `checkFile` and `checkFolders` themselves, the way the
