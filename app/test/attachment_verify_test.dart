@@ -9,10 +9,12 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show FlutterError;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/attachment_copy.dart';
 import 'package:noted/src/home.dart';
 import 'package:noted/src/page_attachments.dart';
+import 'package:noted_box_attachments/noted_box_attachments.dart' show AttachmentRef, readAttachment;
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -271,4 +273,250 @@ void main() {
       expect(to.listSync().length, 2);
     });
   });
+  group('a copy that could not be made is never reported', () {
+    Directory rec() => Directory('${root.path}/rec');
+    File recAsset(String n) => File('${rec().path}/p.assets/$n');
+
+    PageAttachments withRecovery({Directory? pageFolder}) {
+      final s = PageAttachments(
+        pageFolder: pageFolder ?? pages,
+        pageId: 'p',
+        storage: () => AttachmentStorage.folder,
+        cacheDirectory: Directory('${root.path}/cache'),
+        recoveryDirectory: rec(),
+        onNotice: notices.add,
+        watch: false,
+      );
+      addTearDown(() {
+        try {
+          s.dispose();
+        } on FlutterError {
+          // Already disposed by the test.
+        }
+      });
+      return s;
+    }
+
+    void rejectKept() {
+      attachmentBeforeCreateHook = (path) {
+        if (path.contains('.kept-')) throw const FileSystemException('injected');
+      };
+      addTearDown(() => attachmentBeforeCreateHook = null);
+    }
+
+    List<String> names() =>
+        Directory('${pages.path}/p.assets').listSync().map((e) => e.path.split(RegExp(r'[\\/]')).last).toList();
+
+    bool recHoldsFiles() => rec().existsSync() && rec().listSync(recursive: true).any((e) => e is File);
+
+    test('put throws when the kept copy cannot be written and there is no recovery folder', () async {
+      plant(Uint8List.sublistView(good, 0, 50));
+      rejectKept();
+      await expectLater(store.put(good, extension: 'bin'), throwsA(isA<FileSystemException>()));
+      expect(asset(name).lengthSync(), 50);
+    });
+
+    test('a bad file at the name: nothing goes to recovery, the file stays, putInPageFolder throws too', () async {
+      plant(Uint8List.sublistView(good, 0, 50));
+      rejectKept();
+      final s = withRecovery();
+      await expectLater(s.put(good, extension: 'bin'), throwsA(isA<FileSystemException>()));
+      await expectLater(s.putInPageFolder(good, extension: 'bin'), throwsA(isA<FileSystemException>()));
+      expect(recHoldsFiles(), isFalse);
+      expect(asset(name).lengthSync(), 50);
+    });
+
+    test('a damaged file that cannot be set aside: put throws, nothing in recovery, the notice says where it is', () async {
+      plant(bad);
+      // Another file already under the damaged copy's name: nothing can be moved there.
+      File('${pages.path}/p.assets/${damagedName(name, badHash)}').writeAsBytesSync([1, 2, 3]);
+      rejectKept();
+      final s = withRecovery();
+      await expectLater(s.put(good, extension: 'bin'), throwsA(isA<FileSystemException>()));
+      expect(recHoldsFiles(), isFalse);
+      expect(asset(name).readAsBytesSync(), bad, reason: 'the damaged file is still there');
+      expect(notices.single, contains('could not be set aside'));
+    });
+
+    test('a folder that rejects new files, nothing at the name: putInPageFolder throws, nothing goes to recovery', () async {
+      attachmentBeforeCreateHook = (path) {
+        if (path.contains('.assets') && !path.replaceAll('\\', '/').contains('/rec/')) {
+          throw const FileSystemException('injected');
+        }
+      };
+      addTearDown(() => attachmentBeforeCreateHook = null);
+      final s = withRecovery();
+      await expectLater(s.putInPageFolder(good, extension: 'bin'), throwsA(isA<FileSystemException>()));
+      expect(rec().existsSync(), isFalse);
+      // put keeps the file for recovery, as before.
+      final kept = await s.put(good, extension: 'bin');
+      expect(kept.fileName, name);
+      expect(recAsset(name).readAsBytesSync(), good);
+    });
+
+    test('a disposed store throws and does not create the assets folder', () async {
+      final s = withRecovery();
+      s.dispose();
+      await expectLater(s.put(good, extension: 'bin'), throwsA(isA<FileSystemException>()));
+      await expectLater(s.putInPageFolder(good, extension: 'bin'), throwsA(isA<FileSystemException>()));
+      expect(Directory('${pages.path}/p.assets').existsSync(), isFalse);
+      expect(rec().existsSync(), isFalse);
+    });
+
+    test('a second put reuses an existing good kept copy', () async {
+      plant(Uint8List.sublistView(good, 0, 50));
+      await store.put(good, extension: 'bin');
+      await store.put(good, extension: 'bin');
+      expect(names().where((n) => n.contains('.kept-')), hasLength(1));
+    });
+
+    test('kept-copy reuse skips a .tmp file', () async {
+      Directory('${pages.path}/p.assets').createSync(recursive: true);
+      final tmp = File('${pages.path}/p.assets/$name.kept-1.tmp')..writeAsBytesSync(good);
+      final kept = await keepGoodCopy(Directory('${pages.path}/p.assets'), name, good);
+      expect(kept, isNotNull);
+      expect(kept!.endsWith('.tmp'), isFalse);
+      expect(tmp.existsSync(), isTrue, reason: 'not ours to remove');
+    });
+
+    test('a file that appears between the check and the publish is not overwritten', () async {
+      var armed = true;
+      attachmentPublishHook = (tmp, target) async {
+        if (armed) {
+          armed = false;
+          File(target).writeAsBytesSync(Uint8List.sublistView(good, 0, 40));
+        }
+        return publishExclusive(tmp, target);
+      };
+      addTearDown(() => attachmentPublishHook = null);
+      final s = await store.put(good, extension: 'bin');
+      expect(s.fileName, name);
+      expect(asset(name).lengthSync(), 40, reason: 'the other writer\'s file is left alone');
+      final kept = names().where((n) => n.contains('.kept-')).single;
+      expect(File('${pages.path}/p.assets/$kept').readAsBytesSync(), good);
+      expect(names().where((n) => n.endsWith('.tmp')), isEmpty);
+    });
+
+    test('with no hard links the copy is published and no .tmp is left', () async {
+      attachmentPublishHook = (tmp, target) async => throw const FileSystemException('no hard links');
+      addTearDown(() => attachmentPublishHook = null);
+      await store.put(good, extension: 'bin');
+      expect(asset(name).readAsBytesSync(), good);
+      expect(names(), [name]);
+    });
+
+    test('a refused publish leaves no .tmp', () async {
+      attachmentPublishHook = (tmp, target) async => false;
+      addTearDown(() => attachmentPublishHook = null);
+      await expectLater(store.put(good, extension: 'bin'), throwsA(isA<FileSystemException>()));
+      expect(names().where((n) => n.endsWith('.tmp')), isEmpty);
+    });
+
+    test('a damaged folder file with a good recovery copy reads ok, and the page folder alone has no good copy', () async {
+      plant(bad);
+      recAsset(name)
+        ..createSync(recursive: true)
+        ..writeAsBytesSync(good);
+      final s = withRecovery();
+      final v = await s.readVerified(name, size: good.length);
+      expect(v.state, AttachmentState.ok);
+      expect(v.bytes, good);
+      expect(v.keptAs, damagedName(name, badHash));
+      expect(asset(name).existsSync(), isFalse);
+      expect((await s.verifyInPageFolder(name, size: good.length)).state, AttachmentState.syncing);
+    });
+
+    test('readAttachment tells the user where the damaged copy was kept', () async {
+      plant(bad);
+      recAsset(name)
+        ..createSync(recursive: true)
+        ..writeAsBytesSync(good);
+      final s = withRecovery();
+      final ref = AttachmentRef(name: 'f.bin', size: good.length, hash: hash, file: name);
+      final r = await readAttachment(ref, s);
+      expect(r.state, AttachmentState.ok);
+      expect(notices.single, contains(damagedName(name, badHash)));
+    });
+
+    test('a paste kept in recovery still reads when an incomplete file later appears in the folder', () async {
+      final later = Directory('${root.path}/later');
+      final s = withRecovery(pageFolder: later);
+      final stored = await s.put(good, extension: 'bin');
+      expect(recAsset(stored.fileName).readAsBytesSync(), good);
+      Directory('${later.path}/p.assets').createSync(recursive: true);
+      File('${later.path}/p.assets/$name').writeAsBytesSync(Uint8List.sublistView(good, 0, 50));
+      final v = await s.readVerified(name, size: good.length);
+      expect(v.state, AttachmentState.ok);
+      expect(v.bytes, good);
+    });
+  });
+  group('a file another writer put at the name is never deleted', () {
+    test('a fill that throws part way, with the target replaced meanwhile: the other file survives', () async {
+      Directory('${pages.path}/p.assets').createSync(recursive: true);
+      final inner = File('${root.path}/src.bin')..writeAsBytesSync([1, 2, 3]);
+      final target = asset(name);
+      attachmentPublishHook = (tmp, t) async => throw const FileSystemException('no hard links');
+      addTearDown(() => attachmentPublishHook = null);
+      final flaky = _FlakyFile(inner, () => target.writeAsBytesSync([9, 9, 9]));
+      await expectLater(publishAttachment(flaky, target.path), throwsA(isA<FileSystemException>()));
+      expect(target.readAsBytesSync(), [9, 9, 9], reason: 'same length, other bytes: not ours');
+    });
+
+    test('a fill that throws part way removes the partial file it wrote', () async {
+      Directory('${pages.path}/p.assets').createSync(recursive: true);
+      final inner = File('${root.path}/src.bin')..writeAsBytesSync([1, 2, 3]);
+      final target = asset(name);
+      attachmentPublishHook = (tmp, t) async => throw const FileSystemException('no hard links');
+      addTearDown(() => attachmentPublishHook = null);
+      await expectLater(publishAttachment(_FlakyFile(inner, () {}), target.path), throwsA(isA<FileSystemException>()));
+      expect(target.existsSync(), isFalse);
+    });
+
+    test('a target that changes between the fill and the hash check survives', () async {
+      var armed = true;
+      attachmentPublishHook = (tmp, t) async {
+        if (!armed) return publishExclusive(tmp, t);
+        throw const FileSystemException('no hard links');
+      };
+      attachmentAfterFillHook = (t) async {
+        armed = false;
+        File(t).writeAsBytesSync(Uint8List.fromList(bad));
+      };
+      addTearDown(() {
+        attachmentPublishHook = null;
+        attachmentAfterFillHook = null;
+      });
+      await store.put(good, extension: 'bin');
+      // The other writer's file is not deleted and stays at the name; the good
+      // bytes go to a .kept- copy beside it.
+      expect(asset(name).readAsBytesSync(), bad);
+      final kept = Directory('${pages.path}/p.assets').listSync().map((e) => e.path.split(RegExp(r'[\/]')).last).where((n) => n.contains('.kept-'));
+      expect(kept, isNotEmpty);
+    });
+  });
+}
+
+/// A file whose stream yields three bytes, runs [onChunk], then fails. A ranged
+/// read (the writer hashing what it wrote) reads the real file.
+class _FlakyFile implements File {
+  _FlakyFile(this.inner, this.onChunk);
+
+  final File inner;
+  final void Function() onChunk;
+
+  @override
+  Stream<List<int>> openRead([int? start, int? end]) {
+    if (start != null) return inner.openRead(start, end);
+    return () async* {
+      yield [1, 2, 3];
+      onChunk();
+      throw const FileSystemException('injected');
+    }();
+  }
+
+  @override
+  String get path => inner.path;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }

@@ -97,12 +97,15 @@
 
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
+import 'package:noted/src/attachment_copy.dart' show attachmentBeforeCreateHook;
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_store.dart';
+import 'package:noted_box_attachments/noted_box_attachments.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -1259,6 +1262,59 @@ void main() {
                 'on the screen but is in no file and no recovery entry, so leaving the page or quitting '
                 'loses it. Minimal seed: any page, one added box, a failing publish, then open another page.',
     );
+
+    // Run 2026-11-04-02, R-1 (area-data-integrity-2): Move attachments to
+    // folder with the good copy unwritable keeps the embedded data, and puts
+    // nothing hash-named into recovery (it would later land over the file).
+    for (final recoveryToo in [true, false]) {
+      test(
+        'moving an embedded file to the folder when its copy cannot be stored keeps it embedded '
+        '(recovery ${recoveryToo ? 'read-only' : 'writable'})',
+        () async {
+          final id = run.model.keys.first;
+          final m = run.model[id]!;
+          final data = Uint8List.fromList(List.generate(200, (i) => (i * 7) % 251));
+          final name = attachmentFileName(contentHash(data), 'bin');
+          await run.nb.open(id);
+          await run.nb.setAttachmentStorage(id, AttachmentStorage.embedded);
+          final made = await const FileModule().createFromFile(IncomingFile('f.bin', data), run.nb.attachments!);
+          const codec = FileCodec();
+          final box = commitBox(createBox(codec, const Bounds(5, 5, 200, 40)), codec, made!.$1);
+          run.nb.current!.insertBox(box);
+          await run.nb.flush();
+          // A sync client has put the first bytes of the file in the folder.
+          final assets = Directory('${run.dirs[m.loc]!.path}${run.sep}${assetsFolderName(id)}')..createSync();
+          File('${assets.path}${run.sep}$name').writeAsBytesSync(data.sublist(0, 3));
+          attachmentBeforeCreateHook = (path) {
+            final inRec = path.replaceAll('\\', '/').contains('/rec');
+            if (path.contains('.assets') && (recoveryToo || !inRec)) throw const FileSystemException('injected');
+          };
+          addTearDown(() => attachmentBeforeCreateHook = null);
+          final r = await run.nb.convertAttachments(id, AttachmentStorage.folder);
+          expect(r.changed, 0);
+          expect(r.failed, 1);
+          await run.nb.flush();
+          attachmentBeforeCreateHook = null;
+
+          expect((await run.nb.pendingRecovery()).entries, isEmpty);
+          expect(
+            run.rec.existsSync() && run.rec.listSync(recursive: true).any((e) => e.path.contains('.assets')),
+            isFalse,
+            reason: 'no hash-named copy waits in recovery',
+          );
+          expect([for (final e in assets.listSync()) e.path.split(RegExp(r'[\\/]')).last], [name]);
+          expect(File('${assets.path}${run.sep}$name').lengthSync(), 3, reason: 'left alone');
+          final fresh = run._make();
+          run._spare.add(fresh);
+          await fresh.load();
+          await fresh.open(id);
+          final b = fresh.current!.page.nodes.whereType<BoxRecord>().firstWhere((n) => n.id == box.id);
+          final ref = ((fresh.current!.modules.codecs.resolve(b) as LiveBox).data as FileData).ref;
+          expect(ref.bytes, data, reason: 'a fresh notebook still holds the embedded bytes');
+          expect(b.snapshotText, box.snapshotText, reason: 'the box text is unchanged');
+        },
+      );
+    }
 
     test(
       'regression: a delete that fails on a subpage puts back the pages it already deleted',

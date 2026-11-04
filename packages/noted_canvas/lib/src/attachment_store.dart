@@ -60,7 +60,8 @@ abstract interface class AttachmentStore {
 
   /// Stores [bytes]: embedded if [storage] (default: this page's setting)
   /// says so and the file is at most [embedLimitBytes], otherwise in the
-  /// folder under its content hash. A folder file that exists already is
+  /// folder under its content hash. Throws a `FileSystemException` when no
+  /// copy could be stored. A folder file that exists already is
   /// left alone (same name, same content). Over the limit, the user is told
   /// once in a one-line notice.
   Future<StoredAttachment> put(
@@ -150,4 +151,23 @@ abstract interface class VerifyingAttachmentStore implements AttachmentStore {
   /// The same check without keeping the bytes (for a large file that is only
   /// handed to another program).
   Future<VerifiedAttachment> verify(String fileName, {required int size});
+}
+
+/// A [VerifyingAttachmentStore] that can also store and check a file in the
+/// page's own assets folder only, never in a recovery folder. Optional: a
+/// conversion to the folder ("Move attachments to folder") drops a box's
+/// embedded copy only after the file is stored and verified there, so it
+/// refuses to convert for a store that does not implement this.
+abstract interface class PageFolderAttachmentStore implements VerifyingAttachmentStore {
+  /// [AttachmentStore.put] without the recovery fallback: stores [bytes] in the
+  /// page's own assets folder, or throws a `FileSystemException`.
+  Future<StoredAttachment> putInPageFolder(
+    Uint8List bytes, {
+    required String extension,
+    AttachmentStorage? storage,
+  });
+
+  /// [VerifyingAttachmentStore.verify] on the page's own assets folder only:
+  /// a copy in a recovery folder is never looked at.
+  Future<VerifiedAttachment> verifyInPageFolder(String fileName, {required int size});
 }

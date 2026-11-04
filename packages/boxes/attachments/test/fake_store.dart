@@ -143,3 +143,58 @@ class FakeStore extends ChangeNotifier implements AttachmentStore {
   @override
   Future<List<IncomingFile>> pick({required bool imagesOnly}) async => toPick;
 }
+
+/// A [FakeStore] that also stores and checks files "in the page folder"
+/// ([PageFolderAttachmentStore]), as the app's store does. [corruptOnPut]
+/// makes the stored file hold other bytes, [failPut] makes the store throw.
+class PageFolderFakeStore extends FakeStore implements PageFolderAttachmentStore {
+  PageFolderFakeStore({super.storage, super.cache});
+
+  bool failPut = false;
+
+  /// Throws for bytes this accepts (one failing file among several).
+  bool Function(Uint8List bytes)? failWhen;
+
+  bool _fails(Uint8List bytes) => failPut || (failWhen?.call(bytes) ?? false);
+
+  @override
+  Future<StoredAttachment> put(Uint8List bytes, {required String extension, AttachmentStorage? storage}) {
+    if (_fails(bytes)) throw const FileSystemException('The folder rejects new files');
+    return super.put(bytes, extension: extension, storage: storage);
+  }
+
+  bool corruptOnPut = false;
+
+  @override
+  Future<StoredAttachment> putInPageFolder(
+    Uint8List bytes, {
+    required String extension,
+    AttachmentStorage? storage,
+  }) async {
+    if (_fails(bytes)) throw const FileSystemException('The folder rejects new files');
+    final s = await super.put(bytes, extension: extension, storage: storage);
+    if (corruptOnPut) folder[s.fileName] = Uint8List.fromList(bytes.sublist(0, bytes.length ~/ 2));
+    return s;
+  }
+
+  @override
+  Future<VerifiedAttachment> readVerified(String fileName, {required int size}) async {
+    final bytes = folder[fileName];
+    if (bytes == null || bytes.length < size) {
+      return const VerifiedAttachment(AttachmentState.syncing);
+    }
+    return contentHash(bytes) == fileName.split('.').first
+        ? VerifiedAttachment(AttachmentState.ok, bytes: bytes)
+        : const VerifiedAttachment(AttachmentState.damaged);
+  }
+
+  @override
+  Future<VerifiedAttachment> verify(String fileName, {required int size}) async {
+    final v = await readVerified(fileName, size: size);
+    return VerifiedAttachment(v.state);
+  }
+
+  @override
+  Future<VerifiedAttachment> verifyInPageFolder(String fileName, {required int size}) =>
+      verify(fileName, size: size);
+}
