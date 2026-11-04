@@ -52,33 +52,47 @@ $ErrorActionPreference = 'Stop'
 # Copies noted_mcp.exe to $env:LOCALAPPDATA\Noted\mcp, which is what Claude
 # sessions should run: they keep the exe open, and a held exe in the build
 # output blocks rebuilding. Returns the path of the copy (the existing one if
-# it could not be refreshed because a process holds it), or $null when there
-# is no LOCALAPPDATA or no copy could be made. Never throws for a held file.
+# it could not be refreshed), or $null when there is no LOCALAPPDATA or no
+# copy exists. Never throws. The copy is written to a .tmp file, checked by
+# hash and swapped in, so a failed copy leaves the existing one untouched.
+# NOTE: this function is duplicated in package-windows.ps1 and
+# register-mcp.ps1 (which ships alone in the zip); keep the two identical.
 function Update-McpCopy([string]$Source, [string]$Root = $env:LOCALAPPDATA) {
   if (-not $Root) { return $null }
   $dir = Join-Path $Root 'Noted\mcp'
   $dest = Join-Path $dir 'noted_mcp.exe'
-  New-Item -ItemType Directory -Force $dir | Out-Null
-  if (Test-Path $dest) {
-    if ((Get-FileHash $Source).Hash -eq (Get-FileHash $dest).Hash) {
-      Write-Host "MCP copy is up to date: $dest"
-      return $dest
-    }
-    try {
-      # Opening for write with no sharing fails while a process runs or has
-      # the file open.
-      [IO.File]::Open($dest, 'Open', 'Write', 'None').Dispose()
-    } catch {
-      Write-Host "The MCP copy was NOT refreshed because a process holds it (usually a Claude session running noted_mcp.exe): $dest"
-      Write-Host "The old copy is kept and still works. To refresh it, close the Claude sessions using it and run this script again."
-      return $dest
-    }
-  }
+  $tmp = "$dest.tmp"
   try {
-    Copy-Item $Source $dest -Force
-  } catch {
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    # A leftover from an interrupted run.
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    $hash = (Get-FileHash $Source).Hash
     if (Test-Path $dest) {
-      Write-Host "The MCP copy was NOT refreshed ($($_.Exception.Message)); the old copy is kept. Close the Claude sessions using it and run this script again."
+      if ((Get-FileHash $dest).Hash -eq $hash) {
+        Write-Host "MCP copy is up to date: $dest"
+        return $dest
+      }
+      try {
+        # Opening for write with no sharing fails while a process runs or
+        # has the file open.
+        [IO.File]::Open($dest, 'Open', 'Write', 'None').Dispose()
+      } catch {
+        Write-Host "The MCP copy was NOT refreshed because a process holds it (usually a Claude session running noted_mcp.exe): $dest"
+        Write-Host "The old copy is kept and still works. To refresh it, close the Claude sessions using it and run this script again."
+        return $dest
+      }
+    }
+    Copy-Item $Source $tmp -Force
+    if ((Get-FileHash $tmp).Hash -ne $hash) { throw 'the copy does not match the source' }
+    if (Test-Path $dest) {
+      [IO.File]::Replace($tmp, $dest, [NullString]::Value)
+    } else {
+      Move-Item $tmp $dest
+    }
+  } catch {
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    if (Test-Path $dest) {
+      Write-Host "The MCP copy was NOT refreshed ($($_.Exception.Message)); the existing copy is untouched. Close the Claude sessions using it and run this script again."
       return $dest
     }
     Write-Host "Could not copy noted_mcp.exe to ${dest}: $($_.Exception.Message)"
@@ -94,6 +108,14 @@ if (-not $Exe) {
     (Join-Path $PSScriptRoot '..\build\windows\x64\runner\Release\noted_mcp.exe')
   )
   $Exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+  # package-windows.ps1 compiles to build\noted_mcp.new.exe when a process
+  # holds the Release exe; take the newer of the two, never a stale one.
+  $held = Join-Path $PSScriptRoot '..\build\noted_mcp.new.exe'
+  if ($Exe -and (Test-Path $held) -and $Exe -ne $candidates[0]) {
+    if ((Get-Item $held).LastWriteTime -gt (Get-Item $Exe).LastWriteTime) { $Exe = $held }
+  } elseif (-not $Exe -and (Test-Path $held)) {
+    $Exe = $held
+  }
   if (-not $Exe) { throw "noted_mcp.exe not found. Pass -Exe <path>, or build the release first (app\scripts\package-windows.ps1)." }
 }
 $Exe = (Resolve-Path $Exe).Path
