@@ -165,7 +165,7 @@ Pass `--data-dir <folder>` to read another app folder (the tests do).
 powershell -ExecutionPolicy Bypass -File register-mcp.ps1
 ```
 
-It runs `claude mcp add noted -s user -- <path to noted_mcp.exe>`, replacing an earlier registration, so every project sees the server. Check it with `claude mcp list`. The equivalent by hand is:
+It first copies `noted_mcp.exe` to `%LOCALAPPDATA%\Noted\mcp`, so a running chat holds the copy and not the release folder (if a process holds the existing copy, it is kept and the script says so; close the chats using it and run the script again). It then runs `claude mcp add noted -s user -- <path to the copy>`, replacing an earlier registration, so every project sees the server. Check it with `claude mcp list`. The equivalent by hand is:
 
 ```powershell
 claude mcp add noted -s user -- "C:\path\to\Noted\noted_mcp.exe"
@@ -186,11 +186,11 @@ claude mcp add noted -s user -- "C:\path\to\Noted\noted_mcp.exe"
 
 There is no token or other secret in the registration: the server's configuration holds nothing to keep private. To give a chat access beyond Open pages, give it a code in the conversation; it passes the code on each call. (An earlier version took a token in `NOTED_TOKEN` and `register-mcp.ps1 -Token`; both are gone, and register again to drop an old token.)
 
-Run the script with `-PrintOnly` to print the snippet without touching Claude Code. If you move the Noted folder, run it again.
+Pass `-NoCopy` to register the exe where it is. Run the script with `-PrintOnly` to print the snippet without touching Claude Code. If you move the Noted folder, run it again.
 
 ## Building it
 
-`app\scripts\package-windows.ps1` compiles the server with `dart compile exe` into the release folder, next to `noted.exe`, and puts it in the zip. To build it alone:
+`app\scripts\package-windows.ps1` compiles the server with `dart compile exe` into the release folder, next to `noted.exe`, and puts it in the zip. It also refreshes the copy in `%LOCALAPPDATA%\Noted\mcp` unless a process holds it (then it says so and the zip is still built). To build it alone:
 
 ```powershell
 dart compile exe packages\noted_mcp\bin\noted_mcp.dart -o noted_mcp.exe
