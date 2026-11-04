@@ -75,7 +75,9 @@ final Random _nameRandom = Random.secure();
 /// follows the content choice. A box only the copy has that overlaps a box
 /// the copy doesn't have in that place is marked landed; a landed marker on
 /// either side's version is kept. The page header and other top-level fields are
-/// the original's. [codecs] is unused for now and kept so the signature can
+/// the original's. A node that isn't a JSON object can't take an id, so when
+/// it differs from the other side's at the same place both are kept as they
+/// are. [codecs] is unused for now and kept so the signature can
 /// grow a codec-level merge.
 PageMerge mergeConflictCopy(
   NotedPage original,
@@ -182,37 +184,67 @@ bool _sameContent(BoxRecord x, BoxRecord y) =>
     x.data == y.data &&
     x.snapshotText == y.snapshotText;
 
-/// Whether [n], a node Noted doesn't own, is on [page] by its raw text. A
-/// merge may have moved it to a new id (written into its `id` field), so a
-/// node that differs only in that id counts too.
-bool _foreignKept(NotedPage page, ForeignNode n) {
-  final raw = n.toRaw();
-  for (final d in page.nodes) {
-    if (d is! ForeignNode) continue;
-    if (d.toRaw() == raw) return true;
-    if (n.raw.isObject && d.raw.isObject && n.copyWithId(d.id)?.toRaw() == d.toRaw()) {
-      return true;
-    }
-  }
-  return false;
-}
-
 /// Checks, on the page read back from disk, that the merge of [copy] into
-/// [original] lost nothing: every node id of both sides is there, and for each
-/// box both sides have, the saved content is one side's version and the other
-/// is either its ancestor (by revision) or recorded in the box's `conflicts`.
+/// [original] lost nothing: every node of both sides is there, each matched to
+/// its own node on disk, and for each box both sides have, the saved content is
+/// one side's version and the other is either its ancestor (by revision) or
+/// recorded in the box's `conflicts`.
+///
+/// A node Noted doesn't own is matched by its raw text, since its id may be
+/// synthetic (from its position): the original's must be there byte for byte,
+/// the copy's may also have a new id written into its `id` field, or be
+/// recorded in the `conflicts` of the box that has its id. A box only the copy
+/// has (or one the original has as a foreign node) is matched by revision or
+/// content, as it may have taken a new id.
 ///
 /// Returns null if all is well, otherwise what is missing.
 String? verifyConflictCopyMerge(NotedPage onDisk, NotedPage original, NotedPage copy) {
   final copyById = {for (final n in copy.nodes) n.id: n};
-  for (final side in [original, copy]) {
-    for (final n in side.nodes) {
-      if (n is ForeignNode) {
-        // A node Noted doesn't own is checked by its raw text: its id may be
-        // synthetic (from its position) or rewritten by the merge.
-        if (!_foreignKept(onDisk, n)) return 'foreign node ${n.id} is missing or changed';
-      } else if (onDisk.node(n.id) == null) {
-        return 'node ${n.id} is missing';
+  final originalById = {for (final n in original.nodes) n.id: n};
+  final disk = onDisk.nodes;
+  final used = <int>{};
+  // Claims the first disk node not yet claimed that passes [test].
+  bool take(bool Function(CanvasNode d) test) {
+    for (var i = 0; i < disk.length; i++) {
+      if (used.contains(i) || !test(disk[i])) continue;
+      used.add(i);
+      return true;
+    }
+    return false;
+  }
+
+  for (final o in original.nodes) {
+    if (o is ForeignNode) {
+      if (!take((d) => d is ForeignNode && d.toRaw() == o.toRaw())) {
+        return 'foreign node ${o.id} is missing or changed';
+      }
+    } else if (!take((d) => d is BoxRecord && d.id == o.id)) {
+      return 'node ${o.id} is missing';
+    }
+  }
+  for (final c in copy.nodes) {
+    final o = originalById[c.id];
+    if (o != null && o.toRaw() == c.toRaw()) continue; // the original's node
+    if (c is ForeignNode) {
+      if (o is BoxRecord) {
+        // Recorded as a conflicting version of the box with its id.
+        final d = onDisk.node(o.id);
+        if (d is! BoxRecord || !d.conflicts.any((k) => k.node == c.toRaw())) {
+          return 'foreign node ${c.id} is missing or changed';
+        }
+      } else if (!take(
+        (d) =>
+            d is ForeignNode &&
+            (d.toRaw() == c.toRaw() ||
+                (c.raw.isObject && d.raw.isObject && c.copyWithId(d.id)?.toRaw() == d.toRaw())),
+      )) {
+        return 'foreign node ${c.id} is missing or changed';
+      }
+    } else if (c is BoxRecord && o is! BoxRecord) {
+      // Only the copy has this box, or the original has a foreign node by its
+      // id and the box took a new id.
+      if (!take((d) => d is BoxRecord && (c.rev != null ? d.rev == c.rev : _sameContent(d, c)))) {
+        return 'box ${c.id} is missing';
       }
     }
   }

@@ -195,6 +195,44 @@ void main() {
       expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
     });
 
+    String obj(String id, String text) =>
+        '{"id":"$id","type":"text","x":0,"y":0,"width":5,"height":5,"text":"$text"}';
+
+    test('accepts a foreign copy node recorded in the conflicts of a box with its id', () {
+      final original = pageOf([box('b', 'mine')]);
+      final copy = pageOf([raw(a.replaceFirst('"f"', '"b"'), 'b')]);
+      final m = merge(original, copy).page;
+      expect((m.node('b')! as BoxRecord).conflicts, hasLength(1));
+      expect(verifyConflictCopyMerge(readPage(writePage(m)), original, copy), isNull);
+      // Without the record it is lost.
+      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+    });
+
+    test('matches nodes one to one', () {
+      final x = raw(obj('x', 'one'), 'x');
+      final g = raw(obj('g', 'one'), 'g');
+      expect(verifyConflictCopyMerge(pageOf([x]), pageOf([x]), pageOf([g])), isNotNull);
+      final one = raw('1', '#node0');
+      final two = raw('1', '#node1');
+      final both = pageOf([one, two]);
+      expect(verifyConflictCopyMerge(pageOf([one]), both, both), isNotNull);
+      expect(verifyConflictCopyMerge(both, both, both), isNull);
+    });
+
+    test('the original foreign node must be there with its own id', () {
+      final original = pageOf([raw(a, 'f')]);
+      final moved = pageOf([raw(obj('z', 'A'), 'z')]);
+      expect(verifyConflictCopyMerge(moved, original, pageOf([])), isNotNull);
+    });
+
+    test('checks a box the copy has against a foreign node of the original', () {
+      final original = pageOf([raw(obj('b', 'A'), 'b')]);
+      final copy = pageOf([box('b', 'theirs')]);
+      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+      final m = merge(original, copy).page;
+      expect(verifyConflictCopyMerge(readPage(writePage(m)), original, copy), isNull);
+    });
+
     test('accepts the merge, including a copy moved to a new id', () {
       final original = pageOf([raw(a, 'f'), raw('1', '#node1')]);
       final copy = pageOf([raw(b, 'f'), raw('2', '#node1')]);
