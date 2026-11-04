@@ -196,4 +196,69 @@ void main() {
     await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
     expect(opened, ['https://open.example']);
   });
+
+  group('opening a link with the real opener', () {
+    final launched = <String>[];
+
+    setUp(() {
+      launched.clear();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('plugins.flutter.io/url_launcher'),
+        (call) async {
+          if (call.method == 'launch') launched.add((call.arguments as Map)['url'] as String);
+          return true;
+        },
+      );
+    });
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('plugins.flutter.io/url_launcher'),
+        null,
+      );
+    });
+
+    Future<void> ctrlClick(WidgetTester t, String href) async {
+      await pump(t, [
+        {
+          'insert': 'linked words here',
+          'attributes': {'href': href},
+        },
+      ]);
+      await focusNote(t, dx: 40);
+      await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      final b = c.page.node('n')!.bounds!;
+      await t.tapAt(canvas(t).view!.toScreen(Offset(b.x + 60, b.y + 14)) + const Offset(0, CommandToolbar.height));
+      await frames(t);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await frames(t);
+    }
+
+    testWidgets('a file: link to a program asks first; Cancel opens nothing', (t) async {
+      await ctrlClick(t, 'file:///C:/tools/setup1.jar');
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+      expect(launched, isEmpty);
+      await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+      await frames(t);
+      expect(launched, isEmpty);
+    });
+
+    testWidgets('a file: link to a program opens after Open', (t) async {
+      await ctrlClick(t, 'file:///C:/tools/setup2.jar');
+      await t.tap(find.byKey(const ValueKey('open-confirm-open')));
+      await frames(t);
+      expect(launched, hasLength(1));
+    });
+
+    testWidgets('a file: link to a document opens without asking', (t) async {
+      await ctrlClick(t, 'file:///C:/docs/plan.pdf');
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+      expect(launched, hasLength(1));
+    });
+
+    testWidgets('an https: link opens without asking', (t) async {
+      await ctrlClick(t, 'https://open.example/setup.jar');
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+      expect(launched, hasLength(1));
+    });
+  });
 }

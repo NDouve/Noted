@@ -11,4 +11,3 @@ export 'src/attachment_io.dart';
 export 'src/attachment_ref.dart';
 export 'src/file_module.dart';
 export 'src/image_module.dart';
-export 'src/open_confirm.dart';

@@ -126,15 +126,41 @@ Future<void> editLinkIn(BuildContext context, EditorState editor) async {
 }
 
 /// Opens [url] in the system's browser or default app ([linkOpener]).
-Future<void> openLink(String url) => linkOpener(url);
+Future<void> openLink(String url, {BuildContext? context}) {
+  // A Ctrl+click reaches here by two routes (the editor's own and ours): once.
+  final now = DateTime.now();
+  if (url == _lastOpened && now.difference(_lastOpenedAt) < const Duration(milliseconds: 800)) {
+    return Future.value();
+  }
+  _lastOpened = url;
+  _lastOpenedAt = now;
+  _askContext = context;
+  return linkOpener(url);
+}
+
+// The context for a question before opening; [_launch] takes it at once.
+BuildContext? _askContext;
+String? _lastOpened;
+DateTime _lastOpenedAt = DateTime.fromMillisecondsSinceEpoch(0);
 
 /// What opens a link; tests replace it.
 Future<void> Function(String url) linkOpener = _launch;
 
 Future<void> _launch(String url) async {
+  final context = _askContext ?? _navigatorContext();
+  _askContext = null;
   final uri = Uri.tryParse(url);
   if (uri == null) return;
   try {
+    // A local or network file the system would run is opened only after the
+    // user says so. Other schemes are left to the system as before.
+    if (uri.isScheme('file')) {
+      final path = uri.toFilePath();
+      if (needsOpenConfirmation(displayName: path)) {
+        if (context == null || !context.mounted) return;
+        if (!await confirmOpenRunnable(context, path.split(RegExp(r'[\\/]')).last)) return;
+      }
+    }
     await launchUrl(uri, mode: LaunchMode.externalApplication);
   } on Object catch (e) {
     debugPrint('Opening $url failed: $e');
@@ -228,4 +254,34 @@ Future<List<IncomingFile>> clipboardImages() async {
   } on Object {
     return const [];
   }
+}
+
+/// Routes the editor's own link opening (a click on a link in the editor or in
+/// the light view) through [openLink], so a link to a program asks first too.
+void installLinkGuard() {
+  editorLaunchUrl = (href) async {
+    if (href == null) return false;
+    final trimmed = href.trim();
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) return false;
+    // A link without a scheme is a web address, as the editor treats it.
+    await openLink(uri.scheme.isNotEmpty ? trimmed : 'http://$trimmed');
+    return true;
+  };
+}
+
+// A context under a Navigator, for a question when the caller has none.
+BuildContext? _navigatorContext() {
+  BuildContext? found;
+  void visit(Element e) {
+    if (found != null) return;
+    if (e is StatefulElement && e.state is NavigatorState) {
+      found = e;
+      return;
+    }
+    e.visitChildren(visit);
+  }
+
+  WidgetsBinding.instance.rootElement?.visitChildren(visit);
+  return found;
 }

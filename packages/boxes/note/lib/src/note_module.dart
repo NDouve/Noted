@@ -168,6 +168,7 @@ class _NoteEditorState extends State<_NoteEditor>
   void initState() {
     super.initState();
     installMathSlicing();
+    installLinkGuard();
     _focus.addListener(_focusChanged);
     widget.box.find.addListener(_findChanged);
     _shown = widget.box.data;
@@ -282,7 +283,7 @@ class _NoteEditorState extends State<_NoteEditor>
       final sel = editor?.selection;
       if (editor == null || sel == null || !sel.isCollapsed) return;
       final link = linkAt(editor, sel.start);
-      if (link != null) unawaited(openLink(link.href));
+      if (link != null) unawaited(openLink(link.href, context: context));
     });
   }
 
