@@ -147,14 +147,6 @@ class PageStore {
     return null;
   }
 
-  static bool _sameBytes(List<int> a, List<int> b) {
-    if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) return false;
-    }
-    return true;
-  }
-
   static String _name(String path) => path.split(RegExp(r'[\\/]')).last;
 
   Future<NotedPage> load(String pageId) async =>
@@ -215,7 +207,10 @@ class PageStore {
   /// [expectedText] (null: no file expected) at the moment of replacing; see
   /// [replaceIfUnchanged]. On [ReplaceOutcome.changed] and the `Kept` outcomes
   /// the file on disk is not what the caller merged against: reread, merge
-  /// again and retry. The temporary file is always removed.
+  /// again and retry. The temporary file is always removed. On
+  /// [ReplaceOutcome.supersededKept] the replaced version stays as a conflict
+  /// copy at [ReplaceResult.keptPath]; it is never deleted here, even when it
+  /// equals [expectedText], because it may be the only durable copy.
   ///
   /// Callers must serialise this with [scan] on the same folder (see [scan]).
   ///
@@ -234,7 +229,7 @@ class PageStore {
       final written = writePage(page);
       await tmp.writeAsString(written, flush: true);
       final expected = expectedText == null ? null : utf8.encode(expectedText);
-      var result = await replaceIfUnchanged(
+      final result = await replaceIfUnchanged(
         tmp,
         path,
         expected,
@@ -244,23 +239,6 @@ class PageStore {
         beforeRestore: beforeRestore,
       );
       if (result.replaced) _paths[page.id] = path;
-      // A leftover set-aside file whose bytes are exactly the expected (or the
-      // written) text holds nothing that isn't already known: remove it.
-      // Anything else stays for the next scan to surface.
-      final kept = result.keptPath;
-      if (kept != null) {
-        try {
-          final f = File(kept);
-          final bytes = await f.readAsBytes();
-          if ((expected != null && _sameBytes(bytes, expected)) ||
-              _sameBytes(bytes, utf8.encode(written))) {
-            await f.delete();
-            result = ReplaceResult(result.outcome);
-          }
-        } on FileSystemException {
-          // Gone (a scan took it) or locked: leave it to the scan.
-        }
-      }
       return result;
     } finally {
       if (await tmp.exists()) await tmp.delete();

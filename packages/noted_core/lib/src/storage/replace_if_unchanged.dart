@@ -5,6 +5,8 @@
 import 'dart:io';
 import 'dart:math';
 
+import '../attachments/attachments.dart';
+import '../merge/conflict_copy.dart';
 import 'exclusive_publish.dart';
 
 /// The ending of the unique name a file is moved to while it is being replaced.
@@ -33,8 +35,10 @@ enum ReplaceOutcome {
 
   /// The target held the expected bytes, and while it was set aside a newer
   /// file appeared at the target, so the new file was not published. The newer
-  /// file is untouched; the set-aside copy of the expected version is kept at
-  /// [ReplaceResult.keptPath].
+  /// file is untouched; the set-aside copy of the expected version is never
+  /// deleted: it is kept as a conflict copy of the target (a name that
+  /// [conflictCopyOriginalNames] recognises) at [ReplaceResult.keptPath], or,
+  /// if even that failed, under its set-aside name for [sweepAsideFiles].
   supersededKept,
 }
 
@@ -55,6 +59,36 @@ class ReplaceResult {
 }
 
 final Random _random = Random.secure();
+
+String _baseName(String path) => path.split(RegExp(r'[\\/]')).last;
+
+/// The ending of [name] that [conflictCopyName] keeps: `.canvas`, or whatever
+/// follows the last dot (empty when there is none).
+String _extensionOf(String name) {
+  if (name.endsWith('.canvas')) return '.canvas';
+  final dot = name.lastIndexOf('.');
+  return dot <= 0 ? '' : name.substring(dot);
+}
+
+/// Moves [file] (which holds data that must not be lost) to a conflict-copy
+/// name beside [target], never over anything. Returns the new path, or null if
+/// that failed (the file then stays where it is, under its set-aside name).
+Future<String?> _keepAsConflictCopy(File file, String target, String label) async {
+  final name = _baseName(target);
+  final ext = _extensionOf(name);
+  final dir = File(target).parent.path;
+  final sep = Platform.pathSeparator;
+  for (var attempt = 0; attempt < 8; attempt++) {
+    final path = '$dir$sep${conflictCopyName(name, label: label, extension: ext, random: _random)}';
+    try {
+      if (await publishExclusive(file, path)) return path;
+    } on FileSystemException {
+      if (attempt >= 3) return null;
+      await Future<void>.delayed(Duration(milliseconds: 25 * (attempt + 1)));
+    }
+  }
+  return null;
+}
 
 String _asideName(String target) =>
     '$target.$pid-${_random.nextInt(1 << 32).toRadixString(16)}-'
@@ -165,10 +199,13 @@ Future<ReplaceResult> replaceIfUnchanged(
     rethrow;
   }
   // Not published because a newer file is at the target. The verified file is
-  // the version the caller expected and already holds (it merged against it
-  // and retries by rereading the target), so it is not unique data; it is kept
-  // only until the caller or the sweep removes it.
-  if (!ok) return ReplaceResult(ReplaceOutcome.supersededKept, aside.path);
+  // never deleted here: the caller only held a copy in memory, and the file may
+  // be the one durable copy of that version (0128). It is kept as a conflict
+  // copy next to the target, which the conflict-copy merge picks up.
+  if (!ok) {
+    final copy = await _keepAsConflictCopy(aside, target, 'conflict');
+    return ReplaceResult(ReplaceOutcome.supersededKept, copy ?? aside.path);
+  }
   // Verified equal to what the caller expected: safe to drop.
   try {
     await aside.delete();
@@ -182,13 +219,15 @@ Future<ReplaceResult> replaceIfUnchanged(
 /// [replaceIfUnchanged] left under an [asideSuffix] or [verifiedSuffix] name,
 /// without ever replacing anything: each is published to the file it was moved
 /// from if that name is free. When the name is occupied (a newer file was
-/// written there), an [asideSuffix] leftover (not verified) is renamed to
-/// `<id>-recovered-<random>.canvas`, which [PageStore.scan] reports as a
-/// conflict copy of the page when the ids match, or as an unreadable file
-/// otherwise; it is never deleted. A [verifiedSuffix] leftover was verified
-/// equal to a version the caller held, so it is deleted instead. A leftover
-/// whose target does not end in [extension] is not touched; [PageStore.scan]
-/// lists it. Returns the paths now holding the recovered files. A leftover
+/// written there), the leftover is renamed to a conflict-copy name beside the
+/// target (see [conflictCopyName]; `<id>-recovered-<random>.canvas` for an
+/// [asideSuffix] leftover, `<id>-conflict-<random>.canvas` for a verified
+/// one), which [PageStore.scan] reports as a conflict copy of the page when
+/// the ids match, or as an unreadable file otherwise. A leftover is never
+/// deleted, verified or not: it may be the only durable copy of its version.
+/// A leftover whose target does not end in [extension] is not touched;
+/// [PageStore.scan] lists it (pass `extension: ''` to sweep any file, as for
+/// an attachments folder). Returns the paths now holding the recovered files. A leftover
 /// that can't be moved now is left for the next call.
 ///
 /// Don't run it while a [replaceIfUnchanged] on the same folder is in flight;
@@ -225,17 +264,10 @@ Future<List<String>> sweepAsideFiles(
         out.add('$dir$sep$targetName');
         continue;
       }
-      if (verified) {
-        // Verified equal to a version the caller held, and a newer file is
-        // at the target: nothing unique in it.
-        await f.delete();
-        continue;
-      }
-      var stem = targetName.substring(0, targetName.length - extension.length);
-      if (stem.isEmpty) stem = 'page';
-      final hex = _random.nextInt(1 << 32).toRadixString(16);
-      final recovered = '$dir$sep$stem-recovered-$hex$extension';
-      if (await publishExclusive(f, recovered)) out.add(recovered);
+      // A newer file is at the target. Even a verified leftover is kept: it may
+      // be the only durable copy of the version it holds (0128).
+      final kept = await _keepAsConflictCopy(f, '$dir$sep$targetName', verified ? 'conflict' : 'recovered');
+      if (kept != null) out.add(kept);
     } on FileSystemException {
       // Locked for now; the next scan tries again. It stays under its name.
     }
@@ -296,10 +328,14 @@ Future<ReplaceResult> _restore(
 
 /// Best-effort restore on an error path; the caller rethrows its own error. If
 /// it fails the aside file stays, and the next scan puts it back.
-Future<void> _putBack(File aside, String target, void Function()? hook) async {
+/// Returns the path the file is kept at when it could not be put back at
+/// [target], else null.
+Future<String?> _putBack(File aside, String target, void Function()? hook) async {
   try {
-    await _restore(aside, target, hook, ReplaceOutcome.changed);
-  } catch (_) {}
+    return (await _restore(aside, target, hook, ReplaceOutcome.changed)).keptPath;
+  } catch (_) {
+    return aside.path;
+  }
 }
 
 /// What [deleteFileIfUnchanged] did.
@@ -333,15 +369,69 @@ class DeleteResult {
   String toString() => 'DeleteResult($outcome, $keptPath)';
 }
 
+/// A file's content identity: its length and the SHA-256 of its bytes (the same
+/// hash as [contentHash], which names attachments). For deleting a file that
+/// is too big to hold in memory, or whose bytes the caller no longer has.
+class ContentIdentity {
+  const ContentIdentity(this.length, this.sha256);
+
+  /// The identity of [bytes].
+  factory ContentIdentity.ofBytes(List<int> bytes) =>
+      ContentIdentity(bytes.length, contentHash(bytes));
+
+  /// The identity of the file at [path], read as a stream.
+  static Future<ContentIdentity> ofFile(String path) async {
+    final f = File(path);
+    return ContentIdentity(await f.length(), await contentHashOfStream(f.openRead()));
+  }
+
+  final int length;
+
+  /// Lowercase hex.
+  final String sha256;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ContentIdentity && other.length == length && other.sha256 == sha256;
+
+  @override
+  int get hashCode => Object.hash(length, sha256);
+
+  @override
+  String toString() => 'ContentIdentity($length, $sha256)';
+}
+
 /// Deletes the file at [target] only if it holds exactly [expected] at the
-/// moment of deleting. The file is first moved aside to a unique name (which
-/// captures exactly the file being deleted) and its bytes compared; only a
-/// file that is equal is deleted. One that differs is put back with
+/// moment of deleting; see [deleteFileIfMatches], which this calls.
+Future<DeleteResult> deleteFileIfUnchanged(
+  String target,
+  List<int> expected, {
+  void Function()? beforeMoveAside,
+  void Function()? afterRead,
+  Future<void> Function()? beforeDelete,
+  void Function()? beforeRestore,
+}) => deleteFileIfMatches(
+  target,
+  bytes: expected,
+  beforeMoveAside: beforeMoveAside,
+  afterRead: afterRead,
+  beforeDelete: beforeDelete,
+  beforeRestore: beforeRestore,
+);
+
+/// Deletes the file at [target] (any file: a page or an attachment) only if it
+/// holds exactly [bytes], or has the content [identity], at the moment of
+/// deleting; give exactly one. The file is first moved aside to a unique name
+/// (which captures exactly the file being deleted) and compared; only a file
+/// that matches is deleted. One that differs is put back with
 /// [publishExclusive], never over anything; if a file appeared at [target] in
 /// the meantime, the set-aside file stays under its [asideSuffix] name
 /// ([DeleteResult.keptPath]). Limits and error behaviour are those of
-/// [replaceIfUnchanged]: target is briefly absent, and a [FileSystemException]
-/// means "retry later" with the original kept (see there).
+/// [replaceIfUnchanged]: the target is briefly absent, and a
+/// [FileSystemException] means "retry later" with the original kept (see
+/// there). If the set-aside file can't be put back after an error, the thrown
+/// [FileSystemException] names the path it is kept at; a file that isn't a page
+/// is brought back by [sweepAsideFiles] with `extension: ''`.
 ///
 /// Crash window: the file is only set aside, not yet deleted, between the
 /// move-aside and the final delete. A crash there leaves it under its
@@ -352,16 +442,27 @@ class DeleteResult {
 /// Test seams: [beforeMoveAside], [afterRead] (the target is absent), the
 /// asynchronous [beforeDelete] (the verified file is still set aside) and
 /// [beforeRestore], as in [replaceIfUnchanged].
-Future<DeleteResult> deleteFileIfUnchanged(
-  String target,
-  List<int> expected, {
+Future<DeleteResult> deleteFileIfMatches(
+  String target, {
+  List<int>? bytes,
+  ContentIdentity? identity,
   void Function()? beforeMoveAside,
   void Function()? afterRead,
   Future<void> Function()? beforeDelete,
   void Function()? beforeRestore,
 }) async {
+  if ((bytes == null) == (identity == null)) {
+    throw ArgumentError('give exactly one of bytes and identity');
+  }
+  Future<bool> matches(File f) async {
+    if (bytes != null) return _same(await f.readAsBytes(), bytes);
+    // The length is cheap to compare before hashing.
+    if (await f.length() != identity!.length) return false;
+    return await contentHashOfStream(f.openRead()) == identity.sha256;
+  }
+
   try {
-    if (!_same(await File(target).readAsBytes(), expected)) {
+    if (!await matches(File(target))) {
       return const DeleteResult(DeleteOutcome.changed);
     }
   } on FileSystemException {
@@ -381,10 +482,10 @@ Future<DeleteResult> deleteFileIfUnchanged(
   }
   final bool equal;
   try {
-    equal = _same(await aside.readAsBytes(), expected);
+    equal = await matches(aside);
     afterRead?.call();
-  } catch (_) {
-    await _putBack(aside, target, beforeRestore);
+  } catch (e) {
+    await _putBackOrThrow(aside, target, beforeRestore, e);
     rethrow;
   }
   if (!equal) {
@@ -396,9 +497,27 @@ Future<DeleteResult> deleteFileIfUnchanged(
   try {
     if (beforeDelete != null) await beforeDelete();
     await aside.delete();
-  } catch (_) {
-    await _putBack(aside, target, beforeRestore);
+  } catch (e) {
+    await _putBackOrThrow(aside, target, beforeRestore, e);
     rethrow;
   }
   return const DeleteResult(DeleteOutcome.deleted);
+}
+
+/// As [_putBack], but when the file could not be put back where it was (the
+/// target is occupied, or the restore failed) throws a [FileSystemException]
+/// naming the path it is kept at, so it is never lost silently.
+Future<void> _putBackOrThrow(
+  File aside,
+  String target,
+  void Function()? hook,
+  Object cause,
+) async {
+  final kept = await _putBack(aside, target, hook);
+  if (kept != null) {
+    throw FileSystemException(
+      'Could not put the original back; it is kept as $kept ($cause)',
+      target,
+    );
+  }
 }
