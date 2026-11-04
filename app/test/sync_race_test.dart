@@ -41,6 +41,31 @@ class CountingStore extends PageStore {
   // original and publishing the new file.
   void Function()? beforePublishOnce;
 
+  // Runs once, just before the next compare-and-delete.
+  void Function()? beforeDeleteOnce;
+
+  @override
+  Future<DeleteResult> deleteIfUnchanged(
+    String pageId,
+    String expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    Future<void> Function()? beforeDelete,
+    void Function()? beforeRestore,
+  }) {
+    final f = beforeDeleteOnce;
+    beforeDeleteOnce = null;
+    f?.call();
+    return super.deleteIfUnchanged(
+      pageId,
+      expectedText,
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforeDelete: beforeDelete,
+      beforeRestore: beforeRestore,
+    );
+  }
+
   void _fire() {
     final f = beforeWrite;
     beforeWrite = null;
@@ -544,6 +569,66 @@ void main() {
       expect(fired, isTrue);
       expect(onDisk(id).meta.title, 'Renamed');
       expect(idsOnDisk(id), {theirs.id});
+    });
+
+    test('a page deleted while a newer version lands is kept, and the note says so', () async {
+      await start();
+      final id = nb.currentId!;
+      await nb.createPage(); // id is closed now
+      final theirs = noteBox('from the other device', at: const Bounds(400, 10, 200, 40));
+      final base = onDisk(id);
+      counting.beforeDeleteOnce = () => File(pathOf(id)).writeAsStringSync(writePage(base.insertNode(theirs)));
+
+      final deleted = await nb.delete(id);
+
+      expect(File(pathOf(id)).existsSync(), isTrue);
+      expect(idsOnDisk(id), {theirs.id});
+      expect(deleted.pages, isEmpty);
+      expect(deleted.keptNote, contains('not deleted'));
+    });
+
+    test('an undone page whose file came back meanwhile is merged into it, not lost', () async {
+      await start();
+      final id = nb.currentId!;
+      final mine = nb.current!.createBoxAt(const Bounds(10, 10, 0, 0));
+      await nb.createPage();
+      await nb.flush();
+      final deleted = await nb.delete(id);
+      expect(File(pathOf(id)).existsSync(), isFalse);
+      // A sync client puts another version of the page back.
+      final theirs = noteBox('from the other device', at: const Bounds(400, 10, 200, 40));
+      File(pathOf(id)).writeAsStringSync(writePage(deleted.pages.first.removeNode(mine.id).insertNode(theirs)));
+
+      await expectLater(
+        nb.undoDelete(deleted),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('merged into it'))),
+      );
+
+      expect(idsOnDisk(id), {mine.id, theirs.id});
+      expect(
+        dir.listSync().where((f) => f.path.contains('-undo-')),
+        isEmpty,
+        reason: 'the copy was merged and removed',
+      );
+    });
+
+    test('a closed page changed while it is being opened: the editor takes the change', () async {
+      await start();
+      final id = nb.currentId!;
+      final other = await nb.createPage();
+      await nb.flush();
+      nb.syncHook = (point, path) async {
+        if (point != 'closed-update-read') return;
+        nb.syncHook = null;
+        await nb.open(id); // opened from the file as it is before the write
+      };
+
+      await nb.rename(id, 'Renamed');
+
+      expect(nb.currentId, id);
+      expect(nb.current!.page.meta.title, 'Renamed');
+      await nb.open(other);
+      expect(onDisk(id).meta.title, 'Renamed');
     });
 
     test('a closed page changed by a setting: a file that keeps changing is not written over', () async {

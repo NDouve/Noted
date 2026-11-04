@@ -113,7 +113,13 @@ void main() {
       f(from, 'x.txt.4242-1a-2b.cas-old').writeAsStringSync('old');
       f(from, 'x.txt').writeAsStringSync('newer');
 
-      await sweepAttachmentLeftovers(from, AttachmentCopy());
+      final r = AttachmentCopy();
+      await sweepAttachmentLeftovers(from, r);
+      expect(
+        r.keptAside.single,
+        contains('-recovered-'),
+        reason: 'reported, not silent',
+      );
 
       expect(f(from, 'x.txt').readAsStringSync(), 'newer');
       final kept = from.listSync().whereType<File>().where(

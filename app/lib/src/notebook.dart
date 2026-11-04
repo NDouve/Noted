@@ -3436,7 +3436,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // Lists [job], a write queued on _saving, as unfinished until it completes.
-  Future<void> _track(String what, Future<void> job) {
+  Future<T> _track<T>(String what, Future<T> job) {
     _unfinished.add(what);
     return job.whenComplete(() => _unfinished.remove(what));
   }
@@ -4184,7 +4184,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // is read again and [change] is applied to what is there now, which is the
   // merge for a header-only change. [change] returns null for no change (then
   // nothing is written and null is returned). Gives up after [_maxWriteTries].
-  Future<NotedPage?> _updateClosedPage(String loc, String id, NotedPage? Function(NotedPage page) change) async {
+  Future<NotedPage?> _updateClosedPage(String loc, String id, NotedPage? Function(NotedPage page) change) =>
+      _track('change of page $id', _updateClosedPageNow(loc, id, change));
+
+  Future<NotedPage?> _updateClosedPageNow(
+    String loc,
+    String id,
+    NotedPage? Function(NotedPage page) change,
+  ) async {
     final st = _storeOf(loc);
     for (var attempt = 0; attempt < _maxWriteTries; attempt++) {
       final text = await st.readText(id);

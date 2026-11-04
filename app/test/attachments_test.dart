@@ -383,6 +383,34 @@ void main() {
       expect(left, isEmpty, reason: 'the verified set-aside original is deleted, not kept');
     });
 
+    test('a source that changes as it is set aside, with a new file at its path before it is put back: both stay and it is reported', () async {
+      final (nb, a, binder) = await pageWithNotes();
+      attachmentMoveAsideHook = (source) {
+        if (source.path.endsWith('notes.txt')) source.writeAsStringSync('changed at the last moment');
+      };
+      attachmentBeforeRestoreHook = (source) {
+        // The set-aside file no longer matches; a new file takes its path.
+        if (source.path.endsWith('notes.txt')) source.writeAsStringSync('arrived');
+      };
+      addTearDown(() {
+        attachmentMoveAsideHook = null;
+        attachmentBeforeRestoreHook = null;
+      });
+      await expectLater(
+        nb.moveToLocation(a, binderPath: binder.path),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('The page was moved'), contains('leftover temporary file')),
+          ),
+        ),
+      );
+      expect(File('${assets(pages, a).path}/notes.txt').readAsStringSync(), 'arrived');
+      final left = assets(pages, a).listSync().whereType<File>().where((f) => f.path.contains('.cas-')).toList();
+      expect(left.map((f) => f.readAsStringSync()), ['changed at the last moment'], reason: 'the changed original is kept');
+    });
+
     test('R-1: an attachment that changed at the destination is kept when the move is rolled back', () async {
       final store = _HookedStore(pages);
       final (nb, a, binder) = await pageWithNotes(store: store);
