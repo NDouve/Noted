@@ -25,6 +25,7 @@ import 'support/page_gen.dart';
 //   three-way, identical foreign node kept twice  self; unchanged base; swap; foreign-both
 //   three-way, theirs' order not taken            unchanged base; swap (reorder); order
 //   three-way, theirs' order applied even when mine reordered  mine reordered; order
+//   three-way, theirs' order written into fixed slots (run 2026-11-04-02)  additions keep their predecessor; an order changed only there
 //   copy, concurrent edit keeps the copy          copy swap
 //   copy, copy-only nodes dropped                 copy swap
 //   copy, original newer takes the copy           older version; copy swap
@@ -128,6 +129,47 @@ void same(
   }
 }
 
+/// True if a side has an id the merge can't match (made up from the position,
+/// or repeated), or both sides have an id that base doesn't: the order checks
+/// don't hold for those (they aren't matched as common nodes).
+bool _unsafeIds(NotedPage b, NotedPage m, NotedPage t) {
+  for (final p in [b, m, t]) {
+    final ids = [for (final n in p.nodes) n.id];
+    if (ids.toSet().length != ids.length || ids.any((id) => id.startsWith('#'))) return true;
+  }
+  return m.nodes.any((n) => b.node(n.id) == null && t.node(n.id) != null);
+}
+
+/// Why a node mine added (or kept) isn't where 0132 puts it, or null: it follows
+/// the nearest common node it followed in [mine], or, after the last common
+/// node of [mine], comes after every common node.
+String? _anchorProblem(NotedPage b, NotedPage mine, NotedPage theirs, NotedPage merged) {
+  final common = {
+    for (final n in b.nodes)
+      if (mine.node(n.id) != null && theirs.node(n.id) != null && merged.node(n.id) != null) n.id,
+  };
+  final mineIds = [for (final n in mine.nodes) n.id];
+  final out = [for (final n in merged.nodes) n.id];
+  final last = mineIds.lastWhere(common.contains, orElse: () => '');
+  String? prev;
+  for (final id in mineIds) {
+    if (common.contains(id)) {
+      prev = id;
+      continue;
+    }
+    if (merged.node(id) == null) continue;
+    final before = out.sublist(0, out.indexOf(id)).where(common.contains).toList();
+    if (prev == null) {
+      if (before.isNotEmpty) return '$id should come before every common node';
+    } else if (prev == last) {
+      if (before.length != common.length) return '$id should come after every common node';
+    } else if (before.isEmpty || before.last != prev) {
+      return '$id should follow $prev';
+    }
+  }
+  return null;
+}
+
 void main() {
   test('the generated pages reach every case the properties are about', () {
     var conflicts = 0, deletes = 0, codecMerges = 0, copies = 0, moves = 0, reordered = 0;
@@ -177,6 +219,7 @@ void main() {
     });
 
     test('one side reordering the nodes gives the same page whichever side it is', () {
+      var skipped = 0;
       forSeeds((seed, g) {
         final base = g.nodes();
         final moved = <int>{}, foreign = <int>{}, changed = <int>{};
@@ -193,7 +236,34 @@ void main() {
           reordered: true,
           sides: [m, t],
         );
+        // Side order. Mine is the side that reordered: its whole order is in
+        // the result whichever side is mine; the other side's own additions
+        // follow the node they followed (0132).
+        if (_unsafeIds(b, m, t)) {
+          skipped++;
+          return;
+        }
+        final pages = {'base': base, 'mine': mine, 'theirs': theirs};
+        final kept = {
+          for (final n in b.nodes)
+            if (m.node(n.id) != null && t.node(n.id) != null) n.id,
+        };
+        for (final (x, y) in [(m, t), (t, m)]) {
+          final merged = three(b, x, y).page;
+          final problem = _anchorProblem(b, x, y, merged);
+          if (problem != null) fail('seed $seed: $problem\n${dump(pages)}');
+          final want = [
+            for (final n in m.nodes)
+              if (merged.node(n.id) != null && (kept.contains(n.id) || b.node(n.id) == null)) n.id,
+          ];
+          final got = [
+            for (final n in merged.nodes)
+              if (want.contains(n.id)) n.id,
+          ];
+          expect(got, want, reason: 'seed $seed: the nodes of the side that reordered are in another order\n${dump(pages)}');
+        }
       });
+      expect(skipped, lessThan(runs ~/ 2));
     });
 
     test('when mine reordered the nodes, mine\'s relative order of the common nodes stays', () {
@@ -307,6 +377,67 @@ void main() {
       // A node added by mine and one removed by theirs don't hinder it.
       final other = page(['c', 'a']);
       expect(ids(three(base, page(['a', 'b', 'c', 'x']), other).page), ['c', 'a', 'x']);
+      // An addition in the middle follows its predecessor, not its slot.
+      expect(ids(three(base, page(['a', 'x', 'b', 'c']), other).page), ['c', 'a', 'x']);
+    });
+
+    test('mine\'s additions keep their predecessor when theirs\' order is taken', () {
+      var moved = 0, skipped = 0;
+      forSeeds((seed, g) {
+        final base = g.nodes();
+        final mine = g.mutate(base, prefix: 'm', reorders: false);
+        final theirs = g.mutate(base, prefix: 't', reorders: false);
+        final b = pageFrom(base);
+        final baseIds = {for (final n in b.nodes) n.id};
+        final mineIds = {for (final x in mine) idOfText(x)};
+        // Theirs swaps two common nodes with ids of their own.
+        final own = [
+          for (var i = 0; i < theirs.length; i++)
+            if (baseIds.contains(idOfText(theirs[i])) &&
+                mineIds.contains(idOfText(theirs[i])) &&
+                theirs.where((o) => idOfText(o) == idOfText(theirs[i])).length == 1)
+              i,
+        ];
+        if (own.length >= 2) {
+          final i = own[g.r.nextInt(own.length)];
+          final j = own[g.r.nextInt(own.length)];
+          final t = theirs[i];
+          theirs[i] = theirs[j];
+          theirs[j] = t;
+        }
+        final m = pageFrom(mine), t = pageFrom(theirs);
+        if (_unsafeIds(b, m, t)) {
+          skipped++;
+          return;
+        }
+        final pages = {'base': base, 'mine': mine, 'theirs': theirs};
+        final merged = three(b, m, t).page;
+        final problem = _anchorProblem(b, m, t, merged);
+        if (problem != null) fail('seed $seed: $problem\n${dump(pages)}');
+        final common = {
+          for (final n in b.nodes)
+            if (m.node(n.id) != null && t.node(n.id) != null && merged.node(n.id) != null) n.id,
+        };
+        List<String> order(NotedPage p) => [
+          for (final n in p.nodes)
+            if (common.contains(n.id)) n.id,
+        ];
+        final added = m.nodes.any((n) => !baseIds.contains(n.id));
+        if (added && order(t).join() != order(b).join() && order(m).join() == order(b).join()) moved++;
+        // The merge only reorders: put theirs' common nodes back in base order
+        // and the page has the same content.
+        final inBase = order(b);
+        var k = 0;
+        final slots = [for (var i = 0; i < theirs.length; i++) common.contains(idOfText(theirs[i])) ? i : -1];
+        final fixed = [...theirs];
+        final byId = {for (final x in theirs) idOfText(x): x};
+        for (final i in slots.where((i) => i >= 0)) {
+          fixed[i] = byId[inBase[k++]]!;
+        }
+        same(merged, three(b, m, pageFrom(fixed)).page, seed, pages, ordered: false);
+      });
+      expect(moved, greaterThan(20), reason: 'the generator rarely made theirs move a node before an addition');
+      expect(skipped, lessThan(runs ~/ 2));
     });
   });
 
