@@ -36,12 +36,45 @@
 // learned from it. Conflicted boxes are never normalised away: the operations
 // never edit one box on two sides, so any conflict is a failure.
 //
-// Mutations. Each row was made by breaking the named behaviour for one run of
-// this file (edit, run, restore) and names what failed. The table is kept up
-// to date in the run report; see MUTATIONS below.
+// Mutations. Each row below was made by breaking the named behaviour for one
+// run of the first 16 seeds (the suite has 24 now) (edit the source, run this file, restore it). The count
+// is how many of those 16 sequences failed, and what it says is the check that
+// caught it.
 //
-// MUTATIONS
-// (filled in from the runs; see the bottom of this comment block)
+//  1. `Notebook._enqueueSave` does not look at the file before a save of the
+//     open page (the `_checkFile` call): 6 fail; "boxes of page" and "the
+//     files in" after `edit` steps, "the entry was not replayed".
+//  2. `replaceIfUnchanged` deletes the set-aside original instead of keeping it
+//     as a conflict copy when a sync writer takes the target at the publish:
+//     4 fail; "boxes of page" after `conflict:stealPublish` (the original-only
+//     box is lost).
+//  3. `RecoveryStore.write` keeps nothing: 15 fail; "the edit was not kept for
+//     recovery" at every `vanish` step.
+//  4. `Notebook._deleteIfUnchanged` deletes whatever file is there: 9 fail;
+//     "the move should have been refused" (`move:syncAtSource` loses the newer
+//     version).
+//  5. `undoDelete` does nothing: 7 fail; "the files in pages|a|b" after
+//     `delete:undo`.
+//  6. The recovery replay writes the entry without merging the saved file: 3
+//     fail; "the entry was not replayed" and the other device's box lost
+//     (`vanish:*/syncWhileAway`).
+//  7. `_writeIfUnchanged` overwrites instead of compare-and-swap: 13 fail;
+//     "boxes of page" after `edit:sync*`, `rename:sync*` and `conflict:*`
+//     steps, "the sync writer never got its turn", "the entry was dropped
+//     although the page did not land".
+//  8. The conflict-copy merge ignores the copy: 14 fail; "the files in" (the
+//     copy is left or its boxes missing) after `conflict` steps.
+//  9. An external change is not merged into the open page: 11 fail; "boxes of
+//     page" after `external` and `edit` steps, "the entry was not replayed".
+// 10. A move's rollback (`removeCopies`) removes nothing: 5 fail; "the files
+//     in a|b|x" after `move:failDestination` on a subtree (the first page's
+//     copy is left at the target). Before the move faults were aimed at the
+//     last page of a subtree this mutation was not caught at all.
+// 11. A move whose source delete fails leaves its copy at the target: 3 fail;
+//     "the files in a|b" after `move:failSourceDelete`.
+// 12. A publish that fails does not put the set-aside original back: 4 fail;
+//     "the files in" (a `.cas-verified` file where the page was) after
+//     `edit:failAlways`.
 //
 // Wait for watchers: none is used. The notebook runs with `watchFiles` off,
 // and the steps call `checkFile` and `checkFolders` themselves, the way the
@@ -63,7 +96,9 @@ import 'package:noted_core/noted_core.dart';
 // Settings
 
 /// The seeds that run in the normal suite. Each is one sequence of [_steps].
-const List<int> _seeds = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+const List<int> _seeds = [
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, //
+];
 
 const int _steps = 10;
 
@@ -182,11 +217,7 @@ class _Chaos extends PageStore {
   }
 
   @override
-  Future<bool> saveNewText(
-    NotedPage page,
-    String text, {
-    Future<void> Function()? beforePublish,
-  }) {
+  Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish}) {
     if (failNew.contains(page.id)) throw const FileSystemException('destination gone');
     return super.saveNewText(
       page,
@@ -297,6 +328,7 @@ class _Run {
   void _drop() {
     if (_gone.add(nb)) nb.dispose();
   }
+
   int _boxCounter = 0;
   int _copyCounter = 0;
   int _titleCounter = 0;
@@ -400,8 +432,7 @@ class _Run {
 
   // -- reading the world ------------------------------------------------------
 
-  String _pathOf(String id, [String? loc]) =>
-      '${dirs[loc ?? model[id]!.loc]!.path}$sep$id.canvas';
+  String _pathOf(String id, [String? loc]) => '${dirs[loc ?? model[id]!.loc]!.path}$sep$id.canvas';
 
   NotedPage _disk(String id, [String? loc]) => readPage(File(_pathOf(id, loc)).readAsStringSync());
 
@@ -606,7 +637,14 @@ class _Run {
   Future<void> _opCopy() async {
     final id = _pickPage();
     final m = model[id]!;
-    final variant = _pick(['plain', 'plain', 'replacedMidMerge', 'originalChanged', 'stealPublish', 'scan']);
+    final variant = _pick([
+      'plain',
+      'plain',
+      'replacedMidMerge',
+      'originalChanged',
+      'stealPublish',
+      'scan',
+    ]);
     trace.add('conflict copy of ${_short(id)} in ${m.loc}: $variant');
     // The merge hooks belong to the closed-page merge: close the page.
     if (variant == 'replacedMidMerge' || variant == 'originalChanged') {
@@ -723,9 +761,20 @@ class _Run {
   }
 
   Future<void> _opMove() async {
-    final variant = _pick(['plain', 'plain', 'plain', 'pendingEdit', 'failDestination', 'failSourceDelete', 'syncAtSource']);
+    final variant = _pick([
+      'plain',
+      'plain',
+      'plain',
+      'pendingEdit',
+      'failDestination',
+      'failSourceDelete',
+      'syncAtSource',
+    ]);
     // A fault on the last page of a subtree is the one that needs a rollback.
-    final parents = [for (final e in model.entries) if (e.value.parent != null) e.value.parent!];
+    final parents = [
+      for (final e in model.entries)
+        if (e.value.parent != null) e.value.parent!,
+    ];
     final fails = variant == 'failDestination' || variant == 'failSourceDelete';
     final id = fails && parents.isNotEmpty ? parents[rng.nextInt(parents.length)] : _pickPage();
     final m = model[id]!;
@@ -856,8 +905,9 @@ class _Run {
     final awayDir = '${dir.path}-away';
     await _busyRetry(() async => dir.renameSync(awayDir));
     await nb.flush();
-    expect((await nb.pendingRecovery()).entries.map((e) => e.pageId), [id],
-        reason: 'the edit was not kept for recovery');
+    expect((await nb.pendingRecovery()).entries.map((e) => e.pageId), [
+      id,
+    ], reason: 'the edit was not kept for recovery');
     if (!restart) await nb.checkFolders(); // notices the folder is gone
     if (away == 'syncWhileAway') {
       final y = _newBox(_text('sync'));
@@ -884,8 +934,9 @@ class _Run {
     }
     if (away == 'replayFails') {
       st.publishFailures = 0;
-      expect((await nb.pendingRecovery()).entries.map((e) => e.pageId), [id],
-          reason: 'the entry was dropped although the page did not land');
+      expect((await nb.pendingRecovery()).entries.map((e) => e.pageId), [
+        id,
+      ], reason: 'the entry was dropped although the page did not land');
       // The next start replays it.
       _drop();
       nb = _make();
@@ -929,17 +980,18 @@ class _Run {
         for (final e in model.entries)
           if (e.value.loc == loc) '${e.key}.canvas',
       };
-      final actual = <String>{
-        for (final f in d.listSync()) f.path.split(RegExp(r'[\\/]')).last,
-      };
+      final actual = <String>{for (final f in d.listSync()) f.path.split(RegExp(r'[\\/]')).last};
       expect(actual, expected, reason: '$where: the files in $loc');
     }
     for (final e in model.entries) {
       final id = e.key;
       final m = e.value;
       final page = _disk(id);
-      expect(_boxesOf(page, '$where: ${_short(id)} on disk'), m.boxes,
-          reason: '$where: boxes of page ${_short(id)} in ${m.loc}');
+      expect(
+        _boxesOf(page, '$where: ${_short(id)} on disk'),
+        m.boxes,
+        reason: '$where: boxes of page ${_short(id)} in ${m.loc}',
+      );
       expect(page.meta.title, m.title, reason: '$where: title of ${_short(id)}');
       expect(page.meta.parentId, m.parent, reason: '$where: parent of ${_short(id)}');
     }
@@ -980,11 +1032,13 @@ class _Run {
     await other.load();
     try {
       for (final e in model.entries) {
-        expect(other.treeOfPage(e.key)[e.key], isNotNull,
-            reason: '$where: a fresh notebook does not list ${_short(e.key)}');
+        expect(
+          other.treeOfPage(e.key)[e.key],
+          isNotNull,
+          reason: '$where: a fresh notebook does not list ${_short(e.key)}',
+        );
         final want = e.value.loc == 'a' ? pathA : (e.value.loc == 'b' ? pathB : null);
-        expect(other.binderOfPage(e.key), want,
-            reason: '$where: fresh binder of ${_short(e.key)}');
+        expect(other.binderOfPage(e.key), want, reason: '$where: fresh binder of ${_short(e.key)}');
         await other.open(e.key);
         expect(
           _boxesOf(other.current!.page, '$where: fresh ${_short(e.key)}'),
@@ -1033,7 +1087,9 @@ void _record(List<String> trace) {
     if (line.startsWith(' ')) continue;
     final word = line.split(' ').first;
     final colon = line.lastIndexOf(': ');
-    _seen.add(colon < 0 ? word : '${word == 'conflict' ? 'conflict' : word}:${line.substring(colon + 2)}');
+    _seen.add(
+      colon < 0 ? word : '${word == 'conflict' ? 'conflict' : word}:${line.substring(colon + 2)}',
+    );
   }
 }
 
@@ -1055,12 +1111,19 @@ void main() {
   }
 
   for (final seed in _seeds) {
-    test('seed $seed: the files and a fresh notebook equal the model', () => sequence(seed),
-        timeout: const Timeout(Duration(minutes: 3)));
+    test(
+      'seed $seed: the files and a fresh notebook equal the model',
+      () => sequence(seed),
+      timeout: const Timeout(Duration(minutes: 3)),
+    );
   }
   for (var i = 0; i < _extraSeeds; i++) {
     final seed = 1000 + i;
-    test('long run, seed $seed', () => sequence(seed), timeout: const Timeout(Duration(minutes: 3)));
+    test(
+      'long run, seed $seed',
+      () => sequence(seed),
+      timeout: const Timeout(Duration(minutes: 3)),
+    );
   }
 
   test('the seeds reach every kind of step', () {
@@ -1076,37 +1139,46 @@ void main() {
     });
     tearDown(() => run.stop());
 
-    test('a publish that keeps failing, then leaving the page: the edit is not lost', () async {
-      final id = run.model.keys.first;
-      final m = run.model[id]!;
-      await run.nb.open(id);
-      run._addBox(m, run.nb.current!);
-      run.storeOf(m.loc).publishFailures = 50;
-      await run.nb.flush();
-      run.storeOf(m.loc).publishFailures = 0;
-      // The user goes to another page, and quits.
-      await run.nb.open(run.model.keys.last);
-      await run.nb.flush();
-      run._drop();
-      await run._verifyDisk('after leaving');
-    }, skip: _runParked ? null : 'Found by D6: a write error that is not a missing folder is only logged. The edit stays '
-        'on the screen but is in no file and no recovery entry, so leaving the page or quitting '
-        'loses it. Minimal seed: any page, one added box, a failing publish, then open another page.');
+    test(
+      'a publish that keeps failing, then leaving the page: the edit is not lost',
+      () async {
+        final id = run.model.keys.first;
+        final m = run.model[id]!;
+        await run.nb.open(id);
+        run._addBox(m, run.nb.current!);
+        run.storeOf(m.loc).publishFailures = 50;
+        await run.nb.flush();
+        run.storeOf(m.loc).publishFailures = 0;
+        // The user goes to another page, and quits.
+        await run.nb.open(run.model.keys.last);
+        await run.nb.flush();
+        run._drop();
+        await run._verifyDisk('after leaving');
+      },
+      skip: _runParked
+          ? null
+          : 'Found by D6: a write error that is not a missing folder is only logged. The edit stays '
+                'on the screen but is in no file and no recovery entry, so leaving the page or quitting '
+                'loses it. Minimal seed: any page, one added box, a failing publish, then open another page.',
+    );
 
-    test('regression: a delete that fails on a subpage puts back the pages it already deleted', () async {
-      final parent = run.model.keys.first;
-      final sub = run.model.entries.firstWhere((e) => e.value.parent == parent).key;
-      run.storeOf('pages').failDelete.add(sub);
-      Object? error;
-      try {
-        await run.nb.delete(parent);
-      } on Object catch (e) {
-        error = e;
-      }
-      run.storeOf('pages').failDelete.clear();
-      expect(error, isNotNull);
-      // Either everything is deleted and can be undone, or nothing is.
-      await run._verifyDisk('after the failed delete');
-    });
+    test(
+      'regression: a delete that fails on a subpage puts back the pages it already deleted',
+      () async {
+        final parent = run.model.keys.first;
+        final sub = run.model.entries.firstWhere((e) => e.value.parent == parent).key;
+        run.storeOf('pages').failDelete.add(sub);
+        Object? error;
+        try {
+          await run.nb.delete(parent);
+        } on Object catch (e) {
+          error = e;
+        }
+        run.storeOf('pages').failDelete.clear();
+        expect(error, isNotNull);
+        // Either everything is deleted and can be undone, or nothing is.
+        await run._verifyDisk('after the failed delete');
+      },
+    );
   });
 }
