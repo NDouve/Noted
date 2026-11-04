@@ -58,9 +58,9 @@ CodecRegistry propertyRegistry() => CodecRegistry()
   ..register(const PlainCodec())
   ..register(const SetCodec());
 
-NotedPage pageFrom(List<String> nodes, {String title = 'T'}) => readPage(
+NotedPage pageFrom(List<String> nodes, {String title = 'T', int order = 0}) => readPage(
   '{"nodes":[${nodes.join(',')}],'
-  '"noted":{"format":1,"pageId":"p","parentId":null,"title":"$title","order":0}}',
+  '"noted":{"format":1,"pageId":"p","parentId":null,"title":"$title","order":$order}}',
 );
 
 /// The id a node text carries, if it is an object with an `id`.
@@ -166,7 +166,8 @@ class PageGen {
   /// - last write wins for position is asymmetric (mine is kept when both
   ///   moved): a node in [noMove] is not moved, and the ones moved are added
   ///   to [movedBy];
-  /// - when both sides change a node Noted doesn't own, which side keeps the
+  /// - when both sides change a node Noted doesn't own, or one side turns a
+  ///   node into one (0128, below), which side keeps the
   ///   id is asymmetric: a foreign node in [noForeign] is left alone, and the
   ///   ones changed are added to [foreignBy]; [foreignEdits] false leaves
   ///   them all alone;
@@ -178,6 +179,16 @@ class PageGen {
   ///   an order that depends on which side is mine: a test that swaps the
   ///   sides puts one side's additions at the [Place.front] and the other's
   ///   at the [Place.back];
+  /// - when both sides reordered the nodes, mine's order is kept: [reorders]
+  ///   false leaves the order alone (a side may swap two nodes with ids of
+  ///   their own);
+  /// - a node that one side changed into a node Noted doesn't own, or the
+  ///   other way (0128), is kept either as a conflict record on the box or as
+  ///   a copy under a new id, by which side is mine: it counts as a foreign
+  ///   edit ([foreignBy], [noForeign], [foreignEdits]); the side that did not
+  ///   turn it must not have changed the node in any way ([changedBy], [noFlip]),
+  ///   or the merge would see a box edit against a node Noted does not own; and [flips] false
+  ///   leaves it out;
   /// - a conflict-copy merge keeps the original's position whichever side moved
   ///   the box: [moves] false leaves every box in place;
   /// - a box one side has and the other deleted is kept by a conflict-copy
@@ -191,12 +202,16 @@ class PageGen {
     required String prefix,
     Set<int> noMove = const {},
     Set<int> noForeign = const {},
+    Set<int> noFlip = const {},
+    Set<int>? changedBy,
     Set<int>? movedBy,
     Set<int>? foreignBy,
     bool deletes = true,
     bool foreignEdits = true,
     bool spread = true,
     bool moves = true,
+    bool reorders = true,
+    bool flips = true,
     Place place = Place.anywhere,
   }) {
     final ids = [for (final t in base) idOfText(t)];
@@ -213,22 +228,50 @@ class PageGen {
       if (pinned(i)) {
         out.add(t);
         lastPinned = out.length - 1;
+      } else if (noForeign.contains(i)) {
+        out.add(t); // the other side changed what kind of node it is, or its foreign content
       } else if (op == 0 && deletes) {
+        changedBy?.add(i);
         // deleted
       } else if (op <= 4 && !isBoxText(t)) {
         if (foreignEdits && !noForeign.contains(i)) {
+          if (flips && !noFlip.contains(i) && chance(1, 3)) {
+            foreignBy?.add(i);
+            out.add(box(ids[i]!)); // a node Noted doesn't own becomes a box
+            continue;
+          }
           foreignBy?.add(i);
           out.add(foreign(ids[i]!));
         } else {
           out.add(t);
         }
+      } else if (op == 5 && flips && foreignEdits && !noFlip.contains(i)) {
+        changedBy?.add(i);
+        foreignBy?.add(i);
+        out.add(foreign(ids[i]!)); // a box becomes a node Noted doesn't own
       } else if (op == 1 || op == 2) {
+        changedBy?.add(i);
         out.add(editContent(t));
       } else if ((op == 3 || op == 4) && moves && !noMove.contains(i)) {
         movedBy?.add(i);
+        changedBy?.add(i);
         out.add(moved(t));
       } else {
         out.add(t);
+      }
+    }
+    if (reorders && chance(1, 3)) {
+      // Two nodes with ids of their own change places.
+      final own = [
+        for (var i = 0; i < out.length; i++)
+          if (idOfText(out[i]) != null && out.where((o) => idOfText(o) == idOfText(out[i])).length == 1) i,
+      ];
+      if (own.length >= 2) {
+        final i = own[r.nextInt(own.length)];
+        final j = own[r.nextInt(own.length)];
+        final t = out[i];
+        out[i] = out[j];
+        out[j] = t;
       }
     }
     for (var i = r.nextInt(3); i > 0; i--) {
