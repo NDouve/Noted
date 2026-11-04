@@ -36,6 +36,8 @@ final class PageMerge {
 ///   write).
 /// - Added on one side: kept. Removed on one side: removed if the other side
 ///   is unchanged, otherwise the changed box is kept and flagged `deleted`.
+/// - Order of the nodes (stacking): theirs if only theirs reordered the nodes
+///   both sides have, else mine.
 /// - Page header and other top-level fields: per field, theirs if mine is
 ///   unchanged, else mine.
 ///
@@ -106,6 +108,8 @@ PageMerge mergePage(
     }
   }
 
+  _takeTheirOrder(base, mine, theirs, out);
+
   // Nodes only theirs has: new there, or removed here. A box new there that
   // overlaps a box the other side couldn't see in that place (one theirs
   // doesn't have, or has elsewhere) is marked landed.
@@ -142,6 +146,46 @@ PageMerge mergePage(
     out,
   );
   return PageMerge(merged, conflicted);
+}
+
+/// The order of the nodes (their stacking) is a change too: when only theirs
+/// reordered the nodes both sides still have from [base], [out] takes theirs'
+/// order for them. When mine reordered them (also when both did), mine's
+/// order stays: its next save is the later write. Positional ids (a node with
+/// no id of its own, or a repeated one) are matched by position like everywhere
+/// else in the merge.
+void _takeTheirOrder(NotedPage base, NotedPage mine, NotedPage theirs, List<CanvasNode> out) {
+  final inMine = {for (final n in mine.nodes) n.id};
+  final inTheirs = {for (final n in theirs.nodes) n.id};
+  final inOut = {for (final n in out) n.id};
+  final common = {
+    for (final n in base.nodes)
+      if (inMine.contains(n.id) && inTheirs.contains(n.id) && inOut.contains(n.id)) n.id,
+  };
+  List<String> only(Iterable<CanvasNode> nodes) => [
+    for (final n in nodes)
+      if (common.contains(n.id)) n.id,
+  ];
+  final b = only(base.nodes);
+  final m = only(mine.nodes);
+  final t = only(theirs.nodes);
+  final o = only(out);
+  if (o.length != common.length) return;
+  if (_sameIds(m, b) && !_sameIds(t, b)) {
+    final byId = {for (final n in out) n.id: n};
+    var k = 0;
+    for (var i = 0; i < out.length; i++) {
+      if (common.contains(out[i].id)) out[i] = byId[t[k++]]!;
+    }
+  }
+}
+
+bool _sameIds(List<String> a, List<String> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 bool _same(CanvasNode a, CanvasNode b) => a.toRaw() == b.toRaw();
