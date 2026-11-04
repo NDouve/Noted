@@ -120,6 +120,18 @@ void main() {
     expect(store.opened, isEmpty);
   });
 
+  testWidgets('the label on the canvas has no text-reordering characters', (t) async {
+    await openFile(t, 'invoice\u202Efdp.pdf');
+    final shown = (t.widget(find.byKey(const ValueKey('file-box-name'))) as Text).data!;
+    expect(shown, isNot(contains('\u202E')));
+    expect(shown, contains('invoice'));
+  });
+
+  testWidgets('the type line names the stored extension when that raised the question', (t) async {
+    await openFile(t, 'a.pdf', storedAs: '$hash.jar');
+    expect(find.text('Type: .jar'), findsOneWidget);
+  });
+
   testWidgets(
     'the file is verified after the answer: a change while asking is caught',
     (t) async {

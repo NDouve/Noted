@@ -69,6 +69,7 @@ const Set<String> _linuxRunnable = {
 /// trailing dots and spaces Windows strips; empty if it has none.
 String lastExtension(String name) {
   final base = name
+      .replaceAll(RegExp(r'[\\/. ]+$'), '')
       .split(RegExp(r'[\\/]'))
       .last
       .replaceAll(RegExp(r'[. ]+$'), '');
@@ -133,19 +134,32 @@ String cleanNameForDisplay(String name, {int maxLength = 80}) {
   final dot = s.lastIndexOf('.');
   final tail = dot > 0 && s.length - dot <= 20 ? s.substring(dot) : '';
   final tailLength = tail.runes.length;
-  final keep = maxLength - tailLength - 1;
+  final keep = maxLength - tailLength - 2;
   final head = String.fromCharCodes(runes.take(keep));
-  return '$head…$tail';
+  return '$head… $tail';
 }
 
 /// Asks whether to open [displayName], a file the system may run. True only on
 /// Open; Cancel (the default), Escape or a click outside answer false.
 Future<bool> confirmOpenRunnable(
   BuildContext context,
-  String displayName,
-) async {
+  String displayName, {
+  String? storedName,
+  RunnablePlatform? platform,
+  String? pathExt,
+}) async {
   final shown = cleanNameForDisplay(displayName);
-  final ext = lastExtension(displayName);
+  // The type shown is the one that raised the question: the stored name's
+  // when only that is runnable.
+  final shownRuns = isRunnableFileName(
+    displayName,
+    platform: platform,
+    pathExt: pathExt,
+  );
+  final ext = cleanNameForDisplay(
+    lastExtension(!shownRuns && storedName != null ? storedName : displayName),
+    maxLength: 24,
+  );
   final ok = await showDialog<bool>(
     context: context,
     useRootNavigator: true,

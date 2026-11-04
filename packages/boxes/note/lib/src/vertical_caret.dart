@@ -26,6 +26,7 @@ final List<CommandShortcutEvent> noteCommandShortcuts = [
     if (!_replaced.contains(e.key)) e,
   _escape,
   _linkCommand,
+  _openLinksCommand,
   _pasteCommand,
   _undo,
   _redo,
@@ -38,6 +39,7 @@ final List<CommandShortcutEvent> noteCommandShortcuts = [
 final Set<String> _replaced = {
   exitEditingCommand.key,
   showLinkMenuCommand.key,
+  openLinksCommand.key,
   pasteCommand.key,
   undoCommand.key,
   redoCommand.key,
@@ -46,6 +48,28 @@ final Set<String> _replaced = {
   moveCursorUpSelectCommand.key,
   moveCursorDownSelectCommand.key,
 };
+
+/// Alt+Shift+Enter: opens the links in the selection through [openLink], so a
+/// link to a program asks first (appflowy's own handler launches them directly).
+final CommandShortcutEvent _openLinksCommand = openLinksCommand.copyWith(
+  handler: (editorState) {
+    final selection = editorState.selection;
+    if (selection == null || selection.isCollapsed) return KeyEventResult.ignored;
+    final links = <String>{};
+    for (final node in editorState.getNodesInSelection(selection)) {
+      final delta = node.delta;
+      if (delta == null) continue;
+      for (final op in delta) {
+        final href = op.attributes?[AppFlowyRichTextKeys.href];
+        if (href is String) links.add(href);
+      }
+    }
+    for (final link in links) {
+      unawaited(openLink(link));
+    }
+    return KeyEventResult.handled;
+  },
+);
 
 /// Ctrl+K: Noted's own link dialog (insert, edit or remove) instead of
 /// appflowy's link menu.

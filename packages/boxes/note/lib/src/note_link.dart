@@ -127,44 +127,66 @@ Future<void> editLinkIn(BuildContext context, EditorState editor) async {
 
 /// Opens [url] in the system's browser or default app ([linkOpener]).
 Future<void> openLink(String url, {BuildContext? context}) {
-  // A Ctrl+click reaches here by two routes (the editor's own and ours): once.
-  final now = DateTime.now();
-  if (url == _lastOpened && now.difference(_lastOpenedAt) < const Duration(milliseconds: 800)) {
-    return Future.value();
-  }
-  _lastOpened = url;
-  _lastOpenedAt = now;
   _askContext = context;
   return linkOpener(url);
 }
 
 // The context for a question before opening; [_launch] takes it at once.
 BuildContext? _askContext;
-String? _lastOpened;
-DateTime _lastOpenedAt = DateTime.fromMillisecondsSinceEpoch(0);
 
 /// What opens a link; tests replace it.
 Future<void> Function(String url) linkOpener = _launch;
 
+final RegExp _controlChars = RegExp(r'[\x00-\x1f\x7f-\x9f]');
+
 Future<void> _launch(String url) async {
   final context = _askContext ?? _navigatorContext();
   _askContext = null;
-  final uri = Uri.tryParse(url);
-  if (uri == null) return;
+  final messenger = context == null ? null : ScaffoldMessenger.maybeOf(context);
+  final text = url.trim();
+  final uri = Uri.tryParse(text);
+  final scheme = uri?.scheme.toLowerCase() ?? '';
   try {
-    // A local or network file the system would run is opened only after the
-    // user says so. Other schemes are left to the system as before.
-    if (uri.isScheme('file')) {
-      final path = uri.toFilePath();
-      if (needsOpenConfirmation(displayName: path)) {
-        if (context == null || !context.mounted) return;
-        if (!await confirmOpenRunnable(context, path.split(RegExp(r'[\\/]')).last)) return;
-      }
+    // Web and mail links, and schemes of other programs, go to the system as
+    // before. Everything else is a local or network path (a file: link, a
+    // drive letter, a share, a bare path): one the system would run is opened
+    // only after the user says so.
+    final isPath = scheme.isEmpty || scheme == 'file' || scheme.length == 1;
+    if (uri != null && !isPath) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+      return;
     }
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
+    final String path;
+    final Uri target;
+    if (uri != null && scheme == 'file') {
+      path = uri.toFilePath();
+      target = uri;
+    } else {
+      path = text;
+      target = scheme.isEmpty && uri != null && !_looksLikePath(text) ? uri : Uri.file(text);
+    }
+    // A name with a control character (NUL, a line break) is not opened: the
+    // system may read it differently from what was checked.
+    if (_controlChars.hasMatch(path) || _controlChars.hasMatch(Uri.decodeFull(text))) {
+      _notice(messenger);
+      return;
+    }
+    if (needsOpenConfirmation(displayName: path)) {
+      if (context == null || !context.mounted) return;
+      final shown = path.replaceAll(RegExp(r'[\/]+$'), '').split(RegExp(r'[\/]')).last;
+      if (!await confirmOpenRunnable(context, shown)) return;
+    }
+    await launchUrl(target, mode: LaunchMode.externalApplication);
   } on Object catch (e) {
     debugPrint('Opening $url failed: $e');
+    _notice(messenger);
   }
+}
+
+bool _looksLikePath(String s) => s.startsWith(r'\') || s.startsWith('//') || s.contains(r'\') || s.startsWith('/');
+
+void _notice(ScaffoldMessengerState? messenger) {
+  messenger?.showSnackBar(const SnackBar(content: Text("This link can't be opened.")));
 }
 
 /// Asks for a link address. Returns null if cancelled.

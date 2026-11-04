@@ -44,6 +44,12 @@ void main() {
       expect(run('x.exe ', win), isTrue);
       expect(run('x.exe. . ', win), isTrue);
     });
+    test('trailing separators are ignored', () {
+      expect(lastExtension('Evil.app/'), 'app');
+      expect(lastExtension('dir\\Evil.app\\'), 'app');
+      expect(run('Evil.app/', mac), isTrue);
+      expect(run('x.exe/ /', win), isTrue);
+    });
     test('only the last extension counts', () {
       expect(run('report.pdf.exe', win), isTrue);
       expect(run('report.exe.pdf', win), isFalse);
@@ -109,6 +115,7 @@ void main() {
       expect(clean.length, lessThanOrEqualTo(80));
       expect(clean, endsWith('.exe'));
       expect(clean, contains('…'));
+      expect(clean, contains('… .exe'));
       expect(cleanNameForDisplay('short.exe'), 'short.exe');
     },
   );
@@ -154,6 +161,22 @@ void main() {
           .getSize(find.byKey(const ValueKey('open-confirm-text')))
           .width;
       expect(w, lessThanOrEqualTo(600));
+    });
+
+    testWidgets('the type shown is the one that raised the question', (t) async {
+      await t.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => confirmOpenRunnable(context, 'a.pdf', storedName: 'h.jar'),
+              child: const Text('go'),
+            ),
+          ),
+        ),
+      );
+      await t.tap(find.text('go'));
+      await t.pumpAndSettle();
+      expect(find.text('Type: .jar'), findsOneWidget);
     });
 
     testWidgets('Escape is false, Open is true', (t) async {
