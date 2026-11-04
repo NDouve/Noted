@@ -50,7 +50,7 @@
 //     box is lost).
 //  3. `RecoveryStore.write` keeps nothing: 15 fail; "the edit was not kept for
 //     recovery" at every `vanish` step.
-//  4. `Notebook._deleteIfUnchanged` deletes whatever file is there: 9 fail;
+//  4. `Notebook._deleteIfUnchanged` deletes whatever file is there: 11 fail;
 //     "the move should have been refused" (`move:syncAtSource` loses the newer
 //     version).
 //  5. `undoDelete` does nothing: 7 fail; "the files in pages|a|b" after
@@ -66,15 +66,22 @@
 //     copy is left or its boxes missing) after `conflict` steps.
 //  9. An external change is not merged into the open page: 11 fail; "boxes of
 //     page" after `external` and `edit` steps, "the entry was not replayed".
-// 10. A move's rollback (`removeCopies`) removes nothing: 5 fail; "the files
+// 10. A move's rollback (`removeCopies`) removes nothing: 6 fail; "the files
 //     in a|b|x" after `move:failDestination` on a subtree (the first page's
 //     copy is left at the target). Before the move faults were aimed at the
 //     last page of a subtree this mutation was not caught at all.
-// 11. A move whose source delete fails leaves its copy at the target: 3 fail;
+// 11. A move whose source delete fails leaves its copy at the target: 5 fail;
 //     "the files in a|b" after `move:failSourceDelete`.
 // 12. A publish that fails does not put the set-aside original back: 4 fail;
 //     "the files in" (a `.cas-verified` file where the page was) after
 //     `edit:failAlways`.
+// 13. `Notebook.delete` does not put back what a failed delete already deleted
+//     (the fix of this task): 8 fail; "the files in pages" after
+//     `delete:failDelete` on a page with subpages, and the regression probe.
+//     The generator aims the fault at the last page of the subtree for this.
+// 14. A merge re-serialises the data of the unregistered box (invariant 2): all
+//     24 fail; "data of the unregistered box" on disk, first after `vanish`
+//     and `copy` steps.
 //
 // Wait for watchers: none is used. The notebook runs with `watchFiles` off,
 // and the steps call `checkFile` and `checkFolders` themselves, the way the
@@ -883,11 +890,18 @@ class _Run {
   // ---- delete, with undo ------------------------------------------------------
 
   Future<void> _opDelete() async {
-    final id = _pickPage();
+    final variant = _pick(['undo', 'undo', 'keep', 'syncAtDelete', 'failDelete', 'failDelete']);
+    // A fault on the last page of a subtree is the one that needs a put-back.
+    final parents = [
+      for (final e in model.entries)
+        if (e.value.parent != null) e.value.parent!,
+    ];
+    final id = variant == 'failDelete' && parents.isNotEmpty
+        ? parents[rng.nextInt(parents.length)]
+        : _pickPage();
     final gone = _subtree(id);
     if (_standaloneLeft(gone, to: null) < 1) return; // the app would make a new page
     final m = model[id]!;
-    final variant = _pick(['undo', 'undo', 'keep', 'syncAtDelete', 'failDelete']);
     trace.add('delete ${_short(id)} (${gone.length} pages) in ${m.loc}: $variant');
     _kind = 'delete:$variant';
     final st = storeOf(m.loc);
