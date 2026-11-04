@@ -1427,7 +1427,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           stuck.add(i);
         }
       }
-      var assetsBack = true;
+
       for (var i = 0; i < ids.length; i++) {
         final dir = stash[ids[i]];
         if (dir == null) continue;
@@ -1435,17 +1435,31 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           await _moveDir(dir, _assetsDir(loc, ids[i]));
           stash.remove(ids[i]);
         } on FileSystemException catch (e) {
-          assetsBack = false;
           debugPrint('Putting back the attachments of page ${ids[i]} failed: $e');
+        }
+      }
+      // Attachments that could not go back to their folder are handed to
+      // recovery's kept files (0098): they land beside the page when it does,
+      // and are out of reach of a later delete's clean-up of the trash.
+      final rec = _recovery;
+      if (rec != null) {
+        for (final id in stash.keys.toList()) {
+          try {
+            await _moveDir(
+              stash[id]!,
+              Directory('${rec.directory.path}${Platform.pathSeparator}${assetsFolderName(id)}'),
+            );
+            stash.remove(id);
+          } on Object catch (e) {
+            debugPrint('Keeping the attachments of page $id for recovery failed: $e');
+          }
         }
       }
       // Pages kept because a newer version landed: read like any change.
       for (final p in keptIds) {
         await _checkFile(st.pathFor(p));
       }
-      if (stuck.isEmpty && assetsBack && stash.isEmpty) {
-        await _removeDir(trash);
-      }
+      if (stash.isEmpty) await _removeDir(trash);
       _touch(loc);
       _rebuildTree();
       if (openId != null) {
@@ -1457,16 +1471,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
       }
       if (stuck.isNotEmpty) {
-        // What could not be put back is kept for undo and in recovery, which
-        // writes a page file that is not there when it replays.
-        _lastDeleted = DeletedPages._(
-          [for (final i in stuck) pages[i]],
-          null,
-          loc,
-          {for (final i in stuck) if (stash[ids[i]] != null) ids[i]: stash[ids[i]]!}, // any left
-        );
+        // What could not be put back is kept in recovery, which writes a page
+        // file that is not there when it replays. Not offered as an undo: the
+        // next delete would clear its attachments away. An entry that is
+        // already there for the page is left alone: it recreates the page and
+        // holds the newer content.
+        final folder = _normalizePath(st.directory.path);
+        final waiting = rec == null ? const <RecoveryEntry>[] : (await rec.list()).entries;
         for (final i in stuck) {
-          await _keepForRecovery(loc, st, pages[i], base: pages[i]);
+          final has = waiting.any(
+            (e) => e.pageId == ids[i] && _key(_normalizePath(e.folder)) == _key(folder),
+          );
+          if (!has) await _keepForRecovery(loc, st, pages[i], base: pages[i]);
         }
         throw NotebookException(
           '${stuck.length == 1 ? 'A page' : '${stuck.length} pages'} could not be deleted '

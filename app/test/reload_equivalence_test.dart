@@ -96,6 +96,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/recovery_store.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -1028,6 +1029,13 @@ class _Run {
     await nb.load();
   }
 
+  /// What is left in the app's trash of deleted attachments (`app` beside the
+  /// binders file).
+  List<FileSystemEntity> trashChildren() {
+    final d = Directory('${root.path}${sep}app${sep}deleted-attachments');
+    return d.existsSync() ? d.listSync() : const [];
+  }
+
   /// Gives page [id] an attachments folder with a file in it (the probes use
   /// it; the sequences leave attachments alone).
   void _giveAssets(String id) {
@@ -1265,10 +1273,7 @@ void main() {
         // Nothing is deleted: both files, both attachment folders, and a fresh
         // notebook agrees.
         await run.verify('after the failed delete', fresh: true);
-        expect(
-          Directory('${run.dirs['pages']!.path}${run.sep}deleted-attachments').existsSync(),
-          isFalse,
-        );
+        expect(run.trashChildren(), isEmpty);
       },
     );
 
@@ -1295,6 +1300,63 @@ void main() {
       // The next start writes the page back.
       await run._opRestart();
       await run.verify('after the recovery', fresh: true);
+    });
+
+    test('a failed put-back with a recovery entry waiting and attachments that cannot go '
+        'back: a later delete and a restart bring everything back', () async {
+      final parent = run.model.keys.first;
+      final sub = run.model.entries.firstWhere((e) => e.value.parent == parent).key;
+      run._giveAssets(parent);
+      final m = run.model[parent]!;
+      // An entry for the page is waiting, with an edit that is not in the file.
+      final y = run._newBox('pending edit');
+      final disk = run._disk(parent);
+      await RecoveryStore(run.rec).write(
+        folder: run.dirs['pages']!.path,
+        page: disk.insertNode(y),
+        baseText: writePage(disk),
+        time: DateTime.now(),
+      );
+      m.boxes[y.id] = _val(y);
+      final st = run.storeOf('pages');
+      final assets = Directory('${run.dirs['pages']!.path}${run.sep}${assetsFolderName(parent)}');
+      // The attachments cannot go back: a different file holds their place.
+      st.beforeDeleteOnce = () {
+        assets.createSync();
+        File('${assets.path}${run.sep}a.txt').writeAsStringSync('someone else');
+      };
+      st.failDelete.add(sub);
+      st.failNew.add(parent);
+      Object? error;
+      try {
+        await run.nb.delete(parent);
+      } on Object catch (e) {
+        error = e;
+      }
+      st.failDelete.clear();
+      st.failNew.clear();
+      expect(error, isA<NotebookException>());
+      // The waiting entry is still the only one, and still has its edit.
+      final entries = (await run.nb.pendingRecovery()).entries;
+      expect(entries.map((e) => e.pageId), [parent]);
+      expect(entries.single.page.node(y.id), isNotNull, reason: 'the pending edit was replaced');
+      // The attachments are out of reach of the trash clean-up.
+      expect(run.trashChildren(), isEmpty);
+      // The user deletes another page meanwhile.
+      final other = run.model.entries.firstWhere((e) => e.value.loc == 'x').key;
+      run.nb.discardDeleted(await run.nb.delete(other));
+      run.model.remove(other);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      // The blocking file goes away (a transient cause), and the app restarts.
+      assets.deleteSync(recursive: true);
+      await run._opRestart();
+      await run.verify('after the restart', fresh: true);
+      expect(run.model[parent]!.boxes, contains(y.id));
+      expect(
+        File('${assets.path}${run.sep}a.txt').readAsStringSync(),
+        'attachment of $parent',
+        reason: 'the attachment did not come back',
+      );
     });
   });
 }
