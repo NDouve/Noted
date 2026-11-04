@@ -169,6 +169,40 @@ void main() {
     expect((r.page.nodes.last as ForeignNode).text, 'B');
   });
 
+  ForeignNode raw(String text, String id) =>
+      ForeignNode.read(RawJson.trusted(text), fallbackId: id);
+
+  test('differing non-object nodes at the same position are both kept', () {
+    final one = raw('1', '#node0');
+    final two = raw('2', '#node0');
+    final r = merge(pageOf([one]), pageOf([two]));
+    expect(r.page.nodes.map((n) => n.toRaw().text), ['1', '2']);
+  });
+
+  group('verifyConflictCopyMerge foreign content', () {
+    const a = '{"id":"f","type":"text","x":0,"y":0,"width":5,"height":5,"text":"A"}';
+    const b = '{"id":"f","type":"text","x":0,"y":0,"width":5,"height":5,"text":"B"}';
+
+    test('rejects a result that dropped a same-id foreign node with other content', () {
+      final original = pageOf([raw(a, 'f')]);
+      final copy = pageOf([raw(b, 'f')]);
+      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+    });
+
+    test('rejects a result that dropped a non-object node', () {
+      final original = pageOf([raw('1', '#node0')]);
+      final copy = pageOf([raw('2', '#node0')]);
+      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+    });
+
+    test('accepts the merge, including a copy moved to a new id', () {
+      final original = pageOf([raw(a, 'f'), raw('1', '#node1')]);
+      final copy = pageOf([raw(b, 'f'), raw('2', '#node1')]);
+      final m = merge(original, copy).page;
+      expect(verifyConflictCopyMerge(readPage(writePage(m)), original, copy), isNull);
+    });
+  });
+
   group('verifyConflictCopyMerge', () {
     test('accepts what the merge wrote', () {
       final original = base.replaceNode(edit(a, 'mine')).insertNode(box('x', 'x'));

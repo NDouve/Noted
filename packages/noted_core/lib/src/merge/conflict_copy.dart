@@ -105,11 +105,11 @@ PageMerge mergeConflictCopy(
     } else {
       // A node Noted doesn't own differs: keep both, nothing is dropped.
       out.add(o);
-      final extra = switch (c) {
-        ForeignNode() => c.copyWithId(newId()),
+      out.add(switch (c) {
+        // A node that isn't a JSON object can't take an id: kept as it is.
+        ForeignNode() => c.copyWithId(newId()) ?? c,
         BoxRecord() => markLandedIfOverlapping(c.withId(newId()), [o], mergeTime: copyTime),
-      };
-      if (extra != null) out.add(extra);
+      });
     }
   }
 
@@ -182,6 +182,21 @@ bool _sameContent(BoxRecord x, BoxRecord y) =>
     x.data == y.data &&
     x.snapshotText == y.snapshotText;
 
+/// Whether [n], a node Noted doesn't own, is on [page] by its raw text. A
+/// merge may have moved it to a new id (written into its `id` field), so a
+/// node that differs only in that id counts too.
+bool _foreignKept(NotedPage page, ForeignNode n) {
+  final raw = n.toRaw();
+  for (final d in page.nodes) {
+    if (d is! ForeignNode) continue;
+    if (d.toRaw() == raw) return true;
+    if (n.raw.isObject && d.raw.isObject && n.copyWithId(d.id)?.toRaw() == d.toRaw()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Checks, on the page read back from disk, that the merge of [copy] into
 /// [original] lost nothing: every node id of both sides is there, and for each
 /// box both sides have, the saved content is one side's version and the other
@@ -192,7 +207,13 @@ String? verifyConflictCopyMerge(NotedPage onDisk, NotedPage original, NotedPage 
   final copyById = {for (final n in copy.nodes) n.id: n};
   for (final side in [original, copy]) {
     for (final n in side.nodes) {
-      if (onDisk.node(n.id) == null) return 'node ${n.id} is missing';
+      if (n is ForeignNode) {
+        // A node Noted doesn't own is checked by its raw text: its id may be
+        // synthetic (from its position) or rewritten by the merge.
+        if (!_foreignKept(onDisk, n)) return 'foreign node ${n.id} is missing or changed';
+      } else if (onDisk.node(n.id) == null) {
+        return 'node ${n.id} is missing';
+      }
     }
   }
   for (final o in original.nodes) {
