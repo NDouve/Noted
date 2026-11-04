@@ -12,13 +12,14 @@ import 'notebook.dart';
 /// say, or no window to show it in); quitting is never refused.
 Future<void> showRecoveryNoticeOnExit(Notebook notebook, GlobalKey<NavigatorState> navigator) async {
   final listing = await notebook.pendingRecovery();
-  final pages = listing.entries.length;
+  final pages = await notebook.pendingRecoveryPages();
   // The same files and reasons as the sidebar's "Can't open" list.
   final damaged = [...listing.damaged, ...notebook.recoveryOwnDamaged];
   final problems = [
     for (final u in damaged) '${u.path.split(RegExp(r'[\\/]')).last}: ${u.reason}',
   ];
-  if (pages == 0 && problems.isEmpty) return;
+  final lost = notebook.unsavedPageCount;
+  if (pages == 0 && problems.isEmpty && lost == 0) return;
   final context = navigator.currentContext;
   if (context == null || !context.mounted) return;
   await showDialog<void>(
@@ -34,13 +35,21 @@ Future<void> showRecoveryNoticeOnExit(Notebook notebook, GlobalKey<NavigatorStat
             if (pages > 0)
               Text(
                 pages == 1
-                    ? "1 page couldn't be saved because its folder is unavailable. "
-                          'It is kept safely and will be saved automatically when the folder is back.'
-                    : "$pages pages couldn't be saved because their folder is unavailable. "
-                          'They are kept safely and will be saved automatically when the folder is back.',
+                    ? "1 page couldn't be saved. "
+                          'It is kept safely and will be saved automatically when that works again.'
+                    : "$pages pages couldn't be saved. "
+                          'They are kept safely and will be saved automatically when that works again.',
               ),
-            if (problems.isNotEmpty) ...[
+            if (lost > 0) ...[
               if (pages > 0) SizedBox(height: NotedMetrics.of(context).space3),
+              Text(
+                lost == 1
+                    ? "1 page couldn't be saved or kept. Its latest edits will be lost if you quit."
+                    : "$lost pages couldn't be saved or kept. Their latest edits will be lost if you quit.",
+              ),
+            ],
+            if (problems.isNotEmpty) ...[
+              if (pages > 0 || lost > 0) SizedBox(height: NotedMetrics.of(context).space3),
               const Text("Can't open:"),
               for (final p in problems) Text(p, style: Theme.of(context).textTheme.bodySmall),
             ],

@@ -201,6 +201,7 @@ class _ToggleStore extends PageStore {
 
   bool lossy = false;
   bool throwOnRead = false;
+  bool throwOnSave = false;
   bool alterRead = false;
 
   @override
@@ -214,14 +215,17 @@ class _ToggleStore extends PageStore {
     void Function()? afterRead,
     void Function()? beforePublish,
     void Function()? beforeRestore,
-  }) => super.saveIfUnchanged(
-    lossy ? NotedPage.create(page.meta) : page,
-    expectedText,
-    beforeMoveAside: beforeMoveAside,
-    afterRead: afterRead,
-    beforePublish: beforePublish,
-    beforeRestore: beforeRestore,
-  );
+  }) {
+    if (throwOnSave) throw const FileSystemException('injected save failure');
+    return super.saveIfUnchanged(
+      lossy ? NotedPage.create(page.meta) : page,
+      expectedText,
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforePublish: beforePublish,
+      beforeRestore: beforeRestore,
+    );
+  }
 
   @override
   Future<String> readText(String pageId) async {
@@ -1321,33 +1325,32 @@ void main() {
       return (nb, st, moved);
     }
 
-    test('a failed check is listed', () async {
+    test('a page that lands without its edits is retired (it did land) and the user is told', () async {
       final (nb, st, moved) = await parked();
       st.lossy = true;
       await moved.rename(pages.path);
       await nb.checkFolders();
-      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      expect((await nb.pendingRecovery()).entries, isEmpty, reason: 'it landed: folding it again could bring back deletions');
       expect(nb.recoveryDamaged, hasLength(1));
       expect(nb.recoveryProblems, hasLength(1));
     });
 
     test('an exception during replay is listed, and cleared by a later successful replay', () async {
-      final (nb, st, moved) = await parked();
-      st.throwOnRead = true;
+      final (nb, _, moved) = await parked();
+      quit(nb);
       await moved.rename(pages.path);
-      await nb.checkFolders();
-      expect((await nb.pendingRecovery()).entries, hasLength(1));
-      expect(nb.recoveryDamaged, hasLength(1));
-      expect(nb.recoveryDamaged.single.reason, contains('could not be saved into the page file'));
-      expect(nb.recoveryDamaged.single.reason, isNot(contains('injected')));
+      final st = _ToggleStore(pages)..throwOnSave = true;
+      final again = make(store: st);
+      await again.load();
+      expect((await again.pendingRecovery()).entries, hasLength(1));
+      expect(again.recoveryDamaged, hasLength(1));
+      expect(again.recoveryDamaged.single.reason, contains('could not be saved into the page file'));
+      expect(again.recoveryDamaged.single.reason, isNot(contains('injected')));
 
-      await pages.rename(moved.path);
-      await nb.checkFolders();
-      st.throwOnRead = false;
-      await moved.rename(pages.path);
-      await nb.checkFolders();
-      expect((await nb.pendingRecovery()).entries, isEmpty);
-      expect(nb.recoveryDamaged, isEmpty);
+      st.throwOnSave = false;
+      await again.flush();
+      expect((await again.pendingRecovery()).entries, isEmpty);
+      expect(again.recoveryDamaged, isEmpty);
     });
 
     test('a read-back that differs but keeps the edits: retired, nothing listed, not merged again', () async {
