@@ -3125,7 +3125,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     await _binderSeam('recheck', path);
     final wasRemoved = _removedBinders.contains(expectId ?? (read is BinderFound ? read.binder.id : ''));
-    if (found) _foundAdds[key] = [];
+    if (found) {
+      _foundAdds[key] = [];
+      _sweepOff++;
+    }
     try {
       final section = await _openBinder(path, create: !found, createFolder: !found, sweep: !found);
       final id = section.binder?.id;
@@ -3149,7 +3152,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       return (section: _binders[path] ?? section, added: true, wasRemoved: wasRemoved, refused: null);
     } finally {
-      if (found) _foundAdds.remove(key);
+      if (found) {
+        _foundAdds.remove(key);
+        _sweepOff--;
+      }
     }
   }
 
@@ -3175,7 +3181,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }) async {
     final section = _binders[path];
     if (section == null) return true;
-    if (found) _sweepOff++;
     try {
       // The binder file first, before any page is reconciled or written.
       await _checkBinderFile(BinderStore(Directory(path)).file.path);
@@ -3239,7 +3244,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       return true;
     } finally {
-      if (found) _sweepOff--;
+      // (sweeping stays off for the whole found add: see _listBinder)
     }
   }
 
@@ -3733,6 +3738,24 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     });
   }
 
+  // Reads the binder file once: what it parsed to and the text that was parsed.
+  Future<({BinderRead read, String? text})> _readBinderFile(BinderStore store) async {
+    final f = store.file;
+    try {
+      if (!await f.exists()) return (read: const BinderMissing(), text: null);
+      final text = await f.readAsString();
+      try {
+        return (read: BinderFound(Binder.parse(text)), text: text);
+      } on BinderFormatException catch (e) {
+        return (read: BinderUnreadable(e.message), text: text);
+      }
+    } on FileSystemException catch (e) {
+      return (read: BinderUnreadable(e.message), text: null);
+    } on FormatException {
+      return (read: const BinderUnreadable('not valid UTF-8 text'), text: null);
+    }
+  }
+
   Future<BinderSection> _openBinder(
     String path, {
     bool create = false,
@@ -3747,23 +3770,28 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         return unavailable('Folder not found. It may be on another device.', missing: true);
       }
       final binders = BinderStore(dir);
-      var read = await binders.read();
+      // One read of the binder file: what is parsed is exactly what is cached
+      // for the later "did it change" check.
+      final once = await _readBinderFile(binders);
+      var read = once.read;
+      String? text = once.text;
       if (read is BinderMissing) {
         if (!create) return unavailable('No $binderFileName in this folder.');
-        read = BinderFound(
-          await binders.create(
-            Binder.create(
-              title: _folderName(path),
-              color: binderPalette[_binders.length % binderPalette.length],
-            ),
+        final made = await binders.create(
+          Binder.create(
+            title: _folderName(path),
+            color: binderPalette[_binders.length % binderPalette.length],
           ),
         );
+        read = BinderFound(made);
+        text = made.write(); // what `create` wrote
       }
       // A binder whose file can't be read still lists its pages, read-only.
       final binder = read is BinderFound ? read.binder : null;
-      try {
-        _binderText[_key(path)] = await binders.file.readAsString();
-      } on Object {
+      await _binderSeam('parsed', path);
+      if (text != null) {
+        _binderText[_key(path)] = text;
+      } else {
         _binderText.remove(_key(path));
       }
       final pages = storeFactory(dir);
@@ -5845,7 +5873,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (_key(File(e.value).parent.path) == dir) st.adopt(e.key, e.value);
     }
     return _underFolderLock(st, () async {
-      final entries = await st.scan(createFolder: createFolder, sweep: sweep);
+      // No scan sweeps while a found add runs: set-aside files may belong to a
+      // write another device has under way.
+      final entries = await st.scan(createFolder: createFolder, sweep: sweep && _sweepOff == 0);
       // The open page whose chosen file is gone keeps it as its file (its next
       // save writes it again), not the file the scan found instead.
       for (final e in _adoptedFiles.entries) {
@@ -6963,9 +6993,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         return;
       }
       if (_removedBinders.contains(id)) return;
-      // The unreadable file might hold this id too: nothing new is admitted
-      // from a pass that couldn't read every candidate.
-      if (!readsOk) return;
+      // An unreadable file, or a root that could not be listed (or was cut), might
+      // hold this id too: nothing new is admitted from such a pass.
+      if (!readsOk || !rootsOk) return;
       if (paths.length > 1) {
         duplicates[id] = (title: title, folders: paths);
       } else {

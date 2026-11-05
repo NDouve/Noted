@@ -391,8 +391,17 @@ void main() {
       Directory(at('binders/templates')).createSync();
       await BinderStore(Directory(at('binders/f0999'))).create(mkBinder(title: 'last in', id: a1));
       await BinderStore(Directory(at('binders/g'))).create(mkBinder(title: 'cut off', id: a2));
-      final nb = await start();
-      expect(idsOf(nb), [a1]);
+      final nb = make();
+      final read = <String>[];
+      nb.binderHook = (point, path) async {
+        if (point == 'candidate-read') read.add(path);
+      };
+      await nb.load();
+      await nb.discoveryIdle;
+      expect(read.where((p) => p.contains('f0999')), hasLength(1), reason: 'the 1000th folder is read');
+      expect(read.where((p) => p.contains('${sep}g$sep')), isEmpty, reason: 'the 1001st is not');
+      // A pass that was cut short admits nothing: the rest might hold a twin.
+      expect(nb.binders, isEmpty);
     });
 
     test('8: a folder that vanishes as it is read is not recreated and not listed', () async {
@@ -1057,6 +1066,83 @@ void main() {
         await nb.discoverBinders();
         expect(nb.backstopTicksForTest, 10);
       });
+    });
+
+    group('Codex round 1 fixes', () {
+      test(
+        'R-1: a root whose listing failed admits nothing; once it lists, both copies are flagged duplicates',
+        () async {
+          writeSettings({'format': 1, 'binders': <String>[], 'binderIds': <String, Object?>{}});
+          await binderAt('binders/D1', a1, title: 'Twin');
+          await binderAt('pages/D2', a1, title: 'Twin');
+          await binderAt('binders/Control', a2);
+          final nb = make();
+          nb.binderHook = (point, path) async {
+            if (point == 'root-list' && path.contains('pages')) throw const FileSystemException('disk error');
+          };
+          await nb.load();
+          await nb.discoveryIdle;
+          // The visible copy and the control are both left alone: the hidden root
+          // might hold more.
+          expect(nb.binders, isEmpty);
+          nb.binderHook = null;
+          await nb.discoverBinders();
+          expect(idsOf(nb), [a2], reason: 'the control is added; neither twin is');
+          expect(nb.discoveryNotes, hasLength(1));
+          expect(nb.discoveryNotes.single.reason, contains('more than one folder'));
+        },
+      );
+
+      test('R-2: a conflict copy merged in a found add does not sweep a set-aside file', () async {
+        final codec = modules.codecs.codecFor('noted.note')!;
+        BoxRecord noteBox(String text, Bounds b) => commitBox(createBox(codec, b), codec, codec.decode(doc(text), 1));
+        await binderAt('binders/Q', a1);
+        final aside = File(at('binders/Q/x.canvas.1a2b3c.cas-old'))
+          ..writeAsStringSync(writePage(NotedPage.create(PageMeta.create(id: 'x', title: 'X', order: 0))));
+        writeSettings({'format': 1, 'binders': <String>[], 'binderIds': <String, Object?>{}});
+        final base = NotedPage.create(PageMeta.create(id: 'p9', title: 'Named', order: 0));
+        final extra = noteBox('theirs', const Bounds(400, 10, 200, 40));
+        final nb = make();
+        // After the scan, a page whose file name isn't its id arrives with a
+        // conflict copy; the copy sorts first, so it is reconciled first.
+        nb.binderHook = (point, path) async {
+          if (point != 'opened') return;
+          File(at('binders/Q/orig.canvas')).writeAsStringSync(writePage(base));
+          File(at('binders/Q/orig-PC2.canvas')).writeAsStringSync(writePage(base.insertNode(extra)));
+        };
+        await nb.load();
+        await nb.discoveryIdle;
+        expect(nb.binders, hasLength(1));
+        expect(aside.existsSync(), isTrue, reason: 'left for the device that wrote it');
+        expect(File(at('binders/Q/x.canvas')).existsSync(), isFalse);
+        expect(File(at('binders/Q/orig-PC2.canvas')).existsSync(), isFalse, reason: 'the copy was merged and removed');
+        expect(readPage(File(at('binders/Q/orig.canvas')).readAsStringSync()).node(extra.id), isNotNull);
+      });
+
+      for (final variant in ['damaged', 'otherId']) {
+        test('earlier R-1: the binder file replaced between its parse and its cache is noticed ($variant)', () async {
+          await binderAt('binders/Q', a1, pages: ['p1']);
+          writeSettings({'format': 1, 'binders': <String>[], 'binderIds': <String, Object?>{}});
+          final nb = make();
+          nb.binderHook = (point, path) async {
+            if (point != 'parsed') return;
+            final f = File(at('binders/Q/$binderFileName'));
+            if (variant == 'damaged') {
+              f.writeAsStringSync('{oops');
+            } else {
+              f.writeAsStringSync(mkBinder(title: 'Other', id: a3).write());
+            }
+          };
+          await nb.load();
+          await nb.discoveryIdle;
+          nb.binderHook = null;
+          if (variant == 'damaged') {
+            expect(nb.binders.single.status, BinderStatus.unreadable);
+          } else {
+            expect(nb.binders, isEmpty, reason: 'the found add is undone');
+          }
+        });
+      }
     });
   });
 }
