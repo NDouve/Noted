@@ -418,6 +418,120 @@ void main() {
         expect(File(s.copy).readAsBytesSync(), copyBytes);
       });
 
+      test('when the adopted file goes (page closed) the original is the page '
+          'again; if it comes back, registration, store and tree agree', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await openExistingFile(s.nb, s.copy);
+        await s.nb.open(await s.nb.createPage());
+        final copyText = File(s.copy).readAsStringSync();
+        File(s.copy).deleteSync();
+        await s.nb.checkFile(s.copy);
+        expect(s.nb.unreadable, isEmpty);
+        expect(s.nb.pageTitleOf(s.id), 'Original');
+        expect(s.nb.tree.roots.map((r) => r.id), contains(s.id));
+        final loc = s.nb.standaloneFolders.single.path;
+
+        File(s.copy).writeAsStringSync(copyText);
+        final entries = await s.nb.scanLocationForTest(loc);
+        await s.nb.checkFile(s.copy);
+        String n(String p) => p.replaceAll(r'\', '/').toLowerCase();
+        expect(
+          entries.whereType<ReadablePage>().single.path.endsWith(
+            s.orig.split(RegExp(r'[\/]')).last,
+          ),
+          isTrue,
+        );
+        expect(s.nb.unreadable.map((u) => n(u.path)), [n(s.copy)]);
+        expect(s.nb.pageTitleOf(s.id), 'Original');
+        expect(s.nb.tree.roots.map((r) => r.id), contains(s.id));
+        await s.nb.open(s.id);
+        expect(s.nb.pageTitleOf(s.id), 'Original');
+        await s.nb.rename(s.id, 'Edited');
+        await s.nb.flush();
+        expect(File(s.orig).readAsStringSync(), contains('Edited'));
+        expect(File(s.copy).readAsStringSync(), copyText);
+      });
+
+      test('the open adopted page whose file went stays open; the original is '
+          'not merged into it', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await openExistingFile(s.nb, s.copy);
+        final origBytes = File(s.orig).readAsBytesSync();
+        File(s.copy).deleteSync();
+        await s.nb.checkFile(s.copy);
+        final loc = s.nb.standaloneFolders.single.path;
+        await s.nb.scanLocationForTest(loc);
+        await s.nb.checkFile(s.orig);
+        expect(s.nb.currentId, s.id);
+        expect(s.nb.pageTitleOf(s.id), 'Copy');
+        await s.nb.rename(s.id, 'Edited');
+        await s.nb.flush();
+        expect(File(s.copy).readAsStringSync(), contains('Edited'));
+        expect(File(s.orig).readAsBytesSync(), origBytes);
+      });
+
+      test('a conflict copy of the duplicate file is listed, not merged',
+          () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await openExistingFile(s.nb, s.copy);
+        final origBytes = File(s.orig).readAsBytesSync();
+        final cc = '${dir.path}/${s.id}-DESKTOP-1.canvas';
+        File(cc).writeAsBytesSync(origBytes);
+        await s.nb.checkFile(cc);
+        expect(
+          s.nb.unreadable.where((u) => u.path.endsWith('DESKTOP-1.canvas')),
+          hasLength(1),
+        );
+        expect(
+          s.nb.unreadable
+              .firstWhere((u) => u.path.endsWith('DESKTOP-1.canvas'))
+              .reason,
+          'conflict copy of a duplicate file; not merged',
+        );
+        expect(File(cc).existsSync(), isTrue);
+        expect(File(s.orig).readAsBytesSync(), origBytes);
+      });
+
+      test('an open original blocked as unreadable keeps that reason when '
+          'swapped, and the block is cleared', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await s.nb.open(s.id);
+        File(s.orig).writeAsStringSync('not a page');
+        await s.nb.checkFile(s.orig);
+        expect(s.nb.readOnlyReason, isNotNull);
+        await openExistingFile(s.nb, s.copy);
+        expect(s.nb.readOnlyReason, isNull);
+        expect(s.nb.pageTitleOf(s.id), 'Copy');
+        final reasons = s.nb.unreadable.map((u) => u.reason).toList();
+        expect(reasons, hasLength(1));
+        expect(reasons.single, isNot(startsWith('duplicate page id')));
+        await s.nb.rename(s.id, 'Edited');
+        await s.nb.flush();
+        expect(File(s.copy).readAsStringSync(), contains('Edited'));
+        expect(File(s.orig).readAsStringSync(), 'not a page');
+      });
+
+      test('a binder removed and added again still uses the chosen file',
+          () async {
+        final dir = await Directory('${root.path}/Work').create();
+        final s = await setup(dir, dir, binder: true);
+        await openExistingFile(s.nb, s.copy);
+        final origBytes = File(s.orig).readAsBytesSync();
+        final path = s.nb.binders.single.path;
+        await s.nb.removeBinder(path);
+        await s.nb.addBinder(path);
+        expect(s.nb.pageTitleOf(s.id), 'Copy');
+        await s.nb.open(s.id);
+        await s.nb.rename(s.id, 'Edited');
+        await s.nb.flush();
+        expect(File(s.copy).readAsStringSync(), contains('Edited'));
+        expect(File(s.orig).readAsBytesSync(), origBytes);
+      });
+
       test('the registered file itself still opens', () async {
         final dir = await Directory('${root.path}/Elsewhere').create();
         final s = await setup(dir, dir);
