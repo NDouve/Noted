@@ -996,6 +996,28 @@ void main() {
         );
       }
 
+      test('an upgrade with more unlisted binders than the removed cap stays open and adds none', () async {
+        await binderAt('binders/U1', a1);
+        await binderAt('binders/U2', a2);
+        await binderAt('binders/U3', a3);
+        writeSettings({'format': 1, 'binders': <String>[]});
+        final nb = make();
+        nb.setDiscoveryLimitsForTest(removed: 2);
+        await nb.load();
+        await nb.discoveryIdle;
+        expect(saved().containsKey('binderIds'), isFalse, reason: 'the upgrade stays open');
+        expect(saved()['removedBinders'], hasLength(2));
+        expect(nb.binders, isEmpty);
+        expect(nb.discoveryNotes.any((n) => n.reason.contains('more than 2 binders')), isTrue);
+        await nb.discoverBinders();
+        expect(nb.binders, isEmpty, reason: 'a later pass adds none');
+        final again = await restart(nb);
+        again.setDiscoveryLimitsForTest(removed: 2);
+        await again.discoveryIdle;
+        await again.discoverBinders();
+        expect(again.binders, isEmpty, reason: 'nor after a reload');
+      });
+
       test('a root that fails to list keeps the upgrade open; a root refused for permission does not', () async {
         await binderAt('binders/U1', a1);
         await binderAt('pages/U2', a2);

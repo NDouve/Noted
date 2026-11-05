@@ -654,7 +654,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   /// Test seams: lower caps and the time after which a pass counts as slow.
   @visibleForTesting
-  void setDiscoveryLimitsForTest({int? roots, int? folders, Duration? slowPass}) {
+  void setDiscoveryLimitsForTest({int? roots, int? folders, Duration? slowPass, int? removed}) {
+    _removedCap = removed ?? _removedCap;
     _rootCap = roots ?? _rootCap;
     _folderCap = folders ?? _folderCap;
     _slowPass = slowPass ?? _slowPass;
@@ -3928,13 +3929,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // The most removed ids kept; the oldest go first.
-  static const int _removedBindersCap = 1000;
+  int _removedCap = 1000;
 
   // Records [id] as a binder this device took out of its list.
   void _markRemoved(String id) {
     _removedBinders.remove(id);
     _removedBinders.add(id);
-    while (_removedBinders.length > _removedBindersCap) {
+    while (_removedBinders.length > _removedCap) {
       _removedBinders.removeAt(0);
     }
   }
@@ -7028,6 +7029,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final duplicates = <String, ({String title, List<String> folders})>{};
     final adds = <({String id, String path})>[];
     var recorded = false;
+    var overflow = false;
     found.forEach((id, folders) {
       final paths = [for (final f in folders) f.path];
       final title = folders.first.title.trim().isEmpty ? _folderName(paths.first) : folders.first.title.trim();
@@ -7040,6 +7042,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       if (_settingsKind == _SettingsKind.upgrade) {
         if (!_removedBinders.contains(id)) {
+          // Recording would evict an id this pass needs: leave it unrecorded and
+          // keep the upgrade open, so no pass ever adds it.
+          if (_removedBinders.length >= _removedCap) {
+            overflow = true;
+            return;
+          }
           _markRemoved(id);
           recorded = true;
         }
@@ -7057,6 +7065,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     });
     _upgradeNotes.removeWhere((id, _) => !_removedBinders.contains(id) || listedIds.containsKey(id));
+    if (overflow) {
+      capNotes.add(
+        UnreadablePage(
+          defaultBinderFolderPath,
+          "Noted found more than $_removedCap binders it didn't list; it adds none of them by itself. Open them with Open binder…",
+        ),
+      );
+    }
     final changed =
         _alsoIn.toString() != alsoIn.toString() ||
         _movedTo.toString() != movedTo.toString() ||
@@ -7069,7 +7085,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // The upgrade closes when every root that exists was listed and every
     // candidate was read; only then does `binderIds` get written.
     var closed = false;
-    if (_settingsKind == _SettingsKind.upgrade && rootsOk && readsOk) {
+    if (_settingsKind == _SettingsKind.upgrade && rootsOk && readsOk && !overflow) {
       _settingsKind = _SettingsKind.current;
       closed = true;
     }
