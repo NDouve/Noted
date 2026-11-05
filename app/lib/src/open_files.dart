@@ -96,6 +96,12 @@ Future<void> openExistingFile(Notebook nb, String raw) async {
   final bindersBefore = nb.binders.length;
   final foldersBefore = nb.standaloneFolders.length;
   String? added; // the path to remove again if the page is refused
+  // Whether the folder or binder was joined before this open (the default
+  // folder always is).
+  final wasJoined = inBinder
+      ? nb.binders.any((b) => key(b.path) == dirKey)
+      : key(nb.defaultFolderPath) == dirKey ||
+            nb.standaloneFolders.any((f) => key(f.path) == dirKey);
 
   try {
     if (inBinder) {
@@ -122,6 +128,11 @@ Future<void> openExistingFile(Notebook nb, String raw) async {
       }
     }
     final id = pageId!;
+    // A file Noted hasn't listed yet in a folder that was joined before this
+    // open (it arrived after the scan, or is listed only as a duplicate)
+    // is the one asked for: it becomes the page's file, and any other file
+    // with that id is listed as a duplicate. Nothing is written.
+    if (wasJoined) await nb.adoptUnlistedPageFile(path, id);
     // A file whose page id is already in Noted from elsewhere (a copy) is
     // listed as unreadable by the join; opening the id would open the other.
     final copy = [

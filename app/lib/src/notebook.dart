@@ -596,6 +596,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   final Map<String, String> _binderText = {};
   // Conflict copies found by a scan, to be merged once the folders are set up.
   final List<String> _pendingCopies = [];
+  // Page files chosen by [adoptUnlistedPageFile], by page id, for this session.
+  final Map<String, String> _adoptedFiles = {};
+  // Chosen files seen missing once, by page id: forgotten (and a duplicate
+  // promoted) only when a later check finds them still gone.
+  final Map<String, String> _goneChosen = {};
   final Map<String, StreamSubscription<FileSystemEvent>> _watchers = {};
   final Map<String, Timer> _debounce = {};
   Future<void> _checking = Future.value();
@@ -621,6 +626,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // and it is read-only, until a readable version appears on disk.
   String? _diskBlockId;
   String? _diskBlockReason;
+  // The short cause of the block (it isn't a valid page file, ...).
+  String? _diskBlockWhy;
 
   // R-1 v5: failed saves never lose edits ------------------------------------
 
@@ -963,16 +970,121 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  /// Whether the scan entry at [path] for page [id] is a file other than the
+  /// one chosen for that id (see [adoptUnlistedPageFile]) while the chosen
+  /// file still exists or its page is open: it is then a duplicate.
+  bool _otherThanChosen(String id, String path) {
+    final c = _adoptedFiles[id];
+    if (c == null || _key(c) == _key(path)) return false;
+    return id == currentId || File(c).existsSync() || _goneChosen.containsKey(id);
+  }
+
   // The pages found in the default folder.
   void _adoptDefault(List<PageEntry> entries) {
+    final dupes = <UnreadablePage>[];
     for (final e in entries.whereType<ReadablePage>()) {
+      if (_otherThanChosen(e.meta.id, e.path)) {
+        dupes.add(UnreadablePage(e.path, 'duplicate page id ${e.meta.id}'));
+        continue;
+      }
       _metas[e.meta.id] = e.meta;
       _loc[e.meta.id] = _standalone;
       _pathId[_key(e.path)] = e.meta.id;
       if (e.conflicted) _conflicts.add(e.meta.id);
     }
-    _unreadable = entries.whereType<UnreadablePage>().toList();
+    _unreadable = [...entries.whereType<UnreadablePage>(), ...dupes];
     _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
+  }
+
+  /// Makes the page file at [path] (holding page [id]) the file listed for
+  /// that id, when it sits in a folder or binder already joined but was never
+  /// listed (it arrived after the folder was scanned, before any watcher event
+  /// reached it). A different file listed for the id becomes a duplicate, as a
+  /// scan would list it. Nothing is written, renamed or deleted. Does nothing
+  /// for a file that is listed already (as a page or as unreadable), a sync
+  /// client's conflict copy (merged the usual way) or a folder not joined.
+  Future<void> adoptUnlistedPageFile(String path, String id) async {
+    final k = _key(path);
+    if (_pathId.containsKey(k)) return;
+    final listed = [
+      ..._unreadable,
+      for (final f in _folders.values) ...f.unreadable,
+      for (final b in _binders.values) ...b.unreadable,
+    ];
+    // A file listed only as a duplicate of the id is treated as unlisted;
+    // any other reason (damaged, newer format) stays refused.
+    if (listed.any((u) => _key(u.path) == k && !u.reason.startsWith('duplicate page id'))) return;
+    final loc = _locationOf(path);
+    if (loc == null) return;
+    final NotedPage page;
+    final String text;
+    try {
+      text = await File(path).readAsString();
+      page = readPage(text);
+    } on Object {
+      return; // the usual checks report it
+    }
+    if (page.id != id) return;
+    // A sync client's conflict copy of a listed page is merged the usual way.
+    if (await PageStore.findConflictOriginal(path, page) != null) return;
+    final st = _storeOf(loc);
+    await flush();
+    String? blockedWhy;
+    final closedId = id == currentId ? id : null;
+    if (id == currentId) {
+      // The page on screen is closed first (its edits are flushed above), so a
+      // later autosave can't write its old content over the file asked for.
+      if (_diskBlockId == id) blockedWhy = _diskBlockWhy;
+      await _closeCurrent();
+      if (_diskBlockId == id) _clearDiskBlock();
+    }
+    await syncHook?.call('adopt-closed', path);
+    // Everything above waited: the file and its folder must still be as read.
+    var unchanged = false;
+    try {
+      unchanged = _locationOf(path) == loc &&
+          identical(_storeOf(loc), st) &&
+          File(path).readAsStringSync() == text;
+    } on Object {
+      unchanged = false;
+    }
+    if (!unchanged) {
+      // The page that was closed for the swap is shown again.
+      if (closedId != null && _current == null) {
+        try {
+          await open(closedId);
+        } on Object {
+          // The next open picks a page.
+        }
+      }
+      throw const NotebookException('That file changed while it was being opened. Try again.');
+    }
+    final oldLoc = _loc[id];
+    String? oldKey;
+    for (final e in _pathId.entries) {
+      if (e.value == id) oldKey = e.key;
+    }
+    if (oldLoc != null && oldKey != null) {
+      final oldPath = _storeOf(oldLoc).pathFor(id);
+      if (File(oldPath).existsSync()) {
+        _known.remove(oldKey);
+        _knownUnreadable(oldLoc, oldKey, oldPath, blockedWhy ?? 'duplicate page id $id');
+      } else {
+        _fileGone(oldLoc, oldKey, oldPath);
+      }
+    }
+    _dropUnreadable(loc, path, rebuild: false);
+    _adoptedFiles[id] = path;
+    _goneChosen.remove(id);
+    st.adopt(id, path);
+    _pathId[k] = id;
+    _known[k] = text;
+    _metas[id] = page.meta;
+    _loc[id] = loc;
+    _setConflict(id, hasConflicts(page));
+    _touch(loc);
+    onPageContent?.call(loc, page);
+    _rebuildTree();
   }
 
   Future<void> open(String id) async {
@@ -1384,6 +1496,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_diskBlockId != null && c?.page.id != _diskBlockId) {
       _diskBlockId = null; // another page is open now; the block was this page's
       _diskBlockReason = null;
+      _diskBlockWhy = null;
     }
     String? why;
     if (c != null) {
@@ -2908,6 +3021,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _landedProblems.removeWhere((_, p) => _key(_normalizePath(File(p.path).parent.path)) == k);
   }
 
+  // Forgets the files chosen (or seen missing) in the folder [dir], which is
+  // being removed; returns their page ids, for [_promoteDuplicate].
+  List<String> _dropAdoptionsIn(String dir) {
+    final k = _key(dir);
+    final ids = [
+      for (final e in _adoptedFiles.entries)
+        if (_key(File(e.value).parent.path) == k) e.key,
+    ];
+    for (final id in ids) {
+      _adoptedFiles.remove(id);
+      _goneChosen.remove(id);
+    }
+    return ids;
+  }
+
   Future<void> removeStandaloneFolder(String path) async {
     final folder = _folders[path];
     _dropLandedIn(path);
@@ -2915,6 +3043,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId) || _orphanLoc == path;
     if (openHere) await _closeCurrent();
+    final released = _dropAdoptionsIn(path);
     for (final id in ids) {
       _metas.remove(id);
       _loc.remove(id);
@@ -2932,6 +3061,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
     _syncWatchers();
     await _saveSettings();
+    for (final id in released) {
+      await _promoteDuplicate(id);
+    }
     if (openHere) await _openFallback(_standalone);
   }
 
@@ -2949,7 +3081,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
       final bad = <UnreadablePage>[...entries.whereType<UnreadablePage>()];
       for (final e in entries.whereType<ReadablePage>()) {
-        if (_metas.containsKey(e.meta.id)) {
+        if (_metas.containsKey(e.meta.id) || _otherThanChosen(e.meta.id, e.path)) {
           bad.add(UnreadablePage(e.path, 'duplicate page id ${e.meta.id}'));
           continue;
         }
@@ -3231,10 +3363,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
     if (openHere) await _closeCurrent();
+    final released = _dropAdoptionsIn(path);
     for (final id in ids) {
       _metas.remove(id);
       _loc.remove(id);
       _conflicts.remove(id);
+    }
+    for (final e in _pathId.entries.toList()) {
+      if (ids.contains(e.value)) {
+        _pathId.remove(e.key);
+        _known.remove(e.key);
+      }
     }
     _binders.remove(path);
     if (_coverPath == path) _coverPath = null;
@@ -3243,6 +3382,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
     _syncWatchers();
     await _saveSettings();
+    for (final id in released) {
+      await _promoteDuplicate(id);
+    }
     if (openHere) await _openFallback(_standalone);
   }
 
@@ -3330,7 +3472,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         unreadable: bad,
       );
       for (final e in entries.whereType<ReadablePage>()) {
-        if (_metas.containsKey(e.meta.id) && _loc[e.meta.id] != path) {
+        if ((_metas.containsKey(e.meta.id) && _loc[e.meta.id] != path) ||
+            _otherThanChosen(e.meta.id, e.path)) {
           bad.add(UnreadablePage(e.path, 'duplicate page id ${e.meta.id}'));
           continue;
         }
@@ -5322,7 +5465,26 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return run;
   }
 
-  Future<List<PageEntry>> _scan(PageStore st) => _underFolderLock(st, st.scan);
+  Future<List<PageEntry>> _scan(PageStore st) {
+    // A store made again (a binder opened again) is told which files were chosen.
+    final dir = _key(st.directory.path);
+    for (final e in _adoptedFiles.entries) {
+      if (_key(File(e.value).parent.path) == dir) st.adopt(e.key, e.value);
+    }
+    return _underFolderLock(st, () async {
+      final entries = await st.scan();
+      // The open page whose chosen file is gone keeps it as its file (its next
+      // save writes it again), not the file the scan found instead.
+      for (final e in _adoptedFiles.entries) {
+        if (e.key == currentId &&
+            _key(File(e.value).parent.path) == dir &&
+            !File(e.value).existsSync()) {
+          st.adopt(e.key, e.value);
+        }
+      }
+      return entries;
+    });
+  }
 
   /// Whether the notebook still tracks the file at [path] (its last known
   /// text or its page id).
@@ -5745,6 +5907,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       return _blockOpen(loc, key, 'it holds a different page', openId);
     }
+    // A chosen file seen missing before and back now is taken back.
+    if (_goneChosen[page.id] case final g? when _key(g) == key) _goneChosen.remove(page.id);
+    final chosen = _adoptedFiles[page.id];
+    if (chosen != null &&
+        _key(chosen) != key &&
+        (_loc.containsKey(page.id) || _goneChosen.containsKey(page.id))) {
+      // Another file was chosen for this id (see [adoptUnlistedPageFile]):
+      // this one is a duplicate, never merged into the page.
+      _known.remove(key);
+      _knownUnreadable(loc, key, path, 'duplicate page id ${page.id}');
+      return false;
+    }
     if (wasBlocked) {
       _clearDiskBlock(); // readable again: merge it as usual
       // The merged page is saved even if it equals the file, so the recovery
@@ -5801,6 +5975,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_disposed) return true;
     if (_current?.page.id != openId) return true;
     _diskBlockId = openId;
+    _diskBlockWhy = why;
     final kept = _blockKeep?.safe ?? true;
     _diskBlockReason = kept
         ? 'This page is read-only: its file was replaced and $why. '
@@ -5841,6 +6016,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   void _clearDiskBlock() {
     _diskBlockId = null;
     _diskBlockReason = null;
+    _diskBlockWhy = null;
     _syncReadOnly();
   }
 
@@ -5873,6 +6049,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     var originalPath = await PageStore.findConflictOriginal(path, copy);
     if (originalPath == null) return false;
+    // The file it copies is listed as a duplicate (another file with its id
+    // was chosen): merging would land in a file the copy is not of. It is left
+    // for later.
+    final ok = _key(originalPath);
+    final dupes = [
+      ..._unreadable,
+      for (final f in _folders.values) ...f.unreadable,
+      for (final b in _binders.values) ...b.unreadable,
+    ];
+    if (dupes.any((u) => _key(u.path) == ok && u.reason.startsWith('duplicate page id'))) {
+      _known.remove(key);
+      _knownUnreadable(loc, key, path, 'conflict copy of a duplicate file; not merged');
+      return true;
+    }
     try {
       // The sync client may change the copy or the original while this runs.
       // The copy is deleted only if it still holds what was merged, and the
@@ -5972,20 +6162,125 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!deleted.deleted && deleted.outcome != DeleteOutcome.absent) throw const _SourceChanged();
   }
 
-  /// The file is gone.
-  void _fileGone(String loc, String key, String path) {
+  /// The file is gone. Returns the page id whose adopted file this was (it is
+  /// confirmed by [_confirmGoneChosen] at a later check); an open page keeps
+  /// its choice.
+  String? _fileGone(String loc, String key, String path) {
     _known.remove(key);
     final id = _pathId.remove(key);
     if (id == null) {
       _dropUnreadable(loc, path);
-      return;
+      return null;
     }
-    if (_loc[id] != loc || id == currentId) return; // moved, or open: keep it
+    String? forgotten;
+    final chosen = _adoptedFiles[id];
+    if (chosen != null && _key(chosen) == key && id != currentId) {
+      // Seen missing once: a sync client may be about to rename a new file in.
+      _goneChosen[id] = chosen;
+      forgotten = id;
+    }
+    if (_loc[id] != loc || id == currentId) return forgotten; // moved, or open: keep it
     _metas.remove(id);
     _loc.remove(id);
     _conflicts.remove(id);
     _touch(loc);
     _rebuildTree();
+    return forgotten;
+  }
+
+  /// Settles the chosen files seen missing at an earlier check: one that is
+  /// back holding its page is taken back; one still gone (its folder being
+  /// there) is forgotten, and a duplicate of its page is promoted.
+  Future<void> _confirmGoneChosen() async {
+    for (final e in _goneChosen.entries.toList()) {
+      final id = e.key;
+      final path = e.value;
+      if (id == currentId) continue;
+      final loc = _locationOf(path);
+      NotedPage? back;
+      try {
+        back = readPage(await File(path).readAsString());
+        if (back.id != id) back = null;
+      } on Object {
+        back = null;
+      }
+      if (_goneChosen[id] != path) continue;
+      final chosen = _adoptedFiles[id];
+      if (chosen == null || _key(chosen) != _key(path)) {
+        _goneChosen.remove(id); // another file was chosen since
+        continue;
+      }
+      if (back != null && loc != null) {
+        _goneChosen.remove(id);
+        if (!_pathId.containsValue(id)) await _applyClosed(back, loc, _key(path), path);
+        continue;
+      }
+      if (!Directory(File(path).parent.path).existsSync()) continue; // folder away
+      _goneChosen.remove(id);
+      _adoptedFiles.remove(id);
+      if (loc != null) {
+        try {
+          _storeOf(loc).unadopt(id);
+        } on NotebookException {
+          // Nothing to tell.
+        }
+      }
+      if (!_pathId.containsValue(id) && _loc.containsKey(id)) {
+        final at = _loc[id]!;
+        _metas.remove(id);
+        _loc.remove(id);
+        _conflicts.remove(id);
+        _touch(at);
+        _rebuildTree();
+      }
+      await _promoteDuplicate(id);
+    }
+  }
+
+  /// A file with page [id] that was listed only as a duplicate becomes the
+  /// page's file now that the chosen one is gone (and is chosen, so a later
+  /// scan can't swap it back for the file that reappears).
+  Future<void> _promoteDuplicate(String id) async {
+    if (_pathId.containsValue(id)) return;
+    final lists = <(String, List<UnreadablePage>)>[
+      (_standalone, _unreadable),
+      for (final e in _folders.entries) (e.key, e.value.unreadable),
+      for (final e in _binders.entries) (e.key, e.value.unreadable),
+    ];
+    final candidates = <(String, UnreadablePage)>[];
+    for (final (loc, list) in lists) {
+      for (final u in list) {
+        if (u.reason != 'duplicate page id $id') continue;
+        final name = u.path.split(RegExp(r'[\\/]')).last;
+        // A name shaped like a sync client's conflict copy is merged, not chosen.
+        if (conflictCopyOriginalNames(name).isNotEmpty) continue;
+        candidates.add((loc, u));
+      }
+    }
+    candidates.sort((a, b) {
+      int rank((String, UnreadablePage) c) =>
+          c.$2.path.split(RegExp(r'[\\/]')).last == '$id.canvas' ? 0 : 1;
+      return rank(a).compareTo(rank(b));
+    });
+    for (final (loc, u) in candidates) {
+      {
+        final NotedPage page;
+        try {
+          page = readPage(await File(u.path).readAsString());
+        } on Object {
+          continue;
+        }
+        if (page.id != id || _pathId.containsValue(id)) continue;
+        try {
+          _storeOf(loc).adopt(id, u.path);
+        } on NotebookException {
+          continue;
+        }
+        _adoptedFiles[id] = u.path;
+        await _applyClosed(page, loc, _key(u.path), u.path);
+        return;
+      }
+    }
   }
 
   /// The file can't be read as a page. An open page stays as it is; any
@@ -6118,6 +6413,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   Future<void> _checkFolders() async {
     await _recheckBlocked();
+    if (_disposed) return;
+    await _confirmGoneChosen();
     if (_disposed) return;
     final defaultExists = await store.directory.exists();
     if (_disposed) return;
@@ -6470,6 +6767,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _preview = null;
     _blockKeep = null;
     _setTrouble(TroubleState.saved);
+    final closing = _current?.page.id;
     _current?.dispose();
     _current = null;
     _attachments?.dispose();
@@ -6477,6 +6775,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _base = null;
     _orphanLoc = null;
     _readOnlyReason = null;
+    // The page's chosen file went while it was open: from now on it is a
+    // closed page's, settled at a later check like any other.
+    final chosen = closing == null ? null : _adoptedFiles[closing];
+    if (closing != null && chosen != null && !File(chosen).existsSync()) {
+      _goneChosen[closing] = chosen;
+    }
   }
 
   // Opening (R-1 v5, 3.6) -----------------------------------------------------
