@@ -4,7 +4,8 @@
 
 <#
 .SYNOPSIS
-  Creates "Noted" shortcuts on the Desktop and in the Start menu.
+  Creates "Noted" shortcuts on the Desktop and in the Start menu, and lets
+  Noted open page files (.canvas) and binder files (noted-binder.json).
 
 .DESCRIPTION
   The shortcuts point to noted.exe and use its icon. Run it from an unzipped
@@ -13,8 +14,25 @@
   Running it again deletes and recreates the shortcuts and asks Explorer to
   refresh its icons.
 
+  The file associations are per user (HKCU\Software\Classes, no admin):
+    Noted.Page                  the page file type: icon and open command
+    .canvas                     default is Noted.Page if none is set; always
+                                listed in OpenWithProgids
+    Applications\noted.exe      "Open with" entry (also for .json, so that
+                                noted-binder.json can be opened; Noted
+                                ignores any other .json file it is given)
+    SystemFileAssociations\.json\shell\Noted.OpenBinder
+                                "Open in Noted" verb that appears only on
+                                files named noted-binder.json
+  A default already set for .canvas (by anyone) is not taken over, and Noted
+  is not made the default for .json files. -Uninstall removes these keys (and
+  .canvas, if nothing else is left in it) and the shortcuts.
+
 .PARAMETER ExePath
   The noted.exe to point to. Defaults as described above.
+
+.PARAMETER Uninstall
+  Removes the shortcuts and the file associations this script made.
 
 .PARAMETER ResetIconCache
   Also restarts Explorer and deletes its icon cache files, for when an
@@ -28,10 +46,46 @@
 #>
 param(
   [string]$ExePath,
+  [switch]$Uninstall,
   [switch]$ResetIconCache
 )
 
 $ErrorActionPreference = 'Stop'
+
+$notifySource = 'using System; using System.Runtime.InteropServices; public static class NotedShell { [DllImport("shell32.dll")] public static extern void SHChangeNotify(int e, uint f, IntPtr a, IntPtr b); }'
+function Notify-AssociationsChanged {
+  Add-Type -TypeDefinition $notifySource -ErrorAction SilentlyContinue
+  [NotedShell]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+}
+
+if ($Uninstall) {
+  $classes = [Microsoft.Win32.Registry]::CurrentUser
+  $classes.DeleteSubKeyTree('Software\Classes\Noted.Page', $false)
+  $classes.DeleteSubKeyTree('Software\Classes\Applications\noted.exe', $false)
+  # .canvas may be shared with other programs: only Noted's entries go.
+  $classes.DeleteSubKeyTree('Software\Classes\SystemFileAssociations\.json\shell\Noted.OpenBinder', $false)
+  $progids = $classes.OpenSubKey('Software\Classes\.canvas\OpenWithProgids', $true)
+  if ($progids) {
+    if ($progids.GetValueNames() -contains 'Noted.Page') { $progids.DeleteValue('Noted.Page') }
+    $empty = ($progids.ValueCount -eq 0 -and $progids.SubKeyCount -eq 0)
+    $progids.Close()
+    if ($empty) { $classes.DeleteSubKey('Software\Classes\.canvas\OpenWithProgids', $false) }
+  }
+  $ext = $classes.OpenSubKey('Software\Classes\.canvas', $true)
+  if ($ext) {
+    if ($ext.GetValue('') -eq 'Noted.Page') { $ext.DeleteValue('') }
+    $empty = ($ext.ValueCount -eq 0 -and $ext.SubKeyCount -eq 0)
+    $ext.Close()
+    if ($empty) { $classes.DeleteSubKey('Software\Classes\.canvas', $false) }
+  }
+  foreach ($lnk in @((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Noted.lnk'),
+                     (Join-Path ([Environment]::GetFolderPath('Programs')) 'Noted.lnk'))) {
+    if (Test-Path $lnk) { Remove-Item $lnk -Force -Confirm:$false; Write-Host "Removed $lnk" }
+  }
+  Notify-AssociationsChanged
+  Write-Host 'Removed the Noted shortcuts and file associations.'
+  return
+}
 
 if (-not $ExePath) {
   $candidates = @(
@@ -62,6 +116,37 @@ foreach ($lnk in $links) {
   $s.Save()
   Write-Host "Created $lnk -> $ExePath"
 }
+
+# File associations. The .NET registry API is used so that the names are taken
+# literally.
+function Set-ClassKey([string]$subKey, [string]$name, [string]$value) {
+  $k = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Software\Classes\$subKey")
+  $k.SetValue($name, $value)
+  $k.Close()
+}
+$open = '"' + $ExePath + '" "%1"'
+Set-ClassKey 'Noted.Page' '' 'Noted page'
+Set-ClassKey 'Noted.Page\DefaultIcon' '' "$ExePath,0"
+Set-ClassKey 'Noted.Page\shell\open\command' '' $open
+# The default is taken only if no program has one: HKCR is the merged view of
+# HKCU and HKLM, so a system-wide default counts too.
+$merged = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey('.canvas')
+$taken = $merged -and $merged.GetValue('')
+if ($merged) { $merged.Close() }
+if (-not $taken) { Set-ClassKey '.canvas' '' 'Noted.Page' }
+Set-ClassKey '.canvas\OpenWithProgids' 'Noted.Page' ''
+# A right-click verb on noted-binder.json only (not on other .json files).
+Set-ClassKey 'SystemFileAssociations\.json\shell\Noted.OpenBinder' '' 'Open in Noted'
+Set-ClassKey 'SystemFileAssociations\.json\shell\Noted.OpenBinder' 'MUIVerb' 'Open in Noted'
+Set-ClassKey 'SystemFileAssociations\.json\shell\Noted.OpenBinder' 'AppliesTo' 'System.FileName:="noted-binder.json"'
+Set-ClassKey 'SystemFileAssociations\.json\shell\Noted.OpenBinder' 'Icon' "$ExePath,0"
+Set-ClassKey 'SystemFileAssociations\.json\shell\Noted.OpenBinder\command' '' $open
+Set-ClassKey 'Applications\noted.exe' 'FriendlyAppName' 'Noted'
+Set-ClassKey 'Applications\noted.exe\shell\open\command' '' $open
+Set-ClassKey 'Applications\noted.exe\SupportedTypes' '.json' ''
+Set-ClassKey 'Applications\noted.exe\SupportedTypes' '.canvas' ''
+Notify-AssociationsChanged
+Write-Host 'Noted can now open .canvas pages and noted-binder.json.'
 
 # Ask Explorer to refresh the icons it shows.
 & "$env:SystemRoot\System32\ie4uinit.exe" -show

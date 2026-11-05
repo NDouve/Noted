@@ -29,6 +29,7 @@ import 'src/device_storage.dart';
 import 'src/app_theme.dart';
 import 'src/home.dart';
 import 'src/notebook.dart';
+import 'src/open_files.dart';
 import 'src/recovery_notice.dart';
 import 'src/recovery_store.dart';
 
@@ -65,7 +66,7 @@ String? computerName() {
 /// process (the OS lets go of it when the app exits or dies).
 AiRunningLock? appRunningLock;
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   // The bundled Inter font is SIL OFL 1.1; its licence ships with it.
   LicenseRegistry.addLicense(() async* {
@@ -86,8 +87,11 @@ Future<void> main() async {
   final notebook = buildAppNotebook(settings: settings);
   FileClipboard.read = readClipboardFiles;
   final services = await startAiServices(notebook, defaultAiDataFolder());
-  runApp(NotedApp(notebook: notebook, settings: settings, aiLink: services.link, runningLock: services.lock));
+  final openFiles = OpenFileService(notebook);
+  runApp(NotedApp(notebook: notebook, settings: settings, aiLink: services.link, runningLock: services.lock, openFiles: openFiles));
   await notebook.load();
+  // Files named on the command line, then those a second launch hands over.
+  if (!isMobilePlatform) unawaited(openFiles.start(args));
   // After the first frame, so the window can show the questions.
   WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(notebook.askPendingAiApprovals()));
 }
@@ -184,7 +188,7 @@ Future<AiLinkServer?> startAiLink(Notebook notebook, Directory dataFolder) async
 }
 
 class NotedApp extends StatefulWidget {
-  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock});
+  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock, this.openFiles});
 
   final Notebook notebook;
 
@@ -194,6 +198,9 @@ class NotedApp extends StatefulWidget {
 
   /// The lock that says Noted is running; let go of when the app exits.
   final AiRunningLock? runningLock;
+
+  /// Opens files named at launch or by a second launch; its notices show here.
+  final OpenFileService? openFiles;
 
   /// This device's settings (the theme). Null: the defaults, not saved.
   final AppSettings? settings;
@@ -212,6 +219,10 @@ class _NotedAppState extends State<NotedApp> {
     super.initState();
     // AI code approvals and per-write questions are asked in this window.
     widget.notebook.aiApprover = (request) => showAiApprovalDialog(_navigatorKey, request);
+    widget.openFiles?.notify = (message) {
+      final context = _navigatorKey.currentContext;
+      if (context != null) ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(message)));
+    };
     _lifecycle = AppLifecycleListener(
       // Write unsaved edits before the window closes.
       onExitRequested: () async {
