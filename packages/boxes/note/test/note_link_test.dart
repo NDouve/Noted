@@ -522,6 +522,67 @@ void main() {
       expect(launched, isEmpty);
     });
 
+    // An 8.3 short name can stand for a long runnable name.
+    for (final path in [r'C:\x\PAYLOA~1.DIA', r'\\host\share\TOOL~1.APP', '/home/u/PROBE~2.TXT']) {
+      testWidgets('the short name $path asks', (t) async {
+        await pump(t, [
+          {'insert': 'plain'},
+        ]);
+        unawaited(linkOpener(path));
+        await frames(t);
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+        expect(launched, isEmpty);
+        await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+        await frames(t);
+        expect(launched, isEmpty);
+      });
+    }
+
+    // The dialog names what will run: decoded and resolved.
+    for (final (path, name) in [
+      (r'C:\Windows\System32\calc%2Eexe', 'calc.exe'),
+      (r'C:\x\%252E%252E\evil.jar', 'evil.jar'),
+    ]) {
+      testWidgets('the dialog for $path shows $name', (t) async {
+        await pump(t, [
+          {'insert': 'plain'},
+        ]);
+        unawaited(linkOpener(path));
+        await frames(t);
+        expect(t.widget<Text>(find.byKey(const ValueKey('open-confirm-name'))).data, name);
+        await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+        await frames(t);
+      });
+    }
+
+    testWidgets('the dialog shows evil.jar for evil.jar with .. segments', (t) async {
+      await pump(t, [
+        {'insert': 'plain'},
+      ]);
+      unawaited(linkOpener(r'C:\tools\evil.jar\x\..'));
+      await frames(t);
+      expect(t.widget<Text>(find.byKey(const ValueKey('open-confirm-name'))).data, 'evil.jar');
+      await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+      await frames(t);
+    }, skip: !Platform.isWindows);
+
+    // A query or an escaped ? must not hide a program's name.
+    for (final path in ['file:///C:/x/probe.cmd?.pdf', r'C:\x\probe.cmd%3F.pdf']) {
+      testWidgets('$path never launches without the question', (t) async {
+        await pump(t, [
+          {'insert': 'plain'},
+        ]);
+        unawaited(linkOpener(path));
+        await frames(t);
+        expect(launched, isEmpty);
+        expect(
+          find.byKey(const ValueKey('open-confirm-dialog')).evaluate().isNotEmpty ||
+              find.text("This link can't be opened.").evaluate().isNotEmpty,
+          isTrue,
+        );
+      });
+    }
+
     testWidgets('c:foo.jar (a drive without a root) gets the notice on every platform', (t) async {
       await pump(t, [
         {'insert': 'plain'},

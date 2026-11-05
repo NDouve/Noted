@@ -202,14 +202,17 @@ Future<void> _launch(String url) async {
     final decodedPath = _fullyDecoded(path);
     final decodedResolved = _fullyDecoded(resolved);
     final escaped = text.contains('%') || path.contains('%') || resolved.contains('%');
+    final name = decodedResolved.replaceAll(RegExp(r'[\\/]+$'), '').split(RegExp(r'[\\/]')).last;
+    // An 8.3 short name (PAYLOA~1.DIA) can stand for a long runnable name.
+    final shortName = RegExp(r'~\d').hasMatch(name);
     if (escaped ||
+        shortName ||
         needsOpenConfirmation(displayName: path) ||
         needsOpenConfirmation(displayName: resolved) ||
         needsOpenConfirmation(displayName: decodedPath) ||
         needsOpenConfirmation(displayName: decodedResolved)) {
       if (context == null || !context.mounted) return;
-      final shown = path.replaceAll(RegExp(r'[\/]+$'), '').split(RegExp(r'[\/]')).last;
-      if (!await confirmOpenRunnable(context, shown)) return;
+      if (!await confirmOpenRunnable(context, name)) return;
     }
     await launchUrl(target, mode: LaunchMode.externalApplication);
   } on Object catch (e) {

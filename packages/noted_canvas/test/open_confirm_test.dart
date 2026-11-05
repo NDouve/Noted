@@ -46,6 +46,25 @@ void main() {
     expect(answer, isFalse, reason: 'Enter takes the default, Cancel');
   });
 
+  testWidgets('a 95-character scheme is cut at the end with an ellipsis', (t) async {
+    final scheme = 'abcdef${'x' * 89}';
+    await t.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () => confirmOpenLinkScheme(context, scheme),
+            child: const Text('go'),
+          ),
+        ),
+      ),
+    );
+    await t.tap(find.text('go'));
+    await t.pumpAndSettle();
+    final shown = t.widget<Text>(find.byKey(const ValueKey('open-confirm-scheme'))).data!;
+    expect(shown, '${scheme.substring(0, 39)}…:');
+    expect(shown.startsWith('abcdef'), isTrue);
+  });
+
   group('Windows', () {
     test('the fixed list, in any case', () {
       final all =

@@ -224,7 +224,9 @@ bool linkSchemeNeedsConfirmation(String scheme) =>
 /// to another program. True only on Open; Cancel (the default), Escape or a
 /// click outside answer false.
 Future<bool> confirmOpenLinkScheme(BuildContext context, String scheme) async {
-  final shown = cleanNameForDisplay(scheme, maxLength: 40);
+  // A long scheme is cut at the end, not in the middle like a file name.
+  final clean = cleanNameForDisplay(scheme, maxLength: 1 << 20).runes.toList();
+  final shown = clean.length <= 40 ? String.fromCharCodes(clean) : '${String.fromCharCodes(clean.take(39))}…';
   final ok = await showDialog<bool>(
     context: context,
     useRootNavigator: true,
