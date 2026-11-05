@@ -489,6 +489,18 @@ void main() {
     expect(find.text('Undo'), findsOneWidget);
     expect(File('${dir.path}/$b.canvas').existsSync(), isFalse);
 
+    // Another message replaces it: the way back comes back after that one.
+    final messenger = ScaffoldMessenger.of(tester.element(find.byType(PageTreeView)));
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(const SnackBar(content: Text('Some other message')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.text('Some other message'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pump(const Duration(milliseconds: 600));
+    await until(tester, () => find.text('Undo').evaluate().isNotEmpty, what: 'the Undo message to come back');
+    expect(find.textContaining('Recovery could not keep'), findsOneWidget);
+
     failing.failNew.clear();
     await tester.runAsync(() => tester.tap(find.text('Undo')));
     await until(tester, () => File('${dir.path}/$b.canvas').existsSync());

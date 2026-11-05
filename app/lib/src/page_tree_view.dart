@@ -223,9 +223,10 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     }
   }
 
-  // Shows [e] in a SnackBar.
-  void _report(ScaffoldMessengerState? messenger, NotebookException e) {
-    messenger?.hideCurrentSnackBar();
+  // Shows [e] in a SnackBar. [queued]: behind the message on screen, not in
+  // place of it.
+  void _report(ScaffoldMessengerState? messenger, NotebookException e, {bool queued = false}) {
+    if (!queued) messenger?.hideCurrentSnackBar();
     // A message that asks the user to act stays until it is closed.
     final held = e is PagesNotRestoredException ? e.deleted : null;
     messenger
@@ -242,10 +243,14 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         )
         .closed
         .then((reason) {
-          // Closing the message with its X lets the pages go; they stay
-          // while it was only replaced by another message.
-          if (held != null && reason == SnackBarClosedReason.dismiss && _nb.isPendingDelete(held)) {
+          if (held == null || !_nb.isPendingDelete(held)) return;
+          if (reason == SnackBarClosedReason.dismiss) {
+            // Closing the message with its X lets the pages go.
             _nb.discardDeleted(held);
+          } else if (reason != SnackBarClosedReason.action && mounted) {
+            // Replaced by another message: the pages are still only in memory,
+            // so the way back is shown again after it.
+            _report(messenger, e, queued: true);
           }
         });
   }

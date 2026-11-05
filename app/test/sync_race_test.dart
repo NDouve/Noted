@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_store.dart';
+import 'package:noted/src/save_trouble.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -486,56 +487,115 @@ void main() {
       expect(idsOf(pathOf(parent)), contains(mine.id));
     });
 
-    test('a different file at the parent\'s path is left alone and the deleted version survives', () async {
-      await setUpTree();
+    // The deleted parent when a different file has appeared at its path.
+    Future<(Object?, String, BoxRecord)> deleteWithFileInTheWay({bool withRecovery = true}) async {
+      await setUpTree(withRecovery: withRecovery);
       final theirs = noteBox('from the other device', at: const Bounds(400, 10, 200, 40));
-      final base = onDisk(parent);
-      final theirText = writePage(base.removeNode(mine.id).insertNode(theirs));
+      final theirText = writePage(onDisk(parent).removeNode(mine.id).insertNode(theirs));
       counting.onFailDelete = () => File(pathOf(parent)).writeAsStringSync(theirText);
-
       Object? error;
       try {
         await nb.delete(parent);
       } on Object catch (e) {
         error = e;
       }
+      return (error, theirText, theirs);
+    }
+
+    List<File> copies() => dir.listSync().whereType<File>().where((f) => f.path.contains('-undo-')).toList();
+
+    test('a different file at the parent\'s path is left alone and the deleted version is kept beside it', () async {
+      final (error, theirText, theirs) = await deleteWithFileInTheWay();
 
       expect(error, isA<NotebookException>());
-      expect((error! as NotebookException).message, contains('Recovery holds the content of'));
-      expect(File(pathOf(parent)).readAsStringSync(), theirText);
-      expect((await nb.pendingRecovery()).entries, isNotEmpty);
+      expect(error, isNot(isA<PagesNotRestoredException>()));
+      final message = (error! as NotebookException).message;
+      expect(message, contains('was kept beside it as'));
+      expect(message, isNot(contains('Recovery holds')));
+      expect(File(pathOf(parent)).readAsStringSync(), theirText, reason: 'the file that appeared is untouched');
+      final beside = copies();
+      expect(beside, hasLength(1));
+      expect(message, contains(beside.single.uri.pathSegments.last));
+      expect(idsOf(beside.single.path), contains(mine.id), reason: 'the deleted version survives');
+      expect((await nb.pendingRecovery()).entries, isEmpty, reason: 'recovery would have replayed it away');
+      expect(idsOf(pathOf(parent)), contains(theirs.id));
     });
 
-    test('a different file at the parent\'s path with recovery refused: Undo keeps the deleted version beside it', () async {
-      await setUpTree();
-      final theirs = noteBox('from the other device', at: const Bounds(400, 10, 200, 40));
-      final base = onDisk(parent);
-      final theirText = writePage(base.removeNode(mine.id).insertNode(theirs));
-      counting.onFailDelete = () {
-        File(pathOf(parent)).writeAsStringSync(theirText);
-        nb.recoveryStoreForTest!.hook = (point) async {
-          if (point == 'write') throw const FileSystemException('disk full');
+    group('pages held in memory', () {
+      test('at exit they are written beside their place, never over a file', () async {
+        await setUpTree(withRecovery: false);
+        counting.failNew.add(parent);
+        Object? error;
+        try {
+          await nb.delete(parent);
+        } on Object catch (e) {
+          error = e;
+        }
+        expect(error, isA<PagesNotRestoredException>());
+        counting.failNew.clear();
+        counting.failDelete.clear();
+
+        expect(await nb.prepareToExit(), isTrue);
+
+        expect(File(pathOf(parent)).existsSync(), isFalse, reason: 'nothing was written at the page\'s own path');
+        final beside = copies();
+        expect(beside, hasLength(1));
+        expect(idsOf(beside.single.path), contains(mine.id));
+        expect(nb.isPendingDelete((error! as PagesNotRestoredException).deleted), isFalse);
+      });
+
+      test('at exit, when the copy cannot be written, the user is asked', () async {
+        await setUpTree(withRecovery: false);
+        counting.failNew.add(parent);
+        Object? error;
+        try {
+          await nb.delete(parent);
+        } on Object catch (e) {
+          error = e;
+        }
+        expect(error, isA<PagesNotRestoredException>());
+        final asked = <UserQuestion>[];
+        nb.questioner = (q, title) async {
+          asked.add(q);
+          return false; // stay
         };
-      };
+        // The folder goes away, so no copy can be written.
+        final held = (error! as PagesNotRestoredException).deleted;
+        final gone = Directory('${dir.path}-gone');
+        dir.renameSync(gone.path);
 
-      Object? error;
-      try {
-        await nb.delete(parent);
-      } on Object catch (e) {
-        error = e;
-      }
+        expect(await nb.prepareToExit(), isFalse);
 
-      expect(error, isA<PagesNotRestoredException>());
-      counting.failDelete.clear();
-      await nb.undoDelete((error! as PagesNotRestoredException).deleted).catchError((_) {});
+        expect(asked, contains(UserQuestion.leaveAndLose));
+        expect(nb.isPendingDelete(held), isTrue, reason: 'staying keeps the pages');
+        gone.renameSync(dir.path);
+      });
 
-      // The file that appeared now holds both versions (merged), or the deleted
-      // version sits beside it; either way nothing was lost.
-      final all = <String>{
-        for (final f in dir.listSync().whereType<File>())
-          if (f.path.endsWith('.canvas')) ...idsOf(f.path),
-      };
-      expect(all, containsAll([mine.id, theirs.id]));
+      test('Undo of a held delete that cannot write offers Undo again', () async {
+        await setUpTree(withRecovery: false);
+        counting.failNew.add(parent);
+        Object? error;
+        try {
+          await nb.delete(parent);
+        } on Object catch (e) {
+          error = e;
+        }
+        final held = (error! as PagesNotRestoredException).deleted;
+        // Undo finds the folder unusable.
+        final gone = Directory('${dir.path}-gone');
+        dir.renameSync(gone.path);
+        counting.failNew.clear();
+        Object? again;
+        try {
+          await nb.undoDelete(held);
+        } on Object catch (e) {
+          again = e;
+        }
+        gone.renameSync(dir.path);
+        // Either the undo could not place it (held again) or it was refused.
+        if (again != null) expect(again, isA<PagesNotRestoredException>());
+        if (again != null) expect(nb.isPendingDelete(held), isTrue);
+      });
     });
   });
 
