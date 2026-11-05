@@ -6750,13 +6750,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// `binders.json` with no `binderIds`) every binder this device doesn't list
   /// is recorded as removed instead, so none appears unasked.
   ///
-  /// A call while a pass runs asks for one more pass after it.
+  /// A call while a pass runs asks for one more pass after it. The result
+  /// completes when the pass (and the adds of the binders it found) is over.
   Future<void> discoverBinders() {
     if (_disposed || _settingsKind == _SettingsKind.unreadable) return discoveryIdle;
     final running = _discovering;
     if (running != null) {
       _discoverAgain = true;
-      return running;
+      return discoveryIdle;
     }
     final done = Completer<void>();
     _discovering = done.future;
@@ -6766,7 +6767,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         done.complete();
       }),
     );
-    return done.future;
+    return discoveryIdle;
   }
 
   Future<void> _discoverLoop() async {
