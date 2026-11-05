@@ -572,7 +572,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0051 — External file changes and per-box merging
 - **Date:** 2026-10-25
-- **Status:** Active (implements 0020); refined by 0120 (the manual-edit merge view is removed; the issue sequence replaces the badge) and 0121; unreadable replacements of the open page amended by 0124; mixed foreign and Noted nodes amended by 0128; node order amended by 0132
+- **Status:** Active (implements 0020); refined by 0120 (the manual-edit merge view is removed; the issue sequence replaces the badge) and 0121; unreadable replacements of the open page amended by 0124; mixed foreign and Noted nodes amended by 0128; node order amended by 0132 and 0134
 - **Decision:**
   - **Watching:** every storage folder is watched. A changed page file is checked after 300 ms.
     - The app recognises its own writes by their exact text and ignores them.
@@ -1233,7 +1233,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0093 — Continuous integration (GitHub Actions)
 - **Date:** 2026-10-27
-- **Status:** Active; amended by 0123 (a Linux test job, not blocking yet)
+- **Status:** Active; amended by 0123 (a Linux test job, not blocking yet); per-test annotations, script tests, the nightly macOS build and the retry of runner-starved Mac jobs amended by 0134
 - **Decision:**
   - **Workflow:** `.github/workflows/ci.yml` runs on every push, every pull request, and by hand. It has read-only repository permissions, and a newer run on the same branch cancels the one still in progress.
   - **Flutter version:** pinned to 3.47.8 stable, the version used for development, through `subosito/flutter-action@v2` with caching. Actions are pinned to major versions.
@@ -1341,7 +1341,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0098 — Image and file boxes, and where their files are stored
 - **Date:** 2026-10-31
-- **Status:** Active (page format change approved by the maintainer; Box API 0.7 and the attachments package approved retroactively); amended by 0102 (Delete, alt text below the picture); landing kept files amended by 0124; verification and damaged copies amended by 0132; attachment names checked before use, 0133
+- **Status:** Active (page format change approved by the maintainer; Box API 0.7 and the attachments package approved retroactively); amended by 0102 (Delete, alt text below the picture); landing kept files amended by 0124; verification and damaged copies amended by 0132; attachment names checked before use, 0133; conversion verified in the page folder and asking before opening runnable files, 0134
 - **Decision:**
   - **Setting "Store images and files":** on pages and binders, either *In a folder beside the page* (the default) or *In the page file*.
     - It is stored as `"attachments":"folder"|"embedded"` in the page header's `noted` object or in the binder file. An absent value means the page follows its parent.
@@ -1852,7 +1852,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0132 — Damaged attachments are kept; node order in merges; conflict-copy verification; deletes that fail part way; file format document
 - **Date:** 2026-11-03
-- **Status:** Active (the damaged-copy rule and its normalisations approved by the maintainer for this run; Box API 0.12 decided by the PM under delegated authority; the node-order rule decided by the PM and awaiting the maintainer's confirmation; amends 0051, 0053, 0098 and 0128)
+- **Status:** Active (the damaged-copy rule and its normalisations approved by the maintainer for this run; Box API 0.12 decided by the PM under delegated authority; the node-order rule decided by the PM and awaiting the maintainer's confirmation; amends 0051, 0053, 0098 and 0128); additions after the last shared node amended by 0134
 - **Decision:**
   - **Attachments are checked wherever they are trusted (amends 0098):** before a file is used for display, embedding or opening, and when a file with the same name is already there as one is written, its bytes are hashed (streamed) and compared: on the notebook side with the hash in the file's name, in the box module with the hash the box stores, and the two must agree. Embedded data is compared with its hash when it is decoded. A file smaller than the box's recorded size, or still changing, is "Still syncing". At full size with the wrong hash it is **damaged**: both copies are kept. The damaged file is renamed beside it as `<name>.damaged-<first 12 hex of its actual hash>`, never over anything; the good copy is written under the hash name when its bytes are at hand (or kept as `<name>.kept-<n>` if the name can't be freed); and the user is told by the box's own file name. A missing hash-named file is first looked for among its kept copies and put back if one now holds the right hash. Damaged embedded data is kept in the page byte for byte and is never converted. The box shows that the file is damaged, not "Still syncing", while it is open. A file still syncing is checked again when the folder changes, not on every redraw. Older readers ignore the extra names: they are not hash names and not temporary files. **Box API 0.12** adds the optional `VerifyingAttachmentStore` for this; `AttachmentStore` is unchanged.
   - **Node order (amends 0051):** the three-way merge takes the other side's order of the nodes both sides kept when only the other side changed it; when this side changed it, or both did, this side's order stays. Nodes either side added are placed after their predecessor, as before.
@@ -1882,6 +1882,17 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - Cleaning up names instead of rejecting them: path rules differ by platform, and the hash form is all Noted writes.
   - A new "not found" attachment state in the canvas API: a Box API change for a display the modules can make themselves.
   - Registering the build output, as before: it blocks rebuilds.
+
+## 0134 — Merge order on top; conversion that verifies in the page folder; asking before running a file; CI for macOS
+- **Date:** 2026-11-04
+- **Status:** Active (asking before opening runnable files and the macOS workflows approved by the maintainer for this run; the stacking rule decided by the maintainer; conversion counting only the page folder decided by the PM and awaiting the maintainer's confirmation; Box API 0.13 decided by the PM under delegated authority; amends 0093, 0098 and 0132)
+- **Decision:**
+  - **Node order (amends 0132):** when the other side's order of the shared nodes is taken, each node this side added follows the shared node it followed, except that nodes after the last shared node stay last, on top. Base `[a, b]`, this side `[a, x, b]`, the other side `[b, a]` gives `[b, a, x]`; base `[a, b, c]`, this side `[a, b, c, x]`, the other `[c, a, b]` gives `[c, a, b, x]`.
+  - **Moving attachments to the folder (amends 0098):** a box converts only when its file is stored and verified by hash in the page's own assets folder; a copy only in the recovery folder doesn't count (reads still use it). A box that can't be converted keeps its embedded data and is counted in the notice ("1 attachment could not be moved to the folder and stays in the page"); the other boxes still convert. Storing a file never reports a copy it didn't make, never publishes over a file that appeared meanwhile, and never deletes a file it didn't write. A paste or drop whose file can't be stored makes no box and says so. **Box API 0.13** adds the optional `PageFolderAttachmentStore` (`putInPageFolder`, `verifyInPageFolder`).
+  - **Asking before running a file (amends 0098's "a double-click opens the file with the system's default app"):** opening a file box's file, or a note link to a local file (`file:`, a drive path or a network path), whose last extension the system would run asks first, naming the file and its type: on Windows the fixed list (`.exe`, `.bat`, `.cmd`, `.com`, `.ps1`, `.vbs`, `.js`, `.lnk`, `.url`, `.msi`, `.scr` and the other script, installer, shortcut and disk-image types) plus every type in PATHEXT; on macOS, Linux and Android their executable, script, bundle and package types. Both the shown name and the stored name are checked. Cancel is the default and is the filled button (an exception to the button rule: the safe choice is the emphasised one). The name is shown with direction-changing and control characters replaced and long names shortened in the middle, keeping the extension; the file box's label is cleaned the same way. A link without a scheme that isn't a path opens as a web address. A link with a control character in its path isn't opened. The check is in noted_canvas (Box API 0.13).
+  - **CI (amends 0093):** each failing test's annotation carries its own error, output, file and line; the summary and timeouts are listed first. The Windows job also runs the PowerShell tests of the MCP registration scripts. A scheduled workflow builds the macOS app and the unsigned `.ipa` from `main` every day at about 08:00 UTC (and on demand) and keeps them 14 days. A workflow re-runs a CI run's macOS jobs when they were cancelled without ever getting a runner, at most three times per run, never for a failure, a job that started, or a run that a newer one replaced.
+- **Rationale:** a new box is on top, and the other side's reorder shouldn't hide it. A copy that only this machine has is not a durable copy for a synced page. Files in pages come from other machines and people, and a double-click shouldn't run a program unasked. Mac runners are often unavailable during the day, and cancelled Mac builds were being re-run by hand.
+- **Alternatives considered:** the plain predecessor rule for every addition (puts a new box under older ones); counting a recovery copy as converted (other devices would get a reference to a missing file); blocking runnable files outright (some are legitimate); retrying every cancelled or failed Mac job (would retry real failures and hand cancels).
 
 ---
 
