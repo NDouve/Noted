@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
@@ -399,6 +400,34 @@ void main() {
       expect(find.text('Open this link?'), findsOneWidget);
       expect(launched, isEmpty);
     });
+
+    // Relative text with a backslash is no path: never handed to the system.
+    for (final rel in [r'x\..\calc', r'..\..\Windows\System32\calc', r'docs\plan.pdf', r'example.com\docs']) {
+      testWidgets('Ctrl+click on the relative $rel opens nothing', (t) async {
+        await ctrlClick(t, rel);
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+        expect(launched, isEmpty);
+        expect(find.text("This link can't be opened."), findsOneWidget);
+      });
+    }
+
+    testWidgets('example.com\\docs typed into Ctrl+K is not a path: it gets https://', (t) async {
+      expect(normalizeLink(r'example.com\docs'), r'https://example.com\docs');
+      expect(normalizeLink(r'docs\plan.pdf'), r'https://docs\plan.pdf');
+      await ctrlClick(t, normalizeLink(r'example.com\docs')!);
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+      expect(launched.where((u) => !u.startsWith('http')), isEmpty);
+    });
+
+    testWidgets(
+      'a drive path whose .. segments resolve to a program asks',
+      (t) async {
+        await ctrlClick(t, r'C:\tools\evil.jar\x\..');
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+        expect(launched, isEmpty);
+      },
+      skip: !Platform.isWindows,
+    );
 
     // A path typed into Ctrl+K is saved as typed, so Ctrl+click reaches the file check.
     for (final path in [r'\\host\share\typed1.jar', '//host/share/typed2.jar', '/home/user/typed3.jar', r'C:\x\typed4.jar']) {

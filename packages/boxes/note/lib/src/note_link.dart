@@ -65,7 +65,7 @@ String? linkOfSelection(EditorState editor, Selection selection) {
 String? normalizeLink(String text) {
   final t = text.trim();
   if (t.isEmpty) return null;
-  if (RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*:').hasMatch(t) || _looksLikePath(t)) return t;
+  if (RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*:').hasMatch(t) || _isAbsolutePath(t)) return t;
   return 'https://$t';
 }
 
@@ -153,6 +153,12 @@ Future<void> _launch(String url) async {
     // drive letter, a share, a bare path): one the system would run is opened
     // only after the user says so.
     final isPath = scheme.isEmpty || scheme == 'file' || scheme.length == 1;
+    // A drive letter without a root (c:foo) is relative to a drive's current
+    // folder: not a path to open, not a scheme to hand over.
+    if (scheme.length == 1 && !_isAbsolutePath(text)) {
+      _notice(messenger);
+      return;
+    }
     if (uri != null && !isPath) {
       if (linkSchemeNeedsConfirmation(scheme)) {
         if (context == null || !context.mounted) return;
@@ -163,9 +169,10 @@ Future<void> _launch(String url) async {
     }
     // A bare word or address (cmd, example.com) is a web address, as the editor
     // treats it; never handed to the system as it is.
-    if (scheme.isEmpty && !_looksLikePath(text)) {
+    if (scheme.isEmpty && !_isAbsolutePath(text)) {
       final web = Uri.tryParse('http://$text');
-      if (text.isEmpty || web == null || _controlChars.hasMatch(text)) {
+      // A backslash is no part of a web address: a relative path is not opened.
+      if (text.isEmpty || web == null || text.contains(r'\') || _controlChars.hasMatch(text)) {
         _notice(messenger);
         return;
       }
@@ -187,7 +194,9 @@ Future<void> _launch(String url) async {
       _notice(messenger);
       return;
     }
-    if (needsOpenConfirmation(displayName: path)) {
+    // The final target is what runs: `..` segments are resolved before the check.
+    final resolved = target.normalizePath().toFilePath();
+    if (needsOpenConfirmation(displayName: path) || needsOpenConfirmation(displayName: resolved)) {
       if (context == null || !context.mounted) return;
       final shown = path.replaceAll(RegExp(r'[\/]+$'), '').split(RegExp(r'[\/]')).last;
       if (!await confirmOpenRunnable(context, shown)) return;
@@ -209,7 +218,8 @@ String _decoded(String s) {
   }
 }
 
-bool _looksLikePath(String s) => s.startsWith(r'\') || s.startsWith('//') || s.contains(r'\') || s.startsWith('/');
+// An absolute path: a drive (X:\ or X:/), a share (\\ or //) or a root (/ or \).
+bool _isAbsolutePath(String s) => RegExp(r'^([a-zA-Z]:[\\/]|[\\/])').hasMatch(s);
 
 void _notice(ScaffoldMessengerState? messenger) {
   messenger?.showSnackBar(const SnackBar(content: Text("This link can't be opened.")));
