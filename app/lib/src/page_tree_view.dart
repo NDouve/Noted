@@ -367,9 +367,18 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
             child: const Text('Delete'),
           );
     return Tooltip(
-      message: name,
+      message: [
+        putBack
+            ? 'a complete copy of the binder file'
+            : missing
+            ? 'a copy of the binder file'
+            : 'an interrupted change to the binder file',
+        if (missing && !putBack) "can't be read by this version",
+        name,
+      ].join('. '),
       child: SidebarRow(
         key: ValueKey('kept-temp-${k.path}'),
+        titleLines: 2,
         title: putBack
             ? 'a complete copy of the binder file'
             : missing

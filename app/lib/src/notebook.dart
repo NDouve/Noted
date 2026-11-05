@@ -398,6 +398,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// One-line notices about attachments (a file too large to embed).
   Stream<String> get attachmentNotices => _notices.stream;
 
+  final StreamController<String> _stickyNotices = StreamController<String>.broadcast();
+
+  /// Notices that stay until they are closed (something changed outside this app
+  /// that the user should see).
+  Stream<String> get stickyNotices => _stickyNotices.stream;
+
   PageAttachments? _attachments;
 
   /// The open page's images and files, or null with no page open.
@@ -4835,7 +4841,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_lastWrittenAi.containsKey(key)) {
       final was = _lastWrittenAi[key];
       if ((now ?? defaultAiAccess).strictness < (was ?? defaultAiAccess).strictness) {
-        _notices.add(
+        _stickyNotices.add(
           'Binder ${section.title}: AI access was changed to ${(now ?? defaultAiAccess).label} '
           'outside this app (it was ${(was ?? defaultAiAccess).label}).',
         );
@@ -5763,6 +5769,7 @@ for (final t in _binderRechecks.values) {      t.cancel();    }    _binderRechec
     _current?.dispose();
     _attachments?.dispose();
     unawaited(_notices.close());
+    unawaited(_stickyNotices.close());
     tools.dispose();
     super.dispose();
   }

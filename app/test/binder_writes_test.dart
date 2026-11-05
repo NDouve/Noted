@@ -33,6 +33,7 @@ void main() {
   late String standalonePage;
   late Seams seams;
   late StreamSubscription<String> noticeSub;
+  late StreamSubscription<String> stickySub;
   late List<String> notices;
 
   File binderFile() => File('${folder.path}${Platform.pathSeparator}$binderFileName');
@@ -56,6 +57,7 @@ void main() {
     folder = await Directory('${root.path}/Work').create();
     nb = makeNotebook(watch: watch);
     noticeSub = nb.attachmentNotices.listen(notices.add);
+    stickySub = nb.stickyNotices.listen(notices.add);
     await nb.load();
     standalonePage = nb.currentId!;
     section = await nb.addBinder(folder.path);
@@ -70,6 +72,7 @@ void main() {
     // A check queued after a refused change has finished.
     await nb.checkBinderFile(binderFile().path);
     await noticeSub.cancel();
+    await stickySub.cancel();
     nb.dispose();
     await root.delete(recursive: true);
   }

@@ -80,6 +80,7 @@ class _HomeState extends State<Home> {
   String? _canvasKeyFor;
 
   StreamSubscription<String>? _notices;
+  StreamSubscription<String>? _sticky;
 
   @override
   void initState() {
@@ -87,6 +88,7 @@ class _HomeState extends State<Home> {
     _seenFocusTick = _search.focusTick;
     _search.addListener(_searchChanged);
     _notices = notebook.attachmentNotices.listen(_showNotice);
+    _sticky = notebook.stickyNotices.listen(_showStickyNotice);
     final settings = widget.settings;
     if (settings != null) {
       unawaited(
@@ -103,6 +105,7 @@ class _HomeState extends State<Home> {
   }
 
   // A one-line notice about attachments (a file too large to embed).
+void _showStickyNotice(String message) {    if (!mounted) return;    final messenger = ScaffoldMessenger.maybeOf(context);    messenger?.hideCurrentSnackBar();    messenger?.showSnackBar(SnackBar(content: Text(message), persist: true, showCloseIcon: true));  }
   void _showNotice(String message) {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.maybeOf(context);
@@ -171,6 +174,7 @@ class _HomeState extends State<Home> {
     _search.removeListener(_searchChanged);
     _titleHighlight.dispose();
     unawaited(_notices?.cancel());
+    unawaited(_sticky?.cancel());
     _searchCommands.dispose();
     _findRequests.dispose();
     if (widget.search == null) _search.dispose();
