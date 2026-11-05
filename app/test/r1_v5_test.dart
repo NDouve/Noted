@@ -357,6 +357,30 @@ void main() {
       },
     );
 
+    test('a retry already in file I/O when Discard is clicked does not leave its edits on disk', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      w.storeFor(w.pages).failWith = accessDenied();
+      await nb.flush();
+      expect(nb.trouble.isTrouble, isTrue);
+      w.storeFor(w.pages)
+        ..failWith = null
+        ..stall = Completer<void>();
+      final retry = nb.retrySave();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final discard = nb.discardChanges();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      w.storeFor(w.pages).stall!.complete(); // the retry's write goes through
+      await retry;
+      await discard;
+      expect(boxCount(readPage(w.pageFile(id).readAsStringSync())), 0, reason: 'the discarded edits are not on disk');
+      expect(boxCount(nb.current!.page), 0);
+      expect(w.recFiles(), isEmpty);
+      final again = w.make();
+      await again.open(id);
+      expect(boxCount(again.current!.page), 0, reason: 'reopening does not show them');
+    });
+
     test('a delete that fails leaves the page in state 2 with the reason, and the page is not busy', () async {
       final nb = w.make();
       final id = await w.editedPage(nb);

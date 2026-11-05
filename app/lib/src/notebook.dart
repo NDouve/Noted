@@ -4022,6 +4022,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final path = st.pathFor(page.id);
       final key = _key(path);
       var landed = false;
+      String? publishedOver; // the text the landed write replaced (null: no file)
       for (var attempt = 0; !landed; attempt++) {
         if (attempt >= _maxWriteTries) {
           // The file changed under every attempt: the edits are kept.
@@ -4047,6 +4048,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           }
         }
         final known = _known[key];
+        publishedOver = known;
         try {
           // Over exactly the file last seen, checked at the moment of replacing
           // (0128): a version that landed since is not overwritten.
@@ -4058,7 +4060,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           final folderGone = !await st.directory.exists();
           return await _saveFailed(loc, st, toSave, savedSeq, session, error: e, folderGone: folderGone);
         }
-        if (landed) break;
+        if (landed) {
+          // A Discard that came while this write was in flight: its outcome wins.
+          if (session != null && savedSeq < session.floor) {
+            await _undoPublished(loc, st, toSave, publishedOver);
+            return const SaveResult(SaveEnd.skipped);
+          }
+          break;
+        }
         // The file is not what was last seen. The open page takes it in at the
         // top of the next round (_checkFile merges it). A page that is not open
         // has nothing to merge against here: it is never written over; its
@@ -4083,6 +4092,24 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Not an I/O error: also state 2, "an unexpected error" (build note 6).
       debugPrint('Saving page ${page.id} failed: $e\n$s');
       return await _saveFailed(loc, st, toSave, savedSeq, session, error: e is IOException ? e : null);
+    }
+  }
+
+  // A write that was already in flight when Discard changes came has landed:
+  // the file is put back to what it held (or removed, if there was none), but
+  // only if it still holds exactly what was just written. Never throws; a file
+  // that has changed since is left alone (someone else's write is newer).
+  Future<void> _undoPublished(String loc, PageStore st, NotedPage written, String? before) async {
+    try {
+      if (before != null) {
+        await _writeIfUnchanged(loc, readPage(before), writePage(written));
+      } else {
+        await _underFolderLock(st, () => st.deleteIfUnchanged(written.id, writePage(written)));
+        final key = _key(st.pathFor(written.id));
+        _known.remove(key);
+      }
+    } on Object catch (e) {
+      debugPrint('Putting back the page after Discard failed: $e');
     }
   }
 
@@ -6815,6 +6842,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _pendingSave = null;
     _busy[id] = _busyDiscarding;
     try {
+      // A save already running (a retry in file I/O) finishes first: one that
+      // publishes after the floor went up puts the file back (_undoPublished).
+      await _chain.idle.timeout(const Duration(seconds: 10), onTimeout: () {});
       if (rec != null && s.own.isNotEmpty) {
         final problem = _lockProblem();
         if (problem != null) throw StateError(problem);
