@@ -131,12 +131,61 @@ void main() {
     nb.dispose();
     await tearDownNotebook(tester, root, base);
   });
+
+  for (final fails in [false, true]) {
+    testWidgets(
+      'a timed-out quit notice lists the in-memory notices, and a listing ${fails ? 'failing' : 'finishing'} later adds nothing',
+      (tester) async {
+        final (root, base) = await setUpNotebook(tester, pending: false);
+        final nb = _HangingListing(base.store, buildModules())
+          ..own = [UnreadablePage('${root.path}/pages/a.canvas', 'Saved, but the page changed right after.')];
+        final key = GlobalKey<NavigatorState>();
+        await tester.pumpWidget(MaterialApp(navigatorKey: key, home: const SizedBox()));
+        late Future<void> future;
+        await tester.runAsync(() async {
+          future = showRecoveryNoticeOnExit(nb, key, listingTimeout: const Duration(milliseconds: 100));
+          await Future<void>.delayed(const Duration(milliseconds: 400));
+        });
+        await tester.pump();
+        await tester.pump();
+        expect(find.byKey(const ValueKey('recovery-exit-unchecked')), findsOneWidget);
+        expect(find.text("Can't open:"), findsOneWidget);
+        expect(find.textContaining('a.canvas: Saved, but the page changed right after.'), findsOneWidget);
+        // The listing settles after the timeout: no second dialog, no error.
+        await tester.runAsync(() async {
+          if (fails) {
+            nb.listing.completeError(StateError('late'));
+          } else {
+            nb.listing.complete(const RecoveryListing([], []));
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        });
+        await tester.pump();
+        expect(find.byType(AlertDialog), findsOneWidget);
+        await tester.tap(find.byKey(const ValueKey('recovery-exit-ok')));
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.runAsync(() => future);
+        expect(find.byType(AlertDialog), findsNothing);
+        nb.dispose();
+        await tearDownNotebook(tester, root, base);
+      },
+    );
+  }
 }
 
-/// A notebook whose recovery listing never completes (an unresponsive drive).
+/// A notebook whose recovery listing finishes only when told (an unresponsive
+/// drive), with settable in-memory notices.
 class _HangingListing extends Notebook {
-  _HangingListing(super.store, super.modules) : super(saveDelay: const Duration(hours: 1), folderCheckInterval: Duration.zero);
+  _HangingListing(super.store, super.modules)
+    : super(saveDelay: const Duration(hours: 1), folderCheckInterval: Duration.zero);
+
+  final listing = Completer<RecoveryListing>();
+  List<UnreadablePage> own = const [];
 
   @override
-  Future<RecoveryListing> pendingRecovery() => Completer<RecoveryListing>().future;
+  Future<RecoveryListing> pendingRecovery() => listing.future;
+
+  @override
+  List<UnreadablePage> get recoveryOwnDamaged => own;
 }
