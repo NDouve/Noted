@@ -836,17 +836,58 @@ void main() {
       expect(File('${copiedAssets()!.path}/$hash.txt').readAsBytesSync(), bytes);
     });
 
-    test('with the source folder gone and a box type that cannot be asked, it says so', () async {
+    test('with the page folder gone and a box type that cannot be asked, it says so', () async {
       final nb = make(pick: () async => dest.path);
       await nb.load();
-      final a = nb.currentId!;
+      await nb.addStandaloneFolder(extra.path);
+      final a = await nb.createPage(folderPath: extra.path);
+      await nb.open(a);
       await attach(nb);
       await nb.setBoxType(a, FileCodec.id, false);
-      assets(pages, a).deleteSync(recursive: true);
+      extra.deleteSync(recursive: true);
+      await nb.checkFolders();
       final said = await nb.saveCopyElsewhere();
       expect(said, startsWith('Saved a copy to ${dest.path}, but '));
       expect(said, contains("attachments folder wasn't available"));
       expect(said, contains('1 box is'));
+    });
+
+    test('a switched-off box type with no attachments folder at all is not a warning', () async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      final a = nb.currentId!;
+      nb.current!.insertBox(
+        BoxRecord.create(
+          id: 'draw1',
+          typeId: 'noted.drawing',
+          dataVersion: 1,
+          bounds: const Bounds(10, 10, 100, 100),
+          data: RawJson.encode(const <String, Object?>{}),
+          snapshotText: '',
+          rev: 'r',
+        ),
+      );
+      await nb.setBoxType(a, 'noted.drawing', false);
+      await nb.flush();
+      expect(assets(pages, a).existsSync(), isFalse);
+      expect(await nb.saveCopyElsewhere(), 'Saved a copy to ${dest.path}.');
+    });
+
+    test('the page folder gone but a recovery attachments folder present still gets the note', () async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      await nb.addStandaloneFolder(extra.path);
+      final a = await nb.createPage(folderPath: extra.path);
+      await nb.open(a);
+      await attach(nb);
+      await nb.setBoxType(a, FileCodec.id, false);
+      File('${rec.path}/$a.assets/$hash.txt')
+        ..createSync(recursive: true)
+        ..writeAsBytesSync(bytes);
+      extra.deleteSync(recursive: true);
+      await nb.checkFolders();
+      final said = await nb.saveCopyElsewhere();
+      expect(said, contains("attachments folder wasn't available"));
     });
   });
 }

@@ -6727,7 +6727,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // The page stays: editable again, and what a sync merge changed
           // while it was frozen (suppressed, since read-only) is saved.
           _syncReadOnly();
-          if (identical(_current, c) && _preview == null && !identical(c.page, freeze.page)) _pageChanged(c.page);
+          if (!_disposed && identical(_current, c) && _preview == null && !identical(c.page, freeze.page)) _pageChanged(c.page);
         }
       }
     }
@@ -7308,6 +7308,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // the source folder missing or unreadable, a different file already at the
     // target, or a leftover kept aside (never a plain "Saved a copy").
     final refs = _folderAttachmentFiles(page);
+    // The original's own folder is not there (or unknown): files kept in it can't be checked.
+    final sourceUnavailable = loc == null || !Directory(_storeOrFolder(loc).directory.path).existsSync();
     final differing = {for (final p in result.differing) _baseName(p)};
     final notCopied = <String>[
       for (final f in refs.files)
@@ -7328,7 +7330,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         '${refs.unchecked.length == 1 ? 'an attachment name was' : '${refs.unchecked.length} attachment names were'} '
             'not checked because ${refs.unchecked.length == 1 ? "it isn't" : "they aren't"} a file name Noted writes: '
             '${_namesShown(refs.unchecked)}',
-      if (refs.unasked > 0 && !result.sourceExisted)
+      if (refs.unasked > 0 && sourceUnavailable)
         "the original's attachments folder wasn't available, and ${refs.unasked} "
             '${refs.unasked == 1 ? 'box is' : 'boxes are'} of a type that is switched off, not allowed on this page '
             "or from a newer version, so any files ${refs.unasked == 1 ? 'it keeps' : 'they keep'} couldn't be checked",
