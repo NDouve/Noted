@@ -508,6 +508,38 @@ void main() {
         expect(opened, isEmpty);
         expect(notices, isNotEmpty);
         expect(asset(name).readAsBytesSync(), bad);
+        expect(recAsset(name).lengthSync(), 50, reason: 'the recovery copy is left alone');
+        expect(notices.last, contains('damaged'));
+      });
+
+      test('a folder at the page-folder name is skipped for the good recovery copy', () async {
+        Directory(asset(name).path).createSync(recursive: true);
+        recAsset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        await withOpener().open('f.bin', fileName: name);
+        expect(FileSystemEntity.identicalSync(opened.single, recAsset(name).path), isTrue);
+      });
+
+      test('a link at the page-folder name is skipped for the good recovery copy', () async {
+        recAsset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        asset(name).parent.createSync(recursive: true);
+        try {
+          Link(asset(name).path).createSync(recAsset(name).path);
+        } on FileSystemException {
+          return; // Links need a privilege on some systems; the folder test covers the rule.
+        }
+        await withOpener().open('f.bin', fileName: name);
+        expect(FileSystemEntity.identicalSync(opened.single, recAsset(name).path), isTrue);
+        expect(opened.single, isNot(asset(name).path), reason: 'not through the link');
+      });
+
+      test('nothing at either name: nothing is opened, the user is told to try again', () async {
+        await withOpener().open('f.bin', fileName: name);
+        expect(opened, isEmpty);
+        expect(notices.last, contains('Try again'));
       });
     });
   });
