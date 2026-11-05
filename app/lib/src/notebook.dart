@@ -890,6 +890,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final st = _storeOf(loc);
     await flush();
     String? blockedWhy;
+    final closedId = id == currentId ? id : null;
     if (id == currentId) {
       // The page on screen is closed first (its edits are flushed above), so a
       // later autosave can't write its old content over the file asked for.
@@ -909,6 +910,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       unchanged = false;
     }
     if (!unchanged) {
+      // The page that was closed for the swap is shown again.
+      if (closedId != null && _current == null) {
+        try {
+          await open(closedId);
+        } on Object {
+          // The next open picks a page.
+        }
+      }
       throw const NotebookException('That file changed while it was being opened. Try again.');
     }
     final oldLoc = _loc[id];
@@ -2687,6 +2696,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _landedProblems.removeWhere((_, p) => _key(_normalizePath(File(p.path).parent.path)) == k);
   }
 
+  // Forgets the files chosen (or seen missing) in the folder [dir], which is
+  // being removed; returns their page ids, for [_promoteDuplicate].
+  List<String> _dropAdoptionsIn(String dir) {
+    final k = _key(dir);
+    final ids = [
+      for (final e in _adoptedFiles.entries)
+        if (_key(File(e.value).parent.path) == k) e.key,
+    ];
+    for (final id in ids) {
+      _adoptedFiles.remove(id);
+      _goneChosen.remove(id);
+    }
+    return ids;
+  }
+
   Future<void> removeStandaloneFolder(String path) async {
     final folder = _folders[path];
     _dropLandedIn(path);
@@ -2694,6 +2718,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId) || _orphanLoc == path;
     if (openHere) await _closeCurrent();
+    final released = _dropAdoptionsIn(path);
     for (final id in ids) {
       _metas.remove(id);
       _loc.remove(id);
@@ -2711,6 +2736,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
     _syncWatchers();
     await _saveSettings();
+    for (final id in released) {
+      await _promoteDuplicate(id);
+    }
     if (openHere) await _openFallback(_standalone);
   }
 
@@ -3010,10 +3038,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
     if (openHere) await _closeCurrent();
+    final released = _dropAdoptionsIn(path);
     for (final id in ids) {
       _metas.remove(id);
       _loc.remove(id);
       _conflicts.remove(id);
+    }
+    for (final e in _pathId.entries.toList()) {
+      if (ids.contains(e.value)) {
+        _pathId.remove(e.key);
+        _known.remove(e.key);
+      }
     }
     _binders.remove(path);
     if (_coverPath == path) _coverPath = null;
@@ -3022,6 +3057,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
     _syncWatchers();
     await _saveSettings();
+    for (final id in released) {
+      await _promoteDuplicate(id);
+    }
     if (openHere) await _openFallback(_standalone);
   }
 
@@ -4852,7 +4890,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final loc = _locationOf(path);
     if (loc == null) return false;
     final key = _key(path);
-    if (_goneChosen.isNotEmpty) await _confirmGoneChosen(except: key);
     final file = File(path);
     final openId = _current?.page.id;
     // Decided by path, not by _pathId: that entry is dropped when the file is
@@ -5222,11 +5259,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// Settles the chosen files seen missing at an earlier check: one that is
   /// back holding its page is taken back; one still gone (its folder being
   /// there) is forgotten, and a duplicate of its page is promoted.
-  Future<void> _confirmGoneChosen({String? except}) async {
+  Future<void> _confirmGoneChosen() async {
     for (final e in _goneChosen.entries.toList()) {
       final id = e.key;
       final path = e.value;
-      if (except != null && _key(path) == except) continue;
       if (id == currentId) continue;
       final loc = _locationOf(path);
       NotedPage? back;

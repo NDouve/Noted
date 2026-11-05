@@ -522,6 +522,7 @@ void main() {
           throwsA(isA<NotebookException>()),
         );
         s.nb.syncHook = null;
+        expect(s.nb.currentId, s.id); // the closed page is shown again
         expect(s.nb.pageTitleOf(s.id), 'Original');
         expect(s.nb.unreadable, isEmpty);
       });
@@ -550,6 +551,51 @@ void main() {
           isNot(contains(predicate<String>((p) => p.endsWith('copy-of-${s.id}.canvas')))),
         );
         expect(s.nb.unreadable, hasLength(1));
+      });
+
+      test('removing the folder of the chosen file makes the duplicate in the '
+          'other folder the page', () async {
+        final a = await Directory('${root.path}/A').create();
+        final b = await Directory('${root.path}/B').create();
+        final s = await setup(a, b);
+        await openExistingFile(s.nb, s.copy);
+        await s.nb.open(await s.nb.createPage());
+        final bPath = s.nb.standaloneFolders
+            .firstWhere((f) => f.path.replaceAll(r'\', '/').endsWith('/B'))
+            .path;
+        await s.nb.removeStandaloneFolder(bPath);
+        expect(s.nb.pageTitleOf(s.id), 'Original');
+        expect(s.nb.unreadable, isEmpty);
+        expect(s.nb.tree.roots.map((r) => r.id), contains(s.id));
+      });
+
+      test('removing the binder of the chosen file makes the duplicate in the '
+          'other binder the page', () async {
+        final a = await Directory('${root.path}/WorkA').create();
+        final b = await Directory('${root.path}/WorkB').create();
+        final other = make('other');
+        await other.load();
+        final sec = await other.addBinder(a.path);
+        final id = await other.createPage(binderPath: sec.path);
+        await other.rename(id, 'Original');
+        await other.flush();
+        await BinderStore(b).create(Binder.create(title: 'B', color: binderPalette.first));
+        final nb = make('main', pages);
+        await nb.load();
+        await nb.addBinder(a.path);
+        await nb.addBinder(b.path);
+        final copy = '${b.path}/copy-of-$id.canvas';
+        File(copy).writeAsStringSync(
+          File('${a.path}/$id.canvas').readAsStringSync().replaceAll('Original', 'Copy'),
+        );
+        await openExistingFile(nb, copy);
+        expect(nb.pageTitleOf(id), 'Copy');
+        await nb.open(await nb.createPage());
+        final bPath = nb.binders.firstWhere((x) => x.title == 'B').path;
+        await nb.removeBinder(bPath);
+        expect(nb.pageTitleOf(id), 'Original');
+        expect(nb.tree.roots.map((r) => r.id), isNot(contains(id)));
+        expect(nb.binderOfPage(id), isNotNull);
       });
 
       test('the open adopted page whose file went stays open; the original is '
@@ -614,15 +660,20 @@ void main() {
         expect(File(s.orig).readAsStringSync(), 'not a page');
       });
 
-      test('a binder removed and added again still uses the chosen file',
+      test('a binder away and back still uses the chosen file',
           () async {
         final dir = await Directory('${root.path}/Work').create();
         final s = await setup(dir, dir, binder: true);
         await openExistingFile(s.nb, s.copy);
         final origBytes = File(s.orig).readAsBytesSync();
         final path = s.nb.binders.single.path;
-        await s.nb.removeBinder(path);
-        await s.nb.addBinder(path);
+        // The binder's folder goes away and comes back: its store is made again.
+        await s.nb.open(await s.nb.createPage());
+        dir.renameSync('${dir.path}-away');
+        await s.nb.checkFolders();
+        Directory('${dir.path}-away').renameSync(dir.path);
+        await s.nb.checkFolders();
+        expect(path, isNotEmpty);
         expect(s.nb.pageTitleOf(s.id), 'Copy');
         await s.nb.open(s.id);
         await s.nb.rename(s.id, 'Edited');
