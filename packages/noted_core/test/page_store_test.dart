@@ -59,4 +59,18 @@ void main() {
     expect(entries.whereType<ReadablePage>().single.path, endsWith('a.canvas'));
     expect(a.readAsStringSync(), text);
   });
+
+  test('unadopt forgets the choice', () async {
+    final page = NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0));
+    final text = writePage(page);
+    File('${dir.path}/a.canvas').writeAsStringSync(text);
+    File('${dir.path}/b.canvas').writeAsStringSync(text);
+    final store = PageStore(dir)..adopt('p1', '${dir.path}/b.canvas');
+    expect((await store.scan()).whereType<ReadablePage>().single.path, endsWith('b.canvas'));
+    store.unadopt('p1');
+    // Listing order decides again: only that exactly one file is kept.
+    final entries = await store.scan();
+    expect(entries.whereType<ReadablePage>(), hasLength(1));
+    expect(entries.whereType<UnreadablePage>(), hasLength(1));
+  });
 }

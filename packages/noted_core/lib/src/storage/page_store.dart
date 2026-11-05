@@ -296,6 +296,9 @@ class PageStore {
     _adopted[pageId] = path;
   }
 
+  /// Forgets the choice made with [adopt] for [pageId].
+  void unadopt(String pageId) => _adopted.remove(pageId);
+
   /// The path of the file holding (or that will hold) page [pageId].
   String pathFor(String pageId) => _pathFor(pageId);
 
