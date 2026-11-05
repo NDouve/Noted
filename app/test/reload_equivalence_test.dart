@@ -25,6 +25,13 @@
 //     as unreadable (the live notebook finished everything it started);
 //  5. a fresh notebook over the same folders lists the same pages in the same
 //     places and shows the same boxes for each one (end of the sequence).
+//  6. each binder's file, and the live and a fresh notebook, have the model's
+//     AI access (also as `aiAccessFor` gives it), colour, title and the owner
+//     another device set. Binder settings (`binderSetting`: plain, a file
+//     replaced behind the app's back, and a refused write) are drawn from
+//     their own random stream after any step, so the other steps are as they
+//     were. Run against the old cached save, 12 of the 24 sequences failed
+//     ("the binder file of ...", "the refused ... change was reported as saved").
 //
 // Normalisations. Boxes are compared as id to text only, so these are not
 // compared: the `noted.device` and `noted.at` stamps, box revisions (`rev`,
@@ -276,6 +283,47 @@ class _Chaos extends PageStore {
   }
 }
 
+
+/// Faults for the binder file's writes: the next [failRenames] renames fail.
+class _BinderFaults {
+  int failRenames = 0;
+}
+
+class _BinderChaos extends BinderStore {
+  _BinderChaos(super.directory, this.faults) : super(retryDelay: Duration.zero);
+
+  final _BinderFaults faults;
+
+  @override
+  Future<BinderUpdate> update(
+    Binder Function(Binder onDisk) change, {
+    required String binderId,
+    void Function()? beforeCompare,
+    void Function()? beforeRename,
+  }) => super.update(
+    change,
+    binderId: binderId,
+    beforeCompare: beforeCompare,
+    beforeRename: () {
+      if (faults.failRenames > 0) {
+        faults.failRenames--;
+        throw FileSystemException('injected rename failure', file.path);
+      }
+      beforeRename?.call();
+    },
+  );
+}
+
+/// What the model keeps of a binder: AI access, cover colour and title, and the
+/// owner another device set.
+class _MBinder {
+  _MBinder(Binder b) : ai = b.aiAccess, color = b.color, title = b.title, owner = b.owner;
+
+  AiAccess? ai;
+  String color;
+  String title;
+  String owner;
+}
 /// What the model knows of one page.
 class _MPage {
   _MPage(this.loc, {this.parent});
@@ -359,10 +407,17 @@ const _locs = ['pages', 'x', 'a', 'b'];
 // One sequence
 
 class _Run {
-  _Run(this.seed) : rng = Random(seed);
+  _Run(this.seed) : rng = Random(seed), binderRng = Random(seed * 7919 + 13);
 
   final int seed;
   final Random rng;
+
+  /// Its own stream, so the binder settings do not change what the other steps do.
+  final Random binderRng;
+  final Map<String, _MBinder> mbinders = {};
+  final _BinderFaults binderFaults = _BinderFaults();
+  int _ownerCounter = 0;
+  int _titleN = 0;
   final List<String> trace = [];
 
   /// The kind of the step being made, and the kinds of the steps that finished
@@ -408,6 +463,8 @@ class _Run {
     model[first] = _MPage('pages');
     pathA = (await nb.addBinder(dirs['a']!.path)).path;
     pathB = (await nb.addBinder(dirs['b']!.path)).path;
+    mbinders['a'] = _MBinder(nb.binders.firstWhere((b) => b.path == pathA).binder!);
+    mbinders['b'] = _MBinder(nb.binders.firstWhere((b) => b.path == pathB).binder!);
     await nb.addStandaloneFolder(dirs['x']!.path);
     // A page in each place, and a subpage of the first.
     for (final loc in ['a', 'b', 'x']) {
@@ -445,6 +502,7 @@ class _Run {
     recoveryDirectory: rec,
     folderCheckInterval: Duration.zero,
     storeFactory: (d) => _stores.putIfAbsent(_norm(d.path), () => _Chaos(d)),
+    binderStoreFactory: (d) => _BinderChaos(d, binderFaults),
   );
 
   _Chaos storeOf(String loc) {
@@ -553,6 +611,7 @@ class _Run {
       await _opRestart();
     }
     trace.add('  ($name done)');
+    if (binderRng.nextInt(100) < 16) await _opBinderSetting();
     await _settle();
     await verify('step $n ($name)');
     if (_kind != null) kinds.add(_kind!);
@@ -597,6 +656,64 @@ class _Run {
 
   bool _isPageFile(String name) =>
       model.keys.any((id) => name == '$id.canvas') || name == binderFileName;
+
+  // ---- binderSetting: a setting or the cover of a binder ------------------------
+
+  Future<void> _opBinderSetting() async {
+    final loc = binderRng.nextBool() ? 'a' : 'b';
+    final path = loc == 'a' ? pathA : pathB;
+    final m = mbinders[loc]!;
+    final variant = const ['plain', 'plain', 'externalBeforeWrite', 'refuseOnce'][binderRng.nextInt(4)];
+    final what = const ['ai', 'color', 'title'][binderRng.nextInt(3)];
+    trace.add('binder setting $what of $loc: $variant');
+    kinds.add('binderSetting:$variant');
+    final file = File('${dirs[loc]!.path}$sep$binderFileName');
+    if (variant == 'externalBeforeWrite') {
+      // Another device replaced the file; the notebook has not seen it.
+      final b = Binder.parse(file.readAsStringSync()).withOwner('Owner ${++_ownerCounter}');
+      file.writeAsStringSync(b.write().replaceFirst('{', '{"x-future":{"k":1},'));
+      m.owner = b.owner;
+    }
+    late final bool changes;
+    late final Future<bool> Function() apply;
+    late final void Function() commit;
+    switch (what) {
+      case 'ai':
+        final v = const [null, AiAccess.open, AiAccess.privileged, AiAccess.guarded][binderRng.nextInt(4)];
+        changes = v != m.ai;
+        apply = () async {
+          try {
+            await nb.setBinderAiAccess(path, v);
+            return true;
+          } on NotebookException {
+            return false;
+          }
+        };
+        commit = () => m.ai = v;
+      case 'color':
+        final v = binderPalette[binderRng.nextInt(binderPalette.length)];
+        changes = v != m.color;
+        apply = () => nb.updateBinder(path, color: v);
+        commit = () => m.color = v;
+      default:
+        final v = 'Binder title ${++_titleN}';
+        changes = true;
+        apply = () => nb.updateBinder(path, title: v);
+        commit = () => m.title = v;
+    }
+    if (variant == 'refuseOnce') binderFaults.failRenames = 5;
+    final saved = await apply();
+    binderFaults.failRenames = 0;
+    if (variant == 'refuseOnce' && changes) {
+      expect(saved, isFalse, reason: 'seed $seed: the refused $what change was reported as saved');
+    } else {
+      expect(saved, isTrue, reason: 'seed $seed: the $what change was not saved');
+      commit();
+    }
+    await nb.flush();
+    // The look the watcher takes after a refusal, and after the app's own write.
+    await nb.checkBinderFile(file.path, force: true);
+  }
 
   // ---- edit: a save of the open page, sometimes raced or failed ---------------
 
@@ -1082,6 +1199,15 @@ class _Run {
       final actual = <String>{for (final f in d.listSync()) f.path.split(RegExp(r'[\\/]')).last};
       expect(actual, expected, reason: '$where: the files in $loc');
     }
+    for (final e in mbinders.entries) {
+      final b = Binder.parse(File('${dirs[e.key]!.path}$sep$binderFileName').readAsStringSync());
+      final m = e.value;
+      expect(
+        [b.aiAccess, b.color, b.title, b.owner],
+        [m.ai, m.color, m.title, m.owner],
+        reason: '$where: the binder file of ${e.key} (ai, color, title, owner)',
+      );
+    }
     for (final e in model.entries) {
       final id = e.key;
       final m = e.value;
@@ -1103,6 +1229,26 @@ class _Run {
     }
   }
 
+
+  // The AI access, colour and title of each binder as a notebook shows them.
+  void _expectBinders(Notebook n, String where) {
+    for (final e in mbinders.entries) {
+      final path = e.key == 'a' ? pathA : pathB;
+      final m = e.value;
+      final section = n.binders.firstWhere((b) => b.path == path);
+      expect(n.binderAiAccess(path), m.ai, reason: '$where: AI access of binder ${e.key}');
+      expect(section.color, m.color, reason: '$where: color of binder ${e.key}');
+      expect(section.title, m.title, reason: '$where: title of binder ${e.key}');
+      final inside = [for (final p in model.entries) if (p.value.loc == e.key) p.key];
+      if (inside.isNotEmpty) {
+        expect(
+          n.aiAccessFor(inside.first).value,
+          m.ai ?? defaultAiAccess,
+          reason: '$where: what AI may read in binder ${e.key}',
+        );
+      }
+    }
+  }
   Future<void> _verifyLive(String where) async {
     final recov = await nb.pendingRecovery();
     expect(recov.entries, isEmpty, reason: '$where: recovery entries are pending');
@@ -1122,6 +1268,7 @@ class _Run {
       final want = e.value.loc == 'a' ? pathA : (e.value.loc == 'b' ? pathB : null);
       expect(nb.binderOfPage(e.key), want, reason: '$where: binder of ${_short(e.key)}');
     }
+    _expectBinders(nb, where);
   }
 
   Future<void> _verifyFresh(String where) async {
@@ -1160,6 +1307,7 @@ class _Run {
       };
       expect(listed, model.keys.toSet(), reason: '$where: the pages a fresh notebook lists');
       expect((await other.pendingRecovery()).entries, isEmpty);
+      _expectBinders(other, where);
     } finally {
       other.dispose();
     }
@@ -1181,6 +1329,7 @@ const _expectedKinds = {
   'vanish:restart/syncWhileAway', 'vanish:live/deletedWhileAway',
   'vanish:restart/deletedWhileAway', 'vanish:live/replayFails',
   'vanish:restart/replayFails', 'restart', //
+  'binderSetting:plain', 'binderSetting:externalBeforeWrite', 'binderSetting:refuseOnce', // binder settings
 };
 
 /// Run the parked probes too: --dart-define=RELOAD_PARKED=true.

@@ -276,9 +276,23 @@ Other fields are kept in order and written back unchanged.
 {"format":1,"binderId":"c04e91b7a25d3f68","title":"Project Atlas","description":"Planning notes","owner":"","color":"#FF2563EB","created":1793600000000,"attachments":"folder"}
 ```
 
-The file is written to `noted-binder.json.tmp` and then renamed over the old
-file. Creating a binder file first checks that none exists, and does not
-write if one does; the check and the write are separate steps.
+An existing binder file is updated by rereading it, applying the requested
+change to the bytes just read, writing the result to a temporary file
+`noted-binder.json.<microseconds>-<n>.tmp`, comparing the file with what was
+read, and replacing it with a replacing rename; the file is never absent. A
+writer that replaces the file between that comparison and the rename is
+overwritten. A binder file that is missing, damaged, from a newer format or
+another binder's (a different `binderId`) is not written. A new binder file
+is written to a temporary file of the same kind and published without ever
+replacing a file that is there.
+
+Leftovers of an interrupted write are the temporary files above, the older
+fixed name `noted-binder.json.tmp`, and the set-aside files `.cas-old` and
+`.cas-verified` of any of them. A set-aside file is put back. A temporary file
+younger than 10 minutes is left alone (it may be another device's write in
+flight). An older one equal to the current binder file is deleted; any other
+is kept and listed in the binder's "Can't open" list, and is never promoted to
+the binder file by itself.
 
 The file is not valid, and is never written to, when the JSON is invalid,
 `binderId` is missing or empty, `format` is missing or not an integer, or
