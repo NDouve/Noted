@@ -201,5 +201,49 @@ void pageTreeSuite() {
         await s.until(() => s.rootIds.length == n + 1, what: 'Ctrl+N from a note');
       });
     });
+
+    testWidgets('L1: Page and Binder settings are row menu items; the Location section; Open binder… in the header', (t) async {
+      await withSession(t, 'location', (s) async {
+        final a = s.nb.currentId!;
+        // No settings icon on the row; the item is in both menus.
+        expect(find.byIcon(Icons.tune_rounded), findsOneWidget, reason: 'only the one beside the page title');
+        await s.tapKey('pages-menu', settle: 500);
+        expect(find.text('Open binder…'), findsOneWidget);
+        await t.tapAt(const Offset(1, 1));
+        await s.pump(300);
+        expect(find.byKey(const ValueKey('open-binder')), findsOneWidget);
+        await s.pageMenu(a, 'Page settings…');
+        expect(find.byKey(const ValueKey('settings-panel')), findsOneWidget);
+        expect(find.text('Location'), findsOneWidget);
+        expect(
+          t.widget<SelectableText>(find.byKey(const ValueKey('settings-location-path'))).data,
+          s.nb.defaultFolderPath,
+        );
+        expect(find.byKey(const ValueKey('settings-location-show')), findsOneWidget);
+        expect(find.byKey(const ValueKey('settings-location-move')), findsOneWidget);
+        await s.tapKey('settings-close');
+        await t.tap(find.descendant(of: s.row(a), matching: find.byTooltip('Page options')));
+        await s.pump(500);
+        await s.tapText('Page settings…', settle: 500);
+        expect(find.text('Location'), findsOneWidget);
+        await s.tapKey('settings-close');
+        // A binder: Binder settings… in its menu, and a page in it names the binder.
+        await s.tapKey('pages-menu', settle: 500);
+        await s.tapText('New binder', settle: 700);
+        await s.until(() => s.nb.binders.length == 1, what: 'binder');
+        final b = s.nb.binders.single;
+        expect(find.byKey(ValueKey('binder-settings-${b.path}')), findsNothing);
+        await s.tapKey('binder-menu-${b.path}', settle: 500);
+        await s.tapText('Binder settings…', settle: 600);
+        expect(find.text('Binder settings'), findsOneWidget);
+        await s.tapKey('settings-close');
+        final inBinder = await s.newPage('In binder', binderPath: b.path);
+        await s.nb.open(inBinder);
+        await s.pump(300);
+        await s.tapKey('page-settings', settle: 500);
+        expect(find.textContaining('In the binder'), findsOneWidget);
+        await s.tapKey('settings-close');
+      });
+    });
   });
 }

@@ -85,6 +85,7 @@ void main() {
     ThemeData? theme,
     bool watch = false,
     PageStore Function(Directory)? store,
+    Directory? appDir,
   }) async {
     // Room for the whole page menu.
     if (tester.view.physicalSize.height / tester.view.devicePixelRatio < 1400) {
@@ -98,6 +99,7 @@ void main() {
         store != null ? store(dir) : PageStore(dir),
         buildModules(),
         saveDelay: Duration.zero,
+        bindersFile: appDir == null ? null : File('${appDir.path}/binders.json'),
         watchFiles: watch,
         watchDebounce: const Duration(milliseconds: 40),
         folderCheckInterval: watch ? const Duration(milliseconds: 100) : Duration.zero,
@@ -291,6 +293,77 @@ void main() {
     await until(tester, () => rootIds().length == 3 && File('${dir.path}/$b.canvas').existsSync());
     expect(rootIds(), [a, b, c]);
     expect(File('${dir.path}/$b.canvas').existsSync(), isTrue);
+    await finish(tester);
+  });
+
+  // Deletes page [b] with an attachment folder, leaving the Deleted bar up.
+  // Returns the folder its attachments are set aside in.
+  Future<Directory> deleteWithAttachment(WidgetTester tester, Directory appDir) async {
+    await start(tester, appDir: appDir);
+    await tester.runAsync(() async {
+      final assets = await Directory('${dir.path}/${assetsFolderName(b)}').create();
+      await File('${assets.path}/x.bin').writeAsBytes([1, 2, 3]);
+    });
+    await rightClick(tester, b);
+    await tester.tap(find.text('Delete'));
+    await settle(tester);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Delete'));
+    await tester.pump();
+    await until(tester, () => find.text('Undo').evaluate().isNotEmpty);
+    return Directory('${appDir.path}/deleted-attachments');
+  }
+
+  bool trashHasFiles(Directory trash) =>
+      trash.existsSync() && trash.listSync(recursive: true).whereType<File>().isNotEmpty;
+
+  testWidgets('the Deleted bar has a close button and a time limit, even with Undo', (tester) async {
+    final app = await tester.runAsync(() => Directory.systemTemp.createTemp('noted_tree_app')) as Directory;
+    addTearDown(() => app.deleteSync(recursive: true));
+    final trash = await deleteWithAttachment(tester, app);
+    final bar = tester.widget<SnackBar>(find.byType(SnackBar));
+    expect(bar.persist, isFalse, reason: 'a bar with an action persists unless told not to');
+    expect(bar.showCloseIcon, isTrue);
+    expect(trashHasFiles(trash), isTrue, reason: 'set aside while the bar is up');
+    await tester.pump(const Duration(seconds: 11));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('Undo'), findsNothing, reason: 'the bar timed out');
+    await until(tester, () => !trashHasFiles(trash), what: 'the set-aside attachments to be cleaned up');
+    await finish(tester);
+  });
+
+  testWidgets('closing the Deleted bar releases the pages and cleans up the attachments', (tester) async {
+    final app = await tester.runAsync(() => Directory.systemTemp.createTemp('noted_tree_app')) as Directory;
+    addTearDown(() => app.deleteSync(recursive: true));
+    final trash = await deleteWithAttachment(tester, app);
+    expect(trashHasFiles(trash), isTrue);
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pump();
+    await until(tester, () => !trashHasFiles(trash), what: 'the set-aside attachments to be cleaned up');
+    expect(find.text('Undo'), findsNothing);
+    await finish(tester);
+  });
+
+  testWidgets('Page settings is in the page menu and the right-click menu, and the row has no icon', (tester) async {
+    await start(tester);
+    expect(find.byTooltip('Page settings'), findsNothing);
+    // From the row's ⋯ menu.
+    await tester.tap(find.byTooltip('Page options').at(1));
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
+    await tester.runAsync(() => tester.tap(find.text('Page settings…')));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('settings-panel')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('settings-close')));
+    await tester.pumpAndSettle();
+    // From the right-click menu.
+    await rightClick(tester, b);
+    await tester.runAsync(() => tester.tap(find.text('Page settings…')));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('settings-panel')), findsOneWidget);
+    expect(find.text('Location'), findsOneWidget);
+    expect(tester.widget<SelectableText>(find.byKey(const ValueKey('settings-location-path'))).data, dir.path);
+    await tester.tap(find.byKey(const ValueKey('settings-close')));
+    await tester.pumpAndSettle();
     await finish(tester);
   });
 
