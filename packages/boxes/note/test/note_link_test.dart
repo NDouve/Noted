@@ -44,7 +44,8 @@ void main() {
       for (final dots in ['..', '%2e%2e', '%2E%2E', '%252e%252e', '%252E%252E', '.%2e', '%252e.']) {
         test('$dots with "$sep" names the folder it resolves to', () {
           expect(resolvedTargetName('C:${sep}tools${sep}evil.jar${sep}x$sep$dots'), 'evil.jar');
-    });
+          expect(resolvedTargetName('C:${sep}tools${sep}evil.jar$sep$dots${sep}other.txt'), 'other.txt');
+        });
       }
       test('an encoded separator and parent resolve with "$sep"', () {
         expect(resolvedTargetName('C:${sep}t${sep}evil.jar${sep}x%5c%252e%252e'), 'evil.jar');
@@ -663,6 +664,19 @@ void main() {
       expect(t.widget<Text>(find.byKey(const ValueKey('open-confirm-name'))).data, 'evil.jar');
       await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
       await frames(t);
+    });
+
+    testWidgets('evil.j%c0ar asks and is not launched', (t) async {
+      await pump(t, [
+        {'insert': 'plain'},
+      ]);
+      unawaited(linkOpener(r'C:\d\evil.j%c0ar'));
+      await frames(t);
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+      expect(launched, isEmpty);
+      await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+      await frames(t);
+      expect(launched, isEmpty);
     });
 
     testWidgets('the dialog shows evil.jar for evil.jar with .. segments', (t) async {

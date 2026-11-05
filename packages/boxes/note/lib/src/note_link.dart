@@ -225,13 +225,15 @@ Future<void> _launch(String url) async {
         needsOpenConfirmation(displayName: resolved) ||
         needsOpenConfirmation(displayName: decodedPath) ||
         needsOpenConfirmation(displayName: decodedResolved) ||
-        needsOpenConfirmation(displayName: name)) {
+        needsOpenConfirmation(displayName: name) ||
+        // A byte that is not valid text may be dropped by the system.
+        (name.contains('�') && needsOpenConfirmation(displayName: name.replaceAll('�', '')))) {
       if (context == null || !context.mounted) return;
       if (!await confirmOpenRunnable(context, name)) return;
     }
     await launchUrl(target, mode: LaunchMode.externalApplication);
   } on Object catch (e) {
-    debugPrint('Opening $url failed: $e');
+    debugPrint('Noted: opening a link failed: ${e.runtimeType}');
     _notice(messenger);
   }
 }

@@ -127,7 +127,7 @@ bool needsOpenConfirmation({
 /// controls that can reorder text are replaced, and a name longer than
 /// [maxLength] is shortened in the middle so its end (the extension) stays.
 String cleanNameForDisplay(String name, {int maxLength = 80}) {
-  final s = name.replaceAll(RegExp(r'[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]'), '\u00b7');
+  final s = name.replaceAll(RegExp(r'[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]'), '\u00b7');
   final runes = s.runes.toList();
   if (runes.length <= maxLength) return s;
   // Keep the extension (when it is short) and as much of the start as fits.
