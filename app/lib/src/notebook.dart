@@ -722,7 +722,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   final List<DeletedPages> _held = [];
 
   // Undos of held deletes that are running (exit waits for them).
-  final List<Future<void>> _undoRuns = [];
+  final Map<Future<void>, DeletedPages> _undoRuns = {};
   String? _coverPath;
   RawObject _settings = RawObject.empty;
   bool _settingsCorrupt = false;
@@ -2343,7 +2343,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> undoDelete(DeletedPages deleted) async {
     // Exit waits for an Undo in flight, so the page it holds is not lost.
     final done = Completer<void>();
-    _undoRuns.add(done.future);
+    _undoRuns[done.future] = deleted;
     try {
       await _undoDeleteNow(deleted);
     } finally {
@@ -8635,15 +8635,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// the user chose to stay (the question "Your changes will be lost").
   Future<bool> prepareToExit({Duration? limit}) async {
     final bound = limit ?? leaveSaveLimit;
+    final clock = Stopwatch()..start();
+    // One deadline for the whole exit: what the held pages used is gone from the rest.
+    Duration left() => clock.elapsed >= bound ? Duration.zero : bound - clock.elapsed;
     try {
       await _leaveOpenPage();
     } on LeaveCancelled {
       return false;
     }
-    if (!await _saveHeldAtExit()) return false;
+    if (!await _saveHeldAtExit(left)) return false;
     // Other queued writes get the same time; what hangs is left behind.
     var stuck = false;
-    await _chain.idle.timeout(bound, onTimeout: () => stuck = true);
+    await _chain.idle.timeout(left(), onTimeout: () => stuck = true);
     if (stuck) _chain.detach();
     final rec = _recovery;
     if (rec != null && rec.landedEntries.isNotEmpty) {
@@ -8660,9 +8663,26 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // beside their place as exclusive copies, never over a file (the naming Undo
   // uses). Where that fails, the user is asked before they are lost. False:
   // the user chose to stay.
-  Future<bool> _saveHeldAtExit() async {
-    while (_undoRuns.isNotEmpty) {
-      await Future.wait([..._undoRuns]);
+  Future<bool> _saveHeldAtExit(Duration Function() left) async {
+    // An Undo that is still running owns its pages; past the time limit they
+    // count as not preserved.
+    if (_undoRuns.isNotEmpty) {
+      final running = _undoRuns.values.toList();
+      var stalled = false;
+      await Future.wait([..._undoRuns.keys]).timeout(
+        left(),
+        onTimeout: () {
+          stalled = true;
+          return const <void>[];
+        },
+      );
+      if (stalled) {
+        final title = [
+          for (final d in running)
+            for (final p in d.pages) _titleOrUntitled(p.meta.title),
+        ].join(', ');
+        if (!await _ask(UserQuestion.leaveAndLose, title)) return false;
+      }
     }
     for (final d in [..._held]) {
       final failed = <NotedPage>[];
@@ -8671,7 +8691,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         String? copy;
         try {
           _assertWritable(d._location); // a read-only place gets no file
-          copy = await _publishConflictCopy(_storeOf(d._location), page);
+          final write = _publishConflictCopy(_storeOf(d._location), page);
+          // A copy that lands after the time limit still counts as made.
+          unawaited(
+            write.then<void>(
+              (c) {
+                if (c != null) d._copied.add(page.id);
+              },
+              onError: (Object _) {},
+            ),
+          );
+          copy = await write.timeout(left());
         } on Object catch (e) {
           debugPrint('Saving ${page.id} beside its place at exit failed: $e');
         }

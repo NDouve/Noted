@@ -637,6 +637,64 @@ void main() {
         expect(idsOf(pathOf(parent)), contains(mine.id));
         expect(copies(), isEmpty, reason: 'the page exists once');
       });
+
+      test('an Undo that stays stalled past the limit: the user is asked; staying loses nothing', () async {
+        await setUpTree(withRecovery: false);
+        counting.failNew.add(parent);
+        Object? error;
+        try {
+          await nb.delete(parent);
+        } on Object catch (e) {
+          error = e;
+        }
+        final held = (error! as PagesNotRestoredException).deleted;
+        counting.failNew.clear();
+        final release = counting.holdNew = Completer<void>();
+        counting.reachedNew = Completer<void>();
+        final undo = nb.undoDelete(held);
+        await counting.reachedNew!.future;
+        final asked = <UserQuestion>[];
+        nb.questioner = (q, title) async {
+          asked.add(q);
+          return false; // stay
+        };
+
+        expect(await nb.prepareToExit(limit: const Duration(milliseconds: 100)), isFalse);
+
+        expect(asked, [UserQuestion.leaveAndLose]);
+        release.complete();
+        await undo;
+        expect(idsOf(pathOf(parent)), contains(mine.id), reason: 'the Undo still finished');
+        expect(copies(), isEmpty);
+      });
+
+      test('an exit copy that does not finish within the limit: the user is asked', () async {
+        await setUpTree(withRecovery: false);
+        counting.failNew.add(parent);
+        Object? error;
+        try {
+          await nb.delete(parent);
+        } on Object catch (e) {
+          error = e;
+        }
+        expect(error, isA<PagesNotRestoredException>());
+        final asked = <UserQuestion>[];
+        nb.questioner = (q, title) async {
+          asked.add(q);
+          return false; // stay
+        };
+
+        // No time is left for the write: it counts as not made.
+        expect(await nb.prepareToExit(limit: Duration.zero), isFalse);
+
+        expect(asked, [UserQuestion.leaveAndLose]);
+        expect(nb.isPendingDelete((error! as PagesNotRestoredException).deleted), isTrue);
+        // The write that ran out of time still lands; wait so the folder is free.
+        for (var i = 0; i < 100 && copies().isEmpty; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      });
     });
   });
 
