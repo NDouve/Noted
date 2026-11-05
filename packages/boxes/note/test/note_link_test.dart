@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_box_note/noted_box_note.dart';
+import 'package:noted_box_note/src/note_link.dart' show linkNotAddedNotice;
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -229,6 +230,66 @@ void main() {
     await t.tap(find.text('Cancel'));
     await frames(t, 20);
     expect(lines.last, 'insert link skipped: dialog gave no address');
+  });
+
+  NoteData noteText(String text) => NoteData({
+    'document': {
+      'type': 'page',
+      'children': [
+        {
+          'type': 'paragraph',
+          'data': {
+            'delta': [
+              {'insert': text},
+            ],
+          },
+        },
+      ],
+    },
+  });
+
+  testWidgets('the note changing under the dialog: the link goes into the new editor', (t) async {
+    final lines = <String>[];
+    final original = linkLog;
+    linkLog = lines.add;
+    addTearDown(() => linkLog = original);
+    await pump(t, [
+      {'insert': 'go: '},
+    ]);
+    final first = await focusNote(t, dx: 200);
+    await ctrlK(t);
+    // Data changes from outside (a reload, a sync): the note starts over.
+    c.replaceBoxData({'n': noteText('go: and more')});
+    await frames(t, 10);
+    expect(first.isDisposed, isTrue, reason: 'the editor was replaced');
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
+    await t.testTextInput.receiveAction(TextInputAction.done);
+    await frames(t, 20);
+    expect(find.text(linkNotAddedNotice), findsNothing);
+    expect(lines, contains('insert link: using the note\'s current editor'));
+    final stored = (c.page.node('n')! as BoxRecord).data!.text;
+    expect(stored, contains('https://noted.example'));
+    expect(stored, contains('and more'));
+  });
+
+  testWidgets('the text under the saved caret gone: the user is told, nothing is dropped silently', (t) async {
+    final lines = <String>[];
+    final original = linkLog;
+    linkLog = lines.add;
+    addTearDown(() => linkLog = original);
+    await pump(t, [
+      {'insert': 'a long line of text'},
+    ]);
+    await focusNote(t, dx: 380);
+    await ctrlK(t);
+    c.replaceBoxData({'n': noteText('x')});
+    await frames(t, 10);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
+    await t.testTextInput.receiveAction(TextInputAction.done);
+    await frames(t, 20);
+    expect(find.text(linkNotAddedNotice), findsOneWidget);
+    expect(lines.last, 'insert link skipped: selection no longer in the text');
+    expect((c.page.node('n')! as BoxRecord).data!.text, isNot(contains('noted.example')));
   });
 
   testWidgets('a bare caret from a click: Enter in the dialog inserts the address as a link', (t) async {
