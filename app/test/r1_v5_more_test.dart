@@ -378,6 +378,43 @@ void main() {
       });
     }
   });
+  group('a page file that cannot be read as text', () {
+    for (final denied in [true, false]) {
+      test(
+        denied
+            ? 'a file that refuses reads opens a preview from the kept changes'
+            : 'a file holding invalid UTF-8 opens a preview from the kept changes',
+        () async {
+          final nb = w.make();
+          final id = await w.editedPage(nb);
+          w.storeFor(w.pages).failWith = accessDenied();
+          await nb.flush();
+          await nb.createPage();
+          w.storeFor(w.pages).failWith = null;
+          if (denied) {
+            w.storeFor(w.pages).readFailWith = accessDenied();
+          } else {
+            w.pageFile(id).writeAsBytesSync([0xff, 0xfe, 0xfd, 0x80]);
+          }
+          await nb.open(id);
+          expect(nb.trouble.kind, TroubleKind.preview);
+          expect(boxCount(nb.current!.page), 1, reason: 'the kept box is shown');
+          expect(nb.current!.readOnly, isTrue);
+          expect(w.recFiles(), hasLength(1), reason: 'nothing is replayed or deleted');
+        },
+      );
+    }
+
+    test('with nothing kept, the read error is still raised', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      await nb.flush();
+      await nb.createPage();
+      w.storeFor(w.pages).readFailWith = accessDenied();
+      await expectLater(nb.open(id), throwsA(isA<FileSystemException>()));
+    });
+  });
+
   group('a replay that hangs', () {
     test('does not hold recovery: leaving another page still keeps its entry within the bound', () async {
       final nb = w.make(

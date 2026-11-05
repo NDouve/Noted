@@ -6810,14 +6810,27 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final rec = _recovery;
     final folder = _normalizePath(st.directory.path);
     final first = await _afterSaves<({bool done, List<RecoveryEntry> landed, bool ownsBusy})>(() async {
-      final text = await st.readText(id);
+      final (:text, :readError) = await _readForOpen(st, id);
       await syncHook?.call('open-read', st.pathFor(id));
       final entries = rec == null ? const <RecoveryEntry>[] : rec.entriesFor(folder, id);
       final landed = [for (final e in entries) if (rec != null && rec.isLanded(e.gen)) e];
       final pending = entries.length - landed.length;
       final NotedPage page;
       try {
+        if (text == null) throw readError!;
         page = readPage(text);
+      } on _FileUnreadable catch (e) {
+        if (pending == 0) throw e.cause;
+        _installPreview(
+          id,
+          loc,
+          st,
+          null,
+          null,
+          [for (final x in entries) if (!rec!.isLanded(x.gen)) x],
+          unreadable: e.why,
+        );
+        return (done: true, landed: landed, ownsBusy: false);
       } on PageFormatException catch (e) {
         // A file this version can't read, with changes kept for the page: they
         // are shown from the entry (a preview that can't land), never lost.
@@ -6858,13 +6871,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     await _afterSaves(() async {
-      final text = await st.readText(id);
+      final (:text, :readError) = await _readForOpen(st, id);
       final pending = rec == null
           ? const <RecoveryEntry>[]
           : [for (final e in rec.entriesFor(folder, id)) if (!rec.isLanded(e.gen)) e];
       final NotedPage page;
       try {
+        if (text == null) throw readError!;
         page = readPage(text);
+      } on _FileUnreadable catch (e) {
+        if (pending.isEmpty) throw e.cause;
+        _installPreview(id, loc, st, null, null, pending, unreadable: e.why);
+        return;
       } on PageFormatException catch (e) {
         if (pending.isEmpty) rethrow;
         _installPreview(
@@ -6886,6 +6904,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _installPreview(id, loc, st, text, page, pending);
       }
     }, what: 'open of page $id', pages: {id});
+  }
+
+  // Reads the file of [id] for opening. A file that refuses reads or holds
+  // invalid UTF-8 is returned as an error, so that kept edits can still be
+  // shown from recovery (0137) before the error is given up on.
+  Future<({String? text, _FileUnreadable? readError})> _readForOpen(PageStore st, String id) async {
+    try {
+      return (text: await st.readText(id), readError: null);
+    } on FileSystemException catch (e) {
+      return (text: null, readError: _FileUnreadable(e, "the page file can't be read"));
+    } on FormatException catch (e) {
+      return (text: null, readError: _FileUnreadable(e, "the page file isn't a valid page file"));
+    }
   }
 
   // Sets up the page [id] (read as [text]) for editing.
@@ -7326,4 +7357,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     tools.dispose();
     super.dispose();
   }
+}
+
+/// A page file that could not be read as text, and what to say about it.
+class _FileUnreadable implements Exception {
+  _FileUnreadable(this.cause, this.why);
+  final Object cause;
+  final String why;
 }

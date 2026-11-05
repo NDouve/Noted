@@ -24,10 +24,20 @@ class FailStore extends PageStore {
   /// Only the page with this id stalls (null: every page).
   String? stallId;
 
+  /// Thrown by every [readText] while set, as a file held by sync would.
+  Object? readFailWith;
+
   int attempts = 0;
 
   /// Runs at the start of a save (before it stalls or fails).
   void Function()? onAttempt;
+
+  @override
+  Future<String> readText(String pageId) async {
+    final f = readFailWith;
+    if (f != null) throw f;
+    return super.readText(pageId);
+  }
 
   @override
   Future<ReplaceResult> saveIfUnchanged(
