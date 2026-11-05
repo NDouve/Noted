@@ -8,8 +8,6 @@ import 'dart:io';
 import 'package:noted/main.dart' show buildModules;
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_lock.dart';
-import 'package:noted/src/recovery_store.dart';
-import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 /// A page store whose publishes can be made to fail or to hang, as a locked
@@ -58,8 +56,11 @@ class FailStore extends PageStore {
 }
 
 /// "Access is denied." as Windows reports it.
-FileSystemException accessDenied([String path = '']) =>
-    FileSystemException('Cannot write', path, const OSError('Access is denied.', 5));
+FileSystemException accessDenied([String path = '']) => FileSystemException(
+  'Cannot write',
+  path,
+  const OSError('Access is denied.', 5),
+);
 
 /// Folders and notebooks for a test, cleaned up after it.
 class TroubleWorld {
@@ -79,7 +80,8 @@ class TroubleWorld {
     settings = File('${root.path}/app/binders.json');
   }
 
-  FailStore storeFor(Directory d) => stores.putIfAbsent(d.path, () => FailStore(d));
+  FailStore storeFor(Directory d) =>
+      stores.putIfAbsent(d.path, () => FailStore(d));
 
   Notebook make({
     RecoveryLock? lock,
@@ -89,6 +91,7 @@ class TroubleWorld {
     Duration backoffFirst = const Duration(hours: 1),
     Duration backoffMax = const Duration(hours: 1),
     Directory? recovery,
+    Future<String?> Function()? pick,
   }) {
     final nb = Notebook(
       storeFor(pages),
@@ -99,6 +102,7 @@ class TroubleWorld {
       folderCheckInterval: Duration.zero,
       storeFactory: storeFor,
       recoveryLock: lock,
+      pickFolder: pick,
       leaveSaveLimit: leaveLimit,
       busyReadWindow: busyWindow,
       backoffFirst: backoffFirst,
@@ -117,9 +121,15 @@ class TroubleWorld {
     return id;
   }
 
-  File pageFile(String id, [Directory? dir]) => File('${(dir ?? pages).path}/$id.canvas');
+  File pageFile(String id, [Directory? dir]) =>
+      File('${(dir ?? pages).path}/$id.canvas');
 
-  List<File> recFiles() => rec.existsSync() ? [for (final f in rec.listSync()) if (f is File && f.path.endsWith('.entry')) f] : const [];
+  List<File> recFiles() => rec.existsSync()
+      ? [
+          for (final f in rec.listSync())
+            if (f is File && f.path.endsWith('.entry')) f,
+        ]
+      : const [];
 
   /// Quitting without a last save: nothing more is written.
   void crash(Notebook nb) {
@@ -151,10 +161,16 @@ class TroubleWorld {
 }
 
 /// Waits until [done] holds, for up to [within].
-Future<void> until(bool Function() done, {Duration within = const Duration(seconds: 10), String? what}) async {
+Future<void> until(
+  bool Function() done, {
+  Duration within = const Duration(seconds: 10),
+  String? what,
+}) async {
   final end = DateTime.now().add(within);
   while (!done()) {
-    if (DateTime.now().isAfter(end)) throw StateError('timed out waiting for ${what ?? 'a condition'}');
+    if (DateTime.now().isAfter(end)) {
+      throw StateError('timed out waiting for ${what ?? 'a condition'}');
+    }
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
 }

@@ -488,15 +488,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return _landedProblems.values.any((p) => _key(p.path) == k);
   }
 
+  /// Test seam: runs a replay pass over the pages that are not open, as the
+  /// backoff and the folder checks do.
+  @visibleForTesting
+  Future<void> recoverNowForTest() => _recoverPending();
+
   /// Test seam: the recovery store this notebook writes through.
   @visibleForTesting
   RecoveryStore? get recoveryStoreForTest => _recovery;
 
   /// Test seam: writes [page] for recovery as a closed writer does (3.4.2),
-  /// against [base], into the folder of page [page]'s location.
+  /// against [base], for the page folder [folder] (which may be gone).
   @visibleForTesting
-  Future<KeepOutcome> keepClosedForTest(NotedPage page, NotedPage base) =>
-      _keepForRecovery(_loc[page.id] ?? _standalone, _storeOf(_loc[page.id] ?? _standalone), page, base: base);
+  Future<KeepOutcome> keepClosedForTest(NotedPage page, NotedPage base, String folder) =>
+      _keepForRecovery(_standalone, PageStore(Directory(folder)), page, base: base);
 
   /// Test seam: lists the recovery folder so the index holds what a test
   /// wrote to it from outside.
@@ -1728,7 +1733,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // one does. A delete that fails marks the generation landed. Never throws.
   Future<void> _settleRekeys(List<_Rekey> keys, Set<String> atDest) async {
     final rec = _recovery;
-    if (rec == null || keys.isEmpty) return;
+    // A notebook that is gone (the app quit, or died) writes nothing more: both
+    // keys stay, and the next start settles them.
+    if (rec == null || keys.isEmpty || _disposed) return;
     for (final k in keys) {
       try {
         final RecoveryEntry? victim;
@@ -4434,19 +4441,36 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (rec.landedEntries.isNotEmpty) {
       await _deleteGens(rec, [for (final e in rec.landedEntries) e.gen], null);
     }
-    for (final e in listing.entries) {
-      if (_disposed) return;
-      if (rec.isLanded(e.gen)) continue;
-      if (!rec.indexEntries.any((x) => x.gen == e.gen)) continue; // retired since the listing
-      final id = e.pageId;
-      if (_busy.containsKey(id) || _isEditableOpen(id)) continue;
-      final loc = _locOfFolder(e.folder);
-      if (loc == null || _isLocked(loc) || (onlyLoc != null && loc != onlyLoc)) continue;
-      _busy[id] = _busyReplaying;
-      try {
-        await _replayEntry(rec, e, loc);
-      } finally {
-        _busy.remove(id);
+    // Entries under a key other than the one their page is listed in go
+    // first (3.7: the duplicate is dropped while the other key still exists, or
+    // re-keyed), then the rest; a second round takes what re-keying wrote.
+    bool stale(RecoveryEntry e) {
+      final listed = _loc[e.pageId];
+      return listed != null && _locOfFolder(e.folder) != listed;
+    }
+
+    final tried = <String>{};
+    for (var round = 0; round < 2; round++) {
+      final todo = [
+        for (final e in round == 0 ? listing.entries : rec.indexEntries)
+          if (!tried.contains(e.gen)) e,
+      ]..sort((a, b) => (stale(a) ? 0 : 1).compareTo(stale(b) ? 0 : 1));
+      if (todo.isEmpty) break;
+      for (final e in todo) {
+        if (_disposed) return;
+        tried.add(e.gen);
+        if (rec.isLanded(e.gen)) continue;
+        if (!rec.indexEntries.any((x) => x.gen == e.gen)) continue; // retired since the listing
+        final id = e.pageId;
+        if (_busy.containsKey(id) || _isEditableOpen(id)) continue;
+        final loc = _locOfFolder(e.folder);
+        if (loc == null || _isLocked(loc) || (onlyLoc != null && loc != onlyLoc)) continue;
+        _busy[id] = _busyReplaying;
+        try {
+          await _replayEntry(rec, e, loc);
+        } finally {
+          _busy.remove(id);
+        }
       }
     }
     // The kept files go on their own: an entry is retired as soon as its page

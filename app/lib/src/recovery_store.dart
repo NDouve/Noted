@@ -665,6 +665,7 @@ class RecoveryStore {
   Future<RecoveryListing> list() => _serial(_listNow);
 
   Future<RecoveryListing> _listNow() async {
+    await hook?.call('list');
     final entries = <RecoveryEntry>[];
     final problems = <String>[];
     final damaged = <UnreadablePage>[];
@@ -753,7 +754,8 @@ class RecoveryTx {
 /// Checks a recovered page [result] (read back from disk) against the three
 /// pages it came from. Returns null if it is sound, else why not:
 ///
-/// - every box of [theirs] is still there;
+/// - every box of [theirs] is still there, unless [mine] deleted it and
+///   [theirs] had not changed it since [base];
 /// - every box of [mine] is still there, unless [theirs] removed it while
 ///   [mine] hadn't changed it since [base];
 /// - a box that [mine] changed keeps [mine]'s content verbatim, or is
@@ -769,8 +771,14 @@ String? verifyRecoveredPage({
   final out = {for (final n in result.nodes) n.id: n};
   final baseById = {for (final n in base.nodes) n.id: n};
   final theirsById = {for (final n in theirs?.nodes ?? const <CanvasNode>[]) n.id: n};
+  final mineIds = {for (final n in mine.nodes) n.id};
   for (final id in theirsById.keys) {
-    if (!out.containsKey(id)) return 'box $id of the saved file is missing';
+    if (out.containsKey(id)) continue;
+    // A box the edits deleted, which the saved file still had as it was in
+    // the base, is meant to be gone.
+    final b = baseById[id];
+    final deletedHere = b != null && !mineIds.contains(id) && theirsById[id]!.toRaw() == b.toRaw();
+    if (!deletedHere) return 'box $id of the saved file is missing';
   }
   for (final m in mine.nodes) {
     final b = baseById[m.id];

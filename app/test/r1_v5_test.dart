@@ -11,7 +11,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
-import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/trouble_world.dart';
@@ -41,55 +40,77 @@ void main() {
       expect(entries, hasLength(1));
       expect(entries.single.pageText, writePage(nb.current!.page));
       expect(entries.single.baseText, before);
-      expect(w.pageFile(id).readAsStringSync(), before, reason: 'the file was not touched');
+      expect(
+        w.pageFile(id).readAsStringSync(),
+        before,
+        reason: 'the file was not touched',
+      );
     });
 
-    test('Retry lands the save, clears the bar and retires the entry (T)', () async {
-      final nb = w.make();
-      final id = await w.editedPage(nb);
-      final store = w.storeFor(w.pages)..failWith = accessDenied();
-      await nb.flush();
-      expect(nb.trouble.isTrouble, isTrue);
-      store.failWith = null;
-      await nb.retrySave();
-      expect(nb.trouble.isTrouble, isFalse);
-      expect(readPage(w.pageFile(id).readAsStringSync()).nodes, hasLength(1));
-      expect((await nb.pendingRecovery()).entries, isEmpty);
-      expect(w.recFiles(), isEmpty);
-    });
+    test(
+      'Retry lands the save, clears the bar and retires the entry (T)',
+      () async {
+        final nb = w.make();
+        final id = await w.editedPage(nb);
+        final store = w.storeFor(w.pages)..failWith = accessDenied();
+        await nb.flush();
+        expect(nb.trouble.isTrouble, isTrue);
+        store.failWith = null;
+        await nb.retrySave();
+        expect(nb.trouble.isTrouble, isFalse);
+        expect(readPage(w.pageFile(id).readAsStringSync()).nodes, hasLength(1));
+        expect((await nb.pendingRecovery()).entries, isEmpty);
+        expect(w.recFiles(), isEmpty);
+      },
+    );
 
-    test('the backoff tries again by itself and a landed save ends the trouble', () async {
-      final nb = w.make(backoffFirst: const Duration(milliseconds: 30), backoffMax: const Duration(milliseconds: 60));
-      final id = await w.editedPage(nb);
-      final store = w.storeFor(w.pages)..failWith = accessDenied();
-      await nb.flush();
-      final attempts = store.attempts;
-      await until(() => store.attempts >= attempts + 2, what: 'two more attempts');
-      store.failWith = null;
-      await until(() => !nb.trouble.isTrouble, what: 'the page to save');
-      expect(readPage(w.pageFile(id).readAsStringSync()).nodes, hasLength(1));
-      await until(() => w.recFiles().isEmpty, what: 'the entry to go');
-    });
+    test(
+      'the backoff tries again by itself and a landed save ends the trouble',
+      () async {
+        final nb = w.make(
+          backoffFirst: const Duration(milliseconds: 30),
+          backoffMax: const Duration(milliseconds: 60),
+        );
+        final id = await w.editedPage(nb);
+        final store = w.storeFor(w.pages)..failWith = accessDenied();
+        await nb.flush();
+        final attempts = store.attempts;
+        await until(
+          () => store.attempts >= attempts + 2,
+          what: 'two more attempts',
+        );
+        store.failWith = null;
+        await until(() => !nb.trouble.isTrouble, what: 'the page to save');
+        expect(readPage(w.pageFile(id).readAsStringSync()).nodes, hasLength(1));
+        await until(() => w.recFiles().isEmpty, what: 'the entry to go');
+      },
+    );
 
-    test('an error that is not an I/O error also enters state 2 and is kept', () async {
-      final nb = w.make();
-      await w.editedPage(nb);
-      w.storeFor(w.pages).failWith = StateError('bug');
-      await nb.flush();
-      expect(nb.trouble.kind, TroubleKind.failing);
-      expect(nb.trouble.reason, 'an unexpected error');
-      expect(w.recFiles(), hasLength(1));
-    });
+    test(
+      'an error that is not an I/O error also enters state 2 and is kept',
+      () async {
+        final nb = w.make();
+        await w.editedPage(nb);
+        w.storeFor(w.pages).failWith = StateError('bug');
+        await nb.flush();
+        expect(nb.trouble.kind, TroubleKind.failing);
+        expect(nb.trouble.reason, 'an unexpected error');
+        expect(w.recFiles(), hasLength(1));
+      },
+    );
 
-    test('equal snapshots are dropped: a failed retry writes no new generation', () async {
-      final nb = w.make();
-      await w.editedPage(nb);
-      w.storeFor(w.pages).failWith = accessDenied();
-      await nb.flush();
-      final first = w.recFiles().single.readAsStringSync();
-      await nb.retrySave();
-      expect(w.recFiles().single.readAsStringSync(), first);
-    });
+    test(
+      'equal snapshots are dropped: a failed retry writes no new generation',
+      () async {
+        final nb = w.make();
+        await w.editedPage(nb);
+        w.storeFor(w.pages).failWith = accessDenied();
+        await nb.flush();
+        final first = w.recFiles().single.readAsStringSync();
+        await nb.retrySave();
+        expect(w.recFiles().single.readAsStringSync(), first);
+      },
+    );
   });
 
   group('leaving a page', () {
@@ -138,7 +159,9 @@ void main() {
     test('a save that hangs is cut at the limit: the edits are kept, the next page opens, and the old job frees the page when it ends', () async {
       final nb = w.make();
       final id = await w.editedPage(nb);
-      await nb.addStandaloneFolder(w.other.path); // known before anything hangs (it also saves)
+      await nb.addStandaloneFolder(
+        w.other.path,
+      ); // known before anything hangs (it also saves)
       nb.current!.createBoxAt(const Bounds(60, 60, 0, 0));
       final store = w.storeFor(w.pages)
         ..stall = Completer<void>()
@@ -149,13 +172,22 @@ void main() {
       expect(left.elapsed, lessThan(const Duration(seconds: 5)));
       expect(nb.currentId, other);
       expect(w.recFiles(), hasLength(1), reason: 'kept after the limit');
-      expect(nb.isBusy(id), isTrue, reason: 'a job of the page is still on the old chain');
+      expect(
+        nb.isBusy(id),
+        isTrue,
+        reason: 'a job of the page is still on the old chain',
+      );
       // The new chain works: a watcher check completes while the old job hangs.
-      await nb.checkFile(w.pageFile(id).path).timeout(const Duration(seconds: 3));
+      await nb
+          .checkFile(w.pageFile(id).path)
+          .timeout(const Duration(seconds: 3));
       // A page opens and saves before the stalled job ends (review-7 R-1).
       nb.current!.createBoxAt(const Bounds(10, 10, 0, 0));
       await nb.flush().timeout(const Duration(seconds: 3));
-      expect(readPage(w.pageFile(other, w.other).readAsStringSync()).nodes, hasLength(1));
+      expect(
+        readPage(w.pageFile(other, w.other).readAsStringSync()).nodes,
+        hasLength(1),
+      );
       // The old job ends: it lands, retires its own generation and frees the page.
       store.stall!.complete();
       await until(() => !nb.isBusy(id), what: 'the page to be free');
@@ -167,7 +199,8 @@ void main() {
       final nb = w.make();
       final id = await w.editedPage(nb);
       await w.rec.parent.create(recursive: true);
-      File(w.rec.path).writeAsStringSync('in the way'); // a file where the folder should be
+      File(w.rec.path)
+          .writeAsStringSync('in the way'); // a file where the folder should be
       w.storeFor(w.pages).failWith = accessDenied();
       await nb.flush();
       expect(nb.trouble.kind, TroubleKind.recoveryFailing);
@@ -212,19 +245,22 @@ void main() {
   });
 
   group('Discard changes', () {
-    test('removes the kept generations and reopens the page as it is on disk', () async {
-      final nb = w.make();
-      final id = await w.editedPage(nb);
-      w.storeFor(w.pages).failWith = accessDenied();
-      await nb.flush();
-      expect(w.recFiles(), hasLength(1));
-      await nb.discardChanges();
-      expect(nb.currentId, id);
-      expect(nb.trouble.isTrouble, isFalse);
-      expect(boxCount(nb.current!.page), 0);
-      expect(w.recFiles(), isEmpty);
-      expect(nb.isBusy(id), isFalse);
-    });
+    test(
+      'removes the kept generations and reopens the page as it is on disk',
+      () async {
+        final nb = w.make();
+        final id = await w.editedPage(nb);
+        w.storeFor(w.pages).failWith = accessDenied();
+        await nb.flush();
+        expect(w.recFiles(), hasLength(1));
+        await nb.discardChanges();
+        expect(nb.currentId, id);
+        expect(nb.trouble.isTrouble, isFalse);
+        expect(boxCount(nb.current!.page), 0);
+        expect(w.recFiles(), isEmpty);
+        expect(nb.isBusy(id), isFalse);
+      },
+    );
 
     test('a delete that fails leaves the page in state 2 with the reason, and the page is not busy', () async {
       final nb = w.make();
@@ -236,76 +272,105 @@ void main() {
       };
       await expectLater(
         nb.discardChanges(),
-        throwsA(isA<NotebookException>().having((e) => e.message, 'message', startsWith("Couldn't remove the changes kept"))),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            startsWith("Couldn't remove the changes kept"),
+          ),
+        ),
       );
       expect(nb.trouble.kind, TroubleKind.failing);
       expect(nb.currentId, id);
-      expect(nb.isBusy(id), isFalse, reason: 'a failed Discard leaves busy (build note 5)');
+      expect(
+        nb.isBusy(id),
+        isFalse,
+        reason: 'a failed Discard leaves busy (build note 5)',
+      );
       expect(w.recFiles(), hasLength(1));
     });
   });
 
   group('entries that landed but could not be deleted', () {
-    test('open and replay delete them and merge nothing; quit retries the delete', () async {
-      final nb = w.make();
-      final id = await w.editedPage(nb);
-      final box = nb.current!.page.nodes.single.id;
-      final store = w.storeFor(w.pages)..failWith = accessDenied();
-      await nb.flush();
-      store.failWith = null;
-      // The page lands, but the entry can't be deleted.
-      nb.recoveryStoreForTest!.hook = (point) async {
-        if (point == 'delete') throw accessDenied();
-      };
-      await nb.retrySave();
-      expect(readPage(w.pageFile(id).readAsStringSync()).nodes, hasLength(1));
-      expect(w.recFiles(), hasLength(1));
-      expect(nb.recoveryStoreForTest!.landedEntries, hasLength(1));
-      // The user deletes the box and saves.
-      nb.current!.delete(box);
-      await nb.flush();
-      expect(readPage(w.pageFile(id).readAsStringSync()).nodes, isEmpty);
-      // Quitting retries the delete; it fails again, and the notice will say so.
-      expect(await nb.prepareToExit(), isTrue);
-      expect(nb.landedEntryLeft, isTrue);
-      // Leaving and coming back: the entry is deleted, not merged.
-      nb.recoveryStoreForTest!.hook = null;
-      final other = await nb.createPage();
-      await nb.open(id);
-      expect(boxCount(nb.current!.page), 0, reason: 'the deleted box did not come back');
-      expect(w.recFiles(), isEmpty);
-      expect(nb.currentId, id);
-      expect(other, isNot(id));
-    });
+    test(
+      'open and replay delete them and merge nothing; quit retries the delete',
+      () async {
+        final nb = w.make();
+        final id = await w.editedPage(nb);
+        final box = nb.current!.page.nodes.single.id;
+        final store = w.storeFor(w.pages)..failWith = accessDenied();
+        await nb.flush();
+        store.failWith = null;
+        // The page lands, but the entry can't be deleted.
+        nb.recoveryStoreForTest!.hook = (point) async {
+          if (point == 'delete') throw accessDenied();
+        };
+        await nb.retrySave();
+        expect(readPage(w.pageFile(id).readAsStringSync()).nodes, hasLength(1));
+        expect(w.recFiles(), hasLength(1));
+        expect(nb.recoveryStoreForTest!.landedEntries, hasLength(1));
+        // The user deletes the box and saves.
+        nb.current!.delete(box);
+        await nb.flush();
+        expect(readPage(w.pageFile(id).readAsStringSync()).nodes, isEmpty);
+        // Quitting retries the delete; it fails again, and the notice will say so.
+        expect(await nb.prepareToExit(), isTrue);
+        expect(nb.landedEntryLeft, isTrue);
+        // Leaving and coming back: the entry is deleted, not merged.
+        nb.recoveryStoreForTest!.hook = null;
+        final other = await nb.createPage();
+        await nb.open(id);
+        expect(
+          boxCount(nb.current!.page),
+          0,
+          reason: 'the deleted box did not come back',
+        );
+        expect(w.recFiles(), isEmpty);
+        expect(nb.currentId, id);
+        expect(other, isNot(id));
+      },
+    );
   });
 
   group('a preview that cannot land', () {
-    test('Discard kept changes asks first, then deletes only that generation', () async {
-      final nb = w.make(backoffFirst: const Duration(milliseconds: 20), backoffMax: const Duration(milliseconds: 20));
-      final id = await w.editedPage(nb);
-      w.storeFor(w.pages).failWith = accessDenied();
-      await nb.flush();
-      await nb.createPage();
-      await nb.open(id);
-      expect(nb.trouble.kind, TroubleKind.preview);
-      // The write keeps failing past the longest wait: the preview offers to discard.
-      await until(() => nb.trouble.canDiscardKept, what: 'Discard kept changes');
-      var answer = false;
-      final asked = <UserQuestion>[];
-      nb.questioner = (q, t) async {
-        asked.add(q);
-        return answer;
-      };
-      await nb.discardKept();
-      expect(asked, [UserQuestion.discardKept]);
-      expect(w.recFiles(), hasLength(1), reason: 'Cancel changes nothing');
-      answer = true;
-      w.storeFor(w.pages).failWith = null;
-      await nb.discardKept();
-      expect(w.recFiles(), isEmpty);
-      await until(() => nb.trouble.kind == TroubleKind.saved, what: 'the page to open editable');
-      expect(boxCount(nb.current!.page), 0);
-    });
+    test(
+      'Discard kept changes asks first, then deletes only that generation',
+      () async {
+        final nb = w.make(
+          backoffFirst: const Duration(milliseconds: 20),
+          backoffMax: const Duration(milliseconds: 20),
+        );
+        final id = await w.editedPage(nb);
+        w.storeFor(w.pages).failWith = accessDenied();
+        await nb.flush();
+        await nb.createPage();
+        await nb.open(id);
+        expect(nb.trouble.kind, TroubleKind.preview);
+        // The write keeps failing past the longest wait: the preview offers to discard.
+        await until(
+          () => nb.trouble.canDiscardKept,
+          what: 'Discard kept changes',
+        );
+        var answer = false;
+        final asked = <UserQuestion>[];
+        nb.questioner = (q, t) async {
+          asked.add(q);
+          return answer;
+        };
+        await nb.discardKept();
+        expect(asked, [UserQuestion.discardKept]);
+        expect(w.recFiles(), hasLength(1), reason: 'Cancel changes nothing');
+        answer = true;
+        w.storeFor(w.pages).failWith = null;
+        await nb.discardKept();
+        expect(w.recFiles(), isEmpty);
+        await until(
+          () => nb.trouble.kind == TroubleKind.saved,
+          what: 'the page to open editable',
+        );
+        expect(boxCount(nb.current!.page), 0);
+      },
+    );
 
     test('a box deleted after the preview landed stays deleted, live and after a restart', () async {
       final nb = w.make();
@@ -350,7 +415,11 @@ void main() {
       w.storeFor(w.pages).failWith = accessDenied();
       await nb.flush();
       expect(nb.trouble.kind, TroubleKind.recoveryFailing);
-      expect(w.recFiles().single.readAsStringSync(), planted, reason: 'byte-identical');
+      expect(
+        w.recFiles().single.readAsStringSync(),
+        planted,
+        reason: 'byte-identical',
+      );
     });
 
     test('a file added to the slot from outside is not replaced even if the index does not list it', () async {
@@ -385,7 +454,8 @@ void main() {
       final base = readPage(w.pageFile(id).readAsStringSync());
       w.storeFor(w.pages).failWith = accessDenied();
       await nb.flush();
-      final other = await nb.createPage(); // the first page is closed with its entry
+      final other = await nb
+          .createPage(); // the first page is closed with its entry
       expect(other, isNot(id));
       final entry = w.recFiles().single.readAsStringSync();
       // Another writer's change to the same page, with the same base.
@@ -398,50 +468,66 @@ void main() {
         snapshotText: 's',
         rev: 'r',
       );
-      final out = await nb.keepClosedForTest(base.insertNode(b), base);
+      final out = await nb.keepClosedForTest(
+        base.insertNode(b),
+        base,
+        w.pages.path,
+      );
       expect(out.kind, KeepKind.kept);
       final files = w.recFiles();
       expect(files, hasLength(1));
       expect(files.single.readAsStringSync(), isNot(entry));
       final listing = await nb.pendingRecovery();
-      expect(listing.entries.single.page.nodes, hasLength(2), reason: 'the entry\'s box and the closed writer\'s');
+      expect(
+        listing.entries.single.page.nodes,
+        hasLength(2),
+        reason: 'the entry\'s box and the closed writer\'s',
+      );
     });
   });
 
-  group('boxes this build does not know come back unchanged (build note 8)', () {
-    test('an unsupported box survives recovery and the preview byte for byte', () async {
-      const data = r'{"b":1,  "z":"caf\u00e9", "a":[1, 2 ,3],"n":null}';
-      final box = BoxRecord.create(
-        id: '00000000000000f1',
-        typeId: 'x.unregistered',
-        dataVersion: 3,
-        bounds: const Bounds(900, 900, 100, 50),
-        data: const RawJson.trusted(data),
-        snapshotText: 'snapshot',
-        rev: 'opaquerev',
+  group(
+    'boxes this build does not know come back unchanged (build note 8)',
+    () {
+      test(
+        'an unsupported box survives recovery and the preview byte for byte',
+        () async {
+          const data = r'{"b":1,  "z":"caf\u00e9", "a":[1, 2 ,3],"n":null}';
+          final box = BoxRecord.create(
+            id: '00000000000000f1',
+            typeId: 'x.unregistered',
+            dataVersion: 3,
+            bounds: const Bounds(900, 900, 100, 50),
+            data: const RawJson.trusted(data),
+            snapshotText: 'snapshot',
+            rev: 'opaquerev',
+          );
+          final nb = w.make();
+          final id = await w.editedPage(nb);
+          nb.current!.insertBox(box);
+          w.storeFor(w.pages).failWith = accessDenied();
+          await nb.flush();
+          final kept = (await nb.pendingRecovery()).entries.single;
+          expect(kept.page.node(box.id)!.toRaw().text, box.toRaw().text);
+          // Leaving and coming back shows it unchanged in the preview.
+          await nb.createPage();
+          await nb.open(id);
+          expect(nb.trouble.kind, TroubleKind.preview);
+          final shown = nb.current!.page.node(box.id)! as BoxRecord;
+          expect(shown.data!.text, data);
+          expect(shown.toRaw().text, box.toRaw().text);
+          // And lands unchanged.
+          w.storeFor(w.pages).failWith = null;
+          await nb.retryPreview();
+          final onDisk =
+              readPage(w.pageFile(id).readAsStringSync()).node(box.id)!
+                  as BoxRecord;
+          expect(onDisk.data!.text, data);
+          expect(onDisk.toRaw().text, box.toRaw().text);
+        },
       );
-      final nb = w.make();
-      final id = await w.editedPage(nb);
-      nb.current!.insertBox(box);
-      w.storeFor(w.pages).failWith = accessDenied();
-      await nb.flush();
-      final kept = (await nb.pendingRecovery()).entries.single;
-      expect(kept.page.node(box.id)!.toRaw().text, box.toRaw().text);
-      // Leaving and coming back shows it unchanged in the preview.
-      await nb.createPage();
-      await nb.open(id);
-      expect(nb.trouble.kind, TroubleKind.preview);
-      final shown = nb.current!.page.node(box.id)! as BoxRecord;
-      expect(shown.data!.text, data);
-      expect(shown.toRaw().text, box.toRaw().text);
-      // And lands unchanged.
-      w.storeFor(w.pages).failWith = null;
-      await nb.retryPreview();
-      final onDisk = readPage(w.pageFile(id).readAsStringSync()).node(box.id)! as BoxRecord;
-      expect(onDisk.data!.text, data);
-      expect(onDisk.toRaw().text, box.toRaw().text);
-    });
-  });
+    },
+  );
 
   group('quitting', () {
     test('a save stuck on the drive does not hold up quitting; the edits are in recovery', () async {

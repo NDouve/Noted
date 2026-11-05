@@ -12,7 +12,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_lock.dart';
 import 'package:noted/src/save_trouble.dart';
-import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/lock_holder_process.dart';
@@ -34,10 +33,16 @@ void main() {
       final holder = await LockHolder.hold(file);
       addTearDown(holder.release);
       final lock = RecoveryLock(file);
-      expect(lock.acquireSync(tries: 3, gap: const Duration(milliseconds: 20)), RecoveryLockResult.heldByOther);
+      expect(
+        lock.acquireSync(tries: 3, gap: const Duration(milliseconds: 20)),
+        RecoveryLockResult.heldByOther,
+      );
       expect(lock.held, isFalse);
       await holder.release();
-      expect(lock.acquireSync(tries: 3, gap: const Duration(milliseconds: 20)), RecoveryLockResult.acquired);
+      expect(
+        lock.acquireSync(tries: 3, gap: const Duration(milliseconds: 20)),
+        RecoveryLockResult.acquired,
+      );
       expect(lock.held, isTrue);
       expect(lock.check(), isTrue);
       expect(file.lengthSync(), 0, reason: 'zero bytes, never deleted');
@@ -47,14 +52,24 @@ void main() {
       // The lock file's parent is a file: it can never be opened.
       File('${w.root.path}/blocker').writeAsStringSync('x');
       final lock = RecoveryLock(File('${w.root.path}/blocker/recovery.lock'));
-      expect(lock.acquireSync(tries: 2, gap: const Duration(milliseconds: 5)), RecoveryLockResult.failed);
+      expect(
+        lock.acquireSync(tries: 2, gap: const Duration(milliseconds: 5)),
+        RecoveryLockResult.failed,
+      );
       final nb = w.make(lock: lock);
       final id = await w.editedPage(nb);
-      expect(nb.current!.readOnly, isFalse, reason: 'opening a page never needs the lock');
+      expect(
+        nb.current!.readOnly,
+        isFalse,
+        reason: 'opening a page never needs the lock',
+      );
       w.storeFor(w.pages).failWith = accessDenied();
       await nb.flush();
       expect(nb.trouble.kind, TroubleKind.recoveryFailing);
-      expect(nb.trouble.reason, contains("Noted can't use its recovery folder"));
+      expect(
+        nb.trouble.reason,
+        contains("Noted can't use its recovery folder"),
+      );
       expect(w.recFiles(), isEmpty, reason: 'nothing was written');
       expect(nb.currentId, id);
     });
@@ -88,23 +103,32 @@ void main() {
       await nb.createPage(parentId: parent);
       await expectLater(
         nb.delete(parent),
-        throwsA(isA<NotebookException>().having((e) => e.message, 'message', "Noted can't keep a backup right now.")),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            "Noted can't keep a backup right now.",
+          ),
+        ),
       );
       expect(w.pageFile(parent).existsSync(), isTrue);
     });
   });
 
   group('a locked page file is busy, not unreadable', () {
-    final skip = Platform.isWindows ? null : 'byte-range locks only block reads on Windows';
+    final skip = Platform.isWindows
+        ? null
+        : 'byte-range locks only block reads on Windows';
 
     test('a lock released within the window never makes the page read-only, and the save lands', () async {
       final nb = w.make(busyWindow: const Duration(seconds: 4));
       final id = await w.editedPage(nb);
       final reasons = <String?>[];
       nb.addListener(() => reasons.add(nb.readOnlyReason));
-      final raf = w.pageFile(id).openSync(mode: FileMode.append)..lockSync(FileLock.exclusive);
+      final raf = w.pageFile(id).openSync(mode: FileMode.append)
+        ..lockSync(FileLock.exclusive);
       try {
-        final saving = nb.flush();
+        unawaited(nb.flush());
         await Future<void>.delayed(const Duration(milliseconds: 600));
         expect(nb.readOnlyReason, isNull, reason: 'still busy, quietly');
       } finally {
@@ -121,7 +145,8 @@ void main() {
     test('a file still locked after the window blocks the page, and it clears when the lock goes', () async {
       final nb = w.make(busyWindow: const Duration(milliseconds: 300));
       final id = await w.editedPage(nb);
-      final raf = w.pageFile(id).openSync(mode: FileMode.append)..lockSync(FileLock.exclusive);
+      final raf = w.pageFile(id).openSync(mode: FileMode.append)
+        ..lockSync(FileLock.exclusive);
       try {
         await nb.flush();
         expect(nb.readOnlyReason, contains("couldn't be read"));
@@ -144,7 +169,10 @@ void main() {
         ..stall = Completer<void>()
         ..stallId = id;
       unawaited(nb.flush()); // the save of a2 stalls
-      await until(() => store.attempts > 0 && w.storeFor(w.pages).stall != null, what: 'the save to start');
+      await until(
+        () => store.attempts > 0 && w.storeFor(w.pages).stall != null,
+        what: 'the save to start',
+      );
       await Future<void>.delayed(const Duration(milliseconds: 50));
       nb.current!.createBoxAt(const Bounds(120, 40, 0, 0)); // a3
       nb.current!.createBoxAt(const Bounds(200, 40, 0, 0)); // a4
@@ -152,7 +180,11 @@ void main() {
       expect(nb.currentId, other);
       expect(w.recFiles(), hasLength(1));
       final kept = (await nb.pendingRecovery()).entries.single;
-      expect(kept.page.nodes, hasLength(4), reason: 'the leave entry holds the newest snapshot');
+      expect(
+        kept.page.nodes,
+        hasLength(4),
+        reason: 'the leave entry holds the newest snapshot',
+      );
       // The stalled save and the leave's own save (queued behind it) land in
       // order; the retire of the older one keeps the newer generation until
       // the newer one has landed too. Nothing is lost.
@@ -187,7 +219,10 @@ void main() {
 
   group('a replay that hangs', () {
     test('does not hold recovery: leaving another page still keeps its entry within the bound', () async {
-      final nb = w.make(backoffFirst: const Duration(milliseconds: 20), backoffMax: const Duration(milliseconds: 20));
+      final nb = w.make(
+        backoffFirst: const Duration(milliseconds: 20),
+        backoffMax: const Duration(milliseconds: 20),
+      );
       final a = await w.editedPage(nb);
       await nb.addStandaloneFolder(w.other.path);
       nb.current!.createBoxAt(const Bounds(70, 70, 0, 0));

@@ -11,22 +11,30 @@ import 'package:noted/src/save_trouble.dart';
 import 'package:noted/src/storage_check.dart';
 import 'package:noted_core/noted_core.dart';
 
-FileSystemException _err(int code) => FileSystemException('x', 'p', OSError('msg', code));
+FileSystemException _err(int code) =>
+    FileSystemException('x', 'p', OSError('msg', code));
 
 void main() {
   group('busy file errors', () {
-    test('Windows sharing and lock violations are busy; access denied is not', () {
-      expect(isBusyError(_err(32), os: 'windows'), isTrue);
-      expect(isBusyError(_err(33), os: 'windows'), isTrue);
-      expect(isBusyError(_err(5), os: 'windows'), isFalse);
-      expect(isBusyError(_err(2), os: 'windows'), isFalse);
-    });
+    test(
+      'Windows sharing and lock violations are busy; access denied is not',
+      () {
+        expect(isBusyError(_err(32), os: 'windows'), isTrue);
+        expect(isBusyError(_err(33), os: 'windows'), isTrue);
+        expect(isBusyError(_err(5), os: 'windows'), isFalse);
+        expect(isBusyError(_err(2), os: 'windows'), isFalse);
+      },
+    );
 
     test('POSIX EAGAIN and EBUSY are busy', () {
       expect(isBusyError(_err(11), os: 'linux'), isTrue);
       expect(isBusyError(_err(16), os: 'linux'), isTrue);
       expect(isBusyError(_err(35), os: 'macos'), isTrue);
-      expect(isBusyError(_err(35), os: 'linux'), isFalse, reason: '35 is EDEADLK on Linux');
+      expect(
+        isBusyError(_err(35), os: 'linux'),
+        isFalse,
+        reason: '35 is EDEADLK on Linux',
+      );
       expect(isBusyError(_err(13), os: 'linux'), isFalse);
       expect(isBusyError(StateError('x')), isFalse);
     });
@@ -77,10 +85,12 @@ void main() {
     test('runs jobs in order', () async {
       final c = SaveChain();
       final order = <int>[];
-      unawaited(c.run(() async {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        order.add(1);
-      }));
+      unawaited(
+        c.run(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          order.add(1);
+        }),
+      );
       unawaited(c.run(() async => order.add(2)));
       await c.idle;
       await c.run(() async {});
@@ -90,7 +100,10 @@ void main() {
 
     test('a failing job fails its caller and not the chain', () async {
       final c = SaveChain();
-      await expectLater(c.run<void>(() async => throw StateError('x')), throwsStateError);
+      await expectLater(
+        c.run<void>(() async => throw StateError('x')),
+        throwsStateError,
+      );
       expect(await c.run(() async => 7), 7);
     });
 
@@ -102,13 +115,19 @@ void main() {
       final hung = c.run(() => gate.future, pages: {'a'});
       final behind = c.run(() async {}, pages: {'c'});
       var idleDone = false;
-      unawaited(c.idle.then((_) => idleDone = true)); // captured before the detach
+      unawaited(
+        c.idle.then((_) => idleDone = true),
+      ); // captured before the detach
       await Future<void>.delayed(const Duration(milliseconds: 10));
       expect(idleDone, isFalse);
       final pages = c.detach();
       expect(pages, {'a': 1, 'c': 1});
       await Future<void>.delayed(const Duration(milliseconds: 10));
-      expect(idleDone, isTrue, reason: 'a waiter that captured idle before the detach is released');
+      expect(
+        idleDone,
+        isTrue,
+        reason: 'a waiter that captured idle before the detach is released',
+      );
       var ran = false;
       await c.run(() async => ran = true).timeout(const Duration(seconds: 2));
       expect(ran, isTrue, reason: 'a later job does not wait for the hung one');
@@ -121,15 +140,43 @@ void main() {
 
   group('storage causes by error code', () {
     test('per platform', () {
-      expect(classifyErrorCode(_err(112), os: 'windows'), StorageCauseKind.diskFull);
-      expect(classifyErrorCode(_err(5), os: 'windows'), StorageCauseKind.notWritable);
-      expect(classifyErrorCode(_err(32), os: 'windows'), StorageCauseKind.notWritable);
-      expect(classifyErrorCode(_err(21), os: 'windows'), StorageCauseKind.driveFailing);
-      expect(classifyErrorCode(_err(28), os: 'linux'), StorageCauseKind.diskFull);
-      expect(classifyErrorCode(_err(13), os: 'linux'), StorageCauseKind.notWritable);
-      expect(classifyErrorCode(_err(1), os: 'linux'), StorageCauseKind.notWritable);
-      expect(classifyErrorCode(_err(30), os: 'macos'), StorageCauseKind.notWritable);
-      expect(classifyErrorCode(_err(5), os: 'linux'), StorageCauseKind.driveFailing, reason: 'EIO');
+      expect(
+        classifyErrorCode(_err(112), os: 'windows'),
+        StorageCauseKind.diskFull,
+      );
+      expect(
+        classifyErrorCode(_err(5), os: 'windows'),
+        StorageCauseKind.notWritable,
+      );
+      expect(
+        classifyErrorCode(_err(32), os: 'windows'),
+        StorageCauseKind.notWritable,
+      );
+      expect(
+        classifyErrorCode(_err(21), os: 'windows'),
+        StorageCauseKind.driveFailing,
+      );
+      expect(
+        classifyErrorCode(_err(28), os: 'linux'),
+        StorageCauseKind.diskFull,
+      );
+      expect(
+        classifyErrorCode(_err(13), os: 'linux'),
+        StorageCauseKind.notWritable,
+      );
+      expect(
+        classifyErrorCode(_err(1), os: 'linux'),
+        StorageCauseKind.notWritable,
+      );
+      expect(
+        classifyErrorCode(_err(30), os: 'macos'),
+        StorageCauseKind.notWritable,
+      );
+      expect(
+        classifyErrorCode(_err(5), os: 'linux'),
+        StorageCauseKind.driveFailing,
+        reason: 'EIO',
+      );
       expect(classifyErrorCode(_err(99), os: 'linux'), isNull);
     });
 
@@ -148,7 +195,11 @@ void main() {
         recoveryDirectory: Directory('${dir.path}/blocked'),
         os: 'linux',
       );
-      expect(w.kind, StorageCauseKind.notWritable, reason: 'a file where the folder should be');
+      expect(
+        w.kind,
+        StorageCauseKind.notWritable,
+        reason: 'a file where the folder should be',
+      );
       final ok = await checkStorage(
         FileSystemException('x', 'p', const OSError('Something odd', 99)),
         recoveryDirectory: Directory('${dir.path}/fine'),
@@ -160,10 +211,67 @@ void main() {
     });
   });
 
+  group('verifyRecoveredPage', () {
+    BoxRecord box(String id, String data) => BoxRecord.create(
+      id: id,
+      typeId: 'x.unregistered',
+      dataVersion: 1,
+      bounds: const Bounds(0, 0, 10, 10),
+      data: RawJson.trusted(data),
+      snapshotText: 's',
+      rev: 'r',
+    );
+    final empty = NotedPage.create(
+      PageMeta.create(id: 'p1', title: 'T', order: 0),
+    );
+
+    test('a box the edits deleted, which the file still had unchanged, may be gone', () {
+      final a = box('a', '{"n":1}');
+      final base = empty.insertNode(a);
+      expect(
+        verifyRecoveredPage(
+          base: base,
+          mine: empty,
+          theirs: base,
+          result: empty,
+        ),
+        isNull,
+      );
+    });
+
+    test('a box the edits deleted but the file changed since must stay', () {
+      final base = empty.insertNode(box('a', '{"n":1}'));
+      final theirs = empty.insertNode(box('a', '{"n":2}'));
+      expect(
+        verifyRecoveredPage(
+          base: base,
+          mine: empty,
+          theirs: theirs,
+          result: empty,
+        ),
+        contains('box a'),
+      );
+    });
+
+    test('a box of the file that the edits never had is still required', () {
+      final theirs = empty.insertNode(box('b', '{"n":1}'));
+      expect(
+        verifyRecoveredPage(
+          base: empty,
+          mine: empty,
+          theirs: theirs,
+          result: empty,
+        ),
+        contains('box b'),
+      );
+    });
+  });
+
   group('the recovery store', () {
     late Directory dir;
     late RecoveryStore store;
-    NotedPage page(String title) => NotedPage.create(PageMeta.create(id: 'p1', title: title, order: 0));
+    NotedPage page(String title) =>
+        NotedPage.create(PageMeta.create(id: 'p1', title: title, order: 0));
 
     setUp(() {
       dir = Directory.systemTemp.createTempSync('noted_rs');
@@ -172,7 +280,12 @@ void main() {
     tearDown(() => dir.deleteSync(recursive: true));
 
     test('write refuses to replace a slot whose content is not a generation the writer may replace', () async {
-      final first = await store.write(folder: '${dir.path}/pages', page: page('one'), baseText: null, time: DateTime.now());
+      final first = await store.write(
+        folder: '${dir.path}/pages',
+        page: page('one'),
+        baseText: null,
+        time: DateTime.now(),
+      );
       await expectLater(
         store.write(
           folder: '${dir.path}/pages',
@@ -197,15 +310,27 @@ void main() {
 
     test('the index follows writes, deletes and listings', () async {
       expect(store.indexed, isFalse);
-      final e = await store.write(folder: '${dir.path}/pages', page: page('one'), baseText: null, time: DateTime.now());
-      expect(store.entriesFor('${dir.path}/pages', 'p1').map((x) => x.gen), [e.gen]);
+      final e = await store.write(
+        folder: '${dir.path}/pages',
+        page: page('one'),
+        baseText: null,
+        time: DateTime.now(),
+      );
+      expect(store.entriesFor('${dir.path}/pages', 'p1').map((x) => x.gen), [
+        e.gen,
+      ]);
       expect(store.entriesOfPage('p1'), hasLength(1));
       store.markLanded(e.gen);
       expect(store.landedEntries, hasLength(1));
       await store.delete(e);
       expect(store.indexEntries, isEmpty);
       expect(store.isLanded(e.gen), isFalse);
-      await store.write(folder: '${dir.path}/pages', page: page('two'), baseText: null, time: DateTime.now());
+      await store.write(
+        folder: '${dir.path}/pages',
+        page: page('two'),
+        baseText: null,
+        time: DateTime.now(),
+      );
       final listing = await store.list();
       expect(listing.entries, hasLength(1));
       expect(store.indexed, isTrue);
@@ -214,8 +339,16 @@ void main() {
 
     test('a generation is named by its time, base and page, and survives a listing', () async {
       final t = DateTime.now();
-      final e = await store.write(folder: '${dir.path}/pages', page: page('one'), baseText: null, time: t);
-      expect(e.gen, RecoveryStore.generationOf(t, null, writePage(page('one'))));
+      final e = await store.write(
+        folder: '${dir.path}/pages',
+        page: page('one'),
+        baseText: null,
+        time: t,
+      );
+      expect(
+        e.gen,
+        RecoveryStore.generationOf(t, null, writePage(page('one'))),
+      );
       final listed = (await store.list()).entries.single;
       expect(listed.gen, e.gen);
     });

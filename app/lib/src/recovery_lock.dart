@@ -49,7 +49,9 @@ class RecoveryLock {
     for (var i = 0; i < tries; i++) {
       final r = _tryOnce();
       if (r != _Try.busy) {
-        return r == _Try.ok ? RecoveryLockResult.acquired : RecoveryLockResult.failed;
+        return r == _Try.ok
+            ? RecoveryLockResult.acquired
+            : RecoveryLockResult.failed;
       }
       if (i < tries - 1) sleep(gap);
     }

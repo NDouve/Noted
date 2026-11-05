@@ -5,7 +5,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show NotedColors, NotedMetrics, NotedTypography;
+import 'package:noted_canvas/noted_canvas.dart'
+    show NotedColors, NotedMetrics, NotedTypography;
 
 import 'notebook.dart';
 import 'save_trouble.dart';
@@ -37,7 +38,9 @@ class _SaveTroubleBarState extends State<SaveTroubleBar> {
       final done = await action();
       if (done != null && done.isNotEmpty) {
         messenger?.hideCurrentSnackBar();
-        messenger?.showSnackBar(SnackBar(content: Text(done), showCloseIcon: true));
+        messenger?.showSnackBar(
+          SnackBar(content: Text(done), showCloseIcon: true),
+        );
       }
     } on NotebookException catch (e) {
       messenger?.hideCurrentSnackBar();
@@ -52,11 +55,8 @@ class _SaveTroubleBarState extends State<SaveTroubleBar> {
     }
   }
 
-  Widget _button(String key, String label, VoidCallback onPressed) => TextButton(
-    key: ValueKey(key),
-    onPressed: onPressed,
-    child: Text(label),
-  );
+  Widget _button(String key, String label, VoidCallback onPressed) =>
+      TextButton(key: ValueKey(key), onPressed: onPressed, child: Text(label));
 
   @override
   Widget build(BuildContext context) {
@@ -65,7 +65,8 @@ class _SaveTroubleBarState extends State<SaveTroubleBar> {
     final m = NotedMetrics.of(context);
     final colors = NotedColors.of(context);
     final scheme = Theme.of(context).colorScheme;
-    final small = NotedTypography.of(context).small.copyWith(color: scheme.onSurface);
+    final small = NotedTypography.of(context).small
+        .copyWith(color: scheme.onSurface);
     final bold = small.copyWith(fontWeight: FontWeight.w600);
     final loud = t.kind == TroubleKind.recoveryFailing;
     final text = switch (t.kind) {
@@ -77,42 +78,77 @@ class _SaveTroubleBarState extends State<SaveTroubleBar> {
       TroubleKind.saved => '',
     };
     final actions = <Widget>[
-      _button('save-trouble-retry', 'Retry', () => unawaited(_run(() async {
-        await _nb.retrySave();
-        return null;
-      }))),
+      _button(
+        'save-trouble-retry',
+        'Retry',
+        () => unawaited(
+          _run(() async {
+            await _nb.retrySave();
+            return null;
+          }),
+        ),
+      ),
       if (t.canSaveCopy)
-        _button('save-trouble-copy', 'Save a copy elsewhere…', () => unawaited(_run(_nb.saveCopyElsewhere))),
+        _button(
+          'save-trouble-copy',
+          'Save a copy elsewhere…',
+          () => unawaited(_run(_nb.saveCopyElsewhere)),
+        ),
       if (t.kind != TroubleKind.failing)
-        _button('save-trouble-text', 'Copy page text', () => unawaited(_run(() async {
-          await _nb.copyPageText();
-          return 'Copied the text of the page.';
-        }))),
+        _button(
+          'save-trouble-text',
+          'Copy page text',
+          () => unawaited(
+            _run(() async {
+              await _nb.copyPageText();
+              return 'Copied the text of the page.';
+            }),
+          ),
+        ),
       if (t.kind == TroubleKind.failing)
-        _button('save-trouble-discard', 'Discard changes', () => unawaited(_run(() async {
-          await _nb.discardChanges();
-          return null;
-        }))),
+        _button(
+          'save-trouble-discard',
+          'Discard changes',
+          () => unawaited(
+            _run(() async {
+              await _nb.discardChanges();
+              return null;
+            }),
+          ),
+        ),
       if (t.kind == TroubleKind.preview && t.canDiscardKept)
-        _button('save-trouble-discard-kept', 'Discard kept changes', () => unawaited(_run(() async {
-          await _nb.discardKept();
-          return null;
-        }))),
+        _button(
+          'save-trouble-discard-kept',
+          'Discard kept changes',
+          () => unawaited(
+            _run(() async {
+              await _nb.discardKept();
+              return null;
+            }),
+          ),
+        ),
     ];
     return Semantics(
       container: true,
       liveRegion: true,
       child: DecoratedBox(
         key: const ValueKey('save-trouble-bar'),
-        decoration: BoxDecoration(color: loud ? scheme.errorContainer : colors.conflictSoft),
+        decoration: BoxDecoration(
+          color: loud ? scheme.errorContainer : colors.conflictSoft,
+        ),
         child: Padding(
-          padding: EdgeInsets.symmetric(horizontal: m.space6, vertical: m.space2),
+          padding: EdgeInsets.symmetric(
+            horizontal: m.space6,
+            vertical: m.space2,
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               InkWell(
                 key: const ValueKey('save-trouble-expand'),
-                onTap: loud ? () => setState(() => _expanded = !_expanded) : null,
+                onTap: loud
+                    ? () => setState(() => _expanded = !_expanded)
+                    : null,
                 child: Row(
                   children: [
                     Icon(
@@ -124,20 +160,39 @@ class _SaveTroubleBarState extends State<SaveTroubleBar> {
                     Flexible(child: Text(text, style: loud ? bold : small)),
                     if (loud) ...[
                       SizedBox(width: m.space2),
-                      Icon(_expanded ? Icons.expand_less_rounded : Icons.expand_more_rounded, size: m.icon),
+                      Icon(
+                        _expanded
+                            ? Icons.expand_less_rounded
+                            : Icons.expand_more_rounded,
+                        size: m.icon,
+                      ),
                     ],
                   ],
                 ),
               ),
               if (loud && t.reason.isNotEmpty)
                 Padding(
-                  padding: EdgeInsets.only(top: m.space1, left: m.icon + m.space2),
-                  child: Text(t.reason, key: const ValueKey('save-trouble-cause'), style: small),
+                  padding: EdgeInsets.only(
+                    top: m.space1,
+                    left: m.icon + m.space2,
+                  ),
+                  child: Text(
+                    t.reason,
+                    key: const ValueKey('save-trouble-cause'),
+                    style: small,
+                  ),
                 ),
               if (loud && _expanded && t.advice.isNotEmpty)
                 Padding(
-                  padding: EdgeInsets.only(top: m.space1, left: m.icon + m.space2),
-                  child: Text(t.advice, key: const ValueKey('save-trouble-advice'), style: small),
+                  padding: EdgeInsets.only(
+                    top: m.space1,
+                    left: m.icon + m.space2,
+                  ),
+                  child: Text(
+                    t.advice,
+                    key: const ValueKey('save-trouble-advice'),
+                    style: small,
+                  ),
                 ),
               Wrap(spacing: m.space2, children: actions),
             ],
@@ -150,7 +205,11 @@ class _SaveTroubleBarState extends State<SaveTroubleBar> {
 
 /// Asks [q] in a dialog on the window of [navigator]. Cancel is the default
 /// button and the filled one (0134); true means the user chose the other.
-Future<bool> showTroubleQuestion(GlobalKey<NavigatorState> navigator, UserQuestion q, String title) async {
+Future<bool> showTroubleQuestion(
+  GlobalKey<NavigatorState> navigator,
+  UserQuestion q,
+  String title,
+) async {
   final context = navigator.currentContext;
   if (context == null || !context.mounted) return false;
   final (heading, body, yes) = switch (q) {

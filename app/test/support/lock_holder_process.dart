@@ -19,9 +19,18 @@ final class LockHolder {
   static Future<String> _kernel() => _compiled ??= () async {
     final out = Directory.systemTemp.createTempSync('noted_lockholder');
     final dill = '${out.path}/lock_holder.dill';
-    final source = '${Directory.current.parent.path}/packages/noted_core/test/lock_holder.dart';
-    final r = await Process.run('dart', ['compile', 'kernel', source, '-o', dill], runInShell: true);
-    if (r.exitCode != 0) throw StateError('could not compile the lock helper: ${r.stderr}');
+    final source =
+        '${Directory.current.parent.path}/packages/noted_core/test/lock_holder.dart';
+    final r = await Process.run('dart', [
+      'compile',
+      'kernel',
+      source,
+      '-o',
+      dill,
+    ], runInShell: true);
+    if (r.exitCode != 0) {
+      throw StateError('could not compile the lock helper: ${r.stderr}');
+    }
     return dill;
   }();
 
@@ -30,7 +39,11 @@ final class LockHolder {
   static Future<LockHolder> hold(File file) async {
     file.parent.createSync(recursive: true);
     final dill = await _kernel();
-    final p = await Process.start('dart', [dill, file.path, 'keep'], runInShell: true);
+    final p = await Process.start('dart', [
+      dill,
+      file.path,
+      'keep',
+    ], runInShell: true);
     final holder = LockHolder._(p);
     final line = await p.stdout
         .transform(utf8.decoder)
