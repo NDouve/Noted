@@ -8,8 +8,8 @@ this document should be corrected.
 It covers page files (`<page id>.canvas`), binder files (`noted-binder.json`),
 attachment files (`<page id>.assets/`) and the way a sync client's conflict
 copies of page files are recognised and merged. It does not cover recovery
-entries, template files (`.notedtemplate`), `binders.json`, `settings.json`
-or the files the AI integration keeps.
+entries, template files (`.notedtemplate`), `settings.json`
+or the files the AI integration keeps. Only two fields of `binders.json` are covered (section 9).
 
 Source: `packages/noted_core` (`model/page.dart`, `format/page_format.dart`,
 `attachments/attachments.dart`, `binder/binder.dart`, `binder/binder_store.dart`,
@@ -26,6 +26,7 @@ Source: `packages/noted_core` (`model/page.dart`, `format/page_format.dart`,
 6. Binder file
 7. Conflict copies
 8. Compatibility rules
+9. The binder list (`binders.json`)
 
 ## 1. Principles
 
@@ -407,3 +408,14 @@ if either side has it.
   written until the user changes them.
 - **Atomic writes.** Pages and binder files are written to a temporary file
   and then renamed; a half-written file is never left in place of a page.
+
+## 9. The binder list (`binders.json`)
+
+This device's own list of binders and standalone folders, kept beside its settings. It is local to the device and is never synced. Beyond the fields the app has always
+written (`format` 1, `binders`, `standaloneFolders`), it holds two optional fields that record which binder each folder held, so the app can find binders another
+device made and remember the ones this device removed. `format` stays 1.
+
+- `binderIds`: an object from a folder path, as written in `binders`, to the `binderId` of the binder file found there (16 lowercase hex characters). Written for listed binders only; it may be `{}`. A file with no `binderIds` was written by an older build, or is damaged: on the first launch of a build that finds binders, every binder this device does not list is recorded as removed instead of added.
+- `removedBinders`: an array of binder ids this device took out of its list (at most 1000, oldest dropped first). Discovery never lists such a binder again; opening its folder by hand does, and clears the id.
+
+Both are optional. An older build keeps fields it does not know, so it keeps both; a `binderIds` key whose path has left `binders` (an older build removed that binder) is read as a removal. Discovery reads shared storage and never writes a file or folder there.

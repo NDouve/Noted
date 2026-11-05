@@ -378,6 +378,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     this.leaveSaveLimit = const Duration(seconds: 5),
     this.backoffFirst = const Duration(seconds: 2),
     this.backoffMax = const Duration(seconds: 30),
+    this.discoveryDebounce = const Duration(seconds: 1),
   }) {
     _chain.onDetachedJobEnded = _oldJobEnded;
   }
@@ -621,6 +622,83 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   final Map<String, StreamSubscription<FileSystemEvent>> _watchers = {};
   final Map<String, Timer> _debounce = {};
   Future<void> _checking = Future.value();
+
+  // Binders found by id (0050) -------------------------------------------------
+
+  // The binder id of each listed binder, by the key of its folder.
+  final Map<String, String> _binderIds = {};
+  // Ids of binders this device took out of its list (oldest first): discovery
+  // never adds them again.
+  final List<String> _removedBinders = [];
+  // What the settings file looked like at load (see [_SettingsKind]).
+  _SettingsKind _settingsKind = _SettingsKind.fresh;
+  // Folders (by key) a binder is being made in: discovery leaves them alone.
+  final Set<String> _claims = {};
+  Future<void>? _discovering;
+  bool _discoverAgain = false;
+  final Set<Future<void>> _discoveryJobs = {};
+  // Found adds in progress, by folder key, with the removed ids each took out.
+  final Map<String, List<String>> _foundAdds = {};
+  // Candidate reads reused while the binder file is unchanged, by file path.
+  final Map<String, ({int size, int time, _Candidate read})> _candidateReads = {};
+  // What the last pass saw of ids listed here: copies beside the listed folder
+  // (by the key of the listed folder) and where an unavailable one went.
+  Map<String, List<String>> _alsoIn = const {};
+  Map<String, List<String>> _movedTo = const {};
+  // Ids found in more than one folder in the last pass, with those folders.
+  Map<String, ({String title, List<String> folders})> _duplicateIds = const {};
+  // Binders recorded as removed by the first pass of an upgrade, shown this
+  // session, by id.
+  final Map<String, ({String title, String folder})> _upgradeNotes = {};
+  // Subfolders of the roots seen without a binder file yet, by key, with the
+  // time they were first seen.
+  final Map<String, ({String path, DateTime since})> _freshFolders = {};
+  final Map<String, StreamSubscription<FileSystemEvent>> _rootWatchers = {};
+  final Set<String> _rootsRefused = {};
+  final Set<String> _rootsCut = {};
+  Timer? _rootDebounce;
+  int _folderTicks = 0;
+  // How many folder ticks until the next backstop pass: 10, longer after slow passes.
+  int _backstopTicks = 10;
+  int _rootCap = 20;
+  int _folderCap = 1000;
+  bool _rootsTruncated = false;
+  // What the last pass cut short because of the caps, shown under "Can't open".
+  List<UnreadablePage> _capNotes = const [];
+  Duration _slowPass = const Duration(seconds: 5);
+  // Folders that events reported in a root, looked at by the next pass.
+  final Set<String> _eventFolders = {};
+
+  /// Test seams: lower caps and the time after which a pass counts as slow.
+  @visibleForTesting
+  void setDiscoveryLimitsForTest({int? roots, int? folders, Duration? slowPass, int? removed}) {
+    _removedCap = removed ?? _removedCap;
+    _rootCap = roots ?? _rootCap;
+    _folderCap = folders ?? _folderCap;
+    _slowPass = slowPass ?? _slowPass;
+  }
+
+  @visibleForTesting
+  int get backstopTicksForTest => _backstopTicks;
+  // While above zero, rescans made by the checks of a found add never sweep.
+  int _sweepOff = 0;
+
+  /// Test seam for binder discovery and adding: called at named points
+  /// (`candidate-read` just before a candidate's binder file is read: throw a
+  /// [FileSystemException] to make the read fail; `job` as an add job starts,
+  /// `recheck` after its rechecks and before the folder is read; `opened`
+  /// after the folder was scanned and before the binder is listed; `adopted`
+  /// after the binder file of a listed folder was taken over; `root-list` before
+  /// a root is listed (throw to make that fail); `claimed`
+  /// in a template's creation after its binder file was written).
+  @visibleForTesting
+  Future<void> Function(String point, String path)? binderHook;
+
+  Future<void> _binderSeam(String point, String path) async {
+    final h = binderHook;
+    if (h != null) await h(point, path);
+  }
+
   NotedPage? _pendingSave;
   int _pendingSeq = 0;
   Timer? _saveTimer;
@@ -664,6 +742,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// The first and the longest wait of the retry backoff.
   final Duration backoffFirst;
   final Duration backoffMax;
+
+  /// The pause after a change in a folder that may hold binders before
+  /// discovery looks again.
+  final Duration discoveryDebounce;
 
   // L1, the save chain.
   final SaveChain _chain = SaveChain();
@@ -952,8 +1034,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _folders.clear();
     _defaultGone = false;
     _adoptDefault(entries);
-    for (final path in await _readBinderPaths()) {
+    _binderIds.clear();
+    _removedBinders.clear();
+    final listed = await _readBinderPaths();
+    // An older build removed a binder after the ids were recorded: its path
+    // left `binders` but its id is still a key of `binderIds`. That is a removal
+    // (before the key is pruned by the next write).
+    final listedKeys = {for (final p in listed) _key(p)};
+    final recorded = _readRecordedIds();
+    for (final e in recorded.entries) {
+      if (!listedKeys.contains(_key(e.key))) _markRemoved(e.value);
+    }
+    for (final path in listed) {
       _binders[path] = await _openBinder(path);
+      final id = recorded.entries.where((e) => _key(e.key) == _key(path)).firstOrNull?.value;
+      if (id != null) _binderIds[_key(path)] = id;
+      _recordBinderId(path, _binders[path]!.binder);
     }
     // A default page folder chosen in the settings is a standalone folder in
     // use, so the pages already there are listed.
@@ -977,6 +1073,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await open(_tree.roots.first.id);
       _landedProblems.addAll(notices);
     }
+    // Binders other devices made are looked for once the notebook is shown;
+    // found binders are added in their own jobs, never inside startup.
+    unawaited(discoverBinders());
   }
 
   // A page for an empty notebook: in the default page folder, or in the
@@ -3160,21 +3259,200 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// Adds the folder [path] to the binders. A folder that already has a
   /// binder file is opened as it is; otherwise a binder file is created in
   /// it and the page files already there become its pages.
-  Future<BinderSection> addBinder(String path) async {
+  ///
+  /// A folder that holds a copy of a binder already listed (the same binder
+  /// id) is refused with a [NotebookException].
+  Future<BinderSection> addBinder(String path) async => (await addBinderChecked(path)).section;
+
+  /// [addBinder] that also says whether this call listed the binder (`added`)
+  /// and whether its id had been removed from the list before (`wasRemoved`,
+  /// for a caller that takes the binder out again: see [removeBinder]).
+  Future<({BinderSection section, bool added, bool wasRemoved})> addBinderChecked(String path) async {
     path = _normalizePath(path);
     final known = _binders[path];
-    if (known != null) return known;
+    if (known != null) return (section: known, added: false, wasRemoved: false);
     if (path == defaultFolderPath || _folders.containsKey(path)) {
       throw const NotebookException('That folder holds the standalone pages.');
     }
     await flush();
-    final section = await _openBinder(path, create: true);
-    _binders[path] = section;
-    _rebuildTree();
-    _syncWatchers();
-    await _saveSettings();
-    await _mergePendingCopies();
-    return section;
+    final r = await _queued(() => _listBinder(path, found: false));
+    if (r == null) throw const NotebookException('Noted is closing.');
+    final refused = r.refused;
+    if (refused != null) throw NotebookException(refused);
+    return (section: r.section!, added: r.added, wasRemoved: r.wasRemoved);
+  }
+
+  // Runs [body] as one `_checking` job (after the writes in flight), the way
+  // the folder checks do. Null if the notebook was disposed first.
+  Future<T?> _queued<T>(Future<T> Function() body) {
+    final done = Completer<T?>();
+    final job = _checking.then((_) async {
+      try {
+        await _chain.idle;
+        if (_disposed) {
+          done.complete(null);
+        } else {
+          done.complete(await body());
+        }
+      } on Object catch (e, s) {
+        done.completeError(e, s);
+      }
+    });
+    _checking = job;
+    return done.future;
+  }
+
+  // Lists the binder in [path]: one step for a hand add (Open binder…, New
+  // binder in another folder…) and for a binder discovery found. Runs inside
+  // `_checking`. A found binder never creates a file or folder, never sweeps
+  // set-aside files and is listed only if it still is the binder [expectId].
+  Future<({BinderSection? section, bool added, bool wasRemoved, String? refused})> _listBinder(
+    String path, {
+    required bool found,
+    String? expectId,
+  }) async {
+    final key = _key(path);
+    ({BinderSection? section, bool added, bool wasRemoved, String? refused}) none({String? refused}) =>
+        (section: null, added: false, wasRemoved: false, refused: refused);
+    // Already there, or a copy of a binder listed from another folder.
+    final listedHere = _binders.values.where((b) => _key(b.path) == key).firstOrNull;
+    if (listedHere != null) return (section: listedHere, added: false, wasRemoved: false, refused: null);
+    final read = await BinderStore(Directory(path)).read();
+    if (found && (read is! BinderFound || read.binder.id != expectId)) return none();
+    if (read is BinderFound) {
+      final id = read.binder.id;
+      final holder = _binders.values.where((b) => _binderIds[_key(b.path)] == id).firstOrNull;
+      if (holder != null) {
+        final text = holder.available
+            ? 'This folder holds a copy of binder "${holder.title}", which is listed from ${holder.path}.'
+            : '"${holder.title}" is listed but not found at its old folder. '
+                  'Remove it from the sidebar first, then open this folder.';
+        return none(refused: text);
+      }
+    }
+    await _binderSeam('recheck', path);
+    final wasRemoved = _removedBinders.contains(expectId ?? (read is BinderFound ? read.binder.id : ''));
+    if (found) {
+      _foundAdds[key] = [];
+      _sweepOff++;
+    }
+    try {
+      final section = await _openBinder(path, create: !found, createFolder: !found, sweep: !found);
+      final id = section.binder?.id;
+      if (found && (!section.available || id != expectId)) {
+        _undoOpen(path);
+        return none();
+      }
+      await _binderSeam('opened', path);
+      _binders[path] = section;
+      _recordBinderId(path, section.binder);
+      _rebuildTree();
+      _syncWatchers();
+      await _saveSettings();
+      if (!await _reconcileAdded(path, found: found, expectId: expectId)) {
+        return none();
+      }
+      final now = _binders[path];
+      if (now != null && now.available && !_isLocked(path)) {
+        await _mergePendingCopies(inQueue: true);
+        if (!_disposed && _binders[path] == now && now.available) await _recoverPending(onlyLoc: path);
+      }
+      return (section: _binders[path] ?? section, added: true, wasRemoved: wasRemoved, refused: null);
+    } finally {
+      if (found) {
+        _foundAdds.remove(key);
+        _sweepOff--;
+      }
+    }
+  }
+
+  // Takes back what [_openBinder] noted in memory for a folder that was not
+  // listed after all.
+  void _undoOpen(String path) {
+    final key = _key(path);
+    for (final id in [for (final e in _loc.entries) if (e.value == path) e.key]) {
+      _forgetPage(id);
+    }
+    _binderText.remove(key);
+    _pendingCopies.removeWhere((p) => _key(File(p).parent.path) == key);
+  }
+
+  // The page files and the binder file may have changed between the scan of
+  // [path] and the start of its watcher, which saw nothing: looks again, as a
+  // watcher event would. False if a found binder turned out to be another one
+  // and was taken out again.
+  Future<bool> _reconcileAdded(
+    String path, {
+    required bool found,
+    String? expectId,
+  }) async {
+    final section = _binders[path];
+    if (section == null) return true;
+    try {
+      // The binder file first, before any page is reconciled or written.
+      await _checkBinderFile(BinderStore(Directory(path)).file.path);
+      final now = _binders[path];
+      if (_disposed) return true;
+      // Another binder at the folder, or no binder file any more: the found add
+      // is undone (nothing was listed for good). Only the removed ids this add
+      // took out are put back; anything recorded meanwhile stays.
+      if (found &&
+          now != null &&
+          ((now.binder != null && now.binder!.id != expectId) || now.status == BinderStatus.unavailable)) {
+        _binders.remove(path);
+        _binderIds.remove(_key(path));
+        for (final id in _foundAdds[_key(path)] ?? const <String>[]) {
+          if (!_removedBinders.contains(id)) _removedBinders.add(id);
+        }
+        _undoOpen(path);
+        if (_coverPath == path) _coverPath = null;
+        _rebuildTree();
+        _syncWatchers();
+        await _saveSettings();
+        return false;
+      }
+      if (now == null || !identical(now, _binders[path])) return true;
+      // Then the pages: what is listed there now, what the notebook knows of it
+      // and what its "Can't open" list holds.
+      final seen = <String>{};
+      final paths = <String>[];
+      void add(String p) {
+        if (seen.add(_key(p))) paths.add(p);
+      }
+
+      try {
+        await for (final f in Directory(path).list(followLinks: false)) {
+          if (f is File && f.path.endsWith(PageStore.extension)) add(f.path);
+        }
+      } on FileSystemException catch (e) {
+        debugPrint('Listing $path failed: $e');
+      }
+      final st = now.store;
+      if (st != null) {
+        for (final e in _loc.entries.toList()) {
+          if (e.value == path) add(st.pathFor(e.key));
+        }
+      }
+      for (final u in now.unreadable.toList()) {
+        add(u.path);
+      }
+      for (final p in paths) {
+        if (_disposed || !identical(_binders[path], now)) break;
+        try {
+          if (p.endsWith(PageStore.extension)) {
+            await _checkFile(p);
+          } else if (await FileSystemEntity.type(p, followLinks: false) == FileSystemEntityType.notFound) {
+            // A set-aside file that has gone (put back, or deleted by its writer).
+            _dropUnreadable(path, p);
+          }
+        } on Object catch (e) {
+          debugPrint('Checking $p failed: $e');
+        }
+      }
+      return true;
+    } finally {
+      // (sweeping stays off for the whole found add: see _listBinder)
+    }
   }
 
   // Standalone folders ---------------------------------------------------------
@@ -3512,6 +3790,24 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       );
     }
     await flush();
+    // The folder is claimed from before the binder file exists until the binder
+    // is listed (or the creation is undone): discovery leaves it alone.
+    final claim = _key(path);
+    _claims.add(claim);
+    try {
+      return await _instantiateBinder(template, path, openCover: openCover);
+    } finally {
+      _claims.remove(claim);
+    }
+  }
+
+  Future<BinderSection> _instantiateBinder(
+    NotedTemplate template,
+    String path, {
+    required bool openCover,
+  }) async {
+    final dir = Directory(path);
+    final binders = BinderStore(dir);
     final made = template.instantiateBinder();
     final pages = storeFactory(dir);
     final written = <NotedPage>[];
@@ -3519,6 +3815,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     try {
       await binders.create(made.binder);
       binderWritten = true;
+      await _binderSeam('claimed', path);
       for (final p in made.pages) {
         // New ids in a new binder folder: a file already there is not ours.
         if (!await pages.saveNew(p)) {
@@ -3554,7 +3851,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (binderWritten) {
         try {
           final r = await deleteFileIfUnchanged(binders.file.path, utf8.encode(made.binder.write()));
-          if (!r.deleted && r.outcome != DeleteOutcome.absent) debugPrint('Keeping the binder file: it changed');
+          if (!r.deleted && r.outcome != DeleteOutcome.absent) {
+            debugPrint('Keeping the binder file: it changed');
+            // It stays in the folder, so discovery must not list it as new.
+            _markRemoved(made.binder.id);
+            await _saveSettings();
+          }
         } on Object catch (e2) {
           debugPrint('Removing binder file failed: $e2');
         }
@@ -3571,13 +3873,34 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Binders -----------------------------------------------------------------
 
   /// Takes the binder out of the sidebar. Its folder and files stay.
-  Future<void> removeBinder(String path) async {
+  ///
+  /// Its binder id is remembered as removed, so discovery does not list it
+  /// again, unless [recordRemoved] is false (an open that is refused takes the
+  /// binder out again).
+  Future<void> removeBinder(String path, {bool recordRemoved = true}) async {
     final section = _binders[path];
     _dropLandedIn(path);
     if (section == null) return;
+    // Before the first await, so a pass that runs meanwhile sees it. A binder
+    // with no known id records nothing.
+    final binderId = _binderIds.remove(_key(path));
+    final addedRemoved = binderId != null && recordRemoved && !_removedBinders.contains(binderId);
+    if (binderId != null && recordRemoved) _markRemoved(binderId);
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
-    if (openHere) await _closeCurrent();
+    if (openHere) {
+      try {
+        await _closeCurrent();
+      } on Object {
+        // The binder stays listed (the user declined to leave the page, or the
+        // close failed): put back exactly what this call changed.
+        if (identical(_binders[path], section)) {
+          if (binderId != null) _binderIds[_key(path)] = binderId;
+          if (addedRemoved) _removedBinders.remove(binderId);
+        }
+        rethrow;
+      }
+    }
     final released = _dropAdoptionsIn(path);
     for (final id in ids) {
       _metas.remove(id);
@@ -3591,6 +3914,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     _binders.remove(path);
+    // Another remove of this binder may have put its id back after a declined
+    // leave: the binder is gone now, so its id is a removed one again.
+    _binderIds.remove(_key(path));
+    final goneId = binderId ?? section.binder?.id;
+    if (goneId != null && recordRemoved && !_binderIds.containsValue(goneId)) _markRemoved(goneId);
     if (_coverPath == path) _coverPath = null;
     final last = _lastDeleted;
     if (last != null && last._location == path) _lastDeleted = null;
@@ -3642,7 +3970,46 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     });
   }
 
-  Future<BinderSection> _openBinder(String path, {bool create = false}) async {
+  // The one way a binder file is read: the bytes, decoded as UTF-8. Bad bytes
+  // are a damaged file ([damaged]); an I/O failure or a lock is [failure] (try
+  // again later, never "missing"); a file that isn't there is [missing].
+  Future<({String? text, bool missing, String? damaged, String? failure})> _readBinderText(File f) async {
+    final List<int> bytes;
+    try {
+      bytes = await f.readAsBytes();
+    } on FileSystemException catch (e) {
+      if (await FileSystemEntity.type(f.path) == FileSystemEntityType.notFound) {
+        return (text: null, missing: true, damaged: null, failure: null);
+      }
+      return (text: null, missing: false, damaged: null, failure: e.message);
+    }
+    try {
+      return (text: utf8.decode(bytes), missing: false, damaged: null, failure: null);
+    } on FormatException {
+      return (text: null, missing: false, damaged: 'not valid UTF-8 text', failure: null);
+    }
+  }
+
+  // Reads the binder file once: what it parsed to and the text that was parsed.
+  Future<({BinderRead read, String? text})> _readBinderFile(BinderStore store) async {
+    final r = await _readBinderText(store.file);
+    if (r.missing) return (read: const BinderMissing(), text: null);
+    final failure = r.failure ?? r.damaged;
+    if (failure != null) return (read: BinderUnreadable(failure), text: null);
+    final text = r.text!;
+    try {
+      return (read: BinderFound(Binder.parse(text)), text: text);
+    } on BinderFormatException catch (e) {
+      return (read: BinderUnreadable(e.message), text: text);
+    }
+  }
+
+  Future<BinderSection> _openBinder(
+    String path, {
+    bool create = false,
+    bool createFolder = true,
+    bool sweep = true,
+  }) async {
     BinderSection unavailable(String why, {bool missing = false}) =>
         BinderSection._(path, BinderStatus.unavailable, reason: why, missing: missing);
     final dir = Directory(path);
@@ -3651,27 +4018,32 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         return unavailable('Folder not found. It may be on another device.', missing: true);
       }
       final binders = BinderStore(dir);
-      var read = await binders.read();
+      // One read of the binder file: what is parsed is exactly what is cached
+      // for the later "did it change" check.
+      final once = await _readBinderFile(binders);
+      var read = once.read;
+      String? text = once.text;
       if (read is BinderMissing) {
         if (!create) return unavailable('No $binderFileName in this folder.');
-        read = BinderFound(
-          await binders.create(
-            Binder.create(
-              title: _folderName(path),
-              color: binderPalette[_binders.length % binderPalette.length],
-            ),
+        final made = await binders.create(
+          Binder.create(
+            title: _folderName(path),
+            color: binderPalette[_binders.length % binderPalette.length],
           ),
         );
+        read = BinderFound(made);
+        text = made.write(); // what `create` wrote
       }
       // A binder whose file can't be read still lists its pages, read-only.
       final binder = read is BinderFound ? read.binder : null;
-      try {
-        _binderText[_key(path)] = await binders.file.readAsString();
-      } on Object {
+      await _binderSeam('parsed', path);
+      if (text != null) {
+        _binderText[_key(path)] = text;
+      } else {
         _binderText.remove(_key(path));
       }
       final pages = storeFactory(dir);
-      final entries = await _scan(pages);
+      final entries = await _scan(pages, createFolder: createFolder, sweep: sweep && _sweepOff == 0);
       if (binder != null) {
         // Conflict copies are merged by writing, which a damaged binder forbids.
         _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
@@ -3727,23 +4099,72 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<List<String>> _readBinderPaths() async {
+    _settingsKind = _SettingsKind.fresh;
     final f = bindersFile;
     if (f == null) return const [];
     try {
       if (!await f.exists()) return const [];
       _settings = RawObject.parse(await f.readAsString());
+      _settingsKind = _settings.containsKey('binderIds') ? _SettingsKind.current : _SettingsKind.upgrade;
+      final removed = _settings['removedBinders']?.decode();
+      for (final id in removed is List ? removed : const []) {
+        if (id is String && id.isNotEmpty && !_removedBinders.contains(id)) _removedBinders.add(id);
+      }
       final list = _settings['binders']?.decode();
       return [
         for (final p in list is List ? list : const [])
           if (p is String && p.isNotEmpty) p,
       ];
     } on FormatException {
+      // Damaged: treated as an upgrade, the side on which no binder appears
+      // unasked (it is kept as `.bad` by the next write).
       _settingsCorrupt = true;
+      _settingsKind = _SettingsKind.upgrade;
       return const [];
     } on FileSystemException catch (e) {
+      // Exists but can't be read now (a lock): no removal is known, so no
+      // binder is added this session, and discovery never writes the file.
       debugPrint('Reading ${f.path} failed: $e');
+      _settingsKind = _SettingsKind.unreadable;
       return const [];
     }
+  }
+
+  // The binder ids recorded in `binders.json`, by the folder as listed.
+  Map<String, String> _readRecordedIds() {
+    final map = _settings['binderIds']?.decode();
+    return {
+      for (final e in (map is Map ? map : const {}).entries)
+        if (e.key is String && e.value is String && (e.value as String).isNotEmpty) e.key as String: e.value as String,
+    };
+  }
+
+  // The most removed ids kept; the oldest go first.
+  int _removedCap = 1000;
+
+  // Records [id] as a binder this device took out of its list.
+  void _markRemoved(String id) {
+    _removedBinders.remove(id);
+    _removedBinders.add(id);
+    while (_removedBinders.length > _removedCap) {
+      _removedBinders.removeAt(0);
+    }
+  }
+
+  // Notes that the listed folder [path] holds [binder] (null: unreadable, the
+  // recorded id stays). A recorded id that differs is replaced (today's
+  // adoption of whatever binder file is at a listed path), and an id a listed
+  // binder has is no longer a removed one. True if anything changed.
+  bool _recordBinderId(String path, Binder? binder) {
+    if (binder == null) return false;
+    final key = _key(path);
+    final changed = _binderIds[key] != binder.id;
+    _binderIds[key] = binder.id;
+    final cleared = _removedBinders.remove(binder.id);
+    // A found add being made at [path] remembers what it took out of the
+    // removed ids, so that undoing it puts back only those.
+    if (cleared) _foundAdds[key]?.add(binder.id);
+    return cleared || changed;
   }
 
   Future<void> _saveSettings() async {
@@ -3751,6 +4172,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (f == null) return;
     final paths = _binders.keys.toList();
     final folders = _folders.keys.toList();
+    // `binderIds` is never written while an upgrade is open (the next launch
+    // must still be one) and always once it is closed, even as `{}`.
+    final ids = (_settingsKind == _SettingsKind.fresh || _settingsKind == _SettingsKind.current)
+        ? {
+            for (final p in paths)
+              p: ?_binderIds[_key(p)],
+          }
+        : null;
+    final removed = List<String>.of(_removedBinders);
     await _afterSaves(() async {
       await f.parent.create(recursive: true);
       if (_settingsCorrupt) {
@@ -3767,6 +4197,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           .set('binders', RawJson.encode(paths));
       if (folders.isNotEmpty || _settings.containsKey('standaloneFolders')) {
         _settings = _settings.set('standaloneFolders', RawJson.encode(folders));
+      }
+      if (ids != null) _settings = _settings.set('binderIds', RawJson.encode(ids));
+      if (removed.isNotEmpty || _settings.containsKey('removedBinders')) {
+        _settings = _settings.set('removedBinders', RawJson.encode(removed));
       }
       final tmp = File('${f.path}.tmp');
       await tmp.writeAsString('${_settings.toRaw().text}\n', flush: true);
@@ -5680,14 +6114,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return run;
   }
 
-  Future<List<PageEntry>> _scan(PageStore st) {
+  Future<List<PageEntry>> _scan(PageStore st, {bool createFolder = true, bool sweep = true}) {
     // A store made again (a binder opened again) is told which files were chosen.
     final dir = _key(st.directory.path);
     for (final e in _adoptedFiles.entries) {
       if (_key(File(e.value).parent.path) == dir) st.adopt(e.key, e.value);
     }
     return _underFolderLock(st, () async {
-      final entries = await st.scan();
+      // No scan sweeps while a found add runs: set-aside files may belong to a
+      // write another device has under way.
+      final entries = await st.scan(createFolder: createFolder, sweep: sweep && _sweepOff == 0);
       // The open page whose chosen file is gone keeps it as its file (its next
       // save writes it again), not the file the scan found instead.
       for (final e in _adoptedFiles.entries) {
@@ -5799,9 +6235,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         debugPrint('Watching $dir failed: $e');
       }
     });
+    _syncRootWatchers({for (final d in wanted.values) _key(d)});
   }
 
   void _onFileEvent(FileSystemEvent e) {
+    // A folder that appeared in a folder discovery looks in (standalone folders
+    // are watched here): a binder may have arrived.
+    if (e.isDirectory) _onRootEvent(e);
     // Something in or about an assets folder: the open page's boxes may be
     // waiting for a file.
     if (e.path.contains('.assets') || (e is FileSystemMoveEvent && (e.destination ?? '').contains('.assets'))) {
@@ -5873,14 +6313,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final section = _binders.values.where((b) => _key(b.path) == dirKey).firstOrNull;
     if (section == null) return;
     if (section.missing) return; // checkFolders brings a returned folder back
-    String? text;
-    String? unreadable;
-    try {
-      text = await File(path).readAsString();
-    } on FileSystemException {
-      text = null;
-    } on FormatException {
-      unreadable = 'not valid UTF-8 text';
+    final got = await _readBinderText(File(path));
+    final text = got.text;
+    String? unreadable = got.damaged;
+    if (got.failure != null) {
+      // Locked or offline for now: not missing and not damaged. Look again later;
+      // only a folder that is gone is dealt with.
+      if (!_disposed && !await Directory(section.path).exists()) await _binderGone(section);
+      return;
     }
     if (_disposed) return;
     if (text == null && unreadable == null && !await Directory(section.path).exists()) {
@@ -5907,6 +6347,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         section.binder = binder;
         section.lastEdited = DateTime.now();
         notifyListeners();
+        // Whatever binder file is at a listed path is adopted: its id is the
+        // one recorded now.
+        // A found add of this folder saves (or undoes) it itself: a save here could
+        // list the folder with another id before the add looks at it.
+        if (_recordBinderId(section.path, binder) && !_foundAdds.containsKey(_key(section.path))) {
+          await _saveSettings();
+        }
+        await _binderSeam('adopted', section.path);
       } else {
         await _reopenBinder(section.path);
       }
@@ -6002,9 +6450,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final fresh = await _openBinder(path);
     if (_disposed) return;
     _binders[path] = fresh;
+    final changed = _recordBinderId(path, fresh.binder);
     _syncReadOnly();
     _rebuildTree();
     _syncWatchers();
+    if (changed) await _saveSettings();
     await _mergePendingCopies(inQueue: true);
   }
 
@@ -6581,7 +7031,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final st = _storeOf(loc);
       // Make the store find files whose names aren't the page id.
       // (Never when the folder is gone: a scan would create it.)
-      if (_key(st.pathFor(id)) != key && await st.directory.exists()) await _scan(st);
+      if (_key(st.pathFor(id)) != key && await st.directory.exists()) await _scan(st, sweep: _sweepOff == 0);
     }
     _setConflict(id, hasConflicts(page));
     _touch(loc);
@@ -6606,13 +7056,454 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
   }
 
+  // Binder discovery (0050) ----------------------------------------------------
+
+  /// Binders another device made that sit in a folder this device looks in,
+  /// but that this device doesn't list: a full pass over every root (the
+  /// default binder folder, the default page folder, the standalone folders and
+  /// the parent of each listed binder), one level down. Reads only: it never
+  /// creates or writes a file or folder in shared storage. A binder it finds
+  /// once is listed in its own job; a binder this device removed is never
+  /// listed again, and on the first launch of a build with discovery (a
+  /// `binders.json` with no `binderIds`) every binder this device doesn't list
+  /// is recorded as removed instead, so none appears unasked.
+  ///
+  /// A call while a pass runs asks for one more pass after it. The result
+  /// completes when the pass (and the adds of the binders it found) is over.
+  Future<void> discoverBinders() {
+    if (_disposed || _settingsKind == _SettingsKind.unreadable) return discoveryIdle;
+    final running = _discovering;
+    if (running != null) {
+      _discoverAgain = true;
+      return discoveryIdle;
+    }
+    final done = Completer<void>();
+    _discovering = done.future;
+    unawaited(
+      _discoverLoop().whenComplete(() {
+        _discovering = null;
+        done.complete();
+      }),
+    );
+    return discoveryIdle;
+  }
+
+  Future<void> _discoverLoop() async {
+    try {
+      do {
+        _discoverAgain = false;
+        await _discoverOnce();
+      } while (_discoverAgain && !_disposed);
+    } on Object catch (e) {
+      debugPrint('Looking for binders failed: $e');
+    }
+  }
+
+  /// Completes when no discovery pass is running and no binder found by one is
+  /// still being added.
+  Future<void> get discoveryIdle async {
+    while (!_disposed) {
+      final running = _discovering;
+      if (running != null) {
+        await running;
+        continue;
+      }
+      if (_discoveryJobs.isEmpty) return;
+      await Future.wait(_discoveryJobs.toList());
+    }
+  }
+
+  /// The folders discovery looks in, at most 20, in this order. A listed
+  /// binder's folder is never one; a folder that doesn't exist is dropped by
+  /// the caller.
+  List<String> _discoveryRoots({int? cap}) {
+    final limit = cap ?? _rootCap;
+    _rootsTruncated = false;
+    final listed = {for (final p in _binders.keys) _key(p)};
+    final out = <String>[];
+    final seen = <String>{};
+    void add(String? raw) {
+      if (raw == null) return;
+      final p = _normalizePath(raw);
+      final k = _key(p);
+      if (listed.contains(k) || !seen.add(k)) return;
+      if (out.length >= limit) {
+        _rootsTruncated = true; // a root left out: nothing can be said of what it holds
+        return;
+      }
+      out.add(p);
+    }
+
+    add(defaultBinderFolderPath);
+    add(defaultFolderPath);
+    add(settings?.defaultPageFolder);
+    for (final p in _folders.keys) {
+      add(p);
+    }
+    for (final b in _binders.values) {
+      add(File(b.path).parent.path);
+    }
+    return out;
+  }
+
+  bool _refusedForPermission(FileSystemException e) {
+    final c = e.osError?.errorCode;
+    return Platform.isWindows ? c == 5 : (c == 13 || c == 1);
+  }
+
+  Future<void> _discoverOnce() async {
+    final started = DateTime.now();
+    final listed = {for (final p in _binders.keys) _key(p)};
+    final standalone = {
+      _key(defaultFolderPath),
+      if (settings?.defaultPageFolder case final chosen?) _key(_normalizePath(chosen)),
+      for (final p in _folders.keys) _key(p),
+    };
+    var rootsOk = true;
+    var readsOk = true;
+    final found = <String, List<({String path, String title})>>{};
+    final seenFolders = <String>{};
+    final sep = Platform.pathSeparator;
+    // The pass that could close an upgrade lists without the caps (once), so it
+    // can record what it saw; any other pass keeps them and says what it cut.
+    final uncapped = _settingsKind == _SettingsKind.upgrade;
+    final folderCap = uncapped ? 1 << 30 : _folderCap;
+    final capNotes = <UnreadablePage>[];
+    final roots = _discoveryRoots(cap: uncapped ? 1 << 30 : null);
+    if (_rootsTruncated) {
+      capNotes.add(
+        UnreadablePage(
+          defaultBinderFolderPath,
+          'Noted looks in only the first $_rootCap places for binders; open binders elsewhere with Open binder…',
+        ),
+      );
+    }
+    await _noteEventFolders();
+    for (final root in roots) {
+      if (_disposed) return;
+      final List<FileSystemEntity> entries;
+      try {
+        final dir = Directory(root);
+        if (!await dir.exists()) continue;
+        await _binderSeam('root-list', root);
+        entries = await dir.list(followLinks: false).toList();
+      } on FileSystemException catch (e) {
+        if (_refusedForPermission(e)) {
+          if (_rootsRefused.add(_key(root))) debugPrint('Looking for binders in $root: not allowed ($e)');
+        } else {
+          rootsOk = false;
+          debugPrint('Looking for binders in $root failed: $e');
+        }
+        continue;
+      }
+      // Links are never followed, and what isn't a binder folder by its name is
+      // skipped before the cap counts.
+      final folders = [
+        for (final e in entries)
+          if (e is Directory && !_notABinderFolderName(_folderName(e.path))) e.path,
+      ]..sort((a, b) => _folderName(a).compareTo(_folderName(b)));
+      if (folders.length > folderCap) {
+        if (_rootsCut.add(_key(root))) debugPrint('Looking for binders in $root: only the first 1000 folders');
+        capNotes.add(
+          UnreadablePage(
+            root,
+            'Noted looks at only the first $folderCap folders in $root; open binders beyond them with Open binder…',
+          ),
+        );
+        folders.removeRange(folderCap, folders.length);
+      }
+      for (final path in folders) {
+        if (_disposed) return;
+        final k = _key(path);
+        if (listed.contains(k) || standalone.contains(k) || _claims.contains(k)) continue;
+        if (!seenFolders.add(k)) continue;
+        final file = '$path$sep$binderFileName';
+        if (await FileSystemEntity.type(file, followLinks: false) != FileSystemEntityType.file) continue;
+        final read = await _readCandidate(file);
+        if (read.failed) {
+          readsOk = false;
+        } else if (read.id case final id?) {
+          found.putIfAbsent(id, () => []).add((path: _normalizePath(path), title: read.title ?? ''));
+        }
+      }
+    }
+    if (_disposed) return;
+
+    // Classified on the complete, current map.
+    final listedIds = <String, String>{};
+    for (final b in _binders.values) {
+      final id = _binderIds[_key(b.path)];
+      if (id != null) listedIds[id] = b.path;
+    }
+    final alsoIn = <String, List<String>>{};
+    final movedTo = <String, List<String>>{};
+    final duplicates = <String, ({String title, List<String> folders})>{};
+    final adds = <({String id, String path})>[];
+    var recorded = false;
+    var overflow = false;
+    found.forEach((id, folders) {
+      final paths = [for (final f in folders) f.path];
+      final title = folders.first.title.trim().isEmpty ? _folderName(paths.first) : folders.first.title.trim();
+      final at = listedIds[id];
+      if (at != null) {
+        final others = paths.where((p) => _key(p) != _key(at)).toList();
+        if (others.isEmpty) return;
+        ((_binders[at]?.available ?? false) ? alsoIn : movedTo)[_key(at)] = others;
+        return;
+      }
+      if (_settingsKind == _SettingsKind.upgrade) {
+        if (!_removedBinders.contains(id)) {
+          // Recording would evict an id this pass needs: leave it unrecorded and
+          // keep the upgrade open, so no pass ever adds it.
+          if (_removedBinders.length >= _removedCap) {
+            overflow = true;
+            return;
+          }
+          _markRemoved(id);
+          recorded = true;
+        }
+        _upgradeNotes[id] = (title: title, folder: paths.first);
+        return;
+      }
+      if (_removedBinders.contains(id)) return;
+      // An unreadable file, or a root that could not be listed (or was cut), might
+      // hold this id too: nothing new is admitted from such a pass.
+      if (!readsOk || !rootsOk) return;
+      if (paths.length > 1) {
+        duplicates[id] = (title: title, folders: paths);
+      } else {
+        adds.add((id: id, path: paths.single));
+      }
+    });
+    _upgradeNotes.removeWhere((id, _) => !_removedBinders.contains(id) || listedIds.containsKey(id));
+    if (overflow) {
+      capNotes.add(
+        UnreadablePage(
+          defaultBinderFolderPath,
+          "Noted found too many binders it didn't list to remember them all; it adds none of them by itself. Open them with Open binder…",
+        ),
+      );
+    }
+    final changed =
+        _alsoIn.toString() != alsoIn.toString() ||
+        _movedTo.toString() != movedTo.toString() ||
+        _duplicateIds.toString() != duplicates.toString() ||
+        _capNotes.map((n) => n.reason).join() != capNotes.map((n) => n.reason).join();
+    _alsoIn = alsoIn;
+    _capNotes = capNotes;
+    _movedTo = movedTo;
+    _duplicateIds = duplicates;
+    // The upgrade closes when every root that exists was listed and every
+    // candidate was read; only then does `binderIds` get written.
+    var closed = false;
+    if (_settingsKind == _SettingsKind.upgrade && rootsOk && readsOk && !overflow) {
+      _settingsKind = _SettingsKind.current;
+      closed = true;
+    }
+    if (recorded || closed) await _saveSettings();
+    if (_disposed) return;
+    if (changed || recorded) notifyListeners();
+
+    // The found adds go one after another: the next is queued on `_checking`
+    // only when the previous one has ended, so a hand add waits for at most one.
+    if (adds.isNotEmpty) {
+      final chain = _addFoundInTurn(adds);
+      _discoveryJobs.add(chain);
+      unawaited(chain.whenComplete(() => _discoveryJobs.remove(chain)));
+    }
+    final took = DateTime.now().difference(started);
+    if (took > _slowPass) {
+      debugPrint('Looking for binders took ${took.inSeconds} s');
+      // The backstop is stretched while passes are slow (to 5 minutes at most).
+      final most = folderCheckInterval > Duration.zero
+          ? (const Duration(minutes: 5).inMilliseconds / folderCheckInterval.inMilliseconds).ceil()
+          : 10;
+      _backstopTicks = (_backstopTicks * 2).clamp(10, most < 10 ? 10 : most);
+    } else {
+      _backstopTicks = 10;
+    }
+  }
+
+  Future<void> _addFoundInTurn(List<({String id, String path})> adds) async {
+    for (final a in adds) {
+      if (_disposed) return;
+      try {
+        await _queued(() async {
+          await _binderSeam('job', a.path);
+          await _addFound(a.id, a.path);
+        });
+      } on Object catch (e) {
+        debugPrint('Adding the binder in ${a.path} failed: $e');
+      }
+    }
+  }
+
+  bool _notABinderFolderName(String name) =>
+      name.startsWith('.') || name.endsWith('.assets') || name == 'templates';
+
+  // Reads the binder file at [path]. A read that fails (a lock, an offline
+  // placeholder) is `failed`; a file that was read but isn't a binder file with
+  // an id of this form is a settled "not one". The read is reused while the
+  // file's size and time are unchanged.
+  Future<_Candidate> _readCandidate(String path) async {
+    try {
+      final stat = await File(path).stat();
+      final size = stat.size;
+      final time = stat.modified.millisecondsSinceEpoch;
+      final cached = _candidateReads[path];
+      if (cached != null && cached.size == size && cached.time == time) return cached.read;
+      await _binderSeam('candidate-read', path);
+      final bytes = await File(path).readAsBytes();
+      _Candidate result;
+      try {
+        final binder = Binder.parse(utf8.decode(bytes));
+        result = RegExp(r'^[0-9a-f]{16}$').hasMatch(binder.id)
+            ? _Candidate.found(binder.id, binder.title)
+            : const _Candidate.notOne();
+      } on BinderFormatException {
+        result = const _Candidate.notOne();
+      } on FormatException {
+        result = const _Candidate.notOne();
+      }
+      _candidateReads[path] = (size: size, time: time, read: result);
+      return result;
+    } on FileSystemException catch (e) {
+      debugPrint('Reading $path failed: $e');
+      return const _Candidate.failed();
+    }
+  }
+
+  // The job that lists a found binder, after rechecking at the moment it runs.
+  Future<void> _addFound(String id, String path) async {
+    final k = _key(path);
+    if (_binders.keys.any((p) => _key(p) == k) || _claims.contains(k)) return;
+    if (_binderIds.containsValue(id) || _removedBinders.contains(id) || _duplicateIds.containsKey(id)) return;
+    final r = await _listBinder(path, found: true, expectId: id);
+    if (r.refused != null) debugPrint('Found binder in $path not added: ${r.refused}');
+  }
+
+  /// Notes for the "Can't open" list about binders discovery saw and didn't
+  /// add: one id in more than one folder, and binders recorded as removed by
+  /// the first pass of an upgrade.
+  List<UnreadablePage> get discoveryNotes => [
+    ..._capNotes,
+    for (final d in _duplicateIds.values)
+      UnreadablePage(
+        d.folders.first,
+        'Binder "${d.title}" is in more than one folder: ${d.folders.join(', ')}. '
+        'Open the one you want with Open binder…',
+      ),
+    for (final n in _upgradeNotes.values)
+      UnreadablePage(
+        n.folder,
+        'Found binder "${n.title}" in ${n.folder}; it wasn\'t added. Open it with Open binder… to use it',
+      ),
+  ];
+
+  /// Other folders that hold a copy of the available binder at [path] (same
+  /// binder id). They are not used.
+  List<String> binderAlsoIn(String path) => _alsoIn[_key(path)] ?? const [];
+
+  /// Folders where the binder listed (and missing) at [path] was found again:
+  /// it may have been moved. Nothing is changed.
+  List<String> binderMovedTo(String path) => _movedTo[_key(path)] ?? const [];
+
+  // A directory event in a folder discovery looks in: a binder folder may have
+  // arrived there. Only remembered here; the debounced pass looks at it, so the
+  // UI isolate does no file work per event.
+  void _onRootEvent(FileSystemEvent e) {
+    if (_disposed || !e.isDirectory) return;
+    final roots = {for (final r in _discoveryRoots()) _key(r)};
+    var relevant = false;
+    void seen(String p) {
+      if (!roots.contains(_key(File(p).parent.path))) return;
+      if (_notABinderFolderName(_folderName(p))) return;
+      relevant = true;
+      if (_eventFolders.length < 200) _eventFolders.add(p);
+    }
+
+    seen(e.path);
+    if (e is FileSystemMoveEvent && e.destination != null) seen(e.destination!);
+    if (!relevant) return;
+    _rootDebounce?.cancel();
+    _rootDebounce = Timer(discoveryDebounce, () => unawaited(discoverBinders()));
+  }
+
+  // Folders the events named that hold no binder file yet become fresh folders
+  // (checked on the folder ticks); a pass lists the rest anyway.
+  Future<void> _noteEventFolders() async {
+    final paths = _eventFolders.toList();
+    _eventFolders.clear();
+    for (final p in paths) {
+      if (_disposed) return;
+      if (await FileSystemEntity.type(p, followLinks: false) != FileSystemEntityType.directory) continue;
+      final file = '$p${Platform.pathSeparator}$binderFileName';
+      if (await FileSystemEntity.type(file, followLinks: false) == FileSystemEntityType.file) continue;
+      if (_freshFolders.length < 50) _freshFolders.putIfAbsent(_key(p), () => (path: p, since: DateTime.now()));
+    }
+  }
+
+  // On every folder tick: the fresh folders (seen without a binder file) are
+  // statted for 10 minutes; every [_backstopTicks]th tick is a backstop pass.
+  void _discoveryTick() {
+    if (_disposed || _settingsKind == _SettingsKind.unreadable) return;
+    _folderTicks++;
+    final backstop = _folderTicks >= _backstopTicks;
+    if (backstop) _folderTicks = 0;
+    unawaited(_checkFresh(backstop));
+  }
+
+  Future<void> _checkFresh(bool backstop) async {
+    var arrived = false;
+    final now = DateTime.now();
+    for (final e in _freshFolders.entries.toList()) {
+      if (_disposed) return;
+      if (now.difference(e.value.since) > const Duration(minutes: 10)) {
+        _freshFolders.remove(e.key);
+        continue;
+      }
+      final file = '${e.value.path}${Platform.pathSeparator}$binderFileName';
+      if (await FileSystemEntity.type(file, followLinks: false) == FileSystemEntityType.file) {
+        _freshFolders.remove(e.key);
+        arrived = true;
+      }
+    }
+    if (arrived || backstop) unawaited(discoverBinders());
+  }
+
+  // One non-recursive watcher for each root that no folder watcher covers.
+  void _syncRootWatchers(Set<String> watchedDirs) {
+    final wanted = <String, String>{
+      for (final r in _discoveryRoots())
+        if (!watchedDirs.contains(_key(r)) && Directory(r).existsSync()) _key(r): r,
+    };
+    for (final k in _rootWatchers.keys.toList()) {
+      if (!wanted.containsKey(k)) unawaited(_rootWatchers.remove(k)!.cancel());
+    }
+    wanted.forEach((k, dir) {
+      if (_rootWatchers.containsKey(k)) return;
+      try {
+        _rootWatchers[k] = Directory(dir).watch().listen(
+          _onRootEvent,
+          onError: (Object e) => debugPrint('Watching $dir failed: $e'),
+          onDone: () => _rootWatchers.remove(k),
+        );
+      } on FileSystemException catch (e) {
+        debugPrint('Watching $dir failed: $e');
+      }
+    });
+  }
+
   // Folders that come and go -------------------------------------------------
 
   void _startFolderTimer() {
     _folderTimer?.cancel();
     _folderTimer = null;
     if (!watchFiles || _disposed || folderCheckInterval <= Duration.zero) return;
-    _folderTimer = Timer.periodic(folderCheckInterval, (_) => unawaited(checkFolders()));
+    _folderTimer = Timer.periodic(folderCheckInterval, (_) {
+      _discoveryTick();
+      unawaited(checkFolders());
+    });
   }
 
   /// Looks for standalone folders (the default one and the extra ones) that
@@ -6746,9 +7637,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       return;
     }
     _binders[path] = fresh;
+    final changed = _recordBinderId(path, fresh.binder);
     _syncReadOnly();
     _rebuildTree();
     _syncWatchers();
+    if (changed) await _saveSettings();
     await _mergePendingCopies(inQueue: true);
     await _afterResume(await _resumeOpenPage(path, force: true));
     await _recoverPending(onlyLoc: path);
@@ -7662,6 +8555,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       unawaited(w.cancel());
     }
     _watchers.clear();
+    _rootDebounce?.cancel();
+    for (final w in _rootWatchers.values) {
+      unawaited(w.cancel());
+    }
+    _rootWatchers.clear();
     _current?.dispose();
     _attachments?.dispose();
     unawaited(_notices.close());
@@ -7682,4 +8580,23 @@ class _FileUnreadable implements Exception {
 class _Freeze {
   CanvasController? controller;
   NotedPage? page;
+}
+
+// What `binders.json` looked like at load: no file (a new install), a file
+// that already records binder ids, one that doesn't (written by an older build,
+// or damaged: an upgrade, see Notebook.discoverBinders), or one that exists but
+// couldn't be read (discovery stays off for the session).
+enum _SettingsKind { fresh, current, upgrade, unreadable }
+
+// What reading one candidate folder's binder file gave.
+class _Candidate {
+  const _Candidate.found(this.id, this.title) : failed = false;
+  const _Candidate.notOne() : id = null, title = null, failed = false;
+  const _Candidate.failed() : id = null, title = null, failed = true;
+
+  final String? id;
+  final String? title;
+
+  /// An I/O failure (a lock, an offline placeholder): says nothing about the file.
+  final bool failed;
 }

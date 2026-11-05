@@ -104,6 +104,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     final cantOpen = <UnreadablePage>[
       ..._nb.unreadable.where((u) => !_nb.hasLandedNotice(u.path)),
       ..._nb.recoveryDamaged,
+      ..._nb.discoveryNotes,
     ];
     for (final b in _nb.binders) {
       rows.add(_binderHeader(context, b));
@@ -348,13 +349,18 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     if (!b.available) {
       final unreadable = b.status == BinderStatus.unreadable;
       return Tooltip(
-        message: b.reason ?? '',
+        message: [
+          b.reason ?? '',
+          if (_nb.binderMovedTo(b.path).isNotEmpty) 'This binder is now in ${_nb.binderMovedTo(b.path).join(', ')}',
+        ].where((s) => s.isNotEmpty).join('\n'),
         child: SidebarGroupHeader(
           key: ValueKey('binder-header-${b.path}'),
           chipKey: ValueKey('binder-stripe-${b.path}'),
           title: b.title,
           disabled: true,
-          status: unreadable ? "Binder file can't be read" : 'On another device',
+          status: unreadable
+              ? "Binder file can't be read"
+              : (_nb.binderMovedTo(b.path).isNotEmpty ? 'Moved to another folder' : 'On another device'),
           trailing: SidebarMenuButton<String>(
             key: ValueKey('binder-menu-${b.path}'),
             tooltip: 'Binder options',

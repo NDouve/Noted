@@ -73,4 +73,28 @@ void main() {
     expect(entries.whereType<ReadablePage>(), hasLength(1));
     expect(entries.whereType<UnreadablePage>(), hasLength(1));
   });
+
+  group('scan flags (binder discovery)', () {
+    test('createFolder: false on a missing folder fails and creates nothing', () async {
+      final missing = Directory('${dir.path}/nope');
+      await expectLater(PageStore(missing).scan(createFolder: false), throwsA(isA<FileSystemException>()));
+      expect(missing.existsSync(), isFalse);
+      // Control: the default still creates the folder.
+      expect(await PageStore(missing).scan(), isEmpty);
+      expect(missing.existsSync(), isTrue);
+    });
+
+    test('sweep: false leaves set-aside files where they are', () async {
+      final page = NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0));
+      final aside = File('${dir.path}/p1.canvas.1a2b.cas-old')..writeAsStringSync(writePage(page));
+      final entries = await PageStore(dir).scan(sweep: false);
+      expect(aside.existsSync(), isTrue);
+      expect(File('${dir.path}/p1.canvas').existsSync(), isFalse);
+      expect(File(entries.whereType<UnreadablePage>().single.path).uri, aside.uri);
+      // Control: the default sweep puts it back.
+      await PageStore(dir).scan();
+      expect(aside.existsSync(), isFalse);
+      expect(File('${dir.path}/p1.canvas').existsSync(), isTrue);
+    });
+  });
 }

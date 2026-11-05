@@ -93,13 +93,13 @@ Future<void> openExistingFile(Notebook nb, String raw) async {
   final dirKey = key(dir);
   // What this call adds (so a refusal can undo exactly that): judged from the
   // lists before and after the add.
-  final bindersBefore = nb.binders.length;
+  var addedWasRemoved = false; // the binder's id was a removed one before this add
   final foldersBefore = nb.standaloneFolders.length;
   String? added; // the path to remove again if the page is refused
   // Whether the folder or binder was joined before this open (the default
   // folder always is).
-  final wasJoined = inBinder
-      ? nb.binders.any((b) => key(b.path) == dirKey)
+  var wasJoined = inBinder
+      ? true // decided by the add itself below (a found add may list it in between)
       : key(nb.defaultFolderPath) == dirKey ||
             nb.standaloneFolders.any((f) => key(f.path) == dirKey);
 
@@ -110,8 +110,11 @@ Future<void> openExistingFile(Notebook nb, String raw) async {
           .where((b) => key(b.path) == dirKey)
           .map((b) => b.path)
           .firstOrNull;
-      final section = await nb.addBinder(listed ?? dir);
-      if (nb.binders.length > bindersBefore) added = section.path;
+      final result = await nb.addBinderChecked(listed ?? dir);
+      final section = result.section;
+      if (result.added) added = section.path;
+      addedWasRemoved = result.wasRemoved;
+      wasJoined = !result.added;
       if (!section.available) {
         throw NotebookException(
           section.reason ?? "That binder can't be opened.",
@@ -162,7 +165,7 @@ Future<void> openExistingFile(Notebook nb, String raw) async {
     if (undo != null) {
       try {
         if (inBinder) {
-          await nb.removeBinder(undo);
+          await nb.removeBinder(undo, recordRemoved: addedWasRemoved);
         } else {
           await nb.removeStandaloneFolder(undo);
         }

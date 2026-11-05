@@ -571,7 +571,8 @@ void main() {
         await tester.pumpAndSettle();
         await tapAsync(tester, find.text('New binder from template…'));
         await tapWhenFound(tester, find.descendant(of: find.byType(AlertDialog), matching: find.text('Work')));
-        for (var i = 0; i < 60 && nb.binders.length < expected; i++) {
+        // The binder is listed before its cover is shown (the add still checks the folder once more).
+        for (var i = 0; i < 60 && (nb.binders.length < expected || nb.cover?.path != nb.binders.last.path); i++) {
           await tester.runAsync(() => realIoPause(50));
           await tester.pump(const Duration(milliseconds: 50));
         }

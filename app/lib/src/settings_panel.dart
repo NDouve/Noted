@@ -322,6 +322,26 @@ class _SettingsPanelState extends State<SettingsPanel> {
           key: const ValueKey('settings-location-path'),
           style: Theme.of(context).textTheme.bodyMedium,
         ),
+        // Copies of this binder beside it (found by its id): not used.
+        if (binder != null)
+          for (final other in nb.binderAlsoIn(binder)) ...[
+            SizedBox(height: m.space1),
+            _muted(
+              context,
+              'Also in $other (not used)',
+              key: ValueKey('settings-location-also-$other'),
+            ),
+            if (!isMobilePlatform)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  key: ValueKey('settings-location-also-show-$other'),
+                  icon: const Icon(Icons.folder_open_rounded),
+                  label: const Text('Show other copy'),
+                  onPressed: () => _showFolder(other),
+                ),
+              ),
+          ],
         SizedBox(height: m.space2),
         Wrap(
           spacing: m.space2,
