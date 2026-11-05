@@ -334,7 +334,9 @@ const String _standalone = '';
 const String _noBinderFile = 'No $binderFileName in this folder.';
 
 /// Why a binder is unavailable when the file in its folder is another binder's.
-const String _otherBinderReason = 'The binder file in this folder belongs to another binder';
+const String _otherBinderReason =
+    'The binder file in this folder belongs to another binder. '
+    'Remove it from the sidebar and add the folder again to use that binder.';
 
 /// The open notebook: standalone pages and binders (0026), the page on
 /// screen, and autosave.
@@ -5599,7 +5601,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_disposed || !identical(_binders[path], old)) return;
     if (fresh.missing) return; // gone again
     if (fresh.status == BinderStatus.unavailable) {
-      // No binder file (or unusable): as at startup.
+      // No binder file (or unusable): as at startup. What the read found about
+      // the file and the kept copies is shown too.
+      old.fileMissing = fresh.fileMissing;
+      _setKeptTemps(old, fresh.keptTemps);
       await _disableBinder(old, BinderStatus.unavailable, fresh.reason ?? '');
       return;
     }

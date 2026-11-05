@@ -104,8 +104,27 @@ class _HomeState extends State<Home> {
     }
   }
 
+  // A notice that stays until its Close button is pressed. It is a banner, so
+  // the snackbars of ordinary notices neither queue behind it nor dismiss it.
+  void _showStickyNotice(String message) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger.showMaterialBanner(
+      MaterialBanner(
+        content: Text(message),
+        actions: [
+          TextButton(
+            key: const ValueKey('sticky-notice-close'),
+            onPressed: messenger.hideCurrentMaterialBanner,
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   // A one-line notice about attachments (a file too large to embed).
-void _showStickyNotice(String message) {    if (!mounted) return;    final messenger = ScaffoldMessenger.maybeOf(context);    messenger?.hideCurrentSnackBar();    messenger?.showSnackBar(SnackBar(content: Text(message), persist: true, showCloseIcon: true));  }
   void _showNotice(String message) {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.maybeOf(context);

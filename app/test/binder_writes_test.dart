@@ -860,6 +860,79 @@ void main() {
       await settleSaves(t, nb);
       await t.runAsync(stop);
     }, skip: seamsUseCached());
+
+    testWidgets('a folder that comes back with only a complete copy offers Put back', (t) async {
+      t.view.physicalSize = const Size(1200, 900);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      await t.runAsync(() async {
+        await start();
+        final text = fileText();
+        folder.deleteSync(recursive: true);
+        await nb.checkFolders();
+        expect(nb.binders.single.missing, isTrue);
+        folder.createSync();
+        final copy = File('${folder.path}/$binderFileName.1-14.tmp')..writeAsStringSync(text);
+        copy.setLastModifiedSync(DateTime.now().subtract(const Duration(hours: 1)));
+        await nb.checkFolders();
+      });
+      await t.pumpWidget(MaterialApp(home: Home(notebook: nb)));
+      await t.pump();
+      expect(nb.binders.single.fileMissing, isTrue);
+      expect(find.text('a complete copy of the binder file'), findsOneWidget);
+      expect(find.text('Put back'), findsOneWidget);
+      expect(find.text('Delete'), findsNothing);
+
+      await t.pumpWidget(const SizedBox());
+      await settleSaves(t, nb);
+      await t.runAsync(stop);
+    }, skip: seamsUseCached());
+
+    testWidgets('a notice that needs the user stays when an ordinary notice comes', (t) async {
+      t.view.physicalSize = const Size(1200, 900);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      await t.runAsync(() async {
+        await start();
+        await nb.setBinderAiAccess(section.path, AiAccess.guarded);
+      });
+      await t.pumpWidget(MaterialApp(home: Home(notebook: nb)));
+      await t.pump();
+      await t.runAsync(() async {
+        binderFile().writeAsStringSync(Binder.parse(fileText()).withAiAccess(AiAccess.open).write());
+        await nb.checkBinderFile(binderFile().path);
+        await realIoPause(50);
+      });
+      for (var i = 0; i < 20 && find.textContaining('AI access was changed').evaluate().isEmpty; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+        await t.runAsync(() => realIoPause(20));
+      }
+      expect(find.textContaining('AI access was changed to Open'), findsOneWidget);
+
+      // An ordinary notice (a refused change) comes, and goes after its time.
+      seams.failRenames = 5;
+      await t.runAsync(() async {
+        await nb.setBinderBoxType(section.path, 'image', false).then<void>((_) {}, onError: (Object _) {});
+        await realIoPause(50);
+      });
+      for (var i = 0; i < 10 && find.textContaining("wasn't saved").evaluate().isEmpty; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+        await t.runAsync(() => realIoPause(20));
+      }
+      expect(find.textContaining("wasn't saved"), findsOneWidget, reason: 'the ordinary notice showed');
+      for (var i = 0; i < 20; i++) {
+        await t.pump(const Duration(milliseconds: 500));
+        await t.runAsync(() => realIoPause(10));
+      }
+      expect(find.textContaining('AI access was changed to Open'), findsOneWidget, reason: 'still there');
+      await t.tap(find.byKey(const ValueKey('sticky-notice-close')));
+      await t.pumpAndSettle();
+      expect(find.textContaining('AI access was changed'), findsNothing);
+
+      await t.pumpWidget(const SizedBox());
+      await settleSaves(t, nb);
+      await t.runAsync(stop);
+    }, skip: seamsUseCached());
   });
 }
 
