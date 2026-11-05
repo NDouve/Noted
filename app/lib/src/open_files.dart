@@ -122,6 +122,10 @@ Future<void> openExistingFile(Notebook nb, String raw) async {
       }
     }
     final id = pageId!;
+    // A file Noted hasn't listed yet (it arrived after its folder was joined)
+    // is the one asked for: it becomes the page's file, and any other file
+    // with that id is listed as a duplicate. Nothing is written.
+    await nb.adoptUnlistedPageFile(path, id);
     // A file whose page id is already in Noted from elsewhere (a copy) is
     // listed as unreadable by the join; opening the id would open the other.
     final copy = [

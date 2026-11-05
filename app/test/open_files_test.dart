@@ -264,6 +264,94 @@ void main() {
       expect(nb.standaloneFolders, hasLength(1));
     });
 
+    group('a copy that arrives after its folder was joined', () {
+      // A page called Original in [dir] (a binder when [binder]); the notebook
+      // joins the folder, then a copy called Copy appears beside it.
+      Future<({Notebook nb, String id, String orig, String copy})> setup(
+        Directory dir,
+        Directory copyDir, {
+        bool binder = false,
+      }) async {
+        final other = make('other');
+        await other.load();
+        late String id;
+        if (binder) {
+          final s = await other.addBinder(dir.path);
+          id = await other.createPage(binderPath: s.path);
+        } else {
+          id = await other.createPage(folderPath: dir.path);
+        }
+        await other.rename(id, 'Original');
+        await other.flush();
+        final nb = make('main', pages);
+        await nb.load();
+        if (binder) {
+          await nb.addBinder(dir.path);
+        } else {
+          await nb.addStandaloneFolder(dir.path);
+        }
+        if (copyDir.path != dir.path) {
+          if (binder) {
+            await nb.addBinder(copyDir.path);
+          } else {
+            await nb.addStandaloneFolder(copyDir.path);
+          }
+        }
+        final orig = '${dir.path}/$id.canvas';
+        final copy = '${copyDir.path}/copy-of-$id.canvas';
+        File(copy).writeAsStringSync(
+          File(orig).readAsStringSync().replaceAll('Original', 'Copy'),
+        );
+        return (nb: nb, id: id, orig: orig, copy: copy);
+      }
+
+      test('in one standalone folder: the copy opens, the original is the '
+          'duplicate', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        expect(s.nb.pageTitleOf(s.id), 'Original');
+        await openExistingFile(s.nb, s.copy);
+        expect(s.nb.currentId, s.id);
+        expect(s.nb.pageTitleOf(s.id), 'Copy');
+        expect(
+          s.nb.unreadable.map((u) => u.path.replaceAll(r'\', '/')),
+          [s.orig.replaceAll(r'\', '/')],
+        );
+        expect(File(s.orig).readAsStringSync(), contains('Original'));
+        expect(File(s.copy).readAsStringSync(), contains('Copy'));
+      });
+
+      test('between two standalone folders', () async {
+        final a = await Directory('${root.path}/A').create();
+        final b = await Directory('${root.path}/B').create();
+        final s = await setup(a, b);
+        await openExistingFile(s.nb, s.copy);
+        expect(s.nb.currentId, s.id);
+        expect(s.nb.pageTitleOf(s.id), 'Copy');
+        expect(s.nb.unreadable, hasLength(1));
+        expect(File(s.orig).readAsStringSync(), contains('Original'));
+      });
+
+      test('in one binder', () async {
+        final dir = await Directory('${root.path}/Work').create();
+        final s = await setup(dir, dir, binder: true);
+        await openExistingFile(s.nb, s.copy);
+        expect(s.nb.currentId, s.id);
+        expect(s.nb.pageTitleOf(s.id), 'Copy');
+        expect(s.nb.binders.single.unreadable, hasLength(1));
+        expect(File(s.orig).readAsStringSync(), contains('Original'));
+      });
+
+      test('the registered file itself still opens', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await openExistingFile(s.nb, s.orig);
+        expect(s.nb.currentId, s.id);
+        expect(s.nb.pageTitleOf(s.id), 'Original');
+        expect(s.nb.unreadable, isEmpty);
+      });
+    });
+
     test('a copy of a binder is refused and not joined', () async {
       final dir = await Directory('${root.path}/Work').create();
       final copy = await Directory('${root.path}/Work copy').create();

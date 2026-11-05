@@ -835,6 +835,64 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
   }
 
+  /// Makes the page file at [path] (holding page [id]) the file listed for
+  /// that id, when it sits in a folder or binder already joined but was never
+  /// listed (it arrived after the folder was scanned, before any watcher event
+  /// reached it). A different file listed for the id becomes a duplicate, as a
+  /// scan would list it. Nothing is written, renamed or deleted. Does nothing
+  /// for a file that is listed already (as a page or as unreadable), a sync
+  /// client's conflict copy (merged the usual way) or a folder not joined.
+  Future<void> adoptUnlistedPageFile(String path, String id) async {
+    final k = _key(path);
+    if (_pathId.containsKey(k)) return;
+    final listed = [
+      ..._unreadable,
+      for (final f in _folders.values) ...f.unreadable,
+      for (final b in _binders.values) ...b.unreadable,
+    ];
+    if (listed.any((u) => _key(u.path) == k)) return;
+    final loc = _locationOf(path);
+    if (loc == null) return;
+    final NotedPage page;
+    final String text;
+    try {
+      text = await File(path).readAsString();
+      page = readPage(text);
+    } on Object {
+      return; // the usual checks report it
+    }
+    if (page.id != id) return;
+    // A sync client's conflict copy of a listed page is merged the usual way.
+    if (await PageStore.findConflictOriginal(path, page) != null) return;
+    final st = _storeOf(loc);
+    await flush();
+    final oldLoc = _loc[id];
+    String? oldKey;
+    for (final e in _pathId.entries) {
+      if (e.value == id) oldKey = e.key;
+    }
+    if (oldLoc != null && oldKey != null) {
+      final oldPath = _storeOf(oldLoc).pathFor(id);
+      if (id == currentId) await _closeCurrent();
+      if (File(oldPath).existsSync()) {
+        _known.remove(oldKey);
+        _knownUnreadable(oldLoc, oldKey, oldPath, 'duplicate page id $id');
+      } else {
+        _fileGone(oldLoc, oldKey, oldPath);
+      }
+    }
+    _dropUnreadable(loc, path, rebuild: false);
+    st.adopt(id, path);
+    _pathId[k] = id;
+    _known[k] = text;
+    _metas[id] = page.meta;
+    _loc[id] = loc;
+    _setConflict(id, hasConflicts(page));
+    _touch(loc);
+    onPageContent?.call(loc, page);
+    _rebuildTree();
+  }
+
   Future<void> open(String id) async {
     await _open(id);
     // Only once the page is open: a failed open leaves the notice for the next
