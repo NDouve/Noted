@@ -118,6 +118,9 @@ class _NoteEditorState extends State<_NoteEditor>
   /// long as the page is open. Null until then.
   NoteEditorState? _editor;
 
+  /// The note states that are in the tree, by box id.
+  static final Map<String, List<_NoteEditorState>> _live = {};
+
   /// Whether the editor widget is in the tree. Otherwise the light view is.
   bool _editing = false;
 
@@ -169,6 +172,7 @@ class _NoteEditorState extends State<_NoteEditor>
     super.initState();
     installMathSlicing();
     installLinkGuard();
+    (_live[widget.box.boxId] ??= []).add(this);
     _focus.addListener(_focusChanged);
     widget.box.find.addListener(_findChanged);
     _shown = widget.box.data;
@@ -254,10 +258,12 @@ class _NoteEditorState extends State<_NoteEditor>
   Future<void> editLink() async {
     final editor = _editor;
     if (!canInsert || editor == null) {
-      debugPrint('Noted: insert link skipped: note not editable');
+      linkLog('insert link skipped: note not editable');
       return;
     }
-    await editLinkIn(context, editor);
+    final boxId = widget.box.boxId;
+    final canvas = _canvasOf(this);
+    await editLinkIn(context, editor, editorNow: () => _liveEditorOf(boxId, canvas));
   }
 
   @override
@@ -288,6 +294,25 @@ class _NoteEditorState extends State<_NoteEditor>
   }
 
   // The editor's life ---------------------------------------------------
+
+  // The canvas (page) a note state is on, or null.
+  static Object? _canvasOf(_NoteEditorState s) =>
+      s.mounted ? s.context.findAncestorStateOfType<PageCanvasState>()?.controller : null;
+
+  /// The editor of the note box [boxId] on the page [canvas] as it is now,
+  /// which may not be the one asked about earlier: the box replaces its editor
+  /// when its data changes from outside, and a rebuilt box has a new state.
+  /// Made if the box has none (it is in the light view); null if the box is
+  /// gone or read-only. A box of the same id on another page is never taken.
+  static EditorState? _liveEditorOf(String boxId, Object? canvas) {
+    for (final state in (_live[boxId] ?? const <_NoteEditorState>[]).reversed) {
+      if (!state.mounted || !state.widget.editable) continue;
+      if (canvas != null && !identical(_canvasOf(state), canvas)) continue;
+      state._ensureEditor();
+      return state._editor;
+    }
+    return null;
+  }
 
   /// Makes the editor state from the note's data, if there is none.
   void _ensureEditor() {
@@ -487,6 +512,8 @@ class _NoteEditorState extends State<_NoteEditor>
   @override
   void dispose() {
     NoteCommandFocus.release(this);
+    final live = _live[widget.box.boxId];
+    if (live != null && (live..remove(this)).isEmpty) _live.remove(widget.box.boxId);
     widget.box.find.removeListener(_findChanged);
     _focus.removeListener(_focusChanged);
     _disposeEditor();

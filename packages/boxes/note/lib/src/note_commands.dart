@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 
 import 'math_input.dart';
+import 'note_link.dart' show linkLog;
 
 /// Ids of the note module's commands.
 abstract final class NoteCommands {
@@ -250,7 +251,10 @@ List<Command> noteCommands(CommandHost host) {
       // Needs a caret or selection in the focused note.
       enabled: () => canInsert() && editor()?.selection != null,
       listenable: state,
-      invoke: () => NoteCommandFocus.active.value?.editLink(),
+      invoke: () {
+        linkLog('insert link: Link command invoked');
+        return NoteCommandFocus.active.value?.editLink();
+      },
     ),
     Command(
       id: NoteCommands.clearFormatting,

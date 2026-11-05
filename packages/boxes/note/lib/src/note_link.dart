@@ -84,18 +84,110 @@ final class RemoveLink extends LinkChoice {
   const RemoveLink();
 }
 
+/// Where the link path's diagnostics go. Fixed lines only: never link text or
+/// note content. The app replaces it with one that also writes a log file, so a
+/// release build (which prints nowhere) can be traced.
+void Function(String line) linkLog = (line) => debugPrint('Noted: $line');
+
+/// What the user sees when the link could not be put in the note.
+const String linkNotAddedNotice = "The note changed while the link dialog was open, so the link wasn't added.";
+
+// What a saved selection stood on before the dialog: the blocks' types and the
+// text it covers (for a range), or the text around it (for a caret). A change
+// from outside that moved or rewrote the text makes it no longer match, and
+// the link is not put on other text.
+class _Anchor {
+  _Anchor(this.blocks, this.selected, this.before, this.after);
+
+  /// The path and type of every block in the range.
+  final List<String> blocks;
+  final String selected;
+
+  /// The text before the start (in the start block) and after the end (in the
+  /// end block).
+  final String before;
+  final String after;
+
+  static const int _around = 24;
+
+  static _Anchor? of(EditorState editor, Selection s) {
+    final startNode = editor.getNodeAtPath(s.start.path);
+    final endNode = editor.getNodeAtPath(s.end.path);
+    final startText = startNode?.delta?.toPlainText();
+    final endText = endNode?.delta?.toPlainText();
+    if (startNode == null || endNode == null || startText == null || endText == null) return null;
+    if (s.start.offset < 0 || s.start.offset > startText.length || s.end.offset < 0 || s.end.offset > endText.length) {
+      return null;
+    }
+    final blocks = <String>[];
+    final String selected;
+    if (s.isCollapsed) {
+      selected = '';
+      blocks.add('${startNode.path}:${startNode.type}');
+    } else if (startNode == endNode) {
+      selected = startText.substring(s.start.offset, s.end.offset);
+      blocks.add('${startNode.path}:${startNode.type}');
+    } else {
+      final parts = <String>[];
+      for (final n in editor.getNodesInSelection(s)) {
+        blocks.add('${n.path}:${n.type}');
+        final t = n.delta?.toPlainText();
+        if (t == null) continue;
+        if (identical(n, startNode)) {
+          parts.add(t.substring(s.start.offset));
+        } else if (identical(n, endNode)) {
+          parts.add(t.substring(0, s.end.offset));
+        } else {
+          parts.add(t);
+        }
+      }
+      selected = parts.join('\n');
+    }
+    final from = s.start.offset;
+    final to = s.end.offset;
+    return _Anchor(
+      blocks,
+      selected,
+      startText.substring(from < _around ? 0 : from - _around, from),
+      endText.substring(to, to + _around > endText.length ? endText.length : to + _around),
+    );
+  }
+
+  bool holdsIn(EditorState editor, Selection s) {
+    final now = _Anchor.of(editor, s);
+    return now != null &&
+        now.blocks.length == blocks.length &&
+        [for (var i = 0; i < blocks.length; i++) now.blocks[i] == blocks[i]].every((same) => same) &&
+        now.selected == selected &&
+        now.before == before &&
+        now.after == after;
+  }
+}
+
 /// Inserts or edits the link on [editor]'s selection (Ctrl+K): asks for the
 /// address, with a Remove link button when there is one already.
 ///
 /// With a bare caret inside a link, the whole link is edited; with a bare
 /// caret elsewhere, the address is inserted as linked text.
 ///
-/// Each early return says so in the debug log (no link text, no note content),
-/// so a link that did not appear can be traced to the step that skipped it.
-Future<void> editLinkIn(BuildContext context, EditorState editor) async {
+/// [editorNow] gives the note's editor as it is once the dialog closes: the
+/// note replaces its editor when its data changes from outside (a reload, a
+/// sync) or when its box is rebuilt, and the link then goes into the new one,
+/// at the selection saved before the dialog if that is still in the text. If
+/// it can't be applied the user is told ([linkNotAddedNotice]); it is never
+/// dropped silently.
+///
+/// Each early return says so in the log (no link text, no note content), so a
+/// link that did not appear can be traced to the step that skipped it.
+Future<void> editLinkIn(
+  BuildContext context,
+  EditorState editor, {
+  EditorState? Function()? editorNow,
+}) async {
+  linkLog('insert link: started');
   var selection = editor.selection?.normalized;
   if (selection == null) {
-    debugPrint('Noted: insert link skipped: no selection');
+    linkLog('insert link skipped: no selection');
     return;
   }
   if (selection.isCollapsed) {
@@ -108,34 +200,52 @@ Future<void> editLinkIn(BuildContext context, EditorState editor) async {
     }
   }
   final current = linkOfSelection(editor, selection);
+  final anchor = _Anchor.of(editor, selection);
+  // The messenger outlives the note if its widgets are replaced meanwhile.
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  linkLog('insert link: dialog opened (collapsed: ${selection.isCollapsed}, has link: ${current != null})');
   final choice = await showLinkDialog(context, initial: current ?? '', canRemove: current != null);
-  if (editor.isDisposed) {
-    debugPrint('Noted: insert link skipped: editor disposed');
+  linkLog('insert link: dialog closed (${switch (choice) { null => 'cancelled', SetLink() => 'address', RemoveLink() => 'remove' }})');
+  if (editor.isDisposed) linkLog('insert link: editor disposed while the dialog was open');
+  if (choice == null) {
+    linkLog('insert link skipped: dialog gave no address');
     return;
   }
+  void notAdded(String why) {
+    linkLog('insert link skipped: $why');
+    if (messenger != null && messenger.mounted) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(const SnackBar(content: Text(linkNotAddedNotice)));
+    }
+  }
+
+  // With [editorNow], the note's editor as it is now, never the old one: a
+  // note that can no longer be edited has none, and a link drawn into the old
+  // editor would never be saved.
+  final EditorState? target = editorNow == null ? editor : editorNow();
+  if (target == null) return notAdded('note gone or not editable');
+  if (!identical(target, editor)) linkLog('insert link: using the note\'s current editor');
+  if (target.isDisposed) return notAdded('editor disposed');
+  if (anchor == null || !anchor.holdsIn(target, selection)) return notAdded('selection no longer on the same text');
   // The dialog had the focus: give the editor back its selection.
-  editor.updateSelectionWithReason(selection, reason: SelectionUpdateReason.uiEvent);
+  target.updateSelectionWithReason(selection, reason: SelectionUpdateReason.uiEvent);
   switch (choice) {
-    case null:
-      debugPrint('Noted: insert link skipped: dialog gave no address');
-      return;
     case RemoveLink():
-      await editor.formatDelta(selection, {AppFlowyRichTextKeys.href: null});
+      await target.formatDelta(selection, {AppFlowyRichTextKeys.href: null});
     case SetLink(:final url):
       if (selection.isCollapsed) {
-        final node = editor.getNodeAtPath(selection.start.path);
-        if (node == null || node.delta == null) {
-          debugPrint('Noted: insert link skipped: block not found');
-          return;
-        }
-        final transaction = editor.transaction
+        final node = target.getNodeAtPath(selection.start.path);
+        if (node == null || node.delta == null) return notAdded('block not found');
+        final transaction = target.transaction
           ..insertText(node, selection.startIndex, url, attributes: {AppFlowyRichTextKeys.href: url})
           ..afterSelection = Selection.collapsed(
             Position(path: selection.start.path, offset: selection.startIndex + url.length),
           );
-        await editor.apply(transaction);
+        await target.apply(transaction);
+        linkLog('insert link: inserted at caret');
       } else {
-        await editor.formatDelta(selection, {AppFlowyRichTextKeys.href: url});
+        await target.formatDelta(selection, {AppFlowyRichTextKeys.href: url});
+        linkLog('insert link: applied to selection');
       }
   }
 }

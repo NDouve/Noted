@@ -75,9 +75,10 @@ final CommandShortcutEvent _openLinksCommand = openLinksCommand.copyWith(
 /// appflowy's link menu.
 final CommandShortcutEvent _linkCommand = showLinkMenuCommand.copyWith(
   handler: (editorState) {
+    linkLog('insert link: Ctrl+K reached the editor');
     final target = NoteCommandFocus.active.value;
     if (target == null || !target.canInsert) {
-      debugPrint('Noted: insert link skipped: no note has the caret');
+      linkLog('insert link skipped: no note has the caret');
       return KeyEventResult.ignored;
     }
     unawaited(target.editLink());
