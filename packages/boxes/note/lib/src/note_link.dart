@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
@@ -89,16 +90,14 @@ final class RemoveLink extends LinkChoice {
 /// With a bare caret inside a link, the whole link is edited; with a bare
 /// caret elsewhere, the address is inserted as linked text.
 ///
-/// [editorNow] gives the note's editor as it is once the dialog closes: the note
-/// can replace its editor meanwhile (it reloads when its data changes from
-/// outside), and the link then goes into the new one.
-Future<void> editLinkIn(
-  BuildContext context,
-  EditorState editor, {
-  EditorState? Function()? editorNow,
-}) async {
+/// Each early return says so in the debug log (no link text, no note content),
+/// so a link that did not appear can be traced to the step that skipped it.
+Future<void> editLinkIn(BuildContext context, EditorState editor) async {
   var selection = editor.selection?.normalized;
-  if (selection == null) return;
+  if (selection == null) {
+    debugPrint('Noted: insert link skipped: no selection');
+    return;
+  }
   if (selection.isCollapsed) {
     final at = linkAt(editor, selection.start);
     if (at != null) {
@@ -110,19 +109,25 @@ Future<void> editLinkIn(
   }
   final current = linkOfSelection(editor, selection);
   final choice = await showLinkDialog(context, initial: current ?? '', canRemove: current != null);
-  editor = editorNow?.call() ?? editor;
-  if (editor.isDisposed) return;
+  if (editor.isDisposed) {
+    debugPrint('Noted: insert link skipped: editor disposed');
+    return;
+  }
   // The dialog had the focus: give the editor back its selection.
   editor.updateSelectionWithReason(selection, reason: SelectionUpdateReason.uiEvent);
   switch (choice) {
     case null:
+      debugPrint('Noted: insert link skipped: dialog gave no address');
       return;
     case RemoveLink():
       await editor.formatDelta(selection, {AppFlowyRichTextKeys.href: null});
     case SetLink(:final url):
       if (selection.isCollapsed) {
         final node = editor.getNodeAtPath(selection.start.path);
-        if (node == null || node.delta == null) return;
+        if (node == null || node.delta == null) {
+          debugPrint('Noted: insert link skipped: block not found');
+          return;
+        }
         final transaction = editor.transaction
           ..insertText(node, selection.startIndex, url, attributes: {AppFlowyRichTextKeys.href: url})
           ..afterSelection = Selection.collapsed(
@@ -261,13 +266,14 @@ String _fullyDecoded(String s) {
   return current;
 }
 
-String _decoded(String s) {
-  try {
-    return Uri.decodeFull(s);
-  } on Object {
-    return s;
-  }
-}
+// Decodes each run of valid %XX escapes and leaves a bad `%` (a lone one,
+// `%zz`) as it is, so one bad escape does not stop the rest decoding. Bytes
+// that are not valid UTF-8 become U+FFFD.
+String _decoded(String s) => s.replaceAllMapped(RegExp(r'(?:%[0-9a-fA-F]{2})+'), (m) {
+  final run = m[0]!;
+  final bytes = [for (var i = 0; i < run.length; i += 3) int.parse(run.substring(i + 1, i + 3), radix: 16)];
+  return utf8.decode(bytes, allowMalformed: true);
+});
 
 // An absolute path: a drive (X:\ or X:/), a share (\\ or //) or a root (/ or \).
 bool _isAbsolutePath(String s) => RegExp(r'^([a-zA-Z]:[\\/]|[\\/])').hasMatch(s);

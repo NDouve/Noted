@@ -151,10 +151,6 @@ class _NoteEditorState extends State<_NoteEditor>
   bool _revealScheduled = false;
   bool _demoteScheduled = false;
 
-  /// Link dialogs open from this note: the editor is not swapped for the
-  /// light view while one is (or while its result is being applied).
-  int _linkDialogs = 0;
-
   /// The editor is there only because the light view can't draw this note
   /// yet (nobody asked to edit it); it goes back to the light view as soon
   /// as the note can be drawn, without waiting for a focus change.
@@ -257,16 +253,8 @@ class _NoteEditorState extends State<_NoteEditor>
   @override
   Future<void> editLink() async {
     final editor = _editor;
-    if (!canInsert || editor == null || editor.selection == null) return;
-    // The editor stays in the tree while the dialog is up, and the link goes
-    // into whichever editor the note has when it closes.
-    _linkDialogs++;
-    try {
-      await editLinkIn(context, editor, editorNow: () => _editor);
-    } finally {
-      _linkDialogs--;
-      if (mounted && !_focus.hasFocus) _scheduleDemote();
-    }
+    if (!canInsert || editor == null) return;
+    await editLinkIn(context, editor);
   }
 
   @override
@@ -402,7 +390,7 @@ class _NoteEditorState extends State<_NoteEditor>
   void _demote() {
     final editor = _editor;
     if (!mounted || !_editing || editor == null) return;
-    if (!noteLightViewEnabled || _linkDialogs > 0) return;
+    if (!noteLightViewEnabled) return;
     if (_focus.hasFocus || keepEditorFocusNotifier.shouldKeepFocus) return;
     final route = _route;
     if (route != null && !route.isCurrent) return;
