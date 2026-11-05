@@ -568,8 +568,15 @@ Future<void> _settleExisting(
       return;
     }
   } on FileSystemException {
-    // The target (or the source) could not be read: a file that is being
-    // written or is locked. Left alone; the source stays.
+    // An error reading the source is the move's own failure: it propagates.
+    final probe = await src.open();
+    try {
+      await probe.read(1);
+    } finally {
+      await probe.close();
+    }
+    // The target could not be read: a file that is being written or is
+    // locked. Left alone; the source stays.
     r.stillChanging.add(target);
     return;
   }

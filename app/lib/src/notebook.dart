@@ -1537,6 +1537,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  /// A put-back that failed: what [_postIncomplete] says for an incomplete move,
+  /// and always where what could not be put back is kept.
+  void _postKept(Object e, Directory kept, String targetPlace, String sourcePlace) {
+    if (e is _IncompleteAttachments) _postIncomplete(e, targetPlace, sourcePlace);
+    if (_notices.isClosed) return;
+    _notices.add(
+      'Attachments could not be put back in $targetPlace${e is _IncompleteAttachments ? '' : ' (${describeError(e)})'}. '
+      'What could not be put back is still saved in ${kept.path}.',
+    );
+  }
+
   void _postCopyNotices(AttachmentCopy c, String targetPlace, String sourcePlace) {
     if (_notices.isClosed) return;
     for (final n in _copyNotices(c, targetPlace, sourcePlace)) {
@@ -1871,7 +1882,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           stash.remove(ids[i]);
         } on FileSystemException catch (e) {
           debugPrint('Putting back the attachments of page ${ids[i]} failed: $e');
-          if (e is _IncompleteAttachments) _postIncomplete(e, 'the page', 'the folder of deleted pages');
+          _postKept(e, dir, 'the page', 'the folder of deleted pages');
           // Stays in the stash, and the trash folder is never removed while it
           // holds what could not be put back.
           keepTrash.add(dir.path);
@@ -1898,9 +1909,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             handedOff = true;
           } on Object catch (e) {
             debugPrint('Keeping the attachments of page $id for recovery failed: $e');
-            if (e is _IncompleteAttachments) {
-              _postIncomplete(e, 'the recovery folder', 'the folder of deleted pages');
-            }
+            _postKept(e, stash[id]!, 'the recovery folder', 'the folder of deleted pages');
             keepTrash.add(stash[id]!.path);
           }
         }
@@ -1959,7 +1968,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           );
         } on FileSystemException catch (e) {
           debugPrint('Putting back the attachments of page $p failed: $e');
-          if (e is _IncompleteAttachments) _postIncomplete(e, 'the page', 'the folder of deleted pages');
+          _postKept(e, dir, 'the page', 'the folder of deleted pages');
           keepTrash.add(dir.path); // what is left there is never cleaned up with the trash
         }
       }
@@ -2575,9 +2584,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // the old key stays until each page has settled (build note 9).
       try {
         rekeys.addAll(await _rekeyBegin(ids, fromStore, toStore, fromLoc, toLoc));
-      } on NotebookException {
+      } on NotebookException catch (e) {
         await removeCopies();
-        rethrow;
+        throw withKept(e);
       }
       await syncHook?.call('move-rekeyed', toStore.directory.path);
       // Every source is checked before any is deleted. One that changed (or
@@ -2756,7 +2765,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
         if (gone.isEmpty && both.isEmpty && changed.isEmpty && copyLeft.isEmpty) {
           debugPrint('Removing the old page files failed: $e');
-          throw NotebookException('Could not remove the old files, so nothing was moved.${_osReason(e)}');
+          throw withKept(NotebookException('Could not remove the old files, so nothing was moved.${_osReason(e)}'));
         }
         // Only a page with no source moves. A page whose parent ended up in
         // the other location goes to the top level of its own (0059).
