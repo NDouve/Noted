@@ -43,11 +43,13 @@ bool _isBinderName(String name) => name == binderFileName || isBinderTempName(na
 /// time is skipped: it may be a write in flight on another device. An older one
 /// whose bytes equal the current binder file is deleted (with
 /// [deleteFileIfUnchanged]). Any other is **kept, never promoted**, and
-/// returned.
+/// returned. [onYoung] is told, for each skipped young temporary file, how long
+/// until it is old enough.
 Future<List<KeptBinderTemp>> sweepBinderTemps(
   Directory directory, {
   Duration minAge = const Duration(minutes: 10),
   DateTime? now,
+  void Function(Duration remaining)? onYoung,
 }) async {
   final kept = <KeptBinderTemp>[];
   if (!await directory.exists()) return kept;
@@ -78,7 +80,10 @@ Future<List<KeptBinderTemp>> sweepBinderTemps(
   for (final f in temps) {
     try {
       final age = clock.difference(await f.lastModified());
-      if (age < minAge) continue;
+      if (age < minAge) {
+        onYoung?.call(minAge - age);
+        continue;
+      }
       final bytes = await f.readAsBytes();
       if (current != null && _same(bytes, current)) {
         await deleteFileIfUnchanged(f.path, bytes);

@@ -15,6 +15,8 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'support/binder_seams.dart';
+
 /// A box type that takes AI writes: `{"by": code id|null, "text": text}`.
 class _Codec extends BoxCodec<Map<String, Object?>> {
   const _Codec(this.typeId, {this.writes = true});
@@ -145,7 +147,11 @@ void main() {
     if (root.existsSync()) await root.delete(recursive: true);
   });
 
-  Notebook make({PageStore? store, Directory? recovery}) {
+  Notebook make({
+    PageStore? store,
+    Directory? recovery,
+    BinderStore Function(Directory)? binderStores,
+  }) {
     final nb = Notebook(
       store ?? PageStore(pages),
       modules,
@@ -155,6 +161,7 @@ void main() {
       aiAccess: service,
       aiTimings: timings,
       recoveryDirectory: recovery,
+      binderStoreFactory: binderStores ?? BinderStore.new,
     );
     nb.aiApprover = (r) {
       asked.add(r);
@@ -1372,6 +1379,30 @@ void main() {
       t.nb.current!.updateMeta(t.nb.current!.page.meta.withBoxType('test.ai', false));
       expect(t.nb.tree[sub], isNotNull);
       expect(await codeOf(t.nb, req('bs', code)), AiLinkCode.notWritable);
+    });
+
+    test('a box type the binder allows again is refused while that change is not saved', () async {
+      final seams = Seams();
+      final nb = make(binderStores: (d) => SeamStore(d, seams));
+      await nb.load();
+      final s = await nb.addBinder(folder.path);
+      await nb.createPage(binderPath: s.path);
+      nb.current!.insertBox(box('bb'));
+      await nb.flush();
+      await nb.setBinderBoxType(s.path, 'test.ai', false);
+      final code = await issue('bb');
+      expect(await codeOf(nb, req('bb', code)), AiLinkCode.notWritable);
+
+      // The binder allows the type again, but the write is held.
+      final gate = seams.holdNext();
+      final allow = nb.setBinderBoxType(s.path, 'test.ai', null);
+      expect(nb.binderBoxType(s.path, 'test.ai'), isNull, reason: 'the screen shows it allowed');
+      expect(await codeOf(nb, req('bb', code)), AiLinkCode.notWritable);
+      expect(dataOf(nb, 'bb')['text'], '');
+
+      gate.complete();
+      await allow;
+      expect((await nb.handleAiLink(req('bb', code))).ok, isTrue);
     });
 
     Future<({Notebook nb, String page, String binderId})> lockedBinder() async {

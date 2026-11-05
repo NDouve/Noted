@@ -30,7 +30,8 @@
 //     another device set. Binder settings (`binderSetting`: plain, a file
 //     replaced behind the app's back, and a refused write) are drawn from
 //     their own random stream after any step, so the other steps are as they
-//     were. Run against the old cached save, 12 of the 24 sequences failed
+//     were. With `--dart-define=CACHED_SAVE=true` the binder steps run against
+//     the old cached save, and 12 of the 24 sequences fail
 //     ("the binder file of ...", "the refused ... change was reported as saved").
 //
 // Normalisations. Boxes are compared as id to text only, so these are not
@@ -287,7 +288,14 @@ class _Chaos extends PageStore {
 /// Faults for the binder file's writes: the next [failRenames] renames fail.
 class _BinderFaults {
   int failRenames = 0;
+
+  /// The binders this run last read or wrote, by folder (for [_cachedSave]).
+  final Map<String, Binder> cache = {};
 }
+
+/// Run the binder steps against the old cached save, to see the sequences that
+/// fail on it: `--dart-define=CACHED_SAVE=true`.
+const bool _cachedSave = bool.fromEnvironment('CACHED_SAVE');
 
 class _BinderChaos extends BinderStore {
   _BinderChaos(super.directory, this.faults) : super(retryDelay: Duration.zero);
@@ -295,23 +303,58 @@ class _BinderChaos extends BinderStore {
   final _BinderFaults faults;
 
   @override
+  Future<BinderRead> read() async {
+    final r = await super.read();
+    if (r is BinderFound) faults.cache[directory.path] = r.binder;
+    return r;
+  }
+
+  @override
+  Future<BinderCreated> create(Binder binder, {void Function()? beforePublish}) async {
+    final r = await super.create(binder, beforePublish: beforePublish);
+    if (r == BinderCreated.created) faults.cache[directory.path] = binder;
+    return r;
+  }
+
+  @override
   Future<BinderUpdate> update(
     Binder Function(Binder onDisk) change, {
     required String binderId,
     void Function()? beforeCompare,
     void Function()? beforeRename,
-  }) => super.update(
-    change,
-    binderId: binderId,
-    beforeCompare: beforeCompare,
-    beforeRename: () {
-      if (faults.failRenames > 0) {
-        faults.failRenames--;
-        throw FileSystemException('injected rename failure', file.path);
+  }) async {
+    if (_cachedSave) {
+      // The behaviour before R-2: write the cached binder with the change on it.
+      final cached = faults.cache[directory.path];
+      if (cached == null) return const BinderRefused(BinderRefusal.gone, 'nothing cached');
+      final next = change(cached);
+      final tmp = File('${file.path}.tmp');
+      try {
+        await tmp.writeAsString(next.write(), flush: true);
+        if (faults.failRenames > 0) {
+          faults.failRenames--;
+          throw FileSystemException('injected rename failure', file.path);
+        }
+        await tmp.rename(file.path);
+      } on FileSystemException catch (e) {
+        return BinderRefused(BinderRefusal.inUse, e.message);
       }
-      beforeRename?.call();
-    },
-  );
+      faults.cache[directory.path] = next;
+      return BinderUpdated(next, next.write(), wrote: true);
+    }
+    return super.update(
+      change,
+      binderId: binderId,
+      beforeCompare: beforeCompare,
+      beforeRename: () {
+        if (faults.failRenames > 0) {
+          faults.failRenames--;
+          throw FileSystemException('injected rename failure', file.path);
+        }
+        beforeRename?.call();
+      },
+    );
+  }
 }
 
 /// What the model keeps of a binder: AI access, cover colour and title, and the

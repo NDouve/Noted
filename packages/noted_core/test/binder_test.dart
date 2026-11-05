@@ -257,7 +257,10 @@ void main() {
       file.writeAsStringSync(body);
       final young = temp('$binderFileName.1-4.tmp', 'x', at: DateTime.now());
       final fixed = temp('$binderFileName.tmp', body);
-      expect(await sweepBinderTemps(dir), isEmpty);
+      final waits = <Duration>[];
+      expect(await sweepBinderTemps(dir, onYoung: waits.add), isEmpty);
+      expect(waits, hasLength(1));
+      expect(waits.single, greaterThan(const Duration(minutes: 9)), reason: 'time until it is old enough');
       expect(young.existsSync(), isTrue);
       expect(fixed.existsSync(), isFalse);
     });

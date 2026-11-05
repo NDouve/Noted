@@ -348,8 +348,8 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
   // itself). A complete copy of a binder file that is missing can be put back;
   // any other can be deleted, if it still holds what is listed.
   Widget _keptTempRow(BuildContext context, BinderSection b, KeptBinderTemp k) {
-    final name = k.path.split(RegExp(r'[\/]')).last;
-    final putBack = k.complete && b.status == BinderStatus.unavailable && !b.missing;
+    final name = k.path.split(RegExp(r'[\\/]')).last;
+    final putBack = k.complete && b.fileMissing;
     return Tooltip(
       message: name,
       child: SidebarRow(

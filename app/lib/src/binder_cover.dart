@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 import 'package:noted_core/noted_core.dart';
@@ -119,11 +121,23 @@ class _BinderCoverState extends State<BinderCover> {
           if (_owner.text != b.owner) 'owner': (b.owner, _owner.text),
         });
     }
-    widget.notebook.updateBinder(
-      widget.path,
-      title: _title.text,
-      description: _description.text,
-      owner: _owner.text,
+    final mine = Map.of(_sent);
+    unawaited(
+      widget.notebook
+          .updateBinder(
+            widget.path,
+            title: _title.text,
+            description: _description.text,
+            owner: _owner.text,
+          )
+          .then((saved) {
+            // Once a save has landed, the field is no longer "refused": a later
+            // change from another device is shown, not overwritten by this text.
+            if (!saved) return;
+            mine.forEach((field, sent) {
+              if (_sent[field] == sent) _sent.remove(field);
+            });
+          }),
     );
   }
 

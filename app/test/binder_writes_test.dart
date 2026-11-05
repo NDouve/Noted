@@ -298,6 +298,35 @@ void main() {
       expect(section.reason, 'The binder file in this folder belongs to another binder');
       expect(section.binder, isNull);
       expect(fileText(), other, reason: 'the other binder\'s file is not written');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(notices.any((n) => n.contains("wasn't saved")), isTrue, reason: 'the refusal is announced');
+      await stop();
+    });
+
+    test('another binder\'s file is still not adopted after a damaged file in between', () async {
+      await start();
+      final original = fileText();
+      final id = section.saved!.id;
+      final other = Binder.create(id: 'otherbinder00001', title: 'Other', color: binderPalette.first).write();
+      binderFile().writeAsStringSync(other);
+      await nb.checkBinderFile(binderFile().path);
+      expect(section.status, BinderStatus.unavailable);
+      expect(section.expectedBinderId, id);
+
+      binderFile().writeAsStringSync('{oops');
+      await nb.checkBinderFile(binderFile().path);
+      final damaged = nb.binders.single;
+      expect(damaged.status, BinderStatus.unreadable);
+      expect(damaged.expectedBinderId, id, reason: 'carried over to the reopened section');
+
+      binderFile().writeAsStringSync(other);
+      await nb.checkBinderFile(binderFile().path);
+      expect(nb.binders.single.binder, isNull, reason: 'the other binder is not adopted');
+
+      binderFile().writeAsStringSync(original);
+      await nb.checkBinderFile(binderFile().path);
+      expect(nb.binders.single.available, isTrue);
+      expect(nb.binders.single.binder!.id, id);
       await stop();
     });
   });
@@ -476,6 +505,21 @@ void main() {
       expect(s.unreadable, isEmpty);
       await stop();
     });
+
+    test('with no binder file, a young complete copy is looked at again once it is old enough', () async {
+      await start();
+      final text = fileText();
+      binderFile().deleteSync();
+      // Ten minutes old in a second: too young for now.
+      final t = File('${folder.path}/$binderFileName.1-8.tmp')..writeAsStringSync(text);
+      t.setLastModifiedSync(DateTime.now().subtract(const Duration(minutes: 10) - const Duration(milliseconds: 300)));
+      await nb.checkBinderFile(binderFile().path);
+      expect(section.status, BinderStatus.unavailable);
+      expect(section.keptTemps, isEmpty);
+      await Future<void>.delayed(const Duration(milliseconds: 2200));
+      expect(section.keptTemps.single.complete, isTrue);
+      await stop();
+    });
   });
 
   group('16. results for a binder that was removed are ignored', () {
@@ -486,9 +530,16 @@ void main() {
       final held = nb.setBinderAiAccess(section.path, AiAccess.open).catchError((Object _) {});
       await Future<void>.delayed(const Duration(milliseconds: 30)); // the first write is under way
       final queued = nb.updateBinder(section.path, title: 'Queued');
+      final setting = nb
+          .setBinderBoxType(section.path, 'image', false)
+          .then<Object?>((_) => null, onError: (Object e) => e);
       final removed = nb.removeBinder(section.path);
       c0.complete();
       await Future.wait([held, queued, removed]);
+      expect(await queued, isFalse);
+      final thrown = await setting;
+      expect(thrown, isA<NotebookException>());
+      expect((thrown! as NotebookException).message, 'The binder is no longer available');
       expect(seams.updates, 1);
       expect(fileText(), isNot(contains('Queued')));
       await stop();
@@ -552,6 +603,52 @@ void main() {
       await settleSaves(t, nb);
       await t.runAsync(stop);
     });
+
+    testWidgets('a landed save does not hold the field against another device', (t) async {
+      t.view.physicalSize = const Size(1200, 800);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      await t.runAsync(start);
+      await t.pumpWidget(
+        MaterialApp(home: Scaffold(body: BinderCover(notebook: nb, path: section.path))),
+      );
+      await t.pump();
+      String text(String key) => t.widget<TextField>(find.byKey(ValueKey(key))).controller!.text;
+
+      await t.tap(find.byKey(const ValueKey('cover-title')));
+      await t.enterText(find.byKey(const ValueKey('cover-title')), 'A');
+      await t.tap(find.byKey(const ValueKey('cover-owner'))); // saves
+      await t.pump();
+      await settleSaves(t, nb);
+      await t.pump();
+      expect(Binder.parse(fileText()).title, 'A');
+
+      // Another device sets the title back.
+      binderFile().writeAsStringSync(Binder.parse(fileText()).withTitle('Work').write());
+      unawaited(nb.checkBinderFile(binderFile().path));
+      for (var i = 0; i < 100 && section.title != 'Work'; i++) {
+        await t.pump(const Duration(milliseconds: 100));
+        await t.runAsync(() => realIoPause(50));
+      }
+      expect(text('cover-title'), 'Work', reason: 'the other device\'s value is shown');
+
+      final before = seams.updates;
+      await t.tap(find.byKey(const ValueKey('cover-description'))); // a blur
+      await t.pump();
+      await settleSaves(t, nb);
+      await t.pump();
+      expect(seams.updates, before, reason: 'nothing is written on blur');
+      expect(Binder.parse(fileText()).title, 'Work');
+
+      await t.pumpWidget(const SizedBox()); // leaving the cover
+      await t.runAsync(() async {
+        await realIoPause(50);
+      });
+      await settleSaves(t, nb);
+      expect(seams.updates, before, reason: 'nothing is written on dispose');
+      expect(Binder.parse(fileText()).title, 'Work');
+      await t.runAsync(stop);
+    });
   });
 
   group('sidebar', () {
@@ -562,7 +659,8 @@ void main() {
       late File tmp;
       await t.runAsync(() async {
         await start();
-        tmp = File('${folder.path}/$binderFileName.1-9.tmp')..writeAsStringSync('half a binder');
+        tmp = File('${folder.path}/$binderFileName.1-9.tmp')
+          ..writeAsStringSync(Binder.parse(fileText()).withTitle('Interrupted').write());
         tmp.setLastModifiedSync(DateTime.now().subtract(const Duration(hours: 1)));
         await nb.checkBinderFile(binderFile().path);
       });

@@ -233,6 +233,10 @@ class BinderSection {
 
   bool get available => status == BinderStatus.available;
 
+  /// The folder is there but has no binder file (a kept complete copy of it can
+  /// be put back).
+  bool get fileMissing => status == BinderStatus.unavailable && !missing && reason == _noBinderFile;
+
   /// The binder file can't be read: the pages are listed and can be viewed,
   /// but nothing in the binder can be changed.
   bool get readOnly => status == BinderStatus.unreadable;
@@ -325,6 +329,9 @@ String _normalizePath(String path) {
 
 /// The location of standalone pages; binder pages use the binder's path.
 const String _standalone = '';
+
+/// Why a binder is unavailable when its folder has no binder file.
+const String _noBinderFile = 'No $binderFileName in this folder.';
 
 /// The open notebook: standalone pages and binders (0026), the page on
 /// screen, and autosave.
@@ -3016,7 +3023,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         "The binder file couldn't be saved${_osReason(e)}",
       );
     }
-    if (result == null || !current()) return null;
+    if (result == null || !current()) return 'The binder is no longer available';
     final key = _key(path);
     switch (result) {
       case BinderUpdated(:final binder, :final written):
@@ -3034,6 +3041,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // the old one. The binder becomes unavailable, as when the watcher
           // reads such a file.
           s.pending.clear();
+          _notices.add("Binder ${s.title}: the change wasn't saved. ${reason.endsWith('.') ? reason : '$reason.'}");
           s.expectedBinderId = s.saved?.id;
           _showBinder(s);
           notifyListeners();
@@ -3126,9 +3134,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // else, and before the page scan, which would list set-aside files.
       // With no binder file, a complete temp is offered back (see the kept
       // list), never promoted.
-      final (first, swept) = await _underFolderLock(dir, () async {
-        final temps = await sweepBinderTemps(dir);
-        return (await binders.read(), temps);
+      final (first, swept, young) = await _underFolderLock(dir, () async {
+        final (temps, young) = await _sweepBinder(dir);
+        return (await binders.read(), temps, young);
       });
       kept = swept;
       BinderRead read = first;
@@ -3144,7 +3152,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             ? BinderFound(made, made.write())
             : await _underFolderLock<BinderRead>(dir, binders.read);
       }
-      if (read is BinderMissing) return unavailable('No $binderFileName in this folder.');
+      if (read is BinderMissing) {
+        // A young temp may be the only copy: look again once it is old enough.
+        if (young != null) _scheduleBinderRecheck(path, after: young + const Duration(seconds: 1));
+        return unavailable(_noBinderFile);
+      }
       if (read is BinderReadFailed) {
         _scheduleBinderRecheck(path);
         return unavailable("The binder file can't be read right now (${read.reason}).");
@@ -4762,11 +4774,25 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return r;
   }
 
-  void _scheduleBinderRecheck(String path) {
+  // Sweeps the leftovers of interrupted binder writes in [dir] (under the folder
+  // lock). Also says how long until the youngest-skipped temporary file is old
+  // enough to be looked at, or null if none was skipped.
+  Future<(List<KeptBinderTemp>, Duration?)> _sweepBinder(Directory dir) async {
+    Duration? wait;
+    final kept = await sweepBinderTemps(
+      dir,
+      onYoung: (r) {
+        if (wait == null || r > wait!) wait = r;
+      },
+    );
+    return (kept, wait);
+  }
+
+  void _scheduleBinderRecheck(String path, {Duration after = const Duration(seconds: 10)}) {
     if (_disposed) return;
     final key = _key(path);
     _binderRechecks[key]?.cancel();
-    _binderRechecks[key] = Timer(const Duration(seconds: 10), () {
+    _binderRechecks[key] = Timer(after, () {
       _binderRechecks.remove(key);
       if (!_disposed) unawaited(checkBinderFile(_binderFilePath(path), force: true));
     });
@@ -4810,9 +4836,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Leftovers are swept and the file read in one job under the folder lock.
     // What was read is acted on when the lock is released, with nothing awaited
     // before it is adopted.
-    final (read, kept) = await _underFolderLock(dir, () async {
-      final temps = await sweepBinderTemps(dir);
-      return (await binderStoreFactory(dir).read(), temps);
+    final (read, kept, young) = await _underFolderLock(dir, () async {
+      final (temps, young) = await _sweepBinder(dir);
+      return (await binderStoreFactory(dir).read(), temps, young);
     });
     if (_disposed || !identical(_binders[section.path], section)) return;
     _setKeptTemps(section, kept);
@@ -4827,12 +4853,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           await _binderGone(section);
           return;
         }
+        // A young temp may be the only copy: look again once it is old enough.
+        if (young != null) _scheduleBinderRecheck(section.path, after: young + const Duration(seconds: 1));
         _binderText.remove(dirKey);
         if (section.status == BinderStatus.unavailable) return;
         await _disableBinder(
           section,
           BinderStatus.unavailable,
-          'No $binderFileName in this folder.',
+          _noBinderFile,
         );
       case BinderFound(:final binder, :final text):
         if (!force && section.available && _binderText[dirKey] == text) return;
@@ -4942,6 +4970,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     final fresh = await _openBinder(path);
     if (_disposed) return;
+    // A binder that was disabled for belonging to another one keeps waiting for
+    // its own file, even through a damaged file in between.
+    if (!fresh.available) fresh.expectedBinderId = _binders[path]?.expectedBinderId;
     _binders[path] = fresh;
     _syncReadOnly();
     _rebuildTree();
