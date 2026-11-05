@@ -190,13 +190,23 @@ Future<void> _launch(String url) async {
     }
     // A name with a control character (NUL, a line break) is not opened: the
     // system may read it differently from what was checked.
-    if (_controlChars.hasMatch(path) || _controlChars.hasMatch(_decoded(text))) {
+    if (_controlChars.hasMatch(path) || _controlChars.hasMatch(_fullyDecoded(text))) {
       _notice(messenger);
       return;
     }
     // The final target is what runs: `..` segments are resolved before the check.
     final resolved = target.normalizePath().toFilePath();
-    if (needsOpenConfirmation(displayName: path) || needsOpenConfirmation(displayName: resolved)) {
+    // The system decodes escapes again (once or twice) before it runs a file, so
+    // the name is also checked fully decoded, and a target with a `%` in it
+    // always asks, whatever its extension.
+    final decodedPath = _fullyDecoded(path);
+    final decodedResolved = _fullyDecoded(resolved);
+    final escaped = text.contains('%') || path.contains('%') || resolved.contains('%');
+    if (escaped ||
+        needsOpenConfirmation(displayName: path) ||
+        needsOpenConfirmation(displayName: resolved) ||
+        needsOpenConfirmation(displayName: decodedPath) ||
+        needsOpenConfirmation(displayName: decodedResolved)) {
       if (context == null || !context.mounted) return;
       final shown = path.replaceAll(RegExp(r'[\/]+$'), '').split(RegExp(r'[\/]')).last;
       if (!await confirmOpenRunnable(context, shown)) return;
@@ -210,6 +220,16 @@ Future<void> _launch(String url) async {
 
 // The text with percent escapes decoded; as it is if it does not decode (a
 // literal % in a path).
+String _fullyDecoded(String s) {
+  var current = s;
+  for (var i = 0; i < 10; i++) {
+    final next = _decoded(current);
+    if (next == current) break;
+    current = next;
+  }
+  return current;
+}
+
 String _decoded(String s) {
   try {
     return Uri.decodeFull(s);

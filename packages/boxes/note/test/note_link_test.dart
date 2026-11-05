@@ -481,13 +481,56 @@ void main() {
       expect(launched, isEmpty);
     });
 
-    testWidgets('a path with a literal percent sign is not refused', (t) async {
+    testWidgets('a path with a literal percent sign is not refused, but asks', (t) async {
       await pump(t, [
         {'insert': 'plain'},
       ]);
-      await t.runAsync(() => linkOpener(r'C:\docs\100%.txt'));
+      unawaited(linkOpener(r'C:\docs\100%.txt'));
+      await frames(t);
       expect(find.text("This link can't be opened."), findsNothing);
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+      await t.tap(find.byKey(const ValueKey('open-confirm-open')));
+      await frames(t);
       expect(launched, hasLength(1));
+    });
+
+    // The system decodes escapes before it runs a file: any % asks.
+    for (final path in [
+      r'C:\x\tool%2Ejar',
+      'file:///C:/x/tool%252Ejar',
+      r'\\host\share\x%2Ecmd',
+      r'C:\x\%252E%252E\y.txt',
+      r'C:\Windows\System32\calc%2Eexe',
+    ]) {
+      testWidgets('the escaped target $path asks; Cancel opens nothing', (t) async {
+        await pump(t, [
+          {'insert': 'plain'},
+        ]);
+        unawaited(linkOpener(path));
+        await frames(t);
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+        expect(launched, isEmpty);
+        await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+        await frames(t);
+        expect(launched, isEmpty);
+      });
+    }
+
+    testWidgets('Ctrl+click on an escaped file: link asks', (t) async {
+      await ctrlClick(t, 'file:///C:/x/calc%252Eexe');
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+      expect(launched, isEmpty);
+    });
+
+    testWidgets('c:foo.jar (a drive without a root) gets the notice on every platform', (t) async {
+      await pump(t, [
+        {'insert': 'plain'},
+      ]);
+      unawaited(linkOpener('c:foo.jar'));
+      await frames(t);
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+      expect(launched, isEmpty);
+      expect(find.text("This link can't be opened."), findsOneWidget);
     });
 
     testWidgets('a name with a control character is refused with a notice', (t) async {
