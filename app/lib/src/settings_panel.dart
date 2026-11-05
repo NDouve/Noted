@@ -8,7 +8,9 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'ai/ai_access_service.dart';
+import 'device_storage.dart';
 import 'notebook.dart';
+import 'page_location.dart';
 
 /// Opens the settings panel of page [pageId] (the "Page settings" button in
 /// the page header): Background, Images and files, AI access and the box
@@ -207,7 +209,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
           ),
           SizedBox(height: m.space3),
         ],
-        if (widget.isPage) ...[_background(context), _divider(m)],
+        if (widget.isPage) ...[_location(context), _divider(m), _background(context), _divider(m)],
         _imagesAndFiles(context),
         _divider(m),
         _aiAccess(context),
@@ -275,6 +277,89 @@ class _SettingsPanelState extends State<SettingsPanel> {
     ConfigSourceKind.binder => '$value (keep even if the binder changes)',
     ConfigSourceKind.appDefault || ConfigSourceKind.own => '$value (keep even if the app default changes)',
   };
+
+  // Location -------------------------------------------------------------------
+
+  Widget _location(BuildContext context) {
+    final m = NotedMetrics.of(context);
+    final id = _pid!;
+    final folder = pageFolderPath(nb, id);
+    final binder = nb.binderOfPage(id);
+    String? binderTitle;
+    if (binder != null) {
+      for (final b in nb.binders) {
+        if (b.path == binder) binderTitle = (b.binder?.title.trim().isEmpty ?? true) ? b.path : b.title;
+      }
+    }
+    // A subpage is stored beside its parent page.
+    final parentId = nb.treeOfPage(id).parentIdOf(id);
+    final parentTitle = parentId == null ? null : nb.pageTitleOf(parentId);
+    final canPick = nb.pickFolder != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _heading(context, 'Location'),
+        SizedBox(height: m.space1),
+        if (binderTitle != null) ...[
+          _muted(
+            context,
+            'In the binder "$binderTitle". Its page files are in this folder:',
+            key: const ValueKey('settings-location-binder'),
+          ),
+          SizedBox(height: m.space1),
+        ] else if (parentId != null)
+          _muted(
+            context,
+            'Same as its parent page'
+            '${parentTitle == null || parentTitle.isEmpty ? '' : ' "$parentTitle"'}. The file is in this folder:',
+            key: const ValueKey('settings-location-parent'),
+          )
+        else
+          _muted(context, 'This page\'s file is in this folder:'),
+        SizedBox(height: m.space1),
+        SelectableText(
+          folder ?? 'Not found on this device',
+          key: const ValueKey('settings-location-path'),
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+        SizedBox(height: m.space2),
+        Wrap(
+          spacing: m.space2,
+          children: [
+            if (!isMobilePlatform)
+              OutlinedButton.icon(
+                key: const ValueKey('settings-location-show'),
+                icon: const Icon(Icons.folder_open_rounded),
+                label: Text(showFolderLabel()),
+                onPressed: folder == null ? null : () => _showFolder(folder),
+              ),
+            if (canPick)
+              OutlinedButton.icon(
+                key: const ValueKey('settings-location-move'),
+                icon: const Icon(Icons.drive_file_move_rounded),
+                label: const Text('Move to folder…'),
+                onPressed: _readOnly ? null : _moveToFolder,
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _showFolder(String folder) async {
+    final ok = await showFolderInFileManager(folder);
+    if (mounted) {
+      setState(
+        () => _error = ok ? null : "Couldn't open $folder. It may be on another device or not available now.",
+      );
+    }
+  }
+
+  Future<void> _moveToFolder() => _run(() async {
+    final path = await nb.pickFolder?.call();
+    if (path == null) return;
+    await nb.moveToFolder(_pid!, path);
+  });
 
   // Background -----------------------------------------------------------------
 

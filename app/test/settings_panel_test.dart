@@ -516,7 +516,10 @@ void main() {
       await t.tap(find.byKey(const ValueKey('settings-close')));
       await t.pumpAndSettle();
 
-      await t.tap(find.byKey(ValueKey('binder-settings-${b.path}')));
+      expect(find.byKey(ValueKey('binder-settings-${b.path}')), findsNothing, reason: 'no icon in the header');
+      await t.tap(find.byKey(ValueKey('binder-menu-${b.path}')));
+      await t.pumpAndSettle();
+      await t.tap(find.text('Binder settings…'));
       await t.pumpAndSettle();
       expect(find.text('Binder settings'), findsOneWidget);
       await t.tap(find.byKey(const ValueKey('settings-close')));
@@ -562,7 +565,7 @@ void main() {
       final at = t.getCenter(find.byKey(ValueKey('page-row-$a'))) + const Offset(-40, 0);
       await t.runAsync(() => t.tapAt(at, buttons: kSecondaryButton));
       await t.pumpAndSettle();
-      for (final s in ['New subpage', 'Rename', 'Move to folder…', 'Save as template…', 'Delete']) {
+      for (final s in ['New subpage', 'Rename', 'Move to folder…', 'Page settings…', 'Save as template…', 'Delete']) {
         expect(find.text(s), findsOneWidget, reason: s);
       }
       for (final s in settingsWords) {
@@ -573,7 +576,7 @@ void main() {
 
       await t.runAsync(() => t.tap(find.byKey(ValueKey('binder-menu-${b.path}'))));
       await t.pumpAndSettle();
-      for (final s in ['New page', 'Open cover', 'Save as template…', 'Remove from sidebar']) {
+      for (final s in ['New page', 'Open cover', 'Binder settings…', 'Save as template…', 'Remove from sidebar']) {
         expect(find.text(s), findsWidgets, reason: s);
       }
       for (final s in settingsWords) {

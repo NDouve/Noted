@@ -12,6 +12,7 @@ import 'package:noted/src/binder_colors.dart' show binderSidebarColor;
 import 'package:noted/src/binder_cover.dart' show parseBinderColor;
 import 'package:noted/main.dart' show buildModules;
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/open_files.dart';
 import 'package:noted/src/recovery_notice.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -454,6 +455,21 @@ void foldersBindersSuite() {
         t.view.reset();
         await env.dispose();
       }
+    });
+
+    testWidgets('opening a page file from another folder joins that folder and shows the page', (t) async {
+      await withSession(t, 'openfile', (s) async {
+        final extra = s.env.folder('FromExplorer');
+        final id = await s.nb.createPage(folderPath: extra.path);
+        await s.nb.flush();
+        // A second look at the same file, as a double-click would do.
+        await s.nb.removeStandaloneFolder(s.nb.standaloneFolders.single.path);
+        expect(s.nb.pageTitleOf(id), isNull);
+        await openExistingFile(s.nb, '${extra.path}$_sep$id.canvas');
+        await s.pump(600);
+        expect(s.nb.currentId, id);
+        expect(s.nb.standaloneFolders, hasLength(1));
+      });
     });
 
     testWidgets('step 182: a damaged recovery entry appears under Can\'t open with its reason', (t) async {

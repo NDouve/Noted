@@ -29,6 +29,7 @@ import 'src/device_storage.dart';
 import 'src/app_theme.dart';
 import 'src/home.dart';
 import 'src/notebook.dart';
+import 'src/open_files.dart';
 import 'src/recovery_lock.dart';
 import 'src/recovery_notice.dart';
 import 'src/recovery_store.dart';
@@ -67,7 +68,7 @@ String? computerName() {
 /// process (the OS lets go of it when the app exits or dies).
 AiRunningLock? appRunningLock;
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   // The bundled Inter font is SIL OFL 1.1; its licence ships with it.
   LicenseRegistry.addLicense(() async* {
@@ -90,7 +91,7 @@ Future<void> main() async {
   // reason lets Noted run with recovery refused (state 4 with the cause).
   final recoveryLock = RecoveryLock.besides(defaultRecoveryDirectory(defaultBindersFile()));
   if (recoveryLock.acquireSync() == RecoveryLockResult.heldByOther) {
-    runApp(const AlreadyOpenApp());
+    runApp(AlreadyOpenApp(hadFiles: args.isNotEmpty));
     return;
   }
   // --- end -------------------------------------------------------------------
@@ -98,8 +99,11 @@ Future<void> main() async {
   final notebook = buildAppNotebook(settings: settings, recoveryLock: recoveryLock);
   FileClipboard.read = readClipboardFiles;
   final services = await startAiServices(notebook, defaultAiDataFolder());
-  runApp(NotedApp(notebook: notebook, settings: settings, aiLink: services.link, runningLock: services.lock));
+  final openFiles = OpenFileService(notebook);
+  runApp(NotedApp(notebook: notebook, settings: settings, aiLink: services.link, runningLock: services.lock, openFiles: openFiles));
   await notebook.load();
+  // Files named on the command line, then those a second launch hands over.
+  if (!isMobilePlatform) unawaited(openFiles.start(args));
   // After the first frame, so the window can show the questions.
   WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(notebook.askPendingAiApprovals()));
 }
@@ -107,19 +111,26 @@ Future<void> main() async {
 /// Shown instead of the app when another Noted process already owns the
 /// recovery folder (R-1 v5): there is only the one choice.
 class AlreadyOpenApp extends StatelessWidget {
-  const AlreadyOpenApp({super.key});
+  const AlreadyOpenApp({super.key, this.hadFiles = false});
+
+  /// A file was named on the command line: it is not opened by this process.
+  final bool hadFiles;
 
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'Noted',
     debugShowCheckedModeBanner: false,
     theme: buildNotedTheme(Brightness.light, touch: false),
+    darkTheme: buildNotedTheme(Brightness.dark, touch: false),
+    themeMode: ThemeMode.system,
     home: Scaffold(
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text('Noted is already open.', key: ValueKey('already-open-text')),
+            if (hadFiles)
+              const Text('Open the file from there.', key: ValueKey('already-open-file')),
             const SizedBox(height: 16),
             FilledButton(
               key: const ValueKey('already-open-quit'),
@@ -231,8 +242,18 @@ Future<AiLinkServer?> startAiLink(Notebook notebook, Directory dataFolder) async
   }
 }
 
+/// What the app does to the notebook before it exits: writes unsaved edits,
+/// then drops a delete that Undo could still reach (its Deleted bar goes away
+/// with the window without ever reporting that it closed). False: the user chose
+/// to stay (the question Your changes will be lost), and nothing is dropped.
+Future<bool> saveBeforeExit(Notebook notebook) async {
+  if (!await notebook.prepareToExit()) return false;
+  await notebook.discardPendingDelete();
+  return true;
+}
+
 class NotedApp extends StatefulWidget {
-  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock});
+  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock, this.openFiles});
 
   final Notebook notebook;
 
@@ -242,6 +263,9 @@ class NotedApp extends StatefulWidget {
 
   /// The lock that says Noted is running; let go of when the app exits.
   final AiRunningLock? runningLock;
+
+  /// Opens files named at launch or by a second launch; its notices show here.
+  final OpenFileService? openFiles;
 
   /// This device's settings (the theme). Null: the defaults, not saved.
   final AppSettings? settings;
@@ -262,6 +286,10 @@ class _NotedAppState extends State<NotedApp> {
     widget.notebook.aiApprover = (request) => showAiApprovalDialog(_navigatorKey, request);
     // Questions about changes that couldn't be saved (R-1 v5) are asked here too.
     widget.notebook.questioner = (q, title) => showTroubleQuestion(_navigatorKey, q, title);
+    widget.openFiles?.notify = (message) {
+      final context = _navigatorKey.currentContext;
+      if (context != null) ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(message)));
+    };
     _lifecycle = AppLifecycleListener(
       // Write unsaved edits before the window closes.
       onExitRequested: () async {
@@ -270,8 +298,8 @@ class _NotedAppState extends State<NotedApp> {
         debugPrint('Noted: window close requested; saving before exit.');
         // --- Saving at quit has a time limit (R-1 v5) ---------------------------
         // What doesn't save goes to recovery as on leaving a page; the question
-        // Your changes will be lost can cancel the quit.
-        if (!await widget.notebook.prepareToExit()) return AppExitResponse.cancel;
+        // "Your changes will be lost" can cancel the quit (and keeps a pending delete).
+        if (!await saveBeforeExit(widget.notebook)) return AppExitResponse.cancel;
         try {
           await showRecoveryNoticeOnExit(widget.notebook, _navigatorKey);
         } on Object catch (e) {

@@ -147,6 +147,14 @@ void main() {
     expect(ask('a.pdf', null), isFalse);
   });
 
+  test('cleanNameForDisplay replaces line and paragraph separators and NEL', () {
+    final clean = cleanNameForDisplay('a b c\u0085d.exe');
+    for (final c in [' ', ' ', '\u0085']) {
+      expect(clean, isNot(contains(c)));
+    }
+    expect(clean, 'a·b·c·d.exe');
+  });
+
   test('cleanNameForDisplay replaces bidi and control characters', () {
     final clean = cleanNameForDisplay('a\u202Efdp.exe\u2066\u200F\u061C\n');
     expect(clean, isNot(contains('\u202E')));

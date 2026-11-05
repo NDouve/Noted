@@ -7,10 +7,17 @@
 
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
+#include <flutter/method_channel.h>
+#include <flutter/standard_method_codec.h>
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "win32_window.h"
+
+// The dwData of the WM_COPYDATA a second launch sends: a UTF-16 path.
+constexpr ULONG_PTR kOpenFileCopyData = 0x4E4F5001;  // "NOP\1"
 
 // A window that does nothing but host a Flutter view.
 class FlutterWindow : public Win32Window {
@@ -32,6 +39,13 @@ class FlutterWindow : public Win32Window {
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // The "noted/open_files" channel to Dart, for a file a second launch hands
+  // over (WM_COPYDATA, dwData == kOpenFileCopyData). Paths that arrive before
+  // Dart calls "ready" are held and returned by that call.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> open_channel_;
+  std::vector<std::string> pending_paths_;
+  bool dart_ready_ = false;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

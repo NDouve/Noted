@@ -38,6 +38,32 @@ BoxRecord _note(String id, List<Map<String, Object?>> delta) {
 }
 
 void main() {
+  group('resolvedTargetName', () {
+    // Pure string work: the same on every platform.
+    for (final sep in [r'\', '/']) {
+      for (final dots in ['..', '%2e%2e', '%2E%2E', '%252e%252e', '%252E%252E', '.%2e', '%252e.']) {
+        test('$dots with "$sep" names the folder it resolves to', () {
+          expect(resolvedTargetName('C:${sep}tools${sep}evil.jar${sep}x$sep$dots'), 'evil.jar');
+          expect(resolvedTargetName('C:${sep}tools${sep}evil.jar$sep$dots${sep}other.txt'), 'other.txt');
+        });
+      }
+      test('an encoded separator and parent resolve with "$sep"', () {
+        expect(resolvedTargetName('C:${sep}t${sep}evil.jar${sep}x%5c%252e%252e'), 'evil.jar');
+      });
+    }
+    test('a bad escape does not stop the others decoding', () {
+      expect(resolvedTargetName(r'C:\d\evil.jar\x%zz\%2e%2e'), 'evil.jar');
+      expect(resolvedTargetName(r'C:\d\evil.jar\x%zz\%252e%252e'), 'evil.jar');
+      expect(resolvedTargetName('C:/d/evil.jar/x%/%252e%252e'), 'evil.jar');
+      expect(resolvedTargetName(r'C:\d\evil.jar\%2e%2e\last%'), 'last%');
+      expect(resolvedTargetName(r'C:\d\evil.jar\x\%2e%2e%'), '..%');
+    });
+    test('invalid UTF-8 escapes do not stop decoding', () {
+      expect(resolvedTargetName(r'C:\d\evil.jar\x%c0%ae\%2e%2e'), 'evil.jar');
+      expect(resolvedTargetName(r'C:\d\evil.jar\%c0%ae\..'), 'evil.jar');
+    });
+  });
+
   late CanvasController c;
 
   Future<void> frames(WidgetTester t, [int n = 6]) async {
@@ -164,6 +190,68 @@ void main() {
       'insert': 'https://noted.example',
       'attributes': {'href': 'https://noted.example'},
     });
+  });
+
+
+  testWidgets('a bare caret from a click: Enter in the dialog inserts the address as a link', (t) async {
+    await pump(t, [
+      {'insert': 'go: '},
+    ]);
+    final editor = await focusNote(t, dx: 200);
+    await ctrlK(t);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
+    await t.testTextInput.receiveAction(TextInputAction.done);
+    await frames(t, 20);
+    expect(find.text('Insert link'), findsNothing);
+    expect(delta(editor), [
+      {'insert': 'go: '},
+      {
+        'insert': 'https://noted.example',
+        'attributes': {'href': 'https://noted.example'},
+      },
+    ]);
+    expect((c.page.node('n')! as BoxRecord).data!.text, contains('https://noted.example'));
+  });
+
+  testWidgets('the toolbar button links a selection, and a bare caret inserts the address', (t) async {
+    await pump(t, [
+      {'insert': 'see the docs'},
+    ]);
+    var editor = await focusNote(t);
+    editor.selection = Selection.single(path: [0], startOffset: 8, endOffset: 12);
+    await frames(t);
+    await t.tap(find.byTooltip('Link (Ctrl+K)'));
+    await frames(t);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://a.example');
+    await t.tap(find.byKey(const ValueKey('link-save')));
+    await frames(t, 20);
+    expect(delta(editor).last, {
+      'insert': 'docs',
+      'attributes': {'href': 'https://a.example'},
+    });
+    editor = t.widget<AppFlowyEditor>(find.byType(AppFlowyEditor)).editorState;
+    editor.selection = Selection.collapsed(Position(path: [0], offset: 4));
+    await frames(t);
+    await t.tap(find.byTooltip('Link (Ctrl+K)'));
+    await frames(t);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'b.example');
+    await t.tap(find.byKey(const ValueKey('link-save')));
+    await frames(t, 20);
+    expect(delta(editor).any((op) => (op['attributes'] as Map?)?['href'] == 'https://b.example'), isTrue);
+  });
+
+  testWidgets('the Link command is disabled while the focused note has no caret', (t) async {
+    await pump(t, [
+      {'insert': 'text'},
+    ]);
+    final link = canvas(t).commands[NoteCommands.link]!;
+    final editor = await focusNote(t);
+    expect(link.enabled, isTrue);
+    editor.selection = null;
+    await frames(t);
+    expect(link.enabled, isFalse);
+    await ctrlK(t);
+    expect(find.text('Insert link'), findsNothing);
   });
 
   testWidgets('the Link command is enabled only in a note and opens the same dialog', (t) async {
@@ -554,6 +642,42 @@ void main() {
         await frames(t);
       });
     }
+
+    testWidgets('the dialog names evil.jar for a doubly escaped .. at the end', (t) async {
+      await pump(t, [
+        {'insert': 'plain'},
+      ]);
+      unawaited(linkOpener(r'C:\tools\evil.jar\x\%252e%252e'));
+      await frames(t);
+      expect(t.widget<Text>(find.byKey(const ValueKey('open-confirm-name'))).data, 'evil.jar');
+      await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+      await frames(t);
+      expect(launched, isEmpty);
+    });
+
+    testWidgets('a bad escape before an escaped .. still names the resolved file', (t) async {
+      await pump(t, [
+        {'insert': 'plain'},
+      ]);
+      unawaited(linkOpener(r'C:\d\evil.jar\x%zz\%2e%2e'));
+      await frames(t);
+      expect(t.widget<Text>(find.byKey(const ValueKey('open-confirm-name'))).data, 'evil.jar');
+      await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+      await frames(t);
+    });
+
+    testWidgets('evil.j%c0ar asks and is not launched', (t) async {
+      await pump(t, [
+        {'insert': 'plain'},
+      ]);
+      unawaited(linkOpener(r'C:\d\evil.j%c0ar'));
+      await frames(t);
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+      expect(launched, isEmpty);
+      await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+      await frames(t);
+      expect(launched, isEmpty);
+    });
 
     testWidgets('the dialog shows evil.jar for evil.jar with .. segments', (t) async {
       await pump(t, [

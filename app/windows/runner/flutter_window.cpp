@@ -7,6 +7,7 @@
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "utils.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -29,6 +30,27 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+
+  open_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "noted/open_files",
+          &flutter::StandardMethodCodec::GetInstance());
+  open_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) {
+        if (call.method_name() == "ready") {
+          dart_ready_ = true;
+          flutter::EncodableList list;
+          for (const auto& p : pending_paths_) {
+            list.push_back(flutter::EncodableValue(p));
+          }
+          pending_paths_.clear();
+          result->Success(flutter::EncodableValue(list));
+        } else {
+          result->NotImplemented();
+        }
+      });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -44,6 +66,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  open_channel_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -66,6 +89,28 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   }
 
   switch (message) {
+    case WM_COPYDATA: {
+      // A second launch handing over a file to open. Dart checks the path.
+      const auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
+      if (data != nullptr && data->dwData == kOpenFileCopyData &&
+          data->lpData != nullptr && data->cbData >= sizeof(wchar_t) &&
+          data->cbData <= 65536 && open_channel_) {
+        const auto* w = static_cast<const wchar_t*>(data->lpData);
+        std::wstring path(w, data->cbData / sizeof(wchar_t));
+        while (!path.empty() && path.back() == L'\0') path.pop_back();
+        std::string utf8 = Utf8FromUtf16(path.c_str());
+        if (!utf8.empty()) {
+          if (dart_ready_) {
+            open_channel_->InvokeMethod(
+                "open", std::make_unique<flutter::EncodableValue>(utf8));
+          } else {
+            pending_paths_.push_back(utf8);
+          }
+        }
+        return TRUE;
+      }
+      break;
+    }
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
       break;

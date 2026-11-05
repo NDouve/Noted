@@ -5,6 +5,7 @@
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
+#include <shellapi.h>
 
 #include <cstdint>
 #include <cwchar>
@@ -24,7 +25,8 @@ namespace {
 //
 // The first instance holds a Local\ mutex and marks its window with a window
 // property named after the same key; a second launch finds the window by that
-// property, brings it forward and exits.
+// property, brings it forward, hands it the file named on its command line
+// (WM_COPYDATA, received in FlutterWindow and passed to Dart) and exits.
 
 std::wstring EnvVar(const wchar_t *name) {
   DWORD n = ::GetEnvironmentVariableW(name, nullptr, 0);
@@ -75,8 +77,37 @@ BOOL CALLBACK FindMarked(HWND hwnd, LPARAM lparam) {
   return TRUE;
 }
 
-// Brings the first instance's window forward. Returns false if none appears.
-bool ActivateFirstInstance(const std::wstring &prop) {
+// The first command-line argument that isn't a flag (the file to open), or
+// empty. The app checks it; here it is only passed on.
+std::wstring FileArgument() {
+  int argc = 0;
+  wchar_t **argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+  std::wstring found;
+  if (argv != nullptr) {
+    for (int i = 1; i < argc && found.empty(); ++i) {
+      if (argv[i][0] != L'\0' && wcsncmp(argv[i], L"--", 2) != 0) found = argv[i];
+    }
+    ::LocalFree(argv);
+  }
+  // Relative to this process's folder, which is not the running one's.
+  if (!found.empty()) {
+    // Sized from a first call (it returns the length needed, with the NUL).
+    DWORD need = ::GetFullPathNameW(found.c_str(), 0, nullptr, nullptr);
+    if (need == 0 || need > 32000) return L"";
+    std::wstring full(need, L'\0');
+    DWORD n = ::GetFullPathNameW(found.c_str(), need, &full[0], nullptr);
+    if (n == 0 || n >= need) return L"";  // nothing is sent
+    full.resize(n);
+    found = full;
+  }
+  return found;
+}
+
+// Brings the first instance's window forward and, when [path] is not empty,
+// hands it to that instance with WM_COPYDATA (it opens the file). Returns
+// false if no window appears.
+bool ActivateFirstInstance(const std::wstring &prop,
+                           const std::wstring &path = L"") {
   FindContext ctx{prop.c_str(), nullptr};
   // The first instance may still be creating its window; retry briefly.
   for (int i = 0; i < 50 && ctx.found == nullptr; ++i) {
@@ -86,6 +117,16 @@ bool ActivateFirstInstance(const std::wstring &prop) {
   if (ctx.found == nullptr) return false;
   if (::IsIconic(ctx.found)) ::ShowWindow(ctx.found, SW_RESTORE);
   ::SetForegroundWindow(ctx.found);
+  if (!path.empty()) {
+    COPYDATASTRUCT data;
+    data.dwData = kOpenFileCopyData;
+    data.cbData = static_cast<DWORD>((path.size() + 1) * sizeof(wchar_t));
+    data.lpData = const_cast<wchar_t *>(path.c_str());
+    DWORD_PTR ignored = 0;
+    ::SendMessageTimeoutW(ctx.found, WM_COPYDATA, 0,
+                          reinterpret_cast<LPARAM>(&data),
+                          SMTO_ABORTIFHUNG | SMTO_NORMAL, 5000, &ignored);
+  }
   return true;
 }
 
@@ -102,11 +143,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   const DWORD mutex_error = ::GetLastError();
   if (instance_mutex == nullptr && mutex_error == ERROR_ACCESS_DENIED) {
     // Held by something we can't open: treat as already running.
-    ActivateFirstInstance(window_prop);
+    ActivateFirstInstance(window_prop, FileArgument());
     return EXIT_SUCCESS;
   }
   if (instance_mutex != nullptr && mutex_error == ERROR_ALREADY_EXISTS) {
-    if (ActivateFirstInstance(window_prop)) {
+    if (ActivateFirstInstance(window_prop, FileArgument())) {
       ::CloseHandle(instance_mutex);
       return EXIT_SUCCESS;
     }

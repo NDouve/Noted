@@ -48,6 +48,48 @@ class _ChangingStore extends PageStore {
   }
 }
 
+/// A notebook that records which deletes were discarded, and can make Undo
+/// leave the delete pending (a partial Undo).
+class _SpyNotebook extends Notebook {
+  _SpyNotebook(
+    super.store,
+    super.modules, {
+    super.saveDelay,
+    super.bindersFile,
+    super.watchFiles,
+    super.watchDebounce,
+    super.folderCheckInterval,
+  });
+
+  final List<DeletedPages> discarded = [];
+  bool partialUndo = false;
+  bool undoing = false; // the real Undo takes the delete out of reach while it runs
+  int undoCalls = 0;
+  DeletedPages? undone;
+
+  @override
+  void discardDeleted(DeletedPages deleted) {
+    discarded.add(deleted);
+    super.discardDeleted(deleted);
+  }
+
+  @override
+  Future<void> undoDelete(DeletedPages deleted) async {
+    undoCalls++;
+    undone = deleted;
+    if (partialUndo) {
+      undoing = true;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      undoing = false;
+      throw const NotebookException('still available to Undo', needsAction: true);
+    }
+    await super.undoDelete(deleted);
+  }
+
+  @override
+  bool isPendingDelete(DeletedPages deleted) => !undoing && super.isPendingDelete(deleted);
+}
+
 void main() {
   late Directory dir;
   late Notebook nb;
@@ -85,6 +127,7 @@ void main() {
     ThemeData? theme,
     bool watch = false,
     PageStore Function(Directory)? store,
+    Directory? appDir,
   }) async {
     // Room for the whole page menu.
     if (tester.view.physicalSize.height / tester.view.devicePixelRatio < 1400) {
@@ -94,10 +137,11 @@ void main() {
     }
     await tester.runAsync(() async {
       dir = await Directory.systemTemp.createTemp('noted_tree_ui');
-      nb = Notebook(
+      nb = _SpyNotebook(
         store != null ? store(dir) : PageStore(dir),
         buildModules(),
         saveDelay: Duration.zero,
+        bindersFile: appDir == null ? null : File('${appDir.path}/binders.json'),
         watchFiles: watch,
         watchDebounce: const Duration(milliseconds: 40),
         folderCheckInterval: watch ? const Duration(milliseconds: 100) : Duration.zero,
@@ -291,6 +335,136 @@ void main() {
     await until(tester, () => rootIds().length == 3 && File('${dir.path}/$b.canvas').existsSync());
     expect(rootIds(), [a, b, c]);
     expect(File('${dir.path}/$b.canvas').existsSync(), isTrue);
+    await finish(tester);
+  });
+
+  // Deletes page [b] with an attachment folder, leaving the Deleted bar up.
+  // Returns the folder its attachments are set aside in.
+  Future<Directory> deleteWithAttachment(WidgetTester tester, Directory appDir) async {
+    await start(tester, appDir: appDir);
+    await tester.runAsync(() async {
+      final assets = await Directory('${dir.path}/${assetsFolderName(b)}').create();
+      await File('${assets.path}/x.bin').writeAsBytes([1, 2, 3]);
+    });
+    await rightClick(tester, b);
+    await tester.tap(find.text('Delete'));
+    await settle(tester);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Delete'));
+    await tester.pump();
+    await until(tester, () => find.text('Undo').evaluate().isNotEmpty);
+    return Directory('${appDir.path}/deleted-attachments');
+  }
+
+  bool trashHasFiles(Directory trash) =>
+      trash.existsSync() && trash.listSync(recursive: true).whereType<File>().isNotEmpty;
+
+  testWidgets('the Deleted bar has a close button and a time limit, even with Undo', (tester) async {
+    final app = await tester.runAsync(() => Directory.systemTemp.createTemp('noted_tree_app')) as Directory;
+    addTearDown(() => app.deleteSync(recursive: true));
+    final trash = await deleteWithAttachment(tester, app);
+    final bar = tester.widget<SnackBar>(find.byType(SnackBar));
+    expect(bar.persist, isFalse, reason: 'a bar with an action persists unless told not to');
+    expect(bar.showCloseIcon, isTrue);
+    expect(trashHasFiles(trash), isTrue, reason: 'set aside while the bar is up');
+    await tester.pump(const Duration(seconds: 11));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('Undo'), findsNothing, reason: 'the bar timed out');
+    await until(tester, () => !trashHasFiles(trash), what: 'the set-aside attachments to be cleaned up');
+    await finish(tester);
+  });
+
+  /// Deletes page [id] through its menu, leaving the Deleted bar up.
+  Future<void> deleteVia(WidgetTester tester, String id) async {
+    await rightClick(tester, id);
+    await tester.tap(find.text('Delete'));
+    await settle(tester);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Delete'));
+    await tester.pump();
+    await until(tester, () => find.text('Undo').evaluate().isNotEmpty);
+  }
+
+  testWidgets('saveBeforeExit (the exit handler) drops a pending delete and its set-aside attachments',
+      (tester) async {
+    final app = await tester.runAsync(() => Directory.systemTemp.createTemp('noted_tree_app')) as Directory;
+    addTearDown(() => app.deleteSync(recursive: true));
+    final trash = await deleteWithAttachment(tester, app);
+    expect(trashHasFiles(trash), isTrue);
+    await tester.runAsync(() => saveBeforeExit(nb));
+    expect(trashHasFiles(trash), isFalse, reason: 'awaited: gone when it returns');
+    await tester.runAsync(() => saveBeforeExit(nb)); // nothing pending: no error
+    await finish(tester);
+  });
+
+  testWidgets('a second delete discards the first once; the old bar does not discard it again', (tester) async {
+    await start(tester);
+    final spy = nb as _SpyNotebook;
+    await deleteVia(tester, b);
+    await deleteVia(tester, c);
+    await tester.pump(const Duration(seconds: 11));
+    await tester.pump(const Duration(seconds: 1));
+    await until(tester, () => spy.discarded.length >= 2, what: 'both deletes to be discarded');
+    await settle(tester);
+    expect(spy.discarded.length, 2, reason: 'once for the first delete, once for the second');
+    expect(spy.discarded.toSet().length, 2);
+    await finish(tester);
+  });
+
+  testWidgets('a partial Undo shows a new Deleted bar with Undo that times out and discards', (tester) async {
+    await start(tester);
+    final spy = nb as _SpyNotebook;
+    await deleteVia(tester, b);
+    spy.partialUndo = true;
+    await tester.runAsync(() => tester.tap(find.text('Undo')));
+    await until(tester, () => spy.undoCalls == 1);
+    // The explanation shows first (it stays until closed); the new Deleted bar is queued behind it.
+    expect(find.textContaining('still available to Undo'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.close));
+    await settle(tester);
+    expect(find.text('Undo'), findsOneWidget, reason: 'the Deleted bar is offered again');
+    expect(find.text("Some pages weren't restored"), findsOneWidget);
+    spy.partialUndo = false;
+    spy.discarded.clear();
+    await tester.pump(const Duration(seconds: 11));
+    await tester.pump(const Duration(seconds: 1));
+    await until(tester, () => spy.discarded.isNotEmpty, what: 'the delete to be discarded');
+    expect(spy.discarded.single, same(spy.undone), reason: 'discarded once, and it is the delete');
+    expect(find.text('Undo'), findsNothing);
+    await finish(tester);
+  });
+
+  testWidgets('closing the Deleted bar releases the pages and cleans up the attachments', (tester) async {
+    final app = await tester.runAsync(() => Directory.systemTemp.createTemp('noted_tree_app')) as Directory;
+    addTearDown(() => app.deleteSync(recursive: true));
+    final trash = await deleteWithAttachment(tester, app);
+    expect(trashHasFiles(trash), isTrue);
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pump();
+    await until(tester, () => !trashHasFiles(trash), what: 'the set-aside attachments to be cleaned up');
+    expect(find.text('Undo'), findsNothing);
+    await finish(tester);
+  });
+
+  testWidgets('Page settings is in the page menu and the right-click menu, and the row has no icon', (tester) async {
+    await start(tester);
+    expect(find.byTooltip('Page settings'), findsNothing);
+    // From the row's ⋯ menu.
+    await tester.tap(find.byTooltip('Page options').at(1));
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
+    await tester.runAsync(() => tester.tap(find.text('Page settings…')));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('settings-panel')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('settings-close')));
+    await tester.pumpAndSettle();
+    // From the right-click menu.
+    await rightClick(tester, b);
+    await tester.runAsync(() => tester.tap(find.text('Page settings…')));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('settings-panel')), findsOneWidget);
+    expect(find.text('Location'), findsOneWidget);
+    expect(tester.widget<SelectableText>(find.byKey(const ValueKey('settings-location-path'))).data, dir.path);
+    await tester.tap(find.byKey(const ValueKey('settings-close')));
+    await tester.pumpAndSettle();
     await finish(tester);
   });
 
