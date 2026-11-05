@@ -427,6 +427,9 @@ void main() {
         final copyText = File(s.copy).readAsStringSync();
         File(s.copy).deleteSync();
         await s.nb.checkFile(s.copy);
+        // Seen missing once: nothing is promoted until a later check agrees.
+        expect(s.nb.pageTitleOf(s.id), isNull);
+        await s.nb.checkFolders();
         expect(s.nb.unreadable, isEmpty);
         expect(s.nb.pageTitleOf(s.id), 'Original');
         expect(s.nb.tree.roots.map((r) => r.id), contains(s.id));
@@ -451,6 +454,102 @@ void main() {
         await s.nb.flush();
         expect(File(s.orig).readAsStringSync(), contains('Edited'));
         expect(File(s.copy).readAsStringSync(), copyText);
+      });
+
+      test('a chosen file that is back before the next check is kept', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await openExistingFile(s.nb, s.copy);
+        await s.nb.open(await s.nb.createPage());
+        final copyText = File(s.copy).readAsStringSync();
+        File(s.copy).deleteSync();
+        await s.nb.checkFile(s.copy);
+        File(s.copy).writeAsStringSync(copyText);
+        await s.nb.checkFile(s.copy);
+        await s.nb.checkFolders();
+        expect(s.nb.pageTitleOf(s.id), 'Copy');
+        expect(s.nb.unreadable, hasLength(1));
+        expect(s.nb.unreadable.single.path, isNot(endsWith('copy-of-${s.id}.canvas')));
+      });
+
+      test('the promoted duplicate prefers <id>.canvas and skips '
+          'conflict-copy names', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await openExistingFile(s.nb, s.copy);
+        final shaped = '${dir.path}/aa-bb.canvas';
+        File(shaped).writeAsBytesSync(File(s.orig).readAsBytesSync());
+        await s.nb.checkFile(shaped);
+        await s.nb.open(await s.nb.createPage());
+        File(s.copy).deleteSync();
+        await s.nb.checkFile(s.copy);
+        await s.nb.checkFolders();
+        expect(s.nb.pageTitleOf(s.id), 'Original');
+        expect(s.nb.unreadable.map((u) => u.path), [
+          predicate<String>((p) => p.endsWith('aa-bb.canvas')),
+        ]);
+      });
+
+      test('closing a page whose chosen file is gone settles it at the next '
+          'check', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await openExistingFile(s.nb, s.copy);
+        File(s.copy).deleteSync();
+        await s.nb.checkFile(s.copy);
+        expect(s.nb.currentId, s.id);
+        await s.nb.open(await s.nb.createPage());
+        await s.nb.checkFolders();
+        expect(s.nb.pageTitleOf(s.id), 'Original');
+        expect(s.nb.unreadable, isEmpty);
+        expect(s.nb.tree.roots.map((r) => r.id), contains(s.id));
+      });
+
+      test('a file that changes while the open page is closed for the swap '
+          'is not adopted', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await s.nb.open(s.id);
+        s.nb.syncHook = (point, path) async {
+          if (point == 'adopt-closed') {
+            File(s.copy).writeAsStringSync(
+              File(s.copy).readAsStringSync().replaceAll('Copy', 'Other'),
+            );
+          }
+        };
+        await expectLater(
+          openExistingFile(s.nb, s.copy),
+          throwsA(isA<NotebookException>()),
+        );
+        s.nb.syncHook = null;
+        expect(s.nb.pageTitleOf(s.id), 'Original');
+        expect(s.nb.unreadable, isEmpty);
+      });
+
+      test('a folder that goes and comes back while the adopted page is open '
+          'and its file is gone keeps the page', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await openExistingFile(s.nb, s.copy);
+        final away = '${dir.path}-away';
+        dir.renameSync(away);
+        await s.nb.checkFolders();
+        File('$away/copy-of-${s.id}.canvas').deleteSync();
+        Directory(away).renameSync(dir.path);
+        await s.nb.checkFolders();
+        await s.nb.rename(s.id, 'Edited');
+        await s.nb.flush();
+        await s.nb.open(await s.nb.createPage());
+        await s.nb.checkFile(s.copy);
+        await s.nb.checkFolders();
+        expect(s.nb.tree.roots.map((r) => r.id), contains(s.id));
+        expect(s.nb.pageTitleOf(s.id), 'Edited');
+        expect(File(s.copy).readAsStringSync(), contains('Edited'));
+        expect(
+          s.nb.unreadable.map((u) => u.path),
+          isNot(contains(predicate<String>((p) => p.endsWith('copy-of-${s.id}.canvas')))),
+        );
+        expect(s.nb.unreadable, hasLength(1));
       });
 
       test('the open adopted page whose file went stays open; the original is '
