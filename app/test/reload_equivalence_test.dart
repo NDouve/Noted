@@ -96,6 +96,7 @@
 // and 5), as `conflict_copy_test.dart` does.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -105,6 +106,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/attachment_copy.dart' show attachmentBeforeCreateHook;
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/open_files.dart';
 import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted_box_attachments/noted_box_attachments.dart';
@@ -415,8 +417,12 @@ class _Run {
     await nb.load();
     final first = nb.currentId!;
     model[first] = _MPage('pages');
-    pathA = (await nb.addBinder(dirs['a']!.path)).path;
-    pathB = (await nb.addBinder(dirs['b']!.path)).path;
+    final sa = await nb.addBinder(dirs['a']!.path);
+    pathA = sa.path;
+    _idA = sa.binder!.id;
+    final sb = await nb.addBinder(dirs['b']!.path);
+    pathB = sb.path;
+    _idB = sb.binder!.id;
     await nb.addStandaloneFolder(dirs['x']!.path);
     // A page in each place, and a subpage of the first.
     for (final loc in ['a', 'b', 'x']) {
@@ -569,6 +575,9 @@ class _Run {
     await _settle();
     await verify('step $n ($name)');
     if (_kind != null) kinds.add(_kind!);
+    // Another device's binders come and go beside the step (a generator of
+    // its own, so the sequences of the steps above are the ones they were).
+    if (_brng.nextInt(100) < 35) await _binderStep();
   }
 
   /// The watcher's job: look at every conflict copy (and set-aside file) left
@@ -1672,15 +1681,219 @@ class _Run {
     File('${d.path}${sep}a.txt').writeAsStringSync(m.assetText!);
   }
 
+  // -- binders found by id (run 2026-11-05-03, task 3) ---------------------------
+  //
+  // Another device makes binders (empty ones, so the page checks stay as they
+  // are) in the harness root and in the default binder folder, a second root.
+  // The model says which of them this device lists (by folder, with the id) and
+  // which ids it has removed; a pass must find exactly the rest, never a twin,
+  // never a removed one, and must create nothing.
+
+  late final Random _brng = Random(seed * 31 + 7);
+  int _binderStepCount = 0;
+  int _binderCounter = 0;
+  late String _idA;
+  late String _idB;
+
+  /// Folders another device made (absolute, normalised) and the binder id in each.
+  final Map<String, String> _devFolders = {};
+
+  /// The same folders as the paths they really have (the keys above are lower case).
+  final Map<String, String> _devReal = {};
+
+  /// Found binders this device lists: folder (normalised) to id.
+  final Map<String, String> _foundListed = {};
+
+  /// Ids this device took out of its list.
+  final Set<String> _removedIds = {};
+
+  String get _appBinders => '${root.path}${sep}app${sep}binders';
+
+  String _newBinderId() => 'b${(seed * 1000 + ++_binderCounter).toString().padLeft(15, '0')}';
+
+  Future<String> _deviceBinder(String id, {required bool inDefaultFolder, String? name}) async {
+    final n = name ?? 'Dev$_binderCounter';
+    final dir = Directory(inDefaultFolder ? '$_appBinders$sep$n' : '${root.path}$sep$n');
+    await dir.create(recursive: true);
+    await BinderStore(dir).create(Binder.create(title: n, id: id, color: binderPalette.first));
+    _devFolders[_norm(dir.path)] = id;
+    _devReal[_norm(dir.path)] = dir.path;
+    return dir.path;
+  }
+
+  /// The listed path of the section at [folder] (normalised), as the notebook has it.
+  String _listedPath(String folder) => nb.binders.firstWhere((b) => _norm(b.path) == folder).path;
+
+  Future<void> _binderStep() async {
+    const order = [
+      'found/live',
+      'found/restart',
+      'removeRestart',
+      'movedElsewhere',
+      'duplicate/twoRoots',
+      'openCopy',
+      'upgrade',
+    ];
+    final kind = order[(seed + _binderStepCount++) % order.length];
+    trace.add('binder step: $kind');
+    switch (kind) {
+      case 'found/live':
+        final id = _newBinderId();
+        final dir = await _deviceBinder(id, inDefaultFolder: _brng.nextBool());
+        await nb.discoverBinders();
+        _foundListed[_norm(dir)] = id;
+      case 'found/restart':
+        final id = _newBinderId();
+        final dir = await _deviceBinder(id, inDefaultFolder: _brng.nextBool());
+        await _opRestart();
+        await nb.discoveryIdle;
+        _foundListed[_norm(dir)] = id;
+      case 'removeRestart':
+        final target = await _someFound();
+        await nb.removeBinder(_listedPath(target));
+        _removedIds.add(_foundListed.remove(target)!);
+        await _opRestart();
+      case 'movedElsewhere':
+        final target = await _someFound();
+        final id = _foundListed[target]!;
+        final from = Directory(_devReal[target]!);
+        final to = Directory('${from.path}-moved');
+        await _busyRetry(() async => from.rename(to.path));
+        _devFolders
+          ..remove(target)
+          ..[_norm(to.path)] = id;
+        _devReal
+          ..remove(target)
+          ..[_norm(to.path)] = to.path;
+        await nb.checkFolders();
+        await nb.discoverBinders();
+        // Listed at the old folder (now away); the new folder is only a hint.
+        expect(nb.binderMovedTo(_listedPath(target)).map(_norm), [_norm(to.path)], reason: 'seed $seed: the hint');
+        await verify('binder moved away');
+        await _busyRetry(() async => to.rename(from.path));
+        _devFolders
+          ..remove(_norm(to.path))
+          ..[target] = id;
+        _devReal
+          ..remove(_norm(to.path))
+          ..[target] = from.path;
+        await nb.checkFolders();
+        await nb.discoverBinders();
+      case 'duplicate/twoRoots':
+        final id = _newBinderId();
+        await _deviceBinder(id, inDefaultFolder: false, name: 'Twin${_binderCounter}a');
+        await _deviceBinder(id, inDefaultFolder: true, name: 'Twin${_binderCounter}b');
+        await nb.discoverBinders();
+        expect(nb.discoveryNotes.where((n) => n.reason.contains(id) || n.reason.contains('Twin')), isNotEmpty);
+      case 'openCopy':
+        final copy = Directory('${root.path}${sep}Copy${++_binderCounter}')..createSync();
+        File('${dirs['a']!.path}$sep$binderFileName').copySync('${copy.path}$sep$binderFileName');
+        final inA = model.entries.where((e) => e.value.loc == 'a').map((e) => e.key).firstOrNull;
+        if (inA != null) File(_pathOf(inA)).copySync('${copy.path}$sep$inA.canvas');
+        _devFolders[_norm(copy.path)] = _idA;
+        await nb.discoverBinders();
+        for (final f in [if (inA != null) '$inA.canvas', binderFileName]) {
+          Object? refused;
+          try {
+            await openExistingFile(nb, '${copy.path}$sep$f');
+          } on NotebookException catch (e) {
+            refused = e;
+          }
+          expect(refused, isNotNull, reason: 'seed $seed: a copy of a listed binder is refused ($f)');
+        }
+      case 'upgrade':
+        await nb.flush();
+        await nb.discoveryIdle;
+        _drop();
+        // The file as an older build leaves it: no ids, no removals.
+        final text = settings.readAsStringSync();
+        final map = jsonDecode(text) as Map<String, Object?>
+          ..remove('binderIds')
+          ..remove('removedBinders');
+        settings.writeAsStringSync(jsonEncode(map));
+        final id = _newBinderId();
+        await _deviceBinder(id, inDefaultFolder: _brng.nextBool());
+        nb = _make();
+        _spare.add(nb);
+        await nb.load();
+        await nb.discoveryIdle;
+        // Every binder found that isn't listed on an available path is recorded
+        // as removed, not listed.
+        final listedIds = {_idA, _idB, ..._foundListed.values};
+        _removedIds
+          ..clear()
+          ..addAll(_devFolders.values.toSet().difference(listedIds));
+    }
+    await verify('binder step $kind');
+    kinds.add('binder:$kind');
+  }
+
+
+  /// A found binder this device lists (makes one if there is none).
+  Future<String> _someFound() async {
+    if (_foundListed.isEmpty) {
+      final id = _newBinderId();
+      final dir = await _deviceBinder(id, inDefaultFolder: _brng.nextBool());
+      await nb.discoverBinders();
+      _foundListed[_norm(dir)] = id;
+    }
+    return _foundListed.keys.elementAt(_brng.nextInt(_foundListed.length));
+  }
+
+  Future<void> _verifyBinders(String where, Notebook n) async {
+    await n.discoveryIdle;
+    final listed = {for (final b in n.binders) _norm(b.path)};
+    final wantListed = {_norm(pathA), _norm(pathB), ..._foundListed.keys};
+    expect(listed, wantListed, reason: '$where: the binders listed');
+    final file = jsonDecode(settings.readAsStringSync()) as Map<String, Object?>;
+    final ids = {for (final e in (file['binderIds']! as Map).entries) _norm(e.key as String): e.value as String};
+    expect(ids, {_norm(pathA): _idA, _norm(pathB): _idB, ..._foundListed}, reason: '$where: binderIds in binders.json');
+    final removed = {...((file['removedBinders'] as List?) ?? const []).cast<String>()};
+    expect(removed, _removedIds, reason: '$where: removedBinders in binders.json');
+    // Discovery creates nothing: no directory and no binder file beyond what
+    // the model made.
+    final tops = {
+      for (final e in root.listSync())
+        if (e is Directory) e.path.split(RegExp(r'[\\/]')).last,
+    };
+    final known = {
+      'pages', 'Elsewhere', 'Alpha', 'Beta', 'rec', 'app', //
+      for (final f in _devFolders.keys)
+        if (_norm(File(f).parent.path) == _norm(root.path)) f.split('/').last,
+    }.map((s) => s.toLowerCase()).toSet();
+    expect(tops.map((s) => s.toLowerCase()).toSet().difference(known), isEmpty, reason: '$where: a directory nobody made');
+    final inDefault = Directory(_appBinders);
+    final madeThere = {
+      for (final f in _devFolders.keys)
+        if (_norm(File(f).parent.path) == _norm(_appBinders)) f.split('/').last,
+    };
+    final there = inDefault.existsSync()
+        ? {for (final e in inDefault.listSync()) e.path.split(RegExp(r'[\\/]')).last.toLowerCase()}
+        : <String>{};
+    expect(there, madeThere.map((s) => s.toLowerCase()).toSet(), reason: '$where: the default binder folder');
+    final binderFiles = <String>{
+      for (final dir in [root, if (inDefault.existsSync()) inDefault])
+        for (final e in dir.listSync())
+          if (e is Directory && File('${e.path}$sep$binderFileName').existsSync()) _norm(e.path),
+    };
+    expect(
+      binderFiles,
+      {_norm(dirs['a']!.path), _norm(dirs['b']!.path), ..._devFolders.keys},
+      reason: '$where: a binder file nobody made',
+    );
+  }
+
   // -- checks -----------------------------------------------------------------
 
   Future<void> verify(String when, {bool fresh = false}) async {
     final where = 'seed $seed, $when';
+    await nb.discoveryIdle; // the pass at launch, and the binders it found
     await nb.flush(); // a merged-in change is saved once more, harmlessly
     String describe() => '\n--- trace of seed $seed ---\n${trace.join('\n')}\n';
     try {
       await _verifyDisk(where);
       await _verifyLive(where);
+      await _verifyBinders(where, nb);
       if (fresh) await _verifyFresh(where);
     } on TestFailure catch (e) {
       throw TestFailure('${e.message}${describe()}');
@@ -1754,6 +1967,7 @@ class _Run {
     _spare.add(other);
     _gone.add(other);
     await other.load();
+    await _verifyBinders(where, other);
     try {
       for (final e in model.entries) {
         expect(
@@ -1806,6 +2020,8 @@ const _expectedKinds = {
   'vanish:restart/syncWhileAway', 'vanish:live/deletedWhileAway',
   'vanish:restart/deletedWhileAway', 'vanish:live/replayFails',
   'vanish:restart/replayFails', 'restart', //
+  'binder:found/live', 'binder:found/restart', 'binder:removeRestart', 'binder:movedElsewhere', //
+  'binder:duplicate/twoRoots', 'binder:openCopy', 'binder:upgrade', //
 };
 
 final Set<String> _seen = {};
