@@ -488,6 +488,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return _landedProblems.values.any((p) => _key(p.path) == k);
   }
 
+  /// Test seam: the recovery store this notebook writes through.
+  @visibleForTesting
+  RecoveryStore? get recoveryStoreForTest => _recovery;
+
+  /// Test seam: writes [page] for recovery as a closed writer does (3.4.2),
+  /// against [base], into the folder of page [page]'s location.
+  @visibleForTesting
+  Future<KeepOutcome> keepClosedForTest(NotedPage page, NotedPage base) =>
+      _keepForRecovery(_loc[page.id] ?? _standalone, _storeOf(_loc[page.id] ?? _standalone), page, base: base);
+
   /// Test seam: lists the recovery folder so the index holds what a test
   /// wrote to it from outside.
   @visibleForTesting

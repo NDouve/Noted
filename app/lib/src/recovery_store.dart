@@ -150,7 +150,8 @@ class _Env {
 /// `hook` runs inside that sequence, so it must not call back into the store.
 class RecoveryStore {
   /// [windows] says whether locations compare without regard to case (see
-  /// [recoveryLocationKey]); [hook] is called at named points of a write or a
+  /// [recoveryLocationKey]); [hook] is called at named points of a write
+  /// (write: before anything is written; delete: before an entry is removed) or a
   /// migration, so tests can inject a failure there (`tmp-written`: a new
   /// generation is complete but not yet published; `envelope-published`: an
   /// old entry is converted but its old files are still there;
@@ -159,7 +160,7 @@ class RecoveryStore {
 
   final Directory directory;
   final bool? windows;
-  final Future<void> Function(String point)? hook;
+  Future<void> Function(String point)? hook;
 
   static int _tmpCounter = 0;
   static final Map<String, Future<void>> _chains = {};
@@ -392,6 +393,7 @@ class RecoveryStore {
     required DateTime time,
     Set<String>? replaceable,
   }) async {
+    await hook?.call('write');
     await directory.create(recursive: true);
     try {
       // An entry of the old layout for this page is converted first, so the
@@ -722,6 +724,7 @@ class RecoveryStore {
       return;
     }
     if (e.text == entry.pageText && e.base == entry.baseText && e.time == entry.time) {
+      await hook?.call('delete');
       await f.delete();
       _indexRemove(entry);
     }
