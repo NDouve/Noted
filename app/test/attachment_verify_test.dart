@@ -449,6 +449,67 @@ void main() {
       expect(v.state, AttachmentState.ok);
       expect(v.bytes, good);
     });
+
+    group('open hands over the verified copy', () {
+      final opened = <String>[];
+      PageAttachments withOpener() {
+        opened.clear();
+        final s = PageAttachments(
+          pageFolder: pages,
+          pageId: 'p',
+          storage: () => AttachmentStorage.folder,
+          cacheDirectory: Directory('${root.path}/cache'),
+          recoveryDirectory: rec(),
+          onNotice: notices.add,
+          opener: (f) async => opened.add(f.path),
+          watch: false,
+        );
+        addTearDown(() {
+          try {
+            s.dispose();
+          } on FlutterError {
+            // Already disposed.
+          }
+        });
+        return s;
+      }
+
+      test('an incomplete page-folder copy does not shadow the good recovery copy', () async {
+        asset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(Uint8List.sublistView(good, 0, 50));
+        recAsset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        await withOpener().open('f.bin', fileName: name);
+        expect(FileSystemEntity.identicalSync(opened.single, recAsset(name).path), isTrue);
+        expect(asset(name).lengthSync(), 50, reason: 'the incomplete copy is left alone');
+      });
+
+      test('a good page-folder copy is opened', () async {
+        asset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        recAsset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        await withOpener().open('f.bin', fileName: name);
+        expect(FileSystemEntity.identicalSync(opened.single, asset(name).path), isTrue);
+      });
+
+      test('when both copies are bad nothing is opened and the user is told', () async {
+        asset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(bad);
+        recAsset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(Uint8List.sublistView(good, 0, 50));
+        await withOpener().open('f.bin', fileName: name);
+        expect(opened, isEmpty);
+        expect(notices, isNotEmpty);
+        expect(asset(name).readAsBytesSync(), bad);
+      });
+    });
   });
   group('a file another writer put at the name is never deleted', () {
     test('a fill that throws part way, with the target replaced meanwhile: the other file survives', () async {

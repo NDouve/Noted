@@ -394,12 +394,21 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
         await file.writeAsBytes(bytes, flush: true);
       }
     } else if (fileName != null && isAttachmentFileName(fileName)) {
+      // The file handed to the other program is the one that verifies here:
+      // an incomplete or damaged copy in one folder never shadows a good one
+      // in the other. Nothing is moved or deleted on the way (0132). The size
+      // is not known here; a short file has another hash, so it fails anyway.
+      final hash = attachmentNameHash(fileName)!;
       for (final d in [folder, ?recoveryFolder]) {
         final f = _in(d, fileName);
-        if (await f.exists()) {
+        if (FileSystemEntity.typeSync(f.path, followLinks: false) != FileSystemEntityType.file) continue;
+        if ((await checkAttachmentFile(f, hash, 0)).state == AttachmentState.ok) {
           file = f;
           break;
         }
+      }
+      if (file == null) {
+        onNotice?.call('This file can\'t be opened: its saved copy is incomplete or damaged.');
       }
     }
     if (file == null) return;
