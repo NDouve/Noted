@@ -103,12 +103,12 @@ class _OverlapStore extends PageStore {
   var scans = 0;
 
   @override
-  Future<List<PageEntry>> scan() async {
+  Future<List<PageEntry>> scan({bool createFolder = true, bool sweep = true}) async {
     scans++;
     if (_replacing) overlapped = true;
     _scanning = true;
     try {
-      return await super.scan();
+      return await super.scan(createFolder: createFolder, sweep: sweep);
     } finally {
       _scanning = false;
     }
@@ -180,8 +180,8 @@ class _LandingStore extends PageStore {
   final _Landing plan;
 
   @override
-  Future<List<PageEntry>> scan() async {
-    final entries = await super.scan();
+  Future<List<PageEntry>> scan({bool createFolder = true, bool sweep = true}) async {
+    final entries = await super.scan(createFolder: createFolder, sweep: sweep);
     final p = plan.path;
     if (p == null) return entries;
     File(p).writeAsStringSync(plan.text!);

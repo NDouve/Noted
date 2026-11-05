@@ -70,11 +70,18 @@ class PageStore {
   /// It first runs [sweepAsideFiles], which takes the set-aside files of any
   /// [saveIfUnchanged] in flight on this folder: callers must not run `scan`
   /// and `saveIfUnchanged` on the same folder at the same time.
-  Future<List<PageEntry>> scan() async {
-    await directory.create(recursive: true);
+  ///
+  /// [createFolder] false never creates the folder: a missing one fails the
+  /// listing with a [FileSystemException] (binder discovery reads shared
+  /// storage and must not make a folder there). [sweep] false skips the sweep
+  /// and leaves set-aside files for the writer that made them (they may belong
+  /// to a write still under way on another device); they are listed as files
+  /// that can't be opened.
+  Future<List<PageEntry>> scan({bool createFolder = true, bool sweep = true}) async {
+    if (createFolder) await directory.create(recursive: true);
     // Put back what a crashed or failed replace left under a set-aside name
     // (see [sweepAsideFiles]); one that can't be moved yet is listed below.
-    await sweepAsideFiles(directory, extension: extension);
+    if (sweep) await sweepAsideFiles(directory, extension: extension);
     _paths.clear();
     final entries = <PageEntry>[];
     final read = <String, (String, NotedPage)>{}; // by file name
