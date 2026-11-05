@@ -103,7 +103,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
-import 'package:noted/src/attachment_copy.dart' show attachmentBeforeCreateHook;
+import 'package:noted/src/attachment_copy.dart' show attachmentAfterHashHook, attachmentBeforeCreateHook, damagedCopyName;
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
@@ -293,6 +293,7 @@ class _MPage {
   String? parent;
   String title = 'Untitled page';
   String? assetText; // the one file in the page's attachments folder, if any
+  bool hashFile = false; // and a hash-named file beside it (_goodName)
   final Map<String, _BoxVal> boxes = {};
 }
 
@@ -364,6 +365,10 @@ Map<String, _BoxVal> _boxesOf(NotedPage page, String where) {
 
 const _locs = ['pages', 'x', 'a', 'b'];
 
+/// The hash-named attachment some probes give a page, beside its a.txt.
+final Uint8List _goodBytes = Uint8List.fromList(List.generate(40, (i) => i * 3));
+final String _goodName = attachmentFileName(contentHash(_goodBytes), 'bin');
+
 // ---------------------------------------------------------------------------
 // One sequence
 
@@ -389,6 +394,12 @@ class _Run {
   late String pathA;
   late String pathB;
   final List<Notebook> _spare = [];
+
+  /// Kept `.damaged-` files (absolute path to bytes), which must still hold
+  /// exactly those bytes, and attachments folders a rolled-back move left in a
+  /// place the page is not in.
+  final Map<String, List<int>> asides = {};
+  final Set<(String, String)> leftFolders = {};
   final Set<Notebook> _gone = {};
   void _drop() {
     if (_gone.add(nb)) nb.dispose();
@@ -1665,12 +1676,30 @@ class _Run {
 
   /// Gives page [id] an attachments folder with a file in it (the probes use
   /// it; the sequences leave attachments alone).
-  void _giveAssets(String id) {
+  void _giveAssets(String id, {bool hashFile = false}) {
     final m = model[id]!;
     m.assetText = 'attachment of $id';
     final d = Directory('${dirs[m.loc]!.path}$sep${assetsFolderName(id)}')..createSync();
     File('${d.path}${sep}a.txt').writeAsStringSync(m.assetText!);
+    if (hashFile) {
+      m.hashFile = true;
+      File('${d.path}$sep$_goodName').writeAsBytesSync(_goodBytes);
+    }
   }
+
+  String _assetsPath(String id, [String? loc]) => '${dirs[loc ?? model[id]!.loc]!.path}$sep${assetsFolderName(id)}';
+  String _hashPath(String id) => '${_assetsPath(id)}$sep$_goodName';
+  String _hashPathIn(String loc, String id) => '${_assetsPath(id, loc)}$sep$_goodName';
+
+  /// Puts [bytes] under the hash name in the destination's attachments folder
+  /// of [id] before the page is moved there.
+  void _seedDestination(String loc, String id, List<int> bytes) {
+    Directory(_assetsPath(id, loc)).createSync(recursive: true);
+    File(_hashPathIn(loc, id)).writeAsBytesSync(bytes);
+  }
+
+  String _asidePath(String loc, String id, List<int> old) =>
+      '${_assetsPath(id, loc)}$sep${damagedCopyName(_goodName, contentHash(old))}';
 
   // -- checks -----------------------------------------------------------------
 
@@ -1696,14 +1725,22 @@ class _Run {
           if (e.value.loc == loc) '${e.key}.canvas',
         for (final e in model.entries)
           if (e.value.loc == loc && e.value.assetText != null) assetsFolderName(e.key),
+        for (final (l, id) in leftFolders)
+          if (l == loc) assetsFolderName(id),
       };
       final actual = <String>{for (final f in d.listSync()) f.path.split(RegExp(r'[\\/]')).last};
       expect(actual, expected, reason: '$where: the files in $loc');
+    }
+    for (final e in asides.entries) {
+      expect(File(e.key).readAsBytesSync(), e.value, reason: '$where: the kept file ${e.key}');
     }
     for (final e in model.entries) {
       final id = e.key;
       final m = e.value;
       final page = _disk(id);
+      if (m.hashFile) {
+        expect(File(_hashPath(id)).readAsBytesSync(), _goodBytes, reason: '$where: the hash file of page ${_short(id)}');
+      }
       if (m.assetText != null) {
         expect(
           File('${dirs[m.loc]!.path}$sep${assetsFolderName(id)}${sep}a.txt').readAsStringSync(),
@@ -1861,6 +1898,116 @@ void main() {
       await run.start();
     });
     tearDown(() => run.stop());
+
+    // Run 2026-11-05-03, area-data-integrity R-1: a hash-named destination file
+    // that is damaged or short is kept as .damaged-<hex>, in every outcome, and
+    // the good copy takes its name. After a reload the page, the hash file and
+    // each .damaged- file are as the model says.
+    test('a move into folders holding a damaged and a short hash file keeps both aside, also after a rollback', () async {
+      String pageIn(String loc) => run.model.entries.firstWhere((e) => e.value.loc == loc).key;
+      final p1 = pageIn('a'); // damaged destination, moved to b
+      final p2 = pageIn('x'); // short destination, moved to a
+      final p3 = pageIn('b'); // damaged destination, forced into rollback (to a)
+      final damaged = Uint8List.fromList(List.filled(_goodBytes.length, 5));
+      final short = Uint8List.fromList([1, 2]);
+      for (final id in [p1, p2, p3]) {
+        run._giveAssets(id, hashFile: true);
+      }
+      run._seedDestination('b', p1, damaged);
+      run._seedDestination('a', p2, short);
+      run._seedDestination('a', p3, damaged);
+
+      // p1 and p2 move, and the user is told about each kept file.
+      for (final (id, to, old) in [(p1, 'b', damaged), (p2, 'a', short)]) {
+        Object? error;
+        try {
+          await run._moveTo(id, to);
+        } on Object catch (e) {
+          error = e;
+        }
+        expect(error, isA<NotebookException>(), reason: 'the note about the kept file');
+        expect((error! as NotebookException).message, contains('copy of "$_goodName"'));
+        run.model[id]!.loc = to;
+        run.asides[run._asidePath(to, id, old)] = old;
+      }
+
+      // p3: the source page changes after its copy was made, so the move is
+      // rolled back; the good copy this move made goes, the aside stays.
+      final y = run._newBox('synced while moving');
+      final base = run._disk(p3);
+      var fired = false;
+      run.nb.syncHook = (point, _) async {
+        if (point != 'move-rekeyed' || fired) return;
+        fired = true;
+        run._externalWriteSync(p3, base.insertNode(y));
+      };
+      Object? error;
+      try {
+        await run._moveTo(p3, 'a');
+      } on Object catch (e) {
+        error = e;
+      }
+      run.nb.syncHook = null;
+      expect(fired, isTrue);
+      expect(error, isA<NotebookException>());
+      expect((error! as NotebookException).message, allOf(contains('Nothing was moved'), contains('.damaged-')));
+      run.model[p3]!.boxes[y.id] = _val(y);
+      run.leftFolders.add(('a', p3));
+      run.asides[run._asidePath('a', p3, damaged)] = damaged;
+
+      await run.verify('after the moves', fresh: true);
+      await run._opRestart();
+      await run.verify('after a reload', fresh: true);
+      expect(File(run._hashPath(p3)).existsSync(), isTrue, reason: 'the source is untouched');
+      expect(File(run._hashPathIn('a', p3)).existsSync(), isFalse, reason: 'this move\'s good copy was removed');
+    });
+
+    // The same for undo: the set-aside folder goes back into a folder that holds
+    // a damaged hash file and a changing one. The first is kept aside, the second
+    // is left alone and its good copy stays in the trash through the bar's expiry
+    // and a reload.
+    test('undo delete into a folder with a damaged and a changing hash file keeps both aside and the trash source', () async {
+      final id = run.model.entries.firstWhere((e) => e.value.loc == 'x').key;
+      run._giveAssets(id, hashFile: true);
+      final second = Uint8List.fromList(List.generate(60, (i) => 200 - i));
+      final secondName = attachmentFileName(contentHash(second), 'bin');
+      File('${run._assetsPath(id)}${run.sep}$secondName').writeAsBytesSync(second);
+      Notebook.forceCopyMoveForTest = true;
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
+      final deleted = await run.nb.delete(id);
+      final trash = Directory('${run.root.path}${run.sep}app${run.sep}deleted-attachments');
+      final inTrash = trash.listSync(recursive: true).whereType<File>().singleWhere((f) => f.path.endsWith(secondName));
+
+      final damaged = Uint8List.fromList(List.filled(_goodBytes.length, 5));
+      final folder = Directory(run._assetsPath(id))..createSync();
+      File('${folder.path}${run.sep}$_goodName').writeAsBytesSync(damaged);
+      File('${folder.path}${run.sep}$secondName').writeAsBytesSync([...second.take(10)]);
+      var fired = false;
+      attachmentAfterHashHook = (f) async {
+        if (!f.path.endsWith(secondName) || f.path.contains('deleted-attachments')) return;
+        fired = true;
+        f.writeAsBytesSync([...second.take(10), 1]); // still being written
+      };
+      addTearDown(() => attachmentAfterHashHook = null);
+      Object? error;
+      try {
+        await run.nb.undoDelete(deleted);
+      } on Object catch (e) {
+        error = e;
+      }
+      attachmentAfterHashHook = null;
+      expect(fired, isTrue);
+      expect(error, isA<NotebookException>(), reason: 'the undo was partial and says so');
+      expect(File('${folder.path}${run.sep}$_goodName').readAsBytesSync(), _goodBytes);
+      run.asides['${folder.path}${run.sep}${damagedCopyName(_goodName, contentHash(damaged))}'] = damaged;
+      expect(inTrash.readAsBytesSync(), second, reason: 'the only good copy is still in the trash');
+
+      await run.nb.discardPendingDelete(); // the bar expires
+      expect(inTrash.readAsBytesSync(), second, reason: 'kept through the expiry');
+      await run._opRestart();
+      expect(inTrash.readAsBytesSync(), second, reason: 'kept through a reload');
+      await run.verify('after the undo and a reload', fresh: true);
+    });
 
     test('a publish that keeps failing, then leaving the page: the edit is not lost', () async {
         final id = run.model.keys.first;

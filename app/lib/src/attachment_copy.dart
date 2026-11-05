@@ -42,6 +42,40 @@ class AttachmentCopy {
   /// checked, and set-aside originals that could not be put back. They stay
   /// where they are and are reported to the user.
   final List<String> keptAside = [];
+
+  /// Damaged or incomplete files found at a target, moved aside under
+  /// `<name>.damaged-<12 hex>` (never deleted) while the good copy took their
+  /// name. Reported to the user.
+  final List<DamagedKept> damagedKept = [];
+
+  /// Targets that were left alone because they were changing (a sync client
+  /// still writing) or could not be read. Their sources are not deleted.
+  final List<String> stillChanging = [];
+}
+
+/// A file found at a hash name that failed its hash, kept aside next to it.
+class DamagedKept {
+  DamagedKept({required this.folder, required this.name, required this.aside, required this.incomplete});
+
+  /// The folder both files are in.
+  final String folder;
+
+  /// The hash file name the damaged bytes were found under.
+  final String name;
+
+  /// The name they were kept under (`<name>.damaged-<12 hex>`).
+  final String aside;
+
+  /// Shorter than the good file (an unfinished write) rather than a full-size
+  /// file with other bytes.
+  final bool incomplete;
+
+  /// Whether the good copy is in place at [path] at the end: set once it was
+  /// verified there, and cleared when a rollback removed it ([removeCreated]).
+  bool replaced = false;
+
+  /// Where the damaged bytes were found.
+  String get path => '$folder${Platform.pathSeparator}$name';
 }
 
 /// The marker of a damaged attachment kept aside: `<name>.damaged-<12 hex>`,
@@ -86,6 +120,11 @@ Future<void> Function(File file)? attachmentAfterHashHook;
 /// checked there. For tests.
 @visibleForTesting
 void Function(String aside)? attachmentAfterSetAsideHook;
+
+/// Runs in [setAsideDamaged] before the exclusive move. A test makes it throw
+/// a [FileSystemException] to simulate a volume that can't set a file aside.
+@visibleForTesting
+void Function(String aside)? attachmentBeforeSetAsideHook;
 
 /// Hashes [file] (streamed, once) and compares it with [expectedHash]. A file
 /// shorter than [size] (the size the box recorded), one that changes while it
@@ -145,6 +184,7 @@ Future<SetAside> setAsideDamaged(File file, ContentIdentity found) async {
   final aside = '${file.parent.path}$sep$asideName';
   var leftAt = name;
   try {
+    attachmentBeforeSetAsideHook?.call(aside);
     if (await publishExclusive(file, aside)) {
       leftAt = asideName;
       attachmentAfterSetAsideHook?.call(aside);
@@ -432,9 +472,11 @@ Future<bool> sameContent(File a, File b) async {
 /// exclusively and filled instead. The target is then compared with the
 /// source, in chunks. A file already at the target is trusted only if its
 /// bytes equal the source's; if it is named by its content hash and does not
-/// hold that hash it is a partial copy and is replaced; anything else
-/// (different bytes, a link, a folder) stays as it is and is reported in
-/// [AttachmentCopy.differing]. Names are taken as [attachmentNameToTake] says
+/// hold that hash (a partial or damaged copy) it is moved aside as
+/// `<name>.damaged-<12 hex>` and the verified copy takes its name (see
+/// [AttachmentCopy.damagedKept]); one that is still changing stays
+/// ([AttachmentCopy.stillChanging]); anything else (different bytes, a link, a
+/// folder) stays as it is and is reported in [AttachmentCopy.differing]. Names are taken as [attachmentNameToTake] says
 /// (a `<hash>.tmp` attachment keeps its name; an unfinished `<hash>.<ext>.tmp`
 /// lands as `<hash>.<ext>`). Leftover unique temporary names in the source are
 /// put back or reported (see [AttachmentCopy.keptAside]).
@@ -460,10 +502,10 @@ Future<void> copyAttachmentTree(Directory from, Directory to, AttachmentCopy r) 
   }
 }
 
-Future<void> _copyFile(File src, String target, String name, AttachmentCopy r) async {
+Future<void> _copyFile(File src, String target, String name, AttachmentCopy r, {bool settleOnce = false}) async {
   final type = FileSystemEntity.typeSync(target, followLinks: false);
   if (type != FileSystemEntityType.notFound) {
-    await _settleExisting(src, target, name, type, r);
+    await _settleExisting(src, target, name, type, r, settleOnce: settleOnce);
     return;
   }
   final tmp = File('$target.${DateTime.now().microsecondsSinceEpoch}-${_counter++}.tmp');
@@ -499,51 +541,97 @@ Future<void> _copyFile(File src, String target, String name, AttachmentCopy r) a
     }
   }
   // A file appeared at the target while this ran.
-  await _settleExisting(src, target, name, FileSystemEntity.typeSync(target, followLinks: false), r);
+  await _settleExisting(
+    src,
+    target,
+    name,
+    FileSystemEntity.typeSync(target, followLinks: false),
+    r,
+    settleOnce: settleOnce,
+  );
 }
 
+/// Settles a file already at [target]. Nothing there is ever replaced: bytes
+/// that fail the hash in their name are moved aside as `.damaged-<12 hex>`
+/// (see [setAsideDamaged]) and the verified copy is published exclusively.
+/// With [settleOnce] (the call after a set-aside, or after a publish was
+/// refused) it never sets anything aside again.
 Future<void> _settleExisting(
   File src,
   String target,
   String name,
   FileSystemEntityType type,
-  AttachmentCopy r,
-) async {
+  AttachmentCopy r, {
+  bool settleOnce = false,
+}) async {
   if (type != FileSystemEntityType.file) {
     r.differing.add(target); // a link or a folder is never trusted
     return;
   }
   final t = File(target);
-  if (await sameContent(src, t)) {
-    r.verified.add(CopiedFile(src, t));
-    return;
-  }
-  final m = _hashName.firstMatch(name);
-  // Replaced only when the target is provably broken (it fails the hash in its
-  // name) and the source provably holds that hash; otherwise both are kept.
-  if (m != null &&
-      await contentHashOfStream(t.openRead()) != m.group(1) &&
-      await contentHashOfStream(src.openRead()) == m.group(1)) {
-    // Named by its hash and not holding it: a partial copy. It is replaced
-    // by a verified copy (renamed over it); the original is kept until then.
-    final tmp = File('$target.${DateTime.now().microsecondsSinceEpoch}-${_counter++}.tmp');
-    try {
-      await _streamCopy(src, tmp);
-      if (!await sameContent(src, tmp)) {
-        throw FileSystemException('The copy of $name differs from the original', src.path);
-      }
-      await tmp.rename(target);
-    } finally {
-      try {
-        if (await tmp.exists()) await tmp.delete();
-      } on FileSystemException {
-        // Only a leftover with this move's own name.
-      }
+  try {
+    if (await sameContent(src, t)) {
+      r.verified.add(CopiedFile(src, t));
+      return;
     }
-    r.verified.add(CopiedFile(src, t));
+  } on FileSystemException {
+    // An error reading the source is the move's own failure: it propagates.
+    final probe = await src.open();
+    try {
+      await probe.read(1);
+    } finally {
+      await probe.close();
+    }
+    // The target could not be read: a file that is being written or is
+    // locked. Left alone; the source stays.
+    r.stillChanging.add(target);
     return;
   }
-  r.differing.add(target);
+  final hash = attachmentNameHash(name);
+  if (hash == null || settleOnce) {
+    r.differing.add(target);
+    return;
+  }
+  // Only when the source provably holds the hash in the name is the target
+  // judged against it; otherwise both are kept.
+  if (await contentHashOfStream(src.openRead()) != hash) {
+    r.differing.add(target);
+    return;
+  }
+  // Size 0: a short file is not "syncing" for being short; only a change across
+  // the read, or a read error, is.
+  final check = await checkAttachmentFile(t, hash, 0);
+  final found = check.found;
+  if (check.state == AttachmentState.syncing) {
+    r.stillChanging.add(target);
+    return;
+  }
+  if (check.state != AttachmentState.damaged || found == null) {
+    r.differing.add(target);
+    return;
+  }
+  // Stable, and not the source's bytes: incomplete (shorter) or damaged. The
+  // old bytes are kept under their own name; the good copy then takes the name.
+  final incomplete = found.length < await src.length();
+  final verifiedBefore = r.verified.length; // an earlier copy into this target must not count
+  final res = await setAsideDamaged(t, found);
+  final base = _baseName(target);
+  final kept = res.name ?? (res.leftAt != base ? res.leftAt : null);
+  final entry = kept == null
+      ? null
+      : DamagedKept(folder: t.parent.path, name: base, aside: kept, incomplete: incomplete);
+  if (entry != null) r.damagedKept.add(entry);
+  final now = FileSystemEntity.typeSync(target, followLinks: false);
+  if (now == FileSystemEntityType.notFound) {
+    await _copyFile(src, target, name, r, settleOnce: true);
+  } else {
+    // Nothing was set aside (the file changed and was put back, or the move was
+    // refused), or something arrived since: one more look, never another set-aside.
+    await _settleExisting(src, target, name, now, r, settleOnce: true);
+  }
+  // Only reached when nothing threw: the good copy counts as in place when the
+  // target was verified.
+  if (entry != null) entry.replaced = r.verified.skip(verifiedBefore).any((c) => c.target.path == target);
 }
 
 /// Writes [src] to [dst] chunk by chunk and flushes it to disk.
@@ -714,6 +802,11 @@ Future<bool> removeCreated(AttachmentCopy? copy) async {
         if (!res.deleted && res.outcome != DeleteOutcome.absent) {
           all = false;
           debugPrint('Keeping $p: it changed after it was copied');
+        } else {
+          // The good copy is gone again: what was kept aside is all that is left there.
+          for (final k in copy.damagedKept) {
+            if (k.path == p) k.replaced = false;
+          }
         }
       } else {
         await Directory(p).delete();

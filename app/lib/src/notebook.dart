@@ -102,13 +102,29 @@ class _ReplayFailure implements Exception {
 // The kept files landed, but others stay in the kept folder.
 /// An attachments folder could not be moved because the target holds
 /// different files under some of its names; nothing was written over them.
-class _DifferingAttachments extends FileSystemException {
-  _DifferingAttachments(int count, String path)
+class _IncompleteAttachments extends FileSystemException {
+  _IncompleteAttachments(this.copy, this.leftover, String path, {this.cause})
     : super(
-        '$count attachment ${count == 1 ? 'file differs' : 'files differ'} from the file(s) already at '
-        'the destination; the originals were kept',
+        cause != null
+            ? 'moving the attachments stopped: ${cause.message}; the originals were kept'
+            : '${copy.differing.length + copy.stillChanging.length + (leftover ? 1 : 0)} attachment '
+                  'file(s) could not be moved completely (different or changing files at the destination, or files '
+                  'left behind); the originals were kept',
         path,
       );
+
+  /// An ordinary file error that stopped the move after it had begun (so what
+  /// it had already done, e.g. a file kept aside, is still reported).
+  final FileSystemException? cause;
+
+  /// What the move did before it stopped, so its notices are still posted.
+  final AttachmentCopy copy;
+
+  /// The source still held files after the verified ones were removed.
+  final bool leftover;
+
+  /// Only different files at the destination stopped it.
+  bool get onlyDiffering => cause == null && copy.stillChanging.isEmpty && !leftover;
 }
 
 class _KeptFolderNotEmpty implements Exception {
@@ -169,7 +185,8 @@ class FolderUnavailableException extends NotebookException {
 
 /// Pages removed by one delete, held in full so the delete can be undone.
 class DeletedPages {
-  DeletedPages._(this.pages, this.openId, this._location, this._assets, {this.keptNote});
+  DeletedPages._(this.pages, this.openId, this._location, this._assets, {this.keptNote, Set<String>? keepTrash})
+    : _keepTrash = {...?keepTrash};
 
   /// What to tell the user when pages were not deleted because their files
   /// changed after they were read (they stay as they are), or null.
@@ -187,10 +204,10 @@ class DeletedPages {
   // (moved back) or forgotten (removed).
   final Map<String, Directory> _assets;
 
-  // Set-aside folders (by the folder that holds them) that Undo could not
-  // restore and told the user about: a discard removes the other folders in
-  // them one by one instead of the whole folder.
-  final Set<String> _keepTrash = {};
+  // Set-aside folders (their own paths) that could not be put back whole and
+  // that the user was told about: a discard never removes them, nor the shared
+  // trash folder that holds them; it removes the other folders in it one by one.
+  final Set<String> _keepTrash;
 }
 
 /// Whether a binder's folder could be used.
@@ -1427,20 +1444,133 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   static Future<void> _copyDir(Directory from, Directory to, {AttachmentCopy? into}) =>
       copyAttachmentTree(from, to, into ?? AttachmentCopy());
 
+  /// [_copyDir] for a copy that has no rollback of its own (templates): what it
+  /// kept aside or left alone is posted to [attachmentNotices], also when it
+  /// throws.
+  Future<void> _copyDirNotify(Directory from, Directory to, String targetPlace, String sourcePlace) async {
+    final copy = AttachmentCopy();
+    try {
+      await _copyDir(from, to, into: copy);
+    } finally {
+      _postCopyNotices(copy, targetPlace, sourcePlace);
+    }
+  }
+
   /// Moves [from] to [to]: a rename, or a copy and delete across drives.
-  static Future<void> _moveDir(Directory from, Directory to) async {
-    if (!await from.exists()) return;
+  ///
+  /// It fails ([_IncompleteAttachments], carrying what was done) on every
+  /// incomplete move: a destination file that differs or is still changing, or,
+  /// with [fromTrash] (a set-aside folder being put back, where nothing should
+  /// stay), a source that still holds files after the verified ones were
+  /// removed. A complete move returns what the copy did. The notices
+  /// ([damagedKept], [stillChanging]) are for the caller to post.
+  static Future<AttachmentCopy> _moveDir(Directory from, Directory to, {required bool fromTrash}) async {
+    final copy = AttachmentCopy();
+    if (!await from.exists()) return copy;
     await to.parent.create(recursive: true);
     try {
       if (forceCopyMoveForTest) throw const FileSystemException('forced');
       await from.rename(to.path);
     } on FileSystemException {
-      final copy = AttachmentCopy();
-      await _copyDir(from, to, into: copy);
-      if (copy.differing.isNotEmpty) {
-        throw _DifferingAttachments(copy.differing.length, to.path);
+      try {
+        await _copyDir(from, to, into: copy);
+        if (copy.differing.isNotEmpty || copy.stillChanging.isNotEmpty) {
+          throw _IncompleteAttachments(copy, false, to.path);
+        }
+        await removeVerifiedSources(copy, from);
+        if (fromTrash && await _holdsFile(from)) throw _IncompleteAttachments(copy, true, to.path);
+      } on _IncompleteAttachments {
+        rethrow;
+      } on FileSystemException catch (e) {
+        // Carries what was done so far (a file set aside stays reported).
+        throw _IncompleteAttachments(copy, false, to.path, cause: e);
       }
-      await removeVerifiedSources(copy, from);
+    }
+    return copy;
+  }
+
+  static Future<bool> _holdsFile(Directory d) async {
+    if (!await d.exists()) return false;
+    try {
+      await for (final e in d.list(recursive: true, followLinks: false)) {
+        if (e is! Directory) return true;
+      }
+    } on FileSystemException {
+      return true; // can't tell: treated as not empty
+    }
+    return false;
+  }
+
+  /// The notices for what a copy kept or left alone (see [_moveDir]).
+  static List<String> _copyNotices(AttachmentCopy c, String targetPlace, String sourcePlace) {
+    String shown(Iterable<String> names) {
+      final l = names.toList();
+      return l.length <= 3
+          ? l.map((n) => '"$n"').join(', ')
+          : '${l.take(3).map((n) => '"$n"').join(', ')} and ${l.length - 3} more';
+    }
+
+    final out = <String>[];
+    for (final incomplete in [false, true]) {
+      for (final replaced in [true, false]) {
+        final of = c.damagedKept.where((k) => k.incomplete == incomplete && k.replaced == replaced).toList();
+        if (of.isEmpty) continue;
+        final one = of.length == 1;
+        final what = '${one ? 'A' : '${of.length}'} ${incomplete ? 'incomplete' : 'damaged'} '
+            '${one ? 'copy' : 'copies'} of ${shown(of.map((k) => k.name))} in $targetPlace '
+            '${one ? 'was' : 'were'} kept as ${shown(of.map((k) => k.aside))}';
+        out.add(
+          replaced
+              ? '$what, and the good ${one ? 'copy was' : 'copies were'} used.'
+              : "$what; the good ${one ? "copy wasn't" : "copies weren't"} put in "
+                    "${one ? 'its' : 'their'} place and ${one ? 'stays' : 'stay'} in $sourcePlace.",
+        );
+      }
+    }
+    if (c.stillChanging.isNotEmpty) {
+      final one = c.stillChanging.length == 1;
+      out.add(
+        '${shown(c.stillChanging.map(_baseName))} ${one ? 'is' : 'are'} still changing in $targetPlace, so '
+        '${one ? 'it was' : 'they were'} not moved; the ${one ? 'original stays' : 'originals stay'} in $sourcePlace.',
+      );
+    }
+    return out;
+  }
+
+  /// What a move that stopped says: what [_copyNotices] says, the files that
+  /// differ from what is at the destination, and files left in the source.
+  void _postIncomplete(_IncompleteAttachments e, String targetPlace, String sourcePlace) {
+    _postCopyNotices(e.copy, targetPlace, sourcePlace);
+    if (_notices.isClosed) return;
+    if (e.copy.differing.isNotEmpty) {
+      final n = e.copy.differing.length;
+      _notices.add(
+        '${n == 1 ? 'An attachment file' : '$n attachment files'} ("${_baseName(e.copy.differing.first)}"'
+        '${n == 1 ? '' : ' and others'}) could not be moved: $targetPlace already has '
+        '${n == 1 ? 'a different file' : 'different files'} with ${n == 1 ? 'that name' : 'those names'}. '
+        'The original${n == 1 ? '' : 's'} stay in $sourcePlace.',
+      );
+    }
+    if (e.leftover) {
+      _notices.add('Some attachment files could not be moved out of $sourcePlace, so they were left there.');
+    }
+  }
+
+  /// A put-back that failed: what [_postIncomplete] says for an incomplete move,
+  /// and always where what could not be put back is kept.
+  void _postKept(Object e, Directory kept, String targetPlace, String sourcePlace) {
+    if (e is _IncompleteAttachments) _postIncomplete(e, targetPlace, sourcePlace);
+    if (_notices.isClosed) return;
+    _notices.add(
+      'Attachments could not be put back in $targetPlace${e is _IncompleteAttachments && e.cause == null ? '' : ' (${describeError(e is _IncompleteAttachments ? e.cause! : e)})'}. '
+      'What could not be put back is still saved in ${kept.path}.',
+    );
+  }
+
+  void _postCopyNotices(AttachmentCopy c, String targetPlace, String sourcePlace) {
+    if (_notices.isClosed) return;
+    for (final n in _copyNotices(c, targetPlace, sourcePlace)) {
+      _notices.add(n);
     }
   }
 
@@ -1450,8 +1580,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     List<String> differing,
     List<String> keptAside,
     String targetPlace,
-    String sourcePlace,
-  ) {
+    String sourcePlace, {
+    List<DamagedKept> damagedKept = const [],
+    List<String> stillChanging = const [],
+  }) {
     String shown(List<String> paths) {
       final names = paths.map(_baseName).toList();
       return names.length <= 3
@@ -1476,6 +1608,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         '(${shown(keptAside)}) in $sourcePlace could not be checked or put back, so '
         '${one ? 'it was' : 'they were'} left there.',
       );
+    }
+    final extra = AttachmentCopy()
+      ..damagedKept.addAll(damagedKept)
+      ..stillChanging.addAll(stillChanging);
+    for (final n in _copyNotices(extra, targetPlace, sourcePlace)) {
+      parts.add('${n.substring(0, 1).toLowerCase()}${n.substring(1)}');
     }
     return parts.join(' Also, ');
   }
@@ -1704,13 +1842,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (!await dir.exists()) continue;
       final to = Directory('${trash.path}${Platform.pathSeparator}${assetsFolderName(p)}');
       try {
-        await _moveDir(dir, to);
+        _postCopyNotices(await _moveDir(dir, to, fromTrash: false), 'the folder of deleted pages', 'the page');
         stash[p] = to;
       } on FileSystemException catch (e) {
         debugPrint('Setting aside ${dir.path} failed: $e');
+        if (e is _IncompleteAttachments) _postIncomplete(e, 'the folder of deleted pages', 'the page');
+        // Whatever was moved is what Undo restores; files that stayed in the
+        // page folder stay there.
+        if (await to.exists()) stash[p] = to;
       }
     }
     final keptIds = <String>{}; // changed since they were read: not deleted
+    // Set-aside folders that could not be put back (or handed to recovery) whole:
+    // never removed, nor the trash folder that holds them.
+    final keepTrash = <String>{};
     final deletedNow = <int>[]; // deleted by this call, for putting back on a failure
     try {
       for (var i = 0; i < ids.length; i++) {
@@ -1748,10 +1893,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final dir = stash[ids[i]];
         if (dir == null) continue;
         try {
-          await _moveDir(dir, _assetsDir(loc, ids[i]));
+          _postCopyNotices(
+            await _moveDir(dir, _assetsDir(loc, ids[i]), fromTrash: true),
+            'the page',
+            'the folder of deleted pages',
+          );
           stash.remove(ids[i]);
         } on FileSystemException catch (e) {
           debugPrint('Putting back the attachments of page ${ids[i]} failed: $e');
+          _postKept(e, dir, 'the page', 'the folder of deleted pages');
+          // Stays in the stash, and the trash folder is never removed while it
+          // holds what could not be put back.
+          keepTrash.add(dir.path);
         }
       }
       // Attachments that could not go back to their folder are handed to
@@ -1762,14 +1915,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (rec != null) {
         for (final id in stash.keys.toList()) {
           try {
-            await _moveDir(
-              stash[id]!,
-              Directory('${rec.directory.path}${Platform.pathSeparator}${assetsFolderName(id)}'),
+            _postCopyNotices(
+              await _moveDir(
+                stash[id]!,
+                Directory('${rec.directory.path}${Platform.pathSeparator}${assetsFolderName(id)}'),
+                fromTrash: true,
+              ),
+              'the recovery folder',
+              'the folder of deleted pages',
             );
-            stash.remove(id);
+            keepTrash.remove(stash.remove(id)!.path); // emptied: nothing left to protect
             handedOff = true;
           } on Object catch (e) {
             debugPrint('Keeping the attachments of page $id for recovery failed: $e');
+            _postKept(e, stash[id]!, 'the recovery folder', 'the folder of deleted pages');
+            keepTrash.add(stash[id]!.path);
           }
         }
       }
@@ -1777,7 +1937,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final p in keptIds) {
         await _checkFile(st.pathFor(p));
       }
-      if (stash.isEmpty) await _removeDir(trash);
+      if (stash.isEmpty && keepTrash.isEmpty) await _removeDir(trash);
       _touch(loc);
       _rebuildTree();
       if (openId != null) {
@@ -1820,9 +1980,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final dir = stash.remove(p);
       if (dir != null) {
         try {
-          await _moveDir(dir, _assetsDir(loc, p));
+          _postCopyNotices(
+            await _moveDir(dir, _assetsDir(loc, p), fromTrash: true),
+            'the page',
+            'the folder of deleted pages',
+          );
         } on FileSystemException catch (e) {
           debugPrint('Putting back the attachments of page $p failed: $e');
+          _postKept(e, dir, 'the page', 'the folder of deleted pages');
+          keepTrash.add(dir.path); // what is left there is never cleaned up with the trash
         }
       }
       await _checkFile(st.pathFor(p));
@@ -1835,6 +2001,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       openId,
       loc,
       stash,
+      keepTrash: keepTrash,
       keptNote: keptIds.isEmpty
           ? null
           : '${keptIds.length == 1 ? 'A page was' : '${keptIds.length} pages were'} changed on '
@@ -2002,19 +2169,24 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final leftIds = <String>[];
     for (final MapEntry(key: id, value: dir) in deleted._assets.entries) {
       try {
-        await _moveDir(dir, _assetsDir(deleted._location, id));
+        _postCopyNotices(
+          await _moveDir(dir, _assetsDir(deleted._location, id), fromTrash: true),
+          'the page',
+          'the folder of deleted pages',
+        );
       } on FileSystemException catch (e) {
+        if (e is _IncompleteAttachments) _postCopyNotices(e.copy, 'the page', 'the folder of deleted pages');
         debugPrint('Restoring the attachments of page $id failed: $e');
         attachmentsLeft.add(dir.path);
         leftIds.add(id);
-        if (e is! _DifferingAttachments) knownCause = false;
+        if (e is! _IncompleteAttachments || !e.onlyDiffering) knownCause = false;
       }
     }
     // What could not be restored stays where the message says it is: a later
     // discard of this delete leaves those folders alone.
     for (final id in leftIds) {
       final d = deleted._assets.remove(id)!;
-      deleted._keepTrash.add(d.parent.path);
+      deleted._keepTrash.add(d.path);
     }
     // A file that is at a page's path now (a sync client put one there) is not
     // written over. The restored version, which only exists in memory, is put
@@ -2098,9 +2270,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // Removes the folders [d] set aside, except those Undo could not restore.
-  Future<void> _removeSetAside(DeletedPages d) => Future.wait([
-    for (final dir in d._assets.values) _removeDir(d._keepTrash.contains(dir.parent.path) ? dir : dir.parent),
-  ]);
+  Future<void> _removeSetAside(DeletedPages d) {
+    final sep = Platform.pathSeparator;
+    String parentOf(String p) => p.substring(0, p.lastIndexOf(sep));
+    final keptParents = {for (final k in d._keepTrash) parentOf(k)};
+    return Future.wait([
+      for (final dir in d._assets.values)
+        if (!d._keepTrash.contains(dir.path)) _removeDir(keptParents.contains(dir.parent.path) ? dir : dir.parent),
+    ]);
+  }
 
   /// Drops the in-memory copy of [deleted] (its snackbar went away).
   void discardDeleted(DeletedPages deleted) {
@@ -2363,14 +2541,30 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
       }
 
-      String keptCopiesNote() => keptCopies.isEmpty
-          ? ''
-          : ' Some of the copies made for the move in ${_placeName(toLoc)} were kept, because they '
-                'changed after they were made or could not be checked; you can delete what you do '
-                'not need.';
-      NotebookException withKept(NotebookException e) => keptCopies.isEmpty
-          ? e
-          : NotebookException('${e.message}${keptCopiesNote()}', needsAction: true);
+      // Damaged or incomplete files this move set aside in the target, and files
+      // it left alone because they were changing: said however the move ends, so
+      // a kept `.damaged-` file is always named.
+      String keptFilesNote() {
+        final all = AttachmentCopy();
+        for (final c in copies.values) {
+          all.damagedKept.addAll(c.damagedKept);
+          all.stillChanging.addAll(c.stillChanging);
+        }
+        final lines = _copyNotices(all, _placeName(toLoc), _placeName(fromLoc));
+        return lines.isEmpty ? '' : ' ${lines.join(' ')}';
+      }
+
+      String keptCopiesNote() =>
+          (keptCopies.isEmpty
+              ? ''
+              : ' Some of the copies made for the move in ${_placeName(toLoc)} were kept, because they '
+                    'changed after they were made or could not be checked; you can delete what you do '
+                    'not need.') +
+          keptFilesNote();
+      NotebookException withKept(NotebookException e) {
+        final note = keptCopiesNote();
+        return note.isEmpty ? e : NotebookException('${e.message}$note', needsAction: true);
+      }
 
       try {
         for (final p in moved) {
@@ -2409,9 +2603,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // the old key stays until each page has settled (build note 9).
       try {
         rekeys.addAll(await _rekeyBegin(ids, fromStore, toStore, fromLoc, toLoc));
-      } on NotebookException {
+      } on NotebookException catch (e) {
         await removeCopies();
-        rethrow;
+        throw withKept(e);
       }
       await syncHook?.call('move-rekeyed', toStore.directory.path);
       // Every source is checked before any is deleted. One that changed (or
@@ -2467,7 +2661,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           '${stayed.isEmpty ? '' : ' (${stayed.length == 1 ? 'one attachment file' : '${stayed.length} attachment files'} '
               'could not be copied because ${_placeName(toLoc)} already has different ones)'}. '
           'If $src comes back with the old ${ids.length == 1 ? 'page' : 'pages'}, delete the '
-          '${ids.length == 1 ? 'one' : 'ones'} you do not need.',
+          '${ids.length == 1 ? 'one' : 'ones'} you do not need.'
+          '${keptFilesNote()}',
           needsAction: true,
         );
       }
@@ -2589,7 +2784,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
         if (gone.isEmpty && both.isEmpty && changed.isEmpty && copyLeft.isEmpty) {
           debugPrint('Removing the old page files failed: $e');
-          throw NotebookException('Could not remove the old files, so nothing was moved.${_osReason(e)}');
+          throw withKept(NotebookException('Could not remove the old files, so nothing was moved.${_osReason(e)}'));
         }
         // Only a page with no source moves. A page whose parent ended up in
         // the other location goes to the top level of its own (0059).
@@ -2723,7 +2918,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
         throw NotebookException(
           '${gone.isEmpty && both.isEmpty && copyLeft.isEmpty ? 'The page was not moved.' : 'The move was only partly done.'} '
-          '${parts.join(' ')}',
+          '${parts.join(' ')}${keptFilesNote()}',
           needsAction: both.isNotEmpty || copyLeft.isNotEmpty || changed.isNotEmpty,
         );
       }
@@ -2739,9 +2934,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Files that stayed because the target holds something else.
       final differing = [for (final c in copies.values) ...c.differing];
       final keptAside = [for (final c in copies.values) ...c.keptAside];
-      attachmentsNote = differing.isEmpty && keptAside.isEmpty
+      final damagedKept = [for (final c in copies.values) ...c.damagedKept];
+      final stillChanging = [for (final c in copies.values) ...c.stillChanging];
+      attachmentsNote = differing.isEmpty && keptAside.isEmpty && damagedKept.isEmpty && stillChanging.isEmpty
           ? null
-          : _attachmentsNote(differing, keptAside, _placeName(toLoc), _placeName(fromLoc));
+          : _attachmentsNote(
+              differing,
+              keptAside,
+              _placeName(toLoc),
+              _placeName(fromLoc),
+              damagedKept: damagedKept,
+              stillChanging: stillChanging,
+            );
 
       for (final p in moved) {
         _metas[p.id] = p.meta;
@@ -3167,7 +3371,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       page: page,
     );
     await _saveTemplate(dir, template);
-    await _copyDir(_assetsDir(loc, pageId), _templateAssets(dir, template.id, pageId));
+    await _copyDirNotify(
+      _assetsDir(loc, pageId),
+      _templateAssets(dir, template.id, pageId),
+      'the template',
+      'the page',
+    );
     return template;
   }
 
@@ -3188,7 +3397,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final d in dirs) {
       final src = _templateAssets(d, template.id, fromId);
       if (await src.exists()) {
-        await _copyDir(src, _assetsDir(loc, toId));
+        await _copyDirNotify(src, _assetsDir(loc, toId), 'the new page', 'the template');
         return;
       }
     }
@@ -3225,7 +3434,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     );
     await _saveTemplate(dir, template);
     for (final id in ordered) {
-      await _copyDir(_assetsDir(path, id), _templateAssets(dir, template.id, id));
+      await _copyDirNotify(_assetsDir(path, id), _templateAssets(dir, template.id, id), 'the template', 'the binder');
     }
     return template;
   }
@@ -3324,9 +3533,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // the new page ids.
       final templates = appTemplatesDirectory;
       for (var i = 0; templates != null && i < made.pages.length; i++) {
-        await _copyDir(
+        await _copyDirNotify(
           _templateAssets(templates, template.id, template.pages[i].id),
           Directory('${dir.path}${Platform.pathSeparator}${assetsFolderName(made.pages[i].id)}'),
+          'the new binder',
+          'the template',
         );
       }
     } on Object catch (e) {
@@ -7321,6 +7532,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
                 FileSystemEntityType.notFound)
           f,
     ];
+    // What was kept aside as damaged, or left alone because it was still
+    // changing, in the wording the moves use.
+    final keptLines = [
+      // The good copy is in the original's folder or, when that one was the
+      // damaged one, in the recovery folder: say both when both were read.
+      for (final n in _copyNotices(
+        result,
+        'the copy',
+        _recovery == null ? "the original's folder" : "the original's folder or the recovery folder",
+      ))
+        '${n.substring(0, 1).toLowerCase()}${n.substring(1, n.length - 1)}',
+    ];
     final problems = <String>[
       if (notCopied.isNotEmpty)
         "${notCopied.length == 1 ? 'this attachment file was' : 'these attachment files were'} not copied "
@@ -7334,6 +7557,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         "the original's attachments folder wasn't available, and ${refs.unasked} "
             '${refs.unasked == 1 ? 'box is' : 'boxes are'} of a type that is switched off, not allowed on this page '
             "or from a newer version, so any files ${refs.unasked == 1 ? 'it keeps' : 'they keep'} couldn't be checked",
+      ...keptLines,
       if (result.keptAside.isNotEmpty)
         'leftover temporary files in the attachments folder were left where they are: ${_namesShown(result.keptAside)}',
       if (left.isNotEmpty) "these attachment folders couldn't be copied: ${left.join(', ')}",
