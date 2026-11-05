@@ -16,9 +16,14 @@ import 'package:noted_core/noted_core.dart';
 
 void main() {
   // File access needs real time, so it all happens inside runAsync.
-  Future<(Directory, Notebook)> setUpNotebook(WidgetTester tester, {required bool pending}) async {
+  Future<(Directory, Notebook)> setUpNotebook(
+    WidgetTester tester, {
+    required bool pending,
+    void Function(Directory recovery)? beforeLoad,
+  }) async {
     return (await tester.runAsync(() async {
       final root = await Directory.systemTemp.createTemp('noted_recovery_notice');
+      if (beforeLoad != null) beforeLoad(await Directory('${root.path}/app/recovery').create(recursive: true));
       final extra = await Directory('${root.path}/Elsewhere').create();
       final nb = Notebook(
         PageStore(await Directory('${root.path}/pages').create()),
@@ -72,12 +77,15 @@ void main() {
   });
 
   testWidgets("the quit notice lists Can't open rows as 'name: reason', like the sidebar", (tester) async {
-    final (root, nb) = await setUpNotebook(tester, pending: false);
-    await tester.runAsync(() async {
-      final rec = await Directory('${root.path}/app/recovery').create(recursive: true);
-      File('${rec.path}/bad-1.json').writeAsStringSync('{ nope');
-      File('${rec.path}/bad-1.canvas').writeAsStringSync('not a page');
-    });
+    // Damaged files found when Noted started are what the quit notice lists.
+    final (root, nb) = await setUpNotebook(
+      tester,
+      pending: false,
+      beforeLoad: (rec) {
+        File('${rec.path}/bad-1.json').writeAsStringSync('{ nope');
+        File('${rec.path}/bad-1.canvas').writeAsStringSync('not a page');
+      },
+    );
     final key = GlobalKey<NavigatorState>();
     await tester.pumpWidget(MaterialApp(navigatorKey: key, home: const SizedBox()));
     late Future<void> future;
