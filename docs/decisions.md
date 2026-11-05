@@ -1942,6 +1942,22 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - Joining a backup folder to open its copy (later edits would land in the backup).
   - Applying a link at the saved offsets without checking the text (it can link the wrong words).
 
+## 0138 — Leaving a page freezes it; kept edits open as a preview when the file can't be read; the chosen copy survives read failures; Save a copy names what it left out
+- **Date:** 2026-11-05
+- **Status:** Active (fixes within 0137 decided by the PM and awaiting the maintainer's confirmation; the Box API addition decided under delegated authority; amends 0137 and 0098)
+- **Decision:**
+  - **Leaving freezes the page (amends 0137).** While leaving a page has to wait (a save running, a failed save, or a busy page), the page is read-only and shows "Noted is saving this page before leaving it." If the page stays (Cancel, or a save that can't land and stays), it becomes editable again, and a sync merge applied while it was frozen is saved. Leaving without a wait freezes nothing.
+  - **Kept edits open as a preview whatever the file's state (amends 0137).** Reopening a page with kept edits opens the read-only preview when its file can't be read, holds invalid UTF-8, or isn't there. The reason says which ("the page file can't be read", "the page file isn't there"). With no kept edits, the error is shown as before.
+  - **The chosen copy survives read failures (amends 0137).** A same-id file the user chose is given up only when it doesn't exist, or when it reads as a valid page with another id. A file that is locked, half-written or holds invalid text keeps the choice and is checked again later.
+  - **Save a copy elsewhere names what it left out (amends 0098).** The copy uses the page's last known folder when its folder has gone away. Each attachment file the page's image and file boxes keep in the folder is checked in the copy. Any file that is missing, differs or was left as a temporary file is named (up to three, then "and N more"). When the page's folder is unavailable and some boxes couldn't be asked (a switched-off or disallowed type, or a newer data version), the message says so. Otherwise it says "Saved a copy to …" as before. Nothing in the original is changed.
+  - **Box API 0.14 (additive).** `BoxCodec.folderFiles(data)` returns the file names a box keeps in the page's assets folder, by default none. The host asks it only for boxes that resolve to a supported, enabled and allowed type, and checks only names that are attachment hash names.
+- **Rationale:** edits typed while leaving waited on a stalled save could reach neither the save nor recovery. A preview that can't open when the file can't be read hides kept edits exactly when they matter. A sync client briefly holding the chosen copy must not move edits to the other file. A copy that reports success while missing attachments loses data silently. The notebook must not read box-type data itself (invariant 1).
+- **Alternatives considered:**
+  - Rechecking the session after leaving and saving the newer edits (more timing cases than freezing).
+  - Treating every read failure as absence (the reported failure).
+  - Decoding image and file data in the notebook (breaks invariant 1).
+  - Dropping the per-file check and warning only when the folder is missing (misses partly synced folders).
+
 ---
 
 ## Open items
