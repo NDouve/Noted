@@ -449,6 +449,131 @@ void main() {
       expect(v.state, AttachmentState.ok);
       expect(v.bytes, good);
     });
+
+    group('open hands over the verified copy', () {
+      final opened = <String>[];
+      PageAttachments withOpener() {
+        opened.clear();
+        final s = PageAttachments(
+          pageFolder: pages,
+          pageId: 'p',
+          storage: () => AttachmentStorage.folder,
+          cacheDirectory: Directory('${root.path}/cache'),
+          recoveryDirectory: rec(),
+          onNotice: notices.add,
+          opener: (f) async => opened.add(f.path),
+          watch: false,
+        );
+        addTearDown(() {
+          try {
+            s.dispose();
+          } on FlutterError {
+            // Already disposed.
+          }
+        });
+        return s;
+      }
+
+      test('an incomplete page-folder copy does not shadow the good recovery copy', () async {
+        asset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(Uint8List.sublistView(good, 0, 50));
+        recAsset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        await withOpener().open('f.bin', fileName: name);
+        expect(FileSystemEntity.identicalSync(opened.single, recAsset(name).path), isTrue);
+        expect(asset(name).lengthSync(), 50, reason: 'the incomplete copy is left alone');
+      });
+
+      test('a good page-folder copy is opened', () async {
+        asset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        recAsset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        await withOpener().open('f.bin', fileName: name);
+        expect(FileSystemEntity.identicalSync(opened.single, asset(name).path), isTrue);
+      });
+
+      test('when both copies are bad nothing is opened and the user is told', () async {
+        asset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(bad);
+        recAsset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(Uint8List.sublistView(good, 0, 50));
+        await withOpener().open('f.bin', fileName: name);
+        expect(opened, isEmpty);
+        expect(notices, isNotEmpty);
+        expect(asset(name).readAsBytesSync(), bad);
+        expect(recAsset(name).lengthSync(), 50, reason: 'the recovery copy is left alone');
+        expect(notices.last, contains('damaged'));
+        expect(notices.last, isNot(contains('Try again')));
+      });
+
+      test('a folder at the page-folder name is skipped for the good recovery copy', () async {
+        Directory(asset(name).path).createSync(recursive: true);
+        recAsset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        await withOpener().open('f.bin', fileName: name);
+        expect(FileSystemEntity.identicalSync(opened.single, recAsset(name).path), isTrue);
+      });
+
+      test('a link at the page-folder name is skipped for the good recovery copy', () async {
+        recAsset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        asset(name).parent.createSync(recursive: true);
+        try {
+          Link(asset(name).path).createSync(recAsset(name).path);
+        } on FileSystemException {
+          // Links need a privilege on some systems: say so in the results.
+          markTestSkipped('This system does not allow creating links here.');
+          return;
+        }
+        await withOpener().open('f.bin', fileName: name);
+        expect(FileSystemEntity.identicalSync(opened.single, recAsset(name).path), isTrue);
+        expect(opened.single, isNot(asset(name).path), reason: 'not through the link');
+      });
+
+      test('a copy that changes while it is read: the user is told to try again, not that it is damaged', () async {
+        asset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        attachmentAfterHashHook = (f) async => f.writeAsBytesSync([...good, 1]);
+        addTearDown(() => attachmentAfterHashHook = null);
+        await withOpener().open('f.bin', fileName: name);
+        expect(opened, isEmpty);
+        expect(notices.last, contains('Try again'));
+        expect(notices.last, isNot(contains('damaged')));
+      });
+
+      test('a damaged page copy and an unstable recovery copy: the user is told to try again', () async {
+        asset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(bad);
+        recAsset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        attachmentAfterHashHook = (f) async {
+          if (f.path.replaceAll(r'\', '/') == recAsset(name).path.replaceAll(r'\', '/')) f.writeAsBytesSync([...good, 1]);
+        };
+        addTearDown(() => attachmentAfterHashHook = null);
+        await withOpener().open('f.bin', fileName: name);
+        expect(opened, isEmpty);
+        expect(notices.last, contains('Try again'));
+        expect(asset(name).readAsBytesSync(), bad);
+      });
+
+      test('nothing at either name: nothing is opened, the user is told to try again', () async {
+        await withOpener().open('f.bin', fileName: name);
+        expect(opened, isEmpty);
+        expect(notices.last, contains('Try again'));
+      });
+    });
   });
   group('a file another writer put at the name is never deleted', () {
     test('a fill that throws part way, with the target replaced meanwhile: the other file survives', () async {
