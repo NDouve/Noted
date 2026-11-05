@@ -48,6 +48,41 @@ class _ChangingStore extends PageStore {
   }
 }
 
+/// A store whose delete fails for [failDelete], and that won't write back the
+/// pages in [failNew]: a delete that fails part way and can't be rolled back.
+class _FailingStore extends PageStore {
+  _FailingStore(super.directory);
+
+  final Set<String> failDelete = {};
+  final Set<String> failNew = {};
+
+  @override
+  Future<DeleteResult> deleteIfUnchanged(
+    String pageId,
+    String expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    Future<void> Function()? beforeDelete,
+    void Function()? beforeRestore,
+  }) {
+    if (failDelete.contains(pageId)) throw const FileSystemException('source gone');
+    return super.deleteIfUnchanged(
+      pageId,
+      expectedText,
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforeDelete: beforeDelete,
+      beforeRestore: beforeRestore,
+    );
+  }
+
+  @override
+  Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish}) {
+    if (failNew.contains(page.id)) throw const FileSystemException('destination gone');
+    return super.saveNewText(page, text, beforePublish: beforePublish);
+  }
+}
+
 /// A notebook that records which deletes were discarded, and can make Undo
 /// leave the delete pending (a partial Undo).
 class _SpyNotebook extends Notebook {
@@ -429,6 +464,47 @@ void main() {
     await until(tester, () => spy.discarded.isNotEmpty, what: 'the delete to be discarded');
     expect(spy.discarded.single, same(spy.undone), reason: 'discarded once, and it is the delete');
     expect(find.text('Undo'), findsNothing);
+    await finish(tester);
+  });
+
+  testWidgets('pages recovery did not take are offered back with Undo, and closing the message lets them go', (
+    tester,
+  ) async {
+    late _FailingStore failing;
+    await start(tester, store: (d) => failing = _FailingStore(d));
+    late String child;
+    await tester.runAsync(() async {
+      child = await nb.createPage(parentId: b);
+      failing.failDelete.add(child);
+      failing.failNew.add(b);
+    });
+    await tester.pump();
+    await rightClick(tester, b);
+    await tester.tap(find.text('Delete'));
+    await settle(tester);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Delete'));
+    await tester.pump();
+    await until(tester, () => find.textContaining('Recovery could not keep').evaluate().isNotEmpty);
+    expect(find.textContaining('Recovery holds'), findsNothing);
+    expect(find.text('Undo'), findsOneWidget);
+    expect(File('${dir.path}/$b.canvas').existsSync(), isFalse);
+
+    // Another message replaces it: the way back comes back after that one.
+    final messenger = ScaffoldMessenger.of(tester.element(find.byType(PageTreeView)));
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(const SnackBar(content: Text('Some other message')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.text('Some other message'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pump(const Duration(milliseconds: 600));
+    await until(tester, () => find.text('Undo').evaluate().isNotEmpty, what: 'the Undo message to come back');
+    expect(find.textContaining('Recovery could not keep'), findsOneWidget);
+
+    failing.failNew.clear();
+    await tester.runAsync(() => tester.tap(find.text('Undo')));
+    await until(tester, () => File('${dir.path}/$b.canvas').existsSync());
+    expect(rootIds(), contains(b));
     await finish(tester);
   });
 

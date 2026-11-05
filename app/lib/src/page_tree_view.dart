@@ -219,12 +219,40 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     try {
       await action();
     } on NotebookException catch (e) {
-      messenger?.hideCurrentSnackBar();
-      // A message that asks the user to act stays until it is closed.
-      messenger?.showSnackBar(
-        SnackBar(content: Text(e.message), persist: e.needsAction, showCloseIcon: e.needsAction),
-      );
+      _report(messenger, e);
     }
+  }
+
+  // Shows [e] in a SnackBar. [queued]: behind the message on screen, not in
+  // place of it.
+  void _report(ScaffoldMessengerState? messenger, NotebookException e, {bool queued = false}) {
+    if (!queued) messenger?.hideCurrentSnackBar();
+    // A message that asks the user to act stays until it is closed.
+    final held = e is PagesNotRestoredException ? e.deleted : null;
+    messenger
+        ?.showSnackBar(
+          SnackBar(
+            content: Text(e.message),
+            persist: e.needsAction,
+            showCloseIcon: e.needsAction,
+            // Pages that only exist in memory: Undo writes them back.
+            action: held == null
+                ? null
+                : SnackBarAction(label: 'Undo', onPressed: () => _guard(() => _nb.undoDelete(held))),
+          ),
+        )
+        .closed
+        .then((reason) {
+          if (held == null || !_nb.isPendingDelete(held)) return;
+          if (reason == SnackBarClosedReason.dismiss || reason == SnackBarClosedReason.swipe) {
+            // Closing the message with its X lets the pages go.
+            _nb.discardDeleted(held);
+          } else if (reason != SnackBarClosedReason.action && mounted) {
+            // Replaced by another message: the pages are still only in memory,
+            // so the way back is shown again after it.
+            _report(messenger, e, queued: true);
+          }
+        });
   }
 
   // The page tree's actions, which the app's commands (app_commands.dart)
@@ -867,7 +895,15 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       ),
     );
     if (!(ok ?? false)) return;
-    final deleted = await _nb.delete(p.id);
+    final DeletedPages deleted;
+    try {
+      deleted = await _nb.delete(p.id);
+    } on NotebookException catch (e) {
+      // A refused or failed delete: say so (a partly failed one may offer Undo).
+      // Declining the question about kept changes needs no message.
+      if (e is! LeaveCancelled) _report(messenger, e);
+      return;
+    }
     if (messenger == null) return;
     final title = p.title.isEmpty ? 'Untitled page' : p.title;
     final keptNote = deleted.keptNote;

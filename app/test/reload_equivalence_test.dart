@@ -2368,7 +2368,7 @@ void main() {
       st.failDelete.clear();
       st.failNew.clear();
       expect(error, isA<NotebookException>());
-      expect((error! as NotebookException).message, contains('recovery'));
+      expect((error! as NotebookException).message, contains('Recovery holds the content of'));
       expect((await run.nb.pendingRecovery()).entries.map((e) => e.pageId), [parent]);
       expect(File(run._pathOf(parent)).existsSync(), isFalse);
       // The next start writes the page back.
