@@ -668,7 +668,7 @@ void main() {
         expect(copies(), isEmpty);
       });
 
-      test('an exit copy that does not finish within the limit: the user is asked', () async {
+      test('an exit copy that does not finish within the limit: the user is asked, and a second exit reuses the write', () async {
         await setUpTree(withRecovery: false);
         counting.failNew.add(parent);
         Object? error;
@@ -677,24 +677,38 @@ void main() {
         } on Object catch (e) {
           error = e;
         }
-        expect(error, isA<PagesNotRestoredException>());
+        final held = (error! as PagesNotRestoredException).deleted;
+        final reached = Completer<void>();
+        final release = Completer<void>();
+        nb.syncHook = (point, path) async {
+          if (point != 'undo-copy-before-publish') return;
+          if (!reached.isCompleted) reached.complete();
+          await release.future;
+        };
         final asked = <UserQuestion>[];
         nb.questioner = (q, title) async {
           asked.add(q);
           return false; // stay
         };
 
-        // No time is left for the write: it counts as not made.
-        expect(await nb.prepareToExit(limit: Duration.zero), isFalse);
+        expect(await nb.prepareToExit(limit: const Duration(milliseconds: 100)), isFalse);
 
+        expect(reached.isCompleted, isTrue);
         expect(asked, [UserQuestion.leaveAndLose]);
-        expect(nb.isPendingDelete((error! as PagesNotRestoredException).deleted), isTrue);
-        // The write that ran out of time still lands; wait so the folder is free.
-        for (var i = 0; i < 100 && copies().isEmpty; i++) {
-          await Future<void>.delayed(const Duration(milliseconds: 20));
-        }
-        await Future<void>.delayed(const Duration(milliseconds: 300));
+        expect(nb.isPendingDelete(held), isTrue);
+
+        // A second attempt while the write is still pending waits for it.
+        final second = nb.prepareToExit(limit: const Duration(seconds: 5));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        release.complete();
+        expect(await second, isTrue);
+
+        expect(copies(), hasLength(1), reason: 'one copy, not one per attempt');
+        expect(idsOf(copies().single.path), contains(mine.id));
+        expect(nb.isPendingDelete(held), isFalse);
+        expect(File(pathOf(parent)).existsSync(), isFalse);
       });
+
     });
   });
 

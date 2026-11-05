@@ -220,6 +220,10 @@ class DeletedPages {
 
   // Held pages already written beside their place at exit.
   final Set<String> _copied = {};
+
+  // Exit copies being written, by page id: a second exit attempt waits for the
+  // write instead of starting another.
+  final Map<String, Future<String?>> _copying = {};
 }
 
 /// Whether a binder's folder could be used.
@@ -2343,7 +2347,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> undoDelete(DeletedPages deleted) async {
     // Exit waits for an Undo in flight, so the page it holds is not lost.
     final done = Completer<void>();
-    _undoRuns[done.future] = deleted;
+    if (_held.contains(deleted)) _undoRuns[done.future] = deleted;
     try {
       await _undoDeleteNow(deleted);
     } finally {
@@ -2490,6 +2494,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final tmp = File('$path.${DateTime.now().microsecondsSinceEpoch}-$attempt.tmp');
       try {
         await tmp.writeAsString(text, flush: true);
+        await syncHook?.call('undo-copy-before-publish', st.directory.path);
         if (await publishExclusive(tmp, path)) return path;
       } on FileSystemException catch (e) {
         debugPrint('Saving the restored page beside its file failed: $e');
@@ -8635,18 +8640,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// the user chose to stay (the question "Your changes will be lost").
   Future<bool> prepareToExit({Duration? limit}) async {
     final bound = limit ?? leaveSaveLimit;
-    final clock = Stopwatch()..start();
-    // One deadline for the whole exit: what the held pages used is gone from the rest.
-    Duration left() => clock.elapsed >= bound ? Duration.zero : bound - clock.elapsed;
     try {
       await _leaveOpenPage();
     } on LeaveCancelled {
       return false;
     }
+    // The held pages get a deadline of the same length, started now; the queue
+    // below keeps its full limit.
+    final clock = Stopwatch()..start();
+    Duration left() => clock.elapsed >= bound ? Duration.zero : bound - clock.elapsed;
     if (!await _saveHeldAtExit(left)) return false;
     // Other queued writes get the same time; what hangs is left behind.
     var stuck = false;
-    await _chain.idle.timeout(left(), onTimeout: () => stuck = true);
+    await _chain.idle.timeout(bound, onTimeout: () => stuck = true);
     if (stuck) _chain.detach();
     final rec = _recovery;
     if (rec != null && rec.landedEntries.isNotEmpty) {
@@ -8691,16 +8697,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         String? copy;
         try {
           _assertWritable(d._location); // a read-only place gets no file
-          final write = _publishConflictCopy(_storeOf(d._location), page);
+          final st = _storeOf(d._location);
           // A copy that lands after the time limit still counts as made.
-          unawaited(
-            write.then<void>(
-              (c) {
-                if (c != null) d._copied.add(page.id);
-              },
-              onError: (Object _) {},
-            ),
-          );
+          final write = d._copying[page.id] ??= () async {
+            try {
+              final c = await _publishConflictCopy(st, page);
+              if (c != null) d._copied.add(page.id);
+              return c;
+            } finally {
+              d._copying.remove(page.id);
+            }
+          }();
           copy = await write.timeout(left());
         } on Object catch (e) {
           debugPrint('Saving ${page.id} beside its place at exit failed: $e');
