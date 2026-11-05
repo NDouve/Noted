@@ -55,6 +55,10 @@ class _Actions implements PageTreeActions {
   Future<void> binderSaveAsTemplate(BinderSection binder) async {}
   @override
   Future<void> binderRemove(BinderSection binder) async {}
+  @override
+  Future<void> binderSettings(BinderSection binder) async {}
+  @override
+  Future<void> pageSettings(PageMeta page) async => calls.add('pageSettings ${page.id}');
 }
 
 void main() {
@@ -93,6 +97,7 @@ void main() {
           ('app.page.indent', 'Indent'),
           ('app.page.outdent', 'Outdent'),
           ('app.page.moveToFolder', 'Move to folder…'),
+          ('app.page.settings', 'Page settings…'),
           ('app.page.delete', 'Delete'),
         ],
       );

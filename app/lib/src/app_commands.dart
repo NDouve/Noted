@@ -26,6 +26,7 @@ abstract final class AppCommands {
   static const String outdent = 'app.page.outdent';
   static const String delete = 'app.page.delete';
   static const String moveToFolder = 'app.page.moveToFolder';
+  static const String pageSettings = 'app.page.settings';
 
   // Binders (the "Pages" header, and a binder header's menu).
   static const String newBinder = 'app.binder.new';
@@ -38,6 +39,7 @@ abstract final class AppCommands {
   static const String binderCover = 'app.binder.cover';
   static const String binderSaveAsTemplate = 'app.binder.saveAsTemplate';
   static const String binderRemove = 'app.binder.remove';
+  static const String binderSettings = 'app.binder.settings';
 
 
   // Theme.
@@ -77,10 +79,12 @@ abstract interface class PageTreeActions {
   Future<void> indent(PageMeta page);
   Future<void> delete(PageMeta page);
   Future<void> moveToFolder(PageMeta page);
+  Future<void> pageSettings(PageMeta page);
   Future<void> binderNewPage(BinderSection binder);
   Future<void> binderNewPageFromTemplate(BinderSection binder);
   Future<void> binderSaveAsTemplate(BinderSection binder);
   Future<void> binderRemove(BinderSection binder);
+  Future<void> binderSettings(BinderSection binder);
 }
 
 /// New page's keys, also used by the home when no page tree is on screen.
@@ -209,6 +213,12 @@ CommandRegistry pageCommands(Notebook nb, PageMeta p, PageTreeActions a) {
       invoke: () => a.moveToFolder(p),
     ),
     Command(
+      id: AppCommands.pageSettings,
+      label: 'Page settings…',
+      icon: Icons.tune_rounded,
+      invoke: () => a.pageSettings(p),
+    ),
+    Command(
       id: AppCommands.delete,
       label: 'Delete',
       icon: Icons.delete_outline_rounded,
@@ -244,6 +254,12 @@ CommandRegistry binderCommands(
         label: 'Open cover',
         icon: Icons.book_rounded,
         invoke: () => nb.showCover(b.path),
+      ),
+      Command(
+        id: AppCommands.binderSettings,
+        label: 'Binder settings…',
+        icon: Icons.tune_rounded,
+        invoke: () => a.binderSettings(b),
       ),
       Command(
         id: AppCommands.binderSaveAsTemplate,

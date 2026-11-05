@@ -144,6 +144,14 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
                   icon: Icon(header[AppCommands.newBinder]!.icon),
                   onPressed: () => header.invoke(AppCommands.newBinder),
                 ),
+                // Open binder… is also in the menu; the button makes it findable.
+                if (_nb.pickFolder != null)
+                  IconButton(
+                    key: const ValueKey('open-binder'),
+                    tooltip: header[AppCommands.openBinder]!.label,
+                    icon: Icon(header[AppCommands.openBinder]!.icon),
+                    onPressed: () => header.invoke(AppCommands.openBinder),
+                  ),
                 IconButton(
                   tooltip: header[AppCommands.newPage]!.label,
                   icon: Icon(header[AppCommands.newPage]!.icon),
@@ -406,22 +414,11 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
             () => collapsed ? _collapsed.remove(_binderKey(b)) : _collapsed.add(_binderKey(b)),
           ),
         ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              key: ValueKey('binder-settings-${b.path}'),
-              tooltip: 'Binder settings',
-              icon: const Icon(Icons.tune_rounded),
-              onPressed: () => showBinderSettings(context, _nb, b.path),
-            ),
-            SidebarMenuButton<String>(
-              key: ValueKey('binder-menu-${b.path}'),
-              tooltip: 'Binder options',
-              onSelected: (v) => binderCommands(_nb, b, this).invoke(v),
-              itemBuilder: (_) => _binderItems(b),
-            ),
-          ],
+        trailing: SidebarMenuButton<String>(
+          key: ValueKey('binder-menu-${b.path}'),
+          tooltip: 'Binder options',
+          onSelected: (v) => binderCommands(_nb, b, this).invoke(v),
+          itemBuilder: (_) => _binderItems(b),
         ),
     );
   }
@@ -433,6 +430,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         _item(r, AppCommands.binderNewPage),
         _item(r, AppCommands.binderNewPageFromTemplate),
         _item(r, AppCommands.binderCover),
+        _item(r, AppCommands.binderSettings),
         const NotedMenuDivider(),
         _item(r, AppCommands.binderSaveAsTemplate),
         const NotedMenuDivider(),
@@ -440,6 +438,12 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       _item(r, AppCommands.binderRemove),
     ];
   }
+
+  @override
+  Future<void> binderSettings(BinderSection b) => showBinderSettings(context, _nb, b.path);
+
+  @override
+  Future<void> pageSettings(PageMeta p) => showPageSettings(context, _nb, p.id);
 
   @override
   Future<void> binderNewPage(BinderSection b) async {
@@ -753,6 +757,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       _item(r, AppCommands.saveAsTemplate),
       _item(r, AppCommands.rename),
       _item(r, AppCommands.moveToFolder),
+      _item(r, AppCommands.pageSettings),
       const NotedMenuDivider(),
       _item(r, AppCommands.moveUp),
       _item(r, AppCommands.moveDown),
@@ -860,7 +865,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     if (messenger == null) return;
     final title = p.title.isEmpty ? 'Untitled page' : p.title;
     final keptNote = deleted.keptNote;
-    messenger.hideCurrentSnackBar();
+    messenger.clearSnackBars();
     if (deleted.pages.isEmpty) {
       // Everything was kept (a newer version landed): nothing to undo.
       messenger.showSnackBar(
@@ -874,17 +879,46 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     }
     // The deleted pages stay in memory only as long as the snackbar (or until
     // the next delete); once it goes away without Undo they are dropped.
+    _showDeletedBar(messenger, deleted, title);
+  }
+
+  void _showDeletedBar(ScaffoldMessengerState messenger, DeletedPages deleted, String title, {bool again = false}) {
+    final keptNote = deleted.keptNote;
+    var undoPressed = false; // this bar's Undo ran: whatever it left is for the next bar
     messenger
         .showSnackBar(
           SnackBar(
             duration: const Duration(seconds: 10),
-            content: Text(keptNote == null ? 'Deleted "$title"' : 'Deleted some of "$title". $keptNote'),
-            action: SnackBarAction(label: 'Undo', onPressed: () => _guard(() => _nb.undoDelete(deleted))),
+            // A bar with an action stays until acted on unless told
+            // otherwise (persist defaults to true then); this one must time
+            // out, or the deleted pages stay in memory.
+            persist: false,
+            showCloseIcon: true,
+            content: Text(
+              again
+                  ? "Some pages weren't restored"
+                  : keptNote == null
+                  ? 'Deleted "$title"'
+                  : 'Deleted some of "$title". $keptNote',
+            ),
+            action: SnackBarAction(
+              label: 'Undo',
+              onPressed: () async {
+                undoPressed = true;
+                await _guard(() => _nb.undoDelete(deleted));
+                // A partial Undo keeps the delete for another try: offer it again.
+                if (mounted && _nb.isPendingDelete(deleted)) _showDeletedBar(messenger, deleted, title, again: true);
+              },
+            ),
           ),
         )
         .closed
         .then((reason) {
-          if (reason != SnackBarClosedReason.action) _nb.discardDeleted(deleted);
+          // Only the delete Undo can still reach is dropped; a newer delete
+          // has already dropped this one.
+          if (!undoPressed && reason != SnackBarClosedReason.action && _nb.isPendingDelete(deleted)) {
+            _nb.discardDeleted(deleted);
+          }
         });
   }
 }

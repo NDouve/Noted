@@ -187,6 +187,14 @@ Future<AiLinkServer?> startAiLink(Notebook notebook, Directory dataFolder) async
   }
 }
 
+/// What the app does to the notebook before it exits: writes unsaved edits,
+/// then drops a delete that Undo could still reach (its Deleted bar goes away
+/// with the window without ever reporting that it closed).
+Future<void> saveBeforeExit(Notebook notebook) async {
+  await notebook.flush();
+  await notebook.discardPendingDelete();
+}
+
 class NotedApp extends StatefulWidget {
   const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock, this.openFiles});
 
@@ -229,7 +237,7 @@ class _NotedAppState extends State<NotedApp> {
         // Logged so a normal close (Alt+F4, the close button) can be told
         // apart from a crash in the `flutter run` console.
         debugPrint('Noted: window close requested; saving before exit.');
-        await widget.notebook.flush();
+        await saveBeforeExit(widget.notebook);
         await showRecoveryNoticeOnExit(widget.notebook, _navigatorKey);
         await widget.aiLink?.dispose();
         widget.runningLock?.release();
