@@ -3078,13 +3078,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final s = _binders[path];
     final kept = s?.keptTemps.where((k) => k.path == tempPath).firstOrNull;
     if (s == null || kept == null) return;
-    final DeleteResult r;
+    final DeleteResult? r;
     try {
-      r = await _underFolderLock(Directory(path), () => deleteFileIfUnchanged(tempPath, kept.bytes));
+      r = await _underFolderLock(Directory(path), () async {
+        // With no binder file this copy may be the only one: never delete it.
+        if (!File(_binderFilePath(path)).existsSync()) return null;
+        return deleteFileIfUnchanged(tempPath, kept.bytes);
+      });
     } on FileSystemException catch (e) {
       throw NotebookException("Couldn't delete the file.${_osReason(e)}");
     }
     await checkBinderFile(_binderFilePath(path), force: true);
+    if (r == null) {
+      throw const NotebookException('The binder file is missing; this copy is kept');
+    }
     if (!r.deleted && r.outcome != DeleteOutcome.absent) {
       throw const NotebookException('That file changed since it was listed, so it was kept.');
     }

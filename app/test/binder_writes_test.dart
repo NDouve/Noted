@@ -744,6 +744,47 @@ void main() {
       await settleSaves(t, nb);
       await t.runAsync(stop);
     }, skip: seamsUseCached());
+
+    testWidgets('a copy is kept when the binder file went missing after Delete was shown', (t) async {
+      t.view.physicalSize = const Size(1200, 900);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      late File tmp;
+      await t.runAsync(() async {
+        await start();
+        tmp = File('${folder.path}/$binderFileName.1-13.tmp')
+          ..writeAsStringSync(Binder.parse(fileText()).withTitle('Interrupted').write());
+        tmp.setLastModifiedSync(DateTime.now().subtract(const Duration(hours: 1)));
+        await nb.checkBinderFile(binderFile().path);
+      });
+      await t.pumpWidget(MaterialApp(home: Home(notebook: nb)));
+      await t.pump();
+      final listed = nb.binders.single.keptTemps.single.path;
+      expect(find.byKey(ValueKey('kept-temp-delete-$listed')), findsOneWidget);
+      // The file goes away behind the app's back, then Delete is pressed.
+      binderFile().deleteSync();
+      await t.runAsync(() async {
+        await t.tap(find.byKey(ValueKey('kept-temp-delete-$listed')));
+        await realIoPause(100);
+      });
+      await settleSaves(t, nb);
+      for (var i = 0; i < 40 && nb.binders.single.keptTemps.isNotEmpty && !nb.binders.single.fileMissing; i++) {
+        await t.pump(const Duration(milliseconds: 100));
+        await t.runAsync(() => realIoPause(50));
+      }
+      await t.pump();
+      expect(tmp.existsSync(), isTrue, reason: 'the copy is kept');
+      expect(nb.binders.single.fileMissing, isTrue);
+      expect(find.byKey(ValueKey('kept-temp-delete-$listed')), findsNothing);
+
+      await t.pumpWidget(const SizedBox());
+      for (var i = 0; i < 4; i++) {
+        await t.pump(const Duration(milliseconds: 100));
+        await t.runAsync(() => realIoPause(30));
+      }
+      await settleSaves(t, nb);
+      await t.runAsync(stop);
+    }, skip: seamsUseCached());
   });
 }
 
