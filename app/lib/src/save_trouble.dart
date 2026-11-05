@@ -60,6 +60,10 @@ class _Root {
 class SaveChain {
   _Root _root = _Root();
 
+  /// Counts the detaches: a job queued before one is older than the chain it
+  /// runs beside.
+  int generation = 0;
+
   /// Called when a job of a detached chain ends, with the pages it declared.
   /// Not called for a job that ended before the chain was detached.
   void Function(Set<String> pages)? onDetachedJobEnded;
@@ -106,6 +110,7 @@ class SaveChain {
       }
     }
     r.detached = true;
+    generation++;
     if (!r.detachedSignal.isCompleted) r.detachedSignal.complete();
     _root = _Root();
     return pages;
@@ -156,7 +161,7 @@ enum KeepKind {
 }
 
 class KeepOutcome {
-  const KeepOutcome(this.kind, {this.cause, this.why, this.gen});
+  const KeepOutcome(this.kind, {this.cause, this.why, this.gen, this.discardedSnapshot = false});
 
   final KeepKind kind;
 
@@ -169,11 +174,16 @@ class KeepOutcome {
   /// A plain reason for [KeepKind.refused] and [KeepKind.failed].
   final String? why;
 
+  /// A write of a snapshot that Discard threw away: not kept, and not a
+  /// failure either; it is never safe to rely on.
+  final bool discardedSnapshot;
+
   /// Whether the edits are safe: kept, or a newer kept write holds them.
-  bool get safe => kind == KeepKind.kept || kind == KeepKind.dropped;
+  bool get safe => kind == KeepKind.kept || (kind == KeepKind.dropped && !discardedSnapshot);
 
   static const kept = KeepOutcome(KeepKind.kept);
   static const dropped = KeepOutcome(KeepKind.dropped);
+  static const discarded = KeepOutcome(KeepKind.dropped, discardedSnapshot: true);
 }
 
 /// How a save of the open page ended.

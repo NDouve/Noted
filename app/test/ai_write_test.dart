@@ -15,7 +15,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
-import 'support/trouble_world.dart' show FailStore, accessDenied;
+import 'support/trouble_world.dart' show FailStore, accessDenied, until;
 
 /// A box type that takes AI writes: `{"by": code id|null, "text": text}`.
 class _Codec extends BoxCodec<Map<String, Object?>> {
@@ -966,6 +966,39 @@ void main() {
       expect((r as AiLinkError).code, AiLinkCode.saveFailed);
       expect(r.message, contains("couldn't be saved, so nothing was written"));
       expect(dataOf(nb, 'ba')['text'], 'old', reason: 'the editor is untouched');
+    });
+
+    test('a hung save: the closed page of a queued AI write is busy, and another AI call answers on the new chain', () async {
+      final store = FailStore(pages);
+      final nb = make(store: store, recovery: Directory('${root.path}/rec'));
+      await nb.load();
+      final c = nb.currentId!;
+      nb.current!.insertBox(box('ba', text: 'old'));
+      await nb.flush();
+      final code = await issue('ba');
+      final a = await nb.createPage(); // a is open; c is closed
+      await nb.addStandaloneFolder(folder.path);
+      nb.current!.createBoxAt(const Bounds(60, 60, 0, 0));
+      store
+        ..stall = Completer<void>()
+        ..stallId = a;
+      unawaited(nb.flush()); // the save of a hangs
+      await until(() => store.attempts > 0, what: 'the save to start');
+      final first = nb.handleAiLink(req('ba', code, content: 'one')); // queued behind it
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await nb.createPage(folderPath: folder.path); // leaving a cuts the hung save
+      expect(nb.isBusy(c), isTrue, reason: 'a job of the closed page is on the old chain');
+      // An AI link call that reads a page runs on the new chain (the AI writes
+      // themselves queue one after another, so the hung one holds the next).
+      final saved = await nb.aiSavedPage(a).timeout(const Duration(seconds: 3));
+      expect(saved, isNotNull);
+      // A write to the busy page is answered "busy" once it is its turn.
+      final second = nb.handleAiLink(req('ba', code, content: 'two'));
+      store.stall!.complete();
+      expect((await first).ok, isTrue);
+      await until(() => !nb.isBusy(c), what: 'the page to be free');
+      final r2 = await second;
+      expect(r2.ok, isTrue, reason: 'free again: ${r2 is AiLinkError ? '${r2.code} ${r2.message}' : ''}');
     });
 
     test('a closed page is called kept only if recovery holds the change', () async {

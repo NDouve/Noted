@@ -285,6 +285,60 @@ void main() {
     });
   });
 
+  group('unavailable storage still asks (pre-merge C2, C3)', () {
+    Future<void> blockRecovery() async {
+      await w.rec.parent.create(recursive: true);
+      if (w.rec.existsSync()) w.rec.deleteSync(recursive: true);
+      File(w.rec.path).writeAsStringSync('in the way');
+    }
+
+    test('a folder that went away with edits only on screen: leaving and quitting ask', () async {
+      final nb = w.make();
+      await nb.load();
+      final id = await nb.createPage(folderPath: w.other.path);
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      await blockRecovery();
+      w.storeFor(w.other).failWith = accessDenied();
+      await nb.flush();
+      expect(nb.trouble.kind, TroubleKind.recoveryFailing);
+      // The folder goes away: the page loses its place and turns read-only.
+      w.other.renameSync('${w.root.path}/other-away');
+      await nb.checkFolders();
+      expect(nb.currentId, id);
+      final asked = <UserQuestion>[];
+      nb.questioner = (q, t) async {
+        asked.add(q);
+        return false;
+      };
+      await nb.open(nb.tree.roots.first.id);
+      expect(asked, [UserQuestion.leaveAndLose]);
+      expect(nb.currentId, id, reason: 'Cancel keeps the only copy on screen');
+      expect(await nb.prepareToExit(), isFalse);
+      expect(asked, hasLength(2));
+    });
+
+    test('an unreadable replacement file and a failed recovery write: the page is not abandoned unasked', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      await nb.flush();
+      w.pageFile(id).writeAsStringSync('this is not a page');
+      nb.current!.createBoxAt(const Bounds(90, 90, 0, 0));
+      await blockRecovery();
+      await nb.flush();
+      expect(nb.readOnlyReason, contains('could not be kept'));
+      expect(nb.trouble.kind, TroubleKind.recoveryFailing);
+      final asked = <UserQuestion>[];
+      nb.questioner = (q, t) async {
+        asked.add(q);
+        return false;
+      };
+      await nb.createPage();
+      expect(asked, [UserQuestion.leaveAndLose]);
+      expect(nb.currentId, id);
+      expect(await nb.prepareToExit(), isFalse);
+    });
+  });
+
   group('Discard changes', () {
     test(
       'removes the kept generations and reopens the page as it is on disk',
@@ -329,6 +383,13 @@ void main() {
         reason: 'a failed Discard leaves busy (build note 5)',
       );
       expect(w.recFiles(), hasLength(1));
+      // Nothing was discarded: the floor is back, so the edits are kept again.
+      nb.recoveryStoreForTest!.hook = null;
+      nb.current!.createBoxAt(const Bounds(70, 70, 0, 0));
+      await nb.flush();
+      expect(nb.trouble.kind, TroubleKind.failing);
+      final held = (await nb.pendingRecovery()).entries.single;
+      expect(held.page.nodes, hasLength(2), reason: 'the newer snapshot was written, not dropped');
     });
   });
 

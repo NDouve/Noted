@@ -493,6 +493,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return _landedProblems.values.any((p) => _key(p.path) == k);
   }
 
+  /// Test seam: [_editsIn].
+  @visibleForTesting
+  static bool editsInForTest(NotedPage eb, NotedPage ep, NotedPage nb) => _editsIn(eb, ep, nb);
+
   /// Test seam: runs a replay pass over the pages that are not open, as the
   /// backoff and the folder checks do.
   @visibleForTesting
@@ -1505,12 +1509,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final ids = [id, ..._treeOf(loc).descendantsOf(id)];
     final openId = ids.contains(currentId) ? currentId : null;
     final DeletedPages result;
-    await _guardKept(ids, loc, 'deleting', "Noted is still trying to save this page, so it can't be deleted yet.");
+    final asked = await _guardKept(ids, loc, 'deleting', "Noted is still trying to save this page, so it can't be deleted yet.");
     try {
-      result = await _deleteGuarded(id, loc, st, ids, openId);
+      result = await _deleteGuarded(id, loc, st, ids, openId, asked);
     } finally {
       for (final p in ids) {
-        _busy.remove(p);
+        _free(p, _busyDeleting);
       }
     }
     return result;
@@ -1520,7 +1524,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // changes, then marks the pages busy for [why] (3.7 delete and move). A
   // delete or move of several pages needs recovery, so it is refused while
   // the recovery lock isn't held (build note 2).
-  Future<void> _guardKept(List<String> ids, String loc, String why, String busyMessage) async {
+  // Returns whether the user was asked about kept changes.
+  Future<bool> _guardKept(List<String> ids, String loc, String why, String busyMessage) async {
+    var asked = false;
     for (final p in ids) {
       if (_busy.containsKey(p)) throw NotebookException(busyMessage);
     }
@@ -1533,6 +1539,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final troubled = _trouble.isTrouble && ids.contains(_trouble.pageId);
       if (kept || troubled) {
         final title = _titleOrUntitled(pageTitleOf(ids.first) ?? '');
+        asked = true;
         if (!await _ask(UserQuestion.deleteKept, title)) throw const LeaveCancelled();
         if (troubled && _preview == null) {
           // The user chose to delete the changes with the page: the session
@@ -1544,11 +1551,27 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final p in ids) {
       _busy[p] = why == 'deleting' ? _busyDeleting : _busyMoving;
     }
+    return asked;
   }
 
-  Future<DeletedPages> _deleteGuarded(String id, String loc, PageStore st, List<String> ids, String? openId) async {
+  Future<DeletedPages> _deleteGuarded(
+    String id,
+    String loc,
+    PageStore st,
+    List<String> ids,
+    String? openId,
+    bool asked,
+  ) async {
     // Closing saves the open page, so the copies read below are current.
     if (openId != null) await _closeCurrent();
+    // The last save may have put new edits in recovery. They were not what the
+    // user was asked about: ask now, so they are not deleted unseen.
+    final rec = _recovery;
+    if (!asked && rec != null && ids.any((p) => rec.entriesOfPage(p).any((e) => !rec.isLanded(e.gen)))) {
+      if (!await _ask(UserQuestion.deleteKept, _titleOrUntitled(pageTitleOf(ids.first) ?? ''))) {
+        throw const LeaveCancelled();
+      }
+    }
     // The text each page was read with: the file is deleted only while it still
     // holds exactly that (a version a sync client landed since is kept).
     final texts = [for (final p in ids) await st.readText(p)];
@@ -1640,7 +1663,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _touch(loc);
       _rebuildTree();
       if (openId != null) {
-        _busy.remove(openId); // reopened for editing, not as a preview
+        _free(openId, _busyDeleting); // reopened for editing, not as a preview
         try {
           await open(openId);
         } on Object catch (e) {
@@ -1724,39 +1747,80 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final toFolder = _normalizePath(toStore.directory.path);
     final done = <_Rekey>[];
     final landed = <String>[];
+    Never refuse(Object why) => throw NotebookException(
+      'Nothing was moved. The changes kept for a page could not be moved with it ($why).',
+      needsAction: true,
+    );
     for (final p in ids) {
       final preexisting = rec.entriesFor(toFolder, p).isNotEmpty;
+      final olds = <RecoveryEntry>[];
       for (final e in rec.entriesFor(fromFolder, p)) {
         if (rec.isLanded(e.gen)) {
           landed.add(e.gen);
-          continue;
-        }
-        final NotedPage? eb = e.baseText == null ? null : _tryRead(e.baseText!);
-        final KeepOutcome out;
-        if (e.baseText != null && eb == null) {
-          out = const KeepOutcome(KeepKind.refused, why: 'its base can not be read');
         } else {
-          out = await _keepForRecovery(toLoc, toStore, e.page, base: eb, exactBase: true);
+          olds.add(e);
         }
-        final fresh = out.gen == null ? null : rec.indexEntries.where((x) => x.gen == out.gen).firstOrNull;
-        if (!out.safe || fresh == null || !await fresh.file.exists()) {
-          await _settleRekeys(done, const {});
-          final why = out.why ?? (out.cause == null ? 'it could not be written' : describeError(out.cause!));
-          throw NotebookException(
-            'Nothing was moved. The changes kept for a page could not be moved with it ($why).',
-            needsAction: true,
-          );
-        }
-        done.add(_Rekey(p, e, fresh.gen, preexisting));
       }
+      final mine = <_Rekey>[];
+      try {
+        for (final e in olds) {
+          if (preexisting) {
+            // The target holds an entry already: merged into it, never replaced.
+            final NotedPage? eb = e.baseText == null ? null : _tryRead(e.baseText!);
+            if (e.baseText != null && eb == null) refuse('its base can not be read');
+            final out = await _keepForRecovery(toLoc, toStore, e.page, base: eb, exactBase: true);
+            if (!out.safe || out.gen == null) {
+              refuse(out.why ?? (out.cause == null ? 'it could not be written' : describeError(out.cause!)));
+            }
+            mine.add(_Rekey(p, e, out.gen!, true));
+          } else {
+            // Its own fresh slot, so the pair is the generation and its copy.
+            if (_lockProblem() != null) refuse(_recovery == null ? 'no recovery' : recoveryLock!.problem);
+            final fresh = await rec.transaction(
+              (tx) => tx.write(
+                folder: toFolder,
+                page: e.page,
+                baseText: e.baseText,
+                time: DateTime.now(),
+                freshSlot: true,
+              ),
+            );
+            mine.add(_Rekey(p, e, fresh.gen, false));
+          }
+        }
+        // Each copy is read back before anything is deleted.
+        for (final k in mine) {
+          final fresh = rec.indexEntries.where((x) => x.gen == k.freshGen).firstOrNull;
+          if (fresh == null || !await rec.transaction((tx) => tx.verify(fresh))) {
+            refuse('the new copy did not read back');
+          }
+        }
+        // Merged ones share the last generation (each write replaced the slot).
+        if (preexisting && mine.isNotEmpty) {
+          final last = mine.last.freshGen;
+          for (var i = 0; i < mine.length; i++) {
+            mine[i] = _Rekey(p, mine[i].old, last, true);
+          }
+        }
+      } on NotebookException {
+        done.addAll(mine);
+        await _settleRekeys(done, const {});
+        rethrow;
+      } on Object catch (e) {
+        done.addAll(mine);
+        await _settleRekeys(done, const {});
+        refuse(describeError(e));
+      }
+      done.addAll(mine);
     }
     if (landed.isNotEmpty) await _deleteGens(rec, landed, null);
     return done;
   }
 
   // The second half: each page's kept entry is decided where the page ended
-  // up. At the target (in [atDest]) the old key goes; at the source the new
-  // one does. A delete that fails marks the generation landed. Never throws.
+  // up. At the target (in [atDest]) the old key goes, once the new one reads
+  // back; at the source the new one goes. A delete that fails marks the
+  // generation landed. Never throws.
   Future<void> _settleRekeys(List<_Rekey> keys, Set<String> atDest) async {
     final rec = _recovery;
     // A notebook that is gone (the app quit, or died) writes nothing more: both
@@ -1767,7 +1831,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final RecoveryEntry? victim;
         if (atDest.contains(k.id)) {
           final fresh = rec.indexEntries.where((x) => x.gen == k.freshGen).firstOrNull;
-          victim = fresh != null && await fresh.file.exists() ? k.old : null;
+          victim = fresh != null && await rec.transaction((tx) => tx.verify(fresh)) ? k.old : null;
         } else {
           victim = k.preexisting ? null : rec.indexEntries.where((x) => x.gen == k.freshGen).firstOrNull;
         }
@@ -1778,7 +1842,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     keys.clear();
   }
-
   // Deletes the recovery entries of [pageIds] in the folder of [st], by exact
   // generation (the pages are deleted).
   Future<void> _dropKeptEntries(List<String> pageIds, PageStore st) async {
@@ -2121,7 +2184,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     } on Object {
       for (final p in ids) {
-        _busy.remove(p);
+        _free(p, _busyMoving);
       }
       rethrow;
     }
@@ -2595,7 +2658,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Every page settles before the reopen; it leaves busy only after.
       await _settleRekeys(rekeys, atDest);
       for (final p in ids) {
-        _busy.remove(p);
+        _free(p, _busyMoving);
       }
       if (reopen != null && _current == null && _loc.containsKey(reopen)) {
         try {
@@ -3590,7 +3653,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (var attempt = 0; attempt < 2; attempt++) {
       final c = _current;
       if (c != null && c.page.id == pageId) return _aiWriteOpen(c, code, req, recheck);
-      final r = await _afterSaves(() => _aiWriteClosed(pageId, code, req, recheck));
+      final queuedOn = _chain.generation;
+      final r = await _afterSaves(
+        () => _aiWriteClosed(pageId, code, req, recheck, queuedOn),
+        what: 'AI write to page $pageId',
+        pages: {pageId},
+      );
       if (r != null) return r;
       // The page was opened while this waited its turn: apply it there.
     }
@@ -3698,11 +3766,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     AiCode code,
     AiLinkWriteBox req,
     AiLinkCode? Function() recheck,
+    int queuedOn,
   ) async {
     if (_current?.page.id == pageId) return null;
     final loc = _loc[pageId];
     if (loc == null) return AiLinkResponse.error(AiLinkCode.noBox);
-    if (_busy.containsKey(pageId)) {
+    // A write queued before the chain was cut waits on the save it was queued
+    // behind, so the page being held for that save is not a reason to refuse it.
+    final heldByItsOwnQueue = queuedOn != _chain.generation && _busy[pageId] == _busyDetached;
+    if (_busy.containsKey(pageId) && !heldByItsOwnQueue) {
       return AiLinkResponse.error(AiLinkCode.busy, 'Noted is still trying to save this page. Try again in a moment.');
     }
     final PageStore st;
@@ -3926,13 +3998,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<SaveResult> _saveNow(NotedPage page, int seq, SaveSession? session) async {
-    final loc = _loc[page.id];
-    if (loc == null || _isLocked(loc)) return const SaveResult(SaveEnd.skipped);
-    final PageStore st;
-    try {
-      st = _storeOf(loc);
-    } on NotebookException {
-      return const SaveResult(SaveEnd.skipped);
+    // A snapshot a Discard threw away is never published.
+    if (session != null && seq < session.floor) return const SaveResult(SaveEnd.skipped);
+    // The open page's place may be gone or locked: nothing can be written, so
+    // its edits are not saved. They go through the recovery rules like any
+    // failed save (a skipped save would let the page be disposed unasked).
+    final loc = _loc[page.id] ?? (session != null ? _orphanLoc : null);
+    if (loc == null) {
+      return session == null
+          ? const SaveResult(SaveEnd.skipped)
+          : await _saveFailed(_standalone, store, page, seq, session, reason: 'its folder is not available', folderGone: true);
+    }
+    final st = _storeOrFolder(loc);
+    if (_loc[page.id] == null || _isLocked(loc)) {
+      return session == null
+          ? const SaveResult(SaveEnd.skipped)
+          : await _saveFailed(loc, st, page, seq, session, reason: 'its folder is not available', folderGone: true);
     }
     var toSave = page;
     var savedSeq = seq;
@@ -3993,7 +4074,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (session != null) await _retireOwn(session, st, toSave, savedSeq);
       return const SaveResult(SaveEnd.landed);
     } on NotebookException {
-      return const SaveResult(SaveEnd.skipped); // the location can't be written now
+      // The location can't be written now (checked inside the write).
+      return session == null
+          ? const SaveResult(SaveEnd.skipped)
+          : await _saveFailed(loc, st, toSave, savedSeq, session, reason: 'its folder is not available', folderGone: true);
     } on Object catch (e, s) {
       // Not an I/O error: also state 2, "an unexpected error" (build note 6).
       debugPrint('Saving page ${page.id} failed: $e\n$s');
@@ -4031,6 +4115,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       );
     }
     return SaveResult(SaveEnd.failed, keep);
+  }
+
+  // The store of [loc], or a bare one for its folder when the location is gone
+  // (only its directory and file names are used, to key a recovery entry).
+  PageStore _storeOrFolder(String loc) {
+    try {
+      return _storeOf(loc);
+    } on NotebookException {
+      return PageStore(loc == _standalone ? store.directory : Directory(loc));
+    }
   }
 
   // Throws unless the pages of [loc] may be written. A folder that has gone
@@ -4166,8 +4260,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // Whether the edits of [ep] (made against [eb]) are already in [nb]: every
-  // box it added or changed is in [nb] with its content (or with conflict
-  // records it doesn't have), every box it deleted is absent, and the title
+  // box it added or changed is in [nb] exactly as it is there (a box with
+  // more conflict versions is not the same: it is merged), every box it deleted is absent, and the title
   // is its own. Only ever used to skip; a false "no" just merges.
   static bool _editsIn(NotedPage eb, NotedPage ep, NotedPage nb) {
     final baseById = {for (final n in eb.nodes) n.id: n};
@@ -4178,7 +4272,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final x = nb.node(m.id);
       if (x == null) return false;
       if (x.toRaw() == m.toRaw()) continue;
-      if (x is BoxRecord && m is BoxRecord && x.withoutConflicts().toRaw() == m.withoutConflicts().toRaw()) continue;
       return false;
     }
     for (final b in eb.nodes) {
@@ -4205,7 +4298,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (rec == null) {
       return const KeepOutcome(KeepKind.refused, why: 'Noted has no recovery folder');
     }
-    if (session != null && (seq <= session.newestWritten || seq < session.floor)) return KeepOutcome.dropped;
+    if (session != null && seq < session.floor) return KeepOutcome.discarded;
+    if (session != null && seq <= session.newestWritten) return KeepOutcome.dropped;
     final problem = _lockProblem();
     if (problem != null) return KeepOutcome(KeepKind.refused, why: problem);
     var baseText = base == null ? (exactBase ? null : _known[_key(st.pathFor(page.id))]) : writePage(base);
@@ -4241,7 +4335,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     int seq,
     List<RecoveryEntry> entries,
   ) async {
-    if (seq <= session.newestWritten || seq < session.floor) return KeepOutcome.dropped;
+    if (seq < session.floor) return KeepOutcome.discarded;
+    if (seq <= session.newestWritten) return KeepOutcome.dropped;
     final foreign = entries.where((e) => !session.own.containsKey(e.gen) && !rec.isLanded(e.gen));
     if (foreign.isNotEmpty) {
       // Only reachable after the lock was taken late: never replaced.
@@ -4251,7 +4346,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       );
     }
     final time = DateTime.now().toUtc();
-    final gen = RecoveryStore.generationOf(time, baseText, writePage(page));
+    final gen = RecoveryStore.generationOf(folder, time, baseText, writePage(page));
     // Recorded before writing: a tmp file that gets promoted is recognised.
     session.own[gen] = seq;
     final replaceable = {...session.own.keys, for (final e in entries) e.gen};
@@ -4455,7 +4550,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (rec == null) return;
     final problem = _lockProblem();
     if (problem != null) {
+      // Writes, deletes and replay are refused; the index is still built, by
+      // reading only, so opening a page knows what is kept for it.
       debugPrint('Replay refused: $problem');
+      if (!rec.indexed) {
+        try {
+          await rec.indexReadOnly();
+        } on Object catch (e) {
+          debugPrint('Reading the recovery folder failed: $e');
+        }
+      }
       return;
     }
     final RecoveryListing listing;
@@ -4506,7 +4610,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         try {
           await _replayEntry(rec, e, loc);
         } finally {
-          _busy.remove(id);
+          _free(id, _busyReplaying);
         }
       }
     }
@@ -4626,7 +4730,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // example " (Access is denied.)"); empty otherwise.
   static String _osReason(Object e) {
     final m = e is FileSystemException ? e.osError?.message : null;
-    return m == null || m.trim().isEmpty ? '' : ' (${m.trim()})';
+    if (m == null || m.trim().isEmpty) return '';
+    final plain = m.trim().replaceAll(RegExp(r'[.\s]+$'), '');
+    return ' ($plain)';
   }
 
   static String _titleOrUntitled(String title) => title.trim().isEmpty ? 'Untitled' : title.trim();
@@ -4713,7 +4819,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       final merged = theirs == null
           ? mine
-          : mergePage(base, mine, theirs, modules.codecs, theirsTime: time, markLanded: false).page;
+          : mergePage(base, mine, theirs, _pageCodecs(id), theirsTime: time, markLanded: false).page;
       final out = writePage(merged);
       if (out != theirsText) {
         await syncHook?.call('recover-before-publish', path);
@@ -5674,14 +5780,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_diskBlockId != openId && text != _known[key]) {
       final st = _storeOf(loc);
       final s = _session;
-      _blockKeep = await _keepForRecovery(loc, st, c.page, session: s, seq: s?.seq ?? 0);
+      final keep = _blockKeep = await _keepForRecovery(loc, st, c.page, session: s, seq: s?.seq ?? 0);
+      // A recovery write that failed is the loud state, so leaving asks.
+      if (s != null && identical(s, _session) && !keep.safe) {
+        _troubleFrom(s, c.page, keep, reason: "its file couldn't be read", folderGone: false);
+      }
     }
     if (_disposed) return true;
     if (_current?.page.id != openId) return true;
     _diskBlockId = openId;
-    _diskBlockReason =
-        'This page is read-only: its file was replaced and $why. '
-        'Your edits are kept in recovery. Put back a readable version, or open another page.';
+    final kept = _blockKeep?.safe ?? true;
+    _diskBlockReason = kept
+        ? 'This page is read-only: its file was replaced and $why. '
+              'Your edits are kept in recovery. Put back a readable version, or open another page.'
+        : 'This page is read-only: its file was replaced and $why. '
+              'Your edits could not be kept in recovery either, so they exist only on screen. '
+              'Use Save a copy elsewhere or Copy page text.';
     _syncReadOnly();
     return true;
   }
@@ -6232,6 +6346,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // The page on screen is `id` and it can be edited (not a preview).
   bool _isEditableOpen(String id) => _current?.page.id == id && _preview == null;
 
+  // Page [id] stops being busy, but only if it is busy for [why] (it may be
+  // held by something else meanwhile).
+  void _free(String id, String why) {
+    if (_busy[id] == why) _busy.remove(id);
+  }
+
   // Page [id] ended being busy for [why]: whatever waited for it can go on.
   void _unbusy(String id, [String? why]) {
     if (why != null && _busy[id] != why) return;
@@ -6285,15 +6405,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final page = c.page;
     final seq = session.seq;
     final troubled = _trouble.isTrouble && _trouble.pageId == page.id;
-    final loc = _loc[page.id];
-    if (loc == null || _isLocked(loc)) return true; // nothing can be written now
     if (!hadPending && !troubled && _chain.isIdle) return true;
-    final PageStore st;
-    try {
-      st = _storeOf(loc);
-    } on NotebookException {
-      return true;
-    }
+    // A place that is gone or locked is not a reason to go unasked: the edits
+    // still have to be in recovery (the save runs the same rules).
+    final loc = _loc[page.id] ?? _orphanLoc ?? _standalone;
+    final st = _storeOrFolder(loc);
     final SaveResult? res = await _enqueueSave(page, seq).then<SaveResult?>((r) => r).timeout(
       leaveSaveLimit,
       onTimeout: () => null,
@@ -6365,10 +6481,29 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final first = await _afterSaves<({bool done, List<RecoveryEntry> landed, bool ownsBusy})>(() async {
       final text = await st.readText(id);
       await syncHook?.call('open-read', st.pathFor(id));
-      final page = readPage(text);
       final entries = rec == null ? const <RecoveryEntry>[] : rec.entriesFor(folder, id);
       final landed = [for (final e in entries) if (rec != null && rec.isLanded(e.gen)) e];
       final pending = entries.length - landed.length;
+      final NotedPage page;
+      try {
+        page = readPage(text);
+      } on PageFormatException catch (e) {
+        // A file this version can't read, with changes kept for the page: they
+        // are shown from the entry (a preview that can't land), never lost.
+        if (pending == 0) rethrow;
+        _installPreview(
+          id,
+          loc,
+          st,
+          null,
+          null,
+          [for (final x in entries) if (!rec!.isLanded(x.gen)) x],
+          unreadable: e is UnsupportedPageFormatException
+              ? 'the page file is from a newer version of Noted'
+              : "the page file isn't a valid page file",
+        );
+        return (done: true, landed: landed, ownsBusy: false);
+      }
       final already = _busy.containsKey(id);
       if (pending == 0 && !already) {
         _installEditable(id, loc, st, text, page);
@@ -6388,15 +6523,32 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (r == null) {
         unawaited(replay.whenComplete(() => _unbusy(id, _busyReplaying)));
       } else {
-        _busy.remove(id);
+        _free(id, _busyReplaying);
       }
     }
     await _afterSaves(() async {
       final text = await st.readText(id);
-      final page = readPage(text);
       final pending = rec == null
           ? const <RecoveryEntry>[]
           : [for (final e in rec.entriesFor(folder, id)) if (!rec.isLanded(e.gen)) e];
+      final NotedPage page;
+      try {
+        page = readPage(text);
+      } on PageFormatException catch (e) {
+        if (pending.isEmpty) rethrow;
+        _installPreview(
+          id,
+          loc,
+          st,
+          null,
+          null,
+          pending,
+          unreadable: e is UnsupportedPageFormatException
+              ? 'the page file is from a newer version of Noted'
+              : "the page file isn't a valid page file",
+        );
+        return;
+      }
       if (pending.isEmpty && !_busy.containsKey(id)) {
         _installEditable(id, loc, st, text, page);
       } else {
@@ -6434,12 +6586,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Shows [id] read-only: the file with the kept [entries] merged in memory,
   // never written (3.6).
-  void _installPreview(String id, String loc, PageStore st, String text, NotedPage page, List<RecoveryEntry> entries) {
-    _known[_key(st.pathFor(id))] = text;
+  void _installPreview(
+    String id,
+    String loc,
+    PageStore st,
+    String? text,
+    NotedPage? page,
+    List<RecoveryEntry> entries, {
+    String? unreadable,
+  }) {
+    final sortedEntries = [...entries]..sort((a, b) => a.time.compareTo(b.time));
+    // With no readable file, the newest entry's page stands in for it.
+    final shown = page ?? sortedEntries.last.page;
+    if (text != null) _known[_key(st.pathFor(id))] = text;
     _base = page;
-    _metas[id] = page.meta;
-    var merged = page;
-    String? unlandable;
+    _metas[id] = shown.meta;
+    var merged = shown;
+    String? unlandable = unreadable;
     final codecs = _pageCodecs(id);
     final sorted = [...entries]..sort((a, b) => a.time.compareTo(b.time));
     for (final e in sorted) {
@@ -6508,7 +6671,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _reopening = true;
       try {
         _disposeCurrent();
-        await _openFresh(p.id);
+        try {
+          await _openFresh(p.id);
+        } on PageFormatException catch (e) {
+          // Nothing is kept for the page any more and its file can't be read:
+          // it is listed as a page that can't be opened; another page is shown.
+          debugPrint('Page ${p.id} can not be opened: ${e.message}');
+          if (_current == null) {
+            final others = [..._treeOf(p.loc).roots, ..._tree.roots].where((r) => r.id != p.id);
+            if (others.isNotEmpty) {
+              await _open(others.first.id);
+            } else {
+              await _createFallbackPage();
+            }
+          }
+        }
       } finally {
         _reopening = false;
       }
@@ -6535,7 +6712,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     try {
       await _replayPage(p.id);
     } finally {
-      _busy.remove(p.id);
+      _free(p.id, _busyReplaying);
     }
     await _refreshPreview();
     _backoff.schedule();
@@ -6547,6 +6724,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final p = _preview;
     final rec = _recovery;
     if (p == null || rec == null || !p.unlandable) return;
+    if (_busy.containsKey(p.id)) {
+      throw const NotebookException('Noted is still trying to save this page. Try again in a moment.');
+    }
     final title = _trouble.title;
     if (!await _ask(UserQuestion.discardKept, title)) return;
     _busy[p.id] = _busyDiscarding;
@@ -6559,7 +6739,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on Object catch (e) {
       throw NotebookException("Couldn't remove the changes kept for this page: ${describeError(e)}", needsAction: true);
     } finally {
-      _busy.remove(p.id);
+      _free(p.id, _busyDiscarding);
     }
     for (final e in p.entries) {
       _replayProblems.remove(_entryKey(e));
@@ -6625,6 +6805,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final rec = _recovery;
     if (c == null || s == null || _preview != null || !_trouble.isTrouble) return;
     final id = c.page.id;
+    final oldFloor = s.floor;
     s.floor = s.seq + 1;
     _saveTimer?.cancel();
     _saveTimer = null;
@@ -6643,13 +6824,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         s.own.clear();
       }
     } on Object catch (e) {
-      _busy.remove(id);
+      _free(id, _busyDiscarding);
+      s.floor = oldFloor; // nothing was discarded: later snapshots are kept again
+      if (identical(_current, c)) _pageChanged(c.page); // and saved again
       throw NotebookException(
         "Couldn't remove the changes kept for this page: ${e is StateError ? e.message : describeError(e)}",
         needsAction: true,
       );
     }
-    _busy.remove(id);
+    _free(id, _busyDiscarding);
     _disposeCurrent();
     await _openFresh(id);
   }

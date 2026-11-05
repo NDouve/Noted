@@ -111,7 +111,17 @@ class _HomeState extends State<Home> {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.maybeOf(context);
     messenger?.hideCurrentSnackBar();
-    messenger?.showSnackBar(keptNoticeBar(n, () => unawaited(notebook.open(n.pageId))));
+    messenger?.showSnackBar(keptNoticeBar(n, () => unawaited(_showKeptPage(n.pageId))));
+  }
+
+  Future<void> _showKeptPage(String id) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      await notebook.open(id);
+    } on NotebookException catch (e) {
+      messenger?.hideCurrentSnackBar();
+      messenger?.showSnackBar(SnackBar(content: Text(e.message)));
+    }
   }
 
   // A one-line notice about attachments (a file too large to embed).

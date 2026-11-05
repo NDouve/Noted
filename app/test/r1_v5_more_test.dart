@@ -48,6 +48,40 @@ void main() {
       expect(file.lengthSync(), 0, reason: 'zero bytes, never deleted');
     });
 
+    test('a file that cannot be opened is a lock problem, not "already open"', () async {
+      final file = File('${w.root.path}/ro/recovery.lock')..createSync(recursive: true);
+      if (Platform.isWindows) {
+        Process.runSync('attrib', ['+R', file.path]);
+        addTearDown(() => Process.runSync('attrib', ['-R', file.path]));
+      } else {
+        Process.runSync('chmod', ['444', file.path]);
+        addTearDown(() => Process.runSync('chmod', ['644', file.path]));
+        if (Process.runSync('id', ['-u']).stdout.toString().trim() == '0') return; // root opens it anyway
+      }
+      final lock = RecoveryLock(file);
+      expect(lock.acquireSync(tries: 2, gap: const Duration(milliseconds: 5)), RecoveryLockResult.failed);
+      expect(lock.held, isFalse);
+      expect(lock.problem, contains("Noted can't use its recovery folder"));
+    });
+
+    test('degraded mode still reads the folder, so a page with kept changes opens as a preview', () async {
+      File('${w.root.path}/blocker').writeAsStringSync('x');
+      final nb0 = w.make();
+      final id = await w.editedPage(nb0);
+      w.storeFor(w.pages).failWith = accessDenied();
+      await nb0.flush();
+      w.crash(nb0);
+      expect(w.recFiles(), hasLength(1));
+      w.storeFor(w.pages).failWith = null;
+      final lock = RecoveryLock(File('${w.root.path}/blocker/recovery.lock'));
+      lock.acquireSync(tries: 1);
+      final nb = w.make(lock: lock);
+      await nb.load();
+      await nb.open(id);
+      expect(nb.trouble.kind, TroubleKind.preview, reason: 'the index was built by reading');
+      expect(w.recFiles(), hasLength(1), reason: 'nothing was written, deleted or replayed');
+    });
+
     test('a lock that cannot be taken for another reason leaves pages editable and refuses recovery into state 4', () async {
       // The lock file's parent is a file: it can never be opened.
       File('${w.root.path}/blocker').writeAsStringSync('x');
@@ -217,6 +251,81 @@ void main() {
     });
   });
 
+  group('old sessions and unreadable files (pre-merge)', () {
+    test('a check that waited on the old chain before the detach completes after it', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      await nb.addStandaloneFolder(w.other.path);
+      nb.current!.createBoxAt(const Bounds(60, 60, 0, 0));
+      final store = w.storeFor(w.pages)
+        ..stall = Completer<void>()
+        ..stallId = id;
+      unawaited(nb.flush());
+      await until(() => store.attempts > 0, what: 'the save to start');
+      final check = nb.checkFile(w.pageFile(id).path); // waits for the hung save
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await nb.createPage(folderPath: w.other.path); // the leave cuts the save
+      await check.timeout(const Duration(seconds: 3));
+      store.stall!.complete();
+    });
+
+    test('a late failure of an old session changes nothing in the preview that replaced it', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      await nb.addStandaloneFolder(w.other.path);
+      nb.current!.createBoxAt(const Bounds(60, 60, 0, 0));
+      final store = w.storeFor(w.pages)
+        ..stall = Completer<void>()
+        ..stallId = id
+        ..failWith = accessDenied();
+      unawaited(nb.flush());
+      await until(() => store.attempts > 0, what: 'the save to start');
+      await nb.createPage(folderPath: w.other.path);
+      await nb.open(id);
+      expect(nb.trouble.kind, TroubleKind.preview);
+      final entry = w.recFiles().single.readAsStringSync();
+      final shown = nb.trouble;
+      store.stall!.complete(); // the old save fails now, in a session that is over
+      await until(() => !nb.isBusy(id), what: 'the old job to end');
+      expect(w.recFiles().single.readAsStringSync(), entry);
+      expect(nb.trouble.kind, TroubleKind.preview);
+      expect(nb.currentId, id);
+      expect(nb.trouble.pageId, shown.pageId);
+      store.failWith = null;
+      await nb.retryPreview();
+      expect(nb.trouble.isTrouble, isFalse);
+      expect(boxCount(nb.current!.page), 2);
+    });
+
+    for (final (name, text) in [
+      ('from a newer version of Noted', null),
+      ('not a page at all', 'this is not a page'),
+    ]) {
+      test('a page file that is $name opens a preview from the kept changes, which cannot land', () async {
+        final nb = w.make();
+        final id = await w.editedPage(nb);
+        w.storeFor(w.pages).failWith = accessDenied();
+        await nb.flush();
+        await nb.createPage();
+        w.storeFor(w.pages).failWith = null;
+        final file = w.pageFile(id);
+        file.writeAsStringSync(
+          text ?? file.readAsStringSync().replaceFirst(RegExp(r'"format"\s*:\s*\d+'), '"format":99'),
+        );
+        await nb.open(id);
+        expect(nb.trouble.kind, TroubleKind.preview);
+        expect(nb.trouble.canDiscardKept, isTrue);
+        expect(boxCount(nb.current!.page), 1, reason: 'the kept box is shown');
+        expect(nb.current!.readOnly, isTrue);
+        expect(w.recFiles(), hasLength(1), reason: 'nothing is replayed or deleted');
+        // Discard kept changes asks, then deletes only that generation.
+        nb.questioner = (q, t) async => true;
+        await nb.discardKept();
+        expect(w.recFiles(), isEmpty);
+        expect(nb.trouble.isTrouble, isFalse);
+      });
+    }
+  });
   group('a replay that hangs', () {
     test('does not hold recovery: leaving another page still keeps its entry within the bound', () async {
       final nb = w.make(

@@ -65,16 +65,20 @@ class _SaveTroubleBarState extends State<SaveTroubleBar> {
     final m = NotedMetrics.of(context);
     final colors = NotedColors.of(context);
     final scheme = Theme.of(context).colorScheme;
-    final small = NotedTypography.of(context).small
-        .copyWith(color: scheme.onSurface);
-    final bold = small.copyWith(fontWeight: FontWeight.w600);
+    // State 4 is the danger role (the error container); state 2 and the preview
+    // are the warm bar.
     final loud = t.kind == TroubleKind.recoveryFailing;
+    final fg = loud ? scheme.onErrorContainer : scheme.onSurface;
+    final small = NotedTypography.of(context).small.copyWith(color: fg);
+    final bold = small.copyWith(fontWeight: FontWeight.w600);
+    // One stop after the reason, whatever the reason itself ends with.
+    final why = t.reason.replaceAll(RegExp(r'[.\s]+$'), '');
     final text = switch (t.kind) {
-      TroubleKind.failing => "Couldn't save this page: ${t.reason}.",
+      TroubleKind.failing => "Couldn't save this page: $why.",
       TroubleKind.recoveryFailing =>
         "Noted can't save anything on this computer. Your changes to \"${t.title}\" exist only on screen.",
       TroubleKind.preview =>
-        "Changes kept in local recovery haven't been saved to this page yet: ${t.reason}.",
+        "Changes kept in local recovery haven't been saved to this page yet: $why.",
       TroubleKind.saved => '',
     };
     final actions = <Widget>[
@@ -235,7 +239,7 @@ Future<bool> showTroubleQuestion(
     builder: (context) => AlertDialog(
       key: ValueKey('trouble-question-${q.name}'),
       title: Text(heading),
-      content: Text(body),
+      content: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 440), child: Text(body)),
       actions: [
         TextButton(
           key: const ValueKey('trouble-question-yes'),

@@ -2121,5 +2121,39 @@ void main() {
       final page = readPage(File(run._pathOf(id)).readAsStringSync());
       expect(page.node(y.id), isNotNull, reason: 'visible, nothing lost');
     });
+
+    test('two kept generations of one page: a move gives each its own new key and settles both', () async {
+      final id = run.model.entries.firstWhere((e) => e.value.loc == 'a').key;
+      final from = run.dirs['a']!.path;
+      final to = run.dirs['b']!.path;
+      final text = File(run._pathOf(id)).readAsStringSync();
+      final y1 = run._newBox('first kept');
+      final y2 = run._newBox('second kept');
+      final store = RecoveryStore(run.rec);
+      await store.write(folder: from, page: readPage(text).insertNode(y1), baseText: text, time: DateTime.now());
+      await store.write(
+        folder: from,
+        page: readPage(text).insertNode(y2),
+        baseText: text,
+        time: DateTime.now().add(const Duration(seconds: 1)),
+        freshSlot: true,
+      );
+      await run.nb.refreshRecoveryIndexForTest();
+      run.nb.syncHook = (p, _) async {
+        if (p != 'move-rekeyed') return;
+        final rs = run.nb.recoveryStoreForTest!;
+        expect(rs.entriesFor(to, id), hasLength(2), reason: 'each generation has its own new key');
+        expect(rs.entriesFor(from, id), hasLength(2), reason: 'and the old ones stay until the page settles');
+      };
+      await run.nb.moveToLocation(id, binderPath: run.pathB);
+      run.nb.syncHook = null;
+      final rs = run.nb.recoveryStoreForTest!;
+      expect(rs.entriesFor(from, id), isEmpty);
+      expect(rs.entriesFor(to, id), hasLength(2));
+      await run.nb.recoverNowForTest();
+      final page = readPage(File('$to/$id.canvas').readAsStringSync());
+      expect(page.node(y1.id), isNotNull);
+      expect(page.node(y2.id), isNotNull);
+    });
   });
 }
