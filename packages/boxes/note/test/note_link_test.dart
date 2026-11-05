@@ -193,6 +193,44 @@ void main() {
   });
 
 
+  testWidgets('Insert link traces each step in the link log, without the address or note text', (t) async {
+    final lines = <String>[];
+    final original = linkLog;
+    linkLog = lines.add;
+    addTearDown(() => linkLog = original);
+    await pump(t, [
+      {'insert': 'private words '},
+    ]);
+    final editor = await focusNote(t, dx: 300);
+    await ctrlK(t);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://secret.example');
+    await t.testTextInput.receiveAction(TextInputAction.done);
+    await frames(t, 20);
+    expect(lines, [
+      'insert link: Ctrl+K reached the editor',
+      'insert link: started',
+      'insert link: dialog opened (collapsed: true, has link: false)',
+      'insert link: dialog closed (SetLink)',
+      'insert link: inserted at caret',
+    ]);
+    expect(delta(editor).last['insert'], 'https://secret.example');
+  });
+
+  testWidgets('a cancelled dialog is traced as skipped', (t) async {
+    final lines = <String>[];
+    final original = linkLog;
+    linkLog = lines.add;
+    addTearDown(() => linkLog = original);
+    await pump(t, [
+      {'insert': 'go: '},
+    ]);
+    await focusNote(t, dx: 200);
+    await ctrlK(t);
+    await t.tap(find.text('Cancel'));
+    await frames(t, 20);
+    expect(lines.last, 'insert link skipped: dialog gave no address');
+  });
+
   testWidgets('a bare caret from a click: Enter in the dialog inserts the address as a link', (t) async {
     await pump(t, [
       {'insert': 'go: '},

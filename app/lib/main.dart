@@ -28,6 +28,7 @@ import 'src/attachment_platform.dart';
 import 'src/device_storage.dart';
 import 'src/app_theme.dart';
 import 'src/home.dart';
+import 'src/link_log.dart';
 import 'src/notebook.dart';
 import 'src/open_files.dart';
 import 'src/recovery_notice.dart';
@@ -83,6 +84,7 @@ Future<void> main(List<String> args) async {
     runApp(StorageErrorApp(error: e));
     return;
   }
+  installLinkLog();
   final settings = AppSettings(defaultSettingsFile());
   final notebook = buildAppNotebook(settings: settings);
   FileClipboard.read = readClipboardFiles;

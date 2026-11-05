@@ -254,7 +254,7 @@ class _NoteEditorState extends State<_NoteEditor>
   Future<void> editLink() async {
     final editor = _editor;
     if (!canInsert || editor == null) {
-      debugPrint('Noted: insert link skipped: note not editable');
+      linkLog('insert link skipped: note not editable');
       return;
     }
     await editLinkIn(context, editor);

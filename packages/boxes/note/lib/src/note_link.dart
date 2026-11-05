@@ -84,6 +84,11 @@ final class RemoveLink extends LinkChoice {
   const RemoveLink();
 }
 
+/// Where the link path's diagnostics go. Fixed lines only: never link text or
+/// note content. The app replaces it with one that also writes a log file, so a
+/// release build (which prints nowhere) can be traced.
+void Function(String line) linkLog = (line) => debugPrint('Noted: $line');
+
 /// Inserts or edits the link on [editor]'s selection (Ctrl+K): asks for the
 /// address, with a Remove link button when there is one already.
 ///
@@ -93,9 +98,10 @@ final class RemoveLink extends LinkChoice {
 /// Each early return says so in the debug log (no link text, no note content),
 /// so a link that did not appear can be traced to the step that skipped it.
 Future<void> editLinkIn(BuildContext context, EditorState editor) async {
+  linkLog('insert link: started');
   var selection = editor.selection?.normalized;
   if (selection == null) {
-    debugPrint('Noted: insert link skipped: no selection');
+    linkLog('insert link skipped: no selection');
     return;
   }
   if (selection.isCollapsed) {
@@ -108,16 +114,18 @@ Future<void> editLinkIn(BuildContext context, EditorState editor) async {
     }
   }
   final current = linkOfSelection(editor, selection);
+  linkLog('insert link: dialog opened (collapsed: ${selection.isCollapsed}, has link: ${current != null})');
   final choice = await showLinkDialog(context, initial: current ?? '', canRemove: current != null);
+  linkLog('insert link: dialog closed (${choice.runtimeType})');
   if (editor.isDisposed) {
-    debugPrint('Noted: insert link skipped: editor disposed');
+    linkLog('insert link skipped: editor disposed');
     return;
   }
   // The dialog had the focus: give the editor back its selection.
   editor.updateSelectionWithReason(selection, reason: SelectionUpdateReason.uiEvent);
   switch (choice) {
     case null:
-      debugPrint('Noted: insert link skipped: dialog gave no address');
+      linkLog('insert link skipped: dialog gave no address');
       return;
     case RemoveLink():
       await editor.formatDelta(selection, {AppFlowyRichTextKeys.href: null});
@@ -125,7 +133,7 @@ Future<void> editLinkIn(BuildContext context, EditorState editor) async {
       if (selection.isCollapsed) {
         final node = editor.getNodeAtPath(selection.start.path);
         if (node == null || node.delta == null) {
-          debugPrint('Noted: insert link skipped: block not found');
+          linkLog('insert link skipped: block not found');
           return;
         }
         final transaction = editor.transaction
@@ -134,8 +142,10 @@ Future<void> editLinkIn(BuildContext context, EditorState editor) async {
             Position(path: selection.start.path, offset: selection.startIndex + url.length),
           );
         await editor.apply(transaction);
+        linkLog('insert link: inserted at caret');
       } else {
         await editor.formatDelta(selection, {AppFlowyRichTextKeys.href: url});
+        linkLog('insert link: applied to selection');
       }
   }
 }
