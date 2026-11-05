@@ -88,7 +88,15 @@ final class RemoveLink extends LinkChoice {
 ///
 /// With a bare caret inside a link, the whole link is edited; with a bare
 /// caret elsewhere, the address is inserted as linked text.
-Future<void> editLinkIn(BuildContext context, EditorState editor) async {
+///
+/// [editorNow] gives the note's editor as it is once the dialog closes: the note
+/// can replace its editor meanwhile (it reloads when its data changes from
+/// outside), and the link then goes into the new one.
+Future<void> editLinkIn(
+  BuildContext context,
+  EditorState editor, {
+  EditorState? Function()? editorNow,
+}) async {
   var selection = editor.selection?.normalized;
   if (selection == null) return;
   if (selection.isCollapsed) {
@@ -102,6 +110,7 @@ Future<void> editLinkIn(BuildContext context, EditorState editor) async {
   }
   final current = linkOfSelection(editor, selection);
   final choice = await showLinkDialog(context, initial: current ?? '', canRemove: current != null);
+  editor = editorNow?.call() ?? editor;
   if (editor.isDisposed) return;
   // The dialog had the focus: give the editor back its selection.
   editor.updateSelectionWithReason(selection, reason: SelectionUpdateReason.uiEvent);
@@ -202,7 +211,7 @@ Future<void> _launch(String url) async {
     final decodedPath = _fullyDecoded(path);
     final decodedResolved = _fullyDecoded(resolved);
     final escaped = text.contains('%') || path.contains('%') || resolved.contains('%');
-    final name = decodedResolved.replaceAll(RegExp(r'[\\/]+$'), '').split(RegExp(r'[\\/]')).last;
+    final name = resolvedTargetName(path);
     // An 8.3 short name (PAYLOA~1.DIA) can stand for a long runnable name.
     final shortName = RegExp(r'~\d').hasMatch(name);
     if (escaped ||
@@ -210,7 +219,8 @@ Future<void> _launch(String url) async {
         needsOpenConfirmation(displayName: path) ||
         needsOpenConfirmation(displayName: resolved) ||
         needsOpenConfirmation(displayName: decodedPath) ||
-        needsOpenConfirmation(displayName: decodedResolved)) {
+        needsOpenConfirmation(displayName: decodedResolved) ||
+        needsOpenConfirmation(displayName: name)) {
       if (context == null || !context.mounted) return;
       if (!await confirmOpenRunnable(context, name)) return;
     }
@@ -219,6 +229,24 @@ Future<void> _launch(String url) async {
     debugPrint('Opening $url failed: $e');
     _notice(messenger);
   }
+}
+
+/// The name of the file [path] stands for as the system will see it: fully
+/// decoded first, then `.` and `..` segments (either separator) resolved, so an
+/// escaped `..` (`%2e%2e`, `%252e%252e`) is resolved too. Falls back to the
+/// decoded text if nothing is left.
+String resolvedTargetName(String path) {
+  final decoded = _fullyDecoded(path);
+  final parts = <String>[];
+  for (final segment in decoded.split(RegExp(r'[\\/]'))) {
+    if (segment.isEmpty || segment == '.') continue;
+    if (segment == '..') {
+      if (parts.isNotEmpty) parts.removeLast();
+      continue;
+    }
+    parts.add(segment);
+  }
+  return parts.isEmpty ? decoded : parts.last;
 }
 
 // The text with percent escapes decoded; as it is if it does not decode (a
