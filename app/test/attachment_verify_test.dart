@@ -551,6 +551,23 @@ void main() {
         expect(notices.last, isNot(contains('damaged')));
       });
 
+      test('a damaged page copy and an unstable recovery copy: the user is told to try again', () async {
+        asset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(bad);
+        recAsset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        attachmentAfterHashHook = (f) async {
+          if (f.path.replaceAll(r'\', '/') == recAsset(name).path.replaceAll(r'\', '/')) f.writeAsBytesSync([...good, 1]);
+        };
+        addTearDown(() => attachmentAfterHashHook = null);
+        await withOpener().open('f.bin', fileName: name);
+        expect(opened, isEmpty);
+        expect(notices.last, contains('Try again'));
+        expect(asset(name).readAsBytesSync(), bad);
+      });
+
       test('nothing at either name: nothing is opened, the user is told to try again', () async {
         await withOpener().open('f.bin', fileName: name);
         expect(opened, isEmpty);
