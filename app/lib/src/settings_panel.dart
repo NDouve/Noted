@@ -288,9 +288,12 @@ class _SettingsPanelState extends State<SettingsPanel> {
     String? binderTitle;
     if (binder != null) {
       for (final b in nb.binders) {
-        if (b.path == binder) binderTitle = b.title;
+        if (b.path == binder) binderTitle = (b.binder?.title.trim().isEmpty ?? true) ? b.path : b.title;
       }
     }
+    // A subpage is stored beside its parent page.
+    final parentId = nb.treeOfPage(id).parentIdOf(id);
+    final parentTitle = parentId == null ? null : nb.pageTitleOf(parentId);
     final canPick = nb.pickFolder != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -304,7 +307,14 @@ class _SettingsPanelState extends State<SettingsPanel> {
             key: const ValueKey('settings-location-binder'),
           ),
           SizedBox(height: m.space1),
-        ] else
+        ] else if (parentId != null)
+          _muted(
+            context,
+            'Same as its parent page'
+            '${parentTitle == null || parentTitle.isEmpty ? '' : ' "$parentTitle"'}. The file is in this folder:',
+            key: const ValueKey('settings-location-parent'),
+          )
+        else
           _muted(context, 'This page\'s file is in this folder:'),
         SizedBox(height: m.space1),
         SelectableText(
@@ -321,7 +331,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
                 key: const ValueKey('settings-location-show'),
                 icon: const Icon(Icons.folder_open_rounded),
                 label: Text(showFolderLabel()),
-                onPressed: folder == null ? null : () => showFolderInFileManager(folder),
+                onPressed: folder == null ? null : () => _showFolder(folder),
               ),
             if (canPick)
               OutlinedButton.icon(
@@ -334,6 +344,15 @@ class _SettingsPanelState extends State<SettingsPanel> {
         ),
       ],
     );
+  }
+
+  Future<void> _showFolder(String folder) async {
+    final ok = await showFolderInFileManager(folder);
+    if (mounted) {
+      setState(
+        () => _error = ok ? null : "Couldn't open $folder. It may be on another device or not available now.",
+      );
+    }
   }
 
   Future<void> _moveToFolder() => _run(() async {

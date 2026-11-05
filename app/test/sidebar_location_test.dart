@@ -94,7 +94,10 @@ void main() {
     await t.runAsync(start);
     final shown = <String>[];
     final old = showFolderInFileManager;
-    showFolderInFileManager = (p) async => shown.add(p);
+    showFolderInFileManager = (p) async {
+      shown.add(p);
+      return true;
+    };
     addTearDown(() => showFolderInFileManager = old);
 
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
@@ -115,6 +118,57 @@ void main() {
     expect(find.byKey(const ValueKey('settings-location-show')), findsNothing);
     expect(pathShown(t), nb.defaultFolderPath, reason: 'the path still shows');
     debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('Show in File Explorer says so when the folder cannot be opened', (t) async {
+    await t.runAsync(start);
+    final old = showFolderInFileManager;
+    showFolderInFileManager = (p) async => false;
+    addTearDown(() => showFolderInFileManager = old);
+    await pumpPanel(t);
+    await t.tap(find.byKey(const ValueKey('settings-location-show')));
+    await t.pump();
+    expect(find.byKey(const ValueKey('settings-error')), findsOneWidget);
+    expect(find.textContaining("Couldn't open"), findsOneWidget);
+  });
+
+  testWidgets('the real opener reports a missing folder', (t) async {
+    await t.runAsync(start); // the shared tearDown needs a notebook
+    final gone = '${root.path}${Platform.pathSeparator}nope';
+    expect(await t.runAsync(() => showFolderInFileManager(gone)), isFalse);
+  });
+
+  testWidgets('a Windows network path becomes a file URI with the server as host', (t) async {
+    await t.runAsync(start);
+    final u = folderUri('\\\\server\\share\\My folder', windows: true);
+    expect(u.scheme, 'file');
+    expect(u.host, 'server');
+    expect(u.path, '/share/My%20folder/');
+    expect(folderUri('C:\\Users\\x\\Pages', windows: true).toString(), 'file:///C:/Users/x/Pages/');
+  });
+
+  testWidgets('a standalone subpage says it is stored like its parent page', (t) async {
+    await t.runAsync(start);
+    await t.runAsync(() async {
+      await nb.rename(a, 'Parent');
+      a = await nb.createPage(parentId: a);
+    });
+    await pumpPanel(t);
+    expect(find.textContaining('Same as its parent page "Parent"'), findsOneWidget);
+    expect(pathShown(t), nb.defaultFolderPath);
+  });
+
+  testWidgets('a binder with no title is named by its path', (t) async {
+    await t.runAsync(start);
+    final dir = await t.runAsync(() => Directory('${root.path}/Untitled').create()) as Directory;
+    await t.runAsync(() async {
+      await nb.addBinder(dir.path);
+      final path = nb.binders.single.path;
+      await nb.updateBinder(path, title: '');
+      a = await nb.createPage(binderPath: path);
+    });
+    await pumpPanel(t);
+    expect(find.textContaining('In the binder "${nb.binders.single.path}"'), findsOneWidget);
   });
 
   testWidgets('Move to folder… moves the page and the Location follows', (t) async {
@@ -153,6 +207,7 @@ void main() {
     await t.runAsync(() => start(picker: false));
     await pumpPanel(t);
     expect(find.byKey(const ValueKey('settings-location-move')), findsNothing);
+    expect(find.byKey(const ValueKey('settings-location-path')), findsOneWidget);
   });
 
   testWidgets('Open binder… is a button in the Pages header', (t) async {

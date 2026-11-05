@@ -48,6 +48,42 @@ class _ChangingStore extends PageStore {
   }
 }
 
+/// A notebook that records which deletes were discarded, and can make Undo
+/// leave the delete pending (a partial Undo).
+class _SpyNotebook extends Notebook {
+  _SpyNotebook(
+    super.store,
+    super.modules, {
+    super.saveDelay,
+    super.bindersFile,
+    super.watchFiles,
+    super.watchDebounce,
+    super.folderCheckInterval,
+  });
+
+  final List<DeletedPages> discarded = [];
+  bool partialUndo = false;
+  int undoCalls = 0;
+
+  @override
+  void discardDeleted(DeletedPages deleted) {
+    discarded.add(deleted);
+    super.discardDeleted(deleted);
+  }
+
+  @override
+  Future<void> undoDelete(DeletedPages deleted) async {
+    undoCalls++;
+    if (partialUndo) {
+      throw const NotebookException('still available to Undo', needsAction: true);
+    }
+    await super.undoDelete(deleted);
+  }
+
+  @override
+  bool isPendingDelete(DeletedPages deleted) => partialUndo || super.isPendingDelete(deleted);
+}
+
 void main() {
   late Directory dir;
   late Notebook nb;
@@ -95,7 +131,7 @@ void main() {
     }
     await tester.runAsync(() async {
       dir = await Directory.systemTemp.createTemp('noted_tree_ui');
-      nb = Notebook(
+      nb = _SpyNotebook(
         store != null ? store(dir) : PageStore(dir),
         buildModules(),
         saveDelay: Duration.zero,
@@ -328,6 +364,64 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     expect(find.text('Undo'), findsNothing, reason: 'the bar timed out');
     await until(tester, () => !trashHasFiles(trash), what: 'the set-aside attachments to be cleaned up');
+    await finish(tester);
+  });
+
+  /// Deletes page [id] through its menu, leaving the Deleted bar up.
+  Future<void> deleteVia(WidgetTester tester, String id) async {
+    await rightClick(tester, id);
+    await tester.tap(find.text('Delete'));
+    await settle(tester);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Delete'));
+    await tester.pump();
+    await until(tester, () => find.text('Undo').evaluate().isNotEmpty);
+  }
+
+  testWidgets('discardPendingDelete removes the set-aside attachments (closing the app within the bar time)',
+      (tester) async {
+    final app = await tester.runAsync(() => Directory.systemTemp.createTemp('noted_tree_app')) as Directory;
+    addTearDown(() => app.deleteSync(recursive: true));
+    final trash = await deleteWithAttachment(tester, app);
+    expect(trashHasFiles(trash), isTrue);
+    await tester.runAsync(() => nb.discardPendingDelete());
+    expect(trashHasFiles(trash), isFalse, reason: 'awaited: gone when it returns');
+    await tester.runAsync(() => nb.discardPendingDelete()); // nothing pending: no error
+    await finish(tester);
+  });
+
+  testWidgets('a second delete discards the first once; the old bar does not discard it again', (tester) async {
+    await start(tester);
+    final spy = nb as _SpyNotebook;
+    await deleteVia(tester, b);
+    await deleteVia(tester, c);
+    await tester.pump(const Duration(seconds: 11));
+    await tester.pump(const Duration(seconds: 1));
+    await until(tester, () => spy.discarded.length >= 2, what: 'both deletes to be discarded');
+    await settle(tester);
+    expect(spy.discarded.length, 2, reason: 'once for the first delete, once for the second');
+    expect(spy.discarded.toSet().length, 2);
+    await finish(tester);
+  });
+
+  testWidgets('a partial Undo shows a new Deleted bar with Undo that times out and discards', (tester) async {
+    await start(tester);
+    final spy = nb as _SpyNotebook;
+    await deleteVia(tester, b);
+    spy.partialUndo = true;
+    await tester.runAsync(() => tester.tap(find.text('Undo')));
+    await until(tester, () => spy.undoCalls == 1);
+    // The explanation shows first (it stays until closed); the new Deleted bar is queued behind it.
+    expect(find.textContaining('still available to Undo'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.close));
+    await settle(tester);
+    expect(find.text('Undo'), findsOneWidget, reason: 'the Deleted bar is offered again');
+    expect(find.textContaining('Deleted "Beta"'), findsOneWidget);
+    spy.partialUndo = false;
+    spy.discarded.clear();
+    await tester.pump(const Duration(seconds: 11));
+    await tester.pump(const Duration(seconds: 1));
+    await until(tester, () => spy.discarded.isNotEmpty || find.text('Undo').evaluate().isEmpty);
+    expect(find.text('Undo'), findsNothing);
     await finish(tester);
   });
 

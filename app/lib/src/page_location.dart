@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -9,8 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'notebook.dart';
 
 /// The folder that holds page [id]'s file (shown in Page settings), or null
-/// if it can't be told. A binder's page is in the binder's folder; a
-/// standalone page is in the default folder or one of the extra folders.
+/// if the page is unknown.
 String? pageFolderPath(Notebook nb, String id) => nb.folderOfPage(id);
 
 /// What the "show the folder" button says on this platform.
@@ -20,11 +20,29 @@ String showFolderLabel() => defaultTargetPlatform == TargetPlatform.macOS
     ? 'Show in File Explorer'
     : 'Show in file manager';
 
-/// Opens [path] in the system's file manager. Tests replace it.
-Future<void> Function(String path) showFolderInFileManager = (path) async {
+/// The URI that opens folder [path] in the file manager. A Windows network
+/// path (UNC, starting with two backslashes) becomes `file://server/share/folder/`.
+Uri folderUri(String path, {bool? windows}) {
+  windows ??= Platform.isWindows;
+  const bs = r'\\';
+  const extended = '\\\\?\\';
+  if (windows && (path.startsWith(bs) || path.startsWith('//')) && !path.startsWith(extended)) {
+    final parts = path.substring(2).split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).toList();
+    if (parts.isNotEmpty) {
+      return Uri(scheme: 'file', host: parts.first, pathSegments: [...parts.skip(1), '']);
+    }
+  }
+  return Uri.directory(path, windows: windows);
+}
+
+/// Opens [path] in the system's file manager. Returns false if the folder is
+/// not there or the system could not open it. Tests replace it.
+Future<bool> Function(String path) showFolderInFileManager = (path) async {
   try {
-    await launchUrl(Uri.directory(path));
+    if (!await Directory(path).exists()) return false;
+    return await launchUrl(folderUri(path));
   } on Object catch (e) {
     debugPrint('Showing $path failed: $e');
+    return false;
   }
 };

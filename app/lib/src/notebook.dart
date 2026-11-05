@@ -724,6 +724,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return l == _standalone ? defaultFolderPath : l;
   }
 
+  /// Whether [deleted] is the delete that Undo can still bring back.
+  bool isPendingDelete(DeletedPages deleted) => identical(_lastDeleted, deleted);
+
+  /// Drops the delete that Undo could still bring back and waits until its
+  /// set-aside attachments are removed. For closing the app: a snack bar that
+  /// is torn down with the window never reports that it closed.
+  Future<void> discardPendingDelete() async {
+    final last = _lastDeleted;
+    if (last == null) return;
+    _lastDeleted = null;
+    await Future.wait([for (final d in last._assets.values) _removeDir(d.parent)]);
+  }
+
   // Standalone pages from every standalone folder share one tree.
   bool _isStandaloneLoc(String loc) => loc == _standalone || _folders.containsKey(loc);
 

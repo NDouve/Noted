@@ -865,7 +865,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     if (messenger == null) return;
     final title = p.title.isEmpty ? 'Untitled page' : p.title;
     final keptNote = deleted.keptNote;
-    messenger.hideCurrentSnackBar();
+    messenger.clearSnackBars();
     if (deleted.pages.isEmpty) {
       // Everything was kept (a newer version landed): nothing to undo.
       messenger.showSnackBar(
@@ -879,6 +879,11 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     }
     // The deleted pages stay in memory only as long as the snackbar (or until
     // the next delete); once it goes away without Undo they are dropped.
+    _showDeletedBar(messenger, deleted, title);
+  }
+
+  void _showDeletedBar(ScaffoldMessengerState messenger, DeletedPages deleted, String title) {
+    final keptNote = deleted.keptNote;
     messenger
         .showSnackBar(
           SnackBar(
@@ -889,12 +894,23 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
             persist: false,
             showCloseIcon: true,
             content: Text(keptNote == null ? 'Deleted "$title"' : 'Deleted some of "$title". $keptNote'),
-            action: SnackBarAction(label: 'Undo', onPressed: () => _guard(() => _nb.undoDelete(deleted))),
+            action: SnackBarAction(
+              label: 'Undo',
+              onPressed: () async {
+                await _guard(() => _nb.undoDelete(deleted));
+                // A partial Undo keeps the delete for another try: offer it again.
+                if (mounted && _nb.isPendingDelete(deleted)) _showDeletedBar(messenger, deleted, title);
+              },
+            ),
           ),
         )
         .closed
         .then((reason) {
-          if (reason != SnackBarClosedReason.action) _nb.discardDeleted(deleted);
+          // Only the delete Undo can still reach is dropped; a newer delete
+          // has already dropped this one.
+          if (reason != SnackBarClosedReason.action && _nb.isPendingDelete(deleted)) {
+            _nb.discardDeleted(deleted);
+          }
         });
   }
 }

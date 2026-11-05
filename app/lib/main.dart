@@ -219,6 +219,7 @@ class _NotedAppState extends State<NotedApp> {
         // apart from a crash in the `flutter run` console.
         debugPrint('Noted: window close requested; saving before exit.');
         await widget.notebook.flush();
+        await widget.notebook.discardPendingDelete();
         await showRecoveryNoticeOnExit(widget.notebook, _navigatorKey);
         await widget.aiLink?.dispose();
         widget.runningLock?.release();
