@@ -211,7 +211,7 @@ void main() {
       'insert link: Ctrl+K reached the editor',
       'insert link: started',
       'insert link: dialog opened (collapsed: true, has link: false)',
-      'insert link: dialog closed (SetLink)',
+      'insert link: dialog closed (address)',
       'insert link: inserted at caret',
     ]);
     expect(delta(editor).last['insert'], 'https://secret.example');
@@ -248,6 +248,23 @@ void main() {
     },
   });
 
+  NoteData noteParas(List<String> texts) => NoteData({
+    'document': {
+      'type': 'page',
+      'children': [
+        for (final text in texts)
+          {
+            'type': 'paragraph',
+            'data': {
+              'delta': [
+                {'insert': text},
+              ],
+            },
+          },
+      ],
+    },
+  });
+
   testWidgets('the note changing under the dialog: the link goes into the new editor', (t) async {
     final lines = <String>[];
     final original = linkLog;
@@ -259,7 +276,7 @@ void main() {
     final first = await focusNote(t, dx: 200);
     await ctrlK(t);
     // Data changes from outside (a reload, a sync): the note starts over.
-    c.replaceBoxData({'n': noteText('go: and more')});
+    c.replaceBoxData({'n': noteParas(['go: ', 'and more'])});
     await frames(t, 10);
     expect(first.isDisposed, isTrue, reason: 'the editor was replaced');
     await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
@@ -288,8 +305,122 @@ void main() {
     await t.testTextInput.receiveAction(TextInputAction.done);
     await frames(t, 20);
     expect(find.text(linkNotAddedNotice), findsOneWidget);
-    expect(lines.last, 'insert link skipped: selection no longer in the text');
+    expect(lines.last, 'insert link skipped: selection no longer on the same text');
     expect((c.page.node('n')! as BoxRecord).data!.text, isNot(contains('noted.example')));
+  });
+
+  // The same note with other text, as a reload or sync would deliver it.
+  String pageText(WidgetTester t) => (c.page.node('n')! as BoxRecord).data!.text;
+
+  testWidgets('text inserted before the selection: the link is not put on other text', (t) async {
+    await pump(t, [
+      {'insert': 'foo bar'},
+    ]);
+    final editor = await focusNote(t, dx: 200);
+    editor.selection = Selection(start: Position(path: [0], offset: 0), end: Position(path: [0], offset: 3));
+    await frames(t);
+    await ctrlK(t);
+    c.replaceBoxData({'n': noteText('Hi foo bar')});
+    await frames(t, 10);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
+    await t.tap(find.byKey(const ValueKey('link-save')));
+    await frames(t, 20);
+    expect(find.text(linkNotAddedNotice), findsOneWidget);
+    expect(pageText(t), isNot(contains('noted.example')));
+  });
+
+  testWidgets('text inserted before the caret: the address is not inserted at the old offset', (t) async {
+    await pump(t, [
+      {'insert': 'go: '},
+    ]);
+    final editor = await focusNote(t, dx: 200);
+    editor.selection = Selection.collapsed(Position(path: [0], offset: 4));
+    await frames(t);
+    await ctrlK(t);
+    c.replaceBoxData({'n': noteText('Hi go: ')});
+    await frames(t, 10);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
+    await t.tap(find.byKey(const ValueKey('link-save')));
+    await frames(t, 20);
+    expect(find.text(linkNotAddedNotice), findsOneWidget);
+    expect(pageText(t), isNot(contains('noted.example')));
+  });
+
+  testWidgets('Remove link after the text shifted removes nothing', (t) async {
+    await pump(t, [
+      {'insert': 'a '},
+      {
+        'insert': 'link',
+        'attributes': {'href': 'https://old.example'},
+      },
+      {'insert': ' b'},
+    ]);
+    final editor = await focusNote(t);
+    editor.selection = Selection.collapsed(Position(path: [0], offset: 4));
+    await frames(t);
+    await ctrlK(t);
+    c.replaceBoxData({
+      'n': NoteData({
+        'document': {
+          'type': 'page',
+          'children': [
+            {
+              'type': 'paragraph',
+              'data': {
+                'delta': [
+                  {'insert': 'Hello a '},
+                  {
+                    'insert': 'link',
+                    'attributes': {'href': 'https://old.example'},
+                  },
+                  {'insert': ' b'},
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    });
+    await frames(t, 10);
+    await t.tap(find.byKey(const ValueKey('link-remove')));
+    await frames(t, 20);
+    expect(find.text(linkNotAddedNotice), findsOneWidget);
+    expect(pageText(t), contains('old.example'));
+  });
+
+  testWidgets('a note that became read-only under the dialog: told, nothing drawn or saved', (t) async {
+    await pump(t, [
+      {'insert': 'go: '},
+    ]);
+    final editor = await focusNote(t, dx: 200);
+    editor.selection = Selection.collapsed(Position(path: [0], offset: 4));
+    await frames(t);
+    await ctrlK(t);
+    final before = pageText(t);
+    c.readOnly = true;
+    await frames(t, 10);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
+    await t.tap(find.byKey(const ValueKey('link-save')));
+    await frames(t, 20);
+    expect(find.text(linkNotAddedNotice), findsOneWidget);
+    expect(pageText(t), before);
+    expect(delta(editor).any((op) => op['attributes'] != null), isFalse, reason: 'no link drawn in the old editor');
+  });
+
+  testWidgets('the note in the light view when the dialog closes: its editor is made and gets the link', (t) async {
+    await pump(t, [
+      {'insert': 'go: '},
+    ]);
+    await focusNote(t, dx: 200);
+    await ctrlK(t);
+    // The note starts over under the dialog; its new state has no editor until asked.
+    c.replaceBoxData({'n': noteParas(['go: ', 'and'])});
+    await frames(t, 20);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
+    await t.tap(find.byKey(const ValueKey('link-save')));
+    await frames(t, 20);
+    expect(find.text(linkNotAddedNotice), findsNothing);
+    expect(pageText(t), contains('https://noted.example'));
   });
 
   testWidgets('a bare caret from a click: Enter in the dialog inserts the address as a link', (t) async {

@@ -14,6 +14,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:noted/src/link_log.dart';
+import 'package:noted_box_note/noted_box_note.dart' show linkLog;
 
 import 'support/harness.dart';
 import 'support/note_helpers.dart';
@@ -26,6 +27,7 @@ void main() {
   testWidgets('Ctrl+K, an address and Enter put a link in the note and fixed lines in the log', (t) async {
     final dir = await Directory.systemTemp.createTemp('noted-linklog');
     final log = File('${dir.path}${Platform.pathSeparator}logs${Platform.pathSeparator}link.log');
+    final originalLog = linkLog;
     installLinkLog(log);
     try {
       await withSession(t, 'linklog', (s) async {
@@ -41,7 +43,8 @@ void main() {
         expect(find.text('Insert link'), findsOneWidget);
         await t.enterText(find.byKey(const ValueKey('link-address')), 'https://secret-address.example');
         await t.testTextInput.receiveAction(TextInputAction.done);
-        await s.pump(600);
+        await s.until(() => find.text('Insert link').evaluate().isEmpty, what: 'the dialog to close');
+        await s.pump(300);
 
         final ops = (editorState(t).getNodeAtPath([0]).delta.toJson() as List).cast<dynamic>();
         expect(
@@ -54,7 +57,7 @@ void main() {
           'insert link: Ctrl+K reached the editor',
           'insert link: started',
           'insert link: dialog opened',
-          'insert link: dialog closed (SetLink)',
+          'insert link: dialog closed (address)',
           'insert link: inserted at caret',
         ]) {
           expect(text, contains(line));
@@ -64,6 +67,7 @@ void main() {
         expect(text, isNot(contains('go:')));
       });
     } finally {
+      linkLog = originalLog;
       await dir.delete(recursive: true);
     }
   });

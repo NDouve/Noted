@@ -47,7 +47,9 @@ void main() {
     expect(() => linkLog('insert link: started'), returnsNormally);
   });
 
-  test('the default file is in the local app data, next to the cache', () {
-    expect(defaultLinkLogFile().path, endsWith('logs${Platform.pathSeparator}link.log'));
+  test('the default file is in the local app data, never derived from the pages folder', () {
+    final path = defaultLinkLogFile()!.path;
+    expect(path, endsWith('logs${Platform.pathSeparator}link.log'));
+    if (Platform.isWindows) expect(path, startsWith(Platform.environment['LOCALAPPDATA']!));
   });
 }

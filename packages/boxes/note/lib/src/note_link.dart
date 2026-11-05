@@ -92,13 +92,69 @@ void Function(String line) linkLog = (line) => debugPrint('Noted: $line');
 /// What the user sees when the link could not be put in the note.
 const String linkNotAddedNotice = "The note changed while the link dialog was open, so the link wasn't added.";
 
-// Whether [selection] still points into text of [editor]'s document.
-bool _selectionValidIn(EditorState editor, Selection selection) {
-  for (final p in [selection.start, selection.end]) {
-    final length = editor.getNodeAtPath(p.path)?.delta?.length;
-    if (length == null || p.offset < 0 || p.offset > length) return false;
+// What a saved selection stood on before the dialog: the blocks' types and the
+// text it covers (for a range), or the text around it (for a caret). A change
+// from outside that moved or rewrote the text makes it no longer match, and
+// the link is not put on other text.
+class _Anchor {
+  _Anchor(this.startType, this.endType, this.selected, this.before, this.after);
+
+  final String startType;
+  final String endType;
+  final String selected;
+  final String before;
+  final String after;
+
+  static const int _around = 24;
+
+  static _Anchor? of(EditorState editor, Selection s) {
+    final startNode = editor.getNodeAtPath(s.start.path);
+    final endNode = editor.getNodeAtPath(s.end.path);
+    final startText = startNode?.delta?.toPlainText();
+    final endText = endNode?.delta?.toPlainText();
+    if (startNode == null || endNode == null || startText == null || endText == null) return null;
+    if (s.start.offset < 0 || s.start.offset > startText.length || s.end.offset < 0 || s.end.offset > endText.length) {
+      return null;
+    }
+    final String selected;
+    if (s.isCollapsed) {
+      selected = '';
+    } else if (startNode == endNode) {
+      selected = startText.substring(s.start.offset, s.end.offset);
+    } else {
+      final parts = <String>[];
+      for (final n in editor.getNodesInSelection(s)) {
+        final t = n.delta?.toPlainText();
+        if (t == null) continue;
+        if (identical(n, startNode)) {
+          parts.add(t.substring(s.start.offset));
+        } else if (identical(n, endNode)) {
+          parts.add(t.substring(0, s.end.offset));
+        } else {
+          parts.add(t);
+        }
+      }
+      selected = parts.join('\n');
+    }
+    final from = s.start.offset;
+    return _Anchor(
+      startNode.type,
+      endNode.type,
+      selected,
+      startText.substring(from < _around ? 0 : from - _around, from),
+      s.isCollapsed ? startText.substring(from, from + _around > startText.length ? startText.length : from + _around) : '',
+    );
   }
-  return true;
+
+  bool holdsIn(EditorState editor, Selection s) {
+    final now = _Anchor.of(editor, s);
+    return now != null &&
+        now.startType == startType &&
+        now.endType == endType &&
+        now.selected == selected &&
+        now.before == before &&
+        now.after == after;
+  }
 }
 
 /// Inserts or edits the link on [editor]'s selection (Ctrl+K): asks for the
@@ -137,14 +193,13 @@ Future<void> editLinkIn(
     }
   }
   final current = linkOfSelection(editor, selection);
+  final anchor = _Anchor.of(editor, selection);
   // The messenger outlives the note if its widgets are replaced meanwhile.
   final messenger = ScaffoldMessenger.maybeOf(context);
   linkLog('insert link: dialog opened (collapsed: ${selection.isCollapsed}, has link: ${current != null})');
   final choice = await showLinkDialog(context, initial: current ?? '', canRemove: current != null);
-  linkLog('insert link: dialog closed (${choice.runtimeType})');
+  linkLog('insert link: dialog closed (${switch (choice) { null => 'cancelled', SetLink() => 'address', RemoveLink() => 'remove' }})');
   if (editor.isDisposed) linkLog('insert link: editor disposed while the dialog was open');
-  final target = editorNow?.call() ?? editor;
-  if (!identical(target, editor)) linkLog('insert link: using the note\'s current editor');
   if (choice == null) {
     linkLog('insert link skipped: dialog gave no address');
     return;
@@ -152,12 +207,19 @@ Future<void> editLinkIn(
   void notAdded(String why) {
     linkLog('insert link skipped: $why');
     if (messenger != null && messenger.mounted) {
+      messenger.hideCurrentSnackBar();
       messenger.showSnackBar(const SnackBar(content: Text(linkNotAddedNotice)));
     }
   }
 
+  // With [editorNow], the note's editor as it is now, never the old one: a
+  // note that can no longer be edited has none, and a link drawn into the old
+  // editor would never be saved.
+  final EditorState? target = editorNow == null ? editor : editorNow();
+  if (target == null) return notAdded('note gone or not editable');
+  if (!identical(target, editor)) linkLog('insert link: using the note\'s current editor');
   if (target.isDisposed) return notAdded('editor disposed');
-  if (!_selectionValidIn(target, selection)) return notAdded('selection no longer in the text');
+  if (anchor == null || !anchor.holdsIn(target, selection)) return notAdded('selection no longer on the same text');
   // The dialog had the focus: give the editor back its selection.
   target.updateSelectionWithReason(selection, reason: SelectionUpdateReason.uiEvent);
   switch (choice) {
