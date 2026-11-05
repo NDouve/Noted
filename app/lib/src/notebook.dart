@@ -720,6 +720,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Failed deletes that left pages only in memory (not in the folder, not in recovery): kept
   // until they are restored or the user lets them go.
   final List<DeletedPages> _held = [];
+
+  // Undos of held deletes that are running (exit waits for them).
+  final List<Future<void>> _undoRuns = [];
   String? _coverPath;
   RawObject _settings = RawObject.empty;
   bool _settingsCorrupt = false;
@@ -2338,6 +2341,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// parents and order, and reopens the page that was open. Does nothing if
   /// a later delete replaced it, or if the binder is gone.
   Future<void> undoDelete(DeletedPages deleted) async {
+    // Exit waits for an Undo in flight, so the page it holds is not lost.
+    final done = Completer<void>();
+    _undoRuns.add(done.future);
+    try {
+      await _undoDeleteNow(deleted);
+    } finally {
+      done.complete();
+      _undoRuns.remove(done.future);
+    }
+  }
+
+  Future<void> _undoDeleteNow(DeletedPages deleted) async {
     final wasHeld = _held.remove(deleted);
     if (!wasHeld && !identical(_lastDeleted, deleted)) return;
     if (identical(_lastDeleted, deleted)) _lastDeleted = null;
@@ -8646,12 +8661,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // uses). Where that fails, the user is asked before they are lost. False:
   // the user chose to stay.
   Future<bool> _saveHeldAtExit() async {
+    while (_undoRuns.isNotEmpty) {
+      await Future.wait([..._undoRuns]);
+    }
     for (final d in [..._held]) {
       final failed = <NotedPage>[];
       for (final page in d.pages) {
         if (d._copied.contains(page.id)) continue;
         String? copy;
         try {
+          _assertWritable(d._location); // a read-only place gets no file
           copy = await _publishConflictCopy(_storeOf(d._location), page);
         } on Object catch (e) {
           debugPrint('Saving ${page.id} beside its place at exit failed: $e');

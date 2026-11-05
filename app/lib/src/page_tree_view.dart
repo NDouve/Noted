@@ -244,7 +244,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         .closed
         .then((reason) {
           if (held == null || !_nb.isPendingDelete(held)) return;
-          if (reason == SnackBarClosedReason.dismiss) {
+          if (reason == SnackBarClosedReason.dismiss || reason == SnackBarClosedReason.swipe) {
             // Closing the message with its X lets the pages go.
             _nb.discardDeleted(held);
           } else if (reason != SnackBarClosedReason.action && mounted) {

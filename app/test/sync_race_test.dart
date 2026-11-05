@@ -5,6 +5,7 @@
 // Failure injection: the sync writer replaces a file at the exact moment the
 // app is about to overwrite or delete it (0051, 0053).
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -49,10 +50,19 @@ class CountingStore extends PageStore {
   // written ([onFailDelete] runs just before a delete fails).
   final Set<String> failDelete = {};
   final Set<String> failNew = {};
+  // The next restore waits for [holdNew]; [reachedNew] completes when it is there.
+  Completer<void>? holdNew;
+  Completer<void>? reachedNew;
   void Function()? onFailDelete;
 
   @override
   Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish}) {
+    final gate = holdNew;
+    if (gate != null) {
+      holdNew = null;
+      reachedNew?.complete();
+      return gate.future.then((_) => super.saveNewText(page, text, beforePublish: beforePublish));
+    }
     if (failNew.contains(page.id)) throw const FileSystemException('destination gone');
     return super.saveNewText(page, text, beforePublish: beforePublish);
   }
@@ -592,9 +602,40 @@ void main() {
           again = e;
         }
         gone.renameSync(dir.path);
-        // Either the undo could not place it (held again) or it was refused.
-        if (again != null) expect(again, isA<PagesNotRestoredException>());
-        if (again != null) expect(nb.isPendingDelete(held), isTrue);
+        expect(again, isA<PagesNotRestoredException>(), reason: 'the pages are held again, with Undo offered');
+        expect(nb.isPendingDelete(held), isTrue);
+      });
+
+      test('an Undo in flight at exit does not lose the page', () async {
+        await setUpTree(withRecovery: false);
+        counting.failNew.add(parent);
+        Object? error;
+        try {
+          await nb.delete(parent);
+        } on Object catch (e) {
+          error = e;
+        }
+        final held = (error! as PagesNotRestoredException).deleted;
+        counting.failNew.clear();
+        final release = counting.holdNew = Completer<void>();
+        counting.reachedNew = Completer<void>();
+        final undo = nb.undoDelete(held);
+        await counting.reachedNew!.future; // the write is paused
+
+        var exited = false;
+        final exit = nb.prepareToExit().then((r) {
+          exited = true;
+          return r;
+        });
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(exited, isFalse, reason: 'exit waits for the Undo');
+        release.complete();
+        await undo;
+
+        expect(await exit, isTrue);
+        expect(File(pathOf(parent)).existsSync(), isTrue);
+        expect(idsOf(pathOf(parent)), contains(mine.id));
+        expect(copies(), isEmpty, reason: 'the page exists once');
       });
     });
   });
