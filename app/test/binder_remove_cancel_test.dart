@@ -84,4 +84,29 @@ void main() {
     expect(saved()['removedBinders'], [id]);
     expect(saved()['binderIds'], isEmpty);
   });
+
+  test('two overlapping removes, the first declined and the second confirmed: the id ends up removed', () async {
+    final (nb, path) = await stuckBinder(id);
+    var asked = 0;
+    nb.questioner = (q, t) async {
+      asked++;
+      if (asked == 1) return false; // the first remove is declined at once...
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      return true; // ...the second, still waiting, is confirmed
+    };
+    final first = nb.removeBinder(path);
+    final second = nb.removeBinder(path);
+    Object? firstError;
+    try {
+      await first;
+    } on Object catch (e) {
+      firstError = e;
+    }
+    await second;
+    expect(asked, greaterThan(0));
+    expect(firstError == null || firstError is LeaveCancelled, isTrue);
+    expect(nb.binders, isEmpty, reason: 'the confirmed remove went through');
+    expect(saved()['removedBinders'], [id]);
+    expect(saved()['binderIds'], isEmpty);
+  });
 }

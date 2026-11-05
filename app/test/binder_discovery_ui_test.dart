@@ -12,9 +12,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
+import 'package:noted/src/page_location.dart';
 import 'package:noted/src/page_tree_view.dart';
 import 'package:noted/src/notebook.dart';
-import 'package:noted/src/page_location.dart';
 import 'package:noted/src/settings_panel.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -126,10 +126,41 @@ void main() {
       (w) => w.key is ValueKey && (w.key! as ValueKey).value.toString().startsWith('settings-location-also-show-'),
     );
     expect(show, findsOneWidget);
-    expect(find.descendant(of: show, matching: find.text(showFolderLabel())), findsOneWidget);
+    expect(find.descendant(of: show, matching: find.text('Show other copy')), findsOneWidget);
     await t.tap(show);
     expect(shown.single.replaceAll(r'\', '/').toLowerCase(), copy.replaceAll(r'\', '/').toLowerCase());
     await t.pumpWidget(const SizedBox());
     await t.runAsync(() => realIoPause(50));
+  });
+
+  testWidgets('a binder that moved to another folder says so in its header and tooltip', (t) async {
+    t.view.physicalSize = const Size(1200, 800);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    late String away;
+    await t.runAsync(() async {
+      await start();
+      await makeBinder('binders/Moved', 'a000000000000001');
+      away = '${root.path}/gone/Old';
+      File('${root.path}/binders.json').writeAsStringSync(
+        jsonEncode({
+          'format': 1,
+          'binders': [away],
+          'binderIds': {away: 'a000000000000001'},
+        }),
+      );
+      await load();
+    });
+    expect(nb.binders.single.available, isFalse);
+    await t.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: PageTreeView(notebook: nb)),
+      ),
+    );
+    await t.pump();
+    final tip = find.byWidgetPredicate((w) => w is Tooltip && (w.message ?? '').contains('This binder is now in'));
+    expect(tip, findsOneWidget);
+    expect(find.text('Moved to another folder'), findsOneWidget);
+    await t.pumpWidget(const SizedBox());
   });
 }

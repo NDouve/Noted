@@ -337,7 +337,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
                 child: TextButton.icon(
                   key: ValueKey('settings-location-also-show-$other'),
                   icon: const Icon(Icons.folder_open_rounded),
-                  label: Text(showFolderLabel()),
+                  label: const Text('Show other copy'),
                   onPressed: () => _showFolder(other),
                 ),
               ),

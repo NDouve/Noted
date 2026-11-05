@@ -400,8 +400,9 @@ void main() {
       await nb.discoveryIdle;
       expect(read.where((p) => p.contains('f0999')), hasLength(1), reason: 'the 1000th folder is read');
       expect(read.where((p) => p.contains('${sep}g$sep')), isEmpty, reason: 'the 1001st is not');
-      // A pass that was cut short admits nothing: the rest might hold a twin.
-      expect(nb.binders, isEmpty);
+      // The pass was cut short, but what it found is added, and a note says so.
+      expect(idsOf(nb), [a1]);
+      expect(nb.discoveryNotes.single.reason, contains('only the first 1000 folders'));
     });
 
     test('8: a folder that vanishes as it is read is not recreated and not listed', () async {
@@ -958,21 +959,41 @@ void main() {
       });
 
       for (final cut in ['roots', 'folders']) {
-        test('an upgrade stays open while a $cut cap cut the pass short', () async {
-          await binderAt('binders/U1', a1);
-          await binderAt('binders/U2', a2);
-          writeSettings({'format': 1, 'binders': <String>[]});
-          final nb = make();
-          nb.setDiscoveryLimitsForTest(roots: cut == 'roots' ? 1 : null, folders: cut == 'folders' ? 1 : null);
-          await nb.load();
-          await nb.discoveryIdle;
-          expect(saved().containsKey('binderIds'), isFalse, reason: 'still an upgrade');
-          // Control: without the cap the same pass closes it.
-          nb.setDiscoveryLimitsForTest(roots: 20, folders: 1000);
-          await nb.discoverBinders();
-          expect(saved()['binderIds'], isEmpty);
-          expect(saved()['removedBinders'], unorderedEquals([a1, a2]));
-        });
+        test(
+          'an upgrade closes in one uncapped pass when a $cut cap would have cut it, and records everything',
+          () async {
+            await binderAt('binders/U1', a1);
+            await binderAt(cut == 'roots' ? 'pages/U2' : 'binders/U2', a2);
+            writeSettings({'format': 1, 'binders': <String>[]});
+            final nb = make();
+            nb.setDiscoveryLimitsForTest(roots: cut == 'roots' ? 1 : null, folders: cut == 'folders' ? 1 : null);
+            await nb.load();
+            await nb.discoveryIdle;
+            expect(saved()['binderIds'], isEmpty, reason: 'the upgrade closed');
+            expect(saved()['removedBinders'], unorderedEquals([a1, a2]));
+            expect(nb.binders, isEmpty);
+          },
+        );
+
+        test(
+          'after the upgrade a $cut cap cuts the pass but found binders are still added, and a note says so',
+          () async {
+            await binderAt('binders/U1', a1);
+            await binderAt('binders/U2', a2);
+            writeSettings({'format': 1, 'binders': <String>[], 'binderIds': <String, Object?>{}});
+            final nb = make();
+            nb.setDiscoveryLimitsForTest(roots: cut == 'roots' ? 1 : null, folders: cut == 'folders' ? 1 : null);
+            await nb.load();
+            await nb.discoveryIdle;
+            if (cut == 'folders') {
+              expect(idsOf(nb), [a1], reason: 'the first folder is read and added; the second is past the cap');
+              expect(nb.discoveryNotes.single.reason, contains('only the first 1 folders'));
+            } else {
+              expect(idsOf(nb), [a1, a2]);
+              expect(nb.discoveryNotes.single.reason, contains('only the first 1 places'));
+            }
+          },
+        );
       }
 
       test('a root that fails to list keeps the upgrade open; a root refused for permission does not', () async {
@@ -1144,5 +1165,21 @@ void main() {
         });
       }
     });
+
+    test(
+      'invalid UTF-8 in noted-binder.json on a hand add is a damaged file: listed read-only, not unavailable',
+      () async {
+        final dir = await Directory(at('other/Bad')).create(recursive: true);
+        await PageStore(dir).save(NotedPage.create(PageMeta.create(id: 'p1', title: 'Page', order: 0)));
+        final bytes = [0x7b, 0xff, 0xfe, 0x7d]; // not UTF-8
+        File('${dir.path}/$binderFileName').writeAsBytesSync(bytes);
+        final nb = await start();
+        final section = await nb.addBinder(dir.path);
+        expect(section.status, BinderStatus.unreadable);
+        expect(nb.binders.single.status, BinderStatus.unreadable, reason: 'not made unavailable by the reconcile');
+        expect(nb.pageTitleOf('p1'), 'Page', reason: 'its pages are listed, read-only');
+        expect(File('${dir.path}/$binderFileName').readAsBytesSync(), bytes, reason: 'the file is never written');
+      },
+    );
   });
 }

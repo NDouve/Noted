@@ -646,6 +646,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   int _rootCap = 20;
   int _folderCap = 1000;
   bool _rootsTruncated = false;
+  // What the last pass cut short because of the caps, shown under "Can't open".
+  List<UnreadablePage> _capNotes = const [];
   Duration _slowPass = const Duration(seconds: 5);
   // Folders that events reported in a root, looked at by the next pass.
   final Set<String> _eventFolders = {};
@@ -3700,6 +3702,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     _binders.remove(path);
+    // Another remove of this binder may have put its id back after a declined
+    // leave: the binder is gone now, so its id is a removed one again.
+    _binderIds.remove(_key(path));
+    final goneId = binderId ?? section.binder?.id;
+    if (goneId != null && recordRemoved && !_binderIds.containsValue(goneId)) _markRemoved(goneId);
     if (_coverPath == path) _coverPath = null;
     final last = _lastDeleted;
     if (last != null && last._location == path) _lastDeleted = null;
@@ -3751,21 +3758,37 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     });
   }
 
+  // The one way a binder file is read: the bytes, decoded as UTF-8. Bad bytes
+  // are a damaged file ([damaged]); an I/O failure or a lock is [failure] (try
+  // again later, never "missing"); a file that isn't there is [missing].
+  Future<({String? text, bool missing, String? damaged, String? failure})> _readBinderText(File f) async {
+    final List<int> bytes;
+    try {
+      bytes = await f.readAsBytes();
+    } on FileSystemException catch (e) {
+      if (await FileSystemEntity.type(f.path) == FileSystemEntityType.notFound) {
+        return (text: null, missing: true, damaged: null, failure: null);
+      }
+      return (text: null, missing: false, damaged: null, failure: e.message);
+    }
+    try {
+      return (text: utf8.decode(bytes), missing: false, damaged: null, failure: null);
+    } on FormatException {
+      return (text: null, missing: false, damaged: 'not valid UTF-8 text', failure: null);
+    }
+  }
+
   // Reads the binder file once: what it parsed to and the text that was parsed.
   Future<({BinderRead read, String? text})> _readBinderFile(BinderStore store) async {
-    final f = store.file;
+    final r = await _readBinderText(store.file);
+    if (r.missing) return (read: const BinderMissing(), text: null);
+    final failure = r.failure ?? r.damaged;
+    if (failure != null) return (read: BinderUnreadable(failure), text: null);
+    final text = r.text!;
     try {
-      if (!await f.exists()) return (read: const BinderMissing(), text: null);
-      final text = await f.readAsString();
-      try {
-        return (read: BinderFound(Binder.parse(text)), text: text);
-      } on BinderFormatException catch (e) {
-        return (read: BinderUnreadable(e.message), text: text);
-      }
-    } on FileSystemException catch (e) {
-      return (read: BinderUnreadable(e.message), text: null);
-    } on FormatException {
-      return (read: const BinderUnreadable('not valid UTF-8 text'), text: null);
+      return (read: BinderFound(Binder.parse(text)), text: text);
+    } on BinderFormatException catch (e) {
+      return (read: BinderUnreadable(e.message), text: text);
     }
   }
 
@@ -6078,14 +6101,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final section = _binders.values.where((b) => _key(b.path) == dirKey).firstOrNull;
     if (section == null) return;
     if (section.missing) return; // checkFolders brings a returned folder back
-    String? text;
-    String? unreadable;
-    try {
-      text = await File(path).readAsString();
-    } on FileSystemException {
-      text = null;
-    } on FormatException {
-      unreadable = 'not valid UTF-8 text';
+    final got = await _readBinderText(File(path));
+    final text = got.text;
+    String? unreadable = got.damaged;
+    if (got.failure != null) {
+      // Locked or offline for now: not missing and not damaged. Look again later;
+      // only a folder that is gone is dealt with.
+      if (!_disposed && !await Directory(section.path).exists()) await _binderGone(section);
+      return;
     }
     if (_disposed) return;
     if (text == null && unreadable == null && !await Directory(section.path).exists()) {
@@ -6881,7 +6904,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// The folders discovery looks in, at most 20, in this order. A listed
   /// binder's folder is never one; a folder that doesn't exist is dropped by
   /// the caller.
-  List<String> _discoveryRoots() {
+  List<String> _discoveryRoots({int? cap}) {
+    final limit = cap ?? _rootCap;
     _rootsTruncated = false;
     final listed = {for (final p in _binders.keys) _key(p)};
     final out = <String>[];
@@ -6891,7 +6915,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final p = _normalizePath(raw);
       final k = _key(p);
       if (listed.contains(k) || !seen.add(k)) return;
-      if (out.length >= _rootCap) {
+      if (out.length >= limit) {
         _rootsTruncated = true; // a root left out: nothing can be said of what it holds
         return;
       }
@@ -6928,8 +6952,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final found = <String, List<({String path, String title})>>{};
     final seenFolders = <String>{};
     final sep = Platform.pathSeparator;
-    final roots = _discoveryRoots();
-    if (_rootsTruncated) rootsOk = false;
+    // The pass that could close an upgrade lists without the caps (once), so it
+    // can record what it saw; any other pass keeps them and says what it cut.
+    final uncapped = _settingsKind == _SettingsKind.upgrade;
+    final folderCap = uncapped ? 1 << 30 : _folderCap;
+    final capNotes = <UnreadablePage>[];
+    final roots = _discoveryRoots(cap: uncapped ? 1 << 30 : null);
+    if (_rootsTruncated) {
+      capNotes.add(
+        UnreadablePage(
+          defaultBinderFolderPath,
+          'Noted looks in only the first $_rootCap places for binders; open binders elsewhere with Open binder…',
+        ),
+      );
+    }
     await _noteEventFolders();
     for (final root in roots) {
       if (_disposed) return;
@@ -6954,10 +6990,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         for (final e in entries)
           if (e is Directory && !_notABinderFolderName(_folderName(e.path))) e.path,
       ]..sort((a, b) => _folderName(a).compareTo(_folderName(b)));
-      if (folders.length > _folderCap) {
-        rootsOk = false; // a cut root can't be said to be fully read
+      if (folders.length > folderCap) {
         if (_rootsCut.add(_key(root))) debugPrint('Looking for binders in $root: only the first 1000 folders');
-        folders.removeRange(_folderCap, folders.length);
+        capNotes.add(
+          UnreadablePage(
+            root,
+            'Noted looks at only the first $folderCap folders in $root; open binders beyond them with Open binder…',
+          ),
+        );
+        folders.removeRange(folderCap, folders.length);
       }
       for (final path in folders) {
         if (_disposed) return;
@@ -7019,8 +7060,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final changed =
         _alsoIn.toString() != alsoIn.toString() ||
         _movedTo.toString() != movedTo.toString() ||
-        _duplicateIds.toString() != duplicates.toString();
+        _duplicateIds.toString() != duplicates.toString() ||
+        _capNotes.map((n) => n.reason).join() != capNotes.map((n) => n.reason).join();
     _alsoIn = alsoIn;
+    _capNotes = capNotes;
     _movedTo = movedTo;
     _duplicateIds = duplicates;
     // The upgrade closes when every root that exists was listed and every
@@ -7116,6 +7159,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// add: one id in more than one folder, and binders recorded as removed by
   /// the first pass of an upgrade.
   List<UnreadablePage> get discoveryNotes => [
+    ..._capNotes,
     for (final d in _duplicateIds.values)
       UnreadablePage(
         d.folders.first,

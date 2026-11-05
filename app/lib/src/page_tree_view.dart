@@ -358,7 +358,9 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
           chipKey: ValueKey('binder-stripe-${b.path}'),
           title: b.title,
           disabled: true,
-          status: unreadable ? "Binder file can't be read" : 'On another device',
+          status: unreadable
+              ? "Binder file can't be read"
+              : (_nb.binderMovedTo(b.path).isNotEmpty ? 'Moved to another folder' : 'On another device'),
           trailing: SidebarMenuButton<String>(
             key: ValueKey('binder-menu-${b.path}'),
             tooltip: 'Binder options',
