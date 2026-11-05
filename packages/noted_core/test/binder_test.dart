@@ -237,6 +237,26 @@ void main() {
       expect(t.existsSync(), isFalse);
     });
 
+    test('a temp equal to the file is kept if the file goes away during the sweep', () async {
+      file.writeAsStringSync(body);
+      final t = temp('$binderFileName.1-8.tmp', body);
+      final kept = await sweepBinderTemps(dir, beforeDelete: file.deleteSync);
+      expect(t.existsSync(), isTrue, reason: 'it may be the last copy');
+      expect(kept.map((k) => File(k.path).uri.pathSegments.last), ['$binderFileName.1-8.tmp']);
+      expect(kept.single.complete, isTrue);
+    });
+
+    test('a temp is kept if the file changed during the sweep', () async {
+      file.writeAsStringSync(body);
+      final t = temp('$binderFileName.1-9.tmp', body);
+      final kept = await sweepBinderTemps(
+        dir,
+        beforeDelete: () => file.writeAsStringSync(body.replaceFirst('"T"', '"U"')),
+      );
+      expect(t.existsSync(), isTrue);
+      expect(kept, hasLength(1));
+    });
+
     test('a stale different temp is kept and returned, never promoted', () async {
       file.writeAsStringSync(body);
       final t = temp('$binderFileName.1-2.tmp', body.replaceFirst('"T"', '"U"'));

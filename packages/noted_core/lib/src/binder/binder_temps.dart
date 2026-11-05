@@ -44,12 +44,14 @@ bool _isBinderName(String name) => name == binderFileName || isBinderTempName(na
 /// whose bytes equal the current binder file is deleted (with
 /// [deleteFileIfUnchanged]). Any other is **kept, never promoted**, and
 /// returned. [onYoung] is told, for each skipped young temporary file, how long
-/// until it is old enough.
+/// until it is old enough. [beforeDelete] is a test seam that runs just before
+/// the binder file is checked for each automatic delete.
 Future<List<KeptBinderTemp>> sweepBinderTemps(
   Directory directory, {
   Duration minAge = const Duration(minutes: 10),
   DateTime? now,
   void Function(Duration remaining)? onYoung,
+  void Function()? beforeDelete,
 }) async {
   final kept = <KeptBinderTemp>[];
   if (!await directory.exists()) return kept;
@@ -59,13 +61,7 @@ Future<List<KeptBinderTemp>> sweepBinderTemps(
     // Locked for now; the next sweep tries again.
   }
   final clock = now ?? DateTime.now();
-  final sep = Platform.pathSeparator;
-  List<int>? current;
-  try {
-    current = await File('${directory.path}$sep$binderFileName').readAsBytes();
-  } on FileSystemException {
-    current = null;
-  }
+  final binderPath = '${directory.path}${Platform.pathSeparator}$binderFileName';
   final temps = <File>[];
   try {
     await for (final f in directory.list(followLinks: false)) {
@@ -85,8 +81,14 @@ Future<List<KeptBinderTemp>> sweepBinderTemps(
         continue;
       }
       final bytes = await f.readAsBytes();
-      if (current != null && _same(bytes, current)) {
-        await deleteFileIfUnchanged(f.path, bytes);
+      // A temp equal to the binder file is a spare copy, deleted only while the
+      // binder file is seen to be there and equal at the moment of deleting:
+      // from the check to the delete there is no await, so nothing in this
+      // isolate can run between them. If the file is gone (sync may have
+      // removed it while this waited), the temp may be the last copy and stays.
+      beforeDelete?.call();
+      if (_sameAsBinderFile(binderPath, bytes) && _sameFileSync(f, bytes)) {
+        f.deleteSync();
         continue;
       }
       kept.add(KeptBinderTemp(f.path, bytes, complete: _parses(bytes)));
@@ -140,4 +142,22 @@ bool _same(List<int> a, List<int> b) {
     if (a[i] != b[i]) return false;
   }
   return true;
+}
+
+// Whether the binder file exists now and holds exactly [bytes]. Synchronous.
+bool _sameAsBinderFile(String path, List<int> bytes) {
+  try {
+    return _same(File(path).readAsBytesSync(), bytes);
+  } on FileSystemException {
+    return false;
+  }
+}
+
+// Whether [f] still holds exactly [bytes]. Synchronous.
+bool _sameFileSync(File f, List<int> bytes) {
+  try {
+    return _same(f.readAsBytesSync(), bytes);
+  } on FileSystemException {
+    return false;
+  }
 }
