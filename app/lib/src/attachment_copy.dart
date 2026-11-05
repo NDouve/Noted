@@ -55,7 +55,7 @@ class AttachmentCopy {
 
 /// A file found at a hash name that failed its hash, kept aside next to it.
 class DamagedKept {
-  const DamagedKept({required this.folder, required this.name, required this.aside, required this.incomplete});
+  DamagedKept({required this.folder, required this.name, required this.aside, required this.incomplete});
 
   /// The folder both files are in.
   final String folder;
@@ -69,6 +69,13 @@ class DamagedKept {
   /// Shorter than the good file (an unfinished write) rather than a full-size
   /// file with other bytes.
   final bool incomplete;
+
+  /// Whether the good copy is in place at [path] at the end: set once it was
+  /// verified there, and cleared when a rollback removed it ([removeCreated]).
+  bool replaced = false;
+
+  /// Where the damaged bytes were found.
+  String get path => '$folder${Platform.pathSeparator}$name';
 }
 
 /// The marker of a damaged attachment kept aside: `<name>.damaged-<12 hex>`,
@@ -609,17 +616,21 @@ Future<void> _settleExisting(
   final res = await setAsideDamaged(t, found);
   final base = _baseName(target);
   final kept = res.name ?? (res.leftAt != base ? res.leftAt : null);
-  if (kept != null) {
-    r.damagedKept.add(DamagedKept(folder: t.parent.path, name: base, aside: kept, incomplete: incomplete));
-  }
+  final entry = kept == null
+      ? null
+      : DamagedKept(folder: t.parent.path, name: base, aside: kept, incomplete: incomplete);
+  if (entry != null) r.damagedKept.add(entry);
   final now = FileSystemEntity.typeSync(target, followLinks: false);
   if (now == FileSystemEntityType.notFound) {
     await _copyFile(src, target, name, r, settleOnce: true);
-    return;
+  } else {
+    // Nothing was set aside (the file changed and was put back, or the move was
+    // refused), or something arrived since: one more look, never another set-aside.
+    await _settleExisting(src, target, name, now, r, settleOnce: true);
   }
-  // Nothing was set aside (the file changed and was put back, or the move was
-  // refused), or something arrived since: one more look, never another set-aside.
-  await _settleExisting(src, target, name, now, r, settleOnce: true);
+  // Only reached when nothing threw: the good copy counts as in place when the
+  // target was verified.
+  if (entry != null) entry.replaced = r.verified.any((c) => c.target.path == target);
 }
 
 /// Writes [src] to [dst] chunk by chunk and flushes it to disk.
@@ -790,6 +801,11 @@ Future<bool> removeCreated(AttachmentCopy? copy) async {
         if (!res.deleted && res.outcome != DeleteOutcome.absent) {
           all = false;
           debugPrint('Keeping $p: it changed after it was copied');
+        } else {
+          // The good copy is gone again: what was kept aside is all that is left there.
+          for (final k in copy.damagedKept) {
+            if (k.path == p) k.replaced = false;
+          }
         }
       } else {
         await Directory(p).delete();

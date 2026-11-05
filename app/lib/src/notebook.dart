@@ -1512,14 +1512,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
     final out = <String>[];
     for (final incomplete in [false, true]) {
-      final of = c.damagedKept.where((k) => k.incomplete == incomplete).toList();
-      if (of.isEmpty) continue;
-      final one = of.length == 1;
-      out.add(
-        '${one ? 'A' : '${of.length}'} ${incomplete ? 'incomplete' : 'damaged'} ${one ? 'copy' : 'copies'} of '
-        '${shown(of.map((k) => k.name))} in $targetPlace ${one ? 'was' : 'were'} kept as '
-        '${shown(of.map((k) => k.aside))}, and the good ${one ? 'copy' : 'copies'} ${one ? 'was' : 'were'} used.',
-      );
+      for (final replaced in [true, false]) {
+        final of = c.damagedKept.where((k) => k.incomplete == incomplete && k.replaced == replaced).toList();
+        if (of.isEmpty) continue;
+        final one = of.length == 1;
+        final what = '${one ? 'A' : '${of.length}'} ${incomplete ? 'incomplete' : 'damaged'} '
+            '${one ? 'copy' : 'copies'} of ${shown(of.map((k) => k.name))} in $targetPlace '
+            '${one ? 'was' : 'were'} kept as ${shown(of.map((k) => k.aside))}';
+        out.add(
+          replaced
+              ? '$what, and the good ${one ? 'copy was' : 'copies were'} used.'
+              : "$what; the good ${one ? "copy wasn't" : "copies weren't"} put in "
+                    "${one ? 'its' : 'their'} place and ${one ? 'stays' : 'stay'} in $sourcePlace.",
+        );
+      }
     }
     if (c.stillChanging.isNotEmpty) {
       final one = c.stillChanging.length == 1;

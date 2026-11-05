@@ -430,7 +430,15 @@ void main() {
       seedDestination(a, damagedBytes);
       final note = await movedWithNote(nb, a, binder);
       final aside = damagedCopyName('$hash.txt', contentHash(damagedBytes));
-      expect(note, allOf(startsWith('The page was moved'), contains('damaged copy of "$hash.txt"'), contains('"$aside"')));
+      expect(
+        note,
+        allOf(
+          startsWith('The page was moved'),
+          contains('damaged copy of "$hash.txt"'),
+          contains('"$aside"'),
+          contains('the good copy was used'),
+        ),
+      );
       expect(asset(extra, a).readAsBytesSync(), bytes);
       final kept = damagedFiles(assets(extra, a));
       expect(kept.map((f) => nameOf(f.path)), [aside]);
@@ -579,7 +587,13 @@ void main() {
           isA<NotebookException>().having(
             (e) => e.message,
             'message',
-            allOf(contains('Nothing was moved'), contains('damaged copy of "$hash.txt"'), contains('"$aside"')),
+            allOf(
+              contains('Nothing was moved'),
+              contains('damaged copy of "$hash.txt"'),
+              contains('"$aside"'),
+              contains("the good copy wasn't put in its place"),
+              isNot(contains('the good copy was used')),
+            ),
           ),
         ),
       );
@@ -860,7 +874,17 @@ void main() {
       expect(fired, isTrue);
       final aside = damagedCopyName('$hash.txt', contentHash(damagedBytes));
       expect(File('${assets(pages, a).path}/$aside').readAsBytesSync(), damagedBytes);
-      expect(notices, contains(allOf(contains('damaged copy of "$hash.txt"'), contains('"$aside"'))));
+      expect(
+        notices,
+        contains(
+          allOf(
+            contains('damaged copy of "$hash.txt"'),
+            contains('"$aside"'),
+            contains("the good copy wasn't put in its place and stays in the folder of deleted pages"),
+            isNot(contains('the good copy was used')),
+          ),
+        ),
+      );
       expect(trashFiles().single.readAsBytesSync(), bytes, reason: 'the good copy is kept in the trash');
     });
 
