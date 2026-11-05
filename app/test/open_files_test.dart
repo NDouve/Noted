@@ -4,12 +4,12 @@
 
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/open_files.dart';
 import 'package:noted_core/noted_core.dart';
-
 
 void main() {
   late Directory root;
@@ -92,6 +92,79 @@ void main() {
     });
   });
 
+  group('channel', () {
+    final binding = TestWidgetsFlutterBinding.ensureInitialized();
+    const codec = StandardMethodCodec();
+
+    tearDown(() {
+      binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        OpenFileService.channel,
+        null,
+      );
+      OpenFileService.channel.setMethodCallHandler(null);
+    });
+
+    test(
+      'start asks "ready", opens what was held, then opens "open" calls',
+      () async {
+        final elsewhere = await Directory('${root.path}/Elsewhere').create();
+        final later = await Directory('${root.path}/Later').create();
+        final other = make('other');
+        await other.load();
+        final held = await other.createPage(folderPath: elsewhere.path);
+        final sent = await other.createPage(folderPath: later.path);
+        await other.flush();
+
+        final calls = <String>[];
+        binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          OpenFileService.channel,
+          (call) async {
+            calls.add(call.method);
+            return call.method == 'ready'
+                ? ['${elsewhere.path}/$held.canvas']
+                : null;
+          },
+        );
+        final nb = make('main', pages);
+        await nb.load();
+        final service = OpenFileService(nb);
+        await service.start([]);
+        expect(calls, ['ready']);
+        expect(nb.currentId, held);
+
+        // The runner hands over a second launch's file.
+        await binding.defaultBinaryMessenger.handlePlatformMessage(
+          'noted/open_files',
+          codec.encodeMethodCall(
+            MethodCall('open', '${later.path}/$sent.canvas'),
+          ),
+          (_) {},
+        );
+        expect(nb.currentId, sent);
+      },
+    );
+
+    test('an "open" call with a bad path is a notice, not an error', () async {
+      binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        OpenFileService.channel,
+        (call) async => <Object?>[],
+      );
+      final nb = make('main', pages);
+      await nb.load();
+      final notices = <String>[];
+      final service = OpenFileService(nb)..notify = notices.add;
+      await service.start([]);
+      final before = nb.currentId;
+      await binding.defaultBinaryMessenger.handlePlatformMessage(
+        'noted/open_files',
+        codec.encodeMethodCall(MethodCall('open', '${root.path}/x.txt')),
+        (_) {},
+      );
+      expect(notices, hasLength(1));
+      expect(nb.currentId, before);
+    });
+  });
+
   group('openExistingFile', () {
     test(
       'a standalone page joins its folder as a standalone folder and opens',
@@ -133,6 +206,80 @@ void main() {
       expect(nb.binders.single.available, isTrue);
       expect(nb.binderOfPage(id), isNotNull);
       expect(nb.standaloneFolders, isEmpty);
+    });
+
+    test('a copy of a page already in Noted is refused, also the open one, '
+        'and its new folder is not left joined', () async {
+      final elsewhere = await Directory('${root.path}/Elsewhere').create();
+      final backup = await Directory('${root.path}/Backup').create();
+      final other = make('other');
+      await other.load();
+      final id = await other.createPage(folderPath: elsewhere.path);
+      await other.flush();
+      File('${elsewhere.path}/$id.canvas')
+          .copySync('${backup.path}/$id.canvas');
+
+      final nb = make('main', pages);
+      await nb.load();
+      await openExistingFile(nb, '${elsewhere.path}/$id.canvas');
+      expect(nb.currentId, id); // the page is the open one
+      await expectLater(
+        openExistingFile(nb, '${backup.path}/$id.canvas'),
+        throwsA(isA<NotebookException>()),
+      );
+      expect(nb.currentId, id);
+      expect(nb.standaloneFolders, hasLength(1));
+
+      // Another page open: still refused.
+      final first = await nb.createPage();
+      await nb.open(first);
+      await expectLater(
+        openExistingFile(nb, '${backup.path}/$id.canvas'),
+        throwsA(isA<NotebookException>()),
+      );
+      expect(nb.currentId, first);
+      expect(nb.standaloneFolders, hasLength(1));
+    });
+
+    test('a copy in a folder already joined is refused', () async {
+      final elsewhere = await Directory('${root.path}/Elsewhere').create();
+      final other = make('other');
+      await other.load();
+      final id = await other.createPage(folderPath: elsewhere.path);
+      await other.flush();
+      File('${elsewhere.path}/$id.canvas')
+          .copySync('${elsewhere.path}/backup.canvas');
+      final nb = make('main', pages);
+      await nb.load();
+      await nb.addStandaloneFolder(elsewhere.path);
+      await expectLater(
+        openExistingFile(nb, '${elsewhere.path}/backup.canvas'),
+        throwsA(isA<NotebookException>()),
+      );
+      expect(nb.standaloneFolders, hasLength(1));
+    });
+
+    test('a copy of a binder is refused and not joined', () async {
+      final dir = await Directory('${root.path}/Work').create();
+      final copy = await Directory('${root.path}/Work copy').create();
+      final other = make('other');
+      await other.load();
+      final section = await other.addBinder(dir.path);
+      final id = await other.createPage(binderPath: section.path);
+      await other.flush();
+      for (final f in dir.listSync().whereType<File>()) {
+        f.copySync('${copy.path}/${f.uri.pathSegments.last}');
+      }
+      final nb = make('main', pages);
+      await nb.load();
+      await openExistingFile(nb, '${dir.path}/$id.canvas');
+      expect(nb.currentId, id);
+      await expectLater(
+        openExistingFile(nb, '${copy.path}/$id.canvas'),
+        throwsA(isA<NotebookException>()),
+      );
+      expect(nb.binders, hasLength(1));
+      expect(nb.currentId, id);
     });
 
     test('noted-binder.json joins the binder and shows its cover', () async {

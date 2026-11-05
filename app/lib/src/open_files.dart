@@ -84,24 +84,77 @@ Future<void> openExistingFile(Notebook nb, String raw) async {
     }
   }
 
-  if (inBinder) {
-    final section = await nb.addBinder(dir);
-    if (!section.available) {
-      throw NotebookException(section.reason ?? "That binder can't be opened.");
-    }
-    if (isBinderFile) {
-      nb.showCover(section.path);
-      return;
-    }
-  } else {
-    await nb.addStandaloneFolder(dir);
+  // Comparable form of a path, as the notebook compares them.
+  String key(String p) {
+    final k = File(p).absolute.path.replaceAll(r'\', '/');
+    return Platform.isWindows ? k.toLowerCase() : k;
   }
-  if (nb.pageTitleOf(pageId!) == null) {
-    throw const NotebookException(
-      "Noted can't add that page: it is a copy of another page or can't be read.",
-    );
+
+  // Whether this call adds the folder or binder (so a refusal can undo it).
+  final dirKey = key(dir);
+  final known = inBinder
+      ? nb.binders.any((b) => key(b.path) == dirKey)
+      : dirKey == key(nb.defaultFolderPath) ||
+            nb.standaloneFolders.any((f) => key(f.path) == dirKey);
+  String? added; // the path to remove again if the page is refused
+
+  try {
+    if (inBinder) {
+      final section = await nb.addBinder(dir);
+      if (!known) added = section.path;
+      if (!section.available) {
+        throw NotebookException(
+          section.reason ?? "That binder can't be opened.",
+        );
+      }
+      if (isBinderFile) {
+        nb.showCover(section.path);
+        return;
+      }
+    } else {
+      final loc = await nb.addStandaloneFolder(dir);
+      if (!known && loc.isNotEmpty) added = loc;
+    }
+    final id = pageId!;
+    // A file whose page id is already in Noted from elsewhere (a copy) is
+    // listed as unreadable by the join; opening the id would open the other.
+    final copy = [
+      ...nb.unreadable,
+      for (final b in nb.binders) ...b.unreadable,
+    ].any((u) => key(u.path) == key(path));
+    final section = inBinder
+        ? nb.binders.where((b) => key(b.path) == dirKey).firstOrNull
+        : null;
+    final owner = nb.binderOfPage(id);
+    final elsewhere = inBinder
+        ? owner == null || section == null || key(owner) != key(section.path)
+        : owner != null;
+    if (copy || (nb.pageTitleOf(id) != null && elsewhere)) {
+      throw const NotebookException(
+        'A page with the same id is already in Noted, from another folder.',
+      );
+    }
+    if (nb.pageTitleOf(id) == null) {
+      throw const NotebookException(
+        "Noted can't add that page: it is a copy of another page or can't be read.",
+      );
+    }
+    await nb.open(id);
+  } on Object {
+    final undo = added;
+    if (undo != null) {
+      try {
+        if (inBinder) {
+          await nb.removeBinder(undo);
+        } else {
+          await nb.removeStandaloneFolder(undo);
+        }
+      } on Object {
+        // Left joined; the refusal below is what the user sees.
+      }
+    }
+    rethrow;
   }
-  await nb.open(pageId);
 }
 
 /// Receives files to open: from the command line at start, and over
