@@ -251,6 +251,38 @@ void main() {
       expect(nb.trouble.isTrouble, isFalse);
     });
 
+    test('an edit typed while the leave waits on a stalled save is saved or kept, even when the next page is edited', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      await nb.addStandaloneFolder(w.other.path);
+      final old = nb.current!;
+      old.createBoxAt(const Bounds(60, 60, 0, 0));
+      final store = w.storeFor(w.pages)
+        ..stall = Completer<void>()
+        ..stallId = id;
+      unawaited(nb.flush());
+      await until(() => store.attempts > 0, what: 'the save to start');
+      final leaving = nb.createPage(folderPath: w.other.path);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      try {
+        old.createBoxAt(const Bounds(120, 40, 0, 0)); // typed after the leave began
+      } on StateError {
+        // frozen for the departure: nothing was accepted
+      }
+      await leaving;
+      final other = nb.currentId!;
+      expect(other, isNot(id));
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0)); // replaces the shared pending save
+      final accepted = boxCount(old.page);
+      store.stall!.complete();
+      await until(() => !nb.isBusy(id), what: 'the page to be free');
+      w.crash(nb);
+      final nb2 = w.make();
+      await nb2.load();
+      await nb2.open(id);
+      expect(boxCount(nb2.current!.page), accepted, reason: 'every accepted edit survives a reload');
+    });
+
     test('a stalled save that fails afterwards is dropped: it does not replace the newer entry', () async {
       final nb = w.make();
       final id = await w.editedPage(nb);

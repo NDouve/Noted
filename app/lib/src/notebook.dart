@@ -612,6 +612,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   String? _coverPath;
   RawObject _settings = RawObject.empty;
   bool _settingsCorrupt = false;
+  // The open page is being left: it takes no edits until the leave is over, so
+  // nothing typed meanwhile can fall between the save and recovery.
+  bool _leaving = false;
   bool _disposed = false;
   Timer? _folderTimer;
   // The default folder disappeared while the app was running.
@@ -1512,7 +1515,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Kept changes shown in place of the page are never edited or saved.
       if (why == null && _preview != null) why = 'These are changes kept in recovery that are not saved to this page yet.';
       if (why == null && _busy[c.page.id] == _busyDiscarding) why = 'Noted is discarding the unsaved changes of this page.';
-      c.readOnly = why != null;
+      c.readOnly = why != null || _leaving;
     }
     if (why != _readOnlyReason) {
       _readOnlyReason = why;
@@ -6702,6 +6705,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // the page may be closed. With [stayIfUnsafe] it returns false instead of
   // asking when the edits are not safe anywhere.
   Future<bool> _leaveOpenPage({bool stayIfUnsafe = false}) async {
+    var mayGo = false;
+    try {
+      return mayGo = await _leaveOpenPageFrozen(stayIfUnsafe: stayIfUnsafe);
+    } finally {
+      _leaving = false;
+      if (!mayGo) _syncReadOnly(); // the page stays: editable again
+    }
+  }
+
+  Future<bool> _leaveOpenPageFrozen({required bool stayIfUnsafe}) async {
     final c = _current;
     final session = _session;
     if (c == null || session == null || _preview != null) return true;
@@ -6715,6 +6728,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final seq = session.seq;
     final troubled = _trouble.isTrouble && _trouble.pageId == page.id;
     if (!hadPending && !troubled && _chain.isIdle) return true;
+    _leaving = true;
+    c.readOnly = true;
     // A place that is gone or locked is not a reason to go unasked: the edits
     // still have to be in recovery (the save runs the same rules).
     final loc = _loc[page.id] ?? _orphanLoc ?? _standalone;
