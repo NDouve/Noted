@@ -1518,6 +1518,25 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return out;
   }
 
+  /// What a move that stopped says: what [_copyNotices] says, the files that
+  /// differ from what is at the destination, and files left in the source.
+  void _postIncomplete(_IncompleteAttachments e, String targetPlace, String sourcePlace) {
+    _postCopyNotices(e.copy, targetPlace, sourcePlace);
+    if (_notices.isClosed) return;
+    if (e.copy.differing.isNotEmpty) {
+      final n = e.copy.differing.length;
+      _notices.add(
+        '${n == 1 ? 'An attachment file' : '$n attachment files'} ("${_baseName(e.copy.differing.first)}"'
+        '${n == 1 ? '' : ' and others'}) could not be moved: $targetPlace already has '
+        '${n == 1 ? 'a different file' : 'different files'} with ${n == 1 ? 'that name' : 'those names'}. '
+        'The original${n == 1 ? '' : 's'} stay in $sourcePlace.',
+      );
+    }
+    if (e.leftover) {
+      _notices.add('Some attachment files could not be moved out of $sourcePlace, so they were left there.');
+    }
+  }
+
   void _postCopyNotices(AttachmentCopy c, String targetPlace, String sourcePlace) {
     if (_notices.isClosed) return;
     for (final n in _copyNotices(c, targetPlace, sourcePlace)) {
@@ -1797,7 +1816,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         stash[p] = to;
       } on FileSystemException catch (e) {
         debugPrint('Setting aside ${dir.path} failed: $e');
-        if (e is _IncompleteAttachments) _postCopyNotices(e.copy, 'the folder of deleted pages', 'the page');
+        if (e is _IncompleteAttachments) _postIncomplete(e, 'the folder of deleted pages', 'the page');
         // Whatever was moved is what Undo restores; files that stayed in the
         // page folder stay there.
         if (await to.exists()) stash[p] = to;
@@ -1852,7 +1871,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           stash.remove(ids[i]);
         } on FileSystemException catch (e) {
           debugPrint('Putting back the attachments of page ${ids[i]} failed: $e');
-          if (e is _IncompleteAttachments) _postCopyNotices(e.copy, 'the page', 'the folder of deleted pages');
+          if (e is _IncompleteAttachments) _postIncomplete(e, 'the page', 'the folder of deleted pages');
           // Stays in the stash, and the trash folder is never removed while it
           // holds what could not be put back.
           keepTrash.add(dir.path);
@@ -1880,7 +1899,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           } on Object catch (e) {
             debugPrint('Keeping the attachments of page $id for recovery failed: $e');
             if (e is _IncompleteAttachments) {
-              _postCopyNotices(e.copy, 'the recovery folder', 'the folder of deleted pages');
+              _postIncomplete(e, 'the recovery folder', 'the folder of deleted pages');
             }
             keepTrash.add(stash[id]!.path);
           }
@@ -1940,7 +1959,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           );
         } on FileSystemException catch (e) {
           debugPrint('Putting back the attachments of page $p failed: $e');
-          if (e is _IncompleteAttachments) _postCopyNotices(e.copy, 'the page', 'the folder of deleted pages');
+          if (e is _IncompleteAttachments) _postIncomplete(e, 'the page', 'the folder of deleted pages');
           keepTrash.add(dir.path); // what is left there is never cleaned up with the trash
         }
       }

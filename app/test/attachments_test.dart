@@ -28,6 +28,35 @@ class _HookedStore extends PageStore {
   }
 }
 
+/// A store that runs a hook once, just before the next compare-and-delete of a page.
+class _DeleteHookStore extends PageStore {
+  _DeleteHookStore(super.directory);
+
+  void Function()? beforeDeleteOnce;
+
+  @override
+  Future<DeleteResult> deleteIfUnchanged(
+    String pageId,
+    String expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    Future<void> Function()? beforeDelete,
+    void Function()? beforeRestore,
+  }) {
+    final f = beforeDeleteOnce;
+    beforeDeleteOnce = null;
+    f?.call();
+    return super.deleteIfUnchanged(
+      pageId,
+      expectedText,
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforeDelete: beforeDelete,
+      beforeRestore: beforeRestore,
+    );
+  }
+}
+
 // The images and files of a page in the notebook: the setting, the assets
 // folder and its life with the page (move, template, delete, undo,
 // recovery).
@@ -343,17 +372,357 @@ void main() {
       expect(extra.listSync(recursive: true).where((f) => f.path.endsWith('.tmp')), isEmpty);
     });
 
-    test('a hash-named destination file that fails its hash is a partial copy and is replaced', () async {
-      final (nb, a, binder) = await pageWithNotes();
+    // Old (damaged and short) bytes for a destination file, of the same length
+    // as [bytes] and shorter.
+    final damagedBytes = Uint8List.fromList(List.filled(bytes.length, 7));
+    final shortBytes = Uint8List.fromList([1]);
+
+    String nameOf(String path) => path.split(RegExp(r'[\\/]')).last;
+    bool under(File f, String folder) => f.path.replaceAll('\\', '/').contains('/$folder/');
+
+    List<File> damagedFiles(Directory d) => [
+      for (final e in d.listSync())
+        if (e is File && isDamagedCopyName(nameOf(e.path))) e,
+    ];
+
+    // Moves the page and returns the note the user is given (the move is made).
+    Future<String> movedWithNote(Notebook nb, String a, BinderSection binder) async {
+      try {
+        await nb.moveToLocation(a, binderPath: binder.path);
+      } on NotebookException catch (e) {
+        expect(e.needsAction, isTrue);
+        return e.message;
+      }
+      fail('the user should have been told');
+    }
+
+    void seedDestination(String a, List<int> old) {
       asset(extra, a)
         ..createSync(recursive: true)
-        ..writeAsBytesSync([1]);
-      File('${assets(extra, a).path}/notes.txt')
-        ..createSync(recursive: true)
-        ..writeAsStringSync('mine');
-      expect(await nb.moveToLocation(a, binderPath: binder.path), isTrue);
+        ..writeAsBytesSync(old);
+    }
+
+    test('a full-size destination file with other bytes is kept as .damaged-<hex>, the good copy takes its name, and the user is told', () async {
+      final (nb, a, binder) = await pageWithNotes();
+      seedDestination(a, damagedBytes);
+      final note = await movedWithNote(nb, a, binder);
+      final aside = damagedCopyName('$hash.txt', contentHash(damagedBytes));
+      expect(note, allOf(startsWith('The page was moved'), contains('damaged copy of "$hash.txt"'), contains('"$aside"')));
       expect(asset(extra, a).readAsBytesSync(), bytes);
+      final kept = damagedFiles(assets(extra, a));
+      expect(kept.map((f) => nameOf(f.path)), [aside]);
+      expect(kept.single.readAsBytesSync(), damagedBytes, reason: 'the old bytes are never lost');
+      expect(assets(pages, a).existsSync(), isFalse, reason: 'the verified source is removed');
+    });
+
+    test('a stable shorter destination file is kept as an incomplete copy, the good copy takes its name', () async {
+      final (nb, a, binder) = await pageWithNotes();
+      seedDestination(a, shortBytes);
+      final note = await movedWithNote(nb, a, binder);
+      final aside = damagedCopyName('$hash.txt', contentHash(shortBytes));
+      expect(note, allOf(contains('incomplete copy of "$hash.txt"'), contains('"$aside"')));
+      expect(asset(extra, a).readAsBytesSync(), bytes);
+      expect(File('${assets(extra, a).path}/$aside').readAsBytesSync(), shortBytes);
       expect(assets(pages, a).existsSync(), isFalse);
+    });
+
+    for (final unreadable in [false, true]) {
+      test('a destination file that is ${unreadable ? 'unreadable' : 'changing'} is left alone, the source stays and the user is told', () async {
+        final (nb, a, binder) = await pageWithNotes();
+        seedDestination(a, damagedBytes);
+        var fired = false;
+        attachmentAfterHashHook = (f) async {
+          if (!f.path.endsWith('$hash.txt') || !under(f, 'Elsewhere')) return;
+          fired = true;
+          if (unreadable) throw const FileSystemException('locked');
+          f.writeAsBytesSync([...damagedBytes, 1]); // a sync client is still writing
+        };
+        addTearDown(() => attachmentAfterHashHook = null);
+        final note = await movedWithNote(nb, a, binder);
+        expect(fired, isTrue);
+        expect(note, allOf(contains('"$hash.txt"'), contains('still changing'), contains('the original stays')));
+        expect(asset(extra, a).readAsBytesSync(), unreadable ? damagedBytes : [...damagedBytes, 1]);
+        expect(damagedFiles(assets(extra, a)), isEmpty);
+        expect(asset(pages, a).readAsBytesSync(), bytes, reason: 'the source is not deleted');
+      });
+    }
+
+    for (final same in [false, true]) {
+      test('a file that arrives between the set-aside and the publish is never replaced (${same ? 'same bytes: verified' : 'other bytes: differing'})', () async {
+        final (nb, a, binder) = await pageWithNotes();
+        seedDestination(a, damagedBytes);
+        var fired = false;
+        attachmentBeforePublishHook = (target) async {
+          if (!target.endsWith('$hash.txt')) return;
+          fired = true;
+          File(target).writeAsBytesSync(same ? bytes : [9, 9]);
+        };
+        addTearDown(() => attachmentBeforePublishHook = null);
+        final aside = damagedCopyName('$hash.txt', contentHash(damagedBytes));
+        final note = await movedWithNote(nb, a, binder);
+        expect(fired, isTrue);
+        expect(note, allOf(contains('"$hash.txt"'), contains('"$aside"')));
+        if (same) {
+          expect(asset(extra, a).readAsBytesSync(), bytes);
+          expect(assets(pages, a).existsSync(), isFalse, reason: 'verified: the source goes');
+        } else {
+          expect(note, contains('different file'));
+          expect(asset(extra, a).readAsBytesSync(), [9, 9], reason: 'what arrived is kept as it is');
+          expect(asset(pages, a).readAsBytesSync(), bytes, reason: 'the source stays');
+        }
+        expect(File('${assets(extra, a).path}/$aside').readAsBytesSync(), damagedBytes, reason: 'the aside is kept');
+      });
+    }
+
+    test('a set-aside that is refused (the aside is replaced) overwrites nothing and ends differing after one look', () async {
+      final (nb, a, binder) = await pageWithNotes();
+      seedDestination(a, damagedBytes);
+      var fired = false;
+      attachmentAfterSetAsideHook = (aside) {
+        fired = true;
+        File(aside).writeAsBytesSync([4, 4, 4]); // not what was checked
+      };
+      addTearDown(() => attachmentAfterSetAsideHook = null);
+      final note = await movedWithNote(nb, a, binder);
+      expect(fired, isTrue);
+      expect(note, allOf(contains('"$hash.txt"'), contains('different file')));
+      expect(asset(extra, a).readAsBytesSync(), [4, 4, 4], reason: 'put back as it was found, never replaced');
+      expect(damagedFiles(assets(extra, a)), isEmpty);
+      expect(asset(pages, a).readAsBytesSync(), bytes, reason: 'the source stays');
+    });
+
+    test('without hard links, the damaged destination file is kept aside and the good copy is filled', () async {
+      var fired = false;
+      attachmentPublishHook = (tmp, target) async {
+        fired = true;
+        throw const FileSystemException('no hard links');
+      };
+      addTearDown(() => attachmentPublishHook = null);
+      final (nb, a, binder) = await pageWithNotes();
+      seedDestination(a, damagedBytes);
+      final note = await movedWithNote(nb, a, binder);
+      expect(fired, isTrue);
+      expect(note, contains('damaged copy of "$hash.txt"'));
+      expect(asset(extra, a).readAsBytesSync(), bytes);
+      expect(damagedFiles(assets(extra, a)).single.readAsBytesSync(), damagedBytes);
+      expect(extra.listSync(recursive: true).where((f) => f.path.endsWith('.tmp')), isEmpty);
+    });
+
+    test('a volume that cannot set a file aside replaces nothing: both files stay and the target is differing', () async {
+      final (nb, a, binder) = await pageWithNotes();
+      seedDestination(a, damagedBytes);
+      var fired = false;
+      attachmentBeforeSetAsideHook = (aside) {
+        fired = true;
+        throw const FileSystemException('no exclusive move');
+      };
+      addTearDown(() => attachmentBeforeSetAsideHook = null);
+      final note = await movedWithNote(nb, a, binder);
+      expect(fired, isTrue);
+      expect(note, allOf(contains('"$hash.txt"'), contains('different file'), contains('the original stays')));
+      expect(asset(extra, a).readAsBytesSync(), damagedBytes);
+      expect(asset(pages, a).readAsBytesSync(), bytes);
+      expect(damagedFiles(assets(extra, a)), isEmpty);
+    });
+
+    test('an identical .damaged- file already there: the target goes only by delete-if-unchanged and the good copy is published', () async {
+      final (nb, a, binder) = await pageWithNotes();
+      seedDestination(a, damagedBytes);
+      final aside = File('${assets(extra, a).path}/${damagedCopyName('$hash.txt', contentHash(damagedBytes))}')
+        ..writeAsBytesSync(damagedBytes);
+      final note = await movedWithNote(nb, a, binder);
+      expect(note, contains('damaged copy of "$hash.txt"'));
+      expect(asset(extra, a).readAsBytesSync(), bytes);
+      expect(damagedFiles(assets(extra, a)).map((f) => nameOf(f.path)), [nameOf(aside.path)]);
+      expect(aside.readAsBytesSync(), damagedBytes);
+      expect(assets(pages, a).existsSync(), isFalse);
+    });
+
+    test('a rollback after a later failure removes this move\'s good copy and keeps the aside, which the message names', () async {
+      final store = _HookedStore(pages);
+      final (nb, a, binder) = await pageWithNotes(store: store);
+      seedDestination(a, damagedBytes);
+      var fired = false;
+      store.onRead = () {
+        if (fired || !File('${assets(extra, a).path}/notes.txt').existsSync()) return;
+        fired = true;
+        final page = File('${pages.path}/$a.canvas');
+        page.writeAsStringSync(page.readAsStringSync().replaceFirst('"title":"', '"title":"Synced '));
+      };
+      final aside = damagedCopyName('$hash.txt', contentHash(damagedBytes));
+      await expectLater(
+        nb.moveToLocation(a, binderPath: binder.path),
+        throwsA(
+          isA<NotebookException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('Nothing was moved'), contains('damaged copy of "$hash.txt"'), contains('"$aside"')),
+          ),
+        ),
+      );
+      expect(fired, isTrue);
+      expect(asset(extra, a).existsSync(), isFalse, reason: 'the good copy this move published is removed');
+      expect(File('${assets(extra, a).path}/$aside').readAsBytesSync(), damagedBytes, reason: 'the aside stays');
+      expect(asset(pages, a).readAsBytesSync(), bytes);
+    });
+
+    test('undo delete into a page folder holding a damaged file keeps it aside and posts a notice', () async {
+      Notebook.forceCopyMoveForTest = true;
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
+      final nb = make();
+      await nb.load();
+      final a = await nb.createPage();
+      await nb.open(a);
+      await attach(nb);
+      final notices = <String>[];
+      nb.attachmentNotices.listen(notices.add);
+      final deleted = await nb.delete(a);
+      assets(pages, a).createSync(recursive: true);
+      asset(pages, a).writeAsBytesSync(damagedBytes);
+      await nb.undoDelete(deleted);
+      await Future<void>.delayed(Duration.zero);
+      expect(asset(pages, a).readAsBytesSync(), bytes);
+      expect(damagedFiles(assets(pages, a)).single.readAsBytesSync(), damagedBytes);
+      expect(notices, contains(contains('damaged copy of "$hash.txt"')));
+    });
+
+    // A page is deleted on the copy path, the folder it returns to holds a file
+    // that stops the undo, and the bar expires: the trash copy has to survive.
+    for (final variant in ['changing', 'unreadable', 'stray']) {
+      test('9b: an undo that stops on a $variant file keeps the trash copy through expiry and a reload', () async {
+        Notebook.forceCopyMoveForTest = true;
+        addTearDown(() => Notebook.forceCopyMoveForTest = false);
+        final nb = make();
+        await nb.load();
+        final a = await nb.createPage();
+        await nb.open(a);
+        await attach(nb);
+        final notices = <String>[];
+        nb.attachmentNotices.listen(notices.add);
+        final deleted = await nb.delete(a);
+        final trash = Directory('${root.path}/app/deleted-attachments');
+        final inTrash = trash.listSync(recursive: true).whereType<File>().singleWhere((f) => f.path.endsWith('$hash.txt'));
+        var fired = false;
+        // What has to survive: the good copy, or (stray) the file no copy takes along.
+        var keep = inTrash;
+        if (variant == 'stray') {
+          keep = File('${inTrash.parent.path}/junk.tmp')..writeAsStringSync('stray');
+        } else {
+          assets(pages, a).createSync(recursive: true);
+          asset(pages, a).writeAsBytesSync(damagedBytes);
+          attachmentAfterHashHook = (f) async {
+            if (!f.path.endsWith('$hash.txt') || !under(f, 'pages')) return;
+            fired = true;
+            if (variant == 'unreadable') throw const FileSystemException('locked');
+            f.writeAsBytesSync([...damagedBytes, 1]);
+          };
+          addTearDown(() => attachmentAfterHashHook = null);
+        }
+        await expectLater(nb.undoDelete(deleted), throwsA(isA<NotebookException>()));
+        attachmentAfterHashHook = null;
+        if (variant != 'stray') expect(fired, isTrue);
+        expect(keep.readAsBytesSync(), variant == 'stray' ? utf8.encode('stray') : bytes, reason: 'survives the undo');
+        if (variant == 'stray') expect(asset(pages, a).readAsBytesSync(), bytes, reason: 'the good copy went back');
+        await nb.discardPendingDelete(); // the bar expires
+        expect(keep.existsSync(), isTrue, reason: 'and the expiry');
+        await Future<void>.delayed(Duration.zero);
+        // The undo's own message tells where the files are; a changing file is also noticed.
+        if (variant != 'stray') expect(notices, contains(contains('still changing')));
+        await nb.flush();
+        nb.dispose();
+        opened.remove(nb);
+        final again = make();
+        await again.load();
+        expect(keep.existsSync(), isTrue, reason: 'and a reload');
+      });
+    }
+
+    test('9c: a delete whose set-aside stops part way keeps what moved, and undo, expiry and a reload lose nothing', () async {
+      Notebook.forceCopyMoveForTest = true;
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
+      final nb = make();
+      await nb.load();
+      final a = await nb.createPage();
+      await nb.open(a);
+      await attach(nb);
+      await nb.createPage(parentId: a);
+      File('${assets(pages, a).path}/junk.tmp').writeAsStringSync('stray'); // not taken along
+      // A file arrives in the set-aside folder just before the copy publishes.
+      var fired = false;
+      attachmentBeforePublishHook = (target) async {
+        if (!target.endsWith('$hash.txt') || !under(File(target), 'deleted-attachments')) return;
+        fired = true;
+        File(target).writeAsBytesSync([8, 8]);
+      };
+      addTearDown(() => attachmentBeforePublishHook = null);
+      final notices = <String>[];
+      nb.attachmentNotices.listen(notices.add);
+      final deleted = await nb.delete(a);
+      attachmentBeforePublishHook = null;
+      expect(fired, isTrue);
+      await Future<void>.delayed(Duration.zero);
+      expect(notices, contains(contains('different file')), reason: 'the user is told');
+      final trash = Directory('${root.path}/app/deleted-attachments');
+      final inTrash = trash.listSync(recursive: true).whereType<File>().singleWhere((f) => f.path.endsWith('$hash.txt'));
+      expect(asset(pages, a).readAsBytesSync(), bytes, reason: 'the source stayed in the page folder');
+      // Stops on the different file: kept for the user.
+      await expectLater(nb.undoDelete(deleted), throwsA(isA<NotebookException>()));
+      expect(asset(pages, a).readAsBytesSync(), bytes);
+      await nb.discardPendingDelete();
+      expect(inTrash.existsSync(), isTrue, reason: 'nothing under trash that holds an unrestored file is removed');
+      expect(File('${assets(pages, a).path}/junk.tmp').existsSync(), isTrue);
+      await nb.flush();
+      nb.dispose();
+      opened.remove(nb);
+      final again = make();
+      await again.load();
+      expect(asset(pages, a).readAsBytesSync(), bytes);
+      expect(inTrash.existsSync(), isTrue);
+    });
+
+    test('9d: a page that changed while deleting, put back into a folder with a changing file, keeps its trash folder through expiry', () async {
+      Notebook.forceCopyMoveForTest = true;
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
+      final store = _DeleteHookStore(pages);
+      final nb = make(store: store);
+      await nb.load();
+      final a = await nb.createPage();
+      await nb.open(a);
+      await attach(nb);
+      final b = await nb.createPage(parentId: a);
+      await nb.open(b);
+      await attach(nb);
+      var fired = false;
+      store.beforeDeleteOnce = () {
+        // A's file changes after it was read, and a file that is still being
+        // written is at the hash name in its (now empty) assets folder.
+        final page = File('${pages.path}/$a.canvas');
+        page.writeAsStringSync(page.readAsStringSync().replaceFirst('"title":"', '"title":"Synced '));
+        assets(pages, a).createSync(recursive: true);
+        asset(pages, a).writeAsBytesSync(damagedBytes);
+        attachmentAfterHashHook = (f) async {
+          if (!f.path.endsWith('$hash.txt') || !under(f, 'pages')) return;
+          fired = true;
+          f.writeAsBytesSync([...damagedBytes, 1]);
+        };
+      };
+      addTearDown(() => attachmentAfterHashHook = null);
+      final deleted = await nb.delete(a);
+      attachmentAfterHashHook = null;
+      expect(fired, isTrue);
+      expect(deleted.keptNote, isNotNull);
+      final trash = Directory('${root.path}/app/deleted-attachments');
+      final aTrash = trash.listSync(recursive: true).whereType<File>().singleWhere(
+        (f) => f.path.endsWith('$hash.txt') && f.path.contains(a),
+      );
+      expect(aTrash.readAsBytesSync(), bytes);
+      await nb.discardPendingDelete(); // the bar expires
+      expect(aTrash.readAsBytesSync(), bytes, reason: 'the folder that could not be put back is not removed with the trash');
+      expect(
+        trash.listSync(recursive: true).whereType<File>().where((f) => f.path.contains(b)),
+        isEmpty,
+        reason: 'the other page\'s set-aside folder is removed',
+      );
     });
 
     test('a folder or other non-file at the destination is never trusted', () async {

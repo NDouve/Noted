@@ -10,6 +10,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/attachment_copy.dart';
+import 'package:noted_core/noted_core.dart' show contentHash;
 
 void main() {
   late Directory root;
@@ -130,4 +131,39 @@ void main() {
       ], reason: 'kept as a copy, not deleted');
     },
   );
+
+  test('10: a hash-named target that fails its hash is kept as .damaged-<hex> and the good copy takes its name (what templates use)', () async {
+    final good = List<int>.generate(40, (i) => i);
+    final hash = contentHash(good);
+    final name = '$hash.png';
+    f(from, name).writeAsBytesSync(good);
+    to.createSync();
+    final old = List<int>.filled(40, 9);
+    f(to, name).writeAsBytesSync(old);
+    final r = AttachmentCopy();
+    await copyAttachmentTree(from, to, r);
+    final aside = damagedCopyName(name, contentHash(old));
+    expect(f(to, name).readAsBytesSync(), good);
+    expect(f(to, aside).readAsBytesSync(), old);
+    expect(r.damagedKept, hasLength(1));
+    expect(r.damagedKept.single.aside, aside);
+    expect(r.damagedKept.single.name, name);
+    expect(r.damagedKept.single.incomplete, isFalse);
+    expect(r.differing, isEmpty);
+    expect(r.stillChanging, isEmpty);
+    expect(r.verified, hasLength(1));
+  });
+
+  test('a shorter target is recorded as incomplete', () async {
+    final good = List<int>.generate(40, (i) => i);
+    final name = contentHash(good);
+    f(from, name).writeAsBytesSync(good);
+    to.createSync();
+    f(to, name).writeAsBytesSync([1, 2]);
+    final r = AttachmentCopy();
+    await copyAttachmentTree(from, to, r);
+    expect(r.damagedKept.single.incomplete, isTrue);
+    expect(f(to, name).readAsBytesSync(), good);
+    expect(f(to, damagedCopyName(name, contentHash([1, 2]))).readAsBytesSync(), [1, 2]);
+  });
 }
