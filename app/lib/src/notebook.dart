@@ -3,12 +3,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
-import 'dart:convert' show jsonDecode, utf8;
+import 'dart:convert' show utf8;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
-import 'package:noted_box_attachments/noted_box_attachments.dart' show AttachmentRef, FileCodec, ImageCodec;
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -615,7 +614,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   bool _settingsCorrupt = false;
   // The open page is being left: it takes no edits until the leave is over, so
   // nothing typed meanwhile can fall between the save and recovery.
-  bool _leaving = false;
+  int _leaving = 0;
   bool _disposed = false;
   Timer? _folderTimer;
   // The default folder disappeared while the app was running.
@@ -1516,7 +1515,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Kept changes shown in place of the page are never edited or saved.
       if (why == null && _preview != null) why = 'These are changes kept in recovery that are not saved to this page yet.';
       if (why == null && _busy[c.page.id] == _busyDiscarding) why = 'Noted is discarding the unsaved changes of this page.';
-      c.readOnly = why != null || _leaving;
+      if (why == null && _leaving > 0) why = 'Noted is saving this page before leaving it.';
+      c.readOnly = why != null || _leaving > 0;
     }
     if (why != _readOnlyReason) {
       _readOnlyReason = why;
@@ -6210,11 +6210,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (back.id != id) back = null;
       } on PathNotFoundException {
         back = null;
-      } on FileSystemException {
+      } on Object {
+        // Refuses reads, holds invalid text or half-synced JSON: while the file
+        // exists it may still be the chosen page, so the choice stays.
         back = null;
         present = File(path).existsSync();
-      } on Object {
-        back = null;
       }
       if (_goneChosen[id] != path) continue;
       final chosen = _adoptedFiles[id];
@@ -6716,15 +6716,24 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // asking when the edits are not safe anywhere.
   Future<bool> _leaveOpenPage({bool stayIfUnsafe = false}) async {
     var mayGo = false;
+    final freeze = _Freeze();
     try {
-      return mayGo = await _leaveOpenPageFrozen(stayIfUnsafe: stayIfUnsafe);
+      return mayGo = await _leaveOpenPageFrozen(stayIfUnsafe: stayIfUnsafe, freeze: freeze);
     } finally {
-      _leaving = false;
-      if (!mayGo) _syncReadOnly(); // the page stays: editable again
+      final c = freeze.controller;
+      if (c != null) {
+        _leaving--; // only this leave's own freeze ends here
+        if (!mayGo) {
+          // The page stays: editable again, and what a sync merge changed
+          // while it was frozen (suppressed, since read-only) is saved.
+          _syncReadOnly();
+          if (identical(_current, c) && _preview == null && !identical(c.page, freeze.page)) _pageChanged(c.page);
+        }
+      }
     }
   }
 
-  Future<bool> _leaveOpenPageFrozen({required bool stayIfUnsafe}) async {
+  Future<bool> _leaveOpenPageFrozen({required bool stayIfUnsafe, required _Freeze freeze}) async {
     final c = _current;
     final session = _session;
     if (c == null || session == null || _preview != null) return true;
@@ -6738,8 +6747,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final seq = session.seq;
     final troubled = _trouble.isTrouble && _trouble.pageId == page.id;
     if (!hadPending && !troubled && _chain.isIdle) return true;
-    _leaving = true;
-    c.readOnly = true;
+    _leaving++;
+    freeze
+      ..controller = c
+      ..page = page;
+    _syncReadOnly();
     // A place that is gone or locked is not a reason to go unasked: the edits
     // still have to be in recovery (the save runs the same rules).
     final loc = _loc[page.id] ?? _orphanLoc ?? _standalone;
@@ -6922,6 +6934,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<({String? text, _FileUnreadable? readError})> _readForOpen(PageStore st, String id) async {
     try {
       return (text: await st.readText(id), readError: null);
+    } on PathNotFoundException catch (e) {
+      return (text: null, readError: _FileUnreadable(e, "the page file isn't there"));
     } on FileSystemException catch (e) {
       return (text: null, readError: _FileUnreadable(e, "the page file can't be read"));
     } on FormatException catch (e) {
@@ -7293,12 +7307,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Whatever the page refers to in its folder that did not arrive is named:
     // the source folder missing or unreadable, a different file already at the
     // target, or a leftover kept aside (never a plain "Saved a copy").
+    final refs = _folderAttachmentFiles(page);
     final differing = {for (final p in result.differing) _baseName(p)};
     final notCopied = <String>[
-      for (final f in _folderAttachmentFiles(page))
-        if (differing.contains(_baseName(f)) ||
+      for (final f in refs.files)
+        if (differing.contains(f) ||
             FileSystemEntity.typeSync(
-                  '${targetAssets.path}${Platform.pathSeparator}${f.replaceAll('/', Platform.pathSeparator)}',
+                  '${targetAssets.path}${Platform.pathSeparator}$f',
                   followLinks: false,
                 ) ==
                 FileSystemEntityType.notFound)
@@ -7309,6 +7324,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         "${notCopied.length == 1 ? 'this attachment file was' : 'these attachment files were'} not copied "
             '(the original is missing or unreadable, or a different file is already under that name): '
             '${_namesShown(notCopied)}',
+      if (refs.unchecked.isNotEmpty)
+        '${refs.unchecked.length == 1 ? 'an attachment name was' : '${refs.unchecked.length} attachment names were'} '
+            'not checked because ${refs.unchecked.length == 1 ? "it isn't" : "they aren't"} a file name Noted writes: '
+            '${_namesShown(refs.unchecked)}',
+      if (refs.unasked > 0 && !result.sourceExisted)
+        "the original's attachments folder wasn't available, and ${refs.unasked} "
+            '${refs.unasked == 1 ? 'box is' : 'boxes are'} of a type that is switched off, not allowed on this page '
+            "or from a newer version, so any files ${refs.unasked == 1 ? 'it keeps' : 'they keep'} couldn't be checked",
       if (result.keptAside.isNotEmpty)
         'leftover temporary files in the attachments folder were left where they are: ${_namesShown(result.keptAside)}',
       if (left.isNotEmpty) "these attachment folders couldn't be copied: ${left.join(', ')}",
@@ -7318,29 +7341,28 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         'Nothing in the original was changed.';
   }
 
-  // The names (relative to the assets folder) of the attachment files [page]
-  // keeps in its folder, as image and file boxes hold them.
-  List<String> _folderAttachmentFiles(NotedPage page) {
-    final out = <String>{};
+  // The attachment files [page] keeps in its folder, as its boxes' modules
+  // say (Box API 0.14): [files] are names Noted writes (joined onto the assets
+  // folder), [unchecked] are names it does not (never joined), and [unasked]
+  // counts boxes whose module could not be asked: switched off, not allowed
+  // on the page, unknown, newer or unreadable data.
+  ({List<String> files, List<String> unchecked, int unasked}) _folderAttachmentFiles(NotedPage page) {
+    final off = disallowedBoxTypesFor(page.id);
+    final files = <String>{};
+    final unchecked = <String>{};
+    var unasked = 0;
     for (final n in page.nodes) {
       if (n is! BoxRecord) continue;
-      final key = switch (n.typeId) {
-        ImageCodec.id => 'image',
-        FileCodec.id => 'file',
-        _ => null,
-      };
-      final raw = n.data;
-      if (key == null || raw == null) continue;
-      try {
-        final json = jsonDecode(raw.text);
-        final ref = json is Map ? AttachmentRef.fromJson(json[key]) : null;
-        final file = ref?.file;
-        if (file != null && file.isNotEmpty) out.add(file);
-      } on FormatException {
-        // A box whose data can't be read refers to nothing we can check.
+      final r = off.contains(n.typeId) ? null : modules.codecs.resolve(n);
+      if (r is! LiveBox) {
+        unasked++;
+        continue;
+      }
+      for (final name in r.codec.folderFiles(r.data)) {
+        (isAttachmentFileName(name) ? files : unchecked).add(name);
       }
     }
-    return out.toList();
+    return (files: files.toList(), unchecked: unchecked.toList(), unasked: unasked);
   }
 
   static String _namesShown(List<String> paths) {
@@ -7427,4 +7449,11 @@ class _FileUnreadable implements Exception {
   _FileUnreadable(this.cause, this.why);
   final Object cause;
   final String why;
+}
+
+// One leave's freeze of the page on screen: the controller it froze and the
+// page as it was then (see Notebook._leaveOpenPage).
+class _Freeze {
+  CanvasController? controller;
+  NotedPage? page;
 }

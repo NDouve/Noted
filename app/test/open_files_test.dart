@@ -499,6 +499,32 @@ void main() {
         expect(File(s.orig).readAsStringSync(), isNot(contains('Edited')));
       }, skip: Platform.isWindows ? null : 'byte-range locks only block reads on Windows');
 
+      for (final (what, damage) in <(String, List<int> Function(String))>[
+        ('truncated JSON', (t) => t.substring(0, t.length ~/ 2).codeUnits),
+        ('invalid UTF-8', (t) => [0xff, 0xfe, 0xfd, 0x80]),
+      ]) {
+        test('a chosen file back as $what at the confirming check keeps the '
+            'choice; once complete, edits go to it', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          await openExistingFile(s.nb, s.copy);
+          await s.nb.open(await s.nb.createPage());
+          final copyText = File(s.copy).readAsStringSync();
+          File(s.copy).deleteSync();
+          await s.nb.checkFile(s.copy);
+          File(s.copy).writeAsBytesSync(damage(copyText));
+          await s.nb.checkFolders(); // the confirming tick
+          File(s.copy).writeAsStringSync(copyText);
+          await s.nb.checkFolders();
+          expect(s.nb.pageTitleOf(s.id), 'Copy');
+          await s.nb.open(s.id);
+          await s.nb.rename(s.id, 'Edited');
+          await s.nb.flush();
+          expect(File(s.copy).readAsStringSync(), contains('Edited'));
+          expect(File(s.orig).readAsStringSync(), isNot(contains('Edited')));
+        });
+      }
+
       test('the promoted duplicate prefers <id>.canvas and skips '
           'conflict-copy names', () async {
         final dir = await Directory('${root.path}/Elsewhere').create();

@@ -405,6 +405,20 @@ void main() {
       );
     }
 
+    test('a page file that is not there opens the preview and says so', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      w.storeFor(w.pages).failWith = accessDenied();
+      await nb.flush();
+      await nb.createPage();
+      w.storeFor(w.pages).failWith = null;
+      w.pageFile(id).deleteSync();
+      await nb.open(id);
+      expect(nb.trouble.kind, TroubleKind.preview);
+      expect(nb.trouble.reason, "the page file isn't there");
+      expect(boxCount(nb.current!.page), 1);
+    });
+
     test('with nothing kept, the read error is still raised', () async {
       final nb = w.make();
       final id = await w.editedPage(nb);
@@ -412,6 +426,78 @@ void main() {
       await nb.createPage();
       w.storeFor(w.pages).readFailWith = accessDenied();
       await expectLater(nb.open(id), throwsA(isA<FileSystemException>()));
+    });
+  });
+
+  group('a leave freezes the page only while it waits', () {
+    // The recovery folder can't be written, so a failed leave asks and the
+    // answer decides.
+    Future<(Notebook, String)> stuckPage() async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      await w.rec.parent.create(recursive: true);
+      File(w.rec.path).writeAsStringSync('in the way');
+      w.storeFor(w.pages).failWith = accessDenied();
+      await nb.flush();
+      return (nb, id);
+    }
+
+    test('after a leave ends in "stay" the page is editable again and the reason is gone', () async {
+      final (nb, id) = await stuckPage();
+      final reasons = <String?>[];
+      nb.questioner = (q, t) async {
+        reasons.add(nb.readOnlyReason);
+        expect(nb.current!.readOnly, isTrue);
+        return false; // Cancel
+      };
+      await nb.createPage();
+      expect(nb.currentId, id);
+      expect(reasons.single, contains('saving this page before leaving'));
+      expect(nb.current!.readOnly, isFalse);
+      expect(nb.readOnlyReason, isNull);
+      nb.current!.createBoxAt(const Bounds(90, 90, 0, 0));
+      expect(boxCount(nb.current!.page), 2);
+    });
+
+    test('a sync merge applied while the page was frozen is saved when the leave ends in "stay"', () async {
+      final (nb, id) = await stuckPage();
+      nb.questioner = (q, t) async {
+        final p = nb.current!.page;
+        nb.current!.applyExternal(p.withMeta(p.meta.withTitle('Merged while leaving')));
+        return false;
+      };
+      await nb.createPage();
+      expect(nb.currentId, id);
+      w.storeFor(w.pages).failWith = null;
+      File(w.rec.path).deleteSync();
+      await nb.flush();
+      expect(readPage(w.pageFile(id).readAsStringSync()).meta.title, 'Merged while leaving');
+    });
+
+    test('a second leave still waiting keeps the page frozen when the first ends in "stay"', () async {
+      final (nb, id) = await stuckPage();
+      w.storeFor(w.pages)
+        ..failWith = null
+        ..stall = Completer<void>()
+        ..stallId = id;
+      nb.current!.createBoxAt(const Bounds(90, 90, 0, 0));
+      var asked = 0;
+      nb.questioner = (q, t) async {
+        asked++;
+        return false; // every leave is cancelled
+      };
+      final old = nb.current!;
+      final first = nb.createPage();
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      final second = nb.createPage();
+      // The first leave gives up at ~400 ms (Cancel), the second at ~550 ms.
+      await first;
+      expect(asked, greaterThan(0));
+      expect(old.readOnly, isTrue, reason: 'the second leave is still waiting');
+      expect(() => old.createBoxAt(const Bounds(5, 5, 0, 0)), throwsStateError);
+      await second;
+      await until(() => !old.readOnly, what: 'the page to thaw');
+      w.storeFor(w.pages).stall!.complete();
     });
   });
 

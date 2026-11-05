@@ -808,5 +808,45 @@ void main() {
       expect(File('${copiedAssets()!.path}/$hash.txt').readAsBytesSync(), bytes);
       expect(other.readAsStringSync(), 'something else', reason: 'the source is untouched');
     });
+
+    test('a page whose folder went away while it was open still reports its files', () async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      await nb.addStandaloneFolder(extra.path);
+      final a = await nb.createPage(folderPath: extra.path);
+      await nb.open(a);
+      await attach(nb);
+      extra.deleteSync(recursive: true);
+      await nb.checkFolders();
+      expect(nb.current!.readOnly, isTrue, reason: 'the page waits for its folder');
+      final said = await nb.saveCopyElsewhere();
+      expect(said, startsWith('Saved a copy to ${dest.path}, but '));
+      expect(said, contains('$hash.txt'));
+    });
+
+    test('a leftover temporary file that could not be put back is reported', () async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      final a = nb.currentId!;
+      await attach(nb);
+      File('${assets(pages, a).path}/notes.1-1.tmp').writeAsStringSync('half a file');
+      final said = await nb.saveCopyElsewhere();
+      expect(said, contains('leftover temporary files'));
+      expect(said, contains('notes.1-1.tmp'));
+      expect(File('${copiedAssets()!.path}/$hash.txt').readAsBytesSync(), bytes);
+    });
+
+    test('with the source folder gone and a box type that cannot be asked, it says so', () async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      final a = nb.currentId!;
+      await attach(nb);
+      await nb.setBoxType(a, FileCodec.id, false);
+      assets(pages, a).deleteSync(recursive: true);
+      final said = await nb.saveCopyElsewhere();
+      expect(said, startsWith('Saved a copy to ${dest.path}, but '));
+      expect(said, contains("attachments folder wasn't available"));
+      expect(said, contains('1 box is'));
+    });
   });
 }
