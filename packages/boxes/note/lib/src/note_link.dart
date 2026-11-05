@@ -147,12 +147,16 @@ Future<void> _launch(String url) async {
   final uri = Uri.tryParse(text);
   final scheme = uri?.scheme.toLowerCase() ?? '';
   try {
-    // Web and mail links, and schemes of other programs, go to the system as
-    // before. Everything else is a local or network path (a file: link, a
+    // Web and mail links go to the system; any other scheme (a program's) asks
+    // first. Everything else is a local or network path (a file: link, a
     // drive letter, a share, a bare path): one the system would run is opened
     // only after the user says so.
     final isPath = scheme.isEmpty || scheme == 'file' || scheme.length == 1;
     if (uri != null && !isPath) {
+      if (linkSchemeNeedsConfirmation(scheme)) {
+        if (context == null || !context.mounted) return;
+        if (!await confirmOpenLinkScheme(context, scheme)) return;
+      }
       await launchUrl(uri, mode: LaunchMode.externalApplication);
       return;
     }
@@ -307,8 +311,9 @@ void installLinkGuard() {
     final trimmed = href.trim();
     final uri = Uri.tryParse(trimmed);
     if (uri == null) return false;
-    // A link without a scheme is a web address, as the editor treats it.
-    await openLink(uri.scheme.isNotEmpty ? trimmed : 'http://$trimmed');
+    // The target goes as it is: [openLink] tells a bare word (a web address)
+    // from a path (a file, asked about if it runs) itself.
+    await openLink(trimmed);
     return true;
   };
 }

@@ -16,6 +16,36 @@ void main() {
   bool run(String n, RunnablePlatform p, {String? pathExt}) =>
       isRunnableFileName(n, platform: p, pathExt: pathExt ?? '');
 
+  test('only web, mail and Noted links open without a scheme question', () {
+    for (final s in ['http', 'HTTPS', 'mailto', 'noted']) {
+      expect(linkSchemeNeedsConfirmation(s), isFalse, reason: s);
+    }
+    for (final s in ['ms-msdt', 'search-ms', 'shell', 'javascript', 'x-unknown']) {
+      expect(linkSchemeNeedsConfirmation(s), isTrue, reason: s);
+    }
+  });
+
+  testWidgets('the scheme question shows the cleaned scheme; Cancel answers false', (t) async {
+    bool? answer;
+    await t.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () async => answer = await confirmOpenLinkScheme(context, 'ms${String.fromCharCode(0x202e)}-msdt'),
+            child: const Text('go'),
+          ),
+        ),
+      ),
+    );
+    await t.tap(find.text('go'));
+    await t.pumpAndSettle();
+    expect(find.text('Open this link?'), findsOneWidget);
+    expect(t.widget<Text>(find.byKey(const ValueKey('open-confirm-scheme'))).data, 'ms·-msdt:');
+    await t.sendKeyEvent(LogicalKeyboardKey.enter);
+    await t.pumpAndSettle();
+    expect(answer, isFalse, reason: 'Enter takes the default, Cancel');
+  });
+
   group('Windows', () {
     test('the fixed list, in any case', () {
       final all =

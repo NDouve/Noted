@@ -211,3 +211,60 @@ Future<bool> confirmOpenRunnable(
   );
   return ok ?? false;
 }
+
+/// Whether a link with [scheme] (any case, no colon) asks before it opens:
+/// every scheme but `http`, `https`, `mailto` and Noted's own `noted`. (`file:`
+/// and paths have their own question, [confirmOpenRunnable].)
+bool linkSchemeNeedsConfirmation(String scheme) =>
+    !const {'http', 'https', 'mailto', 'noted'}.contains(scheme.toLowerCase());
+
+/// Asks whether to open a link whose scheme is [scheme], which hands the link
+/// to another program. True only on Open; Cancel (the default), Escape or a
+/// click outside answer false.
+Future<bool> confirmOpenLinkScheme(BuildContext context, String scheme) async {
+  final shown = cleanNameForDisplay(scheme, maxLength: 40);
+  final ok = await showDialog<bool>(
+    context: context,
+    useRootNavigator: true,
+    builder: (context) => AlertDialog(
+      key: const ValueKey('open-confirm-dialog'),
+      title: const Text('Open this link?'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '$shown:',
+              key: const ValueKey('open-confirm-scheme'),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              textDirection: TextDirection.ltr,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'This link opens another program on your computer. Only open it if you trust where it came from.',
+              key: ValueKey('open-confirm-text'),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        FilledButton(
+          key: const ValueKey('open-confirm-cancel'),
+          autofocus: true,
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          key: const ValueKey('open-confirm-open'),
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Open'),
+        ),
+      ],
+    ),
+  );
+  return ok ?? false;
+}
