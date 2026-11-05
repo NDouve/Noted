@@ -6761,13 +6761,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!await _ask(UserQuestion.discardKept, title)) return;
     _busy[p.id] = _busyDiscarding;
     try {
+      final problem = _lockProblem(); // without the recovery lock nothing is deleted
+      if (problem != null) throw StateError(problem);
       await rec.transaction((tx) async {
         for (final e in p.entries) {
           await tx.delete(e);
         }
       });
     } on Object catch (e) {
-      throw NotebookException("Couldn't remove the changes kept for this page: ${describeError(e)}", needsAction: true);
+      throw NotebookException("Couldn't remove the changes kept for this page: ${e is StateError ? e.message : describeError(e)}", needsAction: true);
     } finally {
       _free(p.id, _busyDiscarding);
     }

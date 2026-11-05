@@ -82,6 +82,26 @@ void main() {
       expect(w.recFiles(), hasLength(1), reason: 'nothing was written, deleted or replayed');
     });
 
+    test('Discard kept changes deletes nothing while the lock is not held', () async {
+      File('${w.root.path}/blocker').writeAsStringSync('x');
+      final nb0 = w.make();
+      final id = await w.editedPage(nb0);
+      w.storeFor(w.pages).failWith = accessDenied();
+      await nb0.flush();
+      w.crash(nb0);
+      w.storeFor(w.pages).failWith = null;
+      w.pageFile(id).writeAsStringSync('this is not a page');
+      final lock = RecoveryLock(File('${w.root.path}/blocker/recovery.lock'));
+      lock.acquireSync(tries: 1);
+      final nb = w.make(lock: lock);
+      await nb.load();
+      await nb.open(id);
+      expect(nb.trouble.canDiscardKept, isTrue);
+      nb.questioner = (q, t) async => true;
+      await expectLater(nb.discardKept(), throwsA(isA<NotebookException>()));
+      expect(w.recFiles(), hasLength(1), reason: 'nothing was deleted without the lock');
+    });
+
     test('a lock that cannot be taken for another reason leaves pages editable and refuses recovery into state 4', () async {
       // The lock file's parent is a file: it can never be opened.
       File('${w.root.path}/blocker').writeAsStringSync('x');
