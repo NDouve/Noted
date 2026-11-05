@@ -219,12 +219,35 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     try {
       await action();
     } on NotebookException catch (e) {
-      messenger?.hideCurrentSnackBar();
-      // A message that asks the user to act stays until it is closed.
-      messenger?.showSnackBar(
-        SnackBar(content: Text(e.message), persist: e.needsAction, showCloseIcon: e.needsAction),
-      );
+      _report(messenger, e);
     }
+  }
+
+  // Shows [e] in a SnackBar.
+  void _report(ScaffoldMessengerState? messenger, NotebookException e) {
+    messenger?.hideCurrentSnackBar();
+    // A message that asks the user to act stays until it is closed.
+    final held = e is PagesNotRestoredException ? e.deleted : null;
+    messenger
+        ?.showSnackBar(
+          SnackBar(
+            content: Text(e.message),
+            persist: e.needsAction,
+            showCloseIcon: e.needsAction,
+            // Pages that only exist in memory: Undo writes them back.
+            action: held == null
+                ? null
+                : SnackBarAction(label: 'Undo', onPressed: () => _guard(() => _nb.undoDelete(held))),
+          ),
+        )
+        .closed
+        .then((reason) {
+          // Closing the message with its X lets the pages go; they stay
+          // while it was only replaced by another message.
+          if (held != null && reason == SnackBarClosedReason.dismiss && _nb.isPendingDelete(held)) {
+            _nb.discardDeleted(held);
+          }
+        });
   }
 
   // The page tree's actions, which the app's commands (app_commands.dart)
@@ -867,7 +890,15 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       ),
     );
     if (!(ok ?? false)) return;
-    final deleted = await _nb.delete(p.id);
+    final DeletedPages deleted;
+    try {
+      deleted = await _nb.delete(p.id);
+    } on NotebookException catch (e) {
+      // A refused or failed delete: say so (a partly failed one may offer Undo).
+      // Declining the question about kept changes needs no message.
+      if (e is! LeaveCancelled) _report(messenger, e);
+      return;
+    }
     if (messenger == null) return;
     final title = p.title.isEmpty ? 'Untitled page' : p.title;
     final keptNote = deleted.keptNote;
