@@ -70,16 +70,23 @@ class RecoveryLock {
 
   _Try _tryOnce() {
     RandomAccessFile? raf;
+    // Creating or opening the file failing is never "held by another process":
+    // only the lock itself being refused is.
     try {
       file.parent.createSync(recursive: true);
       raf = file.openSync(mode: FileMode.append);
+    } on Object catch (e) {
+      error = e;
+      return _Try.failed;
+    }
+    try {
       raf.lockSync(FileLock.exclusive);
       _handle = raf;
       error = null;
       return _Try.ok;
     } on FileSystemException catch (e) {
       try {
-        raf?.closeSync();
+        raf.closeSync();
       } on Object {
         // Nothing more to do.
       }
@@ -87,11 +94,15 @@ class RecoveryLock {
       error = e;
       return _Try.failed;
     } on Object catch (e) {
+      try {
+        raf.closeSync();
+      } on Object {
+        // Nothing more to do.
+      }
       error = e;
       return _Try.failed;
     }
   }
-
   // Windows 33 is a lock violation; POSIX EAGAIN (11 on Linux, 35 on macOS)
   // and EACCES (13) are what a non-blocking lock reports [ASSUMED: Dart's
   // non-blocking lock is F_SETLK].
