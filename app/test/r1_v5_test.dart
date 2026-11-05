@@ -753,6 +753,39 @@ void main() {
       expect(kept.meta.background, PageBackground.dots, reason: 'the header change survives');
       expect(kept.node(b.id), isNotNull);
     });
+
+    test('an entry that only reorders the boxes is not taken for incorporated by a closed writer', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      nb.current!.createBoxAt(const Bounds(200, 200, 0, 0));
+      await nb.flush();
+      await nb.createPage();
+      final base = readPage(w.pageFile(id).readAsStringSync());
+      expect(base.nodes, hasLength(2));
+      final reordered = NotedPage.fromParts(base.top, base.meta, base.nodes.reversed.toList());
+      await RecoveryStore(w.rec).write(
+        folder: w.pages.path,
+        page: reordered,
+        baseText: writePage(base),
+        time: DateTime.now(),
+      );
+      await nb.refreshRecoveryIndexForTest();
+      final b = BoxRecord.create(
+        id: '00000000000000b3',
+        typeId: 'x.unregistered',
+        dataVersion: 1,
+        bounds: const Bounds(300, 300, 10, 10),
+        data: const RawJson.trusted('{"k":1}'),
+        snapshotText: 's',
+        rev: 'r',
+      );
+      final out = await nb.keepClosedForTest(base.insertNode(b), base, w.pages.path);
+      expect(out.kind, KeepKind.kept, reason: out.why);
+      final kept = (await nb.pendingRecovery()).entries.single.page;
+      final order = [for (final n in kept.nodes) n.id].where((i) => i != b.id).toList();
+      expect(order, [for (final n in base.nodes.reversed) n.id], reason: 'the stacking-order change survives');
+      expect(kept.node(b.id), isNotNull);
+    });
   });
 
   group(
