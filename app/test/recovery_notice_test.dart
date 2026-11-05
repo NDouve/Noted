@@ -138,7 +138,10 @@ void main() {
       (tester) async {
         final (root, base) = await setUpNotebook(tester, pending: false);
         final nb = _HangingListing(base.store, buildModules())
-          ..own = [UnreadablePage('${root.path}/pages/a.canvas', 'Saved, but the page changed right after.')];
+          ..own = [
+            UnreadablePage('${root.path}/pages/a.canvas', 'Saved, but the page changed right after.'),
+            UnreadablePage(r'C:\x\recovery\bad-1', "Recovery entry can't be read"),
+          ];
         final key = GlobalKey<NavigatorState>();
         await tester.pumpWidget(MaterialApp(navigatorKey: key, home: const SizedBox()));
         late Future<void> future;
@@ -151,6 +154,9 @@ void main() {
         expect(find.byKey(const ValueKey('recovery-exit-unchecked')), findsOneWidget);
         expect(find.text("Can't open:"), findsOneWidget);
         expect(find.textContaining('a.canvas: Saved, but the page changed right after.'), findsOneWidget);
+        // A Windows path shows only its last part.
+        expect(find.textContaining("bad-1: Recovery entry can't be read"), findsOneWidget);
+        expect(find.textContaining(r'C:\x'), findsNothing);
         // The listing settles after the timeout: no second dialog, no error.
         await tester.runAsync(() async {
           if (fails) {

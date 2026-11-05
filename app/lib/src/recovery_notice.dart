@@ -116,5 +116,5 @@ Future<void> _showCouldNotCheck(
 
 /// "name: reason" rows, as in the sidebar's "Can't open" list.
 List<String> _rows(List<UnreadablePage> damaged) => [
-  for (final u in damaged) '${u.path.split(RegExp(r'[\/]')).last}: ${u.reason}',
+  for (final u in damaged) '${u.path.split(RegExp(r'[\\/]')).last}: ${u.reason}',
 ];
