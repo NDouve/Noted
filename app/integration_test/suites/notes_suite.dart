@@ -412,5 +412,75 @@ void notesSuite() {
         expect(t.takeException(), isNull);
       });
     });
+
+    // Links (0099): Ctrl+K and the toolbar's Link button.
+    List<dynamic> linkOps(dynamic editor) => (editor.getNodeAtPath([0]).delta.toJson() as List).cast<dynamic>();
+
+    bool hasLink(dynamic editor, String text, String href) =>
+        linkOps(editor).any((op) => op['insert'] == text && (op['attributes'] as Map?)?['href'] == href);
+
+    testWidgets('L1: Ctrl+K with a bare caret inserts the address as a link (Enter)', (t) async {
+      await withSession(t, 'linkcaret', (s) async {
+        final id = await _openWith(s, [para('go: ')]);
+        final editor = await editNote(s, id);
+        _setCaret(editor, [0], 4);
+        await s.pump(200);
+        await s.ctrl(LogicalKeyboardKey.keyK);
+        await s.pump(300);
+        expect(find.text('Insert link'), findsOneWidget);
+        await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
+        await t.testTextInput.receiveAction(TextInputAction.done);
+        await s.pump(600);
+        expect(find.text('Insert link'), findsNothing);
+        expect(hasLink(editorState(t), 'https://noted.example', 'https://noted.example'), isTrue);
+        await s.flush();
+        expect(snapshotOf(s, id), contains('https://noted.example'));
+      });
+    });
+
+    testWidgets('L2: Ctrl+K with a selection makes the selection the link (Save)', (t) async {
+      await withSession(t, 'linksel', (s) async {
+        final id = await _openWith(s, [para('see the docs here')]);
+        final editor = await editNote(s, id);
+        _setCaret(editor, [0], 8);
+        final sel = editor.selection;
+        editor.selection = sel.copyWith(end: sel.end.copyWith(offset: 12));
+        await s.pump(200);
+        await s.ctrl(LogicalKeyboardKey.keyK);
+        await s.pump(300);
+        await t.enterText(find.byKey(const ValueKey('link-address')), 'docs.example.com');
+        await t.tap(find.byKey(const ValueKey('link-save')));
+        await s.pump(600);
+        expect(hasLink(editorState(t), 'docs', 'https://docs.example.com'), isTrue);
+        expect(linkOps(editorState(t)).first['insert'], 'see the ');
+      });
+    });
+
+    testWidgets('L3: the toolbar Link button inserts the link at the caret', (t) async {
+      await withSession(t, 'linkbutton', (s) async {
+        final id = await _openWith(s, [para('go: ')]);
+        final editor = await editNote(s, id);
+        _setCaret(editor, [0], 4);
+        await s.pump(200);
+        await t.tap(find.byTooltip('Link (Ctrl+K)').first);
+        await s.pump(300);
+        expect(find.text('Insert link'), findsOneWidget);
+        await t.enterText(find.byKey(const ValueKey('link-address')), 'https://button.example');
+        await t.tap(find.byKey(const ValueKey('link-save')));
+        await s.pump(600);
+        expect(hasLink(editorState(t), 'https://button.example', 'https://button.example'), isTrue);
+      });
+    });
+
+    testWidgets('L4: with no note holding the caret, Ctrl+K opens nothing', (t) async {
+      await withSession(t, 'linknone', (s) async {
+        await s.pump(200);
+        expect(s.nb.current!.editingId, isNull);
+        await s.ctrl(LogicalKeyboardKey.keyK);
+        await s.pump(300);
+        expect(find.text('Insert link'), findsNothing);
+        expect(t.takeException(), isNull);
+      });
+    });
   });
 }

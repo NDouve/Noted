@@ -247,8 +247,9 @@ List<Command> noteCommands(CommandHost host) {
       label: 'Link',
       icon: Icons.link_rounded,
       shortcut: const SingleActivator(LogicalKeyboardKey.keyK, control: true),
-      enabled: canInsert,
-      listenable: NoteCommandFocus.active,
+      // Needs a caret or selection in the focused note.
+      enabled: () => canInsert() && editor()?.selection != null,
+      listenable: state,
       invoke: () => NoteCommandFocus.active.value?.editLink(),
     ),
     Command(

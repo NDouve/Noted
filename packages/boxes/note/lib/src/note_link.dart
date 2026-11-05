@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
@@ -88,9 +89,15 @@ final class RemoveLink extends LinkChoice {
 ///
 /// With a bare caret inside a link, the whole link is edited; with a bare
 /// caret elsewhere, the address is inserted as linked text.
+///
+/// Each early return says so in the debug log (no link text, no note content),
+/// so a link that did not appear can be traced to the step that skipped it.
 Future<void> editLinkIn(BuildContext context, EditorState editor) async {
   var selection = editor.selection?.normalized;
-  if (selection == null) return;
+  if (selection == null) {
+    debugPrint('Noted: insert link skipped: no selection');
+    return;
+  }
   if (selection.isCollapsed) {
     final at = linkAt(editor, selection.start);
     if (at != null) {
@@ -102,18 +109,25 @@ Future<void> editLinkIn(BuildContext context, EditorState editor) async {
   }
   final current = linkOfSelection(editor, selection);
   final choice = await showLinkDialog(context, initial: current ?? '', canRemove: current != null);
-  if (editor.isDisposed) return;
+  if (editor.isDisposed) {
+    debugPrint('Noted: insert link skipped: editor disposed');
+    return;
+  }
   // The dialog had the focus: give the editor back its selection.
   editor.updateSelectionWithReason(selection, reason: SelectionUpdateReason.uiEvent);
   switch (choice) {
     case null:
+      debugPrint('Noted: insert link skipped: dialog gave no address');
       return;
     case RemoveLink():
       await editor.formatDelta(selection, {AppFlowyRichTextKeys.href: null});
     case SetLink(:final url):
       if (selection.isCollapsed) {
         final node = editor.getNodeAtPath(selection.start.path);
-        if (node == null || node.delta == null) return;
+        if (node == null || node.delta == null) {
+          debugPrint('Noted: insert link skipped: block not found');
+          return;
+        }
         final transaction = editor.transaction
           ..insertText(node, selection.startIndex, url, attributes: {AppFlowyRichTextKeys.href: url})
           ..afterSelection = Selection.collapsed(
@@ -202,7 +216,7 @@ Future<void> _launch(String url) async {
     final decodedPath = _fullyDecoded(path);
     final decodedResolved = _fullyDecoded(resolved);
     final escaped = text.contains('%') || path.contains('%') || resolved.contains('%');
-    final name = decodedResolved.replaceAll(RegExp(r'[\\/]+$'), '').split(RegExp(r'[\\/]')).last;
+    final name = resolvedTargetName(path);
     // An 8.3 short name (PAYLOA~1.DIA) can stand for a long runnable name.
     final shortName = RegExp(r'~\d').hasMatch(name);
     if (escaped ||
@@ -210,15 +224,36 @@ Future<void> _launch(String url) async {
         needsOpenConfirmation(displayName: path) ||
         needsOpenConfirmation(displayName: resolved) ||
         needsOpenConfirmation(displayName: decodedPath) ||
-        needsOpenConfirmation(displayName: decodedResolved)) {
+        needsOpenConfirmation(displayName: decodedResolved) ||
+        needsOpenConfirmation(displayName: name) ||
+        // A byte that is not valid text may be dropped by the system.
+        (name.contains('�') && needsOpenConfirmation(displayName: name.replaceAll('�', '')))) {
       if (context == null || !context.mounted) return;
       if (!await confirmOpenRunnable(context, name)) return;
     }
     await launchUrl(target, mode: LaunchMode.externalApplication);
   } on Object catch (e) {
-    debugPrint('Opening $url failed: $e');
+    debugPrint('Noted: opening a link failed: ${e.runtimeType}');
     _notice(messenger);
   }
+}
+
+/// The name of the file [path] stands for as the system will see it: fully
+/// decoded first, then `.` and `..` segments (either separator) resolved, so an
+/// escaped `..` (`%2e%2e`, `%252e%252e`) is resolved too. Falls back to the
+/// decoded text if nothing is left.
+String resolvedTargetName(String path) {
+  final decoded = _fullyDecoded(path);
+  final parts = <String>[];
+  for (final segment in decoded.split(RegExp(r'[\\/]'))) {
+    if (segment.isEmpty || segment == '.') continue;
+    if (segment == '..') {
+      if (parts.isNotEmpty) parts.removeLast();
+      continue;
+    }
+    parts.add(segment);
+  }
+  return parts.isEmpty ? decoded : parts.last;
 }
 
 // The text with percent escapes decoded; as it is if it does not decode (a
@@ -233,13 +268,14 @@ String _fullyDecoded(String s) {
   return current;
 }
 
-String _decoded(String s) {
-  try {
-    return Uri.decodeFull(s);
-  } on Object {
-    return s;
-  }
-}
+// Decodes each run of valid %XX escapes and leaves a bad `%` (a lone one,
+// `%zz`) as it is, so one bad escape does not stop the rest decoding. Bytes
+// that are not valid UTF-8 become U+FFFD.
+String _decoded(String s) => s.replaceAllMapped(RegExp(r'(?:%[0-9a-fA-F]{2})+'), (m) {
+  final run = m[0]!;
+  final bytes = [for (var i = 0; i < run.length; i += 3) int.parse(run.substring(i + 1, i + 3), radix: 16)];
+  return utf8.decode(bytes, allowMalformed: true);
+});
 
 // An absolute path: a drive (X:\ or X:/), a share (\\ or //) or a root (/ or \).
 bool _isAbsolutePath(String s) => RegExp(r'^([a-zA-Z]:[\\/]|[\\/])').hasMatch(s);
