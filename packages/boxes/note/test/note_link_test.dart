@@ -10,7 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_box_note/noted_box_note.dart';
-import 'package:noted_box_note/src/note_link.dart' show linkNotAddedNotice;
+import 'package:noted_box_note/src/note_link.dart' show editLinkIn, linkNotAddedNotice;
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -389,6 +389,10 @@ void main() {
   });
 
   testWidgets('a note that became read-only under the dialog: told, nothing drawn or saved', (t) async {
+    final lines = <String>[];
+    final original = linkLog;
+    linkLog = lines.add;
+    addTearDown(() => linkLog = original);
     await pump(t, [
       {'insert': 'go: '},
     ]);
@@ -405,6 +409,7 @@ void main() {
     expect(find.text(linkNotAddedNotice), findsOneWidget);
     expect(pageText(t), before);
     expect(delta(editor).any((op) => op['attributes'] != null), isFalse, reason: 'no link drawn in the old editor');
+    expect(lines.last, 'insert link skipped: note gone or not editable');
   });
 
   testWidgets('the note in the light view when the dialog closes: its editor is made and gets the link', (t) async {
@@ -421,6 +426,158 @@ void main() {
     await frames(t, 20);
     expect(find.text(linkNotAddedNotice), findsNothing);
     expect(pageText(t), contains('https://noted.example'));
+  });
+
+  testWidgets('editorNow gives none while the old editor is alive: the link is not drawn there', (t) async {
+    final lines = <String>[];
+    final original = linkLog;
+    linkLog = lines.add;
+    addTearDown(() => linkLog = original);
+    final editor = EditorState(
+      document: Document.fromJson({
+        'document': {
+          'type': 'page',
+          'children': [
+            {
+              'type': 'paragraph',
+              'data': {
+                'delta': [
+                  {'insert': 'go: '},
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    );
+    addTearDown(editor.dispose);
+    editor.selection = Selection.collapsed(Position(path: [0], offset: 4));
+    late BuildContext ctx;
+    await t.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: noteLocalizationsDelegates,
+        home: Scaffold(
+          body: Builder(
+            builder: (c) {
+              ctx = c;
+              return const SizedBox();
+            },
+          ),
+        ),
+      ),
+    );
+    unawaited(editLinkIn(ctx, editor, editorNow: () => null));
+    await frames(t);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
+    await t.tap(find.byKey(const ValueKey('link-save')));
+    await frames(t, 20);
+    expect(editor.isDisposed, isFalse);
+    expect(find.text(linkNotAddedNotice), findsOneWidget);
+    expect(lines.last, 'insert link skipped: note gone or not editable');
+    expect(editor.document.root.children.first.delta!.toPlainText(), 'go: ');
+    expect(editor.document.root.children.first.delta!.toJson().any((op) => (op as Map).containsKey('attributes')), isFalse);
+  });
+
+  testWidgets('a range: text added before an identical word does not link the wrong one', (t) async {
+    await pump(t, [
+      {'insert': 'ab ab'},
+    ]);
+    final editor = await focusNote(t, dx: 200);
+    editor.selection = Selection(start: Position(path: [0], offset: 3), end: Position(path: [0], offset: 5));
+    await frames(t);
+    await ctrlK(t);
+    c.replaceBoxData({'n': noteText('ab ab ab')});
+    await frames(t, 10);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
+    await t.tap(find.byKey(const ValueKey('link-save')));
+    await frames(t, 20);
+    expect(find.text(linkNotAddedNotice), findsOneWidget);
+    expect(pageText(t), isNot(contains('noted.example')));
+  });
+
+  testWidgets('a selection across blocks: a block in it changing type stops the link', (t) async {
+    await pump(t, [
+      {'insert': 'a'},
+    ]);
+    c.replaceBoxData({'n': noteParas(['aaa', 'bbb', 'ccc'])});
+    await frames(t, 10);
+    final editor = await focusNote(t, dx: 200);
+    editor.selection = Selection(start: Position(path: [0], offset: 0), end: Position(path: [2], offset: 3));
+    await frames(t);
+    await ctrlK(t);
+    c.replaceBoxData({
+      'n': NoteData({
+        'document': {
+          'type': 'page',
+          'children': [
+            for (final (i, text) in ['aaa', 'bbb', 'ccc'].indexed)
+              {
+                'type': i == 1 ? 'heading' : 'paragraph',
+                'data': {
+                  if (i == 1) 'level': 1,
+                  'delta': [
+                    {'insert': text},
+                  ],
+                },
+              },
+          ],
+        },
+      }),
+    });
+    await frames(t, 10);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
+    await t.tap(find.byKey(const ValueKey('link-save')));
+    await frames(t, 20);
+    expect(find.text(linkNotAddedNotice), findsOneWidget);
+    expect(pageText(t), isNot(contains('noted.example')));
+  });
+
+  testWidgets('two pages with the same box id: the link lands on the page where Ctrl+K was pressed', (t) async {
+    t.view.physicalSize = const Size(1600, 800);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    final modules = ModuleRegistry()..register(const NoteModule(), alwaysOn: true, isDefault: true);
+    CanvasController make(String id) => CanvasController(
+      NotedPage.create(PageMeta.create(id: id, title: '', order: 0)).insertNode(_note('n', [
+        {'insert': 'go: '},
+      ])),
+      modules,
+    );
+    final first = make('p1');
+    final second = make('p2');
+    await t.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: noteLocalizationsDelegates,
+        home: Scaffold(
+          body: Row(
+            children: [
+              Expanded(child: PageCanvas(controller: first)),
+              Expanded(child: PageCanvas(controller: second)),
+            ],
+          ),
+        ),
+      ),
+    );
+    await t.pumpAndSettle();
+    final canvasState = t.state<PageCanvasState>(find.byType(PageCanvas).first);
+    final b = first.page.node('n')!.bounds!;
+    await t.tapAt(canvasState.view!.toScreen(Offset(b.x + 200, b.y + 10)) + const Offset(0, CommandToolbar.height));
+    await frames(t);
+    expect(first.editingId, 'n');
+    final editor = t.widget<AppFlowyEditor>(find.byType(AppFlowyEditor)).editorState;
+    editor.selection = Selection.collapsed(Position(path: [0], offset: 4));
+    await frames(t);
+    await ctrlK(t);
+    // The first page's note starts over under the dialog; the second page has
+    // a box with the same id.
+    first.replaceBoxData({'n': noteParas(['go: ', 'more'])});
+    await frames(t, 10);
+    await t.enterText(find.byKey(const ValueKey('link-address')), 'https://noted.example');
+    await t.tap(find.byKey(const ValueKey('link-save')));
+    await frames(t, 20);
+    expect(find.text(linkNotAddedNotice), findsNothing);
+    expect((first.page.node('n')! as BoxRecord).data!.text, contains('noted.example'));
+    expect((second.page.node('n')! as BoxRecord).data!.text, isNot(contains('noted.example')));
   });
 
   testWidgets('a bare caret from a click: Enter in the dialog inserts the address as a link', (t) async {

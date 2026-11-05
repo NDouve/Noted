@@ -512,7 +512,8 @@ class _NoteEditorState extends State<_NoteEditor>
   @override
   void dispose() {
     NoteCommandFocus.release(this);
-    _live[widget.box.boxId]?.remove(this);
+    final live = _live[widget.box.boxId];
+    if (live != null && (live..remove(this)).isEmpty) _live.remove(widget.box.boxId);
     widget.box.find.removeListener(_findChanged);
     _focus.removeListener(_focusChanged);
     _disposeEditor();

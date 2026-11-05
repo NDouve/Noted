@@ -97,11 +97,14 @@ const String linkNotAddedNotice = "The note changed while the link dialog was op
 // from outside that moved or rewrote the text makes it no longer match, and
 // the link is not put on other text.
 class _Anchor {
-  _Anchor(this.startType, this.endType, this.selected, this.before, this.after);
+  _Anchor(this.blocks, this.selected, this.before, this.after);
 
-  final String startType;
-  final String endType;
+  /// The path and type of every block in the range.
+  final List<String> blocks;
   final String selected;
+
+  /// The text before the start (in the start block) and after the end (in the
+  /// end block).
   final String before;
   final String after;
 
@@ -116,14 +119,18 @@ class _Anchor {
     if (s.start.offset < 0 || s.start.offset > startText.length || s.end.offset < 0 || s.end.offset > endText.length) {
       return null;
     }
+    final blocks = <String>[];
     final String selected;
     if (s.isCollapsed) {
       selected = '';
+      blocks.add('${startNode.path}:${startNode.type}');
     } else if (startNode == endNode) {
       selected = startText.substring(s.start.offset, s.end.offset);
+      blocks.add('${startNode.path}:${startNode.type}');
     } else {
       final parts = <String>[];
       for (final n in editor.getNodesInSelection(s)) {
+        blocks.add('${n.path}:${n.type}');
         final t = n.delta?.toPlainText();
         if (t == null) continue;
         if (identical(n, startNode)) {
@@ -137,20 +144,20 @@ class _Anchor {
       selected = parts.join('\n');
     }
     final from = s.start.offset;
+    final to = s.end.offset;
     return _Anchor(
-      startNode.type,
-      endNode.type,
+      blocks,
       selected,
       startText.substring(from < _around ? 0 : from - _around, from),
-      s.isCollapsed ? startText.substring(from, from + _around > startText.length ? startText.length : from + _around) : '',
+      endText.substring(to, to + _around > endText.length ? endText.length : to + _around),
     );
   }
 
   bool holdsIn(EditorState editor, Selection s) {
     final now = _Anchor.of(editor, s);
     return now != null &&
-        now.startType == startType &&
-        now.endType == endType &&
+        now.blocks.length == blocks.length &&
+        [for (var i = 0; i < blocks.length; i++) now.blocks[i] == blocks[i]].every((same) => same) &&
         now.selected == selected &&
         now.before == before &&
         now.after == after;
