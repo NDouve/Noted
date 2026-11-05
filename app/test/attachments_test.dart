@@ -1509,6 +1509,10 @@ void main() {
       expect(calls, 2, reason: 'the hook fired for both copies');
       expect(said, allOf(contains('damaged copy of "$hash.txt"'), contains("the good copy wasn't put in its place")));
       expect(said, isNot(contains('was used')));
+      // The good bytes are still in recovery, so that is named; the damaged
+      // original's folder alone is not claimed to hold them.
+      expect(said, contains('the recovery folder'));
+      expect(said, isNot(contains("stays in the original's folder.")));
       expect(File('${copiedAssets()!.path}/$hash.txt').readAsBytesSync(), [9, 9], reason: 'what arrived is kept');
     });
 

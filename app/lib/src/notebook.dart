@@ -7535,7 +7535,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // What was kept aside as damaged, or left alone because it was still
     // changing, in the wording the moves use.
     final keptLines = [
-      for (final n in _copyNotices(result, 'the copy', "the original's folder"))
+      // The good copy is in the original's folder or, when that one was the
+      // damaged one, in the recovery folder: say both when both were read.
+      for (final n in _copyNotices(
+        result,
+        'the copy',
+        _recovery == null ? "the original's folder" : "the original's folder or the recovery folder",
+      ))
         '${n.substring(0, 1).toLowerCase()}${n.substring(1, n.length - 1)}',
     ];
     final problems = <String>[
