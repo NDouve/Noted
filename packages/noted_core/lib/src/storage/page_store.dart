@@ -273,6 +273,11 @@ class PageStore {
     return r;
   }
 
+  /// Makes [path] (a page file of this folder holding [pageId]) the file this
+  /// store reads and writes for that page, when another file with the same id
+  /// was listed first. Writes nothing.
+  void adopt(String pageId, String path) => _paths[pageId] = path;
+
   /// The path of the file holding (or that will hold) page [pageId].
   String pathFor(String pageId) => _pathFor(pageId);
 
