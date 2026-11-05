@@ -29,10 +29,11 @@ Future<void> showRecoveryNoticeOnExit(
   // The abandoned listing may still finish settling its temp files; its result
   // is ignored. The in-memory notices are known without the drive.
   if (listing == null) return _showCouldNotCheck(navigator, _rows(notebook.recoveryOwnDamaged));
-  final pages = listing.entries.length;
+  final pages = {for (final e in listing.entries) e.pageId}.length;
   // The same files and reasons as the sidebar's "Can't open" list.
   final problems = _rows([...listing.damaged, ...notebook.recoveryOwnDamaged]);
-  if (pages == 0 && problems.isEmpty) return;
+  final landedLeft = notebook.landedEntryLeft;
+  if (pages == 0 && problems.isEmpty && !landedLeft) return;
   final context = navigator.currentContext;
   if (context == null || !context.mounted) return;
   await showDialog<void>(
@@ -53,8 +54,16 @@ Future<void> showRecoveryNoticeOnExit(
                     : "$pages pages couldn't be saved because their folder is unavailable. "
                           'They are kept safely and will be saved automatically when the folder is back.',
               ),
-            if (problems.isNotEmpty) ...[
+            if (landedLeft) ...[
               if (pages > 0) SizedBox(height: NotedMetrics.of(context).space3),
+              const Text(
+                'One recovered page may show boxes you deleted since: its kept copy was saved '
+                'but could not be removed.',
+                key: ValueKey('recovery-exit-landed'),
+              ),
+            ],
+            if (problems.isNotEmpty) ...[
+              if (pages > 0 || landedLeft) SizedBox(height: NotedMetrics.of(context).space3),
               const Text("Can't open:"),
               for (final p in problems) Text(p, style: Theme.of(context).textTheme.bodySmall),
             ],

@@ -1464,7 +1464,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final ids = [id, ..._treeOf(loc).descendantsOf(id)];
     final openId = ids.contains(currentId) ? currentId : null;
     final DeletedPages result;
-    await _guardKept(ids, loc, "deleting", "Noted is still trying to save this page, so it can't be deleted yet.");
+    await _guardKept(ids, loc, 'deleting', "Noted is still trying to save this page, so it can't be deleted yet.");
     try {
       result = await _deleteGuarded(id, loc, st, ids, openId);
     } finally {
@@ -1483,10 +1483,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final p in ids) {
       if (_busy.containsKey(p)) throw NotebookException(busyMessage);
     }
-    if (ids.length > 1 && recoveryLockProblem != null) {
+    if (ids.length > 1 && _lockProblem() != null) {
       throw const NotebookException("Noted can't keep a backup right now.");
     }
-    if (why == "deleting") {
+    if (why == 'deleting') {
       final rec = _recovery;
       final kept = rec != null && ids.any((p) => rec.entriesOfPage(p).any((e) => !rec.isLanded(e.gen)));
       final troubled = _trouble.isTrouble && ids.contains(_trouble.pageId);
@@ -1501,7 +1501,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     for (final p in ids) {
-      _busy[p] = why == "deleting" ? _busyDeleting : _busyMoving;
+      _busy[p] = why == 'deleting' ? _busyDeleting : _busyMoving;
     }
   }
 
@@ -1702,7 +1702,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           await _settleRekeys(done, const {});
           final why = out.why ?? (out.cause == null ? 'it could not be written' : describeError(out.cause!));
           throw NotebookException(
-            "Nothing was moved. The changes kept for a page could not be moved with it ($why).",
+            'Nothing was moved. The changes kept for a page could not be moved with it ($why).',
             needsAction: true,
           );
         }
@@ -2052,7 +2052,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _guardKept(
       ids,
       fromLoc,
-      "moving",
+      'moving',
       "Noted is still trying to save this page, so it can't be moved yet.",
     );
     final rekeys = <_Rekey>[];
@@ -4344,6 +4344,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         for (final e in rec.indexEntries)
           if (e.gen == g) e,
     ];
+    if (entries.isNotEmpty && _lockProblem() != null) {
+      // Without the lock nothing is deleted (a handle that is lost is taken
+      // again first, build note 4); the generations wait, marked landed.
+      for (final e in entries) {
+        rec.markLanded(e.gen);
+      }
+      for (final g in gens) {
+        session?.own.remove(g);
+      }
+      return;
+    }
     try {
       await rec.transaction((tx) async {
         for (final e in entries) {
@@ -4486,6 +4497,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Deletes the entry of a replay that landed, by its exact generation; one
   // that can't be deleted is marked landed (deleted later, never merged).
   Future<void> _deleteEntry(RecoveryStore rec, RecoveryEntry e) async {
+    if (_lockProblem() != null) {
+      rec.markLanded(e.gen);
+      return;
+    }
     try {
       await rec.transaction((tx) => tx.delete(e));
     } on Object catch (ex) {
@@ -5456,8 +5471,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     String? text;
     var time = DateTime.now().millisecondsSinceEpoch;
     try {
-      text = await file.readAsString();
-      time = (await file.lastModified()).millisecondsSinceEpoch;
+      // A file held by another program (a sync client downloading it) is busy,
+      // not unreadable: the open page's file is reread quietly for a while
+      // before the page is blocked.
+      Future<({String text, int time})> read() async {
+        final s = await file.readAsString();
+        return (text: s, time: (await file.lastModified()).millisecondsSinceEpoch);
+      }
+
+      final got = isOpen ? await _whileBusy(read) : await read();
+      text = got.text;
+      time = got.time;
     } on FileSystemException catch (e) {
       if (await FileSystemEntity.type(path) == FileSystemEntityType.notFound) {
         text = null;
@@ -5546,6 +5570,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await _applyClosed(page, loc, key, path);
     }
     return false;
+  }
+
+  // Runs [read], again after a growing wait (50 ms, doubling to 1 s) while it
+  // fails because the file is busy, for up to [busyReadWindow]. Any other
+  // failure, and a file still busy after that, is thrown.
+  Future<T> _whileBusy<T>(Future<T> Function() read) async {
+    final end = DateTime.now().add(busyReadWindow);
+    var wait = const Duration(milliseconds: 50);
+    while (true) {
+      try {
+        return await read();
+      } on FileSystemException catch (e) {
+        if (!isBusyError(e) || _disposed || DateTime.now().add(wait).isAfter(end)) rethrow;
+        await Future<void>.delayed(wait);
+        wait = wait * 2 > const Duration(seconds: 1) ? const Duration(seconds: 1) : wait * 2;
+      }
+    }
   }
 
   // The open page's file can't be read: keep what is on disk, put the edits

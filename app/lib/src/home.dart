@@ -18,6 +18,8 @@ import 'device_storage.dart';
 import 'notebook.dart';
 import 'notebook_search.dart';
 import 'page_title_field.dart';
+import 'save_trouble.dart' show KeptNotice, TroubleKind;
+import 'save_trouble_bar.dart';
 import 'search_panel.dart';
 import 'settings_panel.dart';
 import 'page_tree_view.dart';
@@ -80,6 +82,7 @@ class _HomeState extends State<Home> {
   String? _canvasKeyFor;
 
   StreamSubscription<String>? _notices;
+  StreamSubscription<KeptNotice>? _kept;
 
   @override
   void initState() {
@@ -87,6 +90,7 @@ class _HomeState extends State<Home> {
     _seenFocusTick = _search.focusTick;
     _search.addListener(_searchChanged);
     _notices = notebook.attachmentNotices.listen(_showNotice);
+    _kept = notebook.keptNotices.listen(_showKept);
     final settings = widget.settings;
     if (settings != null) {
       unawaited(
@@ -100,6 +104,14 @@ class _HomeState extends State<Home> {
         }),
       );
     }
+  }
+
+  // Edits put in recovery on leaving a page: about 30 seconds, with Show.
+  void _showKept(KeptNotice n) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(keptNoticeBar(n, () => unawaited(notebook.open(n.pageId))));
   }
 
   // A one-line notice about attachments (a file too large to embed).
@@ -171,6 +183,7 @@ class _HomeState extends State<Home> {
     _search.removeListener(_searchChanged);
     _titleHighlight.dispose();
     unawaited(_notices?.cancel());
+    unawaited(_kept?.cancel());
     _searchCommands.dispose();
     _findRequests.dispose();
     if (widget.search == null) _search.dispose();
@@ -410,7 +423,8 @@ class _HomeState extends State<Home> {
                           ),
                         ),
                         const Divider(height: 1),
-                        if (notebook.readOnlyReason != null)
+                        if (notebook.trouble.isTrouble) SaveTroubleBar(notebook: notebook),
+                        if (notebook.readOnlyReason != null && notebook.trouble.kind != TroubleKind.preview)
                           ReadOnlyBanner(
                             key: const ValueKey('read-only-banner'),
                             reason: notebook.readOnlyReason!,

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async' show unawaited;
-import 'dart:io' show Directory, File, Platform;
+import 'dart:io' show Directory, File, Platform, exit;
 import 'dart:ui';
 
 import 'package:file_selector/file_selector.dart';
@@ -29,8 +29,10 @@ import 'src/device_storage.dart';
 import 'src/app_theme.dart';
 import 'src/home.dart';
 import 'src/notebook.dart';
+import 'src/recovery_lock.dart';
 import 'src/recovery_notice.dart';
 import 'src/recovery_store.dart';
+import 'src/save_trouble_bar.dart';
 
 /// The box modules compiled into this build (0034, stage 1).
 ///
@@ -82,14 +84,54 @@ Future<void> main() async {
     runApp(StorageErrorApp(error: e));
     return;
   }
+  // --- One process owns recovery (R-1 v5, 3.1) ---------------------------
+  // Taken before anything is built and held for the life of the process. A
+  // second process says so and quits; a lock that can't be taken for another
+  // reason lets Noted run with recovery refused (state 4 with the cause).
+  final recoveryLock = RecoveryLock.besides(defaultRecoveryDirectory(defaultBindersFile()));
+  if (recoveryLock.acquireSync() == RecoveryLockResult.heldByOther) {
+    runApp(const AlreadyOpenApp());
+    return;
+  }
+  // --- end -------------------------------------------------------------------
   final settings = AppSettings(defaultSettingsFile());
-  final notebook = buildAppNotebook(settings: settings);
+  final notebook = buildAppNotebook(settings: settings, recoveryLock: recoveryLock);
   FileClipboard.read = readClipboardFiles;
   final services = await startAiServices(notebook, defaultAiDataFolder());
   runApp(NotedApp(notebook: notebook, settings: settings, aiLink: services.link, runningLock: services.lock));
   await notebook.load();
   // After the first frame, so the window can show the questions.
   WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(notebook.askPendingAiApprovals()));
+}
+
+/// Shown instead of the app when another Noted process already owns the
+/// recovery folder (R-1 v5): there is only the one choice.
+class AlreadyOpenApp extends StatelessWidget {
+  const AlreadyOpenApp({super.key});
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+    title: 'Noted',
+    debugShowCheckedModeBanner: false,
+    theme: buildNotedTheme(Brightness.light, touch: false),
+    home: Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Noted is already open.', key: ValueKey('already-open-text')),
+            const SizedBox(height: 16),
+            FilledButton(
+              key: const ValueKey('already-open-quit'),
+              autofocus: true,
+              onPressed: () => exit(0),
+              child: const Text('Quit'),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
 /// Shown instead of the app when the device's app folders can't be found, so
@@ -127,7 +169,12 @@ Directory defaultAiDataFolder([File? bindersFile]) => (bindersFile ?? defaultBin
 /// picker (neither file_selector's iOS nor its Android folder picker gives
 /// a usable path). The folders default to the platform's; tests pass their
 /// own.
-Notebook buildAppNotebook({AppSettings? settings, Directory? pagesDirectory, File? bindersFile}) {
+Notebook buildAppNotebook({
+  AppSettings? settings,
+  Directory? pagesDirectory,
+  File? bindersFile,
+  RecoveryLock? recoveryLock,
+}) {
   final binders = bindersFile ?? defaultBindersFile();
   late final Notebook notebook;
   final aiAccess = isMobilePlatform
@@ -151,6 +198,7 @@ Notebook buildAppNotebook({AppSettings? settings, Directory? pagesDirectory, Fil
     cacheDirectory: defaultCacheDirectory(),
     attachmentPicker: pickAttachments,
     attachmentOpener: openWithDefaultApp,
+    recoveryLock: recoveryLock,
   );
 }
 
@@ -212,14 +260,24 @@ class _NotedAppState extends State<NotedApp> {
     super.initState();
     // AI code approvals and per-write questions are asked in this window.
     widget.notebook.aiApprover = (request) => showAiApprovalDialog(_navigatorKey, request);
+    // Questions about changes that couldn't be saved (R-1 v5) are asked here too.
+    widget.notebook.questioner = (q, title) => showTroubleQuestion(_navigatorKey, q, title);
     _lifecycle = AppLifecycleListener(
       // Write unsaved edits before the window closes.
       onExitRequested: () async {
         // Logged so a normal close (Alt+F4, the close button) can be told
         // apart from a crash in the `flutter run` console.
         debugPrint('Noted: window close requested; saving before exit.');
-        await widget.notebook.flush();
-        await showRecoveryNoticeOnExit(widget.notebook, _navigatorKey);
+        // --- Saving at quit has a time limit (R-1 v5) ---------------------------
+        // What doesn't save goes to recovery as on leaving a page; the question
+        // Your changes will be lost can cancel the quit.
+        if (!await widget.notebook.prepareToExit()) return AppExitResponse.cancel;
+        try {
+          await showRecoveryNoticeOnExit(widget.notebook, _navigatorKey);
+        } on Object catch (e) {
+          debugPrint('The exit notice failed: $e');
+        }
+        // --- end ---------------------------------------------------------------
         await widget.aiLink?.dispose();
         widget.runningLock?.release();
         return AppExitResponse.exit;

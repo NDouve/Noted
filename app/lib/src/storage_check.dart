@@ -42,8 +42,9 @@ StorageCauseKind? classifyErrorCode(Object error, {String? os}) {
   final windows = (os ?? Platform.operatingSystem) == 'windows';
   if (windows) {
     if (code == 112 || code == 39) return StorageCauseKind.diskFull;
-    if (const {21, 23, 483, 1117, 1167}.contains(code))
+    if (const {21, 23, 483, 1117, 1167}.contains(code)) {
       return StorageCauseKind.driveFailing;
+    }
     if (const {5, 32, 19}.contains(code)) return StorageCauseKind.notWritable;
   } else {
     if (code == 28) return StorageCauseKind.diskFull;
@@ -55,8 +56,9 @@ StorageCauseKind? classifyErrorCode(Object error, {String? os}) {
 
 String _osMessage(Object error) {
   final m = error is FileSystemException ? error.osError?.message.trim() : null;
-  if (m != null && m.isNotEmpty)
+  if (m != null && m.isNotEmpty) {
     return m.endsWith('.') ? m.substring(0, m.length - 1) : m;
+  }
   return error is FileSystemException && error.message.isNotEmpty
       ? error.message
       : '$error';
@@ -93,7 +95,7 @@ Future<StorageCause> checkStorage(
     final need = needed > 0 ? ' Noted needs about ${_human(needed * 2)}.' : '';
     return StorageCause(
       StorageCauseKind.diskFull,
-      "The disk is full.$left",
+      'The disk is full.$left',
       'Free up space (empty the Recycle Bin, move large files).$need Then press Retry. $saveCopyAdvice',
     );
   }

@@ -31,8 +31,9 @@ bool isBusyError(Object e, {String? os}) {
 String describeError(Object e) {
   if (e is FileSystemException) {
     final os = e.osError?.message.trim();
-    if (os != null && os.isNotEmpty)
+    if (os != null && os.isNotEmpty) {
       return os.endsWith('.') ? os.substring(0, os.length - 1) : os;
+    }
     if (e.message.isNotEmpty) return e.message;
   }
   return 'an unexpected error';
