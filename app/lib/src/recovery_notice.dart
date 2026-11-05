@@ -6,20 +6,31 @@ import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 
 import 'notebook.dart';
+import 'recovery_store.dart' show RecoveryListing;
 
 /// On quit: if edits are waiting in the recovery folder, tells the user so.
 /// Resolves when the notice is dismissed (or at once if there is nothing to
 /// say, or no window to show it in); quitting is never refused.
 Future<void> showRecoveryNoticeOnExit(Notebook notebook, GlobalKey<NavigatorState> navigator) async {
-  final listing = await notebook.pendingRecovery();
-  final pages = await notebook.pendingRecoveryPages();
+  // A recovery folder that can't be listed does not stop the rest: the pages whose
+  // edits are held in memory are known without it.
+  var listing = const RecoveryListing([], []);
+  var pages = 0;
+  var checked = true;
+  try {
+    listing = await notebook.pendingRecovery();
+    pages = await notebook.pendingRecoveryPages();
+  } on Object catch (e) {
+    debugPrint('Checking the recovery folder on exit failed: $e');
+    checked = false;
+  }
   // The same files and reasons as the sidebar's "Can't open" list.
   final damaged = [...listing.damaged, ...notebook.recoveryOwnDamaged];
   final problems = [
     for (final u in damaged) '${u.path.split(RegExp(r'[\\/]')).last}: ${u.reason}',
   ];
   final lost = notebook.unsavedPageCount;
-  if (pages == 0 && problems.isEmpty && lost == 0) return;
+  if (pages == 0 && problems.isEmpty && lost == 0 && checked) return;
   final context = navigator.currentContext;
   if (context == null || !context.mounted) return;
   await showDialog<void>(
@@ -47,6 +58,10 @@ Future<void> showRecoveryNoticeOnExit(Notebook notebook, GlobalKey<NavigatorStat
                     ? "1 page couldn't be saved or kept. Its latest edits will be lost if you quit."
                     : "$lost pages couldn't be saved or kept. Their latest edits will be lost if you quit.",
               ),
+            ],
+            if (!checked) ...[
+              if (pages > 0 || lost > 0) SizedBox(height: NotedMetrics.of(context).space3),
+              const Text("The recovery folder couldn't be read, so edits kept in it couldn't be checked."),
             ],
             if (problems.isNotEmpty) ...[
               if (pages > 0 || lost > 0) SizedBox(height: NotedMetrics.of(context).space3),

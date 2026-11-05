@@ -4255,8 +4255,24 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final entry = await _keepForRecovery(loc, st, page, supersedes: supersedes);
     if (entry == null) {
       _heldProblems.remove(page.id);
-      _unsaved.setHeld(page.id, loc, HeldCopy(page, _baseTextOf(st, page.id), supersedes, _folderOf(st)));
-      if (s != null) s.heldIn = true;
+      var held = HeldCopy(page, _baseTextOf(st, page.id), supersedes, _folderOf(st));
+      final before = _unsaved.heldOf(page.id);
+      final keepsOld = before == null || (s != null && s.heldIn);
+      if (before != null && !keepsOld) {
+        // A copy this page does not show: the new one is made beside it, not over it.
+        // Both sets of edits are merged into the copy that is held.
+        final merged = mergePage(
+          before.baseText == null ? NotedPage.create(before.page.meta) : readPage(before.baseText!),
+          before.page,
+          page,
+          modules.codecs,
+          theirsTime: DateTime.now().millisecondsSinceEpoch,
+          markLanded: false,
+        ).page;
+        held = HeldCopy(merged, held.baseText, {...before.supersedes, ...supersedes}.toList(), held.folder);
+      }
+      _unsaved.setHeld(page.id, loc, held);
+      if (s != null && keepsOld) s.heldIn = true;
       return false;
     }
     if (s != null && s.heldIn) {
@@ -4440,14 +4456,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final e in active) {
         final base = e.base ?? NotedPage.create(e.page.meta);
         final before = acc;
+        final taken = _withoutIncorporated(base, e.page, before);
         acc = mergePage(
           base,
-          _withoutIncorporated(base, e.page, before),
+          taken.mine,
           before,
           modules.codecs,
           theirsTime: theirsTime,
           markLanded: false,
         ).page;
+        // The conflict versions an incorporated box brings that acc lacks.
+        for (final box in taken.withConflicts) {
+          if (acc.node(box.id) != null) acc = acc.replaceNode(box);
+        }
         if (e.landing) acc = _markResurrected(acc, base, e.page, before, theirsTime);
         if (debugUnfit.contains(e.gen) || _ownEditsMissing(base, e.page, acc) != null) {
           bad = e;
@@ -4476,7 +4497,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // records that version as its conflict) taken from [acc]: merging it again
   // then changes nothing and records no new conflict. So an entry whose
   // result landed and was not retired (a crash) folds to the page it is in.
-  static NotedPage _withoutIncorporated(NotedPage base, NotedPage mine, NotedPage acc) {
+  static ({NotedPage mine, List<BoxRecord> withConflicts}) _withoutIncorporated(
+    NotedPage base,
+    NotedPage mine,
+    NotedPage acc,
+  ) {
+    final add = <BoxRecord>[];
     final baseById = {for (final n in base.nodes) n.id: n};
     var out = mine;
     for (final m in mine.nodes) {
@@ -4484,23 +4510,29 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (b != null && b.toRaw() == m.toRaw()) continue; // not changed by the entry
       final a = acc.node(m.id);
       if (a == null) continue;
-      if (_sameVersion(a, m) || _recordsAsConflict(a, m)) out = out.replaceNode(a);
+      if (m is! BoxRecord || a is! BoxRecord) {
+        if (a.toRaw() == m.toRaw()) out = out.replaceNode(a);
+        continue;
+      }
+      // The entry's box is taken in when its primary version is one acc's box has
+      // (as its primary or as a recorded conflict). Each conflict version it
+      // records that acc's box lacks is added to acc's box as a conflict, so no
+      // version is lost; the merge then changes nothing else.
+      final have = {_bare(a).toRaw().text, for (final c in a.conflicts) if (c.node != null) _bareText(c.node!, m.id)};
+      if (!have.contains(_bare(m).toRaw().text)) continue;
+      final missing = [
+        for (final c in m.conflicts)
+          if (c.node == null ? !a.conflicts.any((x) => x.deleted) : !have.contains(_bareText(c.node!, m.id))) c,
+      ];
+      out = out.replaceNode(a);
+      if (missing.isNotEmpty) add.add(a.withConflicts([...a.conflicts, ...missing]));
     }
-    return out;
+    return (mine: out, withConflicts: add);
   }
 
   static CanvasNode _bare(CanvasNode n) => n is BoxRecord ? n.withoutConflicts() : n;
 
-  static bool _sameVersion(CanvasNode a, CanvasNode b) => _bare(a).toRaw() == _bare(b).toRaw();
-
-  static bool _recordsAsConflict(CanvasNode a, CanvasNode m) {
-    if (a is! BoxRecord) return false;
-    for (final c in a.conflicts) {
-      final raw = c.node;
-      if (raw != null && _bare(readNode(raw, fallbackId: m.id)).toRaw() == _bare(m).toRaw()) return true;
-    }
-    return false;
-  }
+  static String _bareText(RawJson node, String id) => _bare(readNode(node, fallbackId: id)).toRaw().text;
 
   // The entry [mine] may have landed already (its name is `.landing`): a box it
   // added or changed that [before] lacks was deleted since, and comes back

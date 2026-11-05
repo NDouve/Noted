@@ -95,6 +95,37 @@ void main() {
     await tearDownNotebook(tester, root, nb);
   });
 
+  testWidgets('a recovery folder that cannot be listed does not hide the pages held in memory', (tester) async {
+    final (root, nb) = await setUpNotebook(tester, pending: false);
+    await tester.runAsync(() async {
+      final id = nb.currentId!;
+      final text = writePage(nb.current!.page);
+      nb.debugHold(id, nb.current!.page, text);
+      nb.recoveryHook = (p) async {
+        if (p == 'list') throw const FileSystemException('listing failed');
+      };
+    });
+    final key = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(MaterialApp(navigatorKey: key, home: const SizedBox()));
+    late Future<void> future;
+    await tester.runAsync(() async {
+      future = showRecoveryNoticeOnExit(nb, key);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    });
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('recovery-exit-notice')), findsOneWidget);
+    expect(find.textContaining("1 page couldn't be saved or kept"), findsOneWidget);
+    expect(find.textContaining("couldn't be checked"), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('recovery-exit-ok')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.runAsync(() => future);
+    nb.recoveryHook = null;
+    await tester.runAsync(nb.flush); // the copy is written to recovery now
+    await tearDownNotebook(tester, root, nb);
+  });
+
   testWidgets('no quit notice when nothing is pending', (tester) async {
     final (root, nb) = await setUpNotebook(tester, pending: false);
     final key = GlobalKey<NavigatorState>();

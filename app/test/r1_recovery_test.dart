@@ -1513,4 +1513,84 @@ void main() {
       expect(recNames(), isEmpty);
     });
   });
+
+  group('Codex pre-merge round 1', () {
+    BoxRecord version(int n) => _other('x1', n);
+    BoxRecord withConflicts(BoxRecord box, List<BoxRecord> others) {
+      var out = box;
+      for (final o in others) {
+        out = out.withConflict(BoxConflict.other(node: o.toRaw(), at: 1000 + others.indexOf(o)));
+      }
+      return out;
+    }
+
+    // The file holds [saved] (from base x1 = v0); an entry made on the base holds [mine].
+    Future<BoxRecord> replayed(BoxRecord saved, BoxRecord mine) async {
+      final (nb0, a, _) = await twoPages();
+      pageFile(a).writeAsStringSync(writePage(disk(a).insertNode(version(0))));
+      final baseText = pageFile(a).readAsStringSync();
+      await store().write(
+        folder: pages.path,
+        page: readPage(baseText).replaceNode(mine),
+        baseText: baseText,
+        time: DateTime.now(),
+      );
+      pageFile(a).writeAsStringSync(writePage(readPage(baseText).replaceNode(saved)));
+      quit(nb0);
+      final nb = make();
+      await nb.load();
+      expect(recNames(), isEmpty);
+      return disk(a).node('x1')! as BoxRecord;
+    }
+
+    List<String?> conflictTexts(BoxRecord b) => [for (final c in b.conflicts) c.node?.text];
+
+    test('(R-1) an entry with A and an unresolved B over a saved A keeps B', () async {
+      final a1 = version(1);
+      final b2 = version(2);
+      final result = await replayed(a1, withConflicts(a1, [b2]));
+      expect(result.snapshotText, 's1');
+      expect(conflictTexts(result), [b2.toRaw().text]);
+    });
+
+    test('(R-1) A with B saved, an entry with A and C: both B and C survive', () async {
+      final a1 = version(1);
+      final b2 = version(2);
+      final c3 = version(3);
+      final result = await replayed(withConflicts(a1, [b2]), withConflicts(a1, [c3]));
+      expect(result.snapshotText, 's1');
+      expect(conflictTexts(result), unorderedEquals([b2.toRaw().text, c3.toRaw().text]));
+    });
+
+    test('(R-1) an entry whose conflicted result was published already folds to a no-op', () async {
+      final a1 = version(1);
+      final b2 = version(2);
+      final saved = withConflicts(a1, [b2]);
+      final result = await replayed(saved, a1);
+      expect(result.snapshotText, 's1');
+      expect(conflictTexts(result), [b2.toRaw().text]);
+    });
+
+    test('(R-2) an unfit held copy is kept beside the edits of the page that does not show it', () async {
+      final (nb, a, b) = await twoPages();
+      await nb.open(b);
+      final text = pageFile(a).readAsStringSync();
+      nb.debugHold(a, readPage(text).insertNode(_box('h1', 1)), text);
+      nb.debugUnfit.add('held');
+      File(rec.path).createSync(recursive: true);
+      await nb.open(a); // the copy is unfit: the page opens without it
+      flaky.failSave = true;
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      final mine = ids(nb.current!.page);
+      await nb.flush(); // the save fails and so does recovery
+      expect(nb.unsavedPageCount, 1);
+      File(rec.path).deleteSync();
+      flaky.failSave = false;
+      nb.debugUnfit.clear();
+      await nb.flush();
+      final kept = await entries(nb);
+      final all = <String>{...kept.expand((e) => ids(e.page))}.union(ids(disk(a)));
+      expect(all, containsAll({'h1', ...mine}), reason: 'the original copy and the new edits both survive');
+    });
+  });
 }
