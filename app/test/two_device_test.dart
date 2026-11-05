@@ -145,6 +145,7 @@ void main() {
     await b.removeBinder(listed(b, 'Keep on A')!.path);
     await b.flush();
     // B is rebuilt over the same files.
+    await b.discoveryIdle;
     b.dispose();
     opened.remove(b);
     final b2 = make('b');

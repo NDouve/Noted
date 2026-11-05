@@ -146,6 +146,8 @@ void main() {
     String pagesRel = 'pages',
     String settingsName = 'binders.json',
     Directory? templates,
+    bool watch = false,
+    Duration? interval,
   }) {
     final nb = Notebook(
       PageStore(Directory(at(pagesRel))),
@@ -154,7 +156,10 @@ void main() {
       bindersFile: file ?? File(at(settingsName)),
       storeFactory: storeFactory ?? PageStore.new,
       templatesDirectory: templates,
-      watchFiles: false,
+      watchFiles: watch,
+      watchDebounce: const Duration(milliseconds: 50),
+      discoveryDebounce: const Duration(milliseconds: 50),
+      folderCheckInterval: interval ?? const Duration(seconds: 3),
     );
     opened.add(nb);
     return nb;
@@ -494,12 +499,11 @@ void main() {
                 },
               );
               expect(File(at('binders/Q/p1.canvas')).readAsBytesSync(), pageBytes, reason: 'no page was written');
-              if (variant == 'otherId' && !hand) {
-                // A found add is undone: nothing is listed.
+              if ((variant == 'otherId' || variant == 'deleted') && !hand) {
+                // A found add is undone (another binder there, or no binder file any
+                // more): nothing is listed and binders.json is as it was.
                 expect(nb.binders, isEmpty);
-                expect(saved()['binders'], isEmpty);
-                expect(saved()['binderIds'], isEmpty);
-                expect(saved()['removedBinders'] ?? const [], isEmpty);
+                expect(saved(), {'format': 1, 'binders': <String>[], 'binderIds': <String, Object?>{}});
                 return;
               }
               final live = nb.binders.single;
@@ -886,6 +890,172 @@ void main() {
         await open;
         expect(nb.currentId, 'p1');
         expect(nb.pageTitleOf('p1'), 'Second');
+      });
+    });
+
+    group('review fixes', () {
+      const a5 = 'a000000000000005';
+
+      test('an undone found add puts back only the removed ids it took out; one recorded meanwhile stays', () async {
+        final r = await binderAt('binders/R', a2);
+        await binderAt('binders/Q', a1, pages: ['p1']);
+        // a3 was removed before; the other binder file Q turns into holds it.
+        writeSettings({
+          'format': 1,
+          'binders': [r],
+          'binderIds': {r: a2},
+          'removedBinders': [a3],
+        });
+        final nb = make();
+        nb.binderHook = (point, path) async {
+          if (point != 'opened') return;
+          // Another device replaces Q's file by one holding a3, and this device
+          // removes R, both while Q is being added.
+          File(at('binders/Q/$binderFileName')).writeAsStringSync(mkBinder(title: 'Other', id: a3).write());
+          await nb.removeBinder(r);
+        };
+        await nb.load();
+        await nb.discoveryIdle;
+        nb.binderHook = null;
+        expect(nb.binders, isEmpty);
+        expect(saved()['removedBinders'], unorderedEquals([a2, a3]));
+        // A later pass and a restart leave both out.
+        await nb.discoverBinders();
+        expect(nb.binders, isEmpty);
+        final again = await restart(nb);
+        expect(again.binders, isEmpty);
+      });
+
+      test('binders.json never lists a found binder with another id while it is being reconciled', () async {
+        await binderAt('binders/Q', a1, pages: ['p1']);
+        writeSettings({'format': 1, 'binders': <String>[], 'binderIds': <String, Object?>{}});
+        final nb = make();
+        final seen = <String>[];
+        nb.binderHook = (point, path) async {
+          if (point == 'opened') {
+            File(at('binders/Q/$binderFileName')).writeAsStringSync(mkBinder(title: 'Other', id: a3).write());
+          }
+          if (point == 'adopted') seen.add(settingsFile().readAsStringSync());
+        };
+        await nb.load();
+        await nb.discoveryIdle;
+        nb.binderHook = null;
+        expect(seen, isNotEmpty, reason: 'the adoption happened');
+        for (final text in seen) {
+          expect(text, isNot(contains(a3)));
+        }
+        expect(nb.binders, isEmpty);
+        expect(saved()['binderIds'], isEmpty);
+      });
+
+      for (final cut in ['roots', 'folders']) {
+        test('an upgrade stays open while a $cut cap cut the pass short', () async {
+          await binderAt('binders/U1', a1);
+          await binderAt('binders/U2', a2);
+          writeSettings({'format': 1, 'binders': <String>[]});
+          final nb = make();
+          nb.setDiscoveryLimitsForTest(roots: cut == 'roots' ? 1 : null, folders: cut == 'folders' ? 1 : null);
+          await nb.load();
+          await nb.discoveryIdle;
+          expect(saved().containsKey('binderIds'), isFalse, reason: 'still an upgrade');
+          // Control: without the cap the same pass closes it.
+          nb.setDiscoveryLimitsForTest(roots: 20, folders: 1000);
+          await nb.discoverBinders();
+          expect(saved()['binderIds'], isEmpty);
+          expect(saved()['removedBinders'], unorderedEquals([a1, a2]));
+        });
+      }
+
+      test('a root that fails to list keeps the upgrade open; a root refused for permission does not', () async {
+        await binderAt('binders/U1', a1);
+        await binderAt('pages/U2', a2);
+        writeSettings({'format': 1, 'binders': <String>[]});
+        final nb = make();
+        nb.binderHook = (point, path) async {
+          if (point == 'root-list' && path.contains('pages')) throw const FileSystemException('disk error');
+        };
+        await nb.load();
+        await nb.discoveryIdle;
+        expect(saved().containsKey('binderIds'), isFalse, reason: 'a failed listing keeps it open');
+        expect(saved()['removedBinders'], [a1]);
+        // Refused for permission: skipped, and it holds nothing up.
+        nb.binderHook = (point, path) async {
+          if (point == 'root-list' && path.contains('pages')) {
+            throw FileSystemException('denied', path, OSError('denied', Platform.isWindows ? 5 : 13));
+          }
+        };
+        await nb.discoverBinders();
+        expect(saved()['binderIds'], isEmpty, reason: 'the upgrade closed');
+        expect(saved()['removedBinders'], [a1], reason: 'the refused root was not read');
+      });
+
+      test('a hand add waits for at most one found add of a pass', () async {
+        for (final n in ['Q1', 'Q2', 'Q3']) {
+          await binderAt('binders/$n', 'a00000000000010${n.substring(1)}');
+        }
+        final hand = await binderAt('other/H', a5);
+        writeSettings({'format': 1, 'binders': <String>[], 'binderIds': <String, Object?>{}});
+        final nb = make();
+        final gates = <Completer<void>>[];
+        nb.binderHook = (point, path) async {
+          if (point != 'job') return;
+          final g = Completer<void>();
+          gates.add(g);
+          await g.future;
+        };
+        await nb.load();
+        while (gates.isEmpty) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        final adding = nb.addBinderChecked(hand);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        gates.first.complete(); // only the first found add may go
+        final r = await adding.timeout(const Duration(seconds: 10));
+        expect(r.added, isTrue);
+        for (final g in gates) {
+          if (!g.isCompleted) g.complete();
+        }
+        nb.binderHook = null;
+        // Later jobs of the chain open their gates too.
+        nb.binderHook = (point, path) async {};
+        await nb.discoveryIdle;
+        expect(nb.binders, hasLength(4));
+      });
+
+      for (final routed in ['a root watcher', 'the page folder watcher']) {
+        test('$routed lists a binder that arrives, with no backstop', () async {
+          Directory(at('binders')).createSync();
+          writeSettings({'format': 1, 'binders': <String>[], 'binderIds': <String, Object?>{}});
+          final nb = make(watch: true, interval: const Duration(hours: 1));
+          await nb.load();
+          await nb.discoveryIdle;
+          expect(nb.binders, isEmpty);
+          // Made whole elsewhere and moved in: the event names a folder that
+          // already holds its binder file.
+          await binderAt('staging/Arrived', a1);
+          final target = routed == 'a root watcher' ? at('binders/Arrived') : at('pages/Arrived');
+          Directory(at('staging/Arrived')).renameSync(target);
+          final end = DateTime.now().add(const Duration(seconds: 15));
+          while (nb.binders.isEmpty && DateTime.now().isBefore(end)) {
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+          }
+          await nb.discoveryIdle;
+          expect(idsOf(nb), [a1]);
+        });
+      }
+
+      test('a slow pass stretches the backstop; a fast one resets it', () async {
+        await binderAt('binders/B1', a1);
+        final nb = make();
+        nb.setDiscoveryLimitsForTest(slowPass: const Duration(milliseconds: -1));
+        await nb.load();
+        await nb.discoveryIdle;
+        expect(nb.backstopTicksForTest, 20);
+        await nb.discoverBinders();
+        expect(nb.backstopTicksForTest, 40);
+        nb.setDiscoveryLimitsForTest(slowPass: const Duration(hours: 1));
+        await nb.discoverBinders();
+        expect(nb.backstopTicksForTest, 10);
       });
     });
   });

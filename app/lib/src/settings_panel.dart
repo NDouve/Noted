@@ -335,6 +335,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
               Align(
                 alignment: Alignment.centerLeft,
                 child: TextButton.icon(
+                  key: ValueKey('settings-location-also-show-$other'),
                   icon: const Icon(Icons.folder_open_rounded),
                   label: Text(showFolderLabel()),
                   onPressed: () => _showFolder(other),
