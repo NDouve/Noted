@@ -165,19 +165,25 @@ void main() {
     return nb;
   }
 
-  Future<Notebook> start({File? file, PageStore Function(Directory)? storeFactory, Directory? templates}) async {
+  Future<Notebook> start({
+    File? file,
+    PageStore Function(Directory)? storeFactory,
+    Directory? templates,
+    int? removedCap,
+  }) async {
     final nb = make(file: file, storeFactory: storeFactory, templates: templates);
+    if (removedCap != null) nb.setDiscoveryLimitsForTest(removed: removedCap);
     await nb.load();
     await nb.discoveryIdle;
     return nb;
   }
 
-  Future<Notebook> restart(Notebook nb) async {
+  Future<Notebook> restart(Notebook nb, {int? removedCap}) async {
     await nb.discoveryIdle;
     await nb.flush();
     nb.dispose();
     opened.remove(nb);
-    return start();
+    return start(removedCap: removedCap);
   }
 
   Set<String> listedKeys(Notebook nb) => {for (final b in nb.binders) k(b.path)};
@@ -1008,14 +1014,14 @@ void main() {
         expect(saved().containsKey('binderIds'), isFalse, reason: 'the upgrade stays open');
         expect(saved()['removedBinders'], hasLength(2));
         expect(nb.binders, isEmpty);
-        expect(nb.discoveryNotes.any((n) => n.reason.contains('more than 2 binders')), isTrue);
+        expect(nb.discoveryNotes.any((n) => n.reason.contains('too many binders')), isTrue);
         await nb.discoverBinders();
         expect(nb.binders, isEmpty, reason: 'a later pass adds none');
-        final again = await restart(nb);
-        again.setDiscoveryLimitsForTest(removed: 2);
-        await again.discoveryIdle;
+        final again = await restart(nb, removedCap: 2);
+        expect(again.binders, isEmpty, reason: 'nor on the reload pass');
+        expect(saved().containsKey('binderIds'), isFalse, reason: 'the upgrade is still open after a reload');
         await again.discoverBinders();
-        expect(again.binders, isEmpty, reason: 'nor after a reload');
+        expect(again.binders, isEmpty, reason: 'nor on a later pass after a reload');
       });
 
       test('a root that fails to list keeps the upgrade open; a root refused for permission does not', () async {

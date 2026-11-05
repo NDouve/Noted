@@ -7069,7 +7069,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       capNotes.add(
         UnreadablePage(
           defaultBinderFolderPath,
-          "Noted found more than $_removedCap binders it didn't list; it adds none of them by itself. Open them with Open binder…",
+          "Noted found too many binders it didn't list to remember them all; it adds none of them by itself. Open them with Open binder…",
         ),
       );
     }
