@@ -233,9 +233,9 @@ class BinderSection {
 
   bool get available => status == BinderStatus.available;
 
-  /// The folder is there but has no binder file (a kept complete copy of it can
-  /// be put back).
-  bool get fileMissing => status == BinderStatus.unavailable && !missing && reason == _noBinderFile;
+  /// The last read found the folder without a binder file (a kept complete copy
+  /// of it can be put back). Updated by every read, whatever the status.
+  bool fileMissing = false;
 
   /// The binder file can't be read: the pages are listed and can be viewed,
   /// but nothing in the binder can be changed.
@@ -2916,6 +2916,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _conflicts.remove(id);
     }
     _binders.remove(path);
+    _binderRechecks.remove(_key(path))?.cancel();
     if (_coverPath == path) _coverPath = null;
     final last = _lastDeleted;
     if (last != null && last._location == path) _lastDeleted = null;
@@ -3155,7 +3156,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (read is BinderMissing) {
         // A young temp may be the only copy: look again once it is old enough.
         if (young != null) _scheduleBinderRecheck(path, after: young + const Duration(seconds: 1));
-        return unavailable(_noBinderFile);
+        return unavailable(_noBinderFile)..fileMissing = true;
       }
       if (read is BinderReadFailed) {
         _scheduleBinderRecheck(path);
@@ -4841,7 +4842,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       return (await binderStoreFactory(dir).read(), temps, young);
     });
     if (_disposed || !identical(_binders[section.path], section)) return;
+    final nowMissing = read is BinderMissing;
+    final changedMissing = section.fileMissing != nowMissing;
+    section.fileMissing = nowMissing;
     _setKeptTemps(section, kept);
+    if (changedMissing) notifyListeners();
     switch (read) {
       case BinderReadFailed():
         // Says nothing about the content: keep what is shown, look again later.

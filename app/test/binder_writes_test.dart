@@ -706,6 +706,44 @@ void main() {
       await settleSaves(t, nb);
       await t.runAsync(stop);
     }, skip: seamsUseCached());
+
+    testWidgets('a binder unavailable for another reason, then losing its file, offers Put back, never Delete', (t) async {
+      t.view.physicalSize = const Size(1200, 900);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      late File complete;
+      late File garbage;
+      await t.runAsync(() async {
+        await start();
+        final text = fileText();
+        await nb.removeBinder(section.path);
+        seams.failReads = true;
+        await nb.addBinder(folder.path); // unavailable: can't be read right now
+        seams.failReads = false;
+        binderFile().deleteSync();
+        final old = DateTime.now().subtract(const Duration(hours: 1));
+        complete = File('${folder.path}/$binderFileName.1-11.tmp')..writeAsStringSync(text);
+        garbage = File('${folder.path}/$binderFileName.1-12.tmp')..writeAsStringSync('{"format":9');
+        complete.setLastModifiedSync(old);
+        garbage.setLastModifiedSync(old);
+        await nb.checkBinderFile(binderFile().path);
+      });
+      await t.pumpWidget(MaterialApp(home: Home(notebook: nb)));
+      await t.pump();
+      expect(nb.binders.single.fileMissing, isTrue);
+      expect(find.text('a complete copy of the binder file'), findsOneWidget);
+      expect(find.text('Put back'), findsOneWidget);
+      expect(find.text('Delete'), findsNothing);
+      expect(find.textContaining("can't be read by this version"), findsOneWidget);
+
+      await t.pumpWidget(const SizedBox());
+      for (var i = 0; i < 4; i++) {
+        await t.pump(const Duration(milliseconds: 100));
+        await t.runAsync(() => realIoPause(30));
+      }
+      await settleSaves(t, nb);
+      await t.runAsync(stop);
+    }, skip: seamsUseCached());
   });
 }
 

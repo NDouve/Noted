@@ -349,30 +349,40 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
   // any other can be deleted, if it still holds what is listed.
   Widget _keptTempRow(BuildContext context, BinderSection b, KeptBinderTemp k) {
     final name = k.path.split(RegExp(r'[\\/]')).last;
-    final putBack = k.complete && b.fileMissing;
+    final missing = b.fileMissing && !b.missing;
+    final putBack = k.complete && missing;
+    // While the binder file is missing a temp may be the only copy: it is never
+    // offered for deleting.
+    final Widget? action = putBack
+        ? TextButton(
+            key: ValueKey('kept-temp-put-back-${k.path}'),
+            onPressed: () => _guard(() => _nb.putBackKeptBinderTemp(b.path, k.path)),
+            child: const Text('Put back'),
+          )
+        : missing
+        ? null
+        : TextButton(
+            key: ValueKey('kept-temp-delete-${k.path}'),
+            onPressed: () => _guard(() => _nb.deleteKeptBinderTemp(b.path, k.path)),
+            child: const Text('Delete'),
+          );
     return Tooltip(
       message: name,
       child: SidebarRow(
         key: ValueKey('kept-temp-${k.path}'),
-        title: putBack ? 'a complete copy of the binder file' : 'an interrupted change to the binder file',
-        status: b.title,
+        title: putBack
+            ? 'a complete copy of the binder file'
+            : missing
+            ? 'a copy of the binder file'
+            : 'an interrupted change to the binder file',
+        status: missing && !putBack ? "${b.title}: can't be read by this version" : b.title,
         disabled: true,
         leading: Icon(
           Icons.block_rounded,
           size: NotedMetrics.of(context).icon,
           color: NotedColors.of(context).textDisabled,
         ),
-        trailing: putBack
-            ? TextButton(
-                key: ValueKey('kept-temp-put-back-${k.path}'),
-                onPressed: () => _guard(() => _nb.putBackKeptBinderTemp(b.path, k.path)),
-                child: const Text('Put back'),
-              )
-            : TextButton(
-                key: ValueKey('kept-temp-delete-${k.path}'),
-                onPressed: () => _guard(() => _nb.deleteKeptBinderTemp(b.path, k.path)),
-                child: const Text('Delete'),
-              ),
+        trailing: action,
       ),
     );
   }
