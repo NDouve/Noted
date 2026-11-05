@@ -390,7 +390,9 @@ class _PageIssuesDialogState extends State<PageIssuesDialog> {
       ForeignNode() => otherNode.text ?? '',
       null => '',
     };
-    final extra = box.conflicts.length - 1;
+    // Recorded versions count by identity: a repeated entry is one version
+    // (resolving the first settles every copy of it).
+    final extra = box.conflicts.toSet().length - 1;
     final placeable = issue.otherPlaceable;
     final canAsk =
         issue.kind == PageIssueKind.conflict &&

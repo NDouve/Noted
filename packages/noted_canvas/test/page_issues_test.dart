@@ -322,6 +322,27 @@ void main() {
       expect(find.textContaining('Laptop · saved'), findsOneWidget);
     });
 
+    BoxConflict otherAt(String text, int at) =>
+        BoxConflict.other(node: _box('a', text).toRaw(), at: at, device: 'Laptop');
+
+    testWidgets('a repeated recorded version counts once', (t) async {
+      final first = otherAt('theirs', 5);
+      // The same entry recorded twice is one version: no "more versions" line.
+      final c = controllerOf([_box('a', 'mine').withConflicts([first, first])]);
+      await pump(t, c);
+      expect(find.textContaining('more version'), findsNothing);
+    });
+
+    testWidgets('equal content saved at another time is another version, and stays', (t) async {
+      final first = otherAt('theirs', 5);
+      final c = controllerOf([
+        _box('a', 'mine').withConflicts([first, otherAt('theirs', 9), first]),
+      ]);
+      await pump(t, c);
+      expect(find.textContaining('1 more version recorded'), findsOneWidget);
+      expect((c.page.node('a')! as BoxRecord).conflicts, hasLength(3));
+    });
+
     testWidgets('keep this version, and undo', (t) async {
       final c = controllerOf([_conflicted('a', 'mine', 'theirs')]);
       await pump(t, c);
