@@ -91,9 +91,14 @@ std::wstring FileArgument() {
   }
   // Relative to this process's folder, which is not the running one's.
   if (!found.empty()) {
-    wchar_t full[MAX_PATH * 4];
-    DWORD n = ::GetFullPathNameW(found.c_str(), MAX_PATH * 4, full, nullptr);
-    if (n > 0 && n < MAX_PATH * 4) found.assign(full, n);
+    // Sized from a first call (it returns the length needed, with the NUL).
+    DWORD need = ::GetFullPathNameW(found.c_str(), 0, nullptr, nullptr);
+    if (need == 0 || need > 32000) return L"";
+    std::wstring full(need, L'\0');
+    DWORD n = ::GetFullPathNameW(found.c_str(), need, &full[0], nullptr);
+    if (n == 0 || n >= need) return L"";  // nothing is sent
+    full.resize(n);
+    found = full;
   }
   return found;
 }
