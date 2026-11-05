@@ -1960,6 +1960,48 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ---
 
+## 0139 — Attachment copies keep a damaged destination file; incomplete moves keep their sources
+- **Date:** 2026-11-05
+- **Status:** Active (amends 0130 and 0132)
+- **Decision:**
+  - **Nothing at a copy's target is replaced (amends 0130).** When an attachment copy (page moves, delete set-aside and Undo, put-backs, templates, binder from template, Save a copy elsewhere) finds a hash-named file at its target that is stable but shorter than the source or holds other bytes, that file is moved aside as `<name>.damaged-<12 hex of its bytes>` and checked, and only then is the verified copy published exclusively. A target that is changing or can't be read is left alone, and the source stays.
+  - **Incomplete moves fail and keep their sources.** A move of a page's attachments folder that leaves any file behind (different, changing, or still in the source after the verified removal) fails. Every caller keeps what it couldn't move: the delete set-aside records its trash folder whenever it exists, put-backs and Undo keep a folder they couldn't empty, and clean-up never removes such a folder or its parent.
+  - **The user is told what was kept.** Every caller names the files kept aside as damaged, the files left because they were changing, and whether the good copy took the name; a good copy that couldn't be published is reported as not used, and where it stays is named.
+- **Rationale:** replacing a damaged destination by rename lost its bytes, against 0132's keep-both rule; a partly moved folder could be cleaned away with the trash.
+- **Alternatives considered:**
+  - Refusing the copy whenever a target exists (blocks moves on a stray partial file).
+  - Overwriting after a hash check (the reported loss, and it races a file arriving meanwhile).
+
+## 0140 — Binders found by id; removed binders remembered
+- **Date:** 2026-11-05
+- **Status:** Active (amends 0050 and 0136; the two judgement calls confirmed by the maintainer)
+- **Decision:**
+  - **Discovery.** Noted looks for binder files it doesn't list in the default binder folder, the default and chosen page folders, standalone folders and the parents of listed binders (at most 20 places and 1000 folders each, one level deep). A binder found there with a new id is added to the sidebar. It reads only; its one write is `binders.json`.
+  - **`binders.json` gains two optional fields:** `binderIds` (the id each listed folder holds) and `removedBinders` (ids this device took out of its list, at most 1000, oldest dropped). `format` stays 1, and older builds keep both fields (`docs/file-format.md` §9).
+  - **Removed binders stay removed.** A binder removed from the sidebar isn't added again by discovery; Open binder… adds it back.
+  - **First launch after the upgrade.** Unlisted binders found then are recorded as removed and shown once as info. The upgrade closes only when every place was listed, every binder file read, and every found id fit under the 1000 cap; until then nothing is added.
+  - **Duplicates and moves.** An id found in two folders adds neither and is listed under "Can't open". Binder settings → Location shows "Also in … (not used)" with Show other copy, and a moved binder's header says "Moved to another folder".
+  - **Judgement calls:** folders refused for permission are skipped; a pass cut by the limits still adds what it found and shows a note.
+- **Rationale:** binders created on another device never appeared, and a removal couldn't be told apart from "never seen".
+- **Alternatives considered:**
+  - Renaming or re-pointing binder folders automatically (deferred; binder writes are not merged).
+  - Listing every binder found at the upgrade (brings back binders removed on older builds).
+
+## 0141 — A failed delete says only what is kept; pages recovery didn't take are held with Undo
+- **Date:** 2026-11-05
+- **Status:** Active (amends 0132)
+- **Decision:**
+  - **Each page is checked.** When deleting a page and its subpages fails part way and a deleted page can't be put back, recovery is asked to keep it, and the message says "Recovery holds the content of …" only for the pages it took.
+  - **Pages recovery didn't take are held.** They stay in memory with their attachments protected from clean-up, and the message stays on screen with Undo, which writes them back exclusively (a conflict copy beside any file in the way). The message comes back if another one replaces it; closing or swiping it lets them go.
+  - **A file that appeared in the page's place** is never written over: the deleted version is published beside it as an `-undo-` conflict copy, or held for Undo if that fails.
+  - **Quitting keeps held pages.** Each is written as an exclusive copy beside its place, within the quit time limit; only when that fails or runs out of time is the user asked before they are lost. A page an Undo already restored is never copied or written again.
+- **Rationale:** the rollback claimed recovery kept content even when recovery refused or failed, and a page replaced by a sync client during the rollback lost its deleted version.
+- **Alternatives considered:**
+  - Keeping only recovery's path (recovery can be unavailable).
+  - Asking at the moment of the failure (blocks the delete flow; Undo is the existing way back).
+
+---
+
 ## Open items
 - **Apple build path:** iOS/iPadOS and macOS releases have to be compiled with current Xcode on Apple-silicon-era macOS. The planned approach is cloud macOS build runners.
 - **Equation block sourcing:** resolved (0048).
