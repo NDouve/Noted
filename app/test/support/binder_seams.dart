@@ -45,6 +45,9 @@ class Seams {
 
   /// Runs after a new binder file is written and before it is published.
   void Function()? beforePublish;
+
+  /// Runs after each read, with its result, before the caller sees it.
+  void Function(BinderRead)? afterRead;
 }
 
 /// A [BinderStore] with the seams of [Seams].
@@ -58,6 +61,7 @@ class SeamStore extends BinderStore {
     if (seams.failReads) return const BinderReadFailed('simulated read error');
     final r = await super.read();
     if (r is BinderFound) seams.cache[directory.path] = r.binder;
+    seams.afterRead?.call(r);
     return r;
   }
 

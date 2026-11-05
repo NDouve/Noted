@@ -117,6 +117,7 @@ void main() {
 
     test('a file from a newer format marks the binder cannot-open', () async {
       await start();
+      final binderId = section.saved!.id; // the same binder, mended
       final text = binderFile().readAsStringSync().replaceFirst('"format": 1', '"format": 99');
       final newer = text == binderFile().readAsStringSync()
           ? binderFile().readAsStringSync().replaceFirst('"format":1', '"format":99')
@@ -129,7 +130,7 @@ void main() {
       expect(binderFile().readAsStringSync(), newer);
       // Fixing the file brings the binder and its pages back.
       await binderFile().writeAsString(
-        Binder.create(title: 'Back', color: binderPalette.first).write(),
+        Binder.create(id: binderId, title: 'Back', color: binderPalette.first).write(),
       );
       final fixed = binderFile().readAsStringSync();
       expect(fixed, isNot(contains('"format":99')));
@@ -143,6 +144,7 @@ void main() {
 
     test('a deleted file makes the binder unavailable, as at startup', () async {
       await start();
+      final binderId = section.saved!.id; // the same binder, restored
       nb.showCover(section.path);
       expect(nb.coverPath, section.path);
       await binderFile().delete();
@@ -157,7 +159,7 @@ void main() {
       // It stays in the list, and comes back when the file does.
       expect(nb.binders, hasLength(1));
       await binderFile().writeAsString(
-        Binder.create(title: 'Restored', color: binderPalette.first).write(),
+        Binder.create(id: binderId, title: 'Restored', color: binderPalette.first).write(),
       );
       await nb.checkBinderFile(binderFile().path);
       expect(nb.binders.single.status, BinderStatus.available);

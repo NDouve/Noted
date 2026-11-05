@@ -333,6 +333,9 @@ const String _standalone = '';
 /// Why a binder is unavailable when its folder has no binder file.
 const String _noBinderFile = 'No $binderFileName in this folder.';
 
+/// Why a binder is unavailable when the file in its folder is another binder's.
+const String _otherBinderReason = 'The binder file in this folder belongs to another binder';
+
 /// The open notebook: standalone pages and binders (0026), the page on
 /// screen, and autosave.
 class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
@@ -3052,7 +3055,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               () => _disableBinder(
                 s,
                 BinderStatus.unavailable,
-                'The binder file in this folder belongs to another binder',
+                _otherBinderReason,
               ),
             ),
           );
@@ -3120,7 +3123,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  Future<BinderSection> _openBinder(String path, {bool create = false}) async {
+  // [expectedId] is the id of the binder that was in this folder before: a file
+  // of another binder is not adopted (AI codes and settings are keyed by the
+  // binder id), whatever else this finds.
+  Future<BinderSection> _openBinder(String path, {bool create = false, String? expectedId}) async {
     var kept = const <KeptBinderTemp>[];
     BinderSection unavailable(String why, {bool missing = false}) {
       _binderText.remove(_key(path));
@@ -3130,7 +3136,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         reason: why,
         missing: missing,
         keptTemps: kept,
-      );
+      )..expectedBinderId = expectedId;
     }
     final dir = Directory(path);
     try {
@@ -3169,6 +3175,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _scheduleBinderRecheck(path);
         return unavailable("The binder file can't be read right now (${read.reason}).");
       }
+      if (read is BinderFound && expectedId != null && read.binder.id != expectedId) {
+        // The file is another binder's: not adopted, and its pages not listed.
+        return unavailable(_otherBinderReason);
+      }
       // A binder whose file can't be read still lists its pages, read-only.
       final binder = read is BinderFound ? read.binder : null;
       if (read is BinderFound) {
@@ -3194,7 +3204,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         store: pages,
         reason: read is BinderUnreadable ? read.reason : null,
         unreadable: bad,
-      );
+      )..expectedBinderId = binder == null ? expectedId : null;
       for (final e in entries.whereType<ReadablePage>()) {
         if (_metas.containsKey(e.meta.id) && _loc[e.meta.id] != path) {
           bad.add(UnreadablePage(e.path, 'duplicate page id ${e.meta.id}'));
@@ -4880,7 +4890,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (!section.available) {
           // A file of another binder than the one that was here stays unadopted.
           final expected = section.expectedBinderId;
-          if (expected != null && binder.id != expected) return;
+          if (expected != null && binder.id != expected) {
+            if (section.reason != _otherBinderReason) {
+              section.reason = _otherBinderReason;
+              notifyListeners();
+            }
+            return;
+          }
           await _reopenBinder(section.path);
           return;
         }
@@ -4893,7 +4909,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           await _disableBinder(
             section,
             BinderStatus.unavailable,
-            'The binder file in this folder belongs to another binder',
+            _otherBinderReason,
           );
           return;
         }
@@ -4922,6 +4938,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// nor any page of the binder is written until the file is readable again.
   Future<void> _damageBinder(BinderSection section, String reason) async {
     final path = section.path;
+    section.expectedBinderId ??= section.saved?.id;
     await flush(); // pending edits of the open page land while writing is allowed
     if (_disposed || _binders[path] != section) return;
     section
@@ -4940,6 +4957,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// Takes the pages of the binder out of the notebook and marks it unusable.
   /// Its files, binder file included, are not touched.
   Future<void> _disableBinder(BinderSection section, BinderStatus status, String reason) async {
+    section.expectedBinderId ??= section.saved?.id; // the binder this folder had stays the only one taken up
     section.missing = false;
     final path = section.path;
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
@@ -4980,11 +4998,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final e in _loc.entries.where((e) => e.value == path && e.key != currentId).toList()) {
       _forgetPage(e.key);
     }
-    final fresh = await _openBinder(path);
+    // The binder that was here before is the only one taken up again: the file
+    // actually read is checked against its id (a replacement between a check and
+    // this read is refused too).
+    final old = _binders[path];
+    final fresh = await _openBinder(path, expectedId: old?.expectedBinderId ?? old?.saved?.id);
     if (_disposed) return;
-    // A binder that was disabled for belonging to another one keeps waiting for
-    // its own file, even through a damaged file in between.
-    if (!fresh.available) fresh.expectedBinderId = _binders[path]?.expectedBinderId;
     _binders[path] = fresh;
     _syncReadOnly();
     _rebuildTree();
@@ -5546,6 +5565,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// device" with its pages listed, read-only; an open page stays open. Its
   /// watcher stops and nothing is written until the folder is back.
   Future<void> _binderGone(BinderSection section) async {
+    section.expectedBinderId ??= section.saved?.id;
     await flush();
     final path = section.path;
     if (_disposed || _binders[path] != section || section.missing) return;
@@ -5569,7 +5589,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final e in _loc.entries.where((e) => e.value == path && e.key != currentId).toList()) {
       _forgetPage(e.key);
     }
-    final fresh = await _openBinder(path);
+    final fresh = await _openBinder(path, expectedId: old.expectedBinderId ?? old.saved?.id);
     if (_disposed || !identical(_binders[path], old)) return;
     if (fresh.missing) return; // gone again
     if (fresh.status == BinderStatus.unavailable) {

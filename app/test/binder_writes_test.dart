@@ -329,6 +329,78 @@ void main() {
       expect(nb.binders.single.binder!.id, id);
       await stop();
     });
+
+    group('a binder that was here is the only one taken up again', () {
+      late String original;
+      late String id;
+      late String foreign;
+
+      Future<void> begin() async {
+        await start();
+        original = fileText();
+        id = section.saved!.id;
+        foreign = Binder.create(id: 'otherbinder00001', title: 'Other', color: binderPalette.first).write();
+      }
+
+      Future<void> foreignThenRestore() async {
+        binderFile().writeAsStringSync(foreign);
+        await nb.checkBinderFile(binderFile().path);
+        final s = nb.binders.single;
+        expect(s.available, isFalse);
+        expect(s.binder, isNull);
+        expect(s.reason, 'The binder file in this folder belongs to another binder');
+        expect(fileText(), foreign, reason: 'the other binder\'s file is not touched');
+        binderFile().writeAsStringSync(original);
+        await nb.checkBinderFile(binderFile().path);
+        expect(nb.binders.single.available, isTrue);
+        expect(nb.binders.single.binder!.id, id);
+      }
+
+      test('original, missing, foreign', () async {
+        await begin();
+        binderFile().deleteSync();
+        await nb.checkBinderFile(binderFile().path);
+        expect(nb.binders.single.status, BinderStatus.unavailable);
+        expect(nb.binders.single.expectedBinderId, id);
+        await foreignThenRestore();
+        await stop();
+      });
+
+      test('original, damaged, foreign', () async {
+        await begin();
+        binderFile().writeAsStringSync('{oops');
+        await nb.checkBinderFile(binderFile().path);
+        expect(nb.binders.single.status, BinderStatus.unreadable);
+        expect(nb.binders.single.expectedBinderId, id);
+        await foreignThenRestore();
+        await stop();
+      });
+
+      test('a replacement between the check\'s read and the reopen', () async {
+        await begin();
+        binderFile().deleteSync();
+        await nb.checkBinderFile(binderFile().path);
+        binderFile().writeAsStringSync(original);
+        // The checker reads the original; before the reopen reads again, another
+        // binder's file takes its place.
+        seams.afterRead = (r) {
+          if (r is BinderFound && r.binder.id == id) {
+            seams.afterRead = null;
+            binderFile().writeAsStringSync(foreign);
+          }
+        };
+        await nb.checkBinderFile(binderFile().path);
+        final s = nb.binders.single;
+        expect(s.available, isFalse);
+        expect(s.binder, isNull);
+        expect(s.reason, 'The binder file in this folder belongs to another binder');
+        expect(fileText(), foreign);
+        binderFile().writeAsStringSync(original);
+        await nb.checkBinderFile(binderFile().path);
+        expect(nb.binders.single.available, isTrue);
+        await stop();
+      });
+    });
   });
 
   test('11. a binder file that appears while a binder is created is opened as it is', () async {
