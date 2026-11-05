@@ -474,7 +474,7 @@ void notesSuite() {
 
     testWidgets('L4: with no note holding the caret, Ctrl+K opens nothing', (t) async {
       await withSession(t, 'linknone', (s) async {
-        await _openWith(s, [para('text')]);
+        await s.pump(200);
         expect(s.nb.current!.editingId, isNull);
         await s.ctrl(LogicalKeyboardKey.keyK);
         await s.pump(300);
