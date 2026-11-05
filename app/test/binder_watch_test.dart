@@ -55,7 +55,7 @@ void main() {
     if (description != null) b = b.withDescription(description);
     if (owner != null) b = b.withOwner(owner);
     if (color != null) b = b.withColor(color);
-    await BinderStore(folder).save(b);
+    await File(BinderStore(folder).file.path).writeAsString(b.write());
   }
 
   group('binder file changes', () {
@@ -274,6 +274,7 @@ void main() {
         await tester.pump(const Duration(milliseconds: 100));
         await tester.runAsync(() => realIoPause(50));
       }
+      await settleSaves(tester, nb);
       final saved = (await tester.runAsync(() => BinderStore(folder).read()))! as BinderFound;
       expect(saved.binder.title, 'My draft title');
       expect(saved.binder.owner, 'Their owner');

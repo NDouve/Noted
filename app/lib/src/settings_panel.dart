@@ -397,7 +397,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
     if (id != null) {
       final own = nb.ownAiAccess(id);
       final inherited = nb.inheritedAiAccessFor(id);
-      final eff = nb.aiAccessFor(id);
+      final eff = nb.shownAiAccessFor(id);
       effective = eff.value;
       now = '${eff.value.label}, ${eff.source == ConfigSource.own ? 'set on this page' : 'from ${_sourceName(eff.source)}'}';
       chips = [

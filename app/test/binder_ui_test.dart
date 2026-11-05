@@ -27,6 +27,7 @@ void main() {
   String? pickAnswer;
 
   Future<void> settle(WidgetTester tester) async {
+    await settleSaves(tester, nb);
     for (var i = 0; i < 8; i++) {
       await tester.pump(const Duration(milliseconds: 400));
       await tester.runAsync(() => realIoPause(50));
