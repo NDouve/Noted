@@ -56,6 +56,9 @@ class PageStore {
 
   final Directory directory;
   final Map<String, String> _paths = {};
+  // Files chosen with [adopt], kept for the life of the store: a scan lists
+  // such a file first while it exists and holds that id.
+  final Map<String, String> _adopted = {};
   static int _tmpCounter = 0;
 
   /// Reads every page file in the folder.
@@ -108,7 +111,18 @@ class PageStore {
       return n;
     }
 
-    for (final e in read.entries) {
+    // Files chosen with [adopt] are listed first, so they are the ones kept.
+    bool chosen(MapEntry<String, (String, NotedPage)> e) {
+      final a = _adopted[e.value.$2.id];
+      if (a == null) return false;
+      final x = _name(a), y = e.key;
+      return Platform.isWindows ? x.toLowerCase() == y.toLowerCase() : x == y;
+    }
+
+    for (final e in [
+      ...read.entries.where(chosen),
+      ...read.entries.where((e) => !chosen(e)),
+    ]) {
       final (path, page) = e.value;
       if (copyOf.containsKey(e.key)) {
         entries.add(ConflictCopyPage(path, page.meta, read[rootOf(e.key)]!.$1));
@@ -275,8 +289,12 @@ class PageStore {
 
   /// Makes [path] (a page file of this folder holding [pageId]) the file this
   /// store reads and writes for that page, when another file with the same id
-  /// was listed first. Writes nothing.
-  void adopt(String pageId, String path) => _paths[pageId] = path;
+  /// was listed first. Later scans keep the choice while the file exists and
+  /// holds that id. Nothing is saved across restarts. Writes nothing.
+  void adopt(String pageId, String path) {
+    _paths[pageId] = path;
+    _adopted[pageId] = path;
+  }
 
   /// The path of the file holding (or that will hold) page [pageId].
   String pathFor(String pageId) => _pathFor(pageId);
