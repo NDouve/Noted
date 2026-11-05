@@ -208,8 +208,8 @@ void main() {
       expect(nb.standaloneFolders, isEmpty);
     });
 
-    test('a copy of a page already in Noted, in a folder not joined yet, '
-        'is the file opened; the other file is listed as a duplicate', () async {
+    test('a copy in a folder not joined yet is refused, also while the original '
+        'is open; its folder is not left joined', () async {
       final elsewhere = await Directory('${root.path}/Elsewhere').create();
       final backup = await Directory('${root.path}/Backup').create();
       final other = make('other');
@@ -223,22 +223,19 @@ void main() {
       await nb.load();
       await openExistingFile(nb, '${elsewhere.path}/$id.canvas');
       expect(nb.currentId, id); // the page is the open one
-      await openExistingFile(nb, '${backup.path}/$id.canvas');
-      expect(nb.currentId, id);
-      expect(nb.standaloneFolders, hasLength(2));
-      String n(String p) => p.replaceAll(r'\', '/').toLowerCase();
-      expect(nb.unreadable.map((u) => n(u.path)), [
-        n('${elsewhere.path}/$id.canvas'),
-      ]);
-
-      // Another page open, then the first file asked for again.
-      final first = await nb.createPage();
-      await nb.open(first);
-      await openExistingFile(nb, '${elsewhere.path}/$id.canvas');
-      expect(nb.currentId, id);
-      expect(nb.unreadable.map((u) => n(u.path)), [
-        n('${backup.path}/$id.canvas'),
-      ]);
+      for (var i = 0; i < 2; i++) {
+        final before = nb.currentId;
+        await expectLater(
+          openExistingFile(nb, '${backup.path}/$id.canvas'),
+          throwsA(isA<NotebookException>()),
+        );
+        expect(nb.currentId, before);
+        expect(nb.standaloneFolders, hasLength(1));
+        expect(nb.unreadable, isEmpty);
+        // Another page open: still refused.
+        if (i == 0) await nb.open(await nb.createPage());
+      }
+      expect(nb.pageTitleOf(id), isNotNull);
     });
 
     test('a copy in a folder already joined is opened, the other file '
@@ -431,7 +428,7 @@ void main() {
       });
     });
 
-    test('a copy of a binder is joined and its page opened', () async {
+    test('a copy of a binder is refused and not joined', () async {
       final dir = await Directory('${root.path}/Work').create();
       final copy = await Directory('${root.path}/Work copy').create();
       final other = make('other');
@@ -446,8 +443,11 @@ void main() {
       await nb.load();
       await openExistingFile(nb, '${dir.path}/$id.canvas');
       expect(nb.currentId, id);
-      await openExistingFile(nb, '${copy.path}/$id.canvas');
-      expect(nb.binders, hasLength(2));
+      await expectLater(
+        openExistingFile(nb, '${copy.path}/$id.canvas'),
+        throwsA(isA<NotebookException>()),
+      );
+      expect(nb.binders, hasLength(1));
       expect(nb.currentId, id);
     });
 
