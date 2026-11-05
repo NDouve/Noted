@@ -208,8 +208,8 @@ void main() {
       expect(nb.standaloneFolders, isEmpty);
     });
 
-    test('a copy of a page already in Noted is refused, also the open one, '
-        'and its new folder is not left joined', () async {
+    test('a copy of a page already in Noted, in a folder not joined yet, '
+        'is the file opened; the other file is listed as a duplicate', () async {
       final elsewhere = await Directory('${root.path}/Elsewhere').create();
       final backup = await Directory('${root.path}/Backup').create();
       final other = make('other');
@@ -223,25 +223,26 @@ void main() {
       await nb.load();
       await openExistingFile(nb, '${elsewhere.path}/$id.canvas');
       expect(nb.currentId, id); // the page is the open one
-      await expectLater(
-        openExistingFile(nb, '${backup.path}/$id.canvas'),
-        throwsA(isA<NotebookException>()),
-      );
+      await openExistingFile(nb, '${backup.path}/$id.canvas');
       expect(nb.currentId, id);
-      expect(nb.standaloneFolders, hasLength(1));
+      expect(nb.standaloneFolders, hasLength(2));
+      String n(String p) => p.replaceAll(r'\', '/').toLowerCase();
+      expect(nb.unreadable.map((u) => n(u.path)), [
+        n('${elsewhere.path}/$id.canvas'),
+      ]);
 
-      // Another page open: still refused.
+      // Another page open, then the first file asked for again.
       final first = await nb.createPage();
       await nb.open(first);
-      await expectLater(
-        openExistingFile(nb, '${backup.path}/$id.canvas'),
-        throwsA(isA<NotebookException>()),
-      );
-      expect(nb.currentId, first);
-      expect(nb.standaloneFolders, hasLength(1));
+      await openExistingFile(nb, '${elsewhere.path}/$id.canvas');
+      expect(nb.currentId, id);
+      expect(nb.unreadable.map((u) => n(u.path)), [
+        n('${backup.path}/$id.canvas'),
+      ]);
     });
 
-    test('a copy in a folder already joined is refused', () async {
+    test('a copy in a folder already joined is opened, the other file '
+        'listed as the duplicate', () async {
       final elsewhere = await Directory('${root.path}/Elsewhere').create();
       final other = make('other');
       await other.load();
@@ -253,15 +254,32 @@ void main() {
       await nb.load();
       await nb.addStandaloneFolder(elsewhere.path);
       // Which of the two files the scan keeps depends on the listing order;
-      // the one it lists as a duplicate is the one that is refused.
+      // the one it lists as a duplicate is the one asked for.
       final dup = nb.unreadable.singleWhere(
         (u) => u.reason.startsWith('duplicate page id'),
       );
+      await openExistingFile(nb, dup.path);
+      expect(nb.currentId, id);
+      expect(nb.standaloneFolders, hasLength(1));
+      expect(nb.unreadable, hasLength(1));
+      expect(nb.unreadable.single.path, isNot(dup.path));
+    });
+
+    test('a file damaged or from a newer version is still refused', () async {
+      final dir = await Directory('${root.path}/Elsewhere').create();
+      final other = make('other');
+      await other.load();
+      final id = await other.createPage(folderPath: dir.path);
+      await other.flush();
+      final nb = make('main', pages);
+      await nb.load();
+      await nb.addStandaloneFolder(dir.path);
+      File('${dir.path}/damaged.canvas').writeAsStringSync('not a page');
       await expectLater(
-        openExistingFile(nb, dup.path),
+        openExistingFile(nb, '${dir.path}/damaged.canvas'),
         throwsA(isA<NotebookException>()),
       );
-      expect(nb.standaloneFolders, hasLength(1));
+      expect(nb.pageTitleOf(id), isNotNull);
     });
 
     group('a copy that arrives after its folder was joined', () {
@@ -342,6 +360,67 @@ void main() {
         expect(File(s.orig).readAsStringSync(), contains('Original'));
       });
 
+      test('the choice survives a later scan; edits land in the copy', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        final origBytes = File(s.orig).readAsBytesSync();
+        await openExistingFile(s.nb, s.copy);
+        final loc = s.nb.standaloneFolders.single.path;
+        final entries = await s.nb.scanLocationForTest(loc);
+        expect(
+          entries.whereType<ReadablePage>().single.path.replaceAll(r'\', '/'),
+          s.copy.replaceAll(r'\', '/'),
+        );
+        await s.nb.rename(s.id, 'Edited');
+        await s.nb.flush();
+        expect(File(s.copy).readAsStringSync(), contains('Edited'));
+        expect(File(s.orig).readAsBytesSync(), origBytes);
+      });
+
+      test('after a restart, opening the copy again chooses it again', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await openExistingFile(s.nb, s.copy);
+        await s.nb.flush();
+        s.nb.dispose();
+        opened.remove(s.nb);
+        final again = make('main', pages);
+        await again.load();
+        await openExistingFile(again, s.copy);
+        expect(again.currentId, s.id);
+        expect(again.pageTitleOf(s.id), 'Copy');
+        expect(File(s.orig).readAsStringSync(), contains('Original'));
+      });
+
+      test('the open page whose own file was deleted does not overwrite the '
+          'copy', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await s.nb.open(s.id);
+        File(s.orig).deleteSync();
+        await s.nb.checkFile(s.orig);
+        final copyBytes = File(s.copy).readAsBytesSync();
+        await openExistingFile(s.nb, s.copy);
+        expect(s.nb.pageTitleOf(s.id), 'Copy');
+        await s.nb.flush();
+        expect(File(s.copy).readAsBytesSync(), copyBytes);
+        await s.nb.rename(s.id, 'Edited');
+        await s.nb.flush();
+        expect(File(s.copy).readAsStringSync(), contains('Edited'));
+      });
+
+      test('unsaved edits on the open original are saved to it first', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await s.nb.open(s.id);
+        await s.nb.rename(s.id, 'Edited');
+        final copyBytes = File(s.copy).readAsBytesSync();
+        await openExistingFile(s.nb, s.copy);
+        expect(s.nb.pageTitleOf(s.id), 'Copy');
+        expect(File(s.orig).readAsStringSync(), contains('Edited'));
+        expect(File(s.copy).readAsBytesSync(), copyBytes);
+      });
+
       test('the registered file itself still opens', () async {
         final dir = await Directory('${root.path}/Elsewhere').create();
         final s = await setup(dir, dir);
@@ -352,7 +431,7 @@ void main() {
       });
     });
 
-    test('a copy of a binder is refused and not joined', () async {
+    test('a copy of a binder is joined and its page opened', () async {
       final dir = await Directory('${root.path}/Work').create();
       final copy = await Directory('${root.path}/Work copy').create();
       final other = make('other');
@@ -367,11 +446,8 @@ void main() {
       await nb.load();
       await openExistingFile(nb, '${dir.path}/$id.canvas');
       expect(nb.currentId, id);
-      await expectLater(
-        openExistingFile(nb, '${copy.path}/$id.canvas'),
-        throwsA(isA<NotebookException>()),
-      );
-      expect(nb.binders, hasLength(1));
+      await openExistingFile(nb, '${copy.path}/$id.canvas');
+      expect(nb.binders, hasLength(2));
       expect(nb.currentId, id);
     });
 

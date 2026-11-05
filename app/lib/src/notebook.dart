@@ -517,6 +517,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   final Map<String, String> _binderText = {};
   // Conflict copies found by a scan, to be merged once the folders are set up.
   final List<String> _pendingCopies = [];
+  // Page files chosen by [adoptUnlistedPageFile], by page id, for this session.
+  final Map<String, String> _adoptedFiles = {};
   final Map<String, StreamSubscription<FileSystemEvent>> _watchers = {};
   final Map<String, Timer> _debounce = {};
   Future<void> _checking = Future.value();
@@ -850,7 +852,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final f in _folders.values) ...f.unreadable,
       for (final b in _binders.values) ...b.unreadable,
     ];
-    if (listed.any((u) => _key(u.path) == k)) return;
+    // A file listed only as a duplicate of the id is treated as unlisted;
+    // any other reason (damaged, newer format) stays refused.
+    if (listed.any((u) => _key(u.path) == k && !u.reason.startsWith('duplicate page id'))) return;
     final loc = _locationOf(path);
     if (loc == null) return;
     final NotedPage page;
@@ -871,9 +875,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final e in _pathId.entries) {
       if (e.value == id) oldKey = e.key;
     }
+    if (id == currentId) {
+      // The page on screen is closed first (its edits are flushed above), so a
+      // later autosave can't write its old content over the file asked for.
+      await _closeCurrent();
+      if (_diskBlockId == id) _clearDiskBlock();
+      if (_blockEntry?.pageId == id) _blockEntry = null;
+    }
     if (oldLoc != null && oldKey != null) {
       final oldPath = _storeOf(oldLoc).pathFor(id);
-      if (id == currentId) await _closeCurrent();
       if (File(oldPath).existsSync()) {
         _known.remove(oldKey);
         _knownUnreadable(oldLoc, oldKey, oldPath, 'duplicate page id $id');
@@ -882,6 +892,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     _dropUnreadable(loc, path, rebuild: false);
+    _adoptedFiles[id] = path;
     st.adopt(id, path);
     _pathId[k] = id;
     _known[k] = text;
@@ -4464,7 +4475,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return run;
   }
 
-  Future<List<PageEntry>> _scan(PageStore st) => _underFolderLock(st, st.scan);
+  Future<List<PageEntry>> _scan(PageStore st) {
+    // A store made again (a binder opened again) is told which files were chosen.
+    final dir = _key(st.directory.path);
+    for (final e in _adoptedFiles.entries) {
+      if (_key(File(e.value).parent.path) == dir) st.adopt(e.key, e.value);
+    }
+    return _underFolderLock(st, st.scan);
+  }
 
   /// Whether the notebook still tracks the file at [path] (its last known
   /// text or its page id).
@@ -4998,6 +5016,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     var originalPath = await PageStore.findConflictOriginal(path, copy);
     if (originalPath == null) return false;
+    // The file it copies is listed as a duplicate (another file with its id
+    // was chosen): merging would land in a file the copy is not of. It is left
+    // for later.
+    final ok = _key(originalPath);
+    final dupes = [
+      ..._unreadable,
+      for (final f in _folders.values) ...f.unreadable,
+      for (final b in _binders.values) ...b.unreadable,
+    ];
+    if (dupes.any((u) => _key(u.path) == ok && u.reason.startsWith('duplicate page id'))) return true;
     try {
       // The sync client may change the copy or the original while this runs.
       // The copy is deleted only if it still holds what was merged, and the
