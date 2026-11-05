@@ -282,7 +282,7 @@ void main() {
       await stop();
     });
 
-    test('a change meant for the old binder is dropped, and the folder is read afresh', () async {
+    test('a change meant for the old binder is dropped; the binder becomes unavailable', () async {
       await start();
       final c0 = seams.holdNext();
       final f = nb.setBinderAiAccess(section.path, AiAccess.open).catchError((Object _) {});
@@ -291,12 +291,13 @@ void main() {
       binderFile().writeAsStringSync(other);
       c0.complete();
       await f;
-      await nb.checkBinderFile(binderFile().path); // waits for the queued reopen
+      await nb.checkBinderFile(binderFile().path); // waits for the queued disable
       expect(section.pending, isEmpty);
-      expect(nb.binders.single.binder!.id, 'otherbinder00001');
-      expect(nb.binders.single.binder!.aiAccess, isNull);
+      expect(nb.binders.single, same(section), reason: 'the folder is not reopened');
+      expect(section.status, BinderStatus.unavailable);
+      expect(section.reason, 'The binder file in this folder belongs to another binder');
+      expect(section.binder, isNull);
       expect(fileText(), other, reason: 'the other binder\'s file is not written');
-      expect(notices.any((n) => n.contains('now belongs to another binder')), isTrue);
       await stop();
     });
   });

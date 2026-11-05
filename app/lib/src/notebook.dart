@@ -204,6 +204,10 @@ class BinderSection {
   /// The binder file as last read or written.
   Binder? saved;
 
+  /// Set when the file turned out to belong to another binder: only a file of
+  /// this binder is taken up again (AI codes are keyed by binder id).
+  String? expectedBinderId;
+
   /// Changes made on screen and not saved yet, oldest first.
   final List<BinderDelta> pending = [];
 
@@ -3025,13 +3029,24 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         return null;
       case BinderRefused(:final reason, :final kind):
         if (kind == BinderRefusal.otherBinder) {
-          // The file belongs to another binder now: what was changed on screen
-          // was meant for the old one. The folder is read afresh.
+          // The file belongs to another binder now: it is not adopted (AI codes
+          // are keyed by binderId), and what was changed on screen was meant for
+          // the old one. The binder becomes unavailable, as when the watcher
+          // reads such a file.
           s.pending.clear();
+          s.expectedBinderId = s.saved?.id;
           _showBinder(s);
           notifyListeners();
-          _notices.add('Binder ${s.title}: the binder file in this folder now belongs to another binder.');
-          unawaited(_queueChecked('Reopening $path', () => _reopenBinder(path)));
+          unawaited(
+            _queueChecked(
+              'Disabling $path',
+              () => _disableBinder(
+                s,
+                BinderStatus.unavailable,
+                'The binder file in this folder belongs to another binder',
+              ),
+            ),
+          );
           return reason;
         }
         // The screen and what AI may use fall back to the saved value at once,
@@ -4823,6 +4838,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (!force && section.available && _binderText[dirKey] == text) return;
         _binderText[dirKey] = text;
         if (!section.available) {
+          // A file of another binder than the one that was here stays unadopted.
+          final expected = section.expectedBinderId;
+          if (expected != null && binder.id != expected) return;
           await _reopenBinder(section.path);
           return;
         }
@@ -4831,6 +4849,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // Another binder's file now: it is not adopted, and what was changed
           // on screen was meant for the old one.
           section.pending.clear();
+          section.expectedBinderId = known.id;
           await _disableBinder(
             section,
             BinderStatus.unavailable,
