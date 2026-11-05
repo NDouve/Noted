@@ -3,11 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
-import 'dart:convert' show utf8;
+import 'dart:convert' show jsonDecode, utf8;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:noted_box_attachments/noted_box_attachments.dart' show AttachmentRef, FileCodec, ImageCodec;
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -7255,7 +7256,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (c == null) return '';
     final page = c.page;
     final oldId = page.id;
-    final loc = _loc[oldId] ?? _preview?.loc;
+    final loc = _loc[oldId] ?? _preview?.loc ?? _orphanLoc;
     final chosen = await pick();
     if (chosen == null) return '';
     final dir = Directory(_normalizePath(chosen));
@@ -7263,21 +7264,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final copy = page.withMeta(page.meta.withId(newPageId).withPlacement(parentId: null, order: 0));
     final left = <String>[];
     final sources = <Directory>[
-      ?(loc == null ? null : _assetsDir(loc, oldId)),
+      ?(loc == null ? null : Directory('${_storeOrFolder(loc).directory.path}${Platform.pathSeparator}${assetsFolderName(oldId)}')),
       if (_recovery != null)
         Directory('${_recovery!.directory.path}${Platform.pathSeparator}${assetsFolderName(oldId)}'),
     ];
+    final result = AttachmentCopy();
+    final targetAssets = Directory('${dir.path}${Platform.pathSeparator}${assetsFolderName(newPageId)}');
     try {
       await dir.create(recursive: true);
       for (final src in sources) {
         try {
-          if (await src.exists()) {
-            await _copyDir(
-              src,
-              Directory('${dir.path}${Platform.pathSeparator}${assetsFolderName(newPageId)}'),
-              into: AttachmentCopy(),
-            );
-          }
+          await _copyDir(src, targetAssets, into: result); // a missing folder copies nothing
         } on Object catch (e) {
           debugPrint('Copying ${src.path} failed: $e');
           left.add(src.path);
@@ -7293,7 +7290,64 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on FileSystemException catch (e) {
       throw NotebookException("Couldn't save the copy: ${describeError(e)}", needsAction: true);
     }
-    return 'Saved a copy to ${dir.path}.${left.isEmpty ? '' : " These attachment folders couldn't be copied: ${left.join(', ')}."}';
+    // Whatever the page refers to in its folder that did not arrive is named:
+    // the source folder missing or unreadable, a different file already at the
+    // target, or a leftover kept aside (never a plain "Saved a copy").
+    final differing = {for (final p in result.differing) _baseName(p)};
+    final notCopied = <String>[
+      for (final f in _folderAttachmentFiles(page))
+        if (differing.contains(_baseName(f)) ||
+            FileSystemEntity.typeSync(
+                  '${targetAssets.path}${Platform.pathSeparator}${f.replaceAll('/', Platform.pathSeparator)}',
+                  followLinks: false,
+                ) ==
+                FileSystemEntityType.notFound)
+          f,
+    ];
+    final problems = <String>[
+      if (notCopied.isNotEmpty)
+        "${notCopied.length == 1 ? 'this attachment file was' : 'these attachment files were'} not copied "
+            '(the original is missing or unreadable, or a different file is already under that name): '
+            '${_namesShown(notCopied)}',
+      if (result.keptAside.isNotEmpty)
+        'leftover temporary files in the attachments folder were left where they are: ${_namesShown(result.keptAside)}',
+      if (left.isNotEmpty) "these attachment folders couldn't be copied: ${left.join(', ')}",
+    ];
+    if (problems.isEmpty) return 'Saved a copy to ${dir.path}.';
+    return 'Saved a copy to ${dir.path}, but ${problems.join('. Also, ')}. '
+        'Nothing in the original was changed.';
+  }
+
+  // The names (relative to the assets folder) of the attachment files [page]
+  // keeps in its folder, as image and file boxes hold them.
+  List<String> _folderAttachmentFiles(NotedPage page) {
+    final out = <String>{};
+    for (final n in page.nodes) {
+      if (n is! BoxRecord) continue;
+      final key = switch (n.typeId) {
+        ImageCodec.id => 'image',
+        FileCodec.id => 'file',
+        _ => null,
+      };
+      final raw = n.data;
+      if (key == null || raw == null) continue;
+      try {
+        final json = jsonDecode(raw.text);
+        final ref = json is Map ? AttachmentRef.fromJson(json[key]) : null;
+        final file = ref?.file;
+        if (file != null && file.isNotEmpty) out.add(file);
+      } on FormatException {
+        // A box whose data can't be read refers to nothing we can check.
+      }
+    }
+    return out.toList();
+  }
+
+  static String _namesShown(List<String> paths) {
+    final names = paths.map(_baseName).toList();
+    return names.length <= 3
+        ? names.map((n) => '"$n"').join(', ')
+        : '${names.take(3).map((n) => '"$n"').join(', ')} and ${names.length - 3} more';
   }
 
   // Leaving the app --------------------------------------------------------------
