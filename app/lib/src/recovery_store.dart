@@ -94,6 +94,26 @@ class RecoveryEntry {
 
   /// The entry's file.
   File get file => File('${_dir.path}${Platform.pathSeparator}$_stem.entry');
+
+  /// Names this generation: a hash of its time, base and page text. Two
+  /// entries with the same [gen] hold the same edits.
+  late final String gen = RecoveryStore.generationOf(time, baseText, pageText);
+}
+
+/// An entry was not replaced because the slot holds something that isn't one
+/// of the generations the writer may replace (R-1 v5, build note 1).
+class RecoveryRefused implements Exception {
+  const RecoveryRefused(this.why);
+  final String why;
+  @override
+  String toString() => why;
+}
+
+/// A recovery transaction did not finish within its limit.
+class RecoveryTimeout implements Exception {
+  const RecoveryTimeout();
+  @override
+  String toString() => "the recovery folder isn't responding";
 }
 
 /// What a scan of the recovery folder found: [entries] that can be used and
@@ -144,18 +164,98 @@ class RecoveryStore {
   static int _tmpCounter = 0;
   static final Map<String, Future<void>> _chains = {};
 
-  Future<T> _serial<T>(Future<T> Function() f) {
+  /// How long one transaction may take before its caller gets a
+  /// [RecoveryTimeout] and the next transaction runs (the abandoned one may
+  /// still finish). Recovery is on the local disk, so this is generous.
+  Duration transactionLimit = const Duration(seconds: 10);
+
+  /// Runs [job] after every earlier transaction on this folder (also from
+  /// other instances) and before any later one (L2). Inside, [RecoveryTx]
+  /// lists, writes and deletes without waiting for the chain again; a job
+  /// must not await the notebook's save chain, a dialog or a page folder.
+  Future<T> transaction<T>(Future<T> Function(RecoveryTx tx) job, {Duration? limit}) {
     final k = recoveryLocationKey(directory.path, windows: windows);
     final prev = _chains[k] ?? Future<void>.value();
     final c = Completer<T>();
     _chains[k] = prev.then((_) async {
-      try {
-        c.complete(await f());
-      } on Object catch (e, s) {
-        c.completeError(e, s);
-      }
+      final over = Completer<void>();
+      final timer = Timer(limit ?? transactionLimit, () {
+        if (!c.isCompleted) c.completeError(const RecoveryTimeout());
+        if (!over.isCompleted) over.complete();
+      });
+      unawaited(() async {
+        try {
+          final v = await job(RecoveryTx._(this));
+          if (!c.isCompleted) c.complete(v);
+        } on Object catch (e, s) {
+          if (!c.isCompleted) c.completeError(e, s);
+        } finally {
+          timer.cancel();
+          if (!over.isCompleted) over.complete();
+        }
+      }());
+      await over.future;
     });
     return c.future;
+  }
+
+  Future<T> _serial<T>(Future<T> Function() f) => transaction((_) => f());
+
+  /// The generation hash of an entry with these parts.
+  static String generationOf(DateTime time, String? base, String pageText) =>
+      contentHash(utf8.encode(jsonEncode([time.toUtc().toIso8601String(), base, pageText])));
+
+  // The entries this process knows of: built by every listing and kept
+  // current by every write and delete. This process is the only writer, so
+  // open, preview, the quit notice and the delete question read it without
+  // touching the disk.
+  final List<RecoveryEntry> _index = [];
+  bool _indexed = false;
+
+  // Generations whose page landed but whose entry could not be deleted yet.
+  final Set<String> _landed = {};
+
+  /// Whether a listing has filled the index.
+  bool get indexed => _indexed;
+
+  /// Every entry the index holds.
+  List<RecoveryEntry> get indexEntries => List.unmodifiable(_index);
+
+  /// The entries of [pageId] in [folder], from the index.
+  List<RecoveryEntry> entriesFor(String folder, String pageId) {
+    final k = _key(folder);
+    return [
+      for (final e in _index)
+        if (e.pageId == pageId && _key(e.folder) == k) e,
+    ];
+  }
+
+  /// The entries of [pageId] in any folder, from the index.
+  List<RecoveryEntry> entriesOfPage(String pageId) => [
+    for (final e in _index)
+      if (e.pageId == pageId) e,
+  ];
+
+  /// Whether generation [gen] landed in its page but is still on disk.
+  bool isLanded(String gen) => _landed.contains(gen);
+
+  /// Marks [gen] as landed: open and replay delete it and merge nothing.
+  void markLanded(String gen) => _landed.add(gen);
+
+  /// The landed generations that are still in the index.
+  List<RecoveryEntry> get landedEntries => [
+    for (final e in _index)
+      if (_landed.contains(e.gen)) e,
+  ];
+
+  void _indexPut(RecoveryEntry e) {
+    _index.removeWhere((x) => x.file.path == e.file.path);
+    _index.add(e);
+  }
+
+  void _indexRemove(RecoveryEntry e) {
+    _index.removeWhere((x) => x.file.path == e.file.path && x.gen == e.gen);
+    if (!_index.any((x) => x.gen == e.gen)) _landed.remove(e.gen);
   }
 
   static int _fnv(String s) {
@@ -271,12 +371,27 @@ class RecoveryStore {
   }
 
   /// Writes (or replaces) the entry of [page], belonging in [folder].
-  Future<void> write({
+  ///
+  /// With [replaceable] (generation hashes), a slot that holds anything else
+  /// is not replaced: a [RecoveryRefused] is thrown and the slot is left as it
+  /// is, even if the index doesn't list it (a file put there from outside).
+  Future<RecoveryEntry> write({
     required String folder,
     required NotedPage page,
     required String? baseText,
     required DateTime time,
-  }) => _serial(() async {
+    Set<String>? replaceable,
+  }) => _serial(
+    () => _writeNow(folder: folder, page: page, baseText: baseText, time: time, replaceable: replaceable),
+  );
+
+  Future<RecoveryEntry> _writeNow({
+    required String folder,
+    required NotedPage page,
+    required String? baseText,
+    required DateTime time,
+    Set<String>? replaceable,
+  }) async {
     await directory.create(recursive: true);
     try {
       // An entry of the old layout for this page is converted first, so the
@@ -296,13 +411,28 @@ class RecoveryStore {
         break;
       }
       final e = await _peek(f);
-      if (e != null && e.key == key && e.id == page.id) target = f;
+      if (e != null && e.key == key && e.id == page.id) {
+        if (replaceable != null && !replaceable.contains(generationOf(e.time, e.base, e.text))) {
+          throw const RecoveryRefused('the recovery folder holds an entry for this page that Noted did not write');
+        }
+        target = f;
+      }
     }
-    await _atomic(
-      target,
-      _encode(folder, page.id, time.toUtc().toIso8601String(), baseText, writePage(page)),
+    final text = writePage(page);
+    await _atomic(target, _encode(folder, page.id, time.toUtc().toIso8601String(), baseText, text));
+    final written = RecoveryEntry._(
+      folder,
+      page.id,
+      time.toUtc(),
+      baseText,
+      text,
+      page,
+      _stemOf(target.path),
+      directory,
     );
-  });
+    _indexPut(written);
+    return written;
+  }
 
   // Checks that the identities of an entry agree: the metadata's page id, the
   // page's, the base's and the file name's. Throws a FormatException if not.
@@ -528,11 +658,18 @@ class RecoveryStore {
 
   /// Reads every entry. Files that can't be read, or whose identities
   /// disagree, are reported, not removed, and are never offered.
-  Future<RecoveryListing> list() => _serial(() async {
+  ///
+  /// Refreshes the index from what it finds.
+  Future<RecoveryListing> list() => _serial(_listNow);
+
+  Future<RecoveryListing> _listNow() async {
     final entries = <RecoveryEntry>[];
     final problems = <String>[];
     final damaged = <UnreadablePage>[];
-    if (!await directory.exists()) return const RecoveryListing([], []);
+    if (!await directory.exists()) {
+      _setIndex(const []);
+      return const RecoveryListing([], []);
+    }
 
     // Settling a tmp can publish the entry that an old half-file waits for, so
     // the old files are looked at again afterwards; only that pass reports.
@@ -559,18 +696,55 @@ class RecoveryStore {
         _report(problems, damaged, base, _why(e));
       }
     }
+    _setIndex(entries);
     return RecoveryListing(entries, problems, damaged);
-  });
+  }
+
+  void _setIndex(List<RecoveryEntry> entries) {
+    _index
+      ..clear()
+      ..addAll(entries);
+    _indexed = true;
+    final gens = {for (final e in entries) e.gen};
+    _landed.removeWhere((g) => !gens.contains(g));
+  }
 
   /// Removes [entry]'s file.
-  Future<void> delete(RecoveryEntry entry) => _serial(() async {
+  Future<void> delete(RecoveryEntry entry) => _serial(() => _deleteNow(entry));
+
+  Future<void> _deleteNow(RecoveryEntry entry) async {
     // Only the generation that was listed: a newer one written since stays.
     final f = entry.file;
     final e = await _peek(f);
-    if (e != null && e.text == entry.pageText && e.base == entry.baseText && e.time == entry.time) {
-      await f.delete();
+    if (e == null) {
+      // Gone or unreadable: nothing of ours to remove; forget it if it's gone.
+      if (!await f.exists()) _indexRemove(entry);
+      return;
     }
-  });
+    if (e.text == entry.pageText && e.base == entry.baseText && e.time == entry.time) {
+      await f.delete();
+      _indexRemove(entry);
+    }
+  }
+}
+
+/// What a recovery transaction can do ([RecoveryStore.transaction]).
+class RecoveryTx {
+  RecoveryTx._(this.store);
+
+  final RecoveryStore store;
+
+  Future<RecoveryListing> list() => store._listNow();
+
+  Future<RecoveryEntry> write({
+    required String folder,
+    required NotedPage page,
+    required String? baseText,
+    required DateTime time,
+    Set<String>? replaceable,
+  }) => store._writeNow(folder: folder, page: page, baseText: baseText, time: time, replaceable: replaceable);
+
+  Future<void> delete(RecoveryEntry entry) => store._deleteNow(entry);
 }
 
 /// Checks a recovered page [result] (read back from disk) against the three

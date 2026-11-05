@@ -202,6 +202,7 @@ class _ToggleStore extends PageStore {
   bool lossy = false;
   bool throwOnRead = false;
   bool alterRead = false;
+  bool failWrite = false;
 
   @override
   Future<void> save(NotedPage page) => super.save(lossy ? NotedPage.create(page.meta) : page);
@@ -214,7 +215,9 @@ class _ToggleStore extends PageStore {
     void Function()? afterRead,
     void Function()? beforePublish,
     void Function()? beforeRestore,
-  }) => super.saveIfUnchanged(
+  }) {
+    if (failWrite) throw const FileSystemException('injected write failure');
+    return super.saveIfUnchanged(
     lossy ? NotedPage.create(page.meta) : page,
     expectedText,
     beforeMoveAside: beforeMoveAside,
@@ -222,6 +225,7 @@ class _ToggleStore extends PageStore {
     beforePublish: beforePublish,
     beforeRestore: beforeRestore,
   );
+  }
 
   @override
   Future<String> readText(String pageId) async {
@@ -1318,22 +1322,25 @@ void main() {
       await pages.rename(moved.path);
       await nb.checkFolders();
       expect((await nb.pendingRecovery()).entries, hasLength(1));
+      // The page is closed, as replay (R-1 v5) only works on pages that are not open.
+      final other = await Directory('${root.path}/other').create();
+      await nb.createPage(folderPath: other.path);
       return (nb, st, moved);
     }
 
-    test('a failed check is listed', () async {
+    test('a page that landed and then reads back differently is listed', () async {
       final (nb, st, moved) = await parked();
       st.lossy = true;
       await moved.rename(pages.path);
       await nb.checkFolders();
-      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      expect((await nb.pendingRecovery()).entries, isEmpty, reason: 'it landed, so the entry is retired');
       expect(nb.recoveryDamaged, hasLength(1));
       expect(nb.recoveryProblems, hasLength(1));
     });
 
     test('an exception during replay is listed, and cleared by a later successful replay', () async {
       final (nb, st, moved) = await parked();
-      st.throwOnRead = true;
+      st.failWrite = true;
       await moved.rename(pages.path);
       await nb.checkFolders();
       expect((await nb.pendingRecovery()).entries, hasLength(1));
@@ -1343,7 +1350,7 @@ void main() {
 
       await pages.rename(moved.path);
       await nb.checkFolders();
-      st.throwOnRead = false;
+      st.failWrite = false;
       await moved.rename(pages.path);
       await nb.checkFolders();
       expect((await nb.pendingRecovery()).entries, isEmpty);

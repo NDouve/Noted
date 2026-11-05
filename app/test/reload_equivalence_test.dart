@@ -1415,6 +1415,8 @@ void main() {
         time: DateTime.now(),
       );
       m.boxes[y.id] = _val(y);
+      await run.nb.refreshRecoveryIndexForTest();
+      run.nb.questioner = (q, title) async => true; // delete them with the page
       final st = run.storeOf('pages');
       final assets = Directory('${run.dirs['pages']!.path}${run.sep}${assetsFolderName(parent)}');
       // The attachments cannot go back: a different file holds their place.

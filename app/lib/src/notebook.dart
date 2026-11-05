@@ -7,6 +7,7 @@ import 'dart:convert' show utf8;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -17,8 +18,11 @@ import 'app_settings.dart';
 import 'attachment_copy.dart';
 import 'device_storage.dart';
 import 'page_attachments.dart';
+import 'recovery_lock.dart';
 import 'recovery_store.dart';
+import 'save_trouble.dart';
 import 'search_scope.dart';
+import 'storage_check.dart';
 
 /// Where page files live in Prototype 1: one local folder (0007).
 ///
@@ -129,6 +133,35 @@ class _SaveRefused implements Exception {
   final AiLinkResponse response;
 }
 
+// A kept entry written under a move's target folder, paired with the old one
+// until the page has settled.
+class _Rekey {
+  _Rekey(this.id, this.old, this.freshGen, this.preexisting);
+
+  final String id;
+  final RecoveryEntry old;
+  final String freshGen;
+
+  // The target already held an entry for the page: the new key was merged
+  // into it, so it is never deleted as the page's own copy.
+  final bool preexisting;
+}
+
+/// Leaving a page was cancelled by the user: nothing was changed.
+class LeaveCancelled extends NotebookException {
+  const LeaveCancelled() : super('Nothing was changed.');
+}
+
+// The kept edits of a page shown read-only in its place.
+class _Preview {
+  _Preview(this.id, this.loc, this.entries, this.reason, {this.unlandable = false});
+
+  final String id;
+  final String loc;
+  final List<RecoveryEntry> entries;
+  String reason;
+  bool unlandable;
+}
 /// A save failed because the page's folder isn't there.
 class FolderUnavailableException extends NotebookException {
   const FolderUnavailableException() : super('That folder was not found.');
@@ -318,7 +351,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     this.cacheDirectory,
     this.attachmentPicker,
     this.attachmentOpener,
-  });
+    this.recoveryLock,
+    this.busyReadWindow = const Duration(seconds: 10),
+    this.leaveSaveLimit = const Duration(seconds: 5),
+    this.backoffFirst = const Duration(seconds: 2),
+    this.backoffMax = const Duration(seconds: 30),
+  }) {
+    _chain.onDetachedJobEnded = _oldJobEnded;
+  }
 
   /// The AI codes and activity log (`ai-access.json`, `ai-activity.json` in
   /// the data folder). Null: no AI code is accepted.
@@ -385,10 +425,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// `recovery` next to [bindersFile]; with neither, nothing is kept.
   final Directory? recoveryDirectory;
 
-  RecoveryStore? get _recovery {
+  RecoveryStore? get _recovery => _recoveryStore;
+
+  late final RecoveryStore? _recoveryStore = () {
     final d = recoveryDirectory ?? (bindersFile == null ? null : defaultRecoveryDirectory(bindersFile!));
     return d == null ? null : RecoveryStore(d);
-  }
+  }();
 
   List<String> _recoveryProblems = const [];
 
@@ -446,9 +488,27 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return _landedProblems.values.any((p) => _key(p.path) == k);
   }
 
+  /// Test seam: lists the recovery folder so the index holds what a test
+  /// wrote to it from outside.
+  @visibleForTesting
+  Future<void> refreshRecoveryIndexForTest() async {
+    await _recovery?.list();
+  }
+
   /// The recovery entries and unreadable recovery files waiting now.
-  Future<RecoveryListing> pendingRecovery() async =>
-      await _recovery?.list() ?? const RecoveryListing([], []);
+  ///
+  /// Read from the index in memory, so quitting doesn't wait for the disk:
+  /// entries that landed and wait to be deleted are not edits waiting.
+  Future<RecoveryListing> pendingRecovery() async {
+    final rec = _recovery;
+    if (rec == null) return const RecoveryListing([], []);
+    if (!rec.indexed) return rec.list();
+    return RecoveryListing(
+      [for (final e in rec.indexEntries) if (!rec.isLanded(e.gen)) e],
+      _recoveryProblems,
+      _recoveryDamaged,
+    );
+  }
 
   /// How often, with [watchFiles] on, the standalone folders are checked for
   /// having disappeared or come back (a watcher can't watch a folder that
@@ -516,9 +576,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   final Map<String, Timer> _debounce = {};
   Future<void> _checking = Future.value();
   NotedPage? _pendingSave;
+  int _pendingSeq = 0;
   Timer? _saveTimer;
   final List<String> _unfinished = []; // queued writes not yet done, for unsavedDescription
-  Future<void> _saving = Future.value();
   DeletedPages? _lastDeleted;
   String? _coverPath;
   RawObject _settings = RawObject.empty;
@@ -537,8 +597,69 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // and it is read-only, until a readable version appears on disk.
   String? _diskBlockId;
   String? _diskBlockReason;
-  // The recovery entry written when the block started, for _dropBlockEntry.
-  ({String folder, String pageId, String pageText})? _blockEntry;
+
+  // R-1 v5: failed saves never lose edits ------------------------------------
+
+  /// The recovery lock this process holds (null: none is needed, as in tests).
+  /// While it isn't held, every recovery write and replay is refused.
+  final RecoveryLock? recoveryLock;
+
+  /// How long a locked page file is reread quietly before the page is blocked.
+  final Duration busyReadWindow;
+
+  /// How long leaving a page waits for its last save.
+  final Duration leaveSaveLimit;
+
+  /// The first and the longest wait of the retry backoff.
+  final Duration backoffFirst;
+  final Duration backoffMax;
+
+  // L1, the save chain.
+  final SaveChain _chain = SaveChain();
+
+  // The open page's saves (null: no page, or a preview).
+  SaveSession? _session;
+
+  // The kept edits shown read-only in place of the page, if any.
+  _Preview? _preview;
+
+  // Pages that must not be replayed, opened for editing, deleted or moved now,
+  // by id: why. A page leaves this when what held it ends.
+  final Map<String, String> _busy = {};
+
+  // Old-chain jobs still running, by page.
+  final Map<String, int> _detached = {};
+
+  TroubleState _trouble = TroubleState.saved;
+  late final SaveBackoff _backoff = SaveBackoff(
+    first: backoffFirst,
+    max: backoffMax,
+    onTick: () => unawaited(_backoffTick()),
+  );
+
+  // The recovery index must be rebuilt before the next transaction (the lock
+  // was taken late or again).
+  bool _relist = false;
+
+  // What the last block (an unreadable page file) did with the edits.
+  KeepOutcome? _blockKeep;
+
+  // Pages the user was told about in this failure streak.
+  final Set<String> _told = {};
+
+  /// Asks the user a question (the window shows it). Null: nobody can be
+  /// asked, so the answer is no.
+  Future<bool> Function(UserQuestion question, String title)? questioner;
+
+  final StreamController<KeptNotice> _keptNotices = StreamController<KeptNotice>.broadcast();
+
+  /// Edits put in recovery on leaving a page: the window shows a notice.
+  Stream<KeptNotice> get keptNotices => _keptNotices.stream;
+
+  /// Whether page [id] is held by something (replaying, a save left behind, a
+  /// delete, a move, a discard): it is not replayed, deleted or moved now, and
+  /// opening it gives the preview.
+  bool isBusy(String id) => _busy.containsKey(id);
 
   /// Test seam: called at named points of a conflict-copy merge (`copy-merged`
   /// just before the copy is revalidated for deletion, `original-read` just
@@ -810,7 +931,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<void> open(String id) async {
-    await _open(id);
+    try {
+      await _open(id);
+    } on LeaveCancelled {
+      return; // the user chose to stay on this page
+    }
     // Only once the page is open: a failed open leaves the notice for the next
     // look.
     if (_landedProblems.remove(id) != null) notifyListeners();
@@ -827,37 +952,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       throw const NotebookException('That binder is not available.');
     }
     await _closeCurrent();
-    final st = _storeOf(_loc[id] ?? _standalone);
-    // Read and set up inside the save queue, so a write to this page from an
-    // AI (which goes through the same queue while the page is closed) lands
-    // either before the read or, once the page is open, through its
-    // controller.
-    await _afterSaves(() async {
-      final text = await st.readText(id);
-      final page = readPage(text);
-      _known[_key(st.pathFor(id))] = text;
-      _base = page;
-      _metas[id] = page.meta;
-      _setConflict(id, hasConflicts(page));
-      // A change reported by a controller that is no longer the open one (a
-      // late callback after it was closed) is ignored: it would queue an
-      // unchecked save of a closed page.
-      late final CanvasController controller;
-      controller = CanvasController(
-        page,
-        modules,
-        onChanged: (p) {
-          if (identical(_current, controller)) _pageChanged(p);
-        },
-        deviceName: deviceName,
-      );
-      _current = controller;
-      _attachments = _makeAttachments(id, _loc[id] ?? _standalone);
-      _syncReadOnly();
-      _rebuildTree();
-    });
+    await _openFresh(id);
   }
-
   PageAttachments _makeAttachments(String id, String loc) => PageAttachments(
     pageFolder: _storeOf(loc).directory,
     pageId: id,
@@ -972,17 +1068,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (identical(next, b)) return;
     s.binder = next;
     notifyListeners();
-    final job = _saving.then((_) async {
+    await _afterSaves(() async {
       final latest = s.binder;
       if (latest != null) {
         await BinderStore(Directory(path)).save(latest);
         _binderText[_key(path)] = latest.write();
       }
-    }).catchError((Object e) {
+    }, what: 'binder AI access of $path').catchError((Object e) {
       debugPrint('Saving binder $path failed: $e');
     });
-    _saving = _track('binder AI access of $path', job);
-    await job;
   }
 
   /// The title of page [id] as the settings panel names it, or null if the
@@ -1056,17 +1150,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (identical(next, b)) return;
     s.binder = next;
     notifyListeners();
-    final job = _saving.then((_) async {
+    await _afterSaves(() async {
       final latest = s.binder;
       if (latest != null) {
         await BinderStore(Directory(path)).save(latest);
         _binderText[_key(path)] = latest.write();
       }
-    }).catchError((Object e) {
+    }, what: 'binder box types of $path').catchError((Object e) {
       debugPrint('Saving binder $path failed: $e');
     });
-    _saving = _track('binder box types of $path', job);
-    await job;
   }
 
   // Attachments (images and files) -----------------------------------------
@@ -1141,17 +1233,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (b.attachmentStorage == value) return;
     s.binder = b.withAttachmentStorage(value);
     notifyListeners();
-    final job = _saving.then((_) async {
+    await _afterSaves(() async {
       final latest = s.binder;
       if (latest != null) {
         await BinderStore(Directory(path)).save(latest);
         _binderText[_key(path)] = latest.write();
       }
-    }).catchError((Object e) {
+    }, what: 'binder attachment storage of $path').catchError((Object e) {
       debugPrint('Saving binder $path failed: $e');
     });
-    _saving = _track('binder attachment storage of $path', job);
-    await job;
   }
 
   /// "Embed attachments" / "Move attachments to folder" on page [id]
@@ -1250,7 +1340,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _diskBlockId = null; // another page is open now; the block was this page's
       _diskBlockReason = null;
     }
-    if (_blockEntry != null && c?.page.id != _blockEntry!.pageId) _blockEntry = null;
     String? why;
     if (c != null) {
       final loc = _loc[c.page.id];
@@ -1262,6 +1351,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             : "This page's folder isn't available, so it is read-only.";
       }
       if (why == null && _diskBlockId == c.page.id) why = _diskBlockReason;
+      // Kept changes shown in place of the page are never edited or saved.
+      if (why == null && _preview != null) why = 'These are changes kept in recovery that are not saved to this page yet.';
       c.readOnly = why != null;
     }
     if (why != _readOnlyReason) {
@@ -1372,6 +1463,49 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final st = _storeOf(loc);
     final ids = [id, ..._treeOf(loc).descendantsOf(id)];
     final openId = ids.contains(currentId) ? currentId : null;
+    final DeletedPages result;
+    await _guardKept(ids, loc, "deleting", "Noted is still trying to save this page, so it can't be deleted yet.");
+    try {
+      result = await _deleteGuarded(id, loc, st, ids, openId);
+    } finally {
+      for (final p in ids) {
+        _busy.remove(p);
+      }
+    }
+    return result;
+  }
+
+  // Refuses (BusyException) when a page of [ids] is busy, asks about kept
+  // changes, then marks the pages busy for [why] (3.7 delete and move). A
+  // delete or move of several pages needs recovery, so it is refused while
+  // the recovery lock isn't held (build note 2).
+  Future<void> _guardKept(List<String> ids, String loc, String why, String busyMessage) async {
+    for (final p in ids) {
+      if (_busy.containsKey(p)) throw NotebookException(busyMessage);
+    }
+    if (ids.length > 1 && recoveryLockProblem != null) {
+      throw const NotebookException("Noted can't keep a backup right now.");
+    }
+    if (why == "deleting") {
+      final rec = _recovery;
+      final kept = rec != null && ids.any((p) => rec.entriesOfPage(p).any((e) => !rec.isLanded(e.gen)));
+      final troubled = _trouble.isTrouble && ids.contains(_trouble.pageId);
+      if (kept || troubled) {
+        final title = _titleOrUntitled(pageTitleOf(ids.first) ?? '');
+        if (!await _ask(UserQuestion.deleteKept, title)) throw const LeaveCancelled();
+        if (troubled && _preview == null) {
+          // The user chose to delete the changes with the page: the session
+          // is dropped without a last save; its entries go once the page is.
+          _disposeCurrent();
+        }
+      }
+    }
+    for (final p in ids) {
+      _busy[p] = why == "deleting" ? _busyDeleting : _busyMoving;
+    }
+  }
+
+  Future<DeletedPages> _deleteGuarded(String id, String loc, PageStore st, List<String> ids, String? openId) async {
     // Closing saves the open page, so the copies read below are current.
     if (openId != null) await _closeCurrent();
     // The text each page was read with: the file is deleted only while it still
@@ -1465,6 +1599,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _touch(loc);
       _rebuildTree();
       if (openId != null) {
+        _busy.remove(openId); // reopened for editing, not as a preview
         try {
           await open(openId);
         } on Object catch (e) {
@@ -1478,21 +1613,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // next delete would clear its attachments away. An entry that is
         // already there for the page is left alone: it recreates the page and
         // holds the newer content.
-        final folder = _normalizePath(st.directory.path);
-        var waiting = const <RecoveryEntry>[];
-        if (rec != null) {
-          try {
-            waiting = (await rec.list()).entries;
-          } on Object catch (e) {
-            // Unlisted: treat it as no entry waiting, so the page is kept.
-            debugPrint('Listing recovery after a failed delete failed: $e');
-          }
-        }
         for (final i in stuck) {
-          final has = waiting.any(
-            (e) => e.pageId == ids[i] && _key(_normalizePath(e.folder)) == _key(folder),
-          );
-          if (!has) await _keepForRecovery(loc, st, pages[i], base: pages[i]);
+          // Merged into the entry already there, if any (3.4.2).
+          await _keepForRecovery(loc, st, pages[i], base: pages[i]);
         }
         // Land kept attachments as soon as the folder takes them, not only at
         // the next start; raised only now, so a stuck page's entry exists
@@ -1522,6 +1645,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       await _checkFile(st.pathFor(p));
     }
+    // What the user chose to delete with the pages goes once they are gone,
+    // by exact generation. A page kept because it changed keeps its entries.
+    await _dropKeptEntries([for (final p in ids) if (!keptIds.contains(p)) p], st);
     final deleted = DeletedPages._(
       [for (var i = 0; i < ids.length; i++) if (!keptIds.contains(ids[i])) pages[i]],
       openId,
@@ -1538,6 +1664,89 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
     if (_current == null) await _openFallback(loc);
     return deleted;
+  }
+
+  // The first half of a move of kept edits (3.7): each non-landed entry of the
+  // moved pages is written again under the target's folder, and read back,
+  // while the old one stays. Landed ones are deleted. Throws a
+  // NotebookException, with what was written settled back, if a write fails.
+  Future<List<_Rekey>> _rekeyBegin(
+    List<String> ids,
+    PageStore fromStore,
+    PageStore toStore,
+    String fromLoc,
+    String toLoc,
+  ) async {
+    final rec = _recovery;
+    if (rec == null) return const [];
+    final fromFolder = _normalizePath(fromStore.directory.path);
+    final toFolder = _normalizePath(toStore.directory.path);
+    final done = <_Rekey>[];
+    final landed = <String>[];
+    for (final p in ids) {
+      final preexisting = rec.entriesFor(toFolder, p).isNotEmpty;
+      for (final e in rec.entriesFor(fromFolder, p)) {
+        if (rec.isLanded(e.gen)) {
+          landed.add(e.gen);
+          continue;
+        }
+        final NotedPage? eb = e.baseText == null ? null : _tryRead(e.baseText!);
+        final KeepOutcome out;
+        if (e.baseText != null && eb == null) {
+          out = const KeepOutcome(KeepKind.refused, why: 'its base can not be read');
+        } else {
+          out = await _keepForRecovery(toLoc, toStore, e.page, base: eb, exactBase: true);
+        }
+        final fresh = out.gen == null ? null : rec.indexEntries.where((x) => x.gen == out.gen).firstOrNull;
+        if (!out.safe || fresh == null || !await fresh.file.exists()) {
+          await _settleRekeys(done, const {});
+          final why = out.why ?? (out.cause == null ? 'it could not be written' : describeError(out.cause!));
+          throw NotebookException(
+            "Nothing was moved. The changes kept for a page could not be moved with it ($why).",
+            needsAction: true,
+          );
+        }
+        done.add(_Rekey(p, e, fresh.gen, preexisting));
+      }
+    }
+    if (landed.isNotEmpty) await _deleteGens(rec, landed, null);
+    return done;
+  }
+
+  // The second half: each page's kept entry is decided where the page ended
+  // up. At the target (in [atDest]) the old key goes; at the source the new
+  // one does. A delete that fails marks the generation landed. Never throws.
+  Future<void> _settleRekeys(List<_Rekey> keys, Set<String> atDest) async {
+    final rec = _recovery;
+    if (rec == null || keys.isEmpty) return;
+    for (final k in keys) {
+      try {
+        final RecoveryEntry? victim;
+        if (atDest.contains(k.id)) {
+          final fresh = rec.indexEntries.where((x) => x.gen == k.freshGen).firstOrNull;
+          victim = fresh != null && await fresh.file.exists() ? k.old : null;
+        } else {
+          victim = k.preexisting ? null : rec.indexEntries.where((x) => x.gen == k.freshGen).firstOrNull;
+        }
+        if (victim != null) await _deleteEntry(rec, victim);
+      } on Object catch (e) {
+        debugPrint('Settling the kept changes of page ${k.id} failed: $e');
+      }
+    }
+    keys.clear();
+  }
+
+  // Deletes the recovery entries of [pageIds] in the folder of [st], by exact
+  // generation (the pages are deleted).
+  Future<void> _dropKeptEntries(List<String> pageIds, PageStore st) async {
+    final rec = _recovery;
+    if (rec == null) return;
+    final folder = _key(_normalizePath(st.directory.path));
+    final gens = [
+      for (final e in rec.indexEntries)
+        if (pageIds.contains(e.pageId) && _key(e.folder) == folder) e.gen,
+    ];
+    if (gens.isNotEmpty) await _deleteGens(rec, gens, null);
   }
 
   Future<void> _openFallback(String loc) async {
@@ -1839,12 +2048,28 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
     collect(id);
     final reopen = ids.contains(currentId) ? currentId : null;
+    // The pages are busy until each has settled (3.7).
+    await _guardKept(
+      ids,
+      fromLoc,
+      "moving",
+      "Noted is still trying to save this page, so it can't be moved yet.",
+    );
+    final rekeys = <_Rekey>[];
+    final atDest = <String>{}; // pages that ended at the target
     // Closing or flushing writes pending edits, so the copies read below are
     // current.
-    if (reopen != null) {
-      await _closeCurrent();
-    } else {
-      await flush();
+    try {
+      if (reopen != null) {
+        await _closeCurrent();
+      } else {
+        await flush();
+      }
+    } on Object {
+      for (final p in ids) {
+        _busy.remove(p);
+      }
+      rethrow;
     }
     Object? pending; // what the move is failing with, for the reopen below
     NotebookException? notice; // the move worked; there is something to tell
@@ -1943,6 +2168,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         throw withKept(NotebookException('Could not move the page.${_osReason(e)}'));
       }
 
+      // Kept changes go with their pages: the new key is written (and read
+      // back) before the stale-source check and before any source is deleted;
+      // the old key stays until each page has settled (build note 9).
+      try {
+        rekeys.addAll(await _rekeyBegin(ids, fromStore, toStore, fromLoc, toLoc));
+      } on NotebookException {
+        await removeCopies();
+        rethrow;
+      }
+      await syncHook?.call('move-rekeyed', toStore.directory.path);
       // Every source is checked before any is deleted. One that changed (or
       // can't be read) since it was copied stops the move: nothing is deleted,
       // and this move's own verified copies are dropped. A source that is gone
@@ -1981,6 +2216,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           _metas[p.id] = p.meta;
           _loc[p.id] = toLoc;
         }
+        atDest.addAll(ids); // after the new key is read back, in the settlement
         _touch(fromLoc);
         _touch(toLoc);
         _rebuildTree();
@@ -2122,6 +2358,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // Only a page with no source moves. A page whose parent ended up in
         // the other location goes to the top level of its own (0059).
         final movedIdx = gone.toSet();
+        atDest.addAll([for (final i in movedIdx) ids[i]]);
         final idIndex = {for (var i = 0; i < ids.length; i++) ids[i]: i};
         for (final i in movedIdx) {
           _metas[ids[i]] = moved[i].meta;
@@ -2254,6 +2491,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           needsAction: both.isNotEmpty || copyLeft.isNotEmpty || changed.isNotEmpty,
         );
       }
+      atDest.addAll(ids);
+      await syncHook?.call('move-source-deleted', fromStore.directory.path);
       // Only the attachment files that were copied and verified go from the
       // source; a file that arrived there after the copy, or whose target
       // differs, stays.
@@ -2299,6 +2538,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       pending = out;
       throw out;
     } finally {
+      // Every page settles before the reopen; it leaves busy only after.
+      await _settleRekeys(rekeys, atDest);
+      for (final p in ids) {
+        _busy.remove(p);
+      }
       if (reopen != null && _current == null && _loc.containsKey(reopen)) {
         try {
           await open(reopen);
@@ -2911,17 +3155,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     s.binder = b;
     s.lastEdited = DateTime.now();
     notifyListeners();
-    final job = _saving.then((_) async {
+    await _afterSaves(() async {
       final latest = s.binder;
       if (latest != null) {
         await BinderStore(Directory(path)).save(latest);
         _binderText[_key(path)] = latest.write();
       }
-    }).catchError((Object e) {
+    }, what: 'binder cover edit of $path').catchError((Object e) {
       debugPrint('Saving binder $path failed: $e');
     });
-    _saving = _track('binder cover edit of $path', job);
-    await job;
   }
 
   Future<BinderSection> _openBinder(String path, {bool create = false}) async {
@@ -3032,7 +3274,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (f == null) return;
     final paths = _binders.keys.toList();
     final folders = _folders.keys.toList();
-    final job = _saving.then((_) async {
+    await _afterSaves(() async {
       await f.parent.create(recursive: true);
       if (_settingsCorrupt) {
         // Keep the damaged file instead of overwriting it.
@@ -3052,11 +3294,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final tmp = File('${f.path}.tmp');
       await tmp.writeAsString('${_settings.toRaw().text}\n', flush: true);
       await tmp.rename(f.path);
-    }).catchError((Object e) {
+    }, what: 'settings file write').catchError((Object e) {
       debugPrint('Saving ${f.path} failed: $e');
     });
-    _saving = _track('settings file write', job);
-    await job;
   }
 
   // AI requests (invariant 4) --------------------------------------------------
@@ -3274,6 +3514,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final NotedPage page;
     var readOnly = false;
     if (c != null && c.page.id == pageId) {
+      if (_trouble.isTrouble && _trouble.pageId == pageId) return _aiTroubled();
       page = c.page;
       readOnly = c.readOnly;
     } else {
@@ -3365,6 +3606,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return (error: null, codec: r.codec, data: next);
   }
 
+  // The open page has changes that couldn't be saved: nothing is written to it.
+  AiLinkResponse _aiTroubled() => AiLinkResponse.error(
+    AiLinkCode.saveFailed,
+    "The page has changes that couldn't be saved, so nothing was written.",
+  );
+
   // The page is open: change it through its controller, as one undo step the
   // user sees at once, and let the normal save write it.
   Future<AiLinkResponse> _aiWriteOpen(
@@ -3376,6 +3623,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final pageId = c.page.id;
     final loc = _loc[pageId];
     if (loc == null) return AiLinkResponse.error(AiLinkCode.noBox);
+    if (_trouble.isTrouble && _trouble.pageId == pageId) return _aiTroubled();
     final p = _aiPrepare(c.page, loc, c.readOnly, code, req, recheck);
     if (p.error != null) return p.error!;
     if (c.replaceBoxData({req.box: p.data}) == 0) {
@@ -3400,6 +3648,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_current?.page.id == pageId) return null;
     final loc = _loc[pageId];
     if (loc == null) return AiLinkResponse.error(AiLinkCode.noBox);
+    if (_busy.containsKey(pageId)) {
+      return AiLinkResponse.error(AiLinkCode.busy, 'Noted is still trying to save this page. Try again in a moment.');
+    }
     final PageStore st;
     final NotedPage page;
     try {
@@ -3437,6 +3688,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _touch(loc);
     if (metaChanged) _rebuildTree();
     return AiLinkResponse.written(box: req.box);
+  }
+
+  // The answer to an AI write whose page could not be saved: "kept" only if
+  // recovery now holds the change.
+  Future<AiLinkResponse> _keptAnswer(String loc, PageStore st, NotedPage toSave, NotedPage base) async {
+    final out = await _keepForRecovery(loc, st, toSave, base: base);
+    return out.safe
+        ? AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage)
+        : AiLinkResponse.error(AiLinkCode.saveFailed, 'The change could not be saved or kept, so nothing was written.');
   }
 
   // Reads the file of a closed page: null text if it is not there. Throws
@@ -3526,16 +3786,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // moment of replacing (0128); a file that changed since is merged again.
         if (!await _writeIfUnchanged(loc, toSave, again.text)) continue;
       } on FolderUnavailableException {
-        await _keepForRecovery(loc, st, toSave, base: recoveryBase);
-        throw _SaveRefused(AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage));
+        throw _SaveRefused(await _keptAnswer(loc, st, toSave, recoveryBase));
       } on NotebookException {
         throw _SaveRefused(AiLinkResponse.error(AiLinkCode.locked));
       } on FileSystemException {
         if (await st.directory.exists()) {
           throw _SaveRefused(AiLinkResponse.error(AiLinkCode.saveFailed));
         }
-        await _keepForRecovery(loc, st, toSave, base: recoveryBase);
-        throw _SaveRefused(AiLinkResponse.error(AiLinkCode.saveFailed, _keptMessage));
+        throw _SaveRefused(await _keptAnswer(loc, st, toSave, recoveryBase));
       }
       return toSave;
     }
@@ -3547,18 +3805,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     );
   }
 
-  // Lists [job], a write queued on _saving, as unfinished until it completes.
+  // Lists [job], a write queued on the save chain, as unfinished until it
+  // completes.
   Future<T> _track<T>(String what, Future<T> job) {
     _unfinished.add(what);
     return job.whenComplete(() => _unfinished.remove(what));
   }
 
-  // Runs [job] after the saves queued so far, and before any later one.
-  Future<T> _afterSaves<T>(Future<T> Function() job) {
-    final r = _saving.then((_) => job());
-    _saving = _track('queued job', r.then((_) {}, onError: (_) {}));
-    return r;
-  }
+  // Runs [job] after the jobs queued so far (L1) and before any later one.
+  // [pages] are the pages it works on: if the chain is detached while it
+  // hangs, they are busy until it ends.
+  Future<T> _afterSaves<T>(
+    Future<T> Function() job, {
+    String what = 'queued job',
+    Set<String> pages = const {},
+  }) => _track(what, _chain.run(job, pages: pages));
 
   // Autosave ------------------------------------------------------------------
 
@@ -3580,14 +3841,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _saveTimer = null;
     final p = _pendingSave;
     _pendingSave = null;
-    if (p != null) _enqueueSave(p);
-    await _saving;
+    if (p != null) unawaited(_enqueueSave(p, _pendingSeq));
+    await _chain.idle;
   }
 
   void _pageChanged(NotedPage page) {
     final loc = _loc[page.id];
     if (loc != null && _isLocked(loc)) return; // a read-only page is never saved
+    if (_preview != null) return; // a preview is never saved
+    final s = _session;
+    if (s != null && s.pageId == page.id) s.seq++;
     _pendingSave = page;
+    _pendingSeq = s?.seq ?? 0;
     if (_metas[page.id] != page.meta) {
       _metas[page.id] = page.meta;
       _rebuildTree();
@@ -3597,38 +3862,53 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _saveTimer = Timer(saveDelay, () => unawaited(flush()));
   }
 
-  // Saves run one after another, so an older version never lands last.
-  void _enqueueSave(NotedPage page) {
-    _saving = _track('save of page ${page.id}', _saving.then((_) async {
-      final loc = _loc[page.id];
-      if (loc == null || _isLocked(loc)) return;
-      final st = _storeOf(loc);
-      var toSave = page;
+  // Saves run one after another, so an older version never lands last. The
+  // job never throws: how it ended is the result. [seq] is the snapshot of the
+  // page's session the save is for.
+  Future<SaveResult> _enqueueSave(NotedPage page, int seq) {
+    final s = _session;
+    final session = s != null && s.pageId == page.id && !s.ended ? s : null;
+    return _afterSaves(() => _saveNow(page, seq, session), what: 'save of page ${page.id}', pages: {page.id});
+  }
+
+  Future<SaveResult> _saveNow(NotedPage page, int seq, SaveSession? session) async {
+    final loc = _loc[page.id];
+    if (loc == null || _isLocked(loc)) return const SaveResult(SaveEnd.skipped);
+    final PageStore st;
+    try {
+      st = _storeOf(loc);
+    } on NotebookException {
+      return const SaveResult(SaveEnd.skipped);
+    }
+    var toSave = page;
+    var savedSeq = seq;
+    try {
       final path = st.pathFor(page.id);
       final key = _key(path);
       var landed = false;
       for (var attempt = 0; !landed; attempt++) {
         if (attempt >= _maxWriteTries) {
           // The file changed under every attempt: the edits are kept.
-          _countSaveFailure(page.id);
-          await _keepForRecovery(loc, st, toSave);
-          return;
+          return await _saveFailed(loc, st, toSave, savedSeq, session, reason: 'the page file keeps changing');
         }
-        final isOpen = _current?.page.id == page.id;
+        final isOpen = session != null && identical(session, _session) && _current?.page.id == page.id;
         if (isOpen) {
           // Merge what someone else wrote since the last look first, so this
-          // save doesn't overwrite it.
-          // A replacement this app can't read is never overwritten: the edits
-          // are in recovery and the page is read-only until a readable version
-          // lands (0051). This looks even if nothing is known about the file (it
-          // was deleted and a new one may have been put in its place); only a
-          // file that is really absent is written.
+          // save doesn't overwrite it. A replacement this app can't read is
+          // never overwritten: the edits are in recovery and the page is
+          // read-only until a readable version lands (0051). This looks even
+          // if nothing is known about the file (it was deleted and a new one
+          // may have been put in its place); only a file that is really
+          // absent is written.
           if (await _checkFile(path)) {
             _countSaveFailure(page.id); // it did not land, so a caller that needs it must know
-            return;
+            return SaveResult(SaveEnd.blocked, _blockKeep);
           }
           final c = _current;
-          if (c != null && c.page.id == page.id) toSave = c.page;
+          if (c != null && c.page.id == page.id && identical(session, _session)) {
+            toSave = c.page;
+            savedSeq = session.seq;
+          }
         }
         final known = _known[key];
         try {
@@ -3636,36 +3916,67 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // (0128): a version that landed since is not overwritten.
           landed = await _writeIfUnchanged(loc, toSave, known);
         } on FolderUnavailableException {
-          _countSaveFailure(page.id);
-          await _keepForRecovery(loc, st, toSave);
-          return;
-        } on FileSystemException {
+          return await _saveFailed(loc, st, toSave, savedSeq, session, folderGone: true);
+        } on FileSystemException catch (e) {
           // The folder may have vanished during the write.
-          if (await st.directory.exists()) rethrow;
-          _countSaveFailure(page.id);
-          await _keepForRecovery(loc, st, toSave);
-          return;
+          final folderGone = !await st.directory.exists();
+          return await _saveFailed(loc, st, toSave, savedSeq, session, error: e, folderGone: folderGone);
         }
         if (landed) break;
         // The file is not what was last seen. The open page takes it in at the
         // top of the next round (_checkFile merges it). A page that is not open
         // has nothing to merge against here: it is never written over; its
         // edits are kept in recovery, which merges them three-way later.
-        if (isOpen && _current?.page.id == page.id) continue;
-        _countSaveFailure(page.id);
-        await _keepForRecovery(loc, st, toSave); // against the text last seen
+        if (isOpen && identical(session, _session) && _current?.page.id == page.id) continue;
+        final r = await _saveFailed(loc, st, toSave, savedSeq, session, reason: 'the page file changed');
         await _checkFile(path);
         // Not merged here: the edits are in recovery, and the existing triggers
         // (load, a folder coming back) replay them three-way.
-        return;
+        return r;
       }
-      if (_current?.page.id == toSave.id) _base = toSave;
+      if (_current?.page.id == toSave.id && (session == null || identical(session, _session))) _base = toSave;
       _touch(loc);
-      await _dropBlockEntry(st, toSave);
-    }).catchError((Object e) {
-      _countSaveFailure(page.id);
-      debugPrint('Saving page ${page.id} failed: $e');
-    }));
+      if (session != null) await _retireOwn(session, st, toSave, savedSeq);
+      return const SaveResult(SaveEnd.landed);
+    } on NotebookException {
+      return const SaveResult(SaveEnd.skipped); // the location can't be written now
+    } on Object catch (e, s) {
+      // Not an I/O error: also state 2, "an unexpected error" (build note 6).
+      debugPrint('Saving page ${page.id} failed: $e\n$s');
+      return await _saveFailed(loc, st, toSave, savedSeq, session, error: e is IOException ? e : null);
+    }
+  }
+
+  // A save did not land: the edits go to recovery (3.4), and the bar says so.
+  Future<SaveResult> _saveFailed(
+    String loc,
+    PageStore st,
+    NotedPage toSave,
+    int seq,
+    SaveSession? session, {
+    Object? error,
+    String? reason,
+    bool folderGone = false,
+  }) async {
+    _countSaveFailure(toSave.id);
+    final KeepOutcome keep;
+    try {
+      keep = await _keepForRecovery(loc, st, toSave, session: session, seq: seq);
+    } on Object catch (e) {
+      debugPrint('Keeping page ${toSave.id} for recovery failed: $e');
+      return SaveResult(SaveEnd.failed, KeepOutcome(KeepKind.failed, cause: e));
+    }
+    if (session != null && identical(session, _session) && !session.ended) {
+      _troubleFrom(
+        session,
+        toSave,
+        keep,
+        reason: reason ?? (error == null ? 'an unexpected error' : describeError(error)),
+        folderGone: folderGone,
+        error: error,
+      );
+    }
+    return SaveResult(SaveEnd.failed, keep);
   }
 
   // Throws unless the pages of [loc] may be written. A folder that has gone
@@ -3678,30 +3989,382 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  // The bar -------------------------------------------------------------------
+
+  /// How the open page's saves are going (the bar above the page).
+  TroubleState get trouble => _trouble;
+
+  void _setTrouble(TroubleState s) {
+    if (s == _trouble) return;
+    _trouble = s;
+    if (!_disposed) notifyListeners();
+  }
+
+  // Sets the bar after a failed save, by what became of the edits.
+  void _troubleFrom(
+    SaveSession session,
+    NotedPage page,
+    KeepOutcome keep, {
+    required String reason,
+    required bool folderGone,
+    Object? error,
+  }) {
+    final title = _titleOrUntitled(page.meta.title);
+    if (keep.safe) {
+      // A folder that went away is dealt with by the folder check (the page
+      // turns read-only); the bar is for a folder that is there.
+      if (folderGone) {
+        if (_trouble.pageId == page.id && _trouble.kind == TroubleKind.recoveryFailing) {
+          _setTrouble(TroubleState.saved);
+        }
+      } else {
+        _setTrouble(
+          TroubleState(
+            TroubleKind.failing,
+            pageId: page.id,
+            title: title,
+            reason: reason,
+            canSaveCopy: pickFolder != null,
+          ),
+        );
+      }
+      _backoff.schedule();
+      return;
+    }
+    final why = keep.why ?? (keep.cause == null ? reason : describeError(keep.cause!));
+    final base = TroubleState(
+      TroubleKind.recoveryFailing,
+      pageId: page.id,
+      title: title,
+      reason: why,
+      advice: saveCopyAdvice,
+      canSaveCopy: pickFolder != null,
+    );
+    _setTrouble(base);
+    _backoff.schedule();
+    final rec = _recovery;
+    if (rec != null) {
+      unawaited(
+        checkStorage(
+          error ?? keep.cause ?? reason,
+          recoveryDirectory: rec.directory,
+          needed: writePage(page).length,
+          recoveryFailure: keep.cause,
+        ).then((c) {
+          if (_disposed || _trouble != base) return;
+          _setTrouble(
+            TroubleState(
+              TroubleKind.recoveryFailing,
+              pageId: page.id,
+              title: title,
+              reason: c.summary,
+              advice: c.advice,
+              canSaveCopy: pickFolder != null,
+            ),
+          );
+        }, onError: (Object _) {}),
+      );
+    }
+  }
+
+  // Asks the user; no window to ask means no.
+  Future<bool> _ask(UserQuestion q, String title) async {
+    final ask = questioner;
+    if (ask == null) return false;
+    try {
+      return await ask(q, title);
+    } on Object catch (e) {
+      debugPrint('Asking the user failed: $e');
+      return false;
+    }
+  }
+
   // Recovery ------------------------------------------------------------------
 
-  // A save couldn't land because the folder is gone: keep exactly what the
-  // save would have written, so the edit survives quitting (0066).
-  Future<void> _keepForRecovery(
+  // Why recovery can't be used now (the lock isn't held), or null. A lock that
+  // is taken late means another process may have written entries meanwhile,
+  // so the index is rebuilt before the next transaction.
+  String? _lockProblem() {
+    final l = recoveryLock;
+    if (l == null || l.check()) return null;
+    if (l.ensure()) {
+      _relist = true;
+      return null;
+    }
+    return l.problem;
+  }
+
+  /// Why Noted can't use its recovery folder now, or null. For the window.
+  String? get recoveryLockProblem {
+    final l = recoveryLock;
+    return l == null || l.held ? null : l.problem;
+  }
+
+  // The codecs for page [id]: those of its disallowed box types are off, so a
+  // merge treats such a box opaquely, as a switched-off module would (0111).
+  CodecRegistry _pageCodecs(String id) {
+    final off = disallowedBoxTypesFor(id);
+    final r = CodecRegistry();
+    for (final c in modules.codecs.codecs) {
+      r.register(c, enabled: modules.codecs.isEnabled(c.typeId) && !off.contains(c.typeId));
+    }
+    return r;
+  }
+
+  // Whether the edits of [ep] (made against [eb]) are already in [nb]: every
+  // box it added or changed is in [nb] with its content (or with conflict
+  // records it doesn't have), every box it deleted is absent, and the title
+  // is its own. Only ever used to skip; a false "no" just merges.
+  static bool _editsIn(NotedPage eb, NotedPage ep, NotedPage nb) {
+    final baseById = {for (final n in eb.nodes) n.id: n};
+    final epIds = {for (final n in ep.nodes) n.id};
+    for (final m in ep.nodes) {
+      final b = baseById[m.id];
+      if (b != null && b.toRaw() == m.toRaw()) continue;
+      final x = nb.node(m.id);
+      if (x == null) return false;
+      if (x.toRaw() == m.toRaw()) continue;
+      if (x is BoxRecord && m is BoxRecord && x.withoutConflicts().toRaw() == m.withoutConflicts().toRaw()) continue;
+      return false;
+    }
+    for (final b in eb.nodes) {
+      if (!epIds.contains(b.id) && nb.node(b.id) != null) return false;
+    }
+    return ep.meta.title == eb.meta.title || nb.meta.title == ep.meta.title;
+  }
+
+  // A save couldn't land: keep exactly what the save would have written, so
+  // the edit survives quitting (0066). The only caller of RecoveryStore.write.
+  // [session]: the open page's own writer (3.4.1), else a closed writer that
+  // merges into the entries already there (3.4.2). [base] is the page as last
+  // read or written, if not the one the notebook remembers.
+  Future<KeepOutcome> _keepForRecovery(
     String loc,
     PageStore st,
     NotedPage page, {
     NotedPage? base,
+    bool exactBase = false,
+    SaveSession? session,
+    int seq = 0,
   }) async {
     final rec = _recovery;
-    if (rec == null) return;
-    var baseText = base == null ? _known[_key(st.pathFor(page.id))] : writePage(base);
+    if (rec == null) {
+      return const KeepOutcome(KeepKind.refused, why: 'Noted has no recovery folder');
+    }
+    if (session != null && (seq <= session.newestWritten || seq < session.floor)) return KeepOutcome.dropped;
+    final problem = _lockProblem();
+    if (problem != null) return KeepOutcome(KeepKind.refused, why: problem);
+    var baseText = base == null ? (exactBase ? null : _known[_key(st.pathFor(page.id))]) : writePage(base);
     final b = _base;
-    if (baseText == null && b != null && _current?.page.id == page.id) baseText = writePage(b);
+    if (baseText == null && !exactBase && b != null && session != null) baseText = writePage(b);
+    final folder = _normalizePath(st.directory.path);
     try {
-      await rec.write(
-        folder: _normalizePath(st.directory.path),
-        page: page,
-        baseText: baseText,
-        time: DateTime.now(),
-      );
+      return await rec.transaction((tx) async {
+        if (_relist) {
+          _relist = false;
+          await tx.list();
+        }
+        final entries = rec.entriesFor(folder, page.id);
+        if (session != null) return _keepAsSession(rec, tx, folder, page, baseText, session, seq, entries);
+        return _keepAsClosed(rec, tx, folder, page, baseText, base, entries);
+      });
+    } on RecoveryRefused catch (e) {
+      return KeepOutcome(KeepKind.refused, why: e.why);
     } on Object catch (e) {
       debugPrint('Keeping page ${page.id} for recovery failed: $e');
+      return KeepOutcome(KeepKind.failed, cause: e, why: e is RecoveryTimeout ? e.toString() : null);
+    }
+  }
+
+  // 3.4.1: the open page replaces only its own generations (and landed ones).
+  Future<KeepOutcome> _keepAsSession(
+    RecoveryStore rec,
+    RecoveryTx tx,
+    String folder,
+    NotedPage page,
+    String? baseText,
+    SaveSession session,
+    int seq,
+    List<RecoveryEntry> entries,
+  ) async {
+    if (seq <= session.newestWritten || seq < session.floor) return KeepOutcome.dropped;
+    final foreign = entries.where((e) => !session.own.containsKey(e.gen) && !rec.isLanded(e.gen));
+    if (foreign.isNotEmpty) {
+      // Only reachable after the lock was taken late: never replaced.
+      return const KeepOutcome(
+        KeepKind.refused,
+        why: 'the recovery folder holds changes for this page that this window did not write',
+      );
+    }
+    final time = DateTime.now().toUtc();
+    final gen = RecoveryStore.generationOf(time, baseText, writePage(page));
+    // Recorded before writing: a tmp file that gets promoted is recognised.
+    session.own[gen] = seq;
+    final replaceable = {...session.own.keys, for (final e in entries) e.gen};
+    final written = await tx.write(
+      folder: folder,
+      page: page,
+      baseText: baseText,
+      time: time,
+      replaceable: replaceable,
+    );
+    session.newestWritten = seq;
+    // Older generations in other slots go; one that can't be deleted is marked
+    // landed (deleted, never merged, later).
+    for (final e in rec.entriesFor(folder, page.id)) {
+      if (e.gen == written.gen) continue;
+      if (!session.own.containsKey(e.gen) && !rec.isLanded(e.gen)) continue;
+      try {
+        await tx.delete(e);
+      } on Object catch (ex) {
+        debugPrint('Deleting an older kept generation failed: $ex');
+        rec.markLanded(e.gen);
+      }
+      session.own.remove(e.gen);
+    }
+    // A generation the write replaced is gone from the disk (a tmp left by an
+    // earlier failed rename is older than this one and is deleted at the next
+    // listing), so only the new one is still ours.
+    session.own.removeWhere((g, _) => g != gen && !rec.indexEntries.any((e) => e.gen == g));
+    return KeepOutcome(KeepKind.kept, gen: gen);
+  }
+
+  // 3.4.2: a closed writer merges into the entries of the page, never
+  // replaces one it didn't merge.
+  Future<KeepOutcome> _keepAsClosed(
+    RecoveryStore rec,
+    RecoveryTx tx,
+    String folder,
+    NotedPage page,
+    String? baseText,
+    NotedPage? basePage,
+    List<RecoveryEntry> entries,
+  ) async {
+    final codecs = _pageCodecs(page.id);
+    final nb = basePage ?? (baseText == null ? null : _tryRead(baseText));
+    var np = page;
+    final sorted = [...entries]..sort((a, b) => a.time.compareTo(b.time));
+    for (final e in sorted) {
+      if (rec.isLanded(e.gen)) continue; // deleted, never merged
+      final NotedPage eb;
+      if (e.baseText == null) {
+        eb = NotedPage.create(e.page.meta);
+      } else {
+        final r = _tryRead(e.baseText!);
+        if (r == null) {
+          return const KeepOutcome(
+            KeepKind.refused,
+            why: 'the base of the changes kept for this page can not be read',
+          );
+        }
+        eb = r;
+      }
+      // Already in the writer's base: nothing to merge.
+      if (nb != null && _editsIn(eb, e.page, nb)) continue;
+      final result = mergePage(
+        eb,
+        e.page,
+        np,
+        codecs,
+        theirsTime: DateTime.now().millisecondsSinceEpoch,
+        markLanded: false,
+      ).page;
+      final lost = _ownEditsMissing(eb, e.page, result);
+      final lostMine = _ownEditsMissing(nb ?? NotedPage.create(page.meta), page, result);
+      if (lost != null || lostMine != null) {
+        return KeepOutcome(
+          KeepKind.refused,
+          why: 'the kept changes could not be combined safely (${lost ?? lostMine})',
+        );
+      }
+      np = result;
+    }
+    final time = DateTime.now().toUtc();
+    final written = await tx.write(
+      folder: folder,
+      page: np,
+      baseText: baseText,
+      time: time,
+      replaceable: {for (final e in entries) e.gen},
+    );
+    for (final e in entries) {
+      if (e.gen == written.gen || e.file.path == written.file.path) continue;
+      try {
+        await tx.delete(e);
+      } on Object catch (ex) {
+        debugPrint('Deleting a merged kept generation failed: $ex');
+        rec.markLanded(e.gen);
+      }
+    }
+    return KeepOutcome(KeepKind.kept, gen: written.gen);
+  }
+
+  static NotedPage? _tryRead(String text) {
+    try {
+      return readPage(text);
+    } on PageFormatException {
+      return null;
+    }
+  }
+
+  // T: after a landed save of snapshot [upTo], the session's own generations
+  // up to it are deleted, but only when the file reads back as published
+  // (another writer on top is merged in by _checkFile, and T runs after the
+  // next landed save). A delete that fails marks the generation landed.
+  Future<void> _retireOwn(SaveSession session, PageStore st, NotedPage saved, int upTo) async {
+    final rec = _recovery;
+    if (rec != null && session.own.values.any((s) => s <= upTo)) {
+      try {
+        final back = await st.readText(saved.id);
+        if (back == writePage(saved)) {
+          final gens = [
+            for (final en in session.own.entries)
+              if (en.value <= upTo) en.key,
+          ];
+          await _deleteGens(rec, gens, session);
+          await _landKeptAssets(rec);
+        }
+      } on Object catch (e) {
+        debugPrint('Retiring the kept changes of page ${saved.id} failed: $e');
+      }
+    }
+    if (identical(session, _session) && _trouble.pageId == saved.id && _trouble.kind != TroubleKind.preview) {
+      _setTrouble(TroubleState.saved);
+    }
+    _told.remove(saved.id);
+    _backoff.reset();
+    if (rec != null && rec.indexEntries.isNotEmpty) _backoff.schedule();
+  }
+
+  // Deletes the entries holding generations [gens] (of [session], if given),
+  // by exact generation. Ones that can't be deleted are marked landed.
+  Future<void> _deleteGens(RecoveryStore rec, Iterable<String> gens, SaveSession? session) async {
+    final entries = [
+      for (final g in gens)
+        for (final e in rec.indexEntries)
+          if (e.gen == g) e,
+    ];
+    try {
+      await rec.transaction((tx) async {
+        for (final e in entries) {
+          try {
+            await tx.delete(e);
+          } on Object catch (ex) {
+            debugPrint('Deleting a kept generation failed: $ex');
+            rec.markLanded(e.gen);
+          }
+          session?.own.remove(e.gen);
+        }
+      });
+    } on Object catch (ex) {
+      debugPrint('Deleting kept generations failed: $ex');
+      for (final e in entries) {
+        rec.markLanded(e.gen);
+        session?.own.remove(e.gen);
+      }
+    }
+    for (final g in gens) {
+      session?.own.remove(g);
     }
   }
 
@@ -3720,45 +4383,157 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Merges the recovery entries whose folder is available (only those of
   // [onlyLoc] if given) into the saved pages and deletes each entry once the
   // result has been read back and checked. An entry that can't be applied
-  // stays.
-  Future<void> _recoverPending({
-    String? onlyLoc,
-    ({bool ran, NotedPage? theirs})? resumed,
-  }) async {
+  // stays. A busy page, and a page being edited, are skipped (R-1 v5): its
+  // own session holds its edits.
+  Future<void> _recoverPending({String? onlyLoc}) async {
     final rec = _recovery;
     if (rec == null) return;
-    final listing = await rec.list();
+    final problem = _lockProblem();
+    if (problem != null) {
+      debugPrint('Replay refused: $problem');
+      return;
+    }
+    final RecoveryListing listing;
+    try {
+      listing = await rec.transaction((tx) async {
+        if (_relist) _relist = false;
+        return tx.list();
+      });
+    } on Object catch (e) {
+      // The index keeps what it knew; the next tick lists again.
+      debugPrint('Listing recovery failed: $e');
+      return;
+    }
     _recoveryProblems = listing.problems;
     _recoveryDamaged = listing.damaged;
     // A failure stays listed only while its entry does.
     final live = {for (final e in listing.entries) _entryKey(e)};
     _replayProblems.removeWhere((k, _) => !live.contains(k));
+    // Landed leftovers are deleted, never merged (0130).
+    if (rec.landedEntries.isNotEmpty) {
+      await _deleteGens(rec, [for (final e in rec.landedEntries) e.gen], null);
+    }
     for (final e in listing.entries) {
       if (_disposed) return;
+      if (rec.isLanded(e.gen)) continue;
+      if (!rec.indexEntries.any((x) => x.gen == e.gen)) continue; // retired since the listing
+      final id = e.pageId;
+      if (_busy.containsKey(id) || _isEditableOpen(id)) continue;
       final loc = _locOfFolder(e.folder);
       if (loc == null || _isLocked(loc) || (onlyLoc != null && loc != onlyLoc)) continue;
-      final key = _entryKey(e);
-      final path = _entryPath(e);
+      _busy[id] = _busyReplaying;
       try {
-        if (await _recoverEntry(rec, e, loc, resumed)) _replayProblems.remove(key);
-      } on _ReplayFailure catch (ex) {
-        debugPrint('Recovered page ${e.pageId} not accepted: ${ex.detail ?? ex.why}');
-        _replayProblems[key] = (path: path, why: ex.why);
-      } on Object catch (ex) {
-        // A write failure; the reading failures are _ReplayFailures above.
-        debugPrint('Recovering page ${e.pageId} failed: $ex');
-        _replayProblems[key] = (
-          path: path,
-          why:
-              'the edits kept for "${_titleOrUntitled(e.page.meta.title)}" could not be saved into '
-              'the page file${_osReason(ex)}',
-        );
+        await _replayEntry(rec, e, loc);
+      } finally {
+        _busy.remove(id);
       }
     }
     // The kept files go on their own: an entry is retired as soon as its page
     // has landed, so they must not wait for it (or for an entry at all).
     await _landKeptAssets(rec, onlyLoc: onlyLoc);
     if (!_disposed) notifyListeners();
+    await _refreshPreview();
+  }
+
+  // Replays the kept changes of page [id], which the caller has marked busy.
+  // True if nothing is left to replay for it; null never.
+  Future<bool?> _replayPage(String id) async {
+    final rec = _recovery;
+    if (rec == null) return true;
+    if (_lockProblem() != null) return false;
+    var all = true;
+    for (final e in [...rec.entriesOfPage(id)]) {
+      if (rec.isLanded(e.gen)) continue;
+      final loc = _locOfFolder(e.folder);
+      if (loc == null || _isLocked(loc)) {
+        all = false;
+        continue;
+      }
+      if (!await _replayEntry(rec, e, loc)) all = false;
+    }
+    return all;
+  }
+
+  // One entry through _recoverEntry, with its failure noted. True once it is
+  // replayed and retired.
+  Future<bool> _replayEntry(RecoveryStore rec, RecoveryEntry e, String loc) async {
+    final key = _entryKey(e);
+    final path = _entryPath(e);
+    try {
+      if (await _recoverEntry(rec, e, loc)) {
+        _replayProblems.remove(key);
+        _replayHardFailure.remove(e.pageId);
+        _told.remove(e.pageId);
+        return true;
+      }
+    } on _ReplayFailure catch (ex) {
+      debugPrint('Recovered page ${e.pageId} not accepted: ${ex.detail ?? ex.why}');
+      _replayProblems[key] = (path: path, why: ex.why);
+      _replayHardFailure.add(e.pageId);
+    } on Object catch (ex) {
+      // A write failure; the reading failures are _ReplayFailures above.
+      debugPrint('Recovering page ${e.pageId} failed: $ex');
+      _replayProblems[key] = (
+        path: path,
+        why:
+            'the edits kept for "${_titleOrUntitled(e.page.meta.title)}" could not be saved into '
+            'the page file${_osReason(ex)}',
+      );
+    }
+    return false;
+  }
+
+  // Deletes the entry of a replay that landed, by its exact generation; one
+  // that can't be deleted is marked landed (deleted later, never merged).
+  Future<void> _deleteEntry(RecoveryStore rec, RecoveryEntry e) async {
+    try {
+      await rec.transaction((tx) => tx.delete(e));
+    } on Object catch (ex) {
+      debugPrint('Deleting a replayed recovery entry failed: $ex');
+      rec.markLanded(e.gen);
+    }
+  }
+
+  // The two-key rule (3.7): a page that is listed in a place other than its
+  // entry's is not recreated; the entry is re-keyed to where the page is
+  // listed, or dropped when an identical entry is already there. A page
+  // listed nowhere waits while another key for it exists. Returns whether the
+  // entry is dealt with (true); false: wait; null: the page is where the entry
+  // is, so replay goes on.
+  Future<bool?> _twoKeys(RecoveryStore rec, RecoveryEntry e, String loc) async {
+    final id = e.pageId;
+    final listed = _loc[id];
+    if (listed == loc) return null;
+    if (listed == null) {
+      final other = rec.entriesOfPage(id).any((o) => o.gen != e.gen && _key(o.folder) != _key(e.folder));
+      return other ? false : null;
+    }
+    final PageStore toSt;
+    try {
+      if (_isLocked(listed)) return false;
+      toSt = _storeOf(listed);
+    } on NotebookException {
+      return false;
+    }
+    final toFolder = _normalizePath(toSt.directory.path);
+    // Recheck the current index right before acting (build note 9).
+    final same = rec.entriesFor(toFolder, id).any((o) => o.pageText == e.pageText && o.baseText == e.baseText);
+    if (same) {
+      await _deleteEntry(rec, e);
+      return true;
+    }
+    final NotedPage? basePage = e.baseText == null ? null : _tryRead(e.baseText!);
+    if (e.baseText != null && basePage == null) return false;
+    final out = await _keepForRecovery(
+      listed,
+      toSt,
+      e.page,
+      base: basePage,
+      exactBase: true,
+    );
+    if (!out.safe) return false;
+    await _deleteEntry(rec, e);
+    return true;
   }
 
   // The operating system's own reason, in brackets, when [e] has one (for
@@ -3796,9 +4571,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     RecoveryStore rec,
     RecoveryEntry e,
     String loc,
-    ({bool ran, NotedPage? theirs})? resumed,
-  ) async {
-    final mine = e.page;
+  ) async {    final mine = e.page;
     // The target is the entry's verified identity. The store refuses entries
     // where it disagrees with the page, so this guards against a regression.
     final id = e.pageId;
@@ -3814,33 +4587,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final base = e.baseText == null
         ? NotedPage.create(mine.meta)
         : _readForReplay(e.baseText!, 'the copy kept with the edits for $label');
-    final c = _current;
-    if (c != null && c.page.id == id) {
-      // The page is open: it holds the edit and was merged with its file by
-      // _resumeOpenPage; saving it lands the result.
-      NotedPage? theirs;
-      if (resumed != null && resumed.ran) {
-        theirs = resumed.theirs;
-      } else if (_orphanLoc == loc && _loc[id] == null) {
-        // Its file was deleted while the folder was away: keep the page. (A
-        // file that is there but unreadable is blocked by _resumeOpenPage.)
-        _loc[id] = loc;
-        _metas[id] = c.page.meta;
-        _orphanLoc = null;
-        _syncReadOnly();
-        _rebuildTree();
-      } else {
-        return false;
-      }
-      if (theirs == null) _enqueueSave(c.page);
-      await flush();
-      final back = _readForReplay(await st.readText(id), 'the saved file of $label');
-      final why = verifyRecoveredPage(base: base, mine: mine, theirs: theirs, result: back);
-      if (why != null) throw _ReplayFailure(_notAllKept(label), detail: why);
-      await rec.delete(e);
-      return true;
-    }
-    final path = st.pathFor(id);
+    // The page is where the entry says, or the entry is re-keyed (3.7).
+    final moved = await _twoKeys(rec, e, loc);
+    if (moved != null) return moved;    final path = st.pathFor(id);
     final file = File(path);
     // Read, merge, publish only over exactly what was merged against (or only
     // if still absent), and read back: the same loop as _saveClosedPage. If the
@@ -3907,7 +4656,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // Landed but can't be read back to check: retired, and listed.
           debugPrint('Recovered page $id landed but could not be read back to check');
           await _applyClosed(merged, loc, _key(path), path);
-          await rec.delete(e);
+          await _deleteEntry(rec, e);
           _landedProblems[id] = (path: path, why: _landedThenChanged(label));
           return true;
         }
@@ -3935,7 +4684,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         } on PageFormatException catch (ex) {
           unreadable = ex.message;
         }
-        await rec.delete(e);
+        await _deleteEntry(rec, e);
         if (now == null || unreadable != null) {
           // Listed as a page that can't be opened, like any file that turns
           // unreadable.
@@ -3967,7 +4716,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       );
       if (why != null) throw _ReplayFailure(_notAllKept(label), detail: why);
       await _applyClosed(readPage(back), loc, _key(path), path);
-      await rec.delete(e);
+      await _deleteEntry(rec, e);
       return true;
     }
     throw _ReplayFailure(
@@ -4508,7 +5257,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// again.
   Future<void> checkFile(String path) {
     final job = _checking.then((_) async {
-      await _saving; // let writes in flight land first
+      await _chain.idle; // let writes in flight land first
       if (!_disposed) await _checkFile(path);
     }).catchError((Object e) {
       debugPrint('Checking $path failed: $e');
@@ -4528,7 +5277,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// again is opened afresh.
   Future<void> checkBinderFile(String path) {
     final job = _checking.then((_) async {
-      await _saving;
+      await _chain.idle;
       if (!_disposed) await _checkBinderFile(path);
     }).catchError((Object e) {
       debugPrint('Checking $path failed: $e');
@@ -4626,7 +5375,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final path = section.path;
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
-    if (openHere) await _closeCurrent(); // saves while the store still works
+    // Saves while the store still works. A page whose edits are safe nowhere
+    // stays open, read-only, under the warning (3.5).
+    var left = true;
+    if (openHere) left = await _leaveOpenPage(stayIfUnsafe: true);
+    if (openHere && left) _disposeCurrent();
     for (final id in ids) {
       _metas.remove(id);
       _loc.remove(id);
@@ -4650,7 +5403,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_coverPath == path) _coverPath = null;
     _rebuildTree();
     _syncWatchers();
-    if (openHere) await _openFallback(_standalone);
+    if (openHere && left) {
+      await _openFallback(_standalone);
+    } else if (openHere) {
+      _orphanLoc = path;
+      _syncReadOnly();
+    }
   }
 
   /// A binder whose file is readable again: reads the folder afresh.
@@ -4694,7 +5452,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final openId = _current?.page.id;
     // Decided by path, not by _pathId: that entry is dropped when the file is
     // deleted, and a sync client often deletes first and renames the new file in.
-    final isOpen = openId != null && _isOpenFile(loc, key);
+    final isOpen = openId != null && _preview == null && _isOpenFile(loc, key);
     String? text;
     var time = DateTime.now().millisecondsSinceEpoch;
     try {
@@ -4778,9 +5536,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _clearDiskBlock(); // readable again: merge it as usual
       // The merged page is saved even if it equals the file, so the recovery
       // entry kept for the block can be dropped once that save has landed.
-      saveAfterMerge = _blockEntry != null;
+      saveAfterMerge = _session?.own.isNotEmpty ?? false;
     }
-    if (_current?.page.id == page.id && _loc[page.id] == loc) {
+    if (_current?.page.id == page.id && _loc[page.id] == loc && _preview == null) {
       _mergeOpen(page, text, time);
       final cp = _current;
       if (saveAfterMerge && cp != null && cp.page.id == page.id) _pageChanged(cp.page);
@@ -4803,12 +5561,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Already blocked: the page is read-only, so its entry is still current.
     if (_diskBlockId != openId && text != _known[key]) {
       final st = _storeOf(loc);
-      await _keepForRecovery(loc, st, c.page);
-      _blockEntry = (
-        folder: _normalizePath(st.directory.path),
-        pageId: openId,
-        pageText: text,
-      );
+      final s = _session;
+      _blockKeep = await _keepForRecovery(loc, st, c.page, session: s, seq: s?.seq ?? 0);
     }
     if (_disposed) return true;
     if (_current?.page.id != openId) return true;
@@ -4832,28 +5586,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       return _key(_storeOf(loc).pathFor(id)) == key;
     } on Object {
       return false;
-    }
-  }
-
-  // After a save that followed a block has landed and read back, the recovery
-  // entry _blockOpen kept is no longer needed. Only the entry that was written
-  // for the block is removed.
-  Future<void> _dropBlockEntry(PageStore st, NotedPage saved) async {
-    final b = _blockEntry;
-    final rec = _recovery;
-    if (b == null || rec == null || b.pageId != saved.id || _diskBlockId != null) return;
-    try {
-      if (await st.readText(saved.id) != writePage(saved)) return; // not landed
-      for (final e in (await rec.list()).entries) {
-        if (e.folder == b.folder && e.pageId == b.pageId && e.pageText == b.pageText) {
-          await rec.delete(e);
-        }
-      }
-      _blockEntry = null;
-      // Files kept for the page beside that entry have a page now.
-      await _landKeptAssets(rec);
-    } on Object catch (e) {
-      debugPrint('Dropping the recovery entry of page ${saved.id} failed: $e');
     }
   }
 
@@ -5137,7 +5869,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// never created or deleted here.
   Future<void> checkFolders() {
     final job = _checking.then((_) async {
-      await _saving;
+      await _chain.idle;
       if (!_disposed) await _checkFolders();
     }).catchError((Object e) {
       debugPrint('Checking the folders failed: $e');
@@ -5259,8 +5991,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
     _syncWatchers();
     await _mergePendingCopies(inQueue: true);
-    final resumed = await _resumeOpenPage(path, force: true);
-    await _recoverPending(onlyLoc: path, resumed: resumed);
+    await _afterResume(await _resumeOpenPage(path, force: true));
+    await _recoverPending(onlyLoc: path);
   }
 
   Future<void> _folderBack(String loc) async {
@@ -5287,8 +6019,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
     _syncWatchers();
     await _mergePendingCopies(inQueue: true);
-    final resumed = await _resumeOpenPage(loc);
-    await _recoverPending(onlyLoc: loc, resumed: resumed);
+    await _afterResume(await _resumeOpenPage(loc));
+    await _recoverPending(onlyLoc: loc);
+  }
+
+  // The open page came back with no file: what it kept in recovery is saved
+  // again (its own save lands it and retires the entry).
+  Future<void> _afterResume(({bool ran, NotedPage? theirs}) resumed) async {
+    final c = _current;
+    final s = _session;
+    if (resumed.ran && c != null && s != null && s.own.isNotEmpty) {
+      if (resumed.theirs == null) _pageChanged(c.page);
+      await flush(); // lands the page and retires its kept changes
+    }
   }
 
   // The plain reason the file at [path] can't be used as page [id], chosen
@@ -5372,12 +6115,121 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  Future<void> _closeCurrent() async {
-    // Leaving a page ends editing, so an empty new box is discarded, not saved.
+  // Saving trouble: leaving, the preview, retry, discard (R-1 v5) -------------
+
+  // The page on screen is `id` and it can be edited (not a preview).
+  bool _isEditableOpen(String id) => _current?.page.id == id && _preview == null;
+
+  // Page [id] ended being busy for [why]: whatever waited for it can go on.
+  void _unbusy(String id, [String? why]) {
+    if (why != null && _busy[id] != why) return;
+    if (_busy.remove(id) == null) return;
+    if (!_disposed) unawaited(_afterBusyCleared());
+  }
+
+  Future<void> _afterBusyCleared() async {
+    try {
+      await _refreshPreview();
+    } on Object catch (e) {
+      debugPrint('Refreshing the preview failed: $e');
+    }
+  }
+
+  // A job left on a detached chain ended: its pages are free again.
+  void _oldJobEnded(Set<String> pages) {
+    for (final p in pages) {
+      final n = (_detached[p] ?? 1) - 1;
+      if (n > 0) {
+        _detached[p] = n;
+      } else {
+        _detached.remove(p);
+        _unbusy(p, _busyDetached);
+      }
+    }
+    if (!_disposed && !_backoff.scheduled) _backoff.schedule();
+  }
+
+  static const String _busyDetached = 'a save is still running';
+  static const String _busyReplaying = 'replaying';
+  static const String _busyDeleting = 'deleting';
+  static const String _busyMoving = 'moving';
+  static const String _busyDiscarding = 'discarding';
+
+  // Leaves the open page (R-1 v5, 3.5): its last save is tried for up to
+  // [leaveSaveLimit]; if it lands, T has run and the page may go. Otherwise
+  // the edits are in recovery ("kept"), or the user is asked. Returns true if
+  // the page may be closed. With [stayIfUnsafe] it returns false instead of
+  // asking when the edits are not safe anywhere.
+  Future<bool> _leaveOpenPage({bool stayIfUnsafe = false}) async {
     final c = _current;
-    final editing = c?.editingId;
-    if (c != null && editing != null) c.setEditing(editing, false);
-    await flush();
+    final session = _session;
+    if (c == null || session == null || _preview != null) return true;
+    final editing = c.editingId;
+    if (editing != null) c.setEditing(editing, false);
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    final hadPending = _pendingSave != null;
+    _pendingSave = null;
+    final page = c.page;
+    final seq = session.seq;
+    final troubled = _trouble.isTrouble && _trouble.pageId == page.id;
+    final loc = _loc[page.id];
+    if (loc == null || _isLocked(loc)) return true; // nothing can be written now
+    if (!hadPending && !troubled && _chain.isIdle) return true;
+    final PageStore st;
+    try {
+      st = _storeOf(loc);
+    } on NotebookException {
+      return true;
+    }
+    final SaveResult? res = await _enqueueSave(page, seq).then<SaveResult?>((r) => r).timeout(
+      leaveSaveLimit,
+      onTimeout: () => null,
+    );
+    if (res != null && (res.end == SaveEnd.landed || res.end == SaveEnd.skipped)) return true;
+    final KeepOutcome keep;
+    if (res == null) {
+      // Timed out: the save is left behind. Every page with a job still on the
+      // old chain is busy until it ends; the next open waits on a new chain.
+      _chain.detach().forEach((p, n) {
+        _busy[p] = _busyDetached;
+        _detached[p] = (_detached[p] ?? 0) + n;
+      });
+      keep = await _keepForRecovery(loc, st, page, session: session, seq: seq);
+      _troubleFrom(session, page, keep, reason: "the drive isn't responding", folderGone: false);
+    } else {
+      keep = res.keep ?? KeepOutcome.dropped;
+    }
+    if (keep.safe) {
+      _announceKept(page);
+      return true;
+    }
+    if (stayIfUnsafe) return false;
+    final lose = await _ask(UserQuestion.leaveAndLose, _titleOrUntitled(page.meta.title));
+    if (!lose) throw const LeaveCancelled();
+    return true;
+  }
+
+  // Tells the user, once per failure streak, that [page]'s edits are in
+  // recovery.
+  void _announceKept(NotedPage page) {
+    if (_disposed || !_told.add(page.id)) return;
+    final reason = _trouble.pageId == page.id && _trouble.reason.isNotEmpty ? _trouble.reason : 'it could not be saved';
+    _keptNotices.add(KeptNotice(pageId: page.id, title: _titleOrUntitled(page.meta.title), reason: reason));
+  }
+
+  Future<void> _closeCurrent() async {
+    await _leaveOpenPage();
+    _disposeCurrent();
+  }
+
+  // Closes the page on screen without saving it.
+  void _disposeCurrent() {
+    _session?.ended = true;
+    _session = null;
+    _preview = null;
+    _blockKeep = null;
+    _setTrouble(TroubleState.saved);
     _current?.dispose();
     _current = null;
     _attachments?.dispose();
@@ -5386,6 +6238,414 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _orphanLoc = null;
     _readOnlyReason = null;
   }
+
+  // Opening (R-1 v5, 3.6) -----------------------------------------------------
+
+  // Opens [id] with no page open. The file is read and the page looked up in
+  // the index in one save-chain job, so no write falls between them; a page
+  // with kept edits is replayed outside the chain (bounded), and one that
+  // can't be made current is shown as a preview.
+  Future<void> _openFresh(String id) async {
+    final loc = _loc[id] ?? _standalone;
+    final st = _storeOf(loc);
+    final rec = _recovery;
+    final folder = _normalizePath(st.directory.path);
+    final first = await _afterSaves<({bool done, List<RecoveryEntry> landed, bool ownsBusy})>(() async {
+      final text = await st.readText(id);
+      final page = readPage(text);
+      final entries = rec == null ? const <RecoveryEntry>[] : rec.entriesFor(folder, id);
+      final landed = [for (final e in entries) if (rec != null && rec.isLanded(e.gen)) e];
+      final pending = entries.length - landed.length;
+      final already = _busy.containsKey(id);
+      if (pending == 0 && !already) {
+        _installEditable(id, loc, st, text, page);
+        return (done: true, landed: landed, ownsBusy: false);
+      }
+      if (!already) _busy[id] = _busyReplaying;
+      return (done: false, landed: landed, ownsBusy: !already);
+    }, what: 'open of page $id', pages: {id});
+    if (first.landed.isNotEmpty && rec != null) {
+      // Landed already: deleted, never merged (0130).
+      await _deleteGens(rec, [for (final e in first.landed) e.gen], null);
+    }
+    if (first.done) return;
+    if (first.ownsBusy) {
+      final replay = _replayPage(id);
+      final r = await replay.timeout(const Duration(seconds: 5), onTimeout: () => null);
+      if (r == null) {
+        unawaited(replay.whenComplete(() => _unbusy(id, _busyReplaying)));
+      } else {
+        _busy.remove(id);
+      }
+    }
+    await _afterSaves(() async {
+      final text = await st.readText(id);
+      final page = readPage(text);
+      final pending = rec == null
+          ? const <RecoveryEntry>[]
+          : [for (final e in rec.entriesFor(folder, id)) if (!rec.isLanded(e.gen)) e];
+      if (pending.isEmpty && !_busy.containsKey(id)) {
+        _installEditable(id, loc, st, text, page);
+      } else {
+        _installPreview(id, loc, st, text, page, pending);
+      }
+    }, what: 'open of page $id', pages: {id});
+  }
+
+  // Sets up the page [id] (read as [text]) for editing.
+  void _installEditable(String id, String loc, PageStore st, String text, NotedPage page) {
+    _known[_key(st.pathFor(id))] = text;
+    _base = page;
+    _metas[id] = page.meta;
+    _setConflict(id, hasConflicts(page));
+    _preview = null;
+    final session = _session = SaveSession(id);
+    // A change reported by a controller that is no longer the open one (a
+    // late callback after it was closed) is ignored: it would queue an
+    // unchecked save of a closed page.
+    late final CanvasController controller;
+    controller = CanvasController(
+      page,
+      modules,
+      onChanged: (p) {
+        if (identical(_current, controller) && identical(_session, session)) _pageChanged(p);
+      },
+      deviceName: deviceName,
+    );
+    _current = controller;
+    _attachments = _makeAttachments(id, loc);
+    _setTrouble(TroubleState.saved);
+    _syncReadOnly();
+    _rebuildTree();
+  }
+
+  // Shows [id] read-only: the file with the kept [entries] merged in memory,
+  // never written (3.6).
+  void _installPreview(String id, String loc, PageStore st, String text, NotedPage page, List<RecoveryEntry> entries) {
+    _known[_key(st.pathFor(id))] = text;
+    _base = page;
+    _metas[id] = page.meta;
+    var merged = page;
+    String? unlandable;
+    final codecs = _pageCodecs(id);
+    final sorted = [...entries]..sort((a, b) => a.time.compareTo(b.time));
+    for (final e in sorted) {
+      final NotedPage eb;
+      if (e.baseText == null) {
+        eb = NotedPage.create(e.page.meta);
+      } else {
+        final r = _tryRead(e.baseText!);
+        if (r == null) {
+          unlandable = 'the copy kept with the changes can no longer be read';
+          continue;
+        }
+        eb = r;
+      }
+      merged = mergePage(
+        eb,
+        e.page,
+        merged,
+        codecs,
+        theirsTime: DateTime.now().millisecondsSinceEpoch,
+        markLanded: false,
+      ).page;
+    }
+    final problem = _replayProblems.entries
+        .where((p) => entries.any((e) => p.key == _entryKey(e)))
+        .map((p) => p.value.why)
+        .firstOrNull;
+    final reason = unlandable ?? problem ?? (_busy.containsKey(id) ? 'Noted is still trying to save this page' : 'the page file is not available');
+    final preview = _preview = _Preview(id, loc, entries, reason, unlandable: unlandable != null || problem != null && _replayHardFailure.contains(id));
+    _session = null;
+    late final CanvasController controller;
+    controller = CanvasController(merged, modules, onChanged: (_) {}, deviceName: deviceName);
+    _current = controller;
+    _attachments = _makeAttachments(id, loc);
+    _setTrouble(_previewTrouble(preview, merged));
+    _syncReadOnly();
+    _rebuildTree();
+  }
+
+  // Replays that failed for a reason that retrying won't change (the check
+  // failed, a file can't be read), by page.
+  final Set<String> _replayHardFailure = {};
+
+  TroubleState _previewTrouble(_Preview p, NotedPage page) => TroubleState(
+    TroubleKind.preview,
+    pageId: p.id,
+    title: _titleOrUntitled(page.meta.title),
+    reason: p.reason,
+    canDiscardKept: p.unlandable,
+    canSaveCopy: pickFolder != null,
+  );
+
+  // The preview becomes an editable page once nothing is kept for it and
+  // nothing holds it.
+  bool _reopening = false;
+  Future<void> _refreshPreview() async {
+    final p = _preview;
+    final rec = _recovery;
+    if (p == null || rec == null || _reopening || _disposed) return;
+    if (_busy.containsKey(p.id)) return;
+    final pending = [
+      for (final e in rec.indexEntries)
+        if (e.pageId == p.id && !rec.isLanded(e.gen)) e,
+    ];
+    if (pending.isEmpty) {
+      _reopening = true;
+      try {
+        _disposeCurrent();
+        await _openFresh(p.id);
+      } finally {
+        _reopening = false;
+      }
+      return;
+    }
+    final c = _current;
+    if (c != null) {
+      final reason = _replayProblems.entries
+          .where((x) => pending.any((e) => x.key == _entryKey(e)))
+          .map((x) => x.value.why)
+          .firstOrNull;
+      if (reason != null && reason != p.reason) {
+        p.reason = reason;
+        _setTrouble(_previewTrouble(p, c.page));
+      }
+    }
+  }
+
+  /// Retry on a preview: replays the kept changes now.
+  Future<void> retryPreview() async {
+    final p = _preview;
+    if (p == null || _busy.containsKey(p.id)) return;
+    _busy[p.id] = _busyReplaying;
+    try {
+      await _replayPage(p.id);
+    } finally {
+      _busy.remove(p.id);
+    }
+    await _refreshPreview();
+    _backoff.schedule();
+  }
+
+  /// "Discard kept changes" on a preview that can't land: asks first, then
+  /// deletes exactly the generations the preview shows.
+  Future<void> discardKept() async {
+    final p = _preview;
+    final rec = _recovery;
+    if (p == null || rec == null || !p.unlandable) return;
+    final title = _trouble.title;
+    if (!await _ask(UserQuestion.discardKept, title)) return;
+    _busy[p.id] = _busyDiscarding;
+    try {
+      await rec.transaction((tx) async {
+        for (final e in p.entries) {
+          await tx.delete(e);
+        }
+      });
+    } on Object catch (e) {
+      throw NotebookException("Couldn't remove the changes kept for this page: ${describeError(e)}", needsAction: true);
+    } finally {
+      _busy.remove(p.id);
+    }
+    for (final e in p.entries) {
+      _replayProblems.remove(_entryKey(e));
+    }
+    await _refreshPreview();
+  }
+
+  // Backoff: tries everything that is waiting again --------------------------
+
+  Future<void> _backoffTick() async {
+    if (_disposed) return;
+    final rec = _recovery;
+    var again = false;
+    try {
+      final lockOk = _lockProblem() == null;
+      final c = _current;
+      final s = _session;
+      if (c != null && s != null && _preview == null && _trouble.isTrouble && _trouble.pageId == c.page.id) {
+        final r = await _enqueueSave(c.page, s.seq);
+        if (r.end != SaveEnd.landed && r.end != SaveEnd.skipped) again = true;
+      }
+      if (rec != null && lockOk) {
+        await _recoverPending();
+        await _deleteGens(rec, [for (final e in rec.landedEntries) e.gen], null);
+        if (rec.indexEntries.isNotEmpty) again = true;
+      } else if (rec != null && !lockOk) {
+        again = true;
+        if (_trouble.kind == TroubleKind.saved && rec.indexEntries.isNotEmpty) notifyListeners();
+      }
+      final p = _preview;
+      if (p != null && !p.unlandable && _backoff.delay == backoffMax && rec != null) {
+        // A write that keeps failing past the longest wait: the changes can't land.
+        p.unlandable = true;
+        final cur = _current;
+        if (cur != null) _setTrouble(_previewTrouble(p, cur.page));
+      }
+    } on Object catch (e) {
+      debugPrint('Trying the kept changes again failed: $e');
+      again = true;
+    }
+    if (again && !_disposed) _backoff.schedule();
+  }
+
+  // The open page's own buttons -------------------------------------------------
+
+  /// Retry (bar button): the save is tried again now, and recovery too if it
+  /// was failing; on a preview, the kept changes are replayed.
+  Future<void> retrySave() async {
+    if (_preview != null) return retryPreview();
+    final c = _current;
+    final s = _session;
+    if (c == null || s == null || !_trouble.isTrouble) return;
+    _backoff.cancelWait();
+    final r = await _enqueueSave(c.page, s.seq);
+    if (r.end != SaveEnd.landed) _backoff.schedule();
+  }
+
+  /// Discard changes (bar button): throws away what the page holds that was
+  /// not saved, and reopens it as it is on disk plus what has landed.
+  Future<void> discardChanges() async {
+    final c = _current;
+    final s = _session;
+    final rec = _recovery;
+    if (c == null || s == null || _preview != null || !_trouble.isTrouble) return;
+    final id = c.page.id;
+    s.floor = s.seq + 1;
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    _pendingSave = null;
+    _busy[id] = _busyDiscarding;
+    try {
+      if (rec != null && s.own.isNotEmpty) {
+        final problem = _lockProblem();
+        if (problem != null) throw StateError(problem);
+        final gens = {...s.own.keys};
+        await rec.transaction((tx) async {
+          for (final e in rec.indexEntries.where((e) => gens.contains(e.gen)).toList()) {
+            await tx.delete(e);
+          }
+        });
+        s.own.clear();
+      }
+    } on Object catch (e) {
+      _busy.remove(id);
+      throw NotebookException(
+        "Couldn't remove the changes kept for this page: ${e is StateError ? e.message : describeError(e)}",
+        needsAction: true,
+      );
+    }
+    _busy.remove(id);
+    _disposeCurrent();
+    await _openFresh(id);
+  }
+
+  /// The title and the text of the boxes of the page on screen, in reading
+  /// order. For unsupported boxes it is their saved snapshot; nothing is
+  /// decoded.
+  String pageText() {
+    final c = _current;
+    if (c == null) return '';
+    final boxes = [for (final n in c.page.nodes) if (n is BoxRecord) n];
+    boxes.sort((a, b) {
+      final dy = a.bounds.y.compareTo(b.bounds.y);
+      return dy != 0 ? dy : a.bounds.x.compareTo(b.bounds.x);
+    });
+    final out = StringBuffer(c.page.meta.title);
+    for (final b in boxes) {
+      final t = b.snapshotText;
+      if (t.isNotEmpty) out..writeln()..write(t);
+    }
+    return out.toString();
+  }
+
+  /// Copy page text (bar button).
+  Future<void> copyPageText() => Clipboard.setData(ClipboardData(text: pageText()));
+
+  /// "Save a copy elsewhere…": asks for a folder and writes the page on screen
+  /// there as a new page, with its attachments. Nothing is replaced or deleted.
+  /// Returns what to tell the user (empty: cancelled).
+  Future<String> saveCopyElsewhere() async {
+    final pick = pickFolder;
+    if (pick == null) throw const NotebookException('Saving a copy elsewhere is not available on this device.');
+    final c = _current;
+    if (c == null) return '';
+    final page = c.page;
+    final oldId = page.id;
+    final loc = _loc[oldId] ?? _preview?.loc;
+    final chosen = await pick();
+    if (chosen == null) return '';
+    final dir = Directory(_normalizePath(chosen));
+    final newPageId = newId();
+    final copy = page.withMeta(page.meta.withId(newPageId).withPlacement(parentId: null, order: 0));
+    final left = <String>[];
+    final sources = <Directory>[
+      ?(loc == null ? null : _assetsDir(loc, oldId)),
+      if (_recovery != null)
+        Directory('${_recovery!.directory.path}${Platform.pathSeparator}${assetsFolderName(oldId)}'),
+    ];
+    try {
+      await dir.create(recursive: true);
+      for (final src in sources) {
+        try {
+          if (await src.exists()) {
+            await _copyDir(
+              src,
+              Directory('${dir.path}${Platform.pathSeparator}${assetsFolderName(newPageId)}'),
+              into: AttachmentCopy(),
+            );
+          }
+        } on Object catch (e) {
+          debugPrint('Copying ${src.path} failed: $e');
+          left.add(src.path);
+        }
+      }
+      final target = PageStore(dir);
+      if (!await target.saveNew(copy)) {
+        throw const NotebookException('A file for the copy already exists, so nothing was written.');
+      }
+      if (await target.readText(newPageId) != writePage(copy)) {
+        throw const NotebookException('The copy was not written correctly.');
+      }
+    } on FileSystemException catch (e) {
+      throw NotebookException("Couldn't save the copy: ${describeError(e)}", needsAction: true);
+    }
+    return 'Saved a copy to ${dir.path}.${left.isEmpty ? '' : " These attachment folders couldn't be copied: ${left.join(', ')}."}';
+  }
+
+  // Leaving the app --------------------------------------------------------------
+
+  /// Saves what can be saved before the window closes, within a time limit,
+  /// and puts the rest in recovery as leaving a page does. Returns false if
+  /// the user chose to stay (the question "Your changes will be lost").
+  Future<bool> prepareToExit({Duration? limit}) async {
+    final bound = limit ?? leaveSaveLimit;
+    try {
+      await _leaveOpenPage();
+    } on LeaveCancelled {
+      return false;
+    }
+    // Other queued writes get the same time; what hangs is left behind.
+    var stuck = false;
+    await _chain.idle.timeout(bound, onTimeout: () => stuck = true);
+    if (stuck) _chain.detach();
+    final rec = _recovery;
+    if (rec != null && rec.landedEntries.isNotEmpty) {
+      await _deleteGens(rec, [for (final e in rec.landedEntries) e.gen], null).timeout(
+        const Duration(seconds: 3),
+        onTimeout: () {},
+      );
+      _exitLandedLeft = rec.landedEntries.isNotEmpty;
+    }
+    return true;
+  }
+
+  bool _exitLandedLeft = false;
+
+  /// Whether a recovered page may show boxes deleted since: its entry landed
+  /// but could not be deleted, even at quit (the quit notice says so).
+  bool get landedEntryLeft => _exitLandedLeft;
 
   void _rebuildTree() {
     final groups = <String, List<PageMeta>>{};
@@ -5407,6 +6667,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _disposed = true;
     _aiMerge?.dispose();
     _saveTimer?.cancel();
+    _backoff.dispose();
+    unawaited(_keptNotices.close());
     _folderTimer?.cancel();
     for (final t in _debounce.values) {
       t.cancel();
