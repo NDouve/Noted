@@ -6327,6 +6327,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final folder = _normalizePath(st.directory.path);
     final first = await _afterSaves<({bool done, List<RecoveryEntry> landed, bool ownsBusy})>(() async {
       final text = await st.readText(id);
+      await syncHook?.call('open-read', st.pathFor(id));
       final page = readPage(text);
       final entries = rec == null ? const <RecoveryEntry>[] : rec.entriesFor(folder, id);
       final landed = [for (final e in entries) if (rec != null && rec.isLanded(e.gen)) e];

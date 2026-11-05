@@ -244,6 +244,47 @@ void main() {
     });
   });
 
+  group('opening', () {
+    test('the file is read and the page looked up in one chain job: no write runs between', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      await nb.flush();
+      final other = await nb.createPage();
+      expect(other, isNot(id));
+      if (w.settings.existsSync()) w.settings.deleteSync();
+      Future<void>? queued;
+      var settingsWrittenInside = false;
+      nb.syncHook = (point, path) async {
+        if (point != 'open-read') return;
+        // A write queued now must wait until the open job is over.
+        queued = nb.addStandaloneFolder(w.other.path);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        settingsWrittenInside = w.settings.existsSync();
+      };
+      await nb.open(id);
+      nb.syncHook = null;
+      await queued;
+      expect(settingsWrittenInside, isFalse);
+      expect(w.settings.existsSync(), isTrue);
+      expect(nb.currentId, id);
+    });
+
+    test('a busy page cannot be deleted or moved', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      await nb.addStandaloneFolder(w.other.path);
+      nb.current!.createBoxAt(const Bounds(60, 60, 0, 0));
+      w.storeFor(w.pages)
+        ..stall = Completer<void>()
+        ..stallId = id;
+      await nb.createPage(folderPath: w.other.path);
+      expect(nb.isBusy(id), isTrue);
+      await expectLater(nb.delete(id), throwsA(isA<NotebookException>()));
+      await expectLater(nb.moveToFolder(id, w.other.path), throwsA(isA<NotebookException>()));
+      expect(w.pageFile(id).existsSync(), isTrue);
+    });
+  });
+
   group('Discard changes', () {
     test(
       'removes the kept generations and reopens the page as it is on disk',

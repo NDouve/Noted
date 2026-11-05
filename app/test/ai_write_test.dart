@@ -15,6 +15,8 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'support/trouble_world.dart' show FailStore, accessDenied;
+
 /// A box type that takes AI writes: `{"by": code id|null, "text": text}`.
 class _Codec extends BoxCodec<Map<String, Object?>> {
   const _Codec(this.typeId, {this.writes = true});
@@ -946,6 +948,42 @@ void main() {
       expect((r as AiLinkError).code, AiLinkCode.saveFailed);
       expect(r.message, contains("don't retry an append"));
       expect(rec.existsSync() && rec.listSync().isNotEmpty, isTrue, reason: 'kept for recovery');
+    });
+
+    test('an open page with changes that could not be saved takes no AI write (state 2)', () async {
+      final store = FailStore(pages);
+      final nb = make(store: store, recovery: Directory('${root.path}/rec'));
+      await nb.load();
+      nb.current!.insertBox(box('ba', text: 'old'));
+      await nb.flush();
+      final code = await issue('ba');
+      store.failWith = accessDenied();
+      nb.current!.createBoxAt(const Bounds(5, 5, 10, 10));
+      await nb.flush();
+      expect(nb.trouble.isTrouble, isTrue);
+
+      final r = await nb.handleAiLink(req('ba', code, content: 'new'));
+      expect((r as AiLinkError).code, AiLinkCode.saveFailed);
+      expect(r.message, contains("couldn't be saved, so nothing was written"));
+      expect(dataOf(nb, 'ba')['text'], 'old', reason: 'the editor is untouched');
+    });
+
+    test('a closed page is called kept only if recovery holds the change', () async {
+      final rec = Directory('${root.path}/rec');
+      File(rec.path).writeAsStringSync('in the way'); // recovery can not write
+      final store = _VanishingStore(pages);
+      final nb = make(store: store, recovery: rec);
+      await nb.load();
+      nb.current!.insertBox(box('ba', text: 'old'));
+      await nb.flush();
+      final code = await issue('ba');
+      await nb.createPage();
+      store.vanishOnLoad = store.loads + 3;
+
+      final r = await nb.handleAiLink(req('ba', code, content: 'new'));
+      expect((r as AiLinkError).code, AiLinkCode.saveFailed);
+      expect(r.message, isNot(contains("don't retry an append")));
+      expect(r.message, contains('could not be saved or kept'));
     });
 
     test('R-1: the file replaced at the replace itself is merged, not overwritten', () async {
