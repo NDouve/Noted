@@ -213,10 +213,12 @@ Future<bool> confirmOpenRunnable(
 }
 
 /// Whether a link with [scheme] (any case, no colon) asks before it opens:
-/// every scheme but `http`, `https`, `mailto` and Noted's own `noted`. (`file:`
-/// and paths have their own question, [confirmOpenRunnable].)
+/// every scheme but `http`, `https` and `mailto`. (`file:` and paths have
+/// their own question, [confirmOpenRunnable]. `noted:` asks too until the app
+/// handles it itself: otherwise it goes to the system, where any program can
+/// register it.)
 bool linkSchemeNeedsConfirmation(String scheme) =>
-    !const {'http', 'https', 'mailto', 'noted'}.contains(scheme.toLowerCase());
+    !const {'http', 'https', 'mailto'}.contains(scheme.toLowerCase());
 
 /// Asks whether to open a link whose scheme is [scheme], which hands the link
 /// to another program. True only on Open; Cancel (the default), Escape or a

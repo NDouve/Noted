@@ -16,11 +16,11 @@ void main() {
   bool run(String n, RunnablePlatform p, {String? pathExt}) =>
       isRunnableFileName(n, platform: p, pathExt: pathExt ?? '');
 
-  test('only web, mail and Noted links open without a scheme question', () {
-    for (final s in ['http', 'HTTPS', 'mailto', 'noted']) {
+  test('only web and mail links open without a scheme question', () {
+    for (final s in ['http', 'HTTPS', 'mailto']) {
       expect(linkSchemeNeedsConfirmation(s), isFalse, reason: s);
     }
-    for (final s in ['ms-msdt', 'search-ms', 'shell', 'javascript', 'x-unknown']) {
+    for (final s in ['ms-msdt', 'search-ms', 'shell', 'javascript', 'noted', 'x-unknown']) {
       expect(linkSchemeNeedsConfirmation(s), isTrue, reason: s);
     }
   });

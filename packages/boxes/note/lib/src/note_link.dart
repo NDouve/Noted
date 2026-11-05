@@ -60,11 +60,12 @@ String? linkOfSelection(EditorState editor, Selection selection) {
 }
 
 /// [text] as a link target: as typed if it has a scheme (`https:`,
-/// `mailto:`, `file:`), otherwise as an https address. Null if empty.
+/// `mailto:`, `file:`) or if it is a path (a share, `/home/...`, a drive),
+/// otherwise as an https address. Null if empty.
 String? normalizeLink(String text) {
   final t = text.trim();
   if (t.isEmpty) return null;
-  if (RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*:').hasMatch(t)) return t;
+  if (RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*:').hasMatch(t) || _looksLikePath(t)) return t;
   return 'https://$t';
 }
 

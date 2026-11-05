@@ -87,6 +87,9 @@ void main() {
     expect(normalizeLink('example.com'), 'https://example.com');
     expect(normalizeLink(' mailto:a@b.c '), 'mailto:a@b.c');
     expect(normalizeLink('   '), isNull);
+    for (final p in [r'\\host\share\x.pdf', '//host/share/x.pdf', '/home/user/x.pdf', r'C:\x\y.pdf']) {
+      expect(normalizeLink(' $p '), p, reason: 'a path is kept as typed');
+    }
   });
 
   testWidgets('Ctrl+K links the selection to the address typed', (t) async {
@@ -337,7 +340,7 @@ void main() {
     }
 
     // Scheme-less paths clicked in the editor reach the file path, not http.
-    for (final path in [r'\\host\share\click1.bat', '//host/share/click2.jar', '/home/user/click3.jar', r'C:\x\click4.exe']) {
+    for (final path in [r'\\host\share\click1.jar', '//host/share/click2.jar', '/home/user/click3.jar', r'C:\x\click4.jar']) {
       testWidgets('Ctrl+click on the path $path asks as a file', (t) async {
         await ctrlClick(t, path);
         expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
@@ -383,11 +386,42 @@ void main() {
       expect(launched, isEmpty);
     });
 
-    for (final link in ['https://a.example', 'http://a.example', 'mailto:a@b.example', 'noted:page/1']) {
+    for (final link in ['https://a.example', 'http://a.example', 'mailto:a@b.example']) {
       testWidgets('Ctrl+click on $link opens without asking', (t) async {
         await ctrlClick(t, link);
         expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
         expect(launched, hasLength(1));
+      });
+    }
+
+    testWidgets('a noted: link asks too: nothing in the app handles it, so the system would', (t) async {
+      await ctrlClick(t, 'noted:page/1');
+      expect(find.text('Open this link?'), findsOneWidget);
+      expect(launched, isEmpty);
+    });
+
+    // A path typed into Ctrl+K is saved as typed, so Ctrl+click reaches the file check.
+    for (final path in [r'\\host\share\typed1.jar', '//host/share/typed2.jar', '/home/user/typed3.jar', r'C:\x\typed4.jar']) {
+      testWidgets('typing the path $path into Ctrl+K, then Ctrl+click, asks as a file', (t) async {
+        await pump(t, [
+          {'insert': 'linked words here'},
+        ]);
+        final editor = await focusNote(t, dx: 40);
+        editor.selection = Selection.single(path: [0], startOffset: 0, endOffset: 10);
+        await frames(t);
+        await ctrlK(t);
+        await t.enterText(find.byKey(const ValueKey('link-address')), path);
+        await t.tap(find.byKey(const ValueKey('link-save')));
+        await frames(t);
+        expect(delta(editor).first['attributes'], {'href': path});
+        await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        final b = c.page.node('n')!.bounds!;
+        await t.tapAt(canvas(t).view!.toScreen(Offset(b.x + 60, b.y + 14)) + const Offset(0, CommandToolbar.height));
+        await frames(t);
+        await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await frames(t);
+        expect(find.byKey(const ValueKey('open-confirm-name')), findsOneWidget);
+        expect(launched, isEmpty);
       });
     }
 
