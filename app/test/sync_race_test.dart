@@ -743,6 +743,9 @@ void main() {
         final held = (error! as PagesNotRestoredException).deleted;
         final reached = Completer<void>();
         final release = Completer<void>();
+        addTearDown(() {
+          if (!release.isCompleted) release.complete(); // never leave the write holding the folder
+        });
         nb.syncHook = (point, path) async {
           if (point != 'undo-copy-before-publish') return;
           if (!reached.isCompleted) reached.complete();
@@ -754,9 +757,12 @@ void main() {
           return false; // stay
         };
 
-        expect(await nb.prepareToExit(limit: const Duration(milliseconds: 100)), isFalse);
+        // The limit runs out while the copy is held at the hook: long enough
+        // for the copy to get there on a slow machine, then it times out.
+        final first = nb.prepareToExit(limit: const Duration(seconds: 2));
+        await reached.future.timeout(const Duration(seconds: 30));
+        expect(await first, isFalse);
 
-        expect(reached.isCompleted, isTrue);
         expect(asked, [UserQuestion.leaveAndLose]);
         expect(nb.isPendingDelete(held), isTrue);
 
