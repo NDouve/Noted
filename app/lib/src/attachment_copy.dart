@@ -613,6 +613,7 @@ Future<void> _settleExisting(
   // Stable, and not the source's bytes: incomplete (shorter) or damaged. The
   // old bytes are kept under their own name; the good copy then takes the name.
   final incomplete = found.length < await src.length();
+  final verifiedBefore = r.verified.length; // an earlier copy into this target must not count
   final res = await setAsideDamaged(t, found);
   final base = _baseName(target);
   final kept = res.name ?? (res.leftAt != base ? res.leftAt : null);
@@ -630,7 +631,7 @@ Future<void> _settleExisting(
   }
   // Only reached when nothing threw: the good copy counts as in place when the
   // target was verified.
-  if (entry != null) entry.replaced = r.verified.any((c) => c.target.path == target);
+  if (entry != null) entry.replaced = r.verified.skip(verifiedBefore).any((c) => c.target.path == target);
 }
 
 /// Writes [src] to [dst] chunk by chunk and flushes it to disk.

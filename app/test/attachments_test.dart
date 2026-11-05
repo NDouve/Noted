@@ -1495,6 +1495,23 @@ void main() {
       expect(File('${copiedAssets()!.path}/$aside').readAsBytesSync(), damaged);
     });
 
+    test('a good copy whose publish is refused after the set-aside is not reported as used, though an earlier copy into the same target was verified', () async {
+      final damaged = List<int>.filled(bytes.length, 7);
+      final nb = await pageWithDamagedFirst(damaged);
+      var calls = 0;
+      attachmentBeforePublishHook = (target) async {
+        if (!target.endsWith('$hash.txt') || !target.replaceAll(r'\', '/').contains('/Copies/')) return;
+        // The first call is the page folder's own (damaged) file; the second is the good copy.
+        if (++calls == 2) File(target).writeAsBytesSync([9, 9]);
+      };
+      addTearDown(() => attachmentBeforePublishHook = null);
+      final said = await nb.saveCopyElsewhere();
+      expect(calls, 2, reason: 'the hook fired for both copies');
+      expect(said, allOf(contains('damaged copy of "$hash.txt"'), contains("the good copy wasn't put in its place")));
+      expect(said, isNot(contains('was used')));
+      expect(File('${copiedAssets()!.path}/$hash.txt').readAsBytesSync(), [9, 9], reason: 'what arrived is kept');
+    });
+
     test('a destination file that is still changing during the copy is named, not reported as a plain success', () async {
       final damaged = List<int>.filled(bytes.length, 7);
       final nb = await pageWithDamagedFirst(damaged);
