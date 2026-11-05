@@ -251,6 +251,38 @@ void main() {
       expect(nb.trouble.isTrouble, isFalse);
     });
 
+    test('an edit typed while the leave waits on a stalled save is saved or kept, even when the next page is edited', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      await nb.addStandaloneFolder(w.other.path);
+      final old = nb.current!;
+      old.createBoxAt(const Bounds(60, 60, 0, 0));
+      final store = w.storeFor(w.pages)
+        ..stall = Completer<void>()
+        ..stallId = id;
+      unawaited(nb.flush());
+      await until(() => store.attempts > 0, what: 'the save to start');
+      final leaving = nb.createPage(folderPath: w.other.path);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      try {
+        old.createBoxAt(const Bounds(120, 40, 0, 0)); // typed after the leave began
+      } on StateError {
+        // frozen for the departure: nothing was accepted
+      }
+      await leaving;
+      final other = nb.currentId!;
+      expect(other, isNot(id));
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0)); // replaces the shared pending save
+      final accepted = boxCount(old.page);
+      store.stall!.complete();
+      await until(() => !nb.isBusy(id), what: 'the page to be free');
+      w.crash(nb);
+      final nb2 = w.make();
+      await nb2.load();
+      await nb2.open(id);
+      expect(boxCount(nb2.current!.page), accepted, reason: 'every accepted edit survives a reload');
+    });
+
     test('a stalled save that fails afterwards is dropped: it does not replace the newer entry', () async {
       final nb = w.make();
       final id = await w.editedPage(nb);
@@ -346,6 +378,129 @@ void main() {
       });
     }
   });
+  group('a page file that cannot be read as text', () {
+    for (final denied in [true, false]) {
+      test(
+        denied
+            ? 'a file that refuses reads opens a preview from the kept changes'
+            : 'a file holding invalid UTF-8 opens a preview from the kept changes',
+        () async {
+          final nb = w.make();
+          final id = await w.editedPage(nb);
+          w.storeFor(w.pages).failWith = accessDenied();
+          await nb.flush();
+          await nb.createPage();
+          w.storeFor(w.pages).failWith = null;
+          if (denied) {
+            w.storeFor(w.pages).readFailWith = accessDenied();
+          } else {
+            w.pageFile(id).writeAsBytesSync([0xff, 0xfe, 0xfd, 0x80]);
+          }
+          await nb.open(id);
+          expect(nb.trouble.kind, TroubleKind.preview);
+          expect(boxCount(nb.current!.page), 1, reason: 'the kept box is shown');
+          expect(nb.current!.readOnly, isTrue);
+          expect(w.recFiles(), hasLength(1), reason: 'nothing is replayed or deleted');
+        },
+      );
+    }
+
+    test('a page file that is not there opens the preview and says so', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      w.storeFor(w.pages).failWith = accessDenied();
+      await nb.flush();
+      await nb.createPage();
+      w.storeFor(w.pages).failWith = null;
+      w.pageFile(id).deleteSync();
+      await nb.open(id);
+      expect(nb.trouble.kind, TroubleKind.preview);
+      expect(nb.trouble.reason, "the page file isn't there");
+      expect(boxCount(nb.current!.page), 1);
+    });
+
+    test('with nothing kept, the read error is still raised', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      await nb.flush();
+      await nb.createPage();
+      w.storeFor(w.pages).readFailWith = accessDenied();
+      await expectLater(nb.open(id), throwsA(isA<FileSystemException>()));
+    });
+  });
+
+  group('a leave freezes the page only while it waits', () {
+    // The recovery folder can't be written, so a failed leave asks and the
+    // answer decides.
+    Future<(Notebook, String)> stuckPage() async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      await w.rec.parent.create(recursive: true);
+      File(w.rec.path).writeAsStringSync('in the way');
+      w.storeFor(w.pages).failWith = accessDenied();
+      await nb.flush();
+      return (nb, id);
+    }
+
+    test('after a leave ends in "stay" the page is editable again and the reason is gone', () async {
+      final (nb, id) = await stuckPage();
+      final reasons = <String?>[];
+      nb.questioner = (q, t) async {
+        reasons.add(nb.readOnlyReason);
+        expect(nb.current!.readOnly, isTrue);
+        return false; // Cancel
+      };
+      await nb.createPage();
+      expect(nb.currentId, id);
+      expect(reasons.single, contains('saving this page before leaving'));
+      expect(nb.current!.readOnly, isFalse);
+      expect(nb.readOnlyReason, isNull);
+      nb.current!.createBoxAt(const Bounds(90, 90, 0, 0));
+      expect(boxCount(nb.current!.page), 2);
+    });
+
+    test('a sync merge applied while the page was frozen is saved when the leave ends in "stay"', () async {
+      final (nb, id) = await stuckPage();
+      nb.questioner = (q, t) async {
+        final p = nb.current!.page;
+        nb.current!.applyExternal(p.withMeta(p.meta.withTitle('Merged while leaving')));
+        return false;
+      };
+      await nb.createPage();
+      expect(nb.currentId, id);
+      w.storeFor(w.pages).failWith = null;
+      File(w.rec.path).deleteSync();
+      await nb.flush();
+      expect(readPage(w.pageFile(id).readAsStringSync()).meta.title, 'Merged while leaving');
+    });
+
+    test('a second leave still waiting keeps the page frozen when the first ends in "stay"', () async {
+      final (nb, id) = await stuckPage();
+      w.storeFor(w.pages)
+        ..failWith = null
+        ..stall = Completer<void>()
+        ..stallId = id;
+      nb.current!.createBoxAt(const Bounds(90, 90, 0, 0));
+      var asked = 0;
+      nb.questioner = (q, t) async {
+        asked++;
+        return false; // every leave is cancelled
+      };
+      final old = nb.current!;
+      final first = nb.createPage();
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      final second = nb.createPage();
+      // The first leave gives up at ~400 ms (Cancel), the second at ~550 ms.
+      await first;
+      expect(asked, greaterThan(0));
+      expect(old.readOnly, isTrue, reason: 'the second leave is still waiting');
+      expect(() => old.createBoxAt(const Bounds(5, 5, 0, 0)), throwsStateError);
+      await second;
+      await until(() => !old.readOnly, what: 'the page to thaw');
+      w.storeFor(w.pages).stall!.complete();
+    });
+  });
+
   group('a replay that hangs', () {
     test('does not hold recovery: leaving another page still keeps its entry within the bound', () async {
       final nb = w.make(

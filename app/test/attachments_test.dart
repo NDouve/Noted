@@ -56,7 +56,7 @@ void main() {
     if (root.existsSync()) await root.delete(recursive: true);
   });
 
-  Notebook make({Duration saveDelay = Duration.zero, PageStore? store}) {
+  Notebook make({Duration saveDelay = Duration.zero, PageStore? store, Future<String?> Function()? pick}) {
     final nb = Notebook(
       store ?? PageStore(pages),
       buildModules(),
@@ -66,6 +66,7 @@ void main() {
       recoveryDirectory: rec,
       folderCheckInterval: Duration.zero,
       cacheDirectory: Directory('${root.path}/cache'),
+      pickFolder: pick,
     );
     opened.add(nb);
     return nb;
@@ -757,5 +758,136 @@ void main() {
     await store.open('a.txt', fileName: '$hash.txt');
     String norm(String p) => p.replaceAll(r'\', '/');
     expect(norm(openedFiles.last.path), norm(asset(pages, 'p').path));
+  });
+
+  group('Save a copy elsewhere and the attachments', () {
+    late Directory dest;
+
+    setUp(() async => dest = await Directory('${root.path}/Copies').create());
+
+    // The attachments folder of the only copy made in [dest], or null.
+    Directory? copiedAssets() {
+      final d = dest.listSync().whereType<Directory>().where((d) => d.path.endsWith('.assets'));
+      return d.isEmpty ? null : d.single;
+    }
+
+    test('the page\'s attachment files arrive, and the message is plain', () async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      final a = nb.currentId!;
+      await attach(nb);
+      final said = await nb.saveCopyElsewhere();
+      expect(said, 'Saved a copy to ${dest.path}.');
+      expect(File('${copiedAssets()!.path}/$hash.txt').readAsBytesSync(), bytes);
+      expect(asset(pages, a).readAsBytesSync(), bytes, reason: 'the original is untouched');
+    });
+
+    test('a source folder that is not there is named, not skipped silently', () async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      final a = nb.currentId!;
+      await attach(nb);
+      assets(pages, a).deleteSync(recursive: true);
+      final said = await nb.saveCopyElsewhere();
+      expect(said, startsWith('Saved a copy to ${dest.path}, but '));
+      expect(said, contains('$hash.txt'));
+      expect(said, contains('not copied'));
+    });
+
+    test('a different file already under the name is reported, and left as it is', () async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      final a = nb.currentId!;
+      await attach(nb);
+      // The recovery store holds another file under the same name.
+      final other = File('${rec.path}/$a.assets/$hash.txt')..createSync(recursive: true);
+      other.writeAsStringSync('something else');
+      final said = await nb.saveCopyElsewhere();
+      expect(said, contains('$hash.txt'));
+      expect(said, contains('not copied'));
+      expect(File('${copiedAssets()!.path}/$hash.txt').readAsBytesSync(), bytes);
+      expect(other.readAsStringSync(), 'something else', reason: 'the source is untouched');
+    });
+
+    test('a page whose folder went away while it was open still reports its files', () async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      await nb.addStandaloneFolder(extra.path);
+      final a = await nb.createPage(folderPath: extra.path);
+      await nb.open(a);
+      await attach(nb);
+      extra.deleteSync(recursive: true);
+      await nb.checkFolders();
+      expect(nb.current!.readOnly, isTrue, reason: 'the page waits for its folder');
+      final said = await nb.saveCopyElsewhere();
+      expect(said, startsWith('Saved a copy to ${dest.path}, but '));
+      expect(said, contains('$hash.txt'));
+    });
+
+    test('a leftover temporary file that could not be put back is reported', () async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      final a = nb.currentId!;
+      await attach(nb);
+      File('${assets(pages, a).path}/notes.1-1.tmp').writeAsStringSync('half a file');
+      final said = await nb.saveCopyElsewhere();
+      expect(said, contains('leftover temporary files'));
+      expect(said, contains('notes.1-1.tmp'));
+      expect(File('${copiedAssets()!.path}/$hash.txt').readAsBytesSync(), bytes);
+    });
+
+    test('with the page folder gone and a box type that cannot be asked, it says so', () async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      await nb.addStandaloneFolder(extra.path);
+      final a = await nb.createPage(folderPath: extra.path);
+      await nb.open(a);
+      await attach(nb);
+      await nb.setBoxType(a, FileCodec.id, false);
+      extra.deleteSync(recursive: true);
+      await nb.checkFolders();
+      final said = await nb.saveCopyElsewhere();
+      expect(said, startsWith('Saved a copy to ${dest.path}, but '));
+      expect(said, contains("attachments folder wasn't available"));
+      expect(said, contains('1 box is'));
+    });
+
+    test('a switched-off box type with no attachments folder at all is not a warning', () async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      final a = nb.currentId!;
+      nb.current!.insertBox(
+        BoxRecord.create(
+          id: 'draw1',
+          typeId: 'noted.drawing',
+          dataVersion: 1,
+          bounds: const Bounds(10, 10, 100, 100),
+          data: RawJson.encode(const <String, Object?>{}),
+          snapshotText: '',
+          rev: 'r',
+        ),
+      );
+      await nb.setBoxType(a, 'noted.drawing', false);
+      await nb.flush();
+      expect(assets(pages, a).existsSync(), isFalse);
+      expect(await nb.saveCopyElsewhere(), 'Saved a copy to ${dest.path}.');
+    });
+
+    test('the page folder gone but a recovery attachments folder present still gets the note', () async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      await nb.addStandaloneFolder(extra.path);
+      final a = await nb.createPage(folderPath: extra.path);
+      await nb.open(a);
+      await attach(nb);
+      await nb.setBoxType(a, FileCodec.id, false);
+      File('${rec.path}/$a.assets/$hash.txt')
+        ..createSync(recursive: true)
+        ..writeAsBytesSync(bytes);
+      extra.deleteSync(recursive: true);
+      await nb.checkFolders();
+      final said = await nb.saveCopyElsewhere();
+      expect(said, contains("attachments folder wasn't available"));
+    });
   });
 }

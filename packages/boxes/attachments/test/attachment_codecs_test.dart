@@ -355,4 +355,58 @@ void main() {
       );
     }
   });
+
+  group('folderFiles', () {
+    AttachmentRef ref({String? file, Uint8List? data}) => AttachmentRef(
+      name: 'a.txt',
+      size: bytes.length,
+      hash: hash,
+      file: file,
+      bytes: data,
+    );
+
+    test('a folder ref gives its file; an embedded ref and an empty box give none', () {
+      const image = ImageCodec();
+      const file = FileCodec();
+      expect(
+        file.folderFiles(FileData(ref: ref(file: '$hash.txt'))),
+        ['$hash.txt'],
+      );
+      expect(
+        image.folderFiles(
+          ImageData(ref: ref(file: '$hash.png'), width: 1, height: 1),
+        ),
+        ['$hash.png'],
+      );
+      expect(file.folderFiles(FileData(ref: ref(data: bytes))), isEmpty);
+      // Embedded data wins over a folder name kept beside it.
+      expect(
+        file.folderFiles(FileData(ref: ref(file: '$hash.txt', data: bytes))),
+        isEmpty,
+      );
+      expect(file.folderFiles(null), isEmpty);
+      expect(image.folderFiles(null), isEmpty);
+    });
+
+    test('a box of a data version this build does not know is not resolved, so it is never asked', () {
+      final r = ModuleRegistry()..register(const FileModule());
+      BoxRecord box(int v) => BoxRecord.create(
+        id: 'b',
+        typeId: FileCodec.id,
+        dataVersion: v,
+        bounds: const Bounds(0, 0, 10, 10),
+        data: RawJson.encode(const FileCodec().encode(FileData(ref: ref(file: '$hash.txt')))),
+        snapshotText: '',
+        rev: 'r',
+      );
+      final known = r.codecs.resolve(box(1));
+      expect(known, isA<LiveBox>());
+      expect(
+        (known as LiveBox).codec.folderFiles(known.data),
+        ['$hash.txt'],
+      );
+      final newer = r.codecs.resolve(box(99));
+      expect(newer, isA<UnsupportedBox>());
+    });
+  });
 }

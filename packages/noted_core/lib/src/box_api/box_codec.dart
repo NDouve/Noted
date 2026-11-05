@@ -43,8 +43,8 @@ final class BoxApiVersion {
 /// frame style; 0.6 added Find on page (`BoxFind`); 0.7 added images and files;
 /// 0.8 added `aspectRatioExtraHeight`; 0.9 added AI writes (`AiWrite`,
 /// `BoxCodec.aiOwner` and `BoxCodec.aiWrite`); 0.10 added
-/// `AiWriteMode.replaceAiText`; 0.11 added `CanvasTool.stylusRole`; 0.12 added `VerifyingAttachmentStore`; 0.13 added `PageFolderAttachmentStore`. See `BOX_API_CHANGELOG.md` in this package.
-const BoxApiVersion boxApiVersion = BoxApiVersion(0, 13);
+/// `AiWriteMode.replaceAiText`; 0.11 added `CanvasTool.stylusRole`; 0.12 added `VerifyingAttachmentStore`; 0.13 added `PageFolderAttachmentStore`; 0.14 added `BoxCodec.folderFiles`. See `BOX_API_CHANGELOG.md` in this package.
+const BoxApiVersion boxApiVersion = BoxApiVersion(0, 14);
 
 /// How a box's size relates to its content.
 enum BoxSizing {
@@ -157,6 +157,14 @@ abstract class BoxCodec<D> {
   /// The id of the AI connection that owns this box (never a token or
   /// secret), or null. Only box types that take AI writes return one.
   String? aiOwner(D data) => null;
+
+  /// The names, relative to the page's assets folder, of the files this box
+  /// keeps in that folder (empty for a box that embeds its content or keeps
+  /// none). The host uses it to tell the user which attachment files a copy of
+  /// the page is missing. Names are returned as stored, not checked; the host
+  /// only joins those that [isAttachmentFileName] accepts. The host asks only
+  /// for boxes whose data this codec decoded (see `ModuleRegistry.resolve`).
+  List<String> folderFiles(D data) => const [];
 
   /// The box's data after an AI's [write], or null if this type doesn't take
   /// AI writes. The host checks ownership and the page's rules before calling

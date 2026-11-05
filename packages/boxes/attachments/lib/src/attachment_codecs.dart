@@ -93,6 +93,10 @@ final class ImageCodec extends BoxCodec<ImageData?> {
           ...data.extra,
         };
 
+  /// The image's folder file, if it keeps one there (embedded data wins).
+  @override
+  List<String> folderFiles(ImageData? data) => _folderFile(data?.ref);
+
   /// `[image: <alt text>]`.
   @override
   String snapshotText(ImageData? data) => '[image: ${data?.alt.trim() ?? ''}]';
@@ -178,6 +182,10 @@ final class FileCodec extends BoxCodec<FileData?> {
   Object? encode(FileData? data) =>
       data == null ? null : {'file': data.ref.toJson(), ...data.extra};
 
+  /// The file box's folder file, if it keeps one there.
+  @override
+  List<String> folderFiles(FileData? data) => _folderFile(data?.ref);
+
   /// `[file: <name>]`.
   @override
   String snapshotText(FileData? data) => '[file: ${data?.ref.name ?? ''}]';
@@ -209,6 +217,11 @@ final class FileCodec extends BoxCodec<FileData?> {
 
   @override
   Set<BoxPermission> get permissions => {attachmentsPermission};
+}
+
+List<String> _folderFile(AttachmentRef? ref) {
+  final file = ref?.file;
+  return ref == null || ref.isEmbedded || file == null || file.isEmpty ? const [] : [file];
 }
 
 /// The permission to read and write the page's assets folder (0034).
