@@ -63,21 +63,28 @@ class _BinderCoverState extends State<BinderCover> {
   late (String, String, String) _applied;
 
   // The binder file changed on another machine: show the new values. A field
-  // whose text the user has changed and not saved yet keeps that text.
+  // whose text the user has changed and not saved yet keeps that text, and so
+  // does a field whose save was refused (the screen then goes back to the saved
+  // value, but the typing is kept and saved again when the field loses focus).
   void _takeExternalChanges() {
     final b = _section?.binder;
     if (b == null) return;
-    void take(TextEditingController c, String was, String now) {
+    void take(String field, TextEditingController c, String was, String now) {
       if (now == was || c.text == now) return;
+      final sent = _sent[field];
+      if (sent != null && sent.$1 == now && c.text == sent.$2) return; // refused
       if (c.text != was) return; // being edited
       c.text = now;
     }
 
-    take(_title, _applied.$1, b.title);
-    take(_description, _applied.$2, b.description);
-    take(_owner, _applied.$3, b.owner);
+    take('title', _title, _applied.$1, b.title);
+    take('description', _description, _applied.$2, b.description);
+    take('owner', _owner, _applied.$3, b.owner);
     _applied = (b.title, b.description, b.owner);
   }
+
+  // The fields last sent to be saved: the value shown before and the text sent.
+  final Map<String, (String, String)> _sent = {};
 
   @override
   void dispose() {
@@ -102,6 +109,16 @@ class _BinderCoverState extends State<BinderCover> {
   }
 
   void _save() {
+    final b = _section?.binder;
+    if (b != null) {
+      _sent
+        ..clear()
+        ..addAll({
+          if (_title.text != b.title) 'title': (b.title, _title.text),
+          if (_description.text != b.description) 'description': (b.description, _description.text),
+          if (_owner.text != b.owner) 'owner': (b.owner, _owner.text),
+        });
+    }
     widget.notebook.updateBinder(
       widget.path,
       title: _title.text,

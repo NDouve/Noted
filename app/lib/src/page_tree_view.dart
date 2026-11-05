@@ -105,8 +105,10 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       ..._nb.unreadable.where((u) => !_nb.hasLandedNotice(u.path)),
       ..._nb.recoveryDamaged,
     ];
+    final keptTemps = <(BinderSection, KeptBinderTemp)>[];
     for (final b in _nb.binders) {
       rows.add(_binderHeader(context, b));
+      keptTemps.addAll([for (final k in b.keptTemps) (b, k)]);
       // A binder whose folder is away keeps its pages listed, greyed.
       if (!b.available && !b.readOnly && !b.missing) continue;
       cantOpen.addAll(b.unreadable.where((u) => !_nb.hasLandedNotice(u.path)));
@@ -190,6 +192,13 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
                           ),
                         ),
                       ),
+                  ]),
+                ),
+              if (keptTemps.isNotEmpty)
+                SliverList(
+                  delegate: SliverChildListDelegate([
+                    if (cantOpen.isEmpty) SidebarGroupHeader(title: "Can't open", disabled: true),
+                    for (final (b, k) in keptTemps) _keptTempRow(context, b, k),
                   ]),
                 ),
               // The empty area below the list: dropping here moves a page to
@@ -330,6 +339,39 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
                 itemBuilder: (_) => const [
                   NotedMenuItem<String>(value: 'remove', label: 'Remove from list'),
                 ],
+              ),
+      ),
+    );
+  }
+
+  // A kept temporary file of an interrupted binder write (never promoted by
+  // itself). A complete copy of a binder file that is missing can be put back;
+  // any other can be deleted, if it still holds what is listed.
+  Widget _keptTempRow(BuildContext context, BinderSection b, KeptBinderTemp k) {
+    final name = k.path.split(RegExp(r'[\/]')).last;
+    final putBack = k.complete && b.status == BinderStatus.unavailable && !b.missing;
+    return Tooltip(
+      message: name,
+      child: SidebarRow(
+        key: ValueKey('kept-temp-${k.path}'),
+        title: putBack ? 'a complete copy of the binder file' : 'an interrupted change to the binder file',
+        status: b.title,
+        disabled: true,
+        leading: Icon(
+          Icons.block_rounded,
+          size: NotedMetrics.of(context).icon,
+          color: NotedColors.of(context).textDisabled,
+        ),
+        trailing: putBack
+            ? TextButton(
+                key: ValueKey('kept-temp-put-back-${k.path}'),
+                onPressed: () => _guard(() => _nb.putBackKeptBinderTemp(b.path, k.path)),
+                child: const Text('Put back'),
+              )
+            : TextButton(
+                key: ValueKey('kept-temp-delete-${k.path}'),
+                onPressed: () => _guard(() => _nb.deleteKeptBinderTemp(b.path, k.path)),
+                child: const Text('Delete'),
               ),
       ),
     );

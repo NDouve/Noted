@@ -3023,7 +3023,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _showBinder(s);
         notifyListeners();
         return null;
-      case BinderRefused(:final reason):
+      case BinderRefused(:final reason, :final kind):
+        if (kind == BinderRefusal.otherBinder) {
+          // The file belongs to another binder now: what was changed on screen
+          // was meant for the old one. The folder is read afresh.
+          s.pending.clear();
+          _showBinder(s);
+          notifyListeners();
+          _notices.add('Binder ${s.title}: the binder file in this folder now belongs to another binder.');
+          unawaited(_queueChecked('Reopening $path', () => _reopenBinder(path)));
+          return reason;
+        }
         // The screen and what AI may use fall back to the saved value at once,
         // even when the file is unchanged and readable.
         s.pending.remove(delta);
@@ -3081,13 +3091,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   Future<BinderSection> _openBinder(String path, {bool create = false}) async {
     var kept = const <KeptBinderTemp>[];
-    BinderSection unavailable(String why, {bool missing = false}) => BinderSection._(
-      path,
-      BinderStatus.unavailable,
-      reason: why,
-      missing: missing,
-      keptTemps: kept,
-    );
+    BinderSection unavailable(String why, {bool missing = false}) {
+      _binderText.remove(_key(path));
+      return BinderSection._(
+        path,
+        BinderStatus.unavailable,
+        reason: why,
+        missing: missing,
+        keptTemps: kept,
+      );
+    }
     final dir = Directory(path);
     try {
       if (!await dir.exists()) {
@@ -4721,6 +4734,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   String _binderFilePath(String folder) => '$folder${Platform.pathSeparator}$binderFileName';
 
+  // Runs [job] in the queue of checks of changed files, after the saves queued
+  // so far.
+  Future<void> _queueChecked(String what, Future<void> Function() job) {
+    final r = _checking.then((_) async {
+      await _saving;
+      if (!_disposed) await job();
+    }).catchError((Object e) {
+      debugPrint('$what failed: $e');
+    });
+    _checking = r;
+    return r;
+  }
+
   void _scheduleBinderRecheck(String path) {
     if (_disposed) return;
     final key = _key(path);
@@ -4794,7 +4820,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           'No $binderFileName in this folder.',
         );
       case BinderFound(:final binder, :final text):
-        if (!force && _binderText[dirKey] == text) return;
+        if (!force && section.available && _binderText[dirKey] == text) return;
         _binderText[dirKey] = text;
         if (!section.available) {
           await _reopenBinder(section.path);
@@ -4802,13 +4828,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
         final known = section.saved;
         if (known != null && known.id != binder.id) {
-          // Another binder's file now: what was changed on screen was meant for
-          // the old one. The folder is read afresh.
+          // Another binder's file now: it is not adopted, and what was changed
+          // on screen was meant for the old one.
           section.pending.clear();
-          _notices.add(
-            'Binder ${section.title}: the binder file in this folder now belongs to another binder.',
+          await _disableBinder(
+            section,
+            BinderStatus.unavailable,
+            'The binder file in this folder belongs to another binder',
           );
-          await _reopenBinder(section.path);
           return;
         }
         section.saved = binder;
