@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
@@ -87,6 +88,9 @@ void main() {
     expect(normalizeLink('example.com'), 'https://example.com');
     expect(normalizeLink(' mailto:a@b.c '), 'mailto:a@b.c');
     expect(normalizeLink('   '), isNull);
+    for (final p in [r'\\host\share\x.pdf', '//host/share/x.pdf', '/home/user/x.pdf', r'C:\x\y.pdf']) {
+      expect(normalizeLink(' $p '), p, reason: 'a path is kept as typed');
+    }
   });
 
   testWidgets('Ctrl+K links the selection to the address typed', (t) async {
@@ -336,13 +340,258 @@ void main() {
       });
     }
 
-    testWidgets('a path with a literal percent sign is not refused', (t) async {
+    // Scheme-less paths clicked in the editor reach the file path, not http.
+    for (final path in [r'\\host\share\click1.jar', '//host/share/click2.jar', '/home/user/click3.jar', r'C:\x\click4.jar']) {
+      testWidgets('Ctrl+click on the path $path asks as a file', (t) async {
+        await ctrlClick(t, path);
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+        expect(find.byKey(const ValueKey('open-confirm-name')), findsOneWidget);
+        expect(launched, isEmpty);
+        await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+        await frames(t);
+        expect(launched, isEmpty);
+      });
+    }
+
+    testWidgets('Ctrl+click on a bare word still opens as http://', (t) async {
+      await ctrlClick(t, 'example.com');
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+      expect(launched, ['http://example.com']);
+    });
+
+    for (final link in ['ms-msdt:/id PCWDiagnostic', 'search-ms:query=x', 'shell:startup', 'javascript:alert(1)', 'weird-thing:x']) {
+      testWidgets('Ctrl+click on $link asks, naming the scheme; Cancel opens nothing', (t) async {
+        await ctrlClick(t, link);
+        expect(find.text('Open this link?'), findsOneWidget);
+        final scheme = link.substring(0, link.indexOf(':'));
+        expect(t.widget<Text>(find.byKey(const ValueKey('open-confirm-scheme'))).data, '$scheme:');
+        expect(launched, isEmpty);
+        await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+        await frames(t);
+        expect(launched, isEmpty);
+      });
+    }
+
+    testWidgets('a scheme question opens the link after Open', (t) async {
+      await ctrlClick(t, 'ms-msdt:/id x');
+      await t.tap(find.byKey(const ValueKey('open-confirm-open')));
+      await frames(t);
+      expect(launched, hasLength(1));
+    });
+
+    testWidgets('Escape cancels a scheme question', (t) async {
+      await ctrlClick(t, 'search-ms:query=y');
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await frames(t);
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+      expect(launched, isEmpty);
+    });
+
+    for (final link in ['https://a.example', 'http://a.example', 'mailto:a@b.example']) {
+      testWidgets('Ctrl+click on $link opens without asking', (t) async {
+        await ctrlClick(t, link);
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+        expect(launched, hasLength(1));
+      });
+    }
+
+    testWidgets('a noted: link asks too: nothing in the app handles it, so the system would', (t) async {
+      await ctrlClick(t, 'noted:page/1');
+      expect(find.text('Open this link?'), findsOneWidget);
+      expect(launched, isEmpty);
+    });
+
+    // Relative text with a backslash is no path: never handed to the system.
+    for (final rel in [r'x\..\calc', r'..\..\Windows\System32\calc', r'docs\plan.pdf', r'example.com\docs']) {
+      testWidgets('Ctrl+click on the relative $rel opens nothing', (t) async {
+        await ctrlClick(t, rel);
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+        expect(launched, isEmpty);
+        expect(find.text("This link can't be opened."), findsOneWidget);
+      });
+    }
+
+    testWidgets('example.com\\docs typed into Ctrl+K is not a path: it gets https://', (t) async {
+      expect(normalizeLink(r'example.com\docs'), r'https://example.com\docs');
+      expect(normalizeLink(r'docs\plan.pdf'), r'https://docs\plan.pdf');
+      await ctrlClick(t, normalizeLink(r'example.com\docs')!);
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+      expect(launched.where((u) => !u.startsWith('http')), isEmpty);
+    });
+
+    testWidgets(
+      'a drive path whose .. segments resolve to a program asks',
+      (t) async {
+        await ctrlClick(t, r'C:\tools\evil.jar\x\..');
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+        expect(launched, isEmpty);
+      },
+      skip: !Platform.isWindows,
+    );
+
+    // A path typed into Ctrl+K is saved as typed, so Ctrl+click reaches the file check.
+    for (final path in [r'\\host\share\typed1.jar', '//host/share/typed2.jar', '/home/user/typed3.jar', r'C:\x\typed4.jar']) {
+      testWidgets('typing the path $path into Ctrl+K, then Ctrl+click, asks as a file', (t) async {
+        await pump(t, [
+          {'insert': 'linked words here'},
+        ]);
+        final editor = await focusNote(t, dx: 40);
+        editor.selection = Selection.single(path: [0], startOffset: 0, endOffset: 10);
+        await frames(t);
+        await ctrlK(t);
+        await t.enterText(find.byKey(const ValueKey('link-address')), path);
+        await t.tap(find.byKey(const ValueKey('link-save')));
+        await frames(t);
+        expect(delta(editor).first['attributes'], {'href': path});
+        await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        final b = c.page.node('n')!.bounds!;
+        await t.tapAt(canvas(t).view!.toScreen(Offset(b.x + 60, b.y + 14)) + const Offset(0, CommandToolbar.height));
+        await frames(t);
+        await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await frames(t);
+        expect(find.byKey(const ValueKey('open-confirm-name')), findsOneWidget);
+        expect(launched, isEmpty);
+      });
+    }
+
+    testWidgets('a scheme link in the light view asks too', (t) async {
+      await lightCtrlClick(t, 'ms-msdt:/id light');
+      expect(find.text('Open this link?'), findsOneWidget);
+      expect(launched, isEmpty);
+    });
+
+    testWidgets('Alt+Shift+Enter on a scheme link asks too', (t) async {
+      await pump(t, [
+        {
+          'insert': 'linked words here',
+          'attributes': {'href': 'ms-msdt:/id keys'},
+        },
+      ]);
+      final editor = await focusNote(t, dx: 40);
+      final node = editor.document.root.children.first;
+      editor.selection = Selection.single(path: node.path, startOffset: 0, endOffset: 10);
+      await frames(t);
+      await t.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await t.sendKeyEvent(LogicalKeyboardKey.enter);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+      await frames(t);
+      expect(find.text('Open this link?'), findsOneWidget);
+      expect(launched, isEmpty);
+    });
+
+    testWidgets('a path with a literal percent sign is not refused, but asks', (t) async {
       await pump(t, [
         {'insert': 'plain'},
       ]);
-      await t.runAsync(() => linkOpener(r'C:\docs\100%.txt'));
+      unawaited(linkOpener(r'C:\docs\100%.txt'));
+      await frames(t);
       expect(find.text("This link can't be opened."), findsNothing);
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+      await t.tap(find.byKey(const ValueKey('open-confirm-open')));
+      await frames(t);
       expect(launched, hasLength(1));
+    });
+
+    // The system decodes escapes before it runs a file: any % asks.
+    for (final path in [
+      r'C:\x\tool%2Ejar',
+      'file:///C:/x/tool%252Ejar',
+      r'\\host\share\x%2Ecmd',
+      r'C:\x\%252E%252E\y.txt',
+      r'C:\Windows\System32\calc%2Eexe',
+    ]) {
+      testWidgets('the escaped target $path asks; Cancel opens nothing', (t) async {
+        await pump(t, [
+          {'insert': 'plain'},
+        ]);
+        unawaited(linkOpener(path));
+        await frames(t);
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+        expect(launched, isEmpty);
+        await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+        await frames(t);
+        expect(launched, isEmpty);
+      });
+    }
+
+    testWidgets('Ctrl+click on an escaped file: link asks', (t) async {
+      await ctrlClick(t, 'file:///C:/x/calc%252Eexe');
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+      expect(launched, isEmpty);
+    });
+
+    // An 8.3 short name can stand for a long runnable name.
+    for (final path in [r'C:\x\PAYLOA~1.DIA', r'\\host\share\TOOL~1.APP', '/home/u/PROBE~2.TXT']) {
+      testWidgets('the short name $path asks', (t) async {
+        await pump(t, [
+          {'insert': 'plain'},
+        ]);
+        unawaited(linkOpener(path));
+        await frames(t);
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+        expect(launched, isEmpty);
+        await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+        await frames(t);
+        expect(launched, isEmpty);
+      });
+    }
+
+    // The dialog names what will run: decoded and resolved.
+    for (final (path, name) in [
+      (r'C:\Windows\System32\calc%2Eexe', 'calc.exe'),
+      (r'C:\x\%252E%252E\evil.jar', 'evil.jar'),
+    ]) {
+      testWidgets('the dialog for $path shows $name', (t) async {
+        await pump(t, [
+          {'insert': 'plain'},
+        ]);
+        unawaited(linkOpener(path));
+        await frames(t);
+        expect(t.widget<Text>(find.byKey(const ValueKey('open-confirm-name'))).data, name);
+        await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+        await frames(t);
+      });
+    }
+
+    testWidgets('the dialog shows evil.jar for evil.jar with .. segments', (t) async {
+      await pump(t, [
+        {'insert': 'plain'},
+      ]);
+      unawaited(linkOpener(r'C:\tools\evil.jar\x\..'));
+      await frames(t);
+      expect(t.widget<Text>(find.byKey(const ValueKey('open-confirm-name'))).data, 'evil.jar');
+      await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+      await frames(t);
+    }, skip: !Platform.isWindows);
+
+    // A query or an escaped ? must not hide a program's name.
+    for (final path in ['file:///C:/x/probe.cmd?.pdf', r'C:\x\probe.cmd%3F.pdf']) {
+      testWidgets('$path never launches without the question', (t) async {
+        await pump(t, [
+          {'insert': 'plain'},
+        ]);
+        unawaited(linkOpener(path));
+        await frames(t);
+        expect(launched, isEmpty);
+        expect(
+          find.byKey(const ValueKey('open-confirm-dialog')).evaluate().isNotEmpty ||
+              find.text("This link can't be opened.").evaluate().isNotEmpty,
+          isTrue,
+        );
+      });
+    }
+
+    testWidgets('c:foo.jar (a drive without a root) gets the notice on every platform', (t) async {
+      await pump(t, [
+        {'insert': 'plain'},
+      ]);
+      unawaited(linkOpener('c:foo.jar'));
+      await frames(t);
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+      expect(launched, isEmpty);
+      expect(find.text("This link can't be opened."), findsOneWidget);
     });
 
     testWidgets('a name with a control character is refused with a notice', (t) async {

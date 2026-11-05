@@ -16,6 +16,55 @@ void main() {
   bool run(String n, RunnablePlatform p, {String? pathExt}) =>
       isRunnableFileName(n, platform: p, pathExt: pathExt ?? '');
 
+  test('only web and mail links open without a scheme question', () {
+    for (final s in ['http', 'HTTPS', 'mailto']) {
+      expect(linkSchemeNeedsConfirmation(s), isFalse, reason: s);
+    }
+    for (final s in ['ms-msdt', 'search-ms', 'shell', 'javascript', 'noted', 'x-unknown']) {
+      expect(linkSchemeNeedsConfirmation(s), isTrue, reason: s);
+    }
+  });
+
+  testWidgets('the scheme question shows the cleaned scheme; Cancel answers false', (t) async {
+    bool? answer;
+    await t.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () async => answer = await confirmOpenLinkScheme(context, 'ms${String.fromCharCode(0x202e)}-msdt'),
+            child: const Text('go'),
+          ),
+        ),
+      ),
+    );
+    await t.tap(find.text('go'));
+    await t.pumpAndSettle();
+    expect(find.text('Open this link?'), findsOneWidget);
+    expect(t.widget<Text>(find.byKey(const ValueKey('open-confirm-scheme'))).data, 'ms·-msdt:');
+    await t.sendKeyEvent(LogicalKeyboardKey.enter);
+    await t.pumpAndSettle();
+    expect(answer, isFalse, reason: 'Enter takes the default, Cancel');
+  });
+
+  testWidgets('a 95-character scheme is cut at the end with an ellipsis', (t) async {
+    final scheme = 'abcdef${'x' * 89}';
+    await t.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () => confirmOpenLinkScheme(context, scheme),
+            child: const Text('go'),
+          ),
+        ),
+      ),
+    );
+    await t.tap(find.text('go'));
+    await t.pumpAndSettle();
+    final shown = t.widget<Text>(find.byKey(const ValueKey('open-confirm-scheme'))).data!;
+    expect(shown, '${scheme.substring(0, 39)}…:');
+    expect(shown.startsWith('abcdef'), isTrue);
+  });
+
   group('Windows', () {
     test('the fixed list, in any case', () {
       final all =

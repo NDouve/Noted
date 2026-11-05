@@ -60,11 +60,12 @@ String? linkOfSelection(EditorState editor, Selection selection) {
 }
 
 /// [text] as a link target: as typed if it has a scheme (`https:`,
-/// `mailto:`, `file:`), otherwise as an https address. Null if empty.
+/// `mailto:`, `file:`) or if it is a path (a share, `/home/...`, a drive),
+/// otherwise as an https address. Null if empty.
 String? normalizeLink(String text) {
   final t = text.trim();
   if (t.isEmpty) return null;
-  if (RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*:').hasMatch(t)) return t;
+  if (RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*:').hasMatch(t) || _isAbsolutePath(t)) return t;
   return 'https://$t';
 }
 
@@ -147,20 +148,31 @@ Future<void> _launch(String url) async {
   final uri = Uri.tryParse(text);
   final scheme = uri?.scheme.toLowerCase() ?? '';
   try {
-    // Web and mail links, and schemes of other programs, go to the system as
-    // before. Everything else is a local or network path (a file: link, a
+    // Web and mail links go to the system; any other scheme (a program's) asks
+    // first. Everything else is a local or network path (a file: link, a
     // drive letter, a share, a bare path): one the system would run is opened
     // only after the user says so.
     final isPath = scheme.isEmpty || scheme == 'file' || scheme.length == 1;
+    // A drive letter without a root (c:foo) is relative to a drive's current
+    // folder: not a path to open, not a scheme to hand over.
+    if (scheme.length == 1 && !_isAbsolutePath(text)) {
+      _notice(messenger);
+      return;
+    }
     if (uri != null && !isPath) {
+      if (linkSchemeNeedsConfirmation(scheme)) {
+        if (context == null || !context.mounted) return;
+        if (!await confirmOpenLinkScheme(context, scheme)) return;
+      }
       await launchUrl(uri, mode: LaunchMode.externalApplication);
       return;
     }
     // A bare word or address (cmd, example.com) is a web address, as the editor
     // treats it; never handed to the system as it is.
-    if (scheme.isEmpty && !_looksLikePath(text)) {
+    if (scheme.isEmpty && !_isAbsolutePath(text)) {
       final web = Uri.tryParse('http://$text');
-      if (text.isEmpty || web == null || _controlChars.hasMatch(text)) {
+      // A backslash is no part of a web address: a relative path is not opened.
+      if (text.isEmpty || web == null || text.contains(r'\') || _controlChars.hasMatch(text)) {
         _notice(messenger);
         return;
       }
@@ -178,14 +190,29 @@ Future<void> _launch(String url) async {
     }
     // A name with a control character (NUL, a line break) is not opened: the
     // system may read it differently from what was checked.
-    if (_controlChars.hasMatch(path) || _controlChars.hasMatch(_decoded(text))) {
+    if (_controlChars.hasMatch(path) || _controlChars.hasMatch(_fullyDecoded(text))) {
       _notice(messenger);
       return;
     }
-    if (needsOpenConfirmation(displayName: path)) {
+    // The final target is what runs: `..` segments are resolved before the check.
+    final resolved = target.normalizePath().toFilePath();
+    // The system decodes escapes again (once or twice) before it runs a file, so
+    // the name is also checked fully decoded, and a target with a `%` in it
+    // always asks, whatever its extension.
+    final decodedPath = _fullyDecoded(path);
+    final decodedResolved = _fullyDecoded(resolved);
+    final escaped = text.contains('%') || path.contains('%') || resolved.contains('%');
+    final name = decodedResolved.replaceAll(RegExp(r'[\\/]+$'), '').split(RegExp(r'[\\/]')).last;
+    // An 8.3 short name (PAYLOA~1.DIA) can stand for a long runnable name.
+    final shortName = RegExp(r'~\d').hasMatch(name);
+    if (escaped ||
+        shortName ||
+        needsOpenConfirmation(displayName: path) ||
+        needsOpenConfirmation(displayName: resolved) ||
+        needsOpenConfirmation(displayName: decodedPath) ||
+        needsOpenConfirmation(displayName: decodedResolved)) {
       if (context == null || !context.mounted) return;
-      final shown = path.replaceAll(RegExp(r'[\/]+$'), '').split(RegExp(r'[\/]')).last;
-      if (!await confirmOpenRunnable(context, shown)) return;
+      if (!await confirmOpenRunnable(context, name)) return;
     }
     await launchUrl(target, mode: LaunchMode.externalApplication);
   } on Object catch (e) {
@@ -196,6 +223,16 @@ Future<void> _launch(String url) async {
 
 // The text with percent escapes decoded; as it is if it does not decode (a
 // literal % in a path).
+String _fullyDecoded(String s) {
+  var current = s;
+  for (var i = 0; i < 10; i++) {
+    final next = _decoded(current);
+    if (next == current) break;
+    current = next;
+  }
+  return current;
+}
+
 String _decoded(String s) {
   try {
     return Uri.decodeFull(s);
@@ -204,7 +241,8 @@ String _decoded(String s) {
   }
 }
 
-bool _looksLikePath(String s) => s.startsWith(r'\') || s.startsWith('//') || s.contains(r'\') || s.startsWith('/');
+// An absolute path: a drive (X:\ or X:/), a share (\\ or //) or a root (/ or \).
+bool _isAbsolutePath(String s) => RegExp(r'^([a-zA-Z]:[\\/]|[\\/])').hasMatch(s);
 
 void _notice(ScaffoldMessengerState? messenger) {
   messenger?.showSnackBar(const SnackBar(content: Text("This link can't be opened.")));
@@ -307,8 +345,9 @@ void installLinkGuard() {
     final trimmed = href.trim();
     final uri = Uri.tryParse(trimmed);
     if (uri == null) return false;
-    // A link without a scheme is a web address, as the editor treats it.
-    await openLink(uri.scheme.isNotEmpty ? trimmed : 'http://$trimmed');
+    // The target goes as it is: [openLink] tells a bare word (a web address)
+    // from a path (a file, asked about if it runs) itself.
+    await openLink(trimmed);
     return true;
   };
 }
