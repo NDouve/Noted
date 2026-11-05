@@ -6,12 +6,26 @@ import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 
 import 'notebook.dart';
+import 'recovery_store.dart' show RecoveryListing;
+
+/// How long quitting waits to list the recovery entries before giving up.
+const recoveryListingTimeout = Duration(seconds: 3);
 
 /// On quit: if edits are waiting in the recovery folder, tells the user so.
 /// Resolves when the notice is dismissed (or at once if there is nothing to
 /// say, or no window to show it in); quitting is never refused.
-Future<void> showRecoveryNoticeOnExit(Notebook notebook, GlobalKey<NavigatorState> navigator) async {
-  final listing = await notebook.pendingRecovery();
+Future<void> showRecoveryNoticeOnExit(
+  Notebook notebook,
+  GlobalKey<NavigatorState> navigator, {
+  Duration listingTimeout = recoveryListingTimeout,
+}) async {
+  // A recovery or page folder on an unresponsive drive must not hold up
+  // quitting: past the timeout nothing is assumed, and the notice says so.
+  final RecoveryListing? listing = await notebook.pendingRecovery().then<RecoveryListing?>((l) => l).timeout(
+    listingTimeout,
+    onTimeout: () => null,
+  );
+  if (listing == null) return _showCouldNotCheck(navigator);
   final pages = listing.entries.length;
   // The same files and reasons as the sidebar's "Can't open" list.
   final damaged = [...listing.damaged, ...notebook.recoveryOwnDamaged];
@@ -46,6 +60,31 @@ Future<void> showRecoveryNoticeOnExit(Notebook notebook, GlobalKey<NavigatorStat
             ],
           ],
         ),
+      ),
+      actions: [
+        FilledButton(
+          key: const ValueKey('recovery-exit-ok'),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Quit'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// The notice for a listing that did not finish in time: recovery could not be
+/// checked. Nothing is touched; edits kept in the recovery folder stay there.
+Future<void> _showCouldNotCheck(GlobalKey<NavigatorState> navigator) async {
+  final context = navigator.currentContext;
+  if (context == null || !context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      key: const ValueKey('recovery-exit-unchecked'),
+      title: const Text('Recovery could not be checked'),
+      content: const Text(
+        "Noted couldn't check for unsaved edits because a folder didn't respond. "
+        'Anything kept for recovery is left as it is and is checked again the next time Noted starts.',
       ),
       actions: [
         FilledButton(
