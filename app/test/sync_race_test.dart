@@ -668,6 +668,69 @@ void main() {
         expect(copies(), isEmpty);
       });
 
+      // Two held pages: the parent and a first subpage. Undo then restores the
+      // parent but fails on the subpage; the parent is edited afterwards.
+      Future<(PagesNotRestoredException, String)> partlyRestored() async {
+        await setUpTree(withRecovery: false);
+        final first = await nb.createPage(parentId: parent);
+        final last = await nb.createPage(parentId: parent);
+        await nb.flush();
+        counting.failDelete
+          ..clear()
+          ..add(last);
+        counting.failNew
+          ..add(parent)
+          ..add(first);
+        Object? error;
+        try {
+          await nb.delete(parent);
+        } on Object catch (e) {
+          error = e;
+        }
+        final held = error! as PagesNotRestoredException;
+        expect(held.deleted.pages.map((p) => p.id), containsAll([parent, first]));
+        counting.failDelete.clear();
+        counting.failNew.remove(parent); // only the subpage still fails
+        Object? again;
+        try {
+          await nb.undoDelete(held.deleted);
+        } on Object catch (e) {
+          again = e;
+        }
+        expect(again, isA<PagesNotRestoredException>());
+        expect(File(pathOf(parent)).existsSync(), isTrue);
+        expect(File(pathOf(first)).existsSync(), isFalse);
+        // The user removes a box from the restored parent.
+        File(pathOf(parent)).writeAsStringSync(writePage(onDisk(parent).removeNode(mine.id)));
+        return (again! as PagesNotRestoredException, first);
+      }
+
+      test('a retried Undo leaves a page it already restored alone', () async {
+        final (held, first) = await partlyRestored();
+        final edited = File(pathOf(parent)).readAsStringSync();
+        counting.failNew.clear();
+
+        await nb.undoDelete(held.deleted);
+
+        expect(File(pathOf(parent)).readAsStringSync(), edited, reason: 'the edit is not undone');
+        expect(idsOf(pathOf(parent)), isNot(contains(mine.id)));
+        expect(File(pathOf(first)).existsSync(), isTrue);
+        expect(copies(), isEmpty, reason: 'no copy of the parent beside it');
+      });
+
+      test('at exit only the page not restored is copied', () async {
+        final (held, first) = await partlyRestored();
+        counting.failNew.clear();
+
+        expect(await nb.prepareToExit(), isTrue);
+
+        final beside = copies();
+        expect(beside, hasLength(1));
+        expect(beside.single.path, contains(first));
+        expect(idsOf(pathOf(parent)), isNot(contains(mine.id)));
+        expect(nb.isPendingDelete(held.deleted), isFalse);
+      });
+
       test('an exit copy that does not finish within the limit: the user is asked, and a second exit reuses the write', () async {
         await setUpTree(withRecovery: false);
         counting.failNew.add(parent);

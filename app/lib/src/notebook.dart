@@ -221,6 +221,10 @@ class DeletedPages {
   // Held pages already written beside their place at exit.
   final Set<String> _copied = {};
 
+  // Pages an Undo already put back: a retried Undo and the exit copies leave
+  // them alone, so the snapshot never overwrites what was edited since.
+  final Set<String> _restored = {};
+
   // Exit copies being written, by page id: a second exit attempt waits for the
   // write instead of starting another.
   final Map<String, Future<String?>> _copying = {};
@@ -2415,6 +2419,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final kept = <String>[]; // titles whose restored version stays beside the file
     final notRestored = <String>[]; // titles that could not be put anywhere
     for (final page in deleted.pages) {
+      if (deleted._restored.contains(page.id)) continue;
       var wrote = false;
       try {
         wrote = await _writeNew(deleted._location, page);
@@ -2427,6 +2432,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (wrote) {
         _metas[page.id] = page.meta;
         _loc[page.id] = deleted._location;
+        deleted._restored.add(page.id);
         continue;
       }
       final st = _storeOf(deleted._location);
@@ -2438,6 +2444,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         continue;
       }
       await _checkFile(st.pathFor(page.id)); // the file that is there
+      deleted._restored.add(page.id); // a copy beside the file: the page is back
       await _checkFile(copy); // merged into it, and the copy removed
       if (File(copy).existsSync()) {
         kept.add(title); // the merge failed: the restored version stays beside it
@@ -8693,7 +8700,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final d in [..._held]) {
       final failed = <NotedPage>[];
       for (final page in d.pages) {
-        if (d._copied.contains(page.id)) continue;
+        if (d._copied.contains(page.id) || d._restored.contains(page.id)) continue;
         String? copy;
         try {
           _assertWritable(d._location); // a read-only place gets no file
