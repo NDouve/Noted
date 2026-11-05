@@ -357,12 +357,14 @@ void main() {
       },
     );
 
-    test('a retry already in file I/O when Discard is clicked does not leave its edits on disk', () async {
+    test('a retry already in file I/O when Discard is clicked lands and is kept, with a notice; Discard writes nothing', () async {
       final nb = w.make();
       final id = await w.editedPage(nb);
       w.storeFor(w.pages).failWith = accessDenied();
       await nb.flush();
       expect(nb.trouble.isTrouble, isTrue);
+      final notices = <String>[];
+      final sub = nb.attachmentNotices.listen(notices.add);
       w.storeFor(w.pages)
         ..failWith = null
         ..stall = Completer<void>();
@@ -370,15 +372,68 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 50));
       final discard = nb.discardChanges();
       await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(nb.current!.readOnly, isTrue, reason: 'typing while Discard waits is not accepted');
       w.storeFor(w.pages).stall!.complete(); // the retry's write goes through
       await retry;
       await discard;
-      expect(boxCount(readPage(w.pageFile(id).readAsStringSync())), 0, reason: 'the discarded edits are not on disk');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(boxCount(readPage(w.pageFile(id).readAsStringSync())), 1, reason: 'the landed save is kept');
+      expect(boxCount(nb.current!.page), 1, reason: 'and the page reopens showing it');
+      expect(nb.current!.readOnly, isFalse);
+      expect(notices, [contains('already running finished before Discard')]);
+      expect(w.recFiles(), isEmpty);
+      expect(nb.trouble.isTrouble, isFalse);
+      await sub.cancel();
+    });
+
+    test('a retry loop that has not started its next attempt when Discard runs never publishes again', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      w.storeFor(w.pages).failWith = accessDenied();
+      await nb.flush();
+      final store = w.storeFor(w.pages);
+      store
+        ..failWith = null
+        ..stall = Completer<void>();
+      final retry = nb.retrySave();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      // Someone else changes the file, so attempt 1 does not land.
+      final disk = readPage(w.pageFile(id).readAsStringSync());
+      w.pageFile(id).writeAsStringSync(writePage(disk.withMeta(disk.meta.withTitle('elsewhere'))));
+      final attempts = store.attempts;
+      final discard = nb.discardChanges();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      store.stall!.complete();
+      await retry;
+      await discard;
+      expect(store.attempts, attempts, reason: 'no attempt after Discard');
+      expect(boxCount(readPage(w.pageFile(id).readAsStringSync())), 0);
       expect(boxCount(nb.current!.page), 0);
       expect(w.recFiles(), isEmpty);
-      final again = w.make();
-      await again.open(id);
-      expect(boxCount(again.current!.page), 0, reason: 'reopening does not show them');
+    });
+
+    test('a retry past the floor that is writing recovery when Discard runs leaves no kept generation', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      w.storeFor(w.pages).failWith = accessDenied();
+      await nb.flush();
+      expect(w.recFiles(), hasLength(1));
+      nb.current!.createBoxAt(const Bounds(90, 90, 0, 0)); // a newer snapshot
+      final gate = Completer<void>();
+      nb.recoveryStoreForTest!.hook = (p) async {
+        if (p == 'write') await gate.future;
+      };
+      final retry = nb.retrySave();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final discard = nb.discardChanges();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      gate.complete();
+      await retry;
+      await discard;
+      expect(w.recFiles(), isEmpty, reason: 'the generation written past the floor is deleted too');
+      expect(nb.trouble.kind, isNot(TroubleKind.preview));
+      expect(boxCount(nb.current!.page), 0);
+      expect(boxCount(readPage(w.pageFile(id).readAsStringSync())), 0);
     });
 
     test('a delete that fails leaves the page in state 2 with the reason, and the page is not busy', () async {
