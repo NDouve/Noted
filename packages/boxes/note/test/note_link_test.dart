@@ -336,6 +336,88 @@ void main() {
       });
     }
 
+    // Scheme-less paths clicked in the editor reach the file path, not http.
+    for (final path in [r'\\host\share\click1.bat', '//host/share/click2.jar', '/home/user/click3.jar', r'C:\x\click4.exe']) {
+      testWidgets('Ctrl+click on the path $path asks as a file', (t) async {
+        await ctrlClick(t, path);
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsOneWidget);
+        expect(find.byKey(const ValueKey('open-confirm-name')), findsOneWidget);
+        expect(launched, isEmpty);
+        await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+        await frames(t);
+        expect(launched, isEmpty);
+      });
+    }
+
+    testWidgets('Ctrl+click on a bare word still opens as http://', (t) async {
+      await ctrlClick(t, 'example.com');
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+      expect(launched, ['http://example.com']);
+    });
+
+    for (final link in ['ms-msdt:/id PCWDiagnostic', 'search-ms:query=x', 'shell:startup', 'javascript:alert(1)', 'weird-thing:x']) {
+      testWidgets('Ctrl+click on $link asks, naming the scheme; Cancel opens nothing', (t) async {
+        await ctrlClick(t, link);
+        expect(find.text('Open this link?'), findsOneWidget);
+        final scheme = link.substring(0, link.indexOf(':'));
+        expect(t.widget<Text>(find.byKey(const ValueKey('open-confirm-scheme'))).data, '$scheme:');
+        expect(launched, isEmpty);
+        await t.tap(find.byKey(const ValueKey('open-confirm-cancel')));
+        await frames(t);
+        expect(launched, isEmpty);
+      });
+    }
+
+    testWidgets('a scheme question opens the link after Open', (t) async {
+      await ctrlClick(t, 'ms-msdt:/id x');
+      await t.tap(find.byKey(const ValueKey('open-confirm-open')));
+      await frames(t);
+      expect(launched, hasLength(1));
+    });
+
+    testWidgets('Escape cancels a scheme question', (t) async {
+      await ctrlClick(t, 'search-ms:query=y');
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await frames(t);
+      expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+      expect(launched, isEmpty);
+    });
+
+    for (final link in ['https://a.example', 'http://a.example', 'mailto:a@b.example', 'noted:page/1']) {
+      testWidgets('Ctrl+click on $link opens without asking', (t) async {
+        await ctrlClick(t, link);
+        expect(find.byKey(const ValueKey('open-confirm-dialog')), findsNothing);
+        expect(launched, hasLength(1));
+      });
+    }
+
+    testWidgets('a scheme link in the light view asks too', (t) async {
+      await lightCtrlClick(t, 'ms-msdt:/id light');
+      expect(find.text('Open this link?'), findsOneWidget);
+      expect(launched, isEmpty);
+    });
+
+    testWidgets('Alt+Shift+Enter on a scheme link asks too', (t) async {
+      await pump(t, [
+        {
+          'insert': 'linked words here',
+          'attributes': {'href': 'ms-msdt:/id keys'},
+        },
+      ]);
+      final editor = await focusNote(t, dx: 40);
+      final node = editor.document.root.children.first;
+      editor.selection = Selection.single(path: node.path, startOffset: 0, endOffset: 10);
+      await frames(t);
+      await t.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await t.sendKeyEvent(LogicalKeyboardKey.enter);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+      await frames(t);
+      expect(find.text('Open this link?'), findsOneWidget);
+      expect(launched, isEmpty);
+    });
+
     testWidgets('a path with a literal percent sign is not refused', (t) async {
       await pump(t, [
         {'insert': 'plain'},
