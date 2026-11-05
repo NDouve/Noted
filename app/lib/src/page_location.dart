@@ -21,19 +21,8 @@ String showFolderLabel() => defaultTargetPlatform == TargetPlatform.macOS
     : 'Show in file manager';
 
 /// The URI that opens folder [path] in the file manager. A Windows network
-/// path (UNC, starting with two backslashes) becomes `file://server/share/folder/`.
-Uri folderUri(String path, {bool? windows}) {
-  windows ??= Platform.isWindows;
-  const bs = r'\\';
-  const extended = '\\\\?\\';
-  if (windows && (path.startsWith(bs) || path.startsWith('//')) && !path.startsWith(extended)) {
-    final parts = path.substring(2).split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).toList();
-    if (parts.isNotEmpty) {
-      return Uri(scheme: 'file', host: parts.first, pathSegments: [...parts.skip(1), '']);
-    }
-  }
-  return Uri.directory(path, windows: windows);
-}
+/// path (UNC, two leading backslashes) becomes `file://server/share/folder/`.
+Uri folderUri(String path, {bool? windows}) => Uri.directory(path, windows: windows);
 
 /// Opens [path] in the system's file manager. Returns false if the folder is
 /// not there or the system could not open it. Tests replace it.

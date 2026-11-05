@@ -153,6 +153,11 @@ class DeletedPages {
   // Each deleted page's assets folder, set aside until the delete is undone
   // (moved back) or forgotten (removed).
   final Map<String, Directory> _assets;
+
+  // Set-aside folders (by the folder that holds them) that Undo could not
+  // restore and told the user about: a discard removes the other folders in
+  // them one by one instead of the whole folder.
+  final Set<String> _keepTrash = {};
 }
 
 /// Whether a binder's folder could be used.
@@ -734,7 +739,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final last = _lastDeleted;
     if (last == null) return;
     _lastDeleted = null;
-    await Future.wait([for (final d in last._assets.values) _removeDir(d.parent)]);
+    await _removeSetAside(last);
   }
 
   // Standalone pages from every standalone folder share one tree.
@@ -1586,14 +1591,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     final attachmentsLeft = <String>[]; // saved folders that could not be emptied
     var knownCause = true; // every failure was a different file in the way
+    final leftIds = <String>[];
     for (final MapEntry(key: id, value: dir) in deleted._assets.entries) {
       try {
         await _moveDir(dir, _assetsDir(deleted._location, id));
       } on FileSystemException catch (e) {
         debugPrint('Restoring the attachments of page $id failed: $e');
         attachmentsLeft.add(dir.path);
+        leftIds.add(id);
         if (e is! _DifferingAttachments) knownCause = false;
       }
+    }
+    // What could not be restored stays where the message says it is: a later
+    // discard of this delete leaves those folders alone.
+    for (final id in leftIds) {
+      final d = deleted._assets.remove(id)!;
+      deleted._keepTrash.add(d.parent.path);
     }
     // A file that is at a page's path now (a sync client put one there) is not
     // written over. The restored version, which only exists in memory, is put
@@ -1676,12 +1689,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return null;
   }
 
+  // Removes the folders [d] set aside, except those Undo could not restore.
+  Future<void> _removeSetAside(DeletedPages d) => Future.wait([
+    for (final dir in d._assets.values) _removeDir(d._keepTrash.contains(dir.parent.path) ? dir : dir.parent),
+  ]);
+
   /// Drops the in-memory copy of [deleted] (its snackbar went away).
   void discardDeleted(DeletedPages deleted) {
     if (identical(_lastDeleted, deleted)) _lastDeleted = null;
-    for (final d in deleted._assets.values) {
-      unawaited(_removeDir(d.parent));
-    }
+    unawaited(_removeSetAside(deleted));
   }
 
   /// Moves [id] under [parentId] (null: top level) at [index] among that

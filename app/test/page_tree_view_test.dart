@@ -63,7 +63,9 @@ class _SpyNotebook extends Notebook {
 
   final List<DeletedPages> discarded = [];
   bool partialUndo = false;
+  bool undoing = false; // the real Undo takes the delete out of reach while it runs
   int undoCalls = 0;
+  DeletedPages? undone;
 
   @override
   void discardDeleted(DeletedPages deleted) {
@@ -74,14 +76,18 @@ class _SpyNotebook extends Notebook {
   @override
   Future<void> undoDelete(DeletedPages deleted) async {
     undoCalls++;
+    undone = deleted;
     if (partialUndo) {
+      undoing = true;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      undoing = false;
       throw const NotebookException('still available to Undo', needsAction: true);
     }
     await super.undoDelete(deleted);
   }
 
   @override
-  bool isPendingDelete(DeletedPages deleted) => partialUndo || super.isPendingDelete(deleted);
+  bool isPendingDelete(DeletedPages deleted) => !undoing && super.isPendingDelete(deleted);
 }
 
 void main() {
@@ -377,15 +383,15 @@ void main() {
     await until(tester, () => find.text('Undo').evaluate().isNotEmpty);
   }
 
-  testWidgets('discardPendingDelete removes the set-aside attachments (closing the app within the bar time)',
+  testWidgets('saveBeforeExit (the exit handler) drops a pending delete and its set-aside attachments',
       (tester) async {
     final app = await tester.runAsync(() => Directory.systemTemp.createTemp('noted_tree_app')) as Directory;
     addTearDown(() => app.deleteSync(recursive: true));
     final trash = await deleteWithAttachment(tester, app);
     expect(trashHasFiles(trash), isTrue);
-    await tester.runAsync(() => nb.discardPendingDelete());
+    await tester.runAsync(() => saveBeforeExit(nb));
     expect(trashHasFiles(trash), isFalse, reason: 'awaited: gone when it returns');
-    await tester.runAsync(() => nb.discardPendingDelete()); // nothing pending: no error
+    await tester.runAsync(() => saveBeforeExit(nb)); // nothing pending: no error
     await finish(tester);
   });
 
@@ -415,12 +421,13 @@ void main() {
     await tester.tap(find.byIcon(Icons.close));
     await settle(tester);
     expect(find.text('Undo'), findsOneWidget, reason: 'the Deleted bar is offered again');
-    expect(find.textContaining('Deleted "Beta"'), findsOneWidget);
+    expect(find.text("Some pages weren't restored"), findsOneWidget);
     spy.partialUndo = false;
     spy.discarded.clear();
     await tester.pump(const Duration(seconds: 11));
     await tester.pump(const Duration(seconds: 1));
-    await until(tester, () => spy.discarded.isNotEmpty || find.text('Undo').evaluate().isEmpty);
+    await until(tester, () => spy.discarded.isNotEmpty, what: 'the delete to be discarded');
+    expect(spy.discarded.single, same(spy.undone), reason: 'discarded once, and it is the delete');
     expect(find.text('Undo'), findsNothing);
     await finish(tester);
   });
