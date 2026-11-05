@@ -90,18 +90,22 @@ Future<void> openExistingFile(Notebook nb, String raw) async {
     return Platform.isWindows ? k.toLowerCase() : k;
   }
 
-  // Whether this call adds the folder or binder (so a refusal can undo it).
   final dirKey = key(dir);
-  final known = inBinder
-      ? nb.binders.any((b) => key(b.path) == dirKey)
-      : dirKey == key(nb.defaultFolderPath) ||
-            nb.standaloneFolders.any((f) => key(f.path) == dirKey);
+  // What this call adds (so a refusal can undo exactly that): judged from the
+  // lists before and after the add.
+  final bindersBefore = nb.binders.length;
+  final foldersBefore = nb.standaloneFolders.length;
   String? added; // the path to remove again if the page is refused
 
   try {
     if (inBinder) {
-      final section = await nb.addBinder(dir);
-      if (!known) added = section.path;
+      // A binder already listed is matched without regard to case (Windows).
+      final listed = nb.binders
+          .where((b) => key(b.path) == dirKey)
+          .map((b) => b.path)
+          .firstOrNull;
+      final section = await nb.addBinder(listed ?? dir);
+      if (nb.binders.length > bindersBefore) added = section.path;
       if (!section.available) {
         throw NotebookException(
           section.reason ?? "That binder can't be opened.",
@@ -113,7 +117,9 @@ Future<void> openExistingFile(Notebook nb, String raw) async {
       }
     } else {
       final loc = await nb.addStandaloneFolder(dir);
-      if (!known && loc.isNotEmpty) added = loc;
+      if (nb.standaloneFolders.length > foldersBefore && loc.isNotEmpty) {
+        added = loc;
+      }
     }
     final id = pageId!;
     // A file whose page id is already in Noted from elsewhere (a copy) is
@@ -131,7 +137,7 @@ Future<void> openExistingFile(Notebook nb, String raw) async {
         : owner != null;
     if (copy || (nb.pageTitleOf(id) != null && elsewhere)) {
       throw const NotebookException(
-        'A page with the same id is already in Noted, from another folder.',
+        'A page with the same id is already in Noted, from another file.',
       );
     }
     if (nb.pageTitleOf(id) == null) {

@@ -252,8 +252,13 @@ void main() {
       final nb = make('main', pages);
       await nb.load();
       await nb.addStandaloneFolder(elsewhere.path);
+      // Which of the two files the scan keeps depends on the listing order;
+      // the one it lists as a duplicate is the one that is refused.
+      final dup = nb.unreadable.singleWhere(
+        (u) => u.reason.startsWith('duplicate page id'),
+      );
       await expectLater(
-        openExistingFile(nb, '${elsewhere.path}/backup.canvas'),
+        openExistingFile(nb, dup.path),
         throwsA(isA<NotebookException>()),
       );
       expect(nb.standaloneFolders, hasLength(1));
