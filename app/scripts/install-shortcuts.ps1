@@ -21,9 +21,12 @@
     Applications\noted.exe      "Open with" entry (also for .json, so that
                                 noted-binder.json can be opened; Noted
                                 ignores any other .json file it is given)
-  A default the user already chose for .canvas is not taken over, and Noted is
-  not made the default for .json files. -Uninstall removes these keys and the
-  shortcuts.
+    SystemFileAssociations\.json\shell\Noted.OpenBinder
+                                "Open in Noted" verb that appears only on
+                                files named noted-binder.json
+  A default already set for .canvas (by anyone) is not taken over, and Noted
+  is not made the default for .json files. -Uninstall removes these keys (and
+  .canvas, if nothing else is left in it) and the shortcuts.
 
 .PARAMETER ExePath
   The noted.exe to point to. Defaults as described above.
@@ -60,15 +63,20 @@ if ($Uninstall) {
   $classes.DeleteSubKeyTree('Software\Classes\Noted.Page', $false)
   $classes.DeleteSubKeyTree('Software\Classes\Applications\noted.exe', $false)
   # .canvas may be shared with other programs: only Noted's entries go.
-  $ext = $classes.OpenSubKey('Software\Classes\.canvas', $true)
-  if ($ext) {
-    if ($ext.GetValue('') -eq 'Noted.Page') { $ext.DeleteValue('') }
-    $ext.Close()
-  }
+  $classes.DeleteSubKeyTree('Software\Classes\SystemFileAssociations\.json\shell\Noted.OpenBinder', $false)
   $progids = $classes.OpenSubKey('Software\Classes\.canvas\OpenWithProgids', $true)
   if ($progids) {
     if ($progids.GetValueNames() -contains 'Noted.Page') { $progids.DeleteValue('Noted.Page') }
+    $empty = ($progids.ValueCount -eq 0 -and $progids.SubKeyCount -eq 0)
     $progids.Close()
+    if ($empty) { $classes.DeleteSubKey('Software\Classes\.canvas\OpenWithProgids', $false) }
+  }
+  $ext = $classes.OpenSubKey('Software\Classes\.canvas', $true)
+  if ($ext) {
+    if ($ext.GetValue('') -eq 'Noted.Page') { $ext.DeleteValue('') }
+    $empty = ($ext.ValueCount -eq 0 -and $ext.SubKeyCount -eq 0)
+    $ext.Close()
+    if ($empty) { $classes.DeleteSubKey('Software\Classes\.canvas', $false) }
   }
   foreach ($lnk in @((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Noted.lnk'),
                      (Join-Path ([Environment]::GetFolderPath('Programs')) 'Noted.lnk'))) {
@@ -120,10 +128,19 @@ $open = '"' + $ExePath + '" "%1"'
 Set-ClassKey 'Noted.Page' '' 'Noted page'
 Set-ClassKey 'Noted.Page\DefaultIcon' '' "$ExePath,0"
 Set-ClassKey 'Noted.Page\shell\open\command' '' $open
-$ext = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Classes\.canvas')
-if (-not $ext.GetValue('')) { $ext.SetValue('', 'Noted.Page') }
-$ext.Close()
+# The default is taken only if no program has one: HKCR is the merged view of
+# HKCU and HKLM, so a system-wide default counts too.
+$merged = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey('.canvas')
+$taken = $merged -and $merged.GetValue('')
+if ($merged) { $merged.Close() }
+if (-not $taken) { Set-ClassKey '.canvas' '' 'Noted.Page' }
 Set-ClassKey '.canvas\OpenWithProgids' 'Noted.Page' ''
+# A right-click verb on noted-binder.json only (not on other .json files).
+Set-ClassKey 'SystemFileAssociations\.json\shell\Noted.OpenBinder' '' 'Open in Noted'
+Set-ClassKey 'SystemFileAssociations\.json\shell\Noted.OpenBinder' 'MUIVerb' 'Open in Noted'
+Set-ClassKey 'SystemFileAssociations\.json\shell\Noted.OpenBinder' 'AppliesTo' 'System.FileName:="noted-binder.json"'
+Set-ClassKey 'SystemFileAssociations\.json\shell\Noted.OpenBinder' 'Icon' "$ExePath,0"
+Set-ClassKey 'SystemFileAssociations\.json\shell\Noted.OpenBinder\command' '' $open
 Set-ClassKey 'Applications\noted.exe' 'FriendlyAppName' 'Noted'
 Set-ClassKey 'Applications\noted.exe\shell\open\command' '' $open
 Set-ClassKey 'Applications\noted.exe\SupportedTypes' '.json' ''
