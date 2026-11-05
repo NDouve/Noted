@@ -4286,7 +4286,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     List<String> common(NotedPage p, Set<String> ids) => [for (final x in p.nodes) if (ids.contains(x.id)) x.id];
     final both = baseById.keys.toSet().intersection(epIds);
     final eo = common(eb, both), po = common(ep, both);
-    if (eo.join('\u0000') != po.join('\u0000') && common(nb, both).join('\u0000') != po.join('\u0000')) return false;
+    if (!listEquals(eo, po) && !listEquals(common(nb, both), po)) return false;
     // The whole header (every field, so a new one cannot be missed), by its text.
     final eh = eb.meta.fields.toRaw().text, ph = ep.meta.fields.toRaw().text;
     return ph == eh || nb.meta.fields.toRaw().text == ph;

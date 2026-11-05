@@ -294,6 +294,27 @@ void main() {
       );
     });
 
+    test('a reorder is in only when the closed writer has the same order', () {
+      BoxRecord named(String id) => BoxRecord.create(
+        id: id,
+        typeId: 'x.unregistered',
+        dataVersion: 1,
+        bounds: const Bounds(0, 0, 10, 10),
+        data: const RawJson.trusted('{}'),
+        snapshotText: 's',
+        rev: 'r',
+      );
+      final eb = empty.insertNode(named('a')).insertNode(named('b'));
+      final ep = empty.insertNode(named('b')).insertNode(named('a'));
+      expect(Notebook.editsInForTest(eb, ep, eb), isFalse, reason: 'the closed writer still has the old order');
+      expect(Notebook.editsInForTest(eb, ep, ep), isTrue, reason: 'the closed writer already has the new order');
+      expect(
+        Notebook.editsInForTest(eb, ep, eb.removeNode('a')),
+        isFalse,
+        reason: 'the closed writer deleted a box the entry kept and reordered',
+      );
+    });
+
     test('a write of a snapshot that Discard threw away is never safe', () {
       expect(KeepOutcome.discarded.safe, isFalse);
       expect(KeepOutcome.dropped.safe, isTrue);
