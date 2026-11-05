@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:noted/src/notebook.dart' show Notebook;
 import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted/src/storage_check.dart';
@@ -267,6 +268,39 @@ void main() {
     });
   });
 
+  group('what an entry already holds', () {
+    BoxRecord box(String data) => BoxRecord.create(
+      id: 'a',
+      typeId: 'x.unregistered',
+      dataVersion: 1,
+      bounds: const Bounds(0, 0, 10, 10),
+      data: RawJson.trusted(data),
+      snapshotText: 's',
+      rev: 'r$data',
+    );
+    final empty = NotedPage.create(PageMeta.create(id: 'p1', title: 'T', order: 0));
+
+    test('a box with the same content is already in; one with more conflict versions is not', () {
+      final eb = empty;
+      final ep = empty.insertNode(box('{"n":1}'));
+      expect(Notebook.editsInForTest(eb, ep, ep), isTrue);
+      final withConflict = (ep.node('a')! as BoxRecord).withConflict(
+        BoxConflict.other(node: const RawJson.trusted('{"id":"a"}'), at: 5),
+      );
+      expect(
+        Notebook.editsInForTest(eb, ep, empty.insertNode(withConflict)),
+        isFalse,
+        reason: 'extra conflict versions are merged, not skipped',
+      );
+    });
+
+    test('a write of a snapshot that Discard threw away is never safe', () {
+      expect(KeepOutcome.discarded.safe, isFalse);
+      expect(KeepOutcome.dropped.safe, isTrue);
+      expect(KeepOutcome.kept.safe, isTrue);
+    });
+  });
+
   group('the recovery store', () {
     late Directory dir;
     late RecoveryStore store;
@@ -347,22 +381,72 @@ void main() {
       );
       expect(
         e.gen,
-        RecoveryStore.generationOf(t, null, writePage(page('one'))),
+        RecoveryStore.generationOf('${dir.path}/pages', t, null, writePage(page('one'))),
       );
       final listed = (await store.list()).entries.single;
       expect(listed.gen, e.gen);
     });
 
-    test('a transaction that hangs fails its caller after the limit and lets the next one run', () async {
+    test('a transaction that hangs fails its caller after the limit; later ones fail at once until it ends', () async {
       store.transactionLimit = const Duration(milliseconds: 100);
       final gate = Completer<void>();
       final hung = store.transaction((tx) => gate.future);
       await expectLater(hung, throwsA(isA<RecoveryTimeout>()));
-      final next = await store.transaction((tx) async => 5);
-      expect(next, 5);
+      expect(store.hasAbandonedJob, isTrue);
+      // Nothing else may change the folder under the abandoned job.
+      await expectLater(store.transaction((tx) async => 5), throwsA(isA<RecoveryTimeout>()));
       gate.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(store.hasAbandonedJob, isFalse);
+      expect(await store.transaction((tx) async => 5), 5);
     });
 
+    test('an abandoned write does not publish over a slot that changed since it chose it', () async {
+      final folder = '${dir.path}/pages';
+      final first = await store.write(folder: folder, page: page('one'), baseText: null, time: DateTime.now());
+      final release = Completer<void>();
+      var hang = true;
+      store.hook = (point) async {
+        if (point == 'tmp-written' && hang) {
+          hang = false;
+          await release.future;
+        }
+      };
+      store.transactionLimit = const Duration(milliseconds: 100);
+      final late = store.write(
+        folder: folder,
+        page: page('two'),
+        baseText: null,
+        time: DateTime.now(),
+        replaceable: {first.gen},
+      );
+      await expectLater(late, throwsA(isA<RecoveryTimeout>()));
+      // A newer entry takes the slot meanwhile (put there from outside).
+      final other = RecoveryStore(Directory('${dir.path}/other'));
+      final newer = await other.write(folder: folder, page: page('three'), baseText: null, time: DateTime.now());
+      first.file.writeAsStringSync(newer.file.readAsStringSync());
+      release.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(first.file.readAsStringSync(), contains('three'), reason: 'the late rename did not happen');
+      expect(
+        Directory('${dir.path}/recovery').listSync().where((f) => f.path.endsWith('.tmp')),
+        isEmpty,
+        reason: 'and its temporary file is gone',
+      );
+    });
+
+    test('an abandoned delete does not delete', () async {
+      final e = await store.write(folder: '${dir.path}/pages', page: page('one'), baseText: null, time: DateTime.now());
+      final release = Completer<void>();
+      store.hook = (point) async {
+        if (point == 'delete') await release.future;
+      };
+      store.transactionLimit = const Duration(milliseconds: 100);
+      await expectLater(store.delete(e), throwsA(isA<RecoveryTimeout>()));
+      release.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(e.file.existsSync(), isTrue);
+    });
     test('transactions run one after another', () async {
       final order = <int>[];
       final a = store.transaction((tx) async {

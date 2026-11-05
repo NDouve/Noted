@@ -97,7 +97,7 @@ class RecoveryEntry {
 
   /// Names this generation: a hash of its time, base and page text. Two
   /// entries with the same [gen] hold the same edits.
-  late final String gen = RecoveryStore.generationOf(time, baseText, pageText);
+  late final String gen = RecoveryStore.generationOf(folder, time, baseText, pageText);
 }
 
 /// An entry was not replaced because the slot holds something that isn't one
@@ -174,24 +174,48 @@ class RecoveryStore {
   /// other instances) and before any later one (L2). Inside, [RecoveryTx]
   /// lists, writes and deletes without waiting for the chain again; a job
   /// must not await the notebook's save chain, a dialog or a page folder.
+  ///
+  /// A transaction that times out is fenced: its caller gets the error and
+  /// the next transaction runs, but while the abandoned job is still running
+  /// every later transaction fails at once with the same [RecoveryTimeout]
+  /// (nothing else may change the folder under it), and the abandoned job's
+  /// own writes and deletes stop at their last check (it must not rename or
+  /// delete over a slot that changed since it chose it).
   Future<T> transaction<T>(Future<T> Function(RecoveryTx tx) job, {Duration? limit}) {
     final k = recoveryLocationKey(directory.path, windows: windows);
     final prev = _chains[k] ?? Future<void>.value();
     final c = Completer<T>();
     _chains[k] = prev.then((_) async {
+      if ((_outstanding[k] ?? 0) > 0) {
+        c.completeError(const RecoveryTimeout());
+        return;
+      }
+      final tx = RecoveryTx._(this);
       final over = Completer<void>();
       final timer = Timer(limit ?? transactionLimit, () {
-        if (!c.isCompleted) c.completeError(const RecoveryTimeout());
+        if (!c.isCompleted) {
+          tx.abandoned = true;
+          _outstanding[k] = (_outstanding[k] ?? 0) + 1;
+          c.completeError(const RecoveryTimeout());
+        }
         if (!over.isCompleted) over.complete();
       });
       unawaited(() async {
         try {
-          final v = await job(RecoveryTx._(this));
+          final v = await job(tx);
           if (!c.isCompleted) c.complete(v);
         } on Object catch (e, s) {
           if (!c.isCompleted) c.completeError(e, s);
         } finally {
           timer.cancel();
+          if (tx.abandoned) {
+            final n = (_outstanding[k] ?? 1) - 1;
+            if (n <= 0) {
+              _outstanding.remove(k);
+            } else {
+              _outstanding[k] = n;
+            }
+          }
           if (!over.isCompleted) over.complete();
         }
       }());
@@ -200,11 +224,18 @@ class RecoveryStore {
     return c.future;
   }
 
-  Future<T> _serial<T>(Future<T> Function() f) => transaction((_) => f());
+  // Abandoned (timed out, still running) transactions, by folder.
+  static final Map<String, int> _outstanding = {};
+
+  /// Whether a transaction that timed out is still running on this folder.
+  bool get hasAbandonedJob =>
+      (_outstanding[recoveryLocationKey(directory.path, windows: windows)] ?? 0) > 0;
+
+  Future<T> _serial<T>(Future<T> Function(RecoveryTx tx) f) => transaction(f);
 
   /// The generation hash of an entry with these parts.
-  static String generationOf(DateTime time, String? base, String pageText) =>
-      contentHash(utf8.encode(jsonEncode([time.toUtc().toIso8601String(), base, pageText])));
+  static String generationOf(String folder, DateTime time, String? base, String pageText) =>
+      contentHash(utf8.encode(jsonEncode([folder, time.toUtc().toIso8601String(), base, pageText])));
 
   // The entries this process knows of: built by every listing and kept
   // current by every write and delete. This process is the only writer, so
@@ -292,7 +323,11 @@ class RecoveryStore {
     return File(_path(k == 1 ? n : '${n}_dup$k', 'entry'));
   }
 
-  Future<void> _atomic(File f, String text) async {
+  // [selectedGen]: the generation the slot held when the writer chose it (null:
+  // it was free). Just before the rename the slot is looked at again, and a
+  // writer whose transaction was abandoned stops: it must not publish over a
+  // slot that changed since (build: R-1 v5 pre-merge, timed-out transactions).
+  Future<void> _atomic(File f, String text, {bool checkSlot = false, String? selectedGen, RecoveryTx? tx}) async {
     final tmp = File('${f.path}.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
     try {
       await tmp.writeAsString(text, flush: true);
@@ -302,6 +337,15 @@ class RecoveryStore {
     }
     // A failure injected here stands for a crash: the file stays.
     await hook?.call('tmp-written');
+    if (checkSlot) {
+      final now = await _peek(f);
+      final nowGen = now == null ? (await f.exists() ? '?' : null) : generationOf(now.folder, now.time, now.base, now.text);
+      if ((tx?.abandoned ?? false) || nowGen != selectedGen) {
+        await _tryDelete(tmp);
+        if (tx?.abandoned ?? false) throw const RecoveryTimeout();
+        throw const RecoveryRefused('the entry changed while it was being written');
+      }
+    }
     // If the rename fails, the complete tmp stays: it may be the only copy of
     // the newest edit, and the next listing promotes it.
     await tmp.rename(f.path);
@@ -382,8 +426,17 @@ class RecoveryStore {
     required String? baseText,
     required DateTime time,
     Set<String>? replaceable,
+    bool freshSlot = false,
   }) => _serial(
-    () => _writeNow(folder: folder, page: page, baseText: baseText, time: time, replaceable: replaceable),
+    (tx) => _writeNow(
+      folder: folder,
+      page: page,
+      baseText: baseText,
+      time: time,
+      replaceable: replaceable,
+      freshSlot: freshSlot,
+      tx: tx,
+    ),
   );
 
   Future<RecoveryEntry> _writeNow({
@@ -392,6 +445,8 @@ class RecoveryStore {
     required String? baseText,
     required DateTime time,
     Set<String>? replaceable,
+    bool freshSlot = false,
+    RecoveryTx? tx,
   }) async {
     await hook?.call('write');
     await directory.create(recursive: true);
@@ -406,22 +461,31 @@ class RecoveryStore {
     // another location or page (or one that can't be read) is never replaced.
     final key = _key(folder);
     File? target;
+    String? selectedGen;
     for (var k = 1; target == null; k++) {
       final f = _slot(folder, page.id, k);
       if (!await f.exists()) {
         target = f;
         break;
       }
+      if (freshSlot) continue;
       final e = await _peek(f);
       if (e != null && e.key == key && e.id == page.id) {
-        if (replaceable != null && !replaceable.contains(generationOf(e.time, e.base, e.text))) {
+        selectedGen = generationOf(e.folder, e.time, e.base, e.text);
+        if (replaceable != null && !replaceable.contains(selectedGen)) {
           throw const RecoveryRefused('the recovery folder holds an entry for this page that Noted did not write');
         }
         target = f;
       }
     }
     final text = writePage(page);
-    await _atomic(target, _encode(folder, page.id, time.toUtc().toIso8601String(), baseText, text));
+    await _atomic(
+      target,
+      _encode(folder, page.id, time.toUtc().toIso8601String(), baseText, text),
+      checkSlot: true,
+      selectedGen: selectedGen,
+      tx: tx,
+    );
     final written = RecoveryEntry._(
       folder,
       page.id,
@@ -662,7 +726,35 @@ class RecoveryStore {
   /// disagree, are reported, not removed, and are never offered.
   ///
   /// Refreshes the index from what it finds.
-  Future<RecoveryListing> list() => _serial(_listNow);
+  Future<RecoveryListing> list() => _serial((tx) => _listNow());
+
+  /// Fills the index from the entry files as they are, without settling,
+  /// converting or deleting anything: for a process that doesn't hold the
+  /// recovery lock (it only reads).
+  Future<void> indexReadOnly() => _serial((tx) async {
+    final entries = <RecoveryEntry>[];
+    if (await directory.exists()) {
+      await for (final f in directory.list()) {
+        if (f is! File || !f.path.endsWith('.entry')) continue;
+        try {
+          final env = _parse(await f.readAsString());
+          final page = readPage(env.text);
+          final stem = _stemOf(f.path);
+          _checkIdentity(stem, _name(env.folder, env.id), env.id, page, env.base);
+          entries.add(RecoveryEntry._(env.folder, env.id, env.time, env.base, env.text, page, stem, directory));
+        } on Object {
+          // Reported by a real listing; not offered here.
+        }
+      }
+    }
+    _setIndex(entries);
+  });
+
+  /// Reads [entry]'s file again: true only if it holds exactly this generation.
+  Future<bool> verify(RecoveryEntry entry) => _serial((tx) async {
+    final e = await _peek(entry.file);
+    return e != null && generationOf(e.folder, e.time, e.base, e.text) == entry.gen;
+  });
 
   Future<RecoveryListing> _listNow() async {
     await hook?.call('list');
@@ -713,9 +805,9 @@ class RecoveryStore {
   }
 
   /// Removes [entry]'s file.
-  Future<void> delete(RecoveryEntry entry) => _serial(() => _deleteNow(entry));
+  Future<void> delete(RecoveryEntry entry) => _serial((tx) => _deleteNow(entry, tx));
 
-  Future<void> _deleteNow(RecoveryEntry entry) async {
+  Future<void> _deleteNow(RecoveryEntry entry, [RecoveryTx? tx]) async {
     // Only the generation that was listed: a newer one written since stays.
     final f = entry.file;
     final e = await _peek(f);
@@ -726,6 +818,7 @@ class RecoveryStore {
     }
     if (e.text == entry.pageText && e.base == entry.baseText && e.time == entry.time) {
       await hook?.call('delete');
+      if (tx?.abandoned ?? false) throw const RecoveryTimeout();
       await f.delete();
       _indexRemove(entry);
     }
@@ -738,6 +831,9 @@ class RecoveryTx {
 
   final RecoveryStore store;
 
+  /// Set when the transaction timed out: it must not change the folder any more.
+  bool abandoned = false;
+
   Future<RecoveryListing> list() => store._listNow();
 
   Future<RecoveryEntry> write({
@@ -746,9 +842,24 @@ class RecoveryTx {
     required String? baseText,
     required DateTime time,
     Set<String>? replaceable,
-  }) => store._writeNow(folder: folder, page: page, baseText: baseText, time: time, replaceable: replaceable);
+    bool freshSlot = false,
+  }) => store._writeNow(
+    folder: folder,
+    page: page,
+    baseText: baseText,
+    time: time,
+    replaceable: replaceable,
+    freshSlot: freshSlot,
+    tx: this,
+  );
 
-  Future<void> delete(RecoveryEntry entry) => store._deleteNow(entry);
+  Future<void> delete(RecoveryEntry entry) => store._deleteNow(entry, this);
+
+  /// Reads [entry]'s file again: true only if it holds exactly this generation.
+  Future<bool> verify(RecoveryEntry entry) async {
+    final e = await store._peek(entry.file);
+    return e != null && RecoveryStore.generationOf(e.folder, e.time, e.base, e.text) == entry.gen;
+  }
 }
 
 /// Checks a recovered page [result] (read back from disk) against the three
