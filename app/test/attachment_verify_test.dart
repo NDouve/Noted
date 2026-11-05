@@ -510,6 +510,7 @@ void main() {
         expect(asset(name).readAsBytesSync(), bad);
         expect(recAsset(name).lengthSync(), 50, reason: 'the recovery copy is left alone');
         expect(notices.last, contains('damaged'));
+        expect(notices.last, isNot(contains('Try again')));
       });
 
       test('a folder at the page-folder name is skipped for the good recovery copy', () async {
@@ -529,11 +530,25 @@ void main() {
         try {
           Link(asset(name).path).createSync(recAsset(name).path);
         } on FileSystemException {
-          return; // Links need a privilege on some systems; the folder test covers the rule.
+          // Links need a privilege on some systems: say so in the results.
+          markTestSkipped('This system does not allow creating links here.');
+          return;
         }
         await withOpener().open('f.bin', fileName: name);
         expect(FileSystemEntity.identicalSync(opened.single, recAsset(name).path), isTrue);
         expect(opened.single, isNot(asset(name).path), reason: 'not through the link');
+      });
+
+      test('a copy that changes while it is read: the user is told to try again, not that it is damaged', () async {
+        asset(name)
+          ..createSync(recursive: true)
+          ..writeAsBytesSync(good);
+        attachmentAfterHashHook = (f) async => f.writeAsBytesSync([...good, 1]);
+        addTearDown(() => attachmentAfterHashHook = null);
+        await withOpener().open('f.bin', fileName: name);
+        expect(opened, isEmpty);
+        expect(notices.last, contains('Try again'));
+        expect(notices.last, isNot(contains('damaged')));
       });
 
       test('nothing at either name: nothing is opened, the user is told to try again', () async {

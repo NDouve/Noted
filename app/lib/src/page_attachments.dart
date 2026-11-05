@@ -400,6 +400,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
       // is not known here; a short file has another hash, so it fails anyway.
       final hash = attachmentNameHash(fileName)!;
       var sawDamaged = false;
+      var sawSyncing = false;
       for (final d in [folder, ?recoveryFolder]) {
         final f = _in(d, fileName);
         if (FileSystemEntity.typeSync(f.path, followLinks: false) != FileSystemEntityType.file) continue;
@@ -409,12 +410,13 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
           break;
         }
         if (c.state == AttachmentState.damaged) sawDamaged = true;
+        if (c.state == AttachmentState.syncing) sawSyncing = true;
       }
       if (file == null) {
         // Blame the saved copy only when a copy was read and did not match;
         // a locked, unreadable or changing file may be fine in a moment.
         onNotice?.call(
-          sawDamaged
+          sawDamaged && !sawSyncing
               ? 'This file can\'t be opened: its saved copy is incomplete or damaged.'
               : 'This file can\'t be opened right now. Try again in a moment.',
         );
