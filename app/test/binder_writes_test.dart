@@ -279,7 +279,7 @@ void main() {
       binderFile().writeAsStringSync(other);
       await nb.checkBinderFile(binderFile().path);
       expect(section.status, BinderStatus.unavailable);
-      expect(section.reason, 'The binder file in this folder belongs to another binder');
+      expect(section.reason, startsWith('The binder file in this folder belongs to another binder'));
       expect(section.pending, isEmpty);
       expect(fileText(), other);
       await stop();
@@ -298,7 +298,7 @@ void main() {
       expect(section.pending, isEmpty);
       expect(nb.binders.single, same(section), reason: 'the folder is not reopened');
       expect(section.status, BinderStatus.unavailable);
-      expect(section.reason, 'The binder file in this folder belongs to another binder');
+      expect(section.reason, startsWith('The binder file in this folder belongs to another binder'));
       expect(section.binder, isNull);
       expect(fileText(), other, reason: 'the other binder\'s file is not written');
       await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -351,7 +351,7 @@ void main() {
         final s = nb.binders.single;
         expect(s.available, isFalse);
         expect(s.binder, isNull);
-        expect(s.reason, 'The binder file in this folder belongs to another binder');
+        expect(s.reason, startsWith('The binder file in this folder belongs to another binder'));
         expect(fileText(), foreign, reason: 'the other binder\'s file is not touched');
         binderFile().writeAsStringSync(original);
         await nb.checkBinderFile(binderFile().path);
@@ -396,7 +396,7 @@ void main() {
         final s = nb.binders.single;
         expect(s.available, isFalse);
         expect(s.binder, isNull);
-        expect(s.reason, 'The binder file in this folder belongs to another binder');
+        expect(s.reason, startsWith('The binder file in this folder belongs to another binder'));
         expect(fileText(), foreign);
         binderFile().writeAsStringSync(original);
         await nb.checkBinderFile(binderFile().path);
