@@ -4073,6 +4073,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // (load, a folder coming back) replay them three-way.
         return r;
       }
+      if (session != null && savedSeq < session.floor) session.landedPastFloor = true;
       if (_current?.page.id == toSave.id && (session == null || identical(session, _session))) _base = toSave;
       _touch(loc);
       if (session != null) await _retireOwn(session, st, toSave, savedSeq);
@@ -6813,6 +6814,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final rec = _recovery;
     if (c == null || s == null || _preview != null || !_trouble.isTrouble) return;
     final id = c.page.id;
+    if (_busy[id] == _busyDiscarding) return; // a second click while the first waits
     final oldFloor = s.floor;
     s.floor = s.seq + 1;
     _saveTimer?.cancel();
@@ -6820,9 +6822,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _pendingSave = null;
     _busy[id] = _busyDiscarding;
     _syncReadOnly(); // typing while Discard waits would be dropped: the page is read-only
-    final loc = _loc[id];
-    final fileKey = loc == null ? null : _key(_storeOrFolder(loc).pathFor(id));
-    final before = fileKey == null ? null : _known[fileKey];
     try {
       // A save already running (a retry in file I/O) finishes first. It never
       // publishes anything newer than the floor; one that was already writing
@@ -6850,7 +6849,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       );
     }
     _free(id, _busyDiscarding);
-    if (fileKey != null && _known[fileKey] != before) {
+    // The user went elsewhere while Discard waited: the own generations are
+    // gone, and nothing is reopened over the page now on screen.
+    if (!identical(_current, c) || !identical(_session, s)) return;
+    if (s.landedPastFloor) {
       _notices.add('A save that was already running finished before Discard, so those changes were kept.');
     }
     _disposeCurrent();

@@ -388,6 +388,8 @@ void main() {
 
     test('a retry loop that has not started its next attempt when Discard runs never publishes again', () async {
       final nb = w.make();
+      final notices = <String>[];
+      final sub = nb.attachmentNotices.listen(notices.add);
       final id = await w.editedPage(nb);
       w.storeFor(w.pages).failWith = accessDenied();
       await nb.flush();
@@ -407,9 +409,11 @@ void main() {
       await retry;
       await discard;
       expect(store.attempts, attempts, reason: 'no attempt after Discard');
+      expect(notices, isEmpty, reason: 'no save of ours landed, so no notice');
       expect(boxCount(readPage(w.pageFile(id).readAsStringSync())), 0);
       expect(boxCount(nb.current!.page), 0);
       expect(w.recFiles(), isEmpty);
+      await sub.cancel();
     });
 
     test('a retry past the floor that is writing recovery when Discard runs leaves no kept generation', () async {
@@ -436,6 +440,60 @@ void main() {
       expect(boxCount(readPage(w.pageFile(id).readAsStringSync())), 0);
     });
 
+    test('a second click on Discard while the first waits does nothing; one reopen', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      w.storeFor(w.pages).failWith = accessDenied();
+      await nb.flush();
+      w.storeFor(w.pages)
+        ..failWith = null
+        ..stall = Completer<void>();
+      final retry = nb.retrySave();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      var changes = 0;
+      final first = nb.discardChanges();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      final seen = nb.current;
+      nb.addListener(() => changes++);
+      await nb.discardChanges(); // returns at once
+      expect(nb.current, same(seen), reason: 'the second click reopened nothing');
+      expect(changes, 0);
+      w.storeFor(w.pages).stall!.complete();
+      await retry;
+      await first;
+      expect(nb.currentId, id);
+      expect(nb.isBusy(id), isFalse);
+      expect(w.recFiles(), isEmpty);
+    });
+
+    test('navigating away while Discard waits deletes the kept generations and reopens nothing', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      w.storeFor(w.pages).failWith = accessDenied();
+      await nb.flush();
+      expect(w.recFiles(), hasLength(1));
+      nb.current!.createBoxAt(const Bounds(90, 90, 0, 0));
+      final gate = Completer<void>();
+      nb.recoveryStoreForTest!.hook = (p) async {
+        if (p == 'write') await gate.future;
+      };
+      final retry = nb.retrySave();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final discard = nb.discardChanges();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      nb.questioner = (q, t) async => true;
+      final other = nb.createPage().then<void>((_) {}, onError: (_) {});
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      gate.complete();
+      await retry;
+      await discard;
+      await other;
+      expect(nb.isBusy(id), isFalse);
+      expect(w.recFiles(), isEmpty, reason: 'the discarded edits are not left in recovery');
+      expect(nb.currentId, isNot(id), reason: 'the user is on the new page; Discard did not reopen the old one');
+      expect(boxCount(readPage(w.pageFile(id).readAsStringSync())), 0);
+    });
+
     test('a delete that fails leaves the page in state 2 with the reason, and the page is not busy', () async {
       final nb = w.make();
       final id = await w.editedPage(nb);
@@ -455,6 +513,7 @@ void main() {
         ),
       );
       expect(nb.trouble.kind, TroubleKind.failing);
+      expect(nb.current!.readOnly, isFalse, reason: 'the page is editable again after a failed Discard');
       expect(nb.currentId, id);
       expect(
         nb.isBusy(id),

@@ -141,6 +141,10 @@ class SaveSession {
 
   /// Set when the session is over (the page was closed).
   bool ended = false;
+
+  /// Set when a save landed after Discard raised the floor (it was already
+  /// writing): those changes are part of the page as it reopens.
+  bool landedPastFloor = false;
 }
 
 // Recovery outcomes -------------------------------------------------------------
