@@ -103,13 +103,19 @@ class _ReplayFailure implements Exception {
 /// An attachments folder could not be moved because the target holds
 /// different files under some of its names; nothing was written over them.
 class _IncompleteAttachments extends FileSystemException {
-  _IncompleteAttachments(this.copy, this.leftover, String path)
+  _IncompleteAttachments(this.copy, this.leftover, String path, {this.cause})
     : super(
-        '${copy.differing.length + copy.stillChanging.length + (leftover ? 1 : 0)} attachment '
-        'file(s) could not be moved completely (different or changing files at the destination, or files '
-        'left behind); the originals were kept',
+        cause != null
+            ? 'moving the attachments stopped: ${cause.message}; the originals were kept'
+            : '${copy.differing.length + copy.stillChanging.length + (leftover ? 1 : 0)} attachment '
+                  'file(s) could not be moved completely (different or changing files at the destination, or files '
+                  'left behind); the originals were kept',
         path,
       );
+
+  /// An ordinary file error that stopped the move after it had begun (so what
+  /// it had already done, e.g. a file kept aside, is still reported).
+  final FileSystemException? cause;
 
   /// What the move did before it stopped, so its notices are still posted.
   final AttachmentCopy copy;
@@ -118,7 +124,7 @@ class _IncompleteAttachments extends FileSystemException {
   final bool leftover;
 
   /// Only different files at the destination stopped it.
-  bool get onlyDiffering => copy.stillChanging.isEmpty && !leftover;
+  bool get onlyDiffering => cause == null && copy.stillChanging.isEmpty && !leftover;
 }
 
 class _KeptFolderNotEmpty implements Exception {
@@ -1466,12 +1472,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (forceCopyMoveForTest) throw const FileSystemException('forced');
       await from.rename(to.path);
     } on FileSystemException {
-      await _copyDir(from, to, into: copy);
-      if (copy.differing.isNotEmpty || copy.stillChanging.isNotEmpty) {
-        throw _IncompleteAttachments(copy, false, to.path);
+      try {
+        await _copyDir(from, to, into: copy);
+        if (copy.differing.isNotEmpty || copy.stillChanging.isNotEmpty) {
+          throw _IncompleteAttachments(copy, false, to.path);
+        }
+        await removeVerifiedSources(copy, from);
+        if (fromTrash && await _holdsFile(from)) throw _IncompleteAttachments(copy, true, to.path);
+      } on _IncompleteAttachments {
+        rethrow;
+      } on FileSystemException catch (e) {
+        // Carries what was done so far (a file set aside stays reported).
+        throw _IncompleteAttachments(copy, false, to.path, cause: e);
       }
-      await removeVerifiedSources(copy, from);
-      if (fromTrash && await _holdsFile(from)) throw _IncompleteAttachments(copy, true, to.path);
     }
     return copy;
   }
@@ -1543,7 +1556,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (e is _IncompleteAttachments) _postIncomplete(e, targetPlace, sourcePlace);
     if (_notices.isClosed) return;
     _notices.add(
-      'Attachments could not be put back in $targetPlace${e is _IncompleteAttachments ? '' : ' (${describeError(e)})'}. '
+      'Attachments could not be put back in $targetPlace${e is _IncompleteAttachments && e.cause == null ? '' : ' (${describeError(e is _IncompleteAttachments ? e.cause! : e)})'}. '
       'What could not be put back is still saved in ${kept.path}.',
     );
   }
@@ -7513,6 +7526,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
                 FileSystemEntityType.notFound)
           f,
     ];
+    // What was kept aside as damaged, or left alone because it was still
+    // changing, in the wording the moves use.
+    final keptLines = [
+      for (final n in _copyNotices(result, 'the copy', "the original's folder"))
+        '${n.substring(0, 1).toLowerCase()}${n.substring(1, n.length - 1)}',
+    ];
     final problems = <String>[
       if (notCopied.isNotEmpty)
         "${notCopied.length == 1 ? 'this attachment file was' : 'these attachment files were'} not copied "
@@ -7526,6 +7545,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         "the original's attachments folder wasn't available, and ${refs.unasked} "
             '${refs.unasked == 1 ? 'box is' : 'boxes are'} of a type that is switched off, not allowed on this page '
             "or from a newer version, so any files ${refs.unasked == 1 ? 'it keeps' : 'they keep'} couldn't be checked",
+      ...keptLines,
       if (result.keptAside.isNotEmpty)
         'leftover temporary files in the attachments folder were left where they are: ${_namesShown(result.keptAside)}',
       if (left.isNotEmpty) "these attachment folders couldn't be copied: ${left.join(', ')}",

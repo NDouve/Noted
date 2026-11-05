@@ -831,6 +831,39 @@ void main() {
       expect(File('${assets(pages, a).path}/notes.txt').readAsStringSync(), 'mine, changed');
     });
 
+    test('R-2: an undo that fails with a plain file error after a damaged file was set aside still reports the aside and the kept folder', () async {
+      Notebook.forceCopyMoveForTest = true;
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
+      final nb = make();
+      await nb.load();
+      final a = await nb.createPage();
+      await nb.open(a);
+      await attach(nb);
+      final notices = <String>[];
+      nb.attachmentNotices.listen(notices.add);
+      final deleted = await nb.delete(a);
+      assets(pages, a).createSync(recursive: true);
+      asset(pages, a).writeAsBytesSync(damagedBytes);
+      var fired = false;
+      attachmentBeforePublishHook = (target) async {
+        if (!target.endsWith('$hash.txt') || !under(File(target), 'pages')) return;
+        fired = true;
+        throw const FileSystemException('disk error while publishing');
+      };
+      addTearDown(() => attachmentBeforePublishHook = null);
+      await expectLater(
+        nb.undoDelete(deleted),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('deleted-attachments'))),
+      );
+      attachmentBeforePublishHook = null;
+      await Future<void>.delayed(Duration.zero);
+      expect(fired, isTrue);
+      final aside = damagedCopyName('$hash.txt', contentHash(damagedBytes));
+      expect(File('${assets(pages, a).path}/$aside').readAsBytesSync(), damagedBytes);
+      expect(notices, contains(allOf(contains('damaged copy of "$hash.txt"'), contains('"$aside"'))));
+      expect(trashFiles().single.readAsBytesSync(), bytes, reason: 'the good copy is kept in the trash');
+    });
+
     test('a put-back that fails for another reason (a file in the way) still posts a notice that names the folder', () async {
       Notebook.forceCopyMoveForTest = true;
       addTearDown(() => Notebook.forceCopyMoveForTest = false);
@@ -1410,6 +1443,49 @@ void main() {
       expect(said, contains('not copied'));
       expect(File('${copiedAssets()!.path}/$hash.txt').readAsBytesSync(), bytes);
       expect(other.readAsStringSync(), 'something else', reason: 'the source is untouched');
+    });
+
+    // The page's own folder holds a file under the hash name that fails its
+    // hash, and the recovery store's folder holds the good one: the first copy
+    // is damaged by the time the second arrives.
+    Future<Notebook> pageWithDamagedFirst(List<int> damaged) async {
+      final nb = make(pick: () async => dest.path);
+      await nb.load();
+      final a = nb.currentId!;
+      await attach(nb);
+      File('${rec.path}/$a.assets/$hash.txt')
+        ..createSync(recursive: true)
+        ..writeAsBytesSync(bytes);
+      asset(pages, a).writeAsBytesSync(damaged);
+      return nb;
+    }
+
+    test('a damaged file at the copy\'s destination is kept aside and named, and the good one is used', () async {
+      final damaged = List<int>.filled(bytes.length, 7);
+      final nb = await pageWithDamagedFirst(damaged);
+      final said = await nb.saveCopyElsewhere();
+      final aside = damagedCopyName('$hash.txt', contentHash(damaged));
+      expect(said, startsWith('Saved a copy to ${dest.path}, but '));
+      expect(said, allOf(contains('damaged copy of "$hash.txt"'), contains('"$aside"')));
+      expect(File('${copiedAssets()!.path}/$hash.txt').readAsBytesSync(), bytes);
+      expect(File('${copiedAssets()!.path}/$aside').readAsBytesSync(), damaged);
+    });
+
+    test('a destination file that is still changing during the copy is named, not reported as a plain success', () async {
+      final damaged = List<int>.filled(bytes.length, 7);
+      final nb = await pageWithDamagedFirst(damaged);
+      var fired = false;
+      attachmentAfterHashHook = (f) async {
+        if (!f.path.endsWith('$hash.txt') || !f.path.replaceAll('\\', '/').contains('/Copies/')) return;
+        fired = true;
+        f.writeAsBytesSync([...damaged, 1]); // a sync client is still writing
+      };
+      addTearDown(() => attachmentAfterHashHook = null);
+      final said = await nb.saveCopyElsewhere();
+      expect(fired, isTrue);
+      expect(said, startsWith('Saved a copy to ${dest.path}, but '));
+      expect(said, allOf(contains('"$hash.txt"'), contains('still changing')));
+      expect(File('${copiedAssets()!.path}/$hash.txt').readAsBytesSync(), [...damaged, 1], reason: 'left alone');
     });
 
     test('a page whose folder went away while it was open still reports its files', () async {
