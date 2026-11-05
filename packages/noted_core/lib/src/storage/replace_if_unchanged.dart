@@ -259,6 +259,7 @@ Future<ReplaceResult> replaceIfUnchanged(
 Future<List<String>> sweepAsideFiles(
   Directory directory, {
   String extension = '.canvas',
+  bool Function(String targetName)? only,
 }) async {
   final out = <String>[];
   if (!await directory.exists()) return out;
@@ -282,6 +283,7 @@ Future<List<String>> sweepAsideFiles(
     final targetName = body.substring(0, dot);
     // Not a page file: leave it where it is; [PageStore.scan] lists it.
     if (!targetName.endsWith(extension)) continue;
+    if (only != null && !only(targetName)) continue;
     final dir = f.parent.path;
     try {
       if (await publishExclusive(f, '$dir$sep$targetName')) {
