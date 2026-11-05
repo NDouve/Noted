@@ -3670,10 +3670,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Before the first await, so a pass that runs meanwhile sees it. A binder
     // with no known id records nothing.
     final binderId = _binderIds.remove(_key(path));
+    final addedRemoved = binderId != null && recordRemoved && !_removedBinders.contains(binderId);
     if (binderId != null && recordRemoved) _markRemoved(binderId);
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
-    if (openHere) await _closeCurrent();
+    if (openHere) {
+      try {
+        await _closeCurrent();
+      } on Object {
+        // The binder stays listed (the user declined to leave the page, or the
+        // close failed): put back exactly what this call changed.
+        if (identical(_binders[path], section)) {
+          if (binderId != null) _binderIds[_key(path)] = binderId;
+          if (addedRemoved) _removedBinders.remove(binderId);
+        }
+        rethrow;
+      }
+    }
     final released = _dropAdoptionsIn(path);
     for (final id in ids) {
       _metas.remove(id);
