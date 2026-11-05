@@ -133,6 +133,22 @@ void main() {
     expect(Directory(pathShown(t)).absolute.path, Directory(other.path).absolute.path);
   });
 
+  testWidgets('folderOfPage: default folder, another folder, a binder, an unknown page', (t) async {
+    await t.runAsync(start);
+    final other = await t.runAsync(() => Directory('${root.path}/other').create()) as Directory;
+    final bdir = await t.runAsync(() => Directory('${root.path}/Work').create()) as Directory;
+    late String inBinder;
+    await t.runAsync(() async {
+      await nb.addBinder(bdir.path);
+      inBinder = await nb.createPage(binderPath: nb.binders.single.path);
+    });
+    expect(nb.folderOfPage(a), nb.defaultFolderPath);
+    expect(nb.folderOfPage(inBinder), nb.binders.single.path);
+    expect(nb.folderOfPage('nope'), isNull);
+    await t.runAsync(() => nb.moveToFolder(a, other.path));
+    expect(Directory(nb.folderOfPage(a)!).absolute.path, Directory(other.path).absolute.path);
+  });
+
   testWidgets('without a folder picker there is no Move to folder…', (t) async {
     await t.runAsync(() => start(picker: false));
     await pumpPanel(t);

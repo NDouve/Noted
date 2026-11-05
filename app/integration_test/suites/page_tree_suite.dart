@@ -202,7 +202,7 @@ void pageTreeSuite() {
       });
     });
 
-    testWidgets('L1: Page and Binder settings are row menu items; the Location section; Open binder… in the header', (t) async {
+    testWidgets('P1: Page and Binder settings are row menu items; the Location section; Open binder… in the header', (t) async {
       await withSession(t, 'location', (s) async {
         final a = s.nb.currentId!;
         // No settings icon on the row; the item is in both menus.

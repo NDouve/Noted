@@ -716,6 +716,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return l == null || _isStandaloneLoc(l) ? null : l;
   }
 
+  /// The folder holding page [id]'s file: its binder's folder, or the
+  /// standalone folder it is in. Null if the page is unknown.
+  String? folderOfPage(String id) {
+    final l = _loc[id];
+    if (l == null) return null;
+    return l == _standalone ? defaultFolderPath : l;
+  }
+
   // Standalone pages from every standalone folder share one tree.
   bool _isStandaloneLoc(String loc) => loc == _standalone || _folders.containsKey(loc);
 
