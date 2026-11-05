@@ -586,6 +586,35 @@ void main() {
         reason: 'the entry\'s box and the closed writer\'s',
       );
     });
+
+    test('an entry that only changes the page header is not taken for incorporated by a closed writer', () async {
+      final nb = w.make();
+      final id = await w.editedPage(nb);
+      await nb.flush();
+      await nb.createPage();
+      final base = readPage(w.pageFile(id).readAsStringSync());
+      await RecoveryStore(w.rec).write(
+        folder: w.pages.path,
+        page: base.withMeta(base.meta.withBackground(PageBackground.dots)),
+        baseText: writePage(base),
+        time: DateTime.now(),
+      );
+      await nb.refreshRecoveryIndexForTest();
+      final b = BoxRecord.create(
+        id: '00000000000000b2',
+        typeId: 'x.unregistered',
+        dataVersion: 1,
+        bounds: const Bounds(300, 300, 10, 10),
+        data: const RawJson.trusted('{"k":1}'),
+        snapshotText: 's',
+        rev: 'r',
+      );
+      final out = await nb.keepClosedForTest(base.insertNode(b), base, w.pages.path);
+      expect(out.kind, KeepKind.kept, reason: out.why);
+      final kept = (await nb.pendingRecovery()).entries.single.page;
+      expect(kept.meta.background, PageBackground.dots, reason: 'the header change survives');
+      expect(kept.node(b.id), isNotNull);
+    });
   });
 
   group(

@@ -1788,18 +1788,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             mine.add(_Rekey(p, e, fresh.gen, false));
           }
         }
+        // Merged ones share the last generation (each write replaced the slot),
+        // so that is the one read back, not the obsolete ones.
+        if (preexisting && mine.isNotEmpty) {
+          final last = mine.last.freshGen;
+          for (var i = 0; i < mine.length; i++) {
+            mine[i] = _Rekey(p, mine[i].old, last, true);
+          }
+        }
         // Each copy is read back before anything is deleted.
         for (final k in mine) {
           final fresh = rec.indexEntries.where((x) => x.gen == k.freshGen).firstOrNull;
           if (fresh == null || !await rec.transaction((tx) => tx.verify(fresh))) {
             refuse('the new copy did not read back');
-          }
-        }
-        // Merged ones share the last generation (each write replaced the slot).
-        if (preexisting && mine.isNotEmpty) {
-          final last = mine.last.freshGen;
-          for (var i = 0; i < mine.length; i++) {
-            mine[i] = _Rekey(p, mine[i].old, last, true);
           }
         }
       } on NotebookException {
@@ -4261,8 +4262,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Whether the edits of [ep] (made against [eb]) are already in [nb]: every
   // box it added or changed is in [nb] exactly as it is there (a box with
-  // more conflict versions is not the same: it is merged), every box it deleted is absent, and the title
-  // is its own. Only ever used to skip; a false "no" just merges.
+  // more conflict versions is not the same: it is merged), every box it deleted is absent, and the page header
+  // is its own (whole). Only ever used to skip; a false "no" just merges.
   static bool _editsIn(NotedPage eb, NotedPage ep, NotedPage nb) {
     final baseById = {for (final n in eb.nodes) n.id: n};
     final epIds = {for (final n in ep.nodes) n.id};
@@ -4277,7 +4278,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final b in eb.nodes) {
       if (!epIds.contains(b.id) && nb.node(b.id) != null) return false;
     }
-    return ep.meta.title == eb.meta.title || nb.meta.title == ep.meta.title;
+    // The whole header (every field, so a new one cannot be missed), by its text.
+    final eh = eb.meta.fields.toRaw().text, ph = ep.meta.fields.toRaw().text;
+    return ph == eh || nb.meta.fields.toRaw().text == ph;
   }
 
   // A save couldn't land: keep exactly what the save would have written, so

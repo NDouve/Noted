@@ -2155,5 +2155,39 @@ void main() {
       expect(page.node(y1.id), isNotNull);
       expect(page.node(y2.id), isNotNull);
     });
+
+    test('two kept generations and an entry already at the target: the move succeeds with both generations merged', () async {
+      final id = run.model.entries.firstWhere((e) => e.value.loc == 'a').key;
+      final from = run.dirs['a']!.path;
+      final to = run.dirs['b']!.path;
+      final text = File(run._pathOf(id)).readAsStringSync();
+      final y1 = run._newBox('first kept');
+      final y2 = run._newBox('second kept');
+      final y3 = run._newBox('already at the target');
+      final store = RecoveryStore(run.rec);
+      await store.write(folder: from, page: readPage(text).insertNode(y1), baseText: text, time: DateTime.now());
+      await store.write(
+        folder: from,
+        page: readPage(text).insertNode(y2),
+        baseText: text,
+        time: DateTime.now().add(const Duration(seconds: 1)),
+        freshSlot: true,
+      );
+      await store.write(
+        folder: to,
+        page: readPage(text).insertNode(y3),
+        baseText: text,
+        time: DateTime.now().add(const Duration(seconds: 2)),
+      );
+      await run.nb.refreshRecoveryIndexForTest();
+      await run.nb.moveToLocation(id, binderPath: run.pathB);
+      final rs = run.nb.recoveryStoreForTest!;
+      expect(rs.entriesFor(from, id), isEmpty);
+      final dest = rs.entriesFor(to, id);
+      expect(dest, isNotEmpty);
+      for (final y in [y1, y2, y3]) {
+        expect(dest.any((e) => e.page.node(y.id) != null), isTrue, reason: 'a kept box is in the target recovery');
+      }
+    });
   });
 }
