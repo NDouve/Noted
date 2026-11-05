@@ -472,6 +472,33 @@ void main() {
         expect(s.nb.unreadable.single.path, isNot(endsWith('copy-of-${s.id}.canvas')));
       });
 
+      test('a chosen file that is back but refuses reads at the confirming '
+          'check keeps the choice; once readable, edits go to it', () async {
+        final dir = await Directory('${root.path}/Elsewhere').create();
+        final s = await setup(dir, dir);
+        await openExistingFile(s.nb, s.copy);
+        await s.nb.open(await s.nb.createPage());
+        final copyText = File(s.copy).readAsStringSync();
+        File(s.copy).deleteSync();
+        await s.nb.checkFile(s.copy);
+        File(s.copy).writeAsStringSync(copyText);
+        final raf = File(s.copy).openSync(mode: FileMode.append)
+          ..lockSync(FileLock.exclusive);
+        try {
+          await s.nb.checkFolders(); // the confirming tick: the file can't be read
+        } finally {
+          raf.unlockSync();
+          raf.closeSync();
+        }
+        await s.nb.checkFolders();
+        expect(s.nb.pageTitleOf(s.id), 'Copy');
+        await s.nb.open(s.id);
+        await s.nb.rename(s.id, 'Edited');
+        await s.nb.flush();
+        expect(File(s.copy).readAsStringSync(), contains('Edited'));
+        expect(File(s.orig).readAsStringSync(), isNot(contains('Edited')));
+      }, skip: Platform.isWindows ? null : 'byte-range locks only block reads on Windows');
+
       test('the promoted duplicate prefers <id>.canvas and skips '
           'conflict-copy names', () async {
         final dir = await Directory('${root.path}/Elsewhere').create();

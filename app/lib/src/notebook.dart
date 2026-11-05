@@ -6201,9 +6201,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (id == currentId) continue;
       final loc = _locationOf(path);
       NotedPage? back;
+      // Only a file that is not there confirms the choice is gone: one that
+      // refuses reads or holds unreadable text may be back, held by sync.
+      var present = false;
       try {
         back = readPage(await File(path).readAsString());
         if (back.id != id) back = null;
+      } on PathNotFoundException {
+        back = null;
+      } on FileSystemException {
+        back = null;
+        present = File(path).existsSync();
       } on Object {
         back = null;
       }
@@ -6218,6 +6226,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (!_pathId.containsValue(id)) await _applyClosed(back, loc, _key(path), path);
         continue;
       }
+      if (present) continue; // not readable now: the choice stays, checked again later
       if (!Directory(File(path).parent.path).existsSync()) continue; // folder away
       _goneChosen.remove(id);
       _adoptedFiles.remove(id);
