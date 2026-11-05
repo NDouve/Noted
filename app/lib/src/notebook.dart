@@ -163,6 +163,15 @@ class _Rekey {
   final bool preexisting;
 }
 
+/// A delete that failed part way could not put back some pages, and recovery
+/// did not take them either. They are held in memory in [deleted], and
+/// [Notebook.undoDelete] writes them back (never over a file that is there).
+class PagesNotRestoredException extends NotebookException {
+  const PagesNotRestoredException(super.message, this.deleted) : super(needsAction: true);
+
+  final DeletedPages deleted;
+}
+
 /// Leaving a page was cancelled by the user: nothing was changed.
 class LeaveCancelled extends NotebookException {
   const LeaveCancelled() : super('Nothing was changed.');
@@ -704,6 +713,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Timer? _saveTimer;
   final List<String> _unfinished = []; // queued writes not yet done, for unsavedDescription
   DeletedPages? _lastDeleted;
+
+  // Failed deletes that left pages only in memory (not in the folder, not in recovery): kept
+  // until they are restored or the user lets them go.
+  final List<DeletedPages> _held = [];
   String? _coverPath;
   RawObject _settings = RawObject.empty;
   bool _settingsCorrupt = false;
@@ -979,7 +992,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   /// Whether [deleted] is the delete that Undo can still bring back.
-  bool isPendingDelete(DeletedPages deleted) => identical(_lastDeleted, deleted);
+  bool isPendingDelete(DeletedPages deleted) => identical(_lastDeleted, deleted) || _held.contains(deleted);
 
   /// Drops the delete that Undo could still bring back and waits until its
   /// set-aside attachments are removed. For closing the app: a snack bar that
@@ -1980,7 +1993,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             _loc[ids[i]] = loc;
           } else {
             // A file appeared at its path meanwhile: read it as any change.
+            // Unless it holds exactly the deleted version, that version is
+            // not in the folder, so it is kept like a page that is stuck.
+            String? there;
+            try {
+              there = await st.readText(ids[i]);
+            } on Object {
+              there = null;
+            }
             await _checkFile(st.pathFor(ids[i]));
+            if (there != texts[i]) stuck.add(i);
           }
         } on Object catch (e) {
           debugPrint('Putting back page ${ids[i]} after a failed delete failed: $e');
@@ -2049,25 +2071,58 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
       }
       if (stuck.isNotEmpty) {
-        // What could not be put back is kept in recovery, which writes a page
-        // file that is not there when it replays. Not offered as an undo: the
-        // next delete would clear its attachments away. An entry that is
-        // already there for the page is left alone: it recreates the page and
-        // holds the newer content.
+        // What could not be put back is handed to recovery, which writes a page
+        // file that is not there when it replays. An entry that is already
+        // there for the page is left alone: it recreates the page and holds
+        // the newer content. What recovery does not take is held in memory and
+        // offered as an Undo, which writes it back and never over a file that
+        // is there; its set-aside attachments are in [keepTrash], so no
+        // clean-up of the trash reaches them.
+        final taken = <int>[];
+        final untaken = <int>[];
         for (final i in stuck) {
-          // Merged into the entry already there, if any (3.4.2).
-          await _keepForRecovery(loc, st, pages[i], base: pages[i]);
+          KeepOutcome out;
+          try {
+            // Merged into the entry already there, if any (3.4.2).
+            out = await _keepForRecovery(loc, st, pages[i], base: pages[i]);
+          } on Object catch (e) {
+            debugPrint('Keeping page ${ids[i]} after a failed delete failed: $e');
+            out = KeepOutcome(KeepKind.failed, cause: e);
+          }
+          (out.safe ? taken : untaken).add(i);
         }
         // Land kept attachments as soon as the folder takes them, not only at
         // the next start; raised only now, so a stuck page's entry exists
         // before the folder check looks for the page its files go with.
         if (handedOff) _keptRetry = true;
-        throw NotebookException(
-          '${stuck.length == 1 ? 'A page' : '${stuck.length} pages'} could not be deleted '
-          'completely and ${stuck.length == 1 ? 'was' : 'were'} not put back. The '
-          'content is kept and recovery will write ${stuck.length == 1 ? 'it' : 'them'} '
-          'back.',
-          needsAction: true,
+        String titles(List<int> at) => at.map((i) => '"${_titleOrUntitled(pages[i].meta.title)}"').join(', ');
+        final head =
+            '${stuck.length == 1 ? 'A page' : '${stuck.length} pages'} could not be deleted '
+            'completely and ${stuck.length == 1 ? 'was' : 'were'} not put back.';
+        final heldText = taken.isEmpty
+            ? ''
+            : ' Recovery holds the content of ${titles(taken)} and will write it back.';
+        if (untaken.isEmpty) {
+          throw NotebookException('$head$heldText', needsAction: true);
+        }
+        final held = DeletedPages._(
+          [for (final i in untaken) pages[i]],
+          null,
+          loc,
+          {
+            for (final i in untaken)
+              if (stash.containsKey(ids[i])) ids[i]: stash[ids[i]]!,
+          },
+          keepTrash: keepTrash,
+        );
+        _held.add(held);
+        throw PagesNotRestoredException(
+          '$head$heldText Recovery could not keep ${titles(untaken)}, so '
+          '${untaken.length == 1 ? 'its content is' : 'their content is'} held in memory only. Choose '
+          'Undo to write ${untaken.length == 1 ? 'it' : 'them'} back; '
+          'nothing is written over a file that is there. Closing this message lets '
+          '${untaken.length == 1 ? 'it' : 'them'} go.',
+          held,
         );
       }
       if (handedOff) _keptRetry = true;
@@ -2255,12 +2310,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// parents and order, and reopens the page that was open. Does nothing if
   /// a later delete replaced it, or if the binder is gone.
   Future<void> undoDelete(DeletedPages deleted) async {
-    if (!identical(_lastDeleted, deleted)) return;
-    _lastDeleted = null;
+    final wasHeld = _held.remove(deleted);
+    if (!wasHeld && !identical(_lastDeleted, deleted)) return;
+    if (identical(_lastDeleted, deleted)) _lastDeleted = null;
     try {
       _assertWritable(deleted._location);
       _storeOf(deleted._location);
     } on NotebookException {
+      if (wasHeld) {
+        _held.add(deleted); // still only in memory: Undo can be tried again
+        rethrow;
+      }
       return;
     }
     final attachmentsLeft = <String>[]; // saved folders that could not be emptied
@@ -2316,7 +2376,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         merged.add(title);
       }
     }
-    if (notRestored.isNotEmpty) _lastDeleted = deleted; // Undo can be tried again
+    if (notRestored.isNotEmpty) {
+      // Undo can be tried again.
+      if (wasHeld) {
+        _held.add(deleted);
+      } else {
+        _lastDeleted = deleted;
+      }
+    }
     _touch(deleted._location);
     _rebuildTree();
     final reopen = deleted.openId;
@@ -2340,7 +2407,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             '${knownCause ? ' (a different file with the same name was already there and was left as it is)' : ''}. '
             'What could not be restored is still saved in ${attachmentsLeft.join(', ')}.',
     ];
-    if (notes.isNotEmpty) throw NotebookException(notes.join(' '), needsAction: true);
+    if (notes.isNotEmpty) {
+      final text = notes.join(' ');
+      if (wasHeld && notRestored.isNotEmpty) throw PagesNotRestoredException(text, deleted);
+      throw NotebookException(text, needsAction: true);
+    }
   }
 
   // Publishes [page] beside its file as a conflict copy (never over anything)
@@ -2382,6 +2453,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// Drops the in-memory copy of [deleted] (its snackbar went away).
   void discardDeleted(DeletedPages deleted) {
     if (identical(_lastDeleted, deleted)) _lastDeleted = null;
+    _held.remove(deleted);
     unawaited(_removeSetAside(deleted));
   }
 
