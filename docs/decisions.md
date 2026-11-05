@@ -618,7 +618,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0054 — Desktop and Start menu shortcuts
 - **Date:** 2026-10-25
-- **Status:** Active; extended by 0063
+- **Status:** Active; extended by 0063 and 0136 (file associations)
 - **Decision:** On the development machine, shortcuts named "Noted" on the Desktop and in the Start menu point to the release build, `app\build\windows\x64\runner\Release\noted.exe`, and use its icon. The release exe is rebuilt after each change to the app, so the shortcuts always launch the current build.
 - **Rationale:** Hands-on testing of the current build without a terminal.
 
@@ -1380,7 +1380,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0099 — Links in notes
 - **Date:** 2026-10-31
-- **Status:** Active (replaces the Link placeholder of 0097)
+- **Status:** Active (replaces the Link placeholder of 0097); amended by 0136 (Link needs a caret)
 - **Decision:**
   - **Link (Ctrl+K)** is a note command, in the Tabs layout (Home and Insert) and the Contextual layout (text and insert sections). It opens a dialog for the address:
     - With text selected, the selection becomes the link.
@@ -1596,7 +1596,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0112 — The Page and Binder settings panel
 - **Date:** 2026-11-01
-- **Status:** Active, amended by 0119 (scroll cue, pin option) (approved by the maintainer; moves the settings of 0098 and 0109 and page backgrounds out of the right-click menus)
+- **Status:** Active, amended by 0119 (scroll cue, pin option) and 0136 (settings in row menus, Location) (approved by the maintainer; moves the settings of 0098 and 0109 and page backgrounds out of the right-click menus)
 - **Decision:**
   - A **Page settings** button beside the page title and a **Binder settings** button on the binder cover and in the sidebar binder header open one shared panel (a dialog with *Close*).
   - **Sections:**
@@ -1896,7 +1896,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0135 — Opening the verified attachment; other link schemes ask; local link targets; the quit check times out
 - **Date:** 2026-11-04
-- **Status:** Active (other schemes asking, and conversion counting only the page folder, decided by the maintainer; treating `noted:` links like other schemes, asking for local targets with `%` or a short name, and the quit check's timeout decided by the PM and awaiting the maintainer's confirmation; amends 0070, 0098, 0132, 0133 and 0134)
+- **Status:** Active (other schemes asking, and conversion counting only the page folder, decided by the maintainer; treating `noted:` links like other schemes, asking for local targets with `%` or a short name, and the quit check's timeout decided by the PM and awaiting the maintainer's confirmation; amends 0070, 0098, 0132, 0133 and 0134); amended by 0136 (lenient decoding of link targets)
 - **Decision:**
   - **Opening an attachment (amends 0098 and 0132):** a file box opens the copy whose bytes verified against the hash in its name: the page-folder copy, else the recovery copy. A copy that is incomplete, damaged, a link or a folder never hides a good one. If no copy verifies, nothing opens: "This file can't be opened: its saved copy is incomplete or damaged" when every copy was read and didn't match, otherwise "This file can't be opened right now. Try again in a moment." No copy is moved, renamed or deleted. The runnable-file question (0134) still comes first.
   - **Other link schemes (amends 0133 and 0134):** only `http:`, `https:` and `mailto:` links open directly. Every other scheme (`ms-msdt:`, `search-ms:`, `shell:`, `javascript:`, unknown ones) asks "Open this link?" with the scheme on its own line, a warning that it opens another program, and Cancel as the filled default; a long scheme is cut at the end. `noted:` links ask too, because Noted doesn't handle them itself yet and the system would pass them to whatever program registered the scheme. The helpers are in noted_canvas (Box API 0.13, additive).
@@ -1906,6 +1906,19 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Conflict list:** a recorded version that appears twice in a box's conflicts counts once in "N more versions recorded"; the page data is unchanged.
 - **Rationale:** the bytes handed to another program must be the ones that were checked. A link scheme can start any registered program, and pages come from other people. Windows decodes file URLs again and opens short names by their long names, so a check on the text as written can be bypassed. An unresponsive network drive shouldn't hold up quitting, and in-memory notices are lost at quit if they aren't shown.
 - **Alternatives considered:** opening a temporary copy of the verified bytes (holds the whole file in memory, and the window is now small); asking only for a fixed list of dangerous schemes (misses unknown ones); refusing `%` and short names outright (some are legitimate); expanding short names with `GetLongPathNameW` (offline paths can't be expanded); quitting without a recovery listing on a timeout (hides the in-memory notices).
+
+## 0136 — Settings in row menus and a Location section; the Deleted bar times out; opening page and binder files; resolved names with bad escapes; Link needs a caret
+- **Date:** 2026-11-05
+- **Status:** Active (the menus, the Location section and opening files decided by the maintainer; the rest decided by the PM and awaiting the maintainer's confirmation; amends 0054, 0063, 0099, 0112 and 0135)
+- **Decision:**
+  - **Settings in row menus (amends 0112):** **Page settings…** and **Binder settings…** are items in each sidebar row's ⋯ menu and right-click menu. The sidebar has no settings icons; the button beside the open page's title and the one on the binder cover stay. 0112's "the settings entries are removed" from right-click menus no longer applies.
+  - **Location (amends 0112):** Page settings starts with a Location section: the page file's folder in full and selectable; for a binder page, the binder's name; for a subpage, "Same as its parent page". It offers **Show in File Explorer** (Finder on macOS, "Show in file manager" on Linux, hidden on iOS and Android; a folder that isn't available says so) and **Move to folder…** through the move path of 0059. Background is not inherited (0074); storage location, AI access, images and files and the allowed box types show their inherited value and source.
+  - **The Deleted bar:** a snack bar with an action closes after its time limit (Flutter keeps it otherwise) and has a close button. When the Deleted bar ends, or the app quits normally, the deleted pages are released and their set-aside attachments removed. Attachments a partial Undo couldn't restore are kept where the message says and never removed automatically, and the bar returns with Undo ("Some pages weren't restored").
+  - **Opening page and binder files (extends 0054 and 0063):** a `.canvas` file or `noted-binder.json` passed to Noted opens it. A page file joins its binder (when its folder holds `noted-binder.json`) or its folder as a standalone folder, then opens. A binder file joins its binder and opens the cover. Only an existing file with one of those names is accepted. A file whose page id is already in Noted from another file is refused, and a folder this open added is removed again when the open is refused. On Windows a second launch hands the file to the running Noted. `install-shortcuts.ps1` registers per-user: `.canvas` (made the default only when nothing else is), "Open with" for Noted, and an "Open in Noted" item on `noted-binder.json` only. `.json` files are not given to Noted by default. `-Uninstall` removes what it added. macOS is documented only (`CFBundleDocumentTypes` and `application(_:openFiles:)`). **Open binder…** is also a button in the sidebar header.
+  - **Resolved names (amends 0135):** decoding a local link target is lenient. Each valid `%XX` run is decoded and an invalid `%` kept, repeated until nothing changes. The open-file question and every runnable check use that one result, so a bad escape can't make the question name `..`. A name with an invalid UTF-8 byte is also checked without it. Line and paragraph separators are replaced in the name shown.
+  - **Link needs a caret (amends 0099):** the Link command (Ctrl+K and the toolbar) is enabled only while a note holds a caret or selection. Each place where inserting a link is skipped writes one fixed line to the debug log, with no link or note content.
+- **Rationale:** the sidebar's settings icons were hard to tell apart and the maintainer couldn't find where a page lives. A bar that never closes keeps deleted pages and their files in memory and on disk. Opening a file from the file system is how users expect to reach a page another device made. The question must name what will run.
+- **Alternatives considered:** keeping the icons beside the menus (clutter); making Noted the default for all `.json` files (takes over unrelated files); refusing a link with a bad escape (some are legitimate); a sweep of leftover set-aside attachments at launch (a new automatic delete, which needs its own design).
 
 ---
 
