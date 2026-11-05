@@ -841,7 +841,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0070 — Recovery store for edits that can't be saved
 - **Date:** 2026-10-26
-- **Status:** Active; extended by 0077 (damaged entries in the sidebar); entry layout, identity checks and replay amended by 0124 (the two-file layout below is replaced by one entry file)
+- **Status:** Active; extended by 0077 (damaged entries in the sidebar); entry layout, identity checks and replay amended by 0124 (the two-file layout below is replaced by one entry file); failed saves of the open page, one recovery owner and kept edits shown as a preview amended by 0137
 - **Decision:**
   - **Writing an entry:** when a save can't land because its folder (standalone or binder) is unavailable (0064), the page is written at once to `%APPDATA%\Noted\recovery` as two files:
     - `<name>.canvas`: exactly the text a normal save would write, so it can never hold anything a page file wouldn't (invariant 3)
@@ -1820,7 +1820,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0130 — Mobile storage, pen and touch, compact toolbar; replay, moves and attachment copies that verify before they act
 - **Date:** 2026-11-03
-- **Status:** Active (mobile work and the stylus rule decided by the maintainer for this run; storage rules from the accepted Codex data-integrity findings; the replay rule after a landed write decided by the PM and awaiting the maintainer's confirmation; amends 0033, 0124, 0128 and 0129); conflict copies, moves and attachment copies amended by 0131
+- **Status:** Active (mobile work and the stylus rule decided by the maintainer for this run; storage rules from the accepted Codex data-integrity findings; the replay rule after a landed write decided by the PM and awaiting the maintainer's confirmation; amends 0033, 0124, 0128 and 0129); conflict copies, moves and attachment copies amended by 0131; the quit-time trade-off for landed entries amended by 0137
 - **Decision:**
   - **Storage on mobile (0129):** pages and binders live in the app's documents folder (`Noted/`), `settings.json` and recovery in its support folder (`Noted/`), the attachment cache in its cache folder. `NOTED_PAGES_DIR` keeps the desktop layout. If the folders can't be found at launch, a plain screen names the failure. Desktop is unchanged.
   - **Off on mobile (0129):** drag and drop, the AI link server and its running lock, folder watching beyond the app's storage, and the folder picker.
@@ -1909,7 +1909,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0136 — Settings in row menus and a Location section; the Deleted bar times out; opening page and binder files; resolved names with bad escapes; Link needs a caret
 - **Date:** 2026-11-05
-- **Status:** Active (the menus, the Location section and opening files decided by the maintainer; the rest decided by the PM and awaiting the maintainer's confirmation; amends 0054, 0063, 0099, 0112 and 0135)
+- **Status:** Active (the menus, the Location section and opening files decided by the maintainer; the rest decided by the PM and awaiting the maintainer's confirmation; amends 0054, 0063, 0099, 0112 and 0135); opening a same-id file in a joined folder and inserting links when the note changes amended by 0137
 - **Decision:**
   - **Settings in row menus (amends 0112):** **Page settings…** and **Binder settings…** are items in each sidebar row's ⋯ menu and right-click menu. The sidebar has no settings icons; the button beside the open page's title and the one on the binder cover stay. 0112's "the settings entries are removed" from right-click menus no longer applies.
   - **Location (amends 0112):** Page settings starts with a Location section: the page file's folder in full and selectable; for a binder page, the binder's name; for a subpage, "Same as its parent page". It offers **Show in File Explorer** (Finder on macOS, "Show in file manager" on Linux, hidden on iOS and Android; a folder that isn't available says so) and **Move to folder…** through the move path of 0059. Background is not inherited (0074); storage location, AI access, images and files and the allowed box types show their inherited value and source.
@@ -1919,6 +1919,28 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Link needs a caret (amends 0099):** the Link command (Ctrl+K and the toolbar) is enabled only while a note holds a caret or selection. Each place where inserting a link is skipped writes one fixed line to the debug log, with no link or note content.
 - **Rationale:** the sidebar's settings icons were hard to tell apart and the maintainer couldn't find where a page lives. A bar that never closes keeps deleted pages and their files in memory and on disk. Opening a file from the file system is how users expect to reach a page another device made. The question must name what will run.
 - **Alternatives considered:** keeping the icons beside the menus (clutter); making Noted the default for all `.json` files (takes over unrelated files); refusing a link with a bad escape (some are legitimate); a sweep of leftover set-aside attachments at launch (a new automatic delete, which needs its own design).
+
+## 0137 — Failed saves never lose edits; opening a same-id file in a joined folder; links when the note changes under the dialog
+- **Date:** 2026-11-05
+- **Status:** Active (the failed-save behaviour decided by the maintainer and built from the reviewed R-1 v5 design; the merge with one locally fixed pre-merge finding under the maintainer's merge rule; the rest decided by the PM and awaiting the maintainer's confirmation; amends 0070, 0130 and 0136)
+- **Decision:**
+  - **One process owns recovery (amends 0070).** At startup Noted takes an exclusive lock on `recovery.lock` beside the recovery folder and holds it for the life of the process. A second process shows "Noted is already open." and quits. If the lock can't be taken for another reason, Noted runs, but every recovery write and replay is refused with the cause shown, and the lock is tried again on Retry.
+  - **A failed save stays on screen (amends 0070).** When a save of the open page fails while its folder exists, the page keeps its edits and shows a bar with Retry, Save a copy elsewhere… and Discard changes. Retries back off from 2 s to 30 s. Each failure keeps the edits as the page's own recovery generation. If recovery fails too, a persistent warning names the cause, offers Save a copy elsewhere, Copy page text and Retry, and stays until a save or a recovery write succeeds.
+  - **Leaving is never blocked.** Leaving a page (quitting included) tries its last save for up to 5 s. If the save lands, the page goes. If it doesn't, the save is left behind (its page counts as busy until it ends), and the edits go to recovery with a notice that fades. Only when recovery also fails does Noted ask "Your changes will be lost" (Cancel is the default).
+  - **Kept edits are shown, not folded in.** Opening a page that has kept edits replays them first. If that can't land, the page opens as a read-only preview, built in memory and never written, with Retry, Save a copy elsewhere… and Copy page text. Discard kept changes appears only where the edits can't land, and asks first. Recovery entries and the preview hold every box exactly as saved; nothing decrypts, renders to text or logs box content.
+  - **Recovery writers never replace each other's edits.** The open page's session writes and deletes only its own generations. Closed writers merge three-way into an existing entry. An entry counts as already included only when its boxes, the whole page header and the order of shared boxes all match. Moves keep both recovery keys until each page settles. Deleting a page with kept edits asks first.
+  - **Discard changes** raises the session's floor. No save attempt that starts after it publishes. It waits for a save already running, keeps what that save landed, and says so ("A save that was already running finished before Discard, so those changes were kept."). It never writes or deletes a page file; it deletes only its own recovery generations. The page is read-only while Discard waits.
+  - **Quit-time trade-off (amends 0130).** If the quit-time retry of deleting an entry whose save already landed also fails, the entry may replay at the next launch, and the quit notice says one recovered page may show boxes deleted since.
+  - **Opening a same-id file (amends 0136).** Opening a `.canvas` file in a folder or binder that was already joined, when the scan or watcher hasn't registered it yet (or has listed it only as a duplicate), opens that file. The other file with the same id is listed as the duplicate. The choice lasts for the session: later scans keep it while the file exists, and a chosen file that disappears is given up only after a later folder check confirms it is gone. Nothing is persisted, so after a restart the scan decides again, and opening the file again chooses it again. A file in a folder this open would join is still refused, as before. Nothing is written, renamed or deleted by the choice.
+  - **Links when the note changes under the dialog (amends 0136).** After the link dialog closes, the link is applied through the note's current editor. It is applied only if the selection still stands on the same text: the same blocks, the selected text, and the text around it. Otherwise "The note changed while the link dialog was open, so the link wasn't added." is shown, never a silent drop. The link path's diagnostics also go to `%LOCALAPPDATA%\Noted\logs\link.log` on Windows (`~/.noted/logs` on other desktops, the app's private folder on mobile). They are fixed lines with no link or note content, capped at 256 KB.
+- **Rationale:** a failed save used to be dropped on leaving the page. A recovery slot that any writer could replace lost edits whenever that writer's content lacked them. Two processes sharing one recovery folder couldn't be made safe. A preview can't fold or lose anything. Opening a file must open that file, not another one with the same id. In a release build a silent failure can't be diagnosed.
+- **Alternatives considered:**
+  - Blocking navigation until the save lands (an unresponsive drive would trap the user).
+  - Folding kept edits into the open editor (earlier versions lost edits this way).
+  - Undoing a save that landed after Discard (it can delete the only copy of a page).
+  - Persisting the chosen file across launches (a file format change).
+  - Joining a backup folder to open its copy (later edits would land in the backup).
+  - Applying a link at the saved offsets without checking the text (it can link the wrong words).
 
 ---
 
