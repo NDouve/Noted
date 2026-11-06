@@ -48,7 +48,7 @@ Each page can draw one background on `bg-canvas`, chosen per page and saved in p
 
 ## Mapping to Flutter
 
-Build one `ThemeData` per theme from these tokens. `ColorScheme`: `primary` = `accent`, `onPrimary` = `on-accent`, `primaryContainer` = `accent-soft`, `onPrimaryContainer` = `accent`, `surface` = `surface`, `onSurface` = `text`, `onSurfaceVariant` = `text-muted`, `outline` = `border`, `outlineVariant` = `border-box`, `error` = `error`, `surfaceContainerLowest` = `bg-canvas`, `surfaceContainerLow` = `bg-app`. Put the tokens with no Material slot (`conflict*`, `ink-*`, `binder-*`, `paper-*`, `text-disabled`) in a `ThemeExtension` called `NotedColors`. Spacing, radius and size tokens go in a `NotedMetrics` extension. Widgets read tokens only, never hex values.
+Build one `ThemeData` per theme from these tokens. `ColorScheme`: `primary` = `accent`, `onPrimary` = `on-accent`, `primaryContainer` = `accent-soft`, `onPrimaryContainer` = `accent`, `surface` = `surface`, `onSurface` = `text`, `onSurfaceVariant` = `text-muted`, `outline` = `border`, `outlineVariant` = `border-box`, `error` = `error`, `surfaceContainerLowest` = `bg-canvas`, `surfaceContainerLow` = `bg-app`. Put the tokens with no Material slot (`conflict*`, `ink-*`, `binder-*`, `paper-*`, `text-disabled`) in a `ThemeExtension` called `NotedColors`. Spacing, radius and size tokens go in a `NotedMetrics` extension. The snackbar is inverted: background = `text` (`inverseSurface`), message and close icon = `surface`, and the action label (`actionTextColor`) = the `accent` of the other theme (dark's accent in light, light's in dark), because this theme's own accent fails 4.5:1 on that background. Widgets read tokens only, never hex values.
 
 ## Components
 
