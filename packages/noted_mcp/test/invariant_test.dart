@@ -299,6 +299,33 @@ void main() {
     expect(sources.keys, contains('package:noted_core/src/binder/binder.dart'));
   });
 
+  test('the gate is the only user of the running lock (run 2026-11-06-02)', () {
+    final sources = notedSources();
+    final named = [
+      for (final e in sources.entries)
+        if (e.value.contains('aiRunningLockFileName')) e.key,
+    ];
+    expect(named, [runningProbe], reason: 'only the gate names the running-lock file');
+    final lockCalls = RegExp(r'\.(lock|lockSync|unlock|unlockSync)\s*\(');
+    final users = [
+      for (final e in sources.entries)
+        if (lockCalls.hasMatch(e.value)) e.key,
+    ]..sort();
+    expect(users, [closedWriter, runningProbe]);
+    // In the writer, the lock calls are inside appendLog, on the log file.
+    final src = sources[closedWriter]!;
+    final start = src.indexOf('Future<bool> appendLog(');
+    final end = src.indexOf('static bool _isLockViolation');
+    expect(start, greaterThan(0));
+    expect(end, greaterThan(start));
+    expect(lockCalls.hasMatch(src.substring(0, start)), isFalse);
+    expect(lockCalls.hasMatch(src.substring(end)), isFalse);
+    final open = RegExp(r'\.open\s*\(');
+    expect(open.allMatches(src.substring(start, end)).length, 1, reason: 'the one open in appendLog');
+    expect(src.substring(start, end), contains('_log.open(mode: FileMode.append)'), reason: 'on the log file');
+    expect(open.allMatches(src).length, 1, reason: 'no other open in the writer');
+  });
+
   test('only the link client touches a socket, HTTP or WebSocket API', () {
     final net = RegExp(
       r'\b(Socket|ServerSocket|RawSocket|RawServerSocket|SecureSocket|RawSecureSocket|RawDatagramSocket|HttpClient|HttpServer|WebSocket|InternetAddress|NetworkInterface)\b|dart:(io_http|html)',
