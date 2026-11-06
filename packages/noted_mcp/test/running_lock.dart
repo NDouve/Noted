@@ -43,6 +43,10 @@ final class RunningLock {
   static Future<RunningLock> holdLog(Directory dataDir) =>
       _start(['${dataDir.path}/$aiMcpLogFileName', 'keep']);
 
+  /// Holds an exclusive lock on the existing file [path], leaving its content
+  /// alone: where locks are mandatory (Windows) the file can't be read.
+  static Future<RunningLock> holdFile(String path) => _start([path, 'keep']);
+
   static Future<RunningLock> _start(List<String> args) async {
     final dill = await _holderKernel();
     final p = await Process.start('dart', [dill, ...args], runInShell: true);

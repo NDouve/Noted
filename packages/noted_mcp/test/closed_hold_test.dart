@@ -430,7 +430,7 @@ void main() {
       expect(readLog(data), isEmpty);
     });
 
-    test('a same-id copy that sorts first never stands for the page: the canonical file is read and written', () async {
+    test('a same-id copy (a leftover aside file) makes the page ambiguous: nothing is read or written until it is gone', () async {
       writeStore(data, [writer()], allowClosed());
       // The copy is written before the canonical file (and the selection itself is
       // unit-tested below with copy-first paths, so no listing order is relied on).
@@ -442,13 +442,20 @@ void main() {
       File(copy).writeAsStringSync(writePage(stale));
       File(path).writeAsStringSync(canonical);
       final copyBefore = File(copy).readAsStringSync();
+      // The app's choice between the two is in its memory only: the server picks neither.
       final read = await toolbox().readBox('aiA');
-      expect(read.text, contains('okapi from A'));
-      expect(read.text, isNot(contains('stale copy text')));
+      expect(read.text, noSuchBox('aiA'));
       final out = await append(toolbox());
-      expect(out.isError, isFalse, reason: out.text);
-      expect(File(path).readAsStringSync(), contains('new words'));
+      expect(out.isError, isTrue);
+      expect(out.text, ambiguousPageText);
+      expect(File(path).readAsStringSync(), canonical);
       expect(File(copy).readAsStringSync(), copyBefore);
+      // One copy left: the canonical file is served and written as before.
+      File(copy).deleteSync();
+      expect((await toolbox().readBox('aiA')).text, contains('okapi from A'));
+      final again = await append(toolbox());
+      expect(again.isError, isFalse, reason: again.text);
+      expect(File(path).readAsStringSync(), contains('new words'));
     });
 
     test('8. a missing lock file refuses the write: open Noted once', () async {
