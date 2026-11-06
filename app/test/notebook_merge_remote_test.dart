@@ -577,17 +577,37 @@ void main() {
       await start();
       final (id, box, base) = await closedPage();
       final remote = noteBox('remote', at: const Bounds(600, 10, 200, 40));
-      // With the chain idle the open leaves its page without a save and queues
-      // its job at once; the merge decides "closed" meanwhile and queues behind it.
-      final open = nb.open(id);
-      final merge = nb.mergeRemote(pathOf(id), bytes(base), bytes(base.insertNode(remote)));
-      final r = await merge;
-      await open;
+      // The page is opened after the merge decided "closed" and before its job
+      // is queued; the job must see it open and leave it to the open path.
+      nb.syncHook = (point, _) async {
+        if (point == 'merge-remote-closed') await nb.open(id);
+      };
+      final r = await nb.mergeRemote(pathOf(id), bytes(base), bytes(base.insertNode(remote)));
+      nb.syncHook = null;
       expect(r.outcome, RemoteMergeOutcome.merged, reason: '$r');
       expect(nb.currentId, id);
       expect(ids(nb.current!.page), {box.id, remote.id}, reason: 'the editor holds the merge');
       await nb.flush();
       expect(ids(onDisk(id)), {box.id, remote.id});
+    });
+
+    test('a no-op merge of a file the notebook already holds does not touch last edited', () async {
+      await start();
+      final folder = await Directory.systemTemp.createTemp('noted_merge_remote_le');
+      extra.add(folder);
+      final section = await nb.addBinder(folder.path);
+      final id = await nb.createPage(binderPath: section.path);
+      await nb.flush();
+      await nb.createPage(); // the binder page is closed
+      await nb.flush();
+      final path = '${folder.path}$sep$id.canvas';
+      final base = readPage(File(path).readAsStringSync());
+      final before = nb.binders.single.lastEdited;
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final r = await nb.mergeRemote(path, bytes(base), bytes(base));
+      expect(r.outcome, RemoteMergeOutcome.merged, reason: '$r');
+      expect(r.wrote, isFalse);
+      expect(nb.binders.single.lastEdited, before);
     });
 
     test('mergeRemote inside a save-chain job fails the debug assert', () async {

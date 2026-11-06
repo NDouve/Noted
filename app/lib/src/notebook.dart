@@ -6974,6 +6974,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           r = await _mergeRemoteOpen(loc, path, id, basePage, remotePage, time);
         } else {
           final queuedOn = _chain.generation;
+          // A test seam: the page may be opened here, before the job is queued.
+          await syncHook?.call('merge-remote-closed', path);
           r = await _afterSaves(
             () => _mergeRemoteClosed(loc, path, id, basePage, remotePage, time, queuedOn),
             what: 'merge of remote page $id',
@@ -7035,14 +7037,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (writePage(merged) == text) {
         // Nothing to write, but the file may have been replaced since the
         // watcher last looked: the live state takes it in as after a landing.
+        // A file the notebook already holds as it is changes nothing, and must
+        // not count as an edit of the binder.
         final key = _key(path);
-        _known[key] = text;
-        _pathId[key] = id;
-        _setConflict(id, hasConflicts(merged));
-        onPageContent?.call(loc, merged);
-        _metas[id] = merged.meta;
-        _touch(loc);
-        _rebuildTree();
+        if (_known[key] != text) {
+          _known[key] = text;
+          _pathId[key] = id;
+          _setConflict(id, hasConflicts(merged));
+          onPageContent?.call(loc, merged);
+          _metas[id] = merged.meta;
+          _touch(loc);
+          _rebuildTree();
+        }
         return RemoteMergeResult.merged(identityOfForTest(utf8.encode(text)), wrote: false);
       }
       final w = await _writeIfUnchangedFull(loc, merged, text, wantIdentity: true, onlyAtPath: path);
