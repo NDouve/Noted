@@ -35,6 +35,14 @@ dependencies:
   # Opens attachments and links with the default app (BSD-3-Clause).
   url_launcher: ^6.3.3
   path_provider: 2.1.5
+  noted_auth:
+    path: ../packages/noted_auth
+  # Microsoft sign-in (OneDrive sync stage 2), both BSD-3-Clause, approved by
+  # the maintainer and pinned; neither is from the Flutter team.
+  # flutter_appauth opens the system browser sheet on iOS, Android and macOS;
+  # flutter_secure_storage keeps the refresh token in the keychain or keystore.
+  flutter_appauth: 13.0.0
+  flutter_secure_storage: 11.0.0
 
 dev_dependencies:
   flutter_test:

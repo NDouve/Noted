@@ -26,6 +26,9 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // The redirect scheme of the Microsoft sign-in (flutter_appauth): the
+        // redirect is io.github.ndouve.noted://auth, the already-public bundle id.
+        manifestPlaceholders["appAuthRedirectScheme"] = "io.github.ndouve.noted"
     }
 
     buildTypes {

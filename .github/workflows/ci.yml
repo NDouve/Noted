@@ -141,6 +141,9 @@ jobs:
       # System32 (present on the runner image) and writes the zip.
       - name: Build and package
         shell: pwsh
+        # The script passes it on as --dart-define=NOTED_MS_CLIENT_ID when set.
+        env:
+          NOTED_MS_CLIENT_ID: ${{ vars.NOTED_MS_CLIENT_ID }}
         run: ./app/scripts/package-windows.ps1
 
       - uses: actions/upload-artifact@v4
@@ -172,7 +175,7 @@ jobs:
       # inspection and Gatekeeper will not open it without an override.
       - name: Build
         working-directory: app
-        run: flutter build macos --release
+        run: flutter build macos --release --dart-define=NOTED_MS_CLIENT_ID=${{ vars.NOTED_MS_CLIENT_ID }}
 
       - name: Zip Noted.app
         working-directory: app/build/macos/Build/Products/Release
@@ -192,7 +195,7 @@ jobs:
       - name: Build iOS (unsigned)
         if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         working-directory: app
-        run: flutter build ipa --release --no-codesign
+        run: flutter build ipa --release --no-codesign --dart-define=NOTED_MS_CLIENT_ID=${{ vars.NOTED_MS_CLIENT_ID }}
 
       # flutter build ipa --no-codesign leaves an .xcarchive; the app is the
       # one .app inside it.
@@ -244,7 +247,7 @@ jobs:
       # inspection and Gatekeeper will not open it without an override.
       - name: Build
         working-directory: app
-        run: flutter build macos --release
+        run: flutter build macos --release --dart-define=NOTED_MS_CLIENT_ID=${{ vars.NOTED_MS_CLIENT_ID }}
 
       - name: Zip Noted.app
         working-directory: app/build/macos/Build/Products/Release
@@ -267,7 +270,7 @@ jobs:
         timeout-minutes: 30
         continue-on-error: true
         working-directory: app
-        run: flutter build ipa --release --no-codesign
+        run: flutter build ipa --release --no-codesign --dart-define=NOTED_MS_CLIENT_ID=${{ vars.NOTED_MS_CLIENT_ID }}
 
       - name: Package unsigned .ipa
         id: ipa
@@ -322,7 +325,7 @@ jobs:
 
       - name: Build
         working-directory: app
-        run: flutter build apk --release
+        run: flutter build apk --release --dart-define=NOTED_MS_CLIENT_ID=${{ vars.NOTED_MS_CLIENT_ID }}
 
       - uses: actions/upload-artifact@v4
         with:

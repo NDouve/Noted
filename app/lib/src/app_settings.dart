@@ -114,6 +114,21 @@ class AppSettings extends ChangeNotifier {
     _write();
   }
 
+  /// Whether this install has deleted its own leftover keychain items (iOS keeps
+  /// them when the app is deleted) (`"keychainCleaned"`). Absent in a file from
+  /// an older version, which counts as not yet. Nothing sets it when the file
+  /// couldn't be read.
+  bool get keychainCleaned => _raw['keychainCleaned'] == true;
+
+  /// Sets the flag and saves it; false if it could not be saved (or the file was
+  /// unreadable), in which case the flag is not trusted.
+  bool markKeychainCleaned() {
+    if (_readFailed) return false;
+    if (keychainCleaned) return true;
+    _raw = {..._raw, 'keychainCleaned': true};
+    return _write();
+  }
+
   // A stored folder, as a path of this container (see [resolveStoredPath]).
   String? _folder(String key) {
     final v = _raw[key];
