@@ -1649,7 +1649,10 @@ class _Run {
         await _verifyFresh('after quitting with a page held (seed $seed)');
         // The sequence goes on from a restart with the copy put in the page's
         // place, as its owner would (the model has a file for the page, not
-        // for a copy).
+        // for a copy). This hides nothing the checks look for: the fresh-notebook
+        // verify above ran before the rename, with the copy as the only file of
+        // the page, and the disk check after the restart still requires exactly
+        // the model's files, so a stray or missing file would fail it.
         final copies = dirs[model[removed.last]!.loc]!
             .listSync()
             .whereType<File>()
