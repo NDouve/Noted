@@ -48,12 +48,19 @@ class AiAccessService extends ChangeNotifier implements AiBoxAccess {
   }) : store = AiAccessStore(_file(dataFolder, aiAccessFileName)),
        log = AiActivityLog(_file(dataFolder, aiActivityFileName)),
        mcpLog = _file(dataFolder, aiMcpLogFileName) {
-    if (pollInterval != null) {
-      trimMcpLog();
-      pruneRevokedCodes();
-      _stamp = _stampOf();
-      _poll = Timer.periodic(pollInterval, (_) => _check());
-    }
+    if (pollInterval != null) startPolling(pollInterval);
+  }
+
+  /// Trims the MCP log, prunes revoked codes and starts watching the files every
+  /// [interval]. These write `ai-access.json` and the log, so the app calls it
+  /// only once it holds the running lock (it is not in the constructor of the
+  /// app's own service). Does nothing if it is already polling.
+  void startPolling(Duration interval) {
+    if (_poll != null || _disposed) return;
+    trimMcpLog();
+    pruneRevokedCodes();
+    _stamp = _stampOf();
+    _poll = Timer.periodic(interval, (_) => _check());
   }
 
   static File _file(Directory dir, String name) => File('${dir.path}${Platform.pathSeparator}$name');

@@ -35,14 +35,15 @@ final class LockHolder {
   }();
 
   /// Starts the helper and returns once it holds the lock on [file]. The file
-  /// is left in place afterwards (the helper is told to keep it).
-  static Future<LockHolder> hold(File file) async {
+  /// is left in place afterwards (the helper is told to keep it). With [shared], the
+  /// lock is a shared one, as a noted_mcp write holds.
+  static Future<LockHolder> hold(File file, {bool shared = false}) async {
     file.parent.createSync(recursive: true);
     final dill = await _kernel();
     final p = await Process.start('dart', [
       dill,
       file.path,
-      'keep',
+      shared ? 'shared' : 'keep',
     ], runInShell: true);
     final holder = LockHolder._(p);
     final line = await p.stdout
