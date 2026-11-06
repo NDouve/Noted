@@ -1746,7 +1746,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0124 — Saves, moves and recovery never overwrite or delete what they can't verify
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106; amended by 0127 and 0130; amended by 0131
+- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106; amended by 0127 and 0130; amended by 0131; mobile recovery re-keying amended by 0142
 - **Decision:**
   - **The open page's file (0051):** before every save of the open page, its file is read again, found by path. If it is unreadable, from a newer format, holds a different page, or can't be read for any reason other than not existing, nothing is written: the file stays as it is, the edits go to recovery, and the page becomes read-only with a plain reason and a way out ("Put back a readable version, or open another page"). The block is rechecked by the watcher and the folder timer; when a readable version appears it is merged three-way and the page is editable again, and the block's recovery entry is removed once the merged save reads back. A folder that comes back while the open page waits for it is handled the same way, with or without a recovery entry: a file that is there but unreadable blocks the page, and a missing file puts the page back in place so a file that lands later is merged.
   - **Conflict copies (0053):** a copy is deleted only if its bytes still equal the ones that were merged, and the original is replaced only if it still equals what the merge read. Otherwise the merge is redone, up to five times; then the copy is kept and listed under "Can't open".
@@ -1820,7 +1820,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0130 — Mobile storage, pen and touch, compact toolbar; replay, moves and attachment copies that verify before they act
 - **Date:** 2026-11-03
-- **Status:** Active (mobile work and the stylus rule decided by the maintainer for this run; storage rules from the accepted Codex data-integrity findings; the replay rule after a landed write decided by the PM and awaiting the maintainer's confirmation; amends 0033, 0124, 0128 and 0129); conflict copies, moves and attachment copies amended by 0131; the quit-time trade-off for landed entries amended by 0137
+- **Status:** Active (mobile work and the stylus rule decided by the maintainer for this run; storage rules from the accepted Codex data-integrity findings; the replay rule after a landed write decided by the PM and awaiting the maintainer's confirmation; amends 0033, 0124, 0128 and 0129); conflict copies, moves and attachment copies amended by 0131; the quit-time trade-off for landed entries amended by 0137; mobile stored folders amended by 0142
 - **Decision:**
   - **Storage on mobile (0129):** pages and binders live in the app's documents folder (`Noted/`), `settings.json` and recovery in its support folder (`Noted/`), the attachment cache in its cache folder. `NOTED_PAGES_DIR` keeps the desktop layout. If the folders can't be found at launch, a plain screen names the failure. Desktop is unchanged.
   - **Off on mobile (0129):** drag and drop, the AI link server and its running lock, folder watching beyond the app's storage, and the folder picker.
@@ -1999,6 +1999,24 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Alternatives considered:**
   - Keeping only recovery's path (recovery can be unavailable).
   - Asking at the moment of the failure (blocks the delete flow; Undo is the existing way back).
+
+---
+
+## 0142 — Mobile folders are stored relative to the documents folder; recovery entries are re-keyed without dropping any
+- **Date:** 2026-11-05
+- **Status:** Active (the mobile-only format change approved by the maintainer as stage 1 of the OneDrive sync design; built from the reviewed design `2026-11-05-05-mobile-relative-paths`; the details below decided by the PM; amends 0124 and 0130 for mobile recovery)
+- **Decision:**
+  - **Stored form.** On phones and tablets a folder inside the app's documents folder is stored as `@documents/<relative path>` in `binders.json` (`binders`, `standaloneFolders`, `binderIds` keys), `settings.json` (`defaultPageFolder`, `defaultBinderFolder`) and the `folder` of recovery entries (`docs/file-format.md` §9). Folders outside it stay absolute. `format` stays 1. Old absolute values are converted when read and written in the new form at the next ordinary save, not at launch.
+  - **Old containers.** An absolute path under an earlier app container (the documents path differs in one folder name, the last folder name is the same, `Noted` follows, and the old path no longer exists; a leading `/private` is ignored) is read as the same path in the current container. Other paths stay as written and show unavailable. Android's `/data/data` and `/data/user/0` forms are not matched; Android paths are assumed stable across reinstalls (unverified).
+  - **Generations.** A recovery generation is hashed from the folder string as stored in the entry, at every call site, so keeps, replacements and moves agree with the file on mobile.
+  - **Re-keying.** At listing, before any replay, an entry written in an old form is copied to a free slot in the new form by an exclusive publish, read back, and only then is the old file removed with delete-if-unchanged. An identical entry at the new key means it was already re-keyed. A different entry, even a later one, never makes it redundant: both are kept and replay merges them. A generation that already landed is not re-keyed, and an old copy that can't be deleted is retired with the entry that replaced it, so its edits are replayed once.
+  - **Leftover temps across forms.** Temp settling and legacy conversion compare an old-form file only with files of its own form. Across forms only identity (same page, base and text) removes a file; a later time never supersedes it.
+  - **Desktop is unchanged**: absolute paths, the same file bytes and names. Slots are taken with an exclusive publish, falling back to the previous rename only for files of the same form when the volume can't publish exclusively.
+- **Rationale:** the iOS container path changes on a sideload reinstall, which made every stored folder point nowhere and orphaned recovery entries, which were then never replayed or reported.
+- **Alternatives considered:**
+  - A bare relative path (ambiguous with today's working-directory meaning).
+  - Rewriting the settings files at launch (more writes; conversion on read is idempotent).
+  - Letting a later entry at the new key supersede an old one (it never saw the old edits). Known trade-off, as in 0131: a box deleted in the newer version can reappear when both are merged.
 
 ---
 
