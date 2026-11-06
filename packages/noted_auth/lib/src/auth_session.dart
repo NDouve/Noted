@@ -301,8 +301,14 @@ class AuthSession {
     }
     final fresh = res.refreshToken;
     if (fresh != null && fresh != old) await _rotate(key, fresh);
-    // Signed out during the store calls: keep nothing in memory.
-    if (_accountKey != key) return res.accessToken;
+    // Signed out during the store calls: keep nothing in memory, and fail every
+    // waiter the same way.
+    if (_accountKey != key) {
+      throw const AuthException(
+        AuthErrorKind.signInRequired,
+        'Sign in to Microsoft to continue.',
+      );
+    }
     _accessToken = res.accessToken;
     _expiresAt = _now().add(res.expiresIn);
     return res.accessToken;
@@ -334,6 +340,13 @@ class AuthSession {
       await _store.delete(refreshKey(key));
     } on Object catch (e) {
       developer.log('Could not delete the stored sign-in: $e', name: 'noted_auth');
+    }
+    // Signed out while the delete was out: that is signed out, not sign in again.
+    if (_accountKey != key) {
+      throw const AuthException(
+        AuthErrorKind.signInRequired,
+        'Sign in to Microsoft to continue.',
+      );
     }
     _set(AuthState.signInAgain);
     throw const AuthException(

@@ -56,6 +56,7 @@ class FailingStore extends MemoryTokenStore {
   bool failWrites = false;
   bool failReads = false;
   bool failDeletes = false;
+  Completer<void>? deleteGate; // the next delete waits for this (once)
   bool dropWrites = false; // writes succeed but nothing is kept
   Completer<void>? writeGate; // a write waits for this before it lands
 
@@ -67,6 +68,9 @@ class FailingStore extends MemoryTokenStore {
 
   @override
   Future<void> delete(String key) async {
+    final gate = deleteGate;
+    deleteGate = null;
+    await gate?.future;
     if (failDeletes) throw StateError('delete');
     return super.delete(key);
   }
@@ -384,12 +388,68 @@ void main() {
     expect(store.values, isEmpty);
     store.writeGate = null;
     gate.complete();
-    await refresh;
+    await expectLater(refresh, throwsA(isA<AuthException>()));
     expect(s.state, AuthState.signedOut);
     expect(
       store.values,
       isEmpty,
     ); // the late write did not bring the token back
+  });
+
+  test('signing out while the rotation failure deletes the token stays signed out', () async {
+    final e = FakeEndpoint((f, n) async => ok(tokens('A$n', 'R$n')));
+    final s = session(e);
+    await s.signIn(grant);
+    clock = clock.add(const Duration(hours: 2));
+    store.failWrites = true;
+    final gate = store.deleteGate = Completer<void>();
+    final refresh = s.accessToken();
+    final outcome = expectLater(
+      refresh,
+      throwsA(
+        isA<AuthException>().having(
+          (x) => x.kind,
+          'kind',
+          AuthErrorKind.signInRequired,
+        ),
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    await s.signOut();
+    gate.complete();
+    await outcome;
+    expect(s.state, AuthState.signedOut);
+  });
+
+  test('signing out during a rotation fails every waiter with sign in required', () async {
+    final e = FakeEndpoint((f, n) async => ok(tokens('A$n', 'R$n')));
+    final s = session(e);
+    await s.signIn(grant);
+    final rejected = await s.accessToken();
+    final gate = store.writeGate = Completer<void>();
+    final calls = [
+      for (var i = 0; i < 3; i++) s.tokenAfterRejection(rejected),
+    ];
+    final outcomes = [
+      for (final c in calls)
+        expectLater(
+          c,
+          throwsA(
+            isA<AuthException>().having(
+              (x) => x.kind,
+              'kind',
+              AuthErrorKind.signInRequired,
+            ),
+          ),
+        ),
+    ];
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    await s.signOut();
+    store.writeGate = null;
+    gate.complete();
+    await Future.wait(outcomes);
+    expect(s.state, AuthState.signedOut);
+    expect(store.values, isEmpty);
   });
 
   test('sign out removes the stored tokens and needs no network', () async {
