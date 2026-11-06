@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -359,6 +360,29 @@ void main() {
       expect(account.state, AuthState.signedIn);
       expect(AppSettings(file).keychainCleaned, isTrue);
       expect(deletes, 1); // only the save was retried
+    });
+
+    test('a sign-in while the clean-up is still running ends signed in with its token kept', () async {
+      final dir = Directory.systemTemp.createTempSync('noted_keychain');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final file = File('${dir.path}/settings.json')..writeAsStringSync('{}');
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final store = MemoryTokenStore();
+      final gate = Completer<void>();
+      final account = _account(store);
+      addTearDown(account.dispose);
+      final started = account.start(
+        settings: AppSettings(file),
+        firstLaunchCleanup: () => gate.future,
+      );
+      final signing = account.signIn(); // before the clean-up has finished
+      gate.complete();
+      await started;
+      await signing;
+      expect(account.error, isNull);
+      expect(account.state, AuthState.signedIn);
+      expect(AppSettings(file).keychainCleaned, isTrue);
+      expect(await store.read(AuthSession.refreshKey('t.o')), 'R');
     });
 
     test('markKeychainCleaned leaves the flag unset when the save fails', () {

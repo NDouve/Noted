@@ -111,7 +111,8 @@ class MicrosoftAccount extends ChangeNotifier {
 
   /// Reads the stored account (after, on iOS, the one-time keychain
   /// clean-up). Never throws. If the clean-up fails the account is not
-  /// restored and sign-in is refused until a later start succeeds.
+  /// restored and sign-in is refused until a later sign-in or start retries
+  /// the clean-up and it succeeds.
   Future<void> start({
     AppSettings? settings,
     Future<void> Function()? firstLaunchCleanup,
