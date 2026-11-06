@@ -2,8 +2,8 @@
 
 This document describes the files Noted writes for pages, binders and
 attachments, as the code writes and reads them today. It is a description of
-behaviour, not a design: where it and the code differ, the code is right and
-this document should be corrected.
+behaviour, not a design: where it and the code differ, correct it; where it and
+a decision differ, the maintainer decides (0132).
 
 It covers page files (`<page id>.canvas`), binder files (`noted-binder.json`),
 attachment files (`<page id>.assets/`) and the way a sync client's conflict
@@ -217,8 +217,12 @@ is just `<hash>`) when the original has none, has more than 10 characters or
 has any character other than letters and digits. `file` holds that name
 relative to the assets folder, so a page that gets a new id keeps working
 boxes. Because the name is the content hash, two devices adding the same file
-write the same name and cannot conflict. An existing file with that name is
-left alone.
+write the same name and cannot conflict. An existing file with that name and
+the right hash is left alone. One that is changing or can't be read is left
+alone too, and the source stays. A stable one that fails its hash is moved
+aside as `<name>.damaged-<12 hex of its actual hash>`, and the good copy takes
+the name, or stays as `<name>.kept-<n>` if the name can't be freed. Neither is
+deleted.
 
 ```json
 {"name":"Plan.pdf","size":48213,"hash":"9f86d081884c7d65...","file":"9f86d081884c7d65....pdf"}
@@ -271,7 +275,8 @@ by `\n`.
 | `boxTypes` | object | `{"<type id>": true\|false}`, as in the page header. Only `false` restricts a type; `true` is stored but has no effect. |
 | `ai` | string | The binder's AI access setting, as in the page header. |
 
-Other fields are kept in order and written back unchanged.
+Other fields are kept in order and written back unchanged. A binder with
+`"locked":true`, or an `encryption` or `password` field, is hidden from page AI.
 
 ```json
 {"format":1,"binderId":"c04e91b7a25d3f68","title":"Project Atlas","description":"Planning notes","owner":"","color":"#FF2563EB","created":1793600000000,"attachments":"folder"}
@@ -294,7 +299,9 @@ When a sync client keeps both versions of a page file edited on two machines,
 it saves the second as a copy with a suffix before the extension. OneDrive
 appends a hyphen and the computer name, and a number if that name is taken:
 `<stem>-<COMPUTERNAME>.canvas`, `<stem>-<COMPUTERNAME>-1.canvas`. This naming
-is not verified against other providers, so Noted accepts a wider shape.
+is not verified against other providers, so Noted accepts a wider shape. Noted's
+own copies use the same shape: `<id>-conflict-<hex>`, `<id>-recovered-<hex>`,
+`<id>-undo-<hex>` and, from the MCP server, `<id>-NOTED-MCP-<hex>`.
 
 A file `<stem>-<suffix>.canvas` is treated as a conflict copy of
 `<stem>.canvas` when all of these hold:
@@ -337,8 +344,8 @@ When the same node id differs and one side is a foreign node:
   recorded in the box's `conflicts` (as a `node` entry, 7.3);
 - the original is foreign: the original is kept, and the copy's node is added
   beside it under a new id (a box added this way may get a `landed` marker,
-  7.4). When the copy's node is not a JSON object it cannot take an id; at
-  present it is not added.
+  7.4). A copy's node that is not a JSON object cannot take an id and is
+  added as it is.
 
 ### 7.3 `conflicts`
 
