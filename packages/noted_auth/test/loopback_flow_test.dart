@@ -89,6 +89,31 @@ void main() {
     },
   );
 
+  test('also answers on the IPv6 loopback when there is one', () async {
+    var hasV6 = true;
+    try {
+      (await ServerSocket.bind(InternetAddress.loopbackIPv6, 0)).close();
+    } on Object {
+      hasV6 = false;
+    }
+    final grant = await signInWithLoopback(
+      config: config,
+      launch: browser((redirect, state) async {
+        final c = HttpClient();
+        try {
+          final host = hasV6 ? '[::1]' : '127.0.0.1';
+          final u = Uri.parse(
+            'http://$host:${redirect.port}/noted-auth?code=V6&state=$state',
+          );
+          await (await (await c.getUrl(u)).close()).drain<void>();
+        } finally {
+          c.close(force: true);
+        }
+      }),
+    );
+    expect(grant.code, 'V6');
+  });
+
   test('a wrong state is ignored; the right one then completes', () async {
     final grant = await signInWithLoopback(
       config: config,

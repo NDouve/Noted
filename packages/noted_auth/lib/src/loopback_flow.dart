@@ -49,7 +49,7 @@ Future<AuthGrant> signInWithLoopback({
   final redirect = 'http://localhost:${server.port}$loopbackRedirectPath';
   final done = Completer<AuthGrant>();
 
-  final sub = server.listen((request) async {
+  Future<void> handle(HttpRequest request) async {
     try {
       final q = request.uri.queryParameters;
       if (request.uri.path != loopbackRedirectPath || q['state'] != state) {
@@ -83,7 +83,23 @@ Future<AuthGrant> signInWithLoopback({
     } on Object {
       // A broken connection from the browser; the next request may be good.
     }
-  });
+  }
+
+  final sub = server.listen(handle);
+  // "localhost" may resolve to ::1: listen there too, on the same port, with the
+  // same handler. Best effort; IPv4 alone is enough where there is no IPv6.
+  StreamSubscription<HttpRequest>? sub6;
+  HttpServer? server6;
+  try {
+    server6 = await HttpServer.bind(
+      InternetAddress.loopbackIPv6,
+      server.port,
+      v6Only: true,
+    );
+    sub6 = server6.listen(handle);
+  } on Object {
+    server6 = null;
+  }
 
   try {
     final bool opened;
@@ -116,7 +132,9 @@ Future<AuthGrant> signInWithLoopback({
     );
   } finally {
     await sub.cancel();
+    await sub6?.cancel();
     await server.close(force: true);
+    await server6?.close(force: true);
   }
 }
 
