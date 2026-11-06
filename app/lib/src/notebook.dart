@@ -5301,7 +5301,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       );
     }
     final time = DateTime.now().toUtc();
-    final gen = RecoveryStore.generationOf(folder, time, baseText, writePage(page));
+    final gen = rec.generationFor(folder, time, baseText, writePage(page));
     // Recorded before writing: a tmp file that gets promoted is recognised.
     session.own[gen] = seq;
     final replaceable = {...session.own.keys, for (final e in entries) e.gen};
