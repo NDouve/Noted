@@ -2049,7 +2049,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0145 — Microsoft sign-in (OneDrive sync stage 2)
 - **Date:** 2026-11-06
-- **Status:** Active (approved by the maintainer on 2026-11-05: dependencies, packages, scope, redirects; details decided by the build team; amends 0129's "no mobile sync yet")
+- **Status:** Active (approved by the maintainer on 2026-11-05: dependencies, packages, scope, redirects; details decided by the build team; amends 0129's "no mobile sync yet"); the keychain clean-up order is superseded by 0147
 - **Decision:**
   - **Flow:** authorization code with PKCE (S256), public client, authority `common`, scope `Files.ReadWrite offline_access openid profile`. iOS, Android and macOS use `flutter_appauth` 13.0.0 (`authorize()` only) with the redirect `io.github.ndouve.noted://auth`; Windows and Linux use the system browser and a loopback listener on 127.0.0.1 and ::1 with `http://localhost:<port>/noted-auth`. The code exchange and refresh are in the pure-Dart package `packages/noted_auth` (`http` 1.6.0, `crypto` 3.0.7).
   - **Tokens:** the refresh token is kept with `flutter_secure_storage` 11.0.0, one key per account; the access token stays in memory. A rotated token is written and read back before the old one is dropped. `invalid_grant` or a storage failure means Sign in again. One refresh runs for concurrent callers. Sign-out removes the stored token and touches nothing on OneDrive.
@@ -2081,6 +2081,25 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **No `.bad` copy** is made any more.
 - **Rationale:** binder list changes were written from lists never filled from the file, so a locked or damaged list was overwritten or renamed away, losing binders and removed ids.
 - **Alternatives considered:** an in-memory journal with placeholders, `.bad` copies and a merge (too large); renaming a damaged file automatically (it could move a repaired file aside).
+
+---
+
+## 0147 — iOS keychain clean-up deletes first and blocks sign-in until it is recorded; a failed token rotation means Sign in again
+- **Date:** 2026-11-06
+- **Status:** Active (findings accepted by the maintainer's PM chat, `run-diff-2` R-1 and R-2; details decided by the build team; supersedes 0145's "after saving the `keychainCleaned` flag")
+- **Decision:**
+  - **iOS keychain clean-up:**
+    - On a first launch, Noted deletes its keychain items first, then saves `keychainCleaned: true` in `settings.json`.
+    - Until both have succeeded in this session, the account isn't restored and sign-in is refused with "Noted couldn't prepare sign-in. Try again."
+    - A sign-in attempt retries the clean-up first. A failed delete or a failed save leaves the flag unset, so the next launch retries.
+    - A `settings.json` that exists but can't be read skips the clean-up, because a reinstall removes that file rather than damaging it.
+  - **Rotation:**
+    - If writing or reading back a rotated refresh token fails, the session goes to Sign in again.
+    - The access token is not returned, in-memory tokens are dropped, and the stored token is deleted best-effort.
+    - Every caller waiting on that refresh gets the same error.
+    - A sign-out during the rotation ends signed out, with no token handed out.
+- **Rationale:** a clean-up marked done before it ran could restore the previous install's account. A rotation whose storage failed kept the user signed in on a token that might not be stored.
+- **Alternatives considered:** saving the flag before deleting (a failed delete was then never retried); keeping the old token after a failed rotation write (it hides the storage failure that 0145 says means Sign in again).
 
 ---
 
