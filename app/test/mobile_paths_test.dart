@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -837,27 +838,58 @@ void _recoveryTests() {
     expect(old.readAsBytesSync(), oldBytes);
   });
 
-  test('the pass stops before the transaction limit; the next listing finishes it (note 6)', () async {
+  // Lists once in a transaction on a fake time source: the limit's timer never
+  // fires and "out of time" (75% of the limit) reads a clock that only the hook
+  // moves, by [spent] of the limit, so a slow machine cannot change the outcome.
+  Future<RecoveryListing> listWithSpent(double spent) async {
     await writeOld(oldFolder('pages'), _page('p1', 'one'), t1);
     await writeOld(oldFolder('binders/Work'), _page('p2', 'two'), t1);
+    const limit = Duration(seconds: 4);
+    var now = Duration.zero;
     var slow = true;
+    Duration? timerLimit;
     final s = store(
       hook: (p) async {
         if (slow && p == 'tmp-written') {
           slow = false;
-          await Future<void>.delayed(const Duration(milliseconds: 350));
+          now += limit * spent;
         }
       },
-    );
-    final l = await s.transaction((tx) => tx.list(), limit: const Duration(milliseconds: 400));
+    )
+      ..uptime = (() => now)
+      ..timerFactory = ((d, cb) {
+        timerLimit = d;
+        return Timer(const Duration(hours: 1), cb);
+      });
+    final l = await s.transaction((tx) => tx.list(), limit: limit);
+    expect(timerLimit, limit, reason: 'the limit timer gets the limit');
+    return l;
+  }
+
+  test('the pass stops before the transaction limit; the next listing finishes it (note 6)', () async {
+    final l = await listWithSpent(0.8);
     expect(titles(l), {'one', 'two'});
     expect(l.entries, hasLength(2));
     expect(others(), isEmpty, reason: 'no temp is left');
+    for (final f in entryFiles()) {
+      expect(f.readAsStringSync(), isNot(contains('@documents/')), reason: 'the first pass stopped');
+    }
     final done = await store().list();
     expect(done.entries, hasLength(2));
     expect(entryFiles(), hasLength(2));
     for (final f in entryFiles()) {
       expect(f.readAsStringSync(), contains('@documents/'));
+    }
+  });
+
+  test('the pass does not stop at 70% of the transaction limit', () async {
+    final l = await listWithSpent(0.7);
+    expect(titles(l), {'one', 'two'});
+    expect(l.entries, hasLength(2));
+    expect(others(), isEmpty, reason: 'no temp is left');
+    expect(entryFiles(), hasLength(2));
+    for (final f in entryFiles()) {
+      expect(f.readAsStringSync(), contains('@documents/'), reason: 'the first pass finished');
     }
   });
 

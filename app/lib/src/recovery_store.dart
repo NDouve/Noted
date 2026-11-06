@@ -183,6 +183,16 @@ class RecoveryStore {
   /// still finish). Recovery is on the local disk, so this is generous.
   Duration transactionLimit = const Duration(seconds: 10);
 
+  static final Stopwatch _realClock = Stopwatch()..start();
+
+  /// Test seam: the time source of the transaction limit's "out of time" check.
+  @visibleForTesting
+  Duration Function() uptime = () => _realClock.elapsed;
+
+  /// Test seam: makes the timer that ends a transaction at its limit.
+  @visibleForTesting
+  Timer Function(Duration, void Function()) timerFactory = Timer.new;
+
   /// Runs [job] after every earlier transaction on this folder (also from
   /// other instances) and before any later one (L2). Inside, [RecoveryTx]
   /// lists, writes and deletes without waiting for the chain again; a job
@@ -203,9 +213,9 @@ class RecoveryStore {
         c.completeError(const RecoveryTimeout());
         return;
       }
-      final tx = RecoveryTx._(this, limit ?? transactionLimit);
+      final tx = RecoveryTx._(this, limit ?? transactionLimit, uptime);
       final over = Completer<void>();
-      final timer = Timer(limit ?? transactionLimit, () {
+      final timer = timerFactory(limit ?? transactionLimit, () {
         if (!c.isCompleted) {
           tx.abandoned = true;
           _outstanding[k] = (_outstanding[k] ?? 0) + 1;
@@ -1152,15 +1162,16 @@ class RecoveryStore {
 
 /// What a recovery transaction can do ([RecoveryStore.transaction]).
 class RecoveryTx {
-  RecoveryTx._(this.store, this._limit);
+  RecoveryTx._(this.store, this._limit, this._uptime) : _start = _uptime();
 
   final RecoveryStore store;
   final Duration _limit;
-  final Stopwatch _clock = Stopwatch()..start();
+  final Duration Function() _uptime;
+  final Duration _start;
 
   /// Whether most of the transaction's time is used: long work that can be
   /// finished by a later listing stops here rather than exceed the limit.
-  bool get outOfTime => _clock.elapsed * 4 > _limit * 3;
+  bool get outOfTime => (_uptime() - _start) * 4 > _limit * 3;
 
   /// Set when the transaction timed out: it must not change the folder any more.
   bool abandoned = false;

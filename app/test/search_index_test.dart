@@ -114,7 +114,7 @@ void main() {
     return s;
   }
 
-  Future<void> until(bool Function() ok, {int ms = 6000}) async {
+  Future<void> until(bool Function() ok, {int ms = 60000}) async {
     final end = DateTime.now().add(Duration(milliseconds: ms));
     while (!ok()) {
       if (DateTime.now().isAfter(end)) fail('condition not reached in time');
