@@ -546,6 +546,13 @@ ThemeData notedThemeData(Brightness brightness, {bool touch = false}) {
       ),
       waitDuration: const Duration(milliseconds: 500),
     ),
+    // The snackbar is inverted (background = text), so its action takes the
+    // accent of the opposite brightness: the stock inversePrimary is this
+    // brightness's own accent, which is unreadable on the inverted surface.
+    snackBarTheme: SnackBarThemeData(
+      actionTextColor: (dark ? DesignColors.light : DesignColors.dark).accent,
+      closeIconColor: tokens.surface,
+    ),
     extensions: [colors, metrics, type],
   );
 }
