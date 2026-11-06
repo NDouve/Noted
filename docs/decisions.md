@@ -1746,7 +1746,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0124 — Saves, moves and recovery never overwrite or delete what they can't verify
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106; amended by 0127 and 0130; amended by 0131; mobile recovery re-keying amended by 0142
+- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106; amended by 0127 and 0130; amended by 0131; mobile recovery re-keying amended by 0142)
 - **Decision:**
   - **The open page's file (0051):** before every save of the open page, its file is read again, found by path. If it is unreadable, from a newer format, holds a different page, or can't be read for any reason other than not existing, nothing is written: the file stays as it is, the edits go to recovery, and the page becomes read-only with a plain reason and a way out ("Put back a readable version, or open another page"). The block is rechecked by the watcher and the folder timer; when a readable version appears it is merged three-way and the page is editable again, and the block's recovery entry is removed once the merged save reads back. A folder that comes back while the open page waits for it is handled the same way, with or without a recovery entry: a file that is there but unreadable blocks the page, and a missing file puts the page back in place so a file that lands later is merged.
   - **Conflict copies (0053):** a copy is deleted only if its bytes still equal the ones that were merged, and the original is replaced only if it still equals what the merge read. Otherwise the merge is redone, up to five times; then the copy is kept and listed under "Can't open".
@@ -2064,7 +2064,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 ---
 
 ## Open items
-- **Apple build path:** iOS/iPadOS and macOS releases have to be compiled with current Xcode on Apple-silicon-era macOS. The planned approach is cloud macOS build runners.
+- **Apple build path:** resolved: CI builds the macOS app and an unsigned `.ipa` on GitHub's macOS runners (0093, 0134).
 - **Equation block sourcing:** resolved (0048).
 - **File format:** whether JSON Canvas extra fields are sufficient, and how faithfully appflowy_editor round-trips Markdown.
 - **MCP:** the full tool and resource list. Linking an AI to a box: resolved (0108). Code checks and opted-in writes with Noted closed: resolved (0114–0117).
@@ -2090,6 +2090,6 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 1. Canvas, page tree, Box API, and plain note and editor boxes, on the Windows development machine. Covers typing on a crowded page, editing while zoomed, and box drag and resize.
 2. Drawing box module with the tool-based input rules (0033), on the development machine using a mouse.
 3. Pen and touch ink on a Windows pen tablet, an iPad and an Android phone. Pass condition: zero skipped or broken strokes on fast, long lines, including while a drawing box grows.
-4. Microsoft sign-in on Windows (system browser + PKCE).
+4. Microsoft sign-in for OneDrive sync on iPad and Android (system browser + PKCE).
 5. One AI box through a local MCP server, tested under each page AI setting, with an encrypted box on the same page that appears only as a placeholder.
 6. reMarkable (later phase).
