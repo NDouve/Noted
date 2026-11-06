@@ -243,6 +243,12 @@ void main() {
       await g.moveTo(target + const Offset(0, 0.5));
       await tester.pump();
       await tester.runAsync(() => g.up());
+      // The move copies, verifies and deletes real files: wait for its result,
+      // not for a fixed number of rounds of real IO.
+      for (var i = 0; i < 600 && !(has(extra, a) && !has(pages, a)); i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.runAsync(() => realIoPause(50));
+      }
       await settle(tester);
 
       expect(nb.tree.childrenOf(x).map((p) => p.id), [a]);
