@@ -61,6 +61,7 @@ ToolOutput linkErrorOutput(AiLinkError e) {
     AiLinkCode.conflict => 'The box has a sync conflict in Noted and cannot be written to. Nothing was changed.',
     AiLinkCode.locked => 'The page cannot be edited right now (its binder is locked, or it is read-only). Nothing was changed.',
     AiLinkCode.notWritable when e.message == closedWritesOffText => closedWritesOffText,
+    AiLinkCode.notWritable when e.message == ambiguousPageText => ambiguousPageText,
     AiLinkCode.notWritable => 'This box does not take writes from an AI right now. Nothing was changed.',
     AiLinkCode.saveFailed => 'Noted could not save the change. Nothing was changed.',
     AiLinkCode.busy when e.message == notedBusyText => notedBusyText,

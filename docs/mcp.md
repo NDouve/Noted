@@ -157,6 +157,14 @@ The same folders as the app on this computer, from `%APPDATA%\Noted` (`~/.noted`
 
 Pass `--data-dir <folder>` to read another app folder (the tests do).
 
+### A page with more than one copy
+
+Each request counts the page files in every folder it lists, once per file (a folder listed twice, or under two spellings, counts once). A page id with more than one file, in one folder or across folders and binders (locked binders included), is **ambiguous**: the app's choice between the copies lives in its memory only, so the server can't know which is the page. An ambiguous page is served as **Guarded**, whatever its headers say, and so is every page under it. Its AI boxes answer their box codes with "This box's page has more than one copy in Noted's folders, so it can't be read or written until only one is left." (a closed write is refused with the same text before anything is held or written); writes while Noted runs go to the app, which decides with its own choice. Once one copy is left, the page is served as usual.
+
+A file counts for the id it carries even when the server can't use it: a page file counts for the id it parses as, and only that one. A file that doesn't parse counts for the id in its header (the `pageId` field of the page header, found by a lenient scan that works on text cut short and never reads another object's fields) and for the id its name starts with, both (`<id>.canvas`, a sync copy `<id>-DEVICE.canvas`, or the server's own aside file `<id>-NOTED-MCP-<hex>.canvas`, which is why a closed write's leftover aside file, the `busy` case, keeps the page ambiguous until it is resolved); with neither it counts for nothing (a stray file isn't a page). An id is 16 lowercase hex digits. A file that can't be read at all and whose name carries no id, a listed folder that can't be listed, and a `binders.json` or `settings.json` that exists but can't be read make every id ambiguous for that request. This clears by itself. A binder whose file is damaged or unreadable still has its page files counted, though none of its pages is served. A folder listed both as standalone and as a binder is counted once, and its pages are served with the stricter of the two accesses, which also reaches the pages under them in other folders; a closed write honours the box types either list disallows.
+
+Known gap: a listed folder that is absent (a drive that is away) counts nothing. If the app chose a copy in it earlier in its session, the server serves the other copy. This is rare, and failing closed on every absent folder would hide all pages while any binder is unplugged.
+
 ## Adding it to Claude
 
 **Claude Code.** From the release folder (or `app\scripts` in the repository), run:
@@ -203,4 +211,5 @@ dart compile exe packages\noted_mcp\bin\noted_mcp.dart -o noted_mcp.exe
 - **`ai_test.dart`** runs the tools against a fake Noted over the link: grants (page and box), box-code isolation (no title or page list), the session id and app name on every request, `write_box` (success and each refusal), `describe_code`, every error code, and Noted not running.
 - **`closed_test.dart`** runs the server with Noted not running: code reads (box, page and binder codes, unapproved, expired, revoked), the log (appended, never rewritten, no key), closed-app writes (each mode against each Writer permission, the switch, ask-before-write, type, conflict, locked binder, bytes outside the box unchanged, rev and baseRev, the retry and `busy`), running mode still going to the app, and the narrow writer's path checks.
 - **`tools_test.dart`** runs the page tools against pages with each access value (Open, Privileged, Guarded, the legacy values, inheritance and tightening, binders, a locked binder) and checks that hidden pages appear in no output.
+- **`duplicates_test.dart`** checks the pages with more than one copy: hidden from every tool, box codes and the closed write refused, files the server can't use counted by their header or name, and copies arriving under a closed write's hold.
 - **`stdio_test.dart`** starts the executable and talks to it as an MCP client.
