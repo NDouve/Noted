@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -309,4 +310,70 @@ void main() {
     expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
     expect(nb.unreadable, isEmpty);
   }, timeout: const Timeout(Duration(seconds: 60)));
+
+  group('the merge of a closed page runs as one chain job (run 2026-11-06-04)', () {
+    test('a page opened during the merge shows the merged page, and an edit keeps the copy', () async {
+      await start();
+      final (id, box) = await closedPageWithBox();
+      final added = noteBox('from the copy', at: const Bounds(400, 10, 200, 40));
+      final path = copyPath(id, 'DESKTOP-4QK2N8L');
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      final paused = Completer<void>();
+      final resume = Completer<void>();
+      nb.syncHook = (point, _) async {
+        if (point != 'original-read') return;
+        paused.complete();
+        await resume.future;
+      };
+      final check = nb.checkFile(path);
+      await paused.future;
+      var opened = false;
+      final open = nb.open(id).then((_) => opened = true);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(opened, isFalse, reason: 'the open waits for the merge');
+      resume.complete();
+      await check;
+      await open;
+      nb.syncHook = null;
+
+      expect(nb.currentId, id);
+      expect(nb.current!.page.node(added.id), isNotNull, reason: 'the editor shows the merge');
+      final c = nb.current!;
+      final mine = c.createBoxAt(const Bounds(10, 300, 0, 0));
+      c.commit(mine.id, modules.codecs.codecFor('noted.note')!.decode(doc('after'), 1));
+      await nb.flush();
+      expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id, mine.id});
+      expect(File(path).existsSync(), isFalse);
+    });
+
+    test('a page opened before the job runs takes the merge in the editor', () async {
+      await start();
+      final (id, box) = await closedPageWithBox();
+      final added = noteBox('from the copy', at: const Bounds(400, 10, 200, 40));
+      final path = copyPath(id, 'DESKTOP-4QK2N8L');
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      // The check starts, then the page is opened before the merge runs.
+      final check = nb.checkFile(path);
+      await nb.open(id);
+      await check;
+      expect(nb.current!.page.id, id);
+      expect(nb.current!.page.nodes.map((n) => n.id).toSet(), {box.id, added.id});
+      expect(File(path).existsSync(), isFalse);
+      await nb.flush();
+      expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
+    });
+
+    test('a check that runs inside a chain job and meets a copy of a closed page completes', () async {
+      await start();
+      final (id, box) = await closedPageWithBox();
+      final added = noteBox('from the copy', at: const Bounds(400, 10, 200, 40));
+      final path = copyPath(id, 'DESKTOP-4QK2N8L');
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      // As a save's own check runs: inside a job of the chain, which can't
+      // queue the merge on the chain and wait for it.
+      await nb.checkFileInChainForTest(path).timeout(const Duration(seconds: 20));
+      expect(File(path).existsSync(), isFalse);
+      expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
+    });
+  });
 }

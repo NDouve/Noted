@@ -7211,6 +7211,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return job;
   }
 
+  /// Runs the check of [path] as a save-chain job, as a save's own check runs
+  /// it (inside a job, where queuing on the chain would wait on itself).
+  @visibleForTesting
+  Future<bool> checkFileInChainForTest(String path) => _afterSaves(() => _checkFile(path), what: 'check of $path');
+
   /// Looks at a binder's `noted-binder.json` ([path]) after it may have been
   /// changed by someone else.
   ///
