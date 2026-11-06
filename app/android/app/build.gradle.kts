@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "io.github.ndouve.noted"
     // 37: flutter_secure_storage 11 needs it; the libraries follow (see ../build.gradle.kts).
-    compileSdk = 37
+    compileSdk = maxOf(37, flutter.compileSdkVersion)
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
