@@ -213,6 +213,54 @@ void _guardTests() {
     expect(tmps.single.readAsStringSync(), expected);
   });
 
+  // The name main gives the entry of page p1 in [folder] (desktop).
+  String entryName(String folder) {
+    var h = 0xcbf29ce484222325;
+    final key = File(folder).absolute.path.replaceAll(r'\', '/');
+    for (final u in utf8.encode('${Platform.isWindows ? key.toLowerCase() : key}|p1')) {
+      h = ((h ^ u) * 0x100000001b3) & 0x7fffffffffffffff;
+    }
+    return 'p1-${h.toRadixString(16)}';
+  }
+
+  test('a directory where an entry goes: a listing completes, its tmp is kept in another slot and a later write works', () async {
+    final rec = Directory('${root.path}/rec');
+    final folder = '${root.path}/pages';
+    final name = entryName(folder);
+    final s = RecoveryStore(rec)..transactionLimit = const Duration(seconds: 5);
+    await s.write(folder: folder, page: _page('p1', 'one'), baseText: null, time: DateTime.utc(2026, 10, 25, 10));
+    File('${rec.path}/$name.entry').deleteSync();
+    Directory('${rec.path}/$name.entry').createSync();
+    await expectLater(
+      s.write(folder: folder, page: _page('p1', 'one'), baseText: null, time: DateTime.utc(2026, 10, 25, 10)),
+      throwsA(anything),
+    );
+    final l = await s.list().timeout(const Duration(seconds: 10));
+    expect(l.entries, hasLength(1));
+    expect(l.entries.single.file.path, endsWith('${name}_dup2.entry'));
+    expect(rec.listSync().whereType<File>().where((f) => f.path.endsWith('.tmp')), isEmpty);
+    expect(Directory('${rec.path}/$name.entry').existsSync(), isTrue);
+    await s.write(folder: '${root.path}/other', page: _page('p2', 'two'), baseText: null, time: DateTime.utc(2026, 10, 25, 11));
+    expect((await s.list()).entries, hasLength(2));
+  });
+
+  test('a directory where a legacy entry is converted to: the listing completes and the entry takes the next slot', () async {
+    final rec = Directory('${root.path}/rec')..createSync(recursive: true);
+    final folder = '${root.path}/pages';
+    final name = entryName(folder);
+    Directory('${rec.path}/$name.entry').createSync();
+    final legacy = _legacyName(folder, 'p1');
+    File('${rec.path}/$legacy.canvas').writeAsStringSync(writePage(_page('p1', 'one')));
+    File('${rec.path}/$legacy.json').writeAsStringSync(
+      jsonEncode({'format': 1, 'folder': folder, 'pageId': 'p1', 'time': '2026-10-25T10:00:00.000Z', 'base': null}),
+    );
+    final s = RecoveryStore(rec)..transactionLimit = const Duration(seconds: 5);
+    final l = await s.list().timeout(const Duration(seconds: 10));
+    expect(l.entries, hasLength(1));
+    expect(l.entries.single.file.path, endsWith('${name}_dup2.entry'));
+    expect(File('${rec.path}/$legacy.canvas').existsSync(), isFalse);
+  });
+
   test('7: a build that does not know @documents/ reads the new format harmlessly (codec off)', () async {
     final b = File('${root.path}/app/binders.json')..createSync(recursive: true);
     b.writeAsStringSync(
@@ -457,7 +505,7 @@ void _notebookTests() {
     expect((j['binderIds']! as Map).keys, everyElement(startsWith('@documents/Noted/binders/')));
     expect(j['standaloneFolders'], ['@documents/Noted/other']);
     expect(j['removedBinders'] ?? const [], isEmpty);
-    expect(File('${docs('c2').path}/Noted/binders.json').readAsStringSync(), isNot(contains('c1')));
+    expect(File('${docs('c2').path}/Noted/binders.json').readAsStringSync(), isNot(contains('Documents')));
     settings.theme = ThemeSetting.light;
     expect(readJson(File('${support('c2')}/Noted/settings.json'))['defaultPageFolder'], '@documents/Noted/other');
   });
@@ -581,6 +629,12 @@ void _recoveryTests() {
           },
         );
         await expectLater(crashing.list(), throwsStateError);
+        // Whatever temp the crash left is a re-key temp, never an `.entry.` one.
+        for (final p in others()) {
+          expect(p, isNot(contains('.entry.')), reason: 'a re-key temp name never contains .entry.');
+          if (p.endsWith('.tmp')) expect(p, contains('.rekey.'));
+        }
+        if (point == 'tmp-written') expect(others(), isNotEmpty);
         final l = await store().list();
         expect(l.problems, isEmpty, reason: '${l.problems}');
         expect(titles(l), {'one', 'two'});
@@ -644,10 +698,17 @@ void _recoveryTests() {
     // carries a later time and must not be renamed over E2's slot.
     final e2 = await store().write(folder: newFolder('pages'), page: _page('p1', 'e2'), baseText: null, time: t1);
     final before = e2.file.readAsBytesSync();
+    // E1's old file is gone; only its re-key temp, named as the code names it
+    // (after the old file), is left.
+    await writeOld(oldFolder('pages'), _page('p1', 'e1'), t2);
+    final oldFile = entryFiles().firstWhere((f) => f.path != e2.file.path);
     final stage = Directory('${root.path}/stage')..createSync();
     final e1 = await RecoveryStore(stage).write(folder: newFolder('pages'), page: _page('p1', 'e1'), baseText: null, time: t2);
-    File('${rec.path}/x.rekey.1-1.tmp').writeAsBytesSync(e1.file.readAsBytesSync());
+    final stem = oldFile.path.split(RegExp(r'[\\/]')).last.replaceFirst(RegExp(r'\.entry$'), '');
+    oldFile.deleteSync();
+    File('${rec.path}/$stem.rekey.1-1.tmp').writeAsBytesSync(e1.file.readAsBytesSync());
     final l = await store().list();
+    expect(l.problems.where((p) => p.contains('rekey') || p.contains('unfinished')), isEmpty, reason: 'a re-key temp is not an unfinished write: ${l.problems}');
     expect(titles(l), {'e1', 'e2'});
     expect(l.entries, hasLength(2));
     expect(e2.file.readAsBytesSync(), before);
@@ -757,26 +818,44 @@ void _recoveryTests() {
 
   test('a persistent delete failure: the generation is listed once and replays once, in two listings of a session', () async {
     await writeOld(oldFolder('pages'), _page('p1', 'one'), t1);
-    final old = entryFiles().single;
     final s = store();
-    // Windows refuses to move or delete a file that is open.
-    final held = old.openSync();
-    try {
-      final l1 = await s.list();
-      expect(l1.entries, hasLength(1), reason: 'the old copy and its twin are one generation');
-      expect(entryFiles(), hasLength(2));
-      // The page landed; its entry is deleted.
-      s.markLanded(l1.entries.single.gen);
-      await s.delete(l1.entries.single);
-      expect(entryFiles(), hasLength(1), reason: 'the old file is still there');
-      final l2 = await s.list();
-      expect(entryFiles(), hasLength(1), reason: 'not re-keyed again');
-      expect(l2.entries, hasLength(1));
-      expect(s.isLanded(l2.entries.single.gen), isTrue, reason: 'offered as landed, so replay deletes it and merges nothing');
-    } finally {
-      held.closeSync();
-    }
-  }, skip: !Platform.isWindows ? 'needs a file the OS will not delete while it is open' : false);
+    // The old file can't be deleted, as when something holds it open.
+    s.deleteForTest = (path, expected) async => throw FileSystemException('held', path);
+    final l1 = await s.list();
+    expect(l1.entries, hasLength(1), reason: 'the old copy and its twin are one generation');
+    expect(entryFiles(), hasLength(2));
+    // The page landed; its entry is deleted.
+    s.markLanded(l1.entries.single.gen);
+    await s.delete(l1.entries.single);
+    expect(entryFiles(), hasLength(1), reason: 'the old file is still there');
+    final l2 = await s.list();
+    expect(entryFiles(), hasLength(1), reason: 'not re-keyed again');
+    expect(l2.entries, hasLength(1));
+    expect(s.isLanded(l2.entries.single.gen), isTrue, reason: 'offered as landed, so replay deletes it and merges nothing');
+  });
+
+  test('an old-form entry that landed before the re-key and could not be deleted is not re-keyed into a generation that replays again', () async {
+    await writeOld(oldFolder('pages'), _page('p1', 'one'), t1);
+    final s = store();
+    // A process that only reads (or a listing that stopped early): the old-form
+    // entry is in the index as it is.
+    await s.indexReadOnly();
+    final old = s.indexEntries.single;
+    expect(old.storedFolder, isNot(startsWith('@documents')));
+    s.markLanded(old.gen); // the replay landed it; deleting the entry failed
+    final l = await s.list();
+    expect(entryFiles(), hasLength(1), reason: 'no new generation was made');
+    expect(l.entries.single.storedFolder, old.storedFolder);
+    expect(s.isLanded(l.entries.single.gen), isTrue, reason: 'still landed: replay only deletes it');
+  });
+
+  test('a re-key temp that cannot be read is reported and kept', () async {
+    rec.createSync(recursive: true);
+    final tmp = File('${rec.path}/p1-abc.rekey.1-1.tmp')..writeAsStringSync('{"format":2,');
+    final l = await store().list();
+    expect(l.problems.single, contains('p1-abc.rekey.1-1.tmp'));
+    expect(tmp.existsSync(), isTrue);
+  });
 }
 
 // The name entries had before the layout changed (case folded everywhere).
