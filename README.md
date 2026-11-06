@@ -1,12 +1,15 @@
 # Noted
-Noted is an open-source, OneNote-style notebook for Windows, macOS, Linux, iOS and Android. Pages are freeform canvases: type or draw anywhere, nest subpages under any page, and add special boxes for meetings, linked tasks, any AI, or encrypted text AI can’t read. Notes stay as plain files wherever you store them.
+An open-source, OneNote-style notebook for Windows, macOS, iPad and Android, built with Flutter. Pages are freeform canvases; everything on a page is a box. Notes are plain files in a folder you choose.
 
-## CI
+## What works
+- Pages and subpages, binders, templates, search, dark mode.
+- Note boxes (tables, formulas, equations, links), drawing boxes, image and file boxes.
+- Sync through a OneDrive folder on desktop, with conflicts merged box by box and unsaved edits kept in recovery.
+- AI boxes that an AI app reads and writes through Noted's MCP server, with per-page access levels.
 
-`.github/workflows/ci.yml` runs on every push and pull request (and by hand from the Actions tab), with Flutter pinned to 3.47.8 stable:
+Mobile builds keep notes on the device; mobile sync is in progress.
 
-- **Analyze and test**: `flutter analyze` at the workspace root, then `flutter test` in every package that has a `test/` directory. `app/integration_test` is not run in CI because it needs an interactive desktop session.
-- **Windows release build**: `flutter build windows --release`, packaged by `app/scripts/package-windows.ps1`. Download `Noted-windows-x64` (a zip) from the run's Artifacts.
-- **macOS release build**: an unsigned `flutter build macos --release`. Download `Noted-macos` (a zip of `Noted.app`) from the run's Artifacts.
+## Builds
+CI (`.github/workflows/ci.yml`) runs analyze and tests on every push, then builds Windows, macOS, an unsigned iOS `.ipa` and an Android `.apk`. Download them from the run's Artifacts (kept 14 days). A nightly workflow also builds macOS and the `.ipa`.
 
-Artifacts are kept for 14 days.
+Licensed under MPL-2.0.
