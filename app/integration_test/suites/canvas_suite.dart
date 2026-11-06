@@ -217,11 +217,25 @@ void canvasSuite() {
           addNote(s, [para('box')], x: p.dx, y: p.dy);
         }
         await s.pump(500);
+        // The toolbar and canvas settle over a few frames (the tab bar
+        // animates), so measure the viewport only once they stop changing.
+        Future<Size> settledViewport() async {
+          Size? last;
+          for (var i = 0; i < 40; i++) {
+            final size = t.getSize(find.byType(PageCanvas));
+            final now = Size(size.width, size.height - toolbarHeight(t));
+            if (now == last) return now;
+            last = now;
+            await s.pump(100);
+          }
+          fail('viewport did not settle: $last');
+        }
+
         // 154: Fit all brings all boxes into view.
+        await settledViewport();
         await t.tap(await toolbarButton(t, 'canvas.fitAll'));
         await s.pump(500);
-        final size = t.getSize(find.byType(PageCanvas));
-        final viewport = Size(size.width, size.height - toolbarHeight(t));
+        var viewport = await settledViewport();
         final visible = canvasState(t).view!.visible(viewport);
         for (final b in s.nb.current!.page.nodes.whereType<BoxRecord>()) {
           expect(visible.contains(b.bounds.rect.topLeft), isTrue, reason: 'box ${b.id} in view');
@@ -261,6 +275,9 @@ void canvasSuite() {
 
         // 198-199: Ctrl+= zooms around the mouse over a box, and around the
         // centre when the mouse is on the sidebar.
+        await t.tap(await toolbarButton(t, 'canvas.fitAll'));
+        await s.pump(300);
+        viewport = await settledViewport();
         await t.tap(await toolbarButton(t, 'canvas.fitAll'));
         await s.pump(300);
         final local = const Offset(300, 200);
