@@ -59,7 +59,15 @@ class PageStore {
   // Files chosen with [adopt], kept for the life of the store: a scan lists
   // such a file first while it exists and holds that id.
   final Map<String, String> _adopted = {};
+  // Adopted files the last scan read as a valid page with another id.
+  Map<String, String> _released = const {};
   static int _tmpCounter = 0;
+
+  /// The adopted files (page id to path) that the last [scan] read as a valid
+  /// page holding another id. They are not ranked for the id they were adopted
+  /// for; the choice stays in the store until [unadopt], so the caller decides.
+  /// Each scan replaces it.
+  Map<String, String> get releasedAdoptions => _released;
 
   /// Reads every page file in the folder.
   ///
@@ -83,6 +91,7 @@ class PageStore {
     // (see [sweepAsideFiles]); one that can't be moved yet is listed below.
     if (sweep) await sweepAsideFiles(directory, extension: extension);
     _paths.clear();
+    _released = const {};
     final entries = <PageEntry>[];
     final read = <String, (String, NotedPage)>{}; // by file name
     await for (final f in directory.list()) {
@@ -117,6 +126,21 @@ class PageStore {
       }
       return n;
     }
+
+    // A chosen file that was listed as unreadable (locked, half written,
+    // damaged) still holds its id: every readable file with that id is a
+    // duplicate. One that holds another valid page is reported, not ranked.
+    final released = <String, String>{};
+    for (final a in _adopted.entries) {
+      final name = _name(a.value);
+      bool same(String x) => Platform.isWindows ? x.toLowerCase() == name.toLowerCase() : x == name;
+      if (entries.any((e) => e is UnreadablePage && same(_name(e.path)))) {
+        _paths[a.key] = a.value;
+      } else if (read.entries.any((e) => same(e.key) && e.value.$2.id != a.key)) {
+        released[a.key] = a.value;
+      }
+    }
+    _released = released;
 
     // Files chosen with [adopt] are listed first, so they are the ones kept.
     bool chosen(MapEntry<String, (String, NotedPage)> e) {
@@ -170,8 +194,13 @@ class PageStore {
 
   static String _name(String path) => path.split(RegExp(r'[\\/]')).last;
 
-  Future<NotedPage> load(String pageId) async =>
-      readPage(await File(_pathFor(pageId)).readAsString());
+  /// Reads the page's file. Throws [PageFormatException] if the file holds a
+  /// different page, so one page's content is never served under another id.
+  Future<NotedPage> load(String pageId) async {
+    final page = readPage(await File(_pathFor(pageId)).readAsString());
+    if (page.id != pageId) throw const PageFormatException('the page file holds a different page');
+    return page;
+  }
 
   /// The text of the page's file, as stored.
   Future<String> readText(String pageId) => File(_pathFor(pageId)).readAsString();
