@@ -237,6 +237,45 @@ void main() {
       expect(service.store.codes(), isEmpty, reason: 'polling started after the lock: the revoked code is pruned');
     });
 
+    test('the production factory (buildAppNotebook) writes nothing before the lock: ai-access.json and the MCP log are untouched while waiting', () async {
+      final accessFile = File('${dir.path}/ai-access.json');
+      final logFile = File('${dir.path}/ai-mcp-log.jsonl');
+      final seed = AiAccessService(dataFolder: dir);
+      final id = seed.store
+          .issue(target: const AiCodeTarget.box('b1', page: 'p1'), role: AiCodeRole.reader, label: 'A')
+          .record
+          .id;
+      seed.store.revoke(id); // polling would prune it
+      seed.dispose();
+      logFile.writeAsStringSync('');
+      lockFile().writeAsStringSync('');
+      final holder = await LockHolder.hold(lockFile(), shared: true);
+      addTearDown(holder.release);
+      final accessBefore = accessFile.readAsBytesSync();
+      final logBefore = logFile.readAsBytesSync();
+      final nb = buildAppNotebook(
+        pagesDirectory: Directory('${dir.path}/pages')..createSync(),
+        bindersFile: File('${dir.path}/binders.json'),
+      );
+      addTearDown(() {
+        nb.aiAccess?.dispose();
+        nb.dispose();
+      });
+      final shown = <Widget>[];
+      final started = openWhenOwned(nb, dir, show: shown.add);
+      await Future<void>.delayed(const Duration(milliseconds: 4000)); // longer than one poll
+      expect(shown.single, isA<WaitingForLockApp>());
+      expect(accessFile.readAsBytesSync(), accessBefore);
+      expect(logFile.readAsBytesSync(), logBefore);
+      await holder.release();
+      final r = await started.timeout(const Duration(seconds: 10));
+      addTearDown(() async {
+        await r.link?.dispose();
+        r.lock?.dispose();
+      });
+      expect(nb.aiAccess!.store.codes(), isEmpty, reason: 'pruned only after the lock');
+    });
+
     testWidgets('startLink: false owns the lock and loads, with no link', (t) async {
       late Notebook nb;
       await t.runAsync(() async {

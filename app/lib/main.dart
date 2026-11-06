@@ -206,8 +206,8 @@ Notebook buildAppNotebook({
       : AiAccessService(
           dataFolder: defaultAiDataFolder(binders),
           pageOfBox: (id) => notebook.aiPageOfBox(id),
-          // Another Noted may change the codes or the log: show it.
-          pollInterval: const Duration(seconds: 3),
+          // Polling (which trims the log and prunes codes) starts in
+          // openWhenOwned, once the running lock is held.
         );
   return notebook = Notebook(
     PageStore(pagesDirectory ?? defaultPagesDirectory()),
@@ -256,6 +256,8 @@ Future<({AiRunningLock? lock, AiLinkServer? link})> openWhenOwned(
     if (!lock.acquire(tries: 1)) {
       show(WaitingForLockApp(lock: lock));
       await lock.waitHeld();
+      // Disposed while waiting: never poll, link or load without the lock.
+      if (!lock.held) return (lock: lock, link: null);
     }
     notebook.aiAccess?.startPolling(const Duration(seconds: 3));
   }
