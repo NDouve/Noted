@@ -309,18 +309,38 @@ class AuthSession {
   // Write the new token, read it back; only then is the old one let go. If
   // either step fails the old token is put back (best effort) and kept: it
   // is still valid, so the session carries on with it.
+  //
+  // Signing out can happen while a store call is out. After each one the
+  // session is checked again, and if the account is gone the key is deleted, so
+  // a late write can't bring a signed-out token back.
   Future<void> _rotate(String key, String old, String fresh) async {
     try {
       await _store.write(refreshKey(key), fresh);
-      if (await _store.read(refreshKey(key)) == fresh) return;
+      if (await _signedOutMeanwhile(key)) return;
+      final back = await _store.read(refreshKey(key));
+      if (await _signedOutMeanwhile(key)) return;
+      if (back == fresh) return;
     } on Object {
       // Falls through to the restore below.
     }
+    if (await _signedOutMeanwhile(key)) return;
     try {
       await _store.write(refreshKey(key), old);
     } on Object {
       // Nothing more can be done; the next refresh finds whichever is there.
     }
+    await _signedOutMeanwhile(key);
+  }
+
+  // True, after deleting [key]'s token, if the account was signed out.
+  Future<bool> _signedOutMeanwhile(String key) async {
+    if (_accountKey == key) return false;
+    try {
+      await _store.delete(refreshKey(key));
+    } on Object {
+      // Nothing more can be done.
+    }
+    return true;
   }
 
   void _set(AuthState s) {

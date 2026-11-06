@@ -56,6 +56,7 @@ class FailingStore extends MemoryTokenStore {
   bool failWrites = false;
   bool failReads = false;
   bool dropWrites = false; // writes succeed but nothing is kept
+  Completer<void>? writeGate; // a write waits for this before it lands
 
   @override
   Future<String?> read(String key) async {
@@ -67,6 +68,7 @@ class FailingStore extends MemoryTokenStore {
   Future<void> write(String key, String value) async {
     if (failWrites) throw StateError('write');
     if (dropWrites) return;
+    await writeGate?.future;
     return super.write(key, value);
   }
 }
@@ -316,6 +318,28 @@ void main() {
       e.forms.where((f) => f['grant_type'] == 'refresh_token'),
       hasLength(1),
     );
+  });
+
+  test('signing out while the new refresh token is being written leaves nothing stored', () async {
+    final e = FakeEndpoint((f, n) async => ok(tokens('A$n', 'R$n')));
+    final s = session(e);
+    await s.signIn(grant);
+    clock = clock.add(const Duration(hours: 2));
+    final gate = store.writeGate = Completer<void>();
+    final refresh = s.accessToken();
+    await Future<void>.delayed(
+      const Duration(milliseconds: 10),
+    ); // the write is waiting
+    await s.signOut();
+    expect(store.values, isEmpty);
+    store.writeGate = null;
+    gate.complete();
+    await refresh;
+    expect(s.state, AuthState.signedOut);
+    expect(
+      store.values,
+      isEmpty,
+    ); // the late write did not bring the token back
   });
 
   test('sign out removes the stored tokens and needs no network', () async {
