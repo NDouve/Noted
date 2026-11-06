@@ -146,13 +146,22 @@ void main() {
   /// Alternates the test clock and real IO until [done] (at most 300 rounds,
   /// each with a real pause of 30 ms, 120 ms on CI: about 9 s, or 36 s on
   /// CI), then settles. Fails, naming [what], if [done] never becomes true.
-  Future<void> until(WidgetTester tester, bool Function() done, {String what = 'the condition'}) async {
+  ///
+  /// With [frozenClock] the test clock does not move while waiting (each round
+  /// only rebuilds), so a slow machine cannot run a timed widget (a snackbar)
+  /// out of time, and nothing settles at the end.
+  Future<void> until(
+    WidgetTester tester,
+    bool Function() done, {
+    String what = 'the condition',
+    bool frozenClock = false,
+  }) async {
     for (var i = 0; i < 300 && !done(); i++) {
-      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pump(frozenClock ? Duration.zero : const Duration(milliseconds: 50));
       await tester.runAsync(() => realIoPause(30));
     }
     if (!done()) fail('Gave up waiting for $what.');
-    await settle(tester);
+    if (!frozenClock) await settle(tester);
   }
 
   _ChangingStore? changing;
@@ -375,7 +384,7 @@ void main() {
 
   // Deletes page [b] with an attachment folder, leaving the Deleted bar up.
   // Returns the folder its attachments are set aside in.
-  Future<Directory> deleteWithAttachment(WidgetTester tester, Directory appDir) async {
+  Future<Directory> deleteWithAttachment(WidgetTester tester, Directory appDir, {bool frozenClock = false}) async {
     await start(tester, appDir: appDir);
     await tester.runAsync(() async {
       final assets = await Directory('${dir.path}/${assetsFolderName(b)}').create();
@@ -386,7 +395,7 @@ void main() {
     await settle(tester);
     await tester.tap(find.widgetWithText(OutlinedButton, 'Delete'));
     await tester.pump();
-    await until(tester, () => find.text('Undo').evaluate().isNotEmpty);
+    await until(tester, () => find.text('Undo').evaluate().isNotEmpty, frozenClock: frozenClock);
     return Directory('${appDir.path}/deleted-attachments');
   }
 
@@ -396,15 +405,27 @@ void main() {
   testWidgets('the Deleted bar has a close button and a time limit, even with Undo', (tester) async {
     final app = await tester.runAsync(() => Directory.systemTemp.createTemp('noted_tree_app')) as Directory;
     addTearDown(() => app.deleteSync(recursive: true));
-    final trash = await deleteWithAttachment(tester, app);
+    // The bar's 10 s timer runs on the test clock, which `until` and `settle`
+    // advance once per round of real IO; on a slow machine that could time
+    // the bar out before it is inspected. So the clock is frozen while
+    // waiting for IO, and only the explicit pumps below move it.
+    final trash = await deleteWithAttachment(tester, app, frozenClock: true);
     final bar = tester.widget<SnackBar>(find.byType(SnackBar));
     expect(bar.persist, isFalse, reason: 'a bar with an action persists unless told not to');
     expect(bar.showCloseIcon, isTrue);
     expect(trashHasFiles(trash), isTrue, reason: 'set aside while the bar is up');
-    await tester.pump(const Duration(seconds: 11));
+    await tester.pump(const Duration(milliseconds: 500)); // the entrance ends and starts the 10 s
+    await tester.pump(const Duration(seconds: 8));
+    expect(find.text('Undo'), findsOneWidget, reason: 'still up before its 10 s are over');
+    await tester.pump(const Duration(seconds: 3));
     await tester.pump(const Duration(seconds: 1));
     expect(find.text('Undo'), findsNothing, reason: 'the bar timed out');
-    await until(tester, () => !trashHasFiles(trash), what: 'the set-aside attachments to be cleaned up');
+    await until(
+      tester,
+      () => !trashHasFiles(trash),
+      what: 'the set-aside attachments to be cleaned up',
+      frozenClock: true,
+    );
     await finish(tester);
   });
 
