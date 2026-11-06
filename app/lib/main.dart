@@ -29,6 +29,7 @@ import 'src/device_storage.dart';
 import 'src/app_theme.dart';
 import 'src/home.dart';
 import 'src/link_log.dart';
+import 'src/microsoft_account.dart';
 import 'src/notebook.dart';
 import 'src/open_files.dart';
 import 'src/recovery_lock.dart';
@@ -102,7 +103,10 @@ Future<void> main(List<String> args) async {
   FileClipboard.read = readClipboardFiles;
   final services = await startAiServices(notebook, defaultAiDataFolder());
   final openFiles = OpenFileService(notebook);
-  runApp(NotedApp(notebook: notebook, settings: settings, aiLink: services.link, runningLock: services.lock, openFiles: openFiles));
+  // Null in a build without NOTED_MS_CLIENT_ID: no Microsoft sign-in at all.
+  final microsoft = MicrosoftAccount.create();
+  if (microsoft != null) unawaited(microsoft.start(settings: settings));
+  runApp(NotedApp(notebook: notebook, settings: settings, aiLink: services.link, runningLock: services.lock, openFiles: openFiles, microsoft: microsoft));
   await notebook.load();
   // Files named on the command line, then those a second launch hands over.
   if (!isMobilePlatform) unawaited(openFiles.start(args));
@@ -255,7 +259,7 @@ Future<bool> saveBeforeExit(Notebook notebook) async {
 }
 
 class NotedApp extends StatefulWidget {
-  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock, this.openFiles});
+  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock, this.openFiles, this.microsoft});
 
   final Notebook notebook;
 
@@ -271,6 +275,9 @@ class NotedApp extends StatefulWidget {
 
   /// This device's settings (the theme). Null: the defaults, not saved.
   final AppSettings? settings;
+
+  /// The Microsoft account of a build with a client id; null hides sign-in.
+  final MicrosoftAccount? microsoft;
 
   @override
   State<NotedApp> createState() => _NotedAppState();
@@ -369,7 +376,7 @@ class _NotedAppState extends State<NotedApp> {
         ...noteLocalizationsDelegates,
       ],
       supportedLocales: const [Locale('en')],
-      home: Home(notebook: widget.notebook, settings: _settings),
+      home: Home(notebook: widget.notebook, settings: _settings, microsoft: widget.microsoft),
     );
   }
 }

@@ -8,16 +8,24 @@ import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart'
     show Command, NotedMenuHeading, NotedMenuItem, NotedMetrics, ToolbarStyle;
 
+import 'about_dialog.dart';
 import 'app_commands.dart';
 import 'app_settings.dart';
+import 'microsoft_account.dart';
 import 'notebook.dart';
 
 /// The gear at the bottom of the sidebar: a menu to choose the theme, the
 /// toolbar and the default folders for new pages and binders.
 class SettingsMenu extends StatelessWidget {
-  const SettingsMenu({super.key, required this.settings, this.notebook});
+  const SettingsMenu({super.key, required this.settings, this.notebook, this.microsoft});
+
+  static const String _aboutId = 'about-noted';
 
   final AppSettings settings;
+
+  /// The Microsoft account, in a build that has a client id; null hides every
+  /// trace of Microsoft sign-in. Reached only through About Noted.
+  final MicrosoftAccount? microsoft;
 
   /// Needed for the default folders; without it only the theme is offered.
   final Notebook? notebook;
@@ -35,6 +43,10 @@ class SettingsMenu extends StatelessWidget {
           tooltip: 'Settings',
           icon: const Icon(Icons.settings_rounded),
           onSelected: (id) {
+            if (id == _aboutId && microsoft != null) {
+              unawaited(showAboutNoted(context, microsoft!));
+              return;
+            }
             final theme = themeCommands(settings);
             final toolbar = toolbarCommands(settings);
             if (theme[id] != null) {
@@ -90,6 +102,13 @@ class SettingsMenu extends StatelessWidget {
                   icon: Icons.folder_open_rounded,
                 ),
               ],
+              if (microsoft != null)
+                const NotedMenuItem<String>(
+                  key: ValueKey('settings-about'),
+                  value: _aboutId,
+                  label: 'About Noted',
+                  icon: Icons.info_outline_rounded,
+                ),
             ];
           },
         ),

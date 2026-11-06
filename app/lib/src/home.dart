@@ -23,6 +23,7 @@ import 'save_trouble_bar.dart';
 import 'search_panel.dart';
 import 'settings_panel.dart';
 import 'page_tree_view.dart';
+import 'microsoft_account.dart';
 import 'settings_menu.dart';
 
 /// The snack bar for an attachment notice. A long one (it names a file and
@@ -39,7 +40,7 @@ SnackBar attachmentNoticeBar(String message) {
 
 /// Sidebar with the page tree, and the open page's canvas.
 class Home extends StatefulWidget {
-  const Home({super.key, required this.notebook, this.settings, this.search});
+  const Home({super.key, required this.notebook, this.settings, this.search, this.microsoft});
 
   final Notebook notebook;
 
@@ -48,6 +49,9 @@ class Home extends StatefulWidget {
 
   /// This device's settings; the settings menu is shown when given.
   final AppSettings? settings;
+
+  /// The Microsoft account of a build with a client id (hidden sign-in); null otherwise.
+  final MicrosoftAccount? microsoft;
 
   @override
   State<Home> createState() => _HomeState();
@@ -336,7 +340,7 @@ class _HomeState extends State<Home> {
               ),
             ),
             if (widget.settings != null)
-              SettingsMenu(settings: widget.settings!, notebook: notebook),
+              SettingsMenu(settings: widget.settings!, notebook: notebook, microsoft: widget.microsoft),
           ],
         ),
       ),
