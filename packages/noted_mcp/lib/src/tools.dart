@@ -16,6 +16,12 @@ typedef ToolOutput = ({String text, bool isError});
 /// from no page.
 String noSuchPage(String id) => 'No page with id "$id".';
 
+/// What the AI is told for a box code whose page has more than one copy in
+/// Noted's folders (the app's choice between them is in its memory only, so
+/// the server can't tell which one is the page).
+const String ambiguousPageText =
+    "This box's page has more than one copy in Noted's folders, so it can't be read or written until only one is left.";
+
 /// The text for a box that isn't there, or that the AI may not read.
 String noSuchBox(String id) => 'No box with id "$id".';
 
@@ -149,6 +155,8 @@ final class NotedTools {
   /// its text. A grant for a box that isn't an AI box, or isn't on the
   /// page, answers as a missing box.
   ToolOutput readGrantedBox(AiLinkBoxGrant grant) {
+    // The hint first: a page with more than one copy is not read at all.
+    if (library.isAmbiguous(grant.page)) return (text: ambiguousPageText, isError: true);
     final p = library.page(grant.page);
     CanvasNode? node;
     if (p != null) {
