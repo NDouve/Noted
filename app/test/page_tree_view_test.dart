@@ -604,7 +604,7 @@ void main() {
       if (!release.isCompleted) release.complete();
     });
     await pressFirstUndo();
-    await until(tester, () => failing.reachedNew!.isCompleted, what: "the first Undo to reach its write");
+    await until(tester, () => failing.reachedNew!.isCompleted, what: 'the first Undo to reach its write');
     await deleteAndWait(tester, c, 'Gamma'); // the newer delete's bar
     final discardedBefore = spy.discarded.length;
 
