@@ -8,19 +8,19 @@ From `app/`:
 
     flutter test integration_test -d windows
 
-This builds the Windows app, starts it and runs `integration_test/checklist_test.dart` (all suites in one entry point, so the app is built once). To run one test, add `--plain-name "step 112-116"`. Plain `flutter test` in `app/` only runs `app/test/` and does not touch `integration_test/`.
+This builds the Windows app, starts it and runs every `*_test.dart` in `integration_test/`: `checklist_test.dart` (all suites, one entry point), `link_log_test.dart` and `link_replaced_test.dart`. To run one test, add `--plain-name "step 112-116"`. Plain `flutter test` in `app/` only runs `app/test/` and does not touch `integration_test/`.
 
 Files:
 
 - `app/integration_test/checklist_test.dart`: the entry point.
-- `app/integration_test/suites/*.dart`: `page_tree_suite`, `folders_binders_suite`, `notes_suite`, `templates_suite`, `canvas_suite`, `search_suite`.
+- `app/integration_test/suites/*.dart`: `page_tree_suite`, `folders_binders_suite`, `notes_suite`, `templates_suite`, `canvas_suite`, `search_suite`, `ai_suite`.
 - `app/integration_test/support/harness.dart`: the sandbox and session helpers. `note_helpers.dart`: putting content on a page and driving a note editor.
 - `app/integration_test/step_map.json`: the machine-readable map from test name to step numbers.
 - `app/integration_test/support/semantics_guard.dart`: see "Semantics flake". `perf_benchmark.dart` and `perf_driver.dart`: see "Performance benchmark" (not part of the checklist run).
 
 ## How isolation works
 
-Every test creates its own temp directory (`Directory.systemTemp.createTemp('noted_it_...')`) and builds the `Notebook` and `AppSettings` the way `main()` does, but with every location inside that directory: the pages folder, `app/binders.json`, `app/settings.json`, `app/recovery`, `app/templates`, binder folders and extra standalone folders. `NotedApp` is then pumped with that notebook. No test hook was added to `app/lib`: `Notebook` and `AppSettings` already take all their paths as constructor parameters, and `main()` is the only place that uses `%APPDATA%\Noted` (through `defaultPagesDirectory()`), which the tests never call.
+Every test creates its own temp directory (`Directory.systemTemp.createTemp('noted_it_...')`) and builds the `Notebook` and `AppSettings` the way `main()` does, but with every location inside that directory: the pages folder, `app/binders.json`, `app/settings.json`, `app/recovery`, `app/templates`, binder folders and extra standalone folders. `NotedApp` is then pumped with that notebook. No test hook was added to `app/lib`: `Notebook` and `AppSettings` already take all their paths as constructor parameters, and only `main()` and the default-path helpers it calls (`defaultPagesDirectory()`, `defaultBindersFile()`, `defaultSettingsFile()`) use `%APPDATA%\Noted`, and the tests call none of them.
 
 At the start of every test `Env.assertIsolated` checks that the resolved pages, `binders.json`, `settings.json`, recovery, app templates, default binder and new-page folders are all under the temp directory and none is under `%APPDATA%\Noted`. The folder picker is a stub that answers with a temp path. The temp directory is deleted after the test. "A folder disappears" steps rename the temp folder.
 
@@ -102,7 +102,7 @@ At the start of every test `Env.assertIsolated` checks that the resolved pages, 
 | 58 | Warning chip on the box, red corner icon, page mark | partly automated | step 058-064, 104-105, 168, 185-187 | Second device simulated by writing the file; red color is visual |
 | 59 | The chip or the corner icon opens the issue dialog | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated second device; labels with device name not checked |
 | 60 | Keep this version | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated |
-| 61 | Keep both | manual only | | [2M]; covered by `packages/noted_canvas/test/conflict_test.dart` |
+| 61 | Keep both | superseded by 0120 | packages/noted_canvas/test/page_issues_test.dart | Now Place both (step 62) |
 | 62 | Place both (the other version becomes a new box); Edit manually was dropped | partly automated | packages/noted_canvas/test/page_issues_test.dart | Simulated |
 | 63 | Keep the other version | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated |
 | 64 | Ctrl+Z brings the conflict back | partly automated | step 058-064, 104-105, 168, 185-187 | Simulated |
@@ -255,39 +255,13 @@ At the start of every test `Env.assertIsolated` checks that the resolved pages, 
 | S5 | NOT SEARCHED lists an unavailable binder | automated | S3-S5 | New (search) |
 | T1 | New binder from template: no picker, named after the template, "Name 2", cover title focused | automated | T1 | New (binder from template, after 0084) |
 
-Counts and results are in the engineer's report; this file lists status only.
-
-## Results (2026-10-26, Windows 11)
-
-The suite has 49 tests covering every automated and partly automated step plus S1 to S5 and T1.
-
-| Run | Code | Result |
-|---|---|---|
-| 1 | before the purple-swatch fix | 49 passed |
-| 2 | final | 49 passed |
-| 3 | final | 48 passed, 1 failed: `step 016-017` with "A SemanticsHandle was active at the end of the test" |
-| 4 | final | 49 passed |
-
-The run 3 failure is environmental. On Windows the engine turns semantics on when an accessibility client (any UI Automation consumer on the desktop) queries the window, and the test framework then reports that handle as outstanding. The test creates no handle itself; it passed three times on its own and in runs 1, 2 and 4.
-
-### Bugs found by the suite
-
-- Step 5: the Rename page dialog disposed its text controller while the dialog was still fading out ("used after being disposed"). The dialog now owns the controller.
-- Step 189: the default toolbar listed four of the five ink colors, so purple had no swatch. It now has all five.
-
 ## Step 143: the row handle
 
-An earlier version of the step 143 test colored a column instead of row 0, because the row 0 handle "did not appear" in a 2x2 table. Cause: the test hovered the exact middle of the first cell. A table row with one line of text is about 33 px high, and hovering any cell shows its column's handle at the top of the column, centered, 24 px high with a 4 px margin and moved up by 12 px. That handle covers the middle of the first row (x within 16 px of the column's center, y up to about 18 px into the row). The pointer then sits over the column handle, the cell no longer counts as hovered, and appflowy hides the row handle (each cell's row handle is shown only while that cell or the handle itself is hovered). Measured in the integration test: pointer (495, 247.5), column handle rect to y = 245 plus its 4 px margin = 249.
-
-Users do not hit this: the row handle sits on the table's left edge, and approaching it means moving through the left part of the row, away from the column handle. It is not clipped by the note box (a package test checks the handle lies inside the editor) and nothing covers it. No app change was needed. The test now hovers the left part of the first cell for row handles (`_tableMenu` in `notes_suite.dart`) and step 143 colors row 0 "Accent" and column 1 "Alert". `note_table_fill_test.dart` has a test that reaches the row 0 handle the way a user does (hover the left of the cell, move onto the handle, click it).
+In the first row, hovering the middle of a cell lands on the column handle, which hides the row handle. `_tableMenu` in `notes_suite.dart` hovers the left part of the cell.
 
 ## Semantics flake
 
-Symptom: a test occasionally failed with "A SemanticsHandle was active at the end of the test". `testWidgets` records the number of outstanding semantics handles at the start and compares at the end. When a UI Automation client connects to the window mid-test, the engine reports `semanticsEnabled` and `SemanticsBinding` opens a handle of its own in its `PlatformDispatcher.onSemanticsEnabledChanged` handler, so the count goes up with nothing leaked.
-
-Fix: `integration_test/support/semantics_guard.dart` replaces only that one callback (`ignorePlatformSemantics()`, called once from `checklist_test.dart` and `perf_benchmark.dart`), so the platform's request opens no handle. Handles a test opens itself (`tester.ensureSemantics()`, `SemanticsBinding.instance.ensureSemantics()`, the one `testWidgets` opens) do not go through that callback, so they are still counted and a leak still fails the test. The check and the counts are untouched. `app/test/semantics_guard_test.dart` shows the three cases: without the guard the platform request raises the count; with it, it does not; with it, a handle the test opens is still counted. A UI Automation client cannot be forced to connect, so the flake itself was not reproduced; the platform request is simulated with `semanticsEnabledTestValue`.
-
-Three full runs after the change (`flutter test integration_test -d windows -r expanded`, debug build): 49 passed, 49 passed, 49 passed.
+When a UI Automation client connects mid-test, the engine opens a semantics handle of its own, and `testWidgets` reports it as a leak. `semantics_guard.dart` (`ignorePlatformSemantics()`) replaces only that callback, so a handle a test opens is still counted. `app/test/semantics_guard_test.dart` shows the three cases. The flake itself can't be forced; the platform request is simulated.
 
 ## Performance benchmark
 
@@ -303,21 +277,4 @@ Run in profile mode (`flutter test` has no `--profile`; `flutter drive` does):
 
 Measured: page open (`Notebook.open` to first frame, and to the frame after which no box changes height); typing (200 characters by default, `--dart-define=PERF_KEYSTROKES=<n>`, inserted by editor transaction, as the other tests do, because synthetic key events produce no IME text; the transaction is what the IME ends in, so rebuild, layout and paint are the same; the time from applying it to the end of `pump()`, which includes waiting for the next frame, plus the build time of those frames; each keystroke over 50 ms is listed in `slowKeystrokes` with the number of note editors mounted before and after it, whether one was mounted just before it and, since the keystroke before, whether the note's height changed and whether the canvas rebuilt the other boxes; `heightChanges` and `canvasRebuilds` count those over all keystrokes); pan (mouse wheel, 160 and 120 steps) and zoom (60 scale events, which Ctrl+wheel and pinch also end in; no key events, because the key simulator does not work in profile builds), with build/raster/total time of each `FrameTiming`. Caveat: rasterizer time reads 0 ms in every run here (also in Flutter's own `watchPerformance` summary), so the figures are UI-thread time (build, layout, paint); `total` is the frame's vsync-to-raster-finish span.
 
-Results (Windows 11, this machine), 16 ms budget. Frame times in ms, "build" / "total":
-
-| | Profile before | Profile after | Debug after |
-|---|---|---|---|
-| Page open, first frame / settled | 757 / 1075 | 599 / 788 (run to run noise) | 1616 / 1995 |
-| Pan at 100%, build avg / p90 / p99 / worst / over 16 ms | 38.7 / 110 / 131 / 132 / 160 of 450 | 6.4 / 8.0 / 9.9 / 11.2 / 0 of 160 | 18.3 / 23.4 / 31.0 / 33.4 / 108 of 160 |
-| Pan zoomed in from Fit all, build | 36.0 / 122 / 143 / 166 / 126 of 405 | 6.5 / 7.4 / 9.8 / 11.6 / 0 of 126 | 15.4 / 19.9 / 26.7 / 30.1 / 37 of 126 |
-| Zoom, build | 32.9 / 176 / 245 / 287 / 60 of 337 | 6.8 / 8.8 / 9.9 / 10.7 / 0 of 60 | 14.3 / 16.6 / 20.7 / 26.9 / 11 of 60 |
-| Zoom, total (vsync to raster finish) | 34.4 / 178 / 246 / 288 | 8.1 / 9.6 / 11.8 / 12.0 | 15.6 / 18.2 / 21.6 / 27.8 |
-| Typing, apply transaction avg / worst | | 0.27 / 0.81 | 1.12 / 7.16 |
-| Typing, key to end of frame (includes vsync wait) avg / p90 / worst | 16.3 / 20.0 / 31.4 | 15.4 / 20.0 / 33.5 | 32.0 / 45.2 / 48.5 |
-| Typing frames, build avg / p90 | 11.3 / 7.5 | 12.2 / 15.0 | 37.3 / 24.5 |
-
-Debug numbers are several times slower than profile and are only for comparison; the budget applies to profile.
-
-What was slow: every pan and zoom frame rebuilt the whole canvas, which rebuilt all 220 `BoxHost`s with their editors. `BoxHost` now reads the zoom when it needs it (`scaleOf`), and `PageCanvasState` hands the same `BoxHost` widgets to the Stack while the controller has not notified, the canvas child's origin, the read-only state, the find model and the controller are unchanged, so Flutter skips the boxes. A package test counts editor builds. A `RepaintBoundary` around all boxes, and one per box, was tried and made the total frame time worse (about 11 ms, from 7.6), so neither is kept.
-
-Not fixed: during typing, about one frame in fifteen takes 80 to 140 ms. Typical typing frames build in about 5 ms. Flutter's report for the window shows 10 old-generation and 72 new-generation garbage collections, so these are probably GC pauses on a large heap (hypothesis, not proven). Page open takes about 0.6 s for 220 boxes (all editors are built; only visible ones are not built lazily).
+Results and causes: decisions 0091 and 0095.

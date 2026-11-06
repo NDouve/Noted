@@ -7,9 +7,9 @@ An open-source, OneNote-style notebook for Windows, macOS, iPad and Android, bui
 - Sync through a OneDrive folder on desktop, with conflicts merged box by box and unsaved edits kept in recovery.
 - AI boxes that an AI app reads and writes through Noted's MCP server, with per-page access levels.
 
-Mobile builds keep notes on the device; mobile sync is in progress.
+Mobile builds keep notes on the device.
 
 ## Builds
-CI (`.github/workflows/ci.yml`) runs analyze and tests on every push, then builds Windows, macOS, an unsigned iOS `.ipa` and an Android `.apk`. Download them from the run's Artifacts (kept 14 days). A nightly workflow also builds macOS and the `.ipa`.
+CI (`.github/workflows/ci.yml`) runs analyze and tests and builds Windows and macOS on every push and pull request; pushes to `main` also build an unsigned iOS `.ipa` and an Android `.apk`. Download them from the run's Artifacts (kept 14 days). A nightly workflow also builds macOS and the `.ipa`.
 
 Licensed under MPL-2.0.
