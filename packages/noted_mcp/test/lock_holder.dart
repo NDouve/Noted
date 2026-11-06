@@ -12,9 +12,12 @@ Future<void> main(List<String> args) async {
   final file = File(args.first);
   // With a second argument, "keep": lock an existing file (the log) without
   // truncating or deleting it.
-  final keep = args.length > 1 && args[1] == 'keep';
-  final raf = file.openSync(mode: keep ? FileMode.append : FileMode.write);
-  raf.lockSync(FileLock.exclusive);
+  final keep = args.length > 1 && (args[1] == 'keep' || args[1] == 'shared');
+  // "shared": a shared lock, as a noted_mcp write holds (the file is opened
+  // read-only and kept).
+  final shared = args.length > 1 && args[1] == 'shared';
+  final raf = file.openSync(mode: shared ? FileMode.read : (keep ? FileMode.append : FileMode.write));
+  raf.lockSync(shared ? FileLock.shared : FileLock.exclusive);
   stdout.writeln('locked');
   await stdout.flush();
   await stdin.drain<void>();

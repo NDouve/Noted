@@ -29,8 +29,14 @@ final class RunningLock {
   }();
 
   /// Starts the holder and returns once the lock is taken.
+  /// The file is kept when the holder lets go (the app never deletes it).
   static Future<RunningLock> hold(Directory dataDir) =>
-      _start(['${dataDir.path}/$aiRunningLockFileName']);
+      _start(['${dataDir.path}/$aiRunningLockFileName', 'keep']);
+
+  /// Holds a shared lock on the running-lock file, as a noted_mcp write does
+  /// (the server side).
+  static Future<RunningLock> holdShared(Directory dataDir) =>
+      _start(['${dataDir.path}/$aiRunningLockFileName', 'shared']);
 
   /// Holds an exclusive lock on the existing log file (as the app's trim
   /// does), leaving its content alone.
@@ -59,7 +65,7 @@ final class RunningLock {
 
   bool _released = false;
 
-  /// Lets go: the helper exits and removes the file. Safe to call twice. If it
+  /// Lets go: the helper exits (a log or running-lock file stays). Safe to call twice. If it
   /// doesn't exit in a few seconds it is killed.
   Future<void> release() async {
     if (_released) return;

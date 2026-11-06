@@ -65,6 +65,8 @@ ToolOutput linkErrorOutput(AiLinkError e) {
     AiLinkCode.saveFailed => 'Noted could not save the change. Nothing was changed.',
     AiLinkCode.busy when e.message == notedBusyText => notedBusyText,
     AiLinkCode.busy when e.message == storeUnreadableText => storeUnreadableText,
+    AiLinkCode.busy when e.message == lockUnusableText => lockUnusableText,
+    AiLinkCode.busy when e.message == openNotedOnceText => openNotedOnceText,
     AiLinkCode.busy =>
       'Noted is busy (it may still be starting, or cannot read its codes for a moment). Nothing was changed. Try again in a moment.',
     AiLinkCode.badRequest => e.message,
@@ -97,6 +99,11 @@ final class NotedToolbox {
     this.responseTimeout,
     this.beforeClosedReplace,
     this.beforeClosedRead,
+    this.beforeClosedHold,
+    this.beforeClosedRecheck,
+    this.closedHoldLimit,
+    this.onLinkSend,
+    this.linkRetryDelay = const Duration(seconds: 1),
   }) : session = session ?? newSessionId();
 
   /// Test hook: see [ClosedAccess.beforeReplace].
@@ -104,6 +111,22 @@ final class NotedToolbox {
 
   /// Test hook: see [ClosedAccess.beforeRead].
   final Future<void> Function(int attempt)? beforeClosedRead;
+
+  /// Test hook: see [ClosedAccess.beforeHold].
+  final Future<void> Function(int attempt)? beforeClosedHold;
+
+  /// Test hook: see [ClosedAccess.beforeRecheck].
+  final Future<void> Function(int attempt)? beforeClosedRecheck;
+
+  /// The limit on a closed write's hold of the running lock (default [defaultClosedHoldLimit]).
+  final Duration? closedHoldLimit;
+
+  /// Test hook: called with the number of each send of a write over the link.
+  final void Function(int n)? onLinkSend;
+
+  /// How long a write waits before it sends once more when the link isn't up
+  /// yet (Noted holds its lock, but its link isn't bound).
+  final Duration linkRetryDelay;
 
   final Directory dataDir;
 
@@ -131,7 +154,47 @@ final class NotedToolbox {
   /// Only then is the link used; otherwise the server works closed.
   Future<bool> _running() async => await isNotedRunning(dataDir) || await _client.greets();
 
-  ClosedAccess get _closed => ClosedAccess(dataDir, app: app, beforeReplace: beforeClosedReplace, beforeRead: beforeClosedRead);
+  ClosedAccess get _closed => ClosedAccess(
+    dataDir,
+    app: app,
+    beforeReplace: beforeClosedReplace,
+    beforeRead: beforeClosedRead,
+    beforeHold: beforeClosedHold,
+    beforeRecheck: beforeClosedRecheck,
+    holdLimit: closedHoldLimit ?? defaultClosedHoldLimit,
+    greets: () => _client.greets(),
+  );
+
+  // Why Noted counts as running for a write: its lock is held (or can't be used), or
+  // its link greets. Null: closed.
+  Future<LockClass?> _runningClass() async {
+    final hold = await LockGate.instance.take(dataDir);
+    final c = hold.lockClass;
+    await hold.release();
+    if (c == LockClass.running || c == LockClass.unusable) return c;
+    return await _client.greets() ? LockClass.running : null;
+  }
+
+  // Sends a write over the link. If no link answers (the app holds the lock but
+  // hasn't bound it yet), waits [linkRetryDelay] and sends once more; then it
+  // is busy, and never written around.
+  Future<AiLinkResponse> _sendWrite(AiLinkWriteBox request, LockClass why) async {
+    var n = 0;
+    Future<AiLinkResponse> send() {
+      onLinkSend?.call(++n);
+      return _client.send(request);
+    }
+
+    var r = await send();
+    if (r is AiLinkError && r.code == AiLinkCode.notRunning) {
+      await Future<void>.delayed(linkRetryDelay);
+      r = await send();
+    }
+    if (r is AiLinkError && r.code == AiLinkCode.notRunning) {
+      return AiLinkError(AiLinkCode.busy, why == LockClass.unusable ? lockUnusableText : notedBusyText);
+    }
+    return r;
+  }
 
   /// While Noted holds its lock it is running: if its link doesn't answer
   /// (a busy listener, a slow greeting), the answer is "busy", and the server
@@ -243,13 +306,18 @@ final class NotedToolbox {
     final m = AiLinkMode.fromWire(mode);
     if (m == null) return _error('mode must be "append", "replace_ai" or "replace".');
     if (boxId.isEmpty) return _error('box_id is required.');
-    final response = await _running()
-        ? _ifNoAnswer(
-            await _client.send(
-              AiLinkWriteBox(code: c, session: session, app: app, box: boxId, mode: m, content: content),
-            ),
-          )
-        : await _closed.write(token: c, boxId: boxId, mode: m, content: content);
+    final request = AiLinkWriteBox(code: c, session: session, app: app, box: boxId, mode: m, content: content);
+    // Noted's lock is held, or its link greets: the write goes to the app. Else the
+    // server writes it itself, under its own hold of the lock, which can find
+    // Noted running after all ('runningNow').
+    final running = await _runningClass();
+    final AiLinkResponse response;
+    if (running != null) {
+      response = await _sendWrite(request, running);
+    } else {
+      final r = await _closed.write(token: c, boxId: boxId, mode: m, content: content);
+      response = r.runningNow != null ? await _sendWrite(request, r.runningNow!) : r.response!;
+    }
     return switch (response) {
       AiLinkWritten(:final box) => (text: 'Written to box $box.', isError: false),
       AiLinkError() => linkErrorOutput(response),

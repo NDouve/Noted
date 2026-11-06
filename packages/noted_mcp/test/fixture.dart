@@ -191,6 +191,8 @@ NotedPage page(String id, String title, {String? parent, String? ai, List<Canvas
 /// with nothing set, and a locked binder. Returns the data folder.
 Directory writeFixture(Directory root) {
   final data = Directory('${root.path}/data')..createSync(recursive: true);
+  // The running-lock file, as the app leaves it: a missing one refuses closed writes.
+  File('${data.path}/noted-running.lock').writeAsStringSync('');
   final pages = Directory('${data.path}/pages')..createSync();
   final binder = Directory('${root.path}/Trips')..createSync();
   final privBinder = Directory('${root.path}/Taxes')..createSync();
