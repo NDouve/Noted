@@ -738,6 +738,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   String? _coverPath;
   RawObject _settings = RawObject.empty;
   bool _settingsCorrupt = false;
+  // Why binder list changes are refused now (null: they are accepted). It starts
+  // as pending and is settled by load once the listed binders and folders are
+  // open.
+  _SettingsHold? _settingsHeld = _SettingsHold.pending;
   // The open page is being left: it takes no edits until the leave is over, so
   // nothing typed meanwhile can fall between the save and recovery.
   int _leaving = 0;
@@ -1062,6 +1066,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Completes when the first load is over; AI writes wait for it.
   final Completer<void> _loaded = Completer<void>();
 
+  Future<bool> retrySettings() async => false;
+
   Future<void> _load() async {
     final entries = await _scan(store);
     _metas.clear();
@@ -1096,6 +1102,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (_binders.keys.any((b) => _key(b) == _key(path))) continue;
       _folders[path] = await _openFolder(path);
     }
+    _settingsHeld = null;
     _rebuildTree();
     _syncWatchers();
     _startFolderTimer();
@@ -3351,6 +3358,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Binders -----------------------------------------------------------------
 
+  // Refuses a change of the binder or folder list while it can't be trusted
+  // (see [_settingsHeld]). Called before the change's first await, picker or
+  // folder creation. Unless the launch read is still settling, a refusal also
+  // starts a retry of the read, which it never waits for.
+  void _refuseWhileHeld() {
+    final held = _settingsHeld;
+    if (held == null) return;
+    if (held == _SettingsHold.pending) {
+      throw const NotebookException('Noted is still loading its binder list. Try again in a moment.');
+    }
+    unawaited(retrySettings());
+    throw const NotebookException("Noted can't read its binder list right now. Try again in a moment.");
+  }
+
   /// Creates a binder at once in a new subfolder of the default binder
   /// folder ([defaultBinderFolderPath]) named after [name] (see
   /// [binderFolderName]; a number is added if the folder exists), shows its
@@ -3360,6 +3381,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// folder the user chose is never created: a missing one throws a
   /// [NotebookException].
   Future<BinderSection> createBinder({String name = 'New binder'}) async {
+    _refuseWhileHeld();
     final path = await _newBinderFolder(name);
     try {
       return _showNewBinder(await addBinder(path));
@@ -3374,6 +3396,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// cover opens with the title field focused. If the binder can't be
   /// written, the new folder is removed again.
   Future<BinderSection> createBinderFromTemplateInDefault(NotedTemplate template) async {
+    _refuseWhileHeld();
     final path = await _newBinderFolder(template.name);
     try {
       return _showNewBinder(await createBinderFromTemplate(template, path, openCover: false));
@@ -3437,6 +3460,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// [addBinder]), then shows its cover. A folder that has a binder is
   /// opened. Returns null if cancelled.
   Future<BinderSection?> newBinderInFolder() async {
+    _refuseWhileHeld();
     final pick = pickFolder;
     if (pick == null) return null;
     final path = await pick();
@@ -3450,6 +3474,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// shows its cover. A folder without a binder file is refused. Returns
   /// null if cancelled.
   Future<BinderSection?> openBinder() async {
+    _refuseWhileHeld();
     final pick = pickFolder;
     if (pick == null) return null;
     final path = await pick();
@@ -3515,6 +3540,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     path = _normalizePath(path);
     final known = _binders[path];
     if (known != null) return (section: known, added: false, wasRemoved: false);
+    _refuseWhileHeld();
     if (path == defaultFolderPath || _folders.containsKey(path)) {
       throw const NotebookException('That folder holds the standalone pages.');
     }
@@ -3732,6 +3758,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (_folders[known]!.available) return known;
       throw const NotebookException('That folder is not available.');
     }
+    _refuseWhileHeld();
     await checkStandaloneFolder(path);
     await flush();
     final folder = await _openFolder(path);
@@ -3767,6 +3794,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<void> removeStandaloneFolder(String path) async {
+    _refuseWhileHeld();
     final folder = _folders[path];
     _dropLandedIn(path);
     if (folder == null) return;
@@ -4019,6 +4047,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     String path, {
     bool openCover = true,
   }) async {
+    _refuseWhileHeld();
     if (template.kind != TemplateKind.binder) {
       throw const NotebookException('That is not a binder template.');
     }
@@ -4122,6 +4151,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// again, unless [recordRemoved] is false (an open that is refused takes the
   /// binder out again).
   Future<void> removeBinder(String path, {bool recordRemoved = true}) async {
+    _refuseWhileHeld();
     final section = _binders[path];
     _dropLandedIn(path);
     if (section == null) return;
@@ -4414,6 +4444,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> _saveSettings() async {
     final f = bindersFile;
     if (f == null) return;
+    if (_settingsHeld != null) {
+      debugPrint('Not saving ${f.path}: the binder list is not settled');
+      return;
+    }
     final paths = _binders.keys.toList();
     // Stored in the codec's form (relative to the documents folder on mobile).
     final storedPaths = [for (final p in paths) storedPath(p)];
@@ -8897,10 +8931,14 @@ class _Freeze {
 }
 
 // What `binders.json` looked like at load: no file (a new install), a file
-// that already records binder ids, one that doesn't (written by an older build,
-// or damaged: an upgrade, see Notebook.discoverBinders), or one that exists but
-// couldn't be read (discovery stays off for the session).
+// that already records binder ids, or one that doesn't (written by an older
+// build: an upgrade, see Notebook.discoverBinders).
 enum _SettingsKind { fresh, current, upgrade, unreadable }
+
+// Why binder list changes are refused (see Notebook.settingsHeld): the launch
+// read isn't settled yet, the file is locked or can't be read now, or it is
+// damaged. Only a successful read clears the last two.
+enum _SettingsHold { pending, locked, damaged }
 
 // What reading one candidate folder's binder file gave.
 class _Candidate {
