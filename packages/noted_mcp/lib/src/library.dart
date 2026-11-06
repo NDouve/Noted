@@ -64,10 +64,15 @@ enum FolderState { absent, failed, listed }
 /// One folder as listed by a library load: its state and, if listed, each
 /// `*.canvas` path with the page id it read as (null if unreadable).
 final class FolderListing {
-  FolderListing(this.state, [Map<String, String?>? pageIds]) : pageIds = pageIds ?? const {};
+  FolderListing(this.state, [Map<String, String?>? pageIds, Map<String, String>? stats])
+    : pageIds = pageIds ?? const {},
+      stats = stats ?? const {};
 
   final FolderState state;
   final Map<String, String?> pageIds;
+
+  /// Each listed file's size and modified time, as one string.
+  final Map<String, String> stats;
 }
 
 /// The bytes and listings a load worked from, kept only for a closed write
@@ -227,8 +232,9 @@ final class NotedLibrary {
     Directory dir,
     LibrarySources? kept,
   ) async {
-    final byId = <String, (NotedPage, bool, String)>{};
+    final found = <(NotedPage, String)>[];
     final names = <String, String?>{};
+    final stats = <String, String>{};
     try {
       if (!await dir.exists()) {
         kept?.listings[dir.path] = FolderListing(FolderState.absent);
@@ -236,6 +242,7 @@ final class NotedLibrary {
       }
       await for (final e in dir.list()) {
         if (e is! File || !e.path.endsWith('.canvas')) continue;
+        stats[e.path] = await fileSignature(e.path);
         final bytes = await identity.readBytes(e.path);
         kept?.files[e.path] = bytes;
         names[e.path] = null;
@@ -243,10 +250,7 @@ final class NotedLibrary {
         try {
           final page = readPage(_decode(bytes));
           names[e.path] = page.id;
-          final name = e.path.split(RegExp(r'[\\/]')).last;
-          final exact = name == '${page.id}.canvas';
-          final seen = byId[page.id];
-          if (seen == null || (exact && !seen.$2)) byId[page.id] = (page, exact, e.path);
+          found.add((page, e.path));
         } on Object {
           // Unreadable: not given out.
         }
@@ -255,8 +259,8 @@ final class NotedLibrary {
       kept?.listings[dir.path] = FolderListing(FolderState.failed);
       return const [];
     }
-    kept?.listings[dir.path] = FolderListing(FolderState.listed, names);
-    return [for (final (p, _, path) in byId.values) (p, path)];
+    kept?.listings[dir.path] = FolderListing(FolderState.listed, names, stats);
+    return choosePages(found);
   }
 }
 
@@ -266,4 +270,29 @@ final class NotedLibrary {
 bool isLockedBinder(Binder binder) {
   final f = binder.fields;
   return f['locked']?.text == 'true' || f.containsKey('encryption') || f.containsKey('password');
+}
+
+/// A file's size and modified time as one string, for telling a rewritten file
+/// from one left alone ('-' if it can't be examined).
+Future<String> fileSignature(String path) async {
+  try {
+    final s = await File(path).stat();
+    return '${s.size}/${s.modified.microsecondsSinceEpoch}';
+  } on Object {
+    return '-';
+  }
+}
+
+/// One entry per page id from the page files found in a folder, in any order: a
+/// conflict copy (another file with the same page id) is skipped in favour of
+/// `<id>.canvas`; otherwise the first found is kept.
+List<(NotedPage, String)> choosePages(Iterable<(NotedPage, String)> found) {
+  final byId = <String, (NotedPage, bool, String)>{};
+  for (final (page, path) in found) {
+    final name = path.split(RegExp(r'[\\/]')).last;
+    final exact = name == '${page.id}.canvas';
+    final seen = byId[page.id];
+    if (seen == null || (exact && !seen.$2)) byId[page.id] = (page, exact, path);
+  }
+  return [for (final (p, _, path) in byId.values) (p, path)];
 }

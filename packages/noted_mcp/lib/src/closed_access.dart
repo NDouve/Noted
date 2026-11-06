@@ -544,13 +544,17 @@ final class ClosedAccess {
       if (expired()) return null;
       if (state != e.value.state) return false;
       if (state != FolderState.listed) continue;
-      for (final name in names) {
-        // Read as a readable page at the pre-check: not looked at again.
-        if (e.value.pageIds[name] != null) continue;
+      for (final (name, sig) in names) {
+        // Left alone since the pre-check (same size and modified time) and read as a
+        // page then: not looked at again. A replacement that keeps both its size and
+        // its modified time is a known rare gap (a sync client restoring mtimes).
+        final was = e.value.pageIds[name];
+        if (was != null && e.value.stats[name] == sig) continue;
         final bytes = await identity.readBytes(name);
         if (expired()) return null;
         final id = bytes == null ? null : NotedLibrary.pageIdOf(bytes);
-        if (id != null && ids.contains(id)) return false;
+        // Now a page of the chain (or the missing parent), or no longer one it was.
+        if ((id != null && ids.contains(id)) || (was != null && ids.contains(was) && id != was)) return false;
       }
     }
     return true;
@@ -558,15 +562,15 @@ final class ClosedAccess {
 
   // The `*.canvas` paths in [dir], as the library lists them, and the listing's
   // state.
-  static Future<(FolderState, List<String>)> _list(Directory dir) async {
-    final names = <String>[];
+  static Future<(FolderState, List<(String, String)>)> _list(Directory dir) async {
+    final names = <(String, String)>[];
     try {
       if (!await dir.exists()) return (FolderState.absent, names);
       await for (final e in dir.list()) {
-        if (e is File && e.path.endsWith('.canvas')) names.add(e.path);
+        if (e is File && e.path.endsWith('.canvas')) names.add((e.path, await fileSignature(e.path)));
       }
     } on FileSystemException {
-      return (FolderState.failed, const <String>[]);
+      return (FolderState.failed, const <(String, String)>[]);
     }
     return (FolderState.listed, names);
   }
