@@ -1845,9 +1845,11 @@ void main() {
       test('dispose cancels the timer', () async {
         await lockedSetup();
         final (nb, hooks) = await startHeld(retryFirst: const Duration(milliseconds: 40));
+        expect(nb.settingsTimerActiveForTest, isTrue);
         nb.dispose();
         opened.remove(nb);
         final reads = hooks.count('settings-read');
+        expect(nb.settingsTimerActiveForTest, isFalse);
         await Future<void>.delayed(const Duration(milliseconds: 300));
         expect(hooks.count('settings-read'), reads);
       });
@@ -1914,6 +1916,7 @@ void main() {
         'binders': [b1],
         'binderIds': {b1: a1},
       });
+      await PageStore(Directory(at('pages'))).save(NotedPage.create(PageMeta.create(id: 'a0', title: 'First', order: 0)));
       final settings = AppSettings(null)..defaultPageFolder = c.path;
       final hooks = _Hooks()..locked = true;
       final nb = make(settings: settings);
@@ -1921,6 +1924,7 @@ void main() {
       await nb.load();
       await nb.discoveryIdle;
       expect(nb.pageTitleOf('p'), 'Copy in folder', reason: 'held: only the folder is open');
+      await nb.open('p'); // not the first page of the tree
       expect(nb.currentId, 'p');
       hooks.locked = false;
       expect(await nb.retrySettings(), isTrue);
@@ -1943,6 +1947,35 @@ void main() {
       await again.discoveryIdle;
       expect(again.pageTitleOf('p'), 'Page p');
       expect(problems(again), afterRetry);
+    });
+
+    test('during step 4 the chosen folder\'s pages are out of the tree, and a page opened then stays open', () async {
+      final b1 = await binderAt('other/B1', a1, pages: ['p']);
+      final c = Directory(at('chosen'))..createSync();
+      await PageStore(c).save(NotedPage.create(PageMeta.create(id: 'p', title: 'Copy in folder', order: 0)));
+      await PageStore(Directory(at('pages'))).save(NotedPage.create(PageMeta.create(id: 'a0', title: 'First', order: 0)));
+      await PageStore(Directory(at('pages'))).save(NotedPage.create(PageMeta.create(id: 'a1', title: 'Second', order: 1)));
+      writeSettings({
+        'format': 1,
+        'binders': [b1],
+        'binderIds': {b1: a1},
+      });
+      final hooks = _Hooks()..locked = true;
+      final nb = make(settings: AppSettings(null)..defaultPageFolder = c.path);
+      nb.binderHook = hooks.call;
+      await nb.load();
+      await nb.discoveryIdle;
+      await nb.open('p');
+      hooks.locked = false;
+      final gate = Completer<void>();
+      hooks.on['settings-adopt'] = (_) => gate.future;
+      final retry = nb.retrySettings();
+      await until(() => hooks.count('settings-adopt') == 1, what: 'the retry to reach step 4');
+      expect(nb.tree.roots.map((m) => m.id), ['a0', 'a1'], reason: 'the chosen folder\'s page is out of the tree');
+      await nb.open('a1');
+      gate.complete();
+      expect(await retry, isTrue);
+      expect(nb.currentId, 'a1', reason: 'a page opened meanwhile stays open');
     });
 
     test('N-4: kept files of a page in a hidden binder are not called pageless, and land after the retry', () async {

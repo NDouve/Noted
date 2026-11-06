@@ -1161,6 +1161,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   @visibleForTesting
   Future<void> saveSettingsForTest() => _saveSettings();
 
+  /// Whether the retry timer is armed.
+  @visibleForTesting
+  bool get settingsTimerActiveForTest => _settingsTimer?.isActive ?? false;
+
   /// How many times a retry has asked the open page to leave.
   @visibleForTesting
   int leaveAttemptsForTest = 0;
@@ -1450,6 +1454,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final key = _key(path);
       _pendingCopies.removeWhere((p) => _key(File(p).parent.path) == key);
     }
+    _rebuildTree();
+    _syncWatchers();
+    notifyListeners();
     // 2. and 3. The lists, ids and removed ids.
     final adopted = _adoptSettings(f);
     // 4. Open, in load's order.
