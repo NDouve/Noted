@@ -1,0 +1,23 @@
+name: noted_auth
+description: "Noted's Microsoft sign-in: PKCE, the token endpoint, refresh-token rotation and the sign-in session. Pure Dart, no Flutter."
+publish_to: none
+version: 0.1.0
+resolution: workspace
+
+environment:
+  sdk: ^3.13.0
+
+# Pure Dart only (dart:io is fine, Flutter is not). noted_core and
+# noted_mcp must never depend on this package (invariant 4); a test in each
+# of them checks it.
+
+dependencies:
+  # The token endpoint calls (BSD-3-Clause, the Dart team, publisher dart.dev).
+  http: 1.6.0
+  # SHA-256 for the PKCE challenge (BSD-3-Clause, the Dart team).
+  crypto: 3.0.7
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
