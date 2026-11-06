@@ -457,6 +457,51 @@ void _notebookTests() {
     if (root.existsSync()) await root.delete(recursive: true);
   });
 
+  test('an old-form entry whose twin replayed and was deleted is not offered again in the same session (old file undeletable)', () async {
+    await container('c1');
+    var nb = build('c1');
+    await nb.load();
+    final id = nb.currentId!;
+    await nb.flush();
+    final pagesDir = Directory('${docs('c1').path}/Noted/pages').absolute.path;
+    final before = readPage(File('$pagesDir/$id.canvas').readAsStringSync()).nodes.length;
+    nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+    // The entry as the build before relative paths wrote it.
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    await RecoveryStore(Directory('${support('c1')}/Noted/recovery')).write(
+      folder: pagesDir,
+      page: nb.current!.page,
+      baseText: File('$pagesDir/$id.canvas').readAsStringSync(),
+      time: DateTime.now(),
+    );
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    close(nb); // quits with the edit unsaved
+
+    docs('c1').parent.renameSync(docs('c2').parent.path);
+    await container('c2');
+    nb = build('c2');
+    final rec = nb.recoveryStoreForTest!;
+    rec.deleteForTest = (path, expected) async => throw FileSystemException('held', path);
+    await nb.load();
+    final file = File('${docs('c2').path}/Noted/pages/$id.canvas');
+    expect(readPage(file.readAsStringSync()).nodes, hasLength(before + 1), reason: 'the edit landed once');
+    expect((await nb.pendingRecovery()).entries, isEmpty);
+    final recDir = Directory('${support('c2')}/Noted/recovery');
+    List<File> entries() => [for (final f in recDir.listSync()) if (f is File && f.path.endsWith('.entry')) f];
+    expect(entries(), hasLength(1), reason: 'only the old-form file is left');
+    expect(entries().single.readAsStringSync(), isNot(contains('@documents')));
+
+    // The box is deleted on purpose; a second listing and a replay in the same
+    // session must not bring it back.
+    await nb.open(id);
+    nb.current!.delete(nb.current!.page.nodes.last.id);
+    await nb.flush();
+    await rec.list();
+    expect((await nb.pendingRecovery()).entries, isEmpty, reason: 'the old entry is not offered again');
+    await nb.recoverNowForTest();
+    expect(readPage(file.readAsStringSync()).nodes, hasLength(before));
+  });
+
   test('1: after a container change every binder, folder and default is found; the next save writes @documents/ forms', () async {
     await container('c1');
     var nb = build('c1');
@@ -824,8 +869,8 @@ void _recoveryTests() {
     final l1 = await s.list();
     expect(l1.entries, hasLength(1), reason: 'the old copy and its twin are one generation');
     expect(entryFiles(), hasLength(2));
-    // The page landed; its entry is deleted.
-    s.markLanded(l1.entries.single.gen);
+    // The page landed and its entry is deleted the way the replay does it (no
+    // markLanded: the delete succeeds).
     await s.delete(l1.entries.single);
     expect(entryFiles(), hasLength(1), reason: 'the old file is still there');
     final l2 = await s.list();

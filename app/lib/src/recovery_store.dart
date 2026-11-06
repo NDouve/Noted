@@ -317,6 +317,10 @@ class RecoveryStore {
   }
 
   void _indexRemove(RecoveryEntry e) {
+    // A retired generation with an old-form twin that could not be deleted: the
+    // twin is retired with it, so no later listing offers it again.
+    final twin = _twinOf[e.gen];
+    if (twin != null) _landedOld.add(twin);
     _index.removeWhere((x) => x.file.path == e.file.path && x.gen == e.gen);
     if (!_index.any((x) => x.gen == e.gen)) _landed.remove(e.gen);
   }
@@ -745,6 +749,7 @@ class RecoveryStore {
         await hook?.call('envelope-published');
         await _removeLegacy(base, pageFirst: already);
       } on Object catch (e) {
+        if (e is RecoveryTimeout) rethrow;
         _report(problems, damaged, base, _why(e));
       }
     }
@@ -838,6 +843,7 @@ class RecoveryStore {
           throw const FormatException('an unfinished write was left here');
         }
       } on Object catch (e) {
+        if (e is RecoveryTimeout) rethrow;
         _report(problems, damaged, f.path, _why(e));
       }
     }
@@ -930,6 +936,7 @@ class RecoveryStore {
         _report(problems, damaged, base, _why(e));
       }
     }
+    if (tx.abandoned) throw const RecoveryTimeout();
     await _listOnce(entries);
     for (final e in entries) {
       if (_landedOld.contains(e.gen)) _landed.add(e.gen);
@@ -1024,6 +1031,8 @@ class RecoveryStore {
         await _rekeyOne(tx, old, bytes, env, oldGen);
       } on FileSystemException {
         // Locked or full: the old file stays the copy; the next listing retries.
+      } on FormatException catch (e) {
+        _report(problems, damaged, old.path, e.message);
       }
     }
   }
@@ -1080,7 +1089,16 @@ class RecoveryStore {
       }
       final slot = _slot(env.folder, env.id, k);
       if (!_occupied(slot)) {
-        if (await publishExclusive(tmp, slot.path)) {
+        final bool done;
+        try {
+          done = await publishExclusive(tmp, slot.path);
+        } on FileSystemException {
+          // No hard links here (exFAT/FAT, some network or FUSE storage): the
+          // entry can't be moved without risking another one. The old file stays.
+          if (deleteOnStop) await _tryDelete(tmp);
+          throw const FormatException("can't be moved to the current folder form on this storage; it is kept as it is");
+        }
+        if (done) {
           await hook?.call('rekey-published');
           return (file: slot, published: true);
         }
