@@ -991,7 +991,10 @@ void main() {
       ).listSync(recursive: true).whereType<File>().where((f) => f.path.contains(top) && f.path.endsWith('f.bin'));
       expect(inTrash, hasLength(1), reason: 'the set-aside folder stays in the trash');
       expect(inTrash.single.readAsBytesSync(), [1, 2, 3]);
-      await nb.discardPendingDelete();
+      // Let the held entry go (as the held bar's X does), so its set-aside
+      // doesn't stay in the shared trash folder for other tests.
+      nb.discardDeleted(held);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
     });
 
     test('3: an ordinary Undo whose write fails keeps the pages held', () async {
