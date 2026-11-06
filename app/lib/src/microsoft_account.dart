@@ -86,24 +86,23 @@ class MicrosoftAccount extends ChangeNotifier {
   Future<void> Function()? _cleanup;
   bool _ready = true;
   bool _deleted = false;
-  bool _saveFailed = false;
 
   /// Runs the clean-up if it is due. True when sign-in may go ahead: nothing to
   /// clean, or the items were deleted and the flag saved.
   Future<bool> _prepare() async {
     final settings = _settings;
     if (settings == null || _ready) return true;
-    // A flag that failed to save stays set in the settings object in memory,
-    // which would then pass for saved; so it is not retried before the next
-    // launch.
-    if (_saveFailed) return false;
     try {
-      final delete = _cleanup ?? SecureTokenStore.deleteEverything;
-      _ready = await clearKeychainOnFirstLaunch(settings, () async {
-        await delete();
-        _deleted = true;
-      });
-      if (!_ready && _deleted) _saveFailed = true;
+      if (_deleted) {
+        // The items are gone; only the flag is left to save.
+        _ready = settings.markKeychainCleaned();
+      } else {
+        final delete = _cleanup ?? SecureTokenStore.deleteEverything;
+        _ready = await clearKeychainOnFirstLaunch(settings, () async {
+          await delete();
+          _deleted = true;
+        });
+      }
     } on Object {
       _ready = false;
     }
@@ -121,7 +120,6 @@ class MicrosoftAccount extends ChangeNotifier {
     _cleanup = firstLaunchCleanup;
     _ready = settings == null;
     _deleted = false;
-    _saveFailed = false;
     try {
       if (await _prepare()) await session.restore();
     } on Object {

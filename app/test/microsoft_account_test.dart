@@ -337,6 +337,40 @@ void main() {
       expect(deletes, 2);
     });
 
+    test('a flag that failed to save is saved by the next sign-in once storage recovers', () async {
+      final dir = Directory.systemTemp.createTempSync('noted_keychain');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final blocker = File('${dir.path}/settings')..writeAsStringSync('x');
+      final file = File('${dir.path}/settings/settings.json');
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      var deletes = 0;
+      final account = _account(MemoryTokenStore());
+      addTearDown(account.dispose);
+      await account.start(
+        settings: AppSettings(file),
+        firstLaunchCleanup: () async => deletes++,
+      );
+      await account.signIn();
+      expect(account.error, "Noted couldn't prepare sign-in. Try again.");
+
+      blocker.deleteSync(); // storage recovers
+      await account.signIn();
+      expect(account.error, isNull);
+      expect(account.state, AuthState.signedIn);
+      expect(AppSettings(file).keychainCleaned, isTrue);
+      expect(deletes, 1); // only the save was retried
+    });
+
+    test('markKeychainCleaned leaves the flag unset when the save fails', () {
+      final dir = Directory.systemTemp.createTempSync('noted_keychain');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      File('${dir.path}/blocker').writeAsStringSync('x');
+      final s = AppSettings(File('${dir.path}/blocker/settings.json'));
+      expect(s.markKeychainCleaned(), isFalse);
+      expect(s.keychainCleaned, isFalse);
+      expect(s.markKeychainCleaned(), isFalse); // a retry is not fooled
+    });
+
     test(
       'never runs on other platforms, or when the settings cannot be saved',
       () async {
