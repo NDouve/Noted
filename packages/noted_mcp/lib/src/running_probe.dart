@@ -214,7 +214,12 @@ final class LockIdentity {
     try {
       return await FileSystemEntity.identical(path, lock);
     } on Object {
-      return false;
+      // Can't tell: a file that exists is skipped (fail closed); one that is gone is not.
+      try {
+        return await FileSystemEntity.type(path) != FileSystemEntityType.notFound;
+      } on Object {
+        return true;
+      }
     }
   }
 
