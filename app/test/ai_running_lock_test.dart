@@ -276,6 +276,35 @@ void main() {
       expect(nb.aiAccess!.store.codes(), isEmpty, reason: 'pruned only after the lock');
     });
 
+    test('a lock disposed while waiting ends the start: no polling, no link, no load', () async {
+      lockFile().writeAsStringSync('');
+      final holder = await LockHolder.hold(lockFile(), shared: true);
+      addTearDown(holder.release);
+      final service = AiAccessService(dataFolder: dir);
+      addTearDown(service.dispose);
+      final nb = Notebook(
+        PageStore(Directory('${dir.path}/pages')..createSync()),
+        buildModules(),
+        bindersFile: File('${dir.path}/binders.json'),
+        saveDelay: Duration.zero,
+        aiAccess: service,
+      );
+      addTearDown(nb.dispose);
+      var loadedDone = false;
+      unawaited(nb.loaded.then((_) => loadedDone = true));
+      final shown = <Widget>[];
+      final started = openWhenOwned(nb, dir, show: shown.add);
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      appRunningLock!.dispose();
+      final r = await started.timeout(const Duration(seconds: 5));
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(r.lock!.held, isFalse);
+      expect(r.link, isNull);
+      expect(shown.single, isA<WaitingForLockApp>());
+      expect(loadedDone, isFalse, reason: 'load never started');
+      expect(File('${dir.path}/ai-link.json').existsSync(), isFalse);
+    });
+
     testWidgets('startLink: false owns the lock and loads, with no link', (t) async {
       late Notebook nb;
       await t.runAsync(() async {
