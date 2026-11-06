@@ -1361,6 +1361,21 @@ void main() {
           expect(s.nb.pageTitleOf(y.id), 'Why');
         });
 
+        test('a chosen file that stays damaged changes nothing at later folder checks', () async {
+          final dir = await Directory('${root.path}/Work').create();
+          final s = await setup(dir, dir, binder: true);
+          await leave(s);
+          truncate(s.copy);
+          await s.nb.checkFile(s.copy);
+          final edited = s.nb.binders.single.lastEdited;
+          final listed = s.nb.binders.single.unreadable.map((u) => '${u.path} ${u.reason}').toList();
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          await s.nb.checkFolders();
+          await s.nb.checkFolders();
+          expect(s.nb.binders.single.lastEdited, edited);
+          expect(s.nb.binders.single.unreadable.map((u) => '${u.path} ${u.reason}').toList(), listed);
+        });
+
         test('a page opened as a preview while the confirming read runs keeps its choice', () async {
           final dir = await Directory('${root.path}/Elsewhere').create();
           final s = await setup(dir, dir, recovery: true);

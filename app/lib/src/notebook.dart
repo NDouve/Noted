@@ -8127,6 +8127,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   void _knownUnreadable(String loc, String key, String path, String reason) {
     final id = _pathId[key];
     if (id != null && id == currentId) return;
+    // Already listed for this reason and not in the index: nothing changes, so
+    // no touch and no rebuild (a damaged chosen file is looked at every tick).
+    if (id == null) {
+      final listed = loc == _standalone
+          ? _unreadable
+          : (_folders[loc]?.unreadable ?? _binders[loc]?.unreadable ?? const <UnreadablePage>[]);
+      if (listed.any((u) => _key(u.path) == key && u.reason == reason)) return;
+    }
     if (id != null && _loc[id] == loc) {
       _metas.remove(id);
       _loc.remove(id);
