@@ -1976,7 +1976,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Date:** 2026-11-05
 - **Status:** Active (amends 0050 and 0136; the two judgement calls confirmed by the maintainer)
 - **Decision:**
-  - **Discovery.** Noted looks for binder files it doesn't list in the default binder folder, the default and chosen page folders, standalone folders and the parents of listed binders (at most 20 places and 1000 folders each, one level deep). A binder found there with a new id is added to the sidebar. It reads only; its one write is `binders.json`.
+  - **Discovery.** Noted looks for binder files it doesn't list in the default binder folder, the default and chosen page folders, standalone folders and the parents of listed binders (at most 20 places and 1000 folders each, one level deep). A binder found there with a new id is added to the sidebar. The search itself only reads, and its one write is `binders.json`. Adding a found binder opens it as any binder is opened: its conflict copies are merged and its recovery entries replayed. Discovery writes nothing else.
   - **`binders.json` gains two optional fields:** `binderIds` (the id each listed folder holds) and `removedBinders` (ids this device took out of its list, at most 1000, oldest dropped). `format` stays 1, and older builds keep both fields (`docs/file-format.md` §9).
   - **Removed binders stay removed.** A binder removed from the sidebar isn't added again by discovery; Open binder… adds it back.
   - **First launch after the upgrade.** Unlisted binders found then are recorded as removed and shown once as info. The upgrade closes only when every place was listed, every binder file read, and every found id fit under the 1000 cap; until then nothing is added.
