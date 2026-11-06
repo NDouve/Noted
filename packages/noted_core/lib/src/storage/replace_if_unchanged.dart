@@ -117,7 +117,9 @@ String _asideName(String target) =>
 
 /// Replaces the file at [target] with the finished file [tmp], only if the
 /// target holds exactly [expected] when it is replaced; [expected] null means
-/// no file is expected there (the same as [publishExclusive]).
+/// no file is expected there (the same as [publishExclusive]). Instead of
+/// [expected], give [identity] to compare by length and SHA-256, as
+/// [deleteFileIfMatches] does; giving both throws an [ArgumentError].
 ///
 /// When [expected] is null, or the target plainly differs from it, nothing is
 /// moved. Otherwise the target is moved aside to a unique name (which captures
@@ -152,18 +154,22 @@ Future<ReplaceResult> replaceIfUnchanged(
   File tmp,
   String target,
   List<int>? expected, {
+  ContentIdentity? identity,
   void Function()? beforeMoveAside,
   void Function()? afterRead,
   void Function()? beforePublish,
   void Function()? beforeRestore,
 }) async {
-  if (expected == null) {
+  if (expected != null && identity != null) {
+    throw ArgumentError('give at most one of expected and identity');
+  }
+  if (expected == null && identity == null) {
     final ok = await publishExclusive(tmp, target, beforeOsCall: beforePublish);
     return ReplaceResult(ok ? ReplaceOutcome.replaced : ReplaceOutcome.changed);
   }
   // Don't move anything when it plainly can't match.
   try {
-    if (!_same(await File(target).readAsBytes(), expected)) {
+    if (!await _matches(File(target), expected, identity)) {
       return const ReplaceResult(ReplaceOutcome.changed);
     }
   } on FileSystemException {
@@ -187,7 +193,7 @@ Future<ReplaceResult> replaceIfUnchanged(
   // The aside file is exactly what was at the target. Compare it.
   final bool equal;
   try {
-    equal = _same(await aside.readAsBytes(), expected);
+    equal = await _matches(aside, expected, identity);
     afterRead?.call();
   } catch (_) {
     await _putBack(aside, target, beforeRestore);
@@ -297,6 +303,14 @@ Future<List<String>> sweepAsideFiles(
     }
   }
   return out;
+}
+
+/// Whether [f] holds exactly [bytes] or has the content [identity] (give one).
+/// The length is cheap to compare before hashing.
+Future<bool> _matches(File f, List<int>? bytes, ContentIdentity? identity) async {
+  if (bytes != null) return _same(await f.readAsBytes(), bytes);
+  if (await f.length() != identity!.length) return false;
+  return await contentHashOfStream(f.openRead()) == identity.sha256;
 }
 
 bool _same(List<int> a, List<int> b) {
@@ -481,15 +495,8 @@ Future<DeleteResult> deleteFileIfMatches(
   if ((bytes == null) == (identity == null)) {
     throw ArgumentError('give exactly one of bytes and identity');
   }
-  Future<bool> matches(File f) async {
-    if (bytes != null) return _same(await f.readAsBytes(), bytes);
-    // The length is cheap to compare before hashing.
-    if (await f.length() != identity!.length) return false;
-    return await contentHashOfStream(f.openRead()) == identity.sha256;
-  }
-
   try {
-    if (!await matches(File(target))) {
+    if (!await _matches(File(target), bytes, identity)) {
       return const DeleteResult(DeleteOutcome.changed);
     }
   } on FileSystemException {
@@ -509,7 +516,7 @@ Future<DeleteResult> deleteFileIfMatches(
   }
   final bool equal;
   try {
-    equal = await matches(aside);
+    equal = await _matches(aside, bytes, identity);
     afterRead?.call();
   } catch (e) {
     await _putBackOrThrow(aside, target, beforeRestore, e);

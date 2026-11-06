@@ -2400,6 +2400,112 @@ void main() {
     timeout: const Timeout(Duration(minutes: 3)),
   );
 
+  // Run 2026-11-06-04, sync stage 1: scripted (not random steps, so the seeds
+  // above don't move). mergeRemote lands a remote version; the model, the
+  // files, the live notebook and a fresh one must agree, before and after a
+  // restart.
+  group('mergeRemote and reload equivalence', () {
+    for (final open in [false, true]) {
+      test('mergeRemote on ${open ? 'the open' : 'a closed'} page: the model equals the files, live and after a restart', () async {
+        final run = _Run(open ? 922 : 921);
+        try {
+          await run.start();
+          await run.nb.flush();
+          final id = open ? run.nb.currentId! : run.model.keys.firstWhere((i) => i != run.nb.currentId);
+          final m = run.model[id]!;
+          final path = run._pathOf(id);
+          final baseText = File(path).readAsStringSync();
+          final base = readPage(baseText);
+          if (open) {
+            run._addBox(m, run.nb.current!); // an unsaved local edit
+          } else {
+            final local = run._newBox(run._text('local'));
+            await run._externalWrite(id, base.insertNode(local));
+            m.boxes[local.id] = _val(local);
+          }
+          final remote = run._newBox(run._text('remote'));
+          final theirs = base.insertNode(remote);
+          final title = 'Remote title s${run.seed}';
+          final r = await run.nb.mergeRemote(
+            path,
+            utf8.encode(baseText),
+            utf8.encode(writePage(theirs.withMeta(theirs.meta.withTitle(title)))),
+          );
+          expect(r.outcome, RemoteMergeOutcome.merged, reason: '$r');
+          m.boxes[remote.id] = _val(remote);
+          m.title = title;
+          await run.verify('after mergeRemote', fresh: true);
+          await run._opRestart();
+          await run.verify('after a restart', fresh: true);
+        } finally {
+          await run.stop();
+        }
+      }, timeout: const Timeout(Duration(minutes: 3)));
+    }
+  });
+
+  test('a no-op mergeRemote after an unobserved disk change: live metas equal the files and a fresh notebook', () async {
+    final run = _Run(924);
+    try {
+      await run.start();
+      await run.nb.flush();
+      final id = run.model.keys.firstWhere((i) => i != run.nb.currentId);
+      final m = run.model[id]!;
+      final replaced = run._disk(id);
+      final title = 'Replaced outside s${run.seed}';
+      final next = replaced.withMeta(replaced.meta.withTitle(title));
+      await run._externalWrite(id, next); // the watcher is not told
+      m.title = title;
+      final bytes = utf8.encode(writePage(next));
+      final r = await run.nb.mergeRemote(run._pathOf(id), bytes, bytes);
+      expect(r.outcome, RemoteMergeOutcome.merged, reason: '$r');
+      expect(r.wrote, isFalse);
+      await run.verify('after the no-op merge', fresh: true);
+      await run._opRestart();
+      await run.verify('after a restart', fresh: true);
+    } finally {
+      await run.stop();
+    }
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a page opened during the merge of its conflict copy: an edit keeps the copy, and the files and a restart agree', () async {
+    final run = _Run(923);
+    try {
+      await run.start();
+      await run.nb.flush();
+      final id = run.model.keys.firstWhere((i) => i != run.nb.currentId);
+      final m = run.model[id]!;
+      final disk = run._disk(id);
+      final z = run._newBox(run._text('copy'));
+      final copy = '${run.dirs[m.loc]!.path}${run.sep}$id-DESKTOP-9.canvas';
+      File(copy).writeAsStringSync(writePage(disk.insertNode(z)));
+      m.boxes[z.id] = _val(z);
+      final paused = Completer<void>();
+      final resume = Completer<void>();
+      run.nb.syncHook = (point, _) async {
+        if (point != 'original-read') return;
+        paused.complete();
+        await resume.future;
+      };
+      final check = run.nb.checkFile(copy);
+      await paused.future;
+      final open = run.nb.open(id);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      resume.complete();
+      await check;
+      await open;
+      run.nb.syncHook = null;
+      expect(run.nb.current!.page.node(z.id), isNotNull, reason: 'the editor shows the copy');
+      run._addBox(m, run.nb.current!);
+      await run.nb.flush();
+      await run.verify('after the edit', fresh: true);
+      await run._opRestart();
+      await run.verify('after a restart', fresh: true);
+    } finally {
+      await run.stop();
+    }
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
   group('probes of the faults on their own', () {
     late _Run run;
     setUp(() async {

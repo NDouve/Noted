@@ -5,6 +5,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:noted_core/noted_core.dart' show ContentIdentity;
+
 /// The pieces of R-1 v5 (failed saves never lose edits) that don't need the
 /// notebook: the save chain (L1), the open page's session, the outcome of a
 /// recovery write, the retry backoff, error classification and the state the
@@ -76,17 +78,24 @@ class SaveChain {
     root.live.add(j);
     final c = Completer<T>();
     root.tail = root.tail.then((_) async {
+      final token = _InJob();
       try {
-        c.complete(await job());
+        c.complete(await runZoned(job, zoneValues: {this: token}));
       } on Object catch (e, s) {
         c.completeError(e, s);
       } finally {
+        token.active = false;
         root.live.remove(j);
         if (root.detached && pages.isNotEmpty) onDetachedJobEnded?.call(pages);
       }
     });
     return c.future;
   }
+
+  /// Whether the current code runs inside a job of this chain (any chain
+  /// root). A job that queued another on the chain and waited would wait on
+  /// itself; such code runs inline instead.
+  bool get insideJob => (Zone.current[this] as _InJob?)?.active ?? false;
 
   /// Completes when everything queued so far has finished, or when the chain
   /// is detached.
@@ -194,9 +203,16 @@ class KeepOutcome {
 enum SaveEnd { landed, failed, blocked, skipped }
 
 class SaveResult {
-  const SaveResult(this.end, [this.keep]);
+  const SaveResult(this.end, [this.keep, this.identity, this.keepsChanging = false]);
 
   final SaveEnd end;
+
+  /// The identity of the file as written, set when [end] is [SaveEnd.landed]
+  /// and the caller asked for it (or the change feed is live).
+  final ContentIdentity? identity;
+
+  /// Set when the save gave up because the file kept changing.
+  final bool keepsChanging;
 
   /// What happened to the edits when [end] is [SaveEnd.failed] or blocked.
   final KeepOutcome? keep;
@@ -341,4 +357,10 @@ class KeptNotice {
   final String pageId;
   final String title;
   final String reason;
+}
+
+// Marks the code of one running chain job; cleared when the job ends, so a
+// timer or future made inside it and run later is not "inside" any more.
+class _InJob {
+  bool active = true;
 }

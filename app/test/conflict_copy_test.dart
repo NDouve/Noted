@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -309,4 +310,130 @@ void main() {
     expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
     expect(nb.unreadable, isEmpty);
   }, timeout: const Timeout(Duration(seconds: 60)));
+
+  group('the merge of a closed page runs as one chain job (run 2026-11-06-04)', () {
+    test('a page opened during the merge shows the merged page, and an edit keeps the copy', () async {
+      await start();
+      final (id, box) = await closedPageWithBox();
+      final added = noteBox('from the copy', at: const Bounds(400, 10, 200, 40));
+      final path = copyPath(id, 'DESKTOP-4QK2N8L');
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      final paused = Completer<void>();
+      final resume = Completer<void>();
+      nb.syncHook = (point, _) async {
+        if (point != 'original-read') return;
+        paused.complete();
+        await resume.future;
+      };
+      final check = nb.checkFile(path);
+      await paused.future;
+      var opened = false;
+      final open = nb.open(id).then((_) => opened = true);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(opened, isFalse, reason: 'the open waits for the merge');
+      resume.complete();
+      await check;
+      await open;
+      nb.syncHook = null;
+
+      expect(nb.currentId, id);
+      expect(nb.current!.page.node(added.id), isNotNull, reason: 'the editor shows the merge');
+      final c = nb.current!;
+      final mine = c.createBoxAt(const Bounds(10, 300, 0, 0));
+      c.commit(mine.id, modules.codecs.codecFor('noted.note')!.decode(doc('after'), 1));
+      await nb.flush();
+      expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id, mine.id});
+      expect(File(path).existsSync(), isFalse);
+    });
+
+    test('a page opened ahead of the queued job takes the merge in the editor (in-job re-check)', () async {
+      await start();
+      final (id, box) = await closedPageWithBox();
+      final added = noteBox('from the copy', at: const Bounds(400, 10, 200, 40));
+      final path = copyPath(id, 'DESKTOP-4QK2N8L');
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      // The page is opened after the check decided "closed" and before its job
+      // is queued; the job must see it open.
+      nb.syncHook = (point, _) async {
+        if (point == 'conflict-copy-closed') await nb.open(id);
+      };
+      await nb.checkFile(path);
+      nb.syncHook = null;
+      expect(nb.currentId, id);
+      expect(nb.current!.page.nodes.map((n) => n.id).toSet(), {box.id, added.id});
+      expect(File(path).existsSync(), isFalse);
+      await nb.flush();
+      expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
+    });
+
+    test('a page opened before the job runs takes the merge in the editor', () async {
+      await start();
+      final (id, box) = await closedPageWithBox();
+      final added = noteBox('from the copy', at: const Bounds(400, 10, 200, 40));
+      final path = copyPath(id, 'DESKTOP-4QK2N8L');
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      // The check starts, then the page is opened before the merge runs.
+      final check = nb.checkFile(path);
+      await nb.open(id);
+      await check;
+      expect(nb.current!.page.id, id);
+      expect(nb.current!.page.nodes.map((n) => n.id).toSet(), {box.id, added.id});
+      expect(File(path).existsSync(), isFalse);
+      await nb.flush();
+      expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
+    });
+
+    test('a check started by a timer made inside a chain job still queues on the chain', () async {
+      await start();
+      final (id, box) = await closedPageWithBox();
+      final a = noteBox('copy one', at: const Bounds(400, 10, 200, 40));
+      final b = noteBox('copy two', at: const Bounds(400, 100, 200, 40));
+      final path1 = copyPath(id, 'DESKTOP-1');
+      final path2 = copyPath(id, 'DESKTOP-2');
+      final base = await other.load(id);
+      await writeCopy(path1, base.insertNode(a));
+      await writeCopy(path2, base.insertNode(b));
+      final paused = Completer<void>();
+      final resume = Completer<void>();
+      Future<void>? second;
+      var calls = 0;
+      nb.syncHook = (point, _) async {
+        if (point != 'original-read') return;
+        if (++calls == 1) {
+          // Inside the first merge's chain job: a timer that starts the next
+          // check after the job has ended.
+          Timer(const Duration(milliseconds: 30), () => second = nb.checkFile(path2));
+          return;
+        }
+        paused.complete();
+        await resume.future;
+      };
+      await nb.checkFile(path1);
+      await paused.future;
+      expect(second, isNotNull);
+      var opened = false;
+      final open = nb.open(id).then((_) => opened = true);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(opened, isFalse, reason: 'the second merge holds the chain: it was queued, not run inline');
+      resume.complete();
+      await second;
+      await open;
+      nb.syncHook = null;
+      expect(nb.current!.page.nodes.map((n) => n.id).toSet(), {box.id, a.id, b.id});
+      expect(File(path1).existsSync() || File(path2).existsSync(), isFalse);
+    });
+
+    test('a check that runs inside a chain job and meets a copy of a closed page completes', () async {
+      await start();
+      final (id, box) = await closedPageWithBox();
+      final added = noteBox('from the copy', at: const Bounds(400, 10, 200, 40));
+      final path = copyPath(id, 'DESKTOP-4QK2N8L');
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      // As a save's own check runs: inside a job of the chain, which can't
+      // queue the merge on the chain and wait for it.
+      await nb.checkFileInChainForTest(path).timeout(const Duration(seconds: 20));
+      expect(File(path).existsSync(), isFalse);
+      expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
+    });
+  });
 }

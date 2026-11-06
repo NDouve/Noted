@@ -88,6 +88,16 @@ class _SourceChanged implements Exception {
   const _SourceChanged();
 }
 
+// How a compare-and-swap page write ended: whether it landed, the identity
+// published (null when nobody asked and the feed wasn't live), and whether
+// nothing was written because the page's file is at another path.
+class _WriteOutcome {
+  const _WriteOutcome({required this.landed, this.identity, this.pathMoved = false});
+  final bool landed;
+  final ContentIdentity? identity;
+  final bool pathMoved;
+}
+
 // Why a recovery entry could not be applied; it is kept and listed.
 class _ReplayFailure implements Exception {
   _ReplayFailure(this.why, {this.detail});
@@ -402,8 +412,55 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     this.discoveryDebounce = const Duration(seconds: 1),
     this.settingsRetryFirst = const Duration(seconds: 2),
     this.settingsAbsentConfirm = const Duration(seconds: 30),
-  }) {
+    FolderLocks? folderLocks,
+  }) : folderLocks = folderLocks ?? FolderLocks() {
     _chain.onDetachedJobEnded = _oldJobEnded;
+  }
+
+  /// The per-folder lock the notebook's page-file writes and scans run under.
+  /// Share one with anything else that writes page files in the same folders.
+  final FolderLocks folderLocks;
+
+  final StreamController<LocalChange> _changes = StreamController<LocalChange>.broadcast();
+
+  /// The page and binder files this notebook wrote or deleted, in the folder
+  /// lock's order for locked writes. Delivered asynchronously; nothing is
+  /// emitted without a listener. Closed by [dispose]. Not reported: sweep
+  /// restores, kept copies, attachments, templates, and the app's own
+  /// settings, binders and recovery files.
+  Stream<LocalChange> get localChanges => _changes.stream;
+
+  bool get _feedLive => !_disposed && !_changes.isClosed && _changes.hasListener;
+
+  /// Hashes the bytes of a written text; a seam so a test can count the calls.
+  @visibleForTesting
+  ContentIdentity Function(List<int> bytes) identityOfForTest = ContentIdentity.ofBytes;
+
+  // The identity of [text] when the feed is live or the caller [want]s it,
+  // else null (no hashing for nobody).
+  ContentIdentity? _identityOf(String Function() text, {bool want = false}) =>
+      want || _feedLive ? identityOfForTest(utf8.encode(text())) : null;
+
+  // Reports a landed write. Never throws: the write has landed.
+  // [identity] null means it wasn't computed (no listener then): [text] is
+  // hashed only if a listener has appeared since.
+  void _emitPublished(String path, ContentIdentity? identity, [String Function()? text]) {
+    if (!_feedLive) return;
+    try {
+      final id = identity ?? (text == null ? null : identityOfForTest(utf8.encode(text())));
+      if (id != null) _changes.add(LocalChange(LocalChangeKind.published, path, id));
+    } on Object {
+      // The feed is advisory.
+    }
+  }
+
+  void _emitDeleted(String path) {
+    if (!_feedLive) return;
+    try {
+      _changes.add(LocalChange(LocalChangeKind.deleted, path));
+    } on Object {
+      // The feed is advisory.
+    }
   }
 
   /// The AI codes and activity log (`ai-access.json`, `ai-activity.json` in
@@ -1780,6 +1837,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
   }
 
+  // Saves the binder file of folder [path] and reports it. `BinderStore.save`
+  // is a blind write outside the folder lock (left for a later stage).
+  Future<void> _saveBinderFile(String path, Binder binder) async {
+    final store = BinderStore(Directory(path));
+    final text = binder.write();
+    final identity = _identityOf(() => text);
+    await store.save(binder);
+    _emitPublished(store.file.path, identity, () => text);
+  }
+
   /// The AI access binder [path] has chosen, or null (the app default).
   AiAccess? binderAiAccess(String path) => _binders[path]?.binder?.aiAccess;
 
@@ -1796,7 +1863,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _afterSaves(() async {
       final latest = s.binder;
       if (latest != null) {
-        await BinderStore(Directory(path)).save(latest);
+        await _saveBinderFile(path, latest);
         _binderText[_key(path)] = latest.write();
       }
     }, what: 'binder AI access of $path').catchError((Object e) {
@@ -1878,7 +1945,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _afterSaves(() async {
       final latest = s.binder;
       if (latest != null) {
-        await BinderStore(Directory(path)).save(latest);
+        await _saveBinderFile(path, latest);
         _binderText[_key(path)] = latest.write();
       }
     }, what: 'binder box types of $path').catchError((Object e) {
@@ -1961,7 +2028,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _afterSaves(() async {
       final latest = s.binder;
       if (latest != null) {
-        await BinderStore(Directory(path)).save(latest);
+        await _saveBinderFile(path, latest);
         _binderText[_key(path)] = latest.write();
       }
     }, what: 'binder attachment storage of $path').catchError((Object e) {
@@ -3009,7 +3076,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       try {
         await tmp.writeAsString(text, flush: true);
         await syncHook?.call('undo-copy-before-publish', st.directory.path);
-        if (await publishExclusive(tmp, path)) return path;
+        if (await publishExclusive(tmp, path)) {
+          _emitPublished(path, _identityOf(() => text), () => text);
+          return path;
+        }
       } on FileSystemException catch (e) {
         debugPrint('Saving the restored page beside its file failed: $e');
       } finally {
@@ -4492,17 +4562,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final written = <NotedPage>[];
     var binderWritten = false;
     try {
+      final binderIdentity = _identityOf(() => made.binder.write());
       await binders.create(made.binder);
       binderWritten = true;
+      _emitPublished(binders.file.path, binderIdentity, () => made.binder.write());
       await _binderSeam('claimed', path);
       for (final p in made.pages) {
         // New ids in a new binder folder: a file already there is not ours.
+        final pageIdentity = _identityOf(() => writePage(p));
         if (!await pages.saveNew(p)) {
           throw const NotebookException(
             'A file for one of the new pages already exists, so the binder was not created. '
             'The existing file was left as it is.',
           );
         }
+        _emitPublished(pages.pathFor(p.id), pageIdentity, () => writePage(p));
         written.add(p);
       }
       // Binder templates are app-wide; their pages' images and files follow
@@ -4522,6 +4596,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final p in written) {
         try {
           final r = await pages.deleteIfUnchanged(p.id, writePage(p));
+          if (r.deleted) _emitDeleted(pages.pathFor(p.id));
           if (!r.deleted && r.outcome != DeleteOutcome.absent) debugPrint('Keeping page ${p.id}: it changed');
         } on Object catch (e2) {
           debugPrint('Removing page ${p.id} failed: $e2');
@@ -4530,6 +4605,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (binderWritten) {
         try {
           final r = await deleteFileIfUnchanged(binders.file.path, utf8.encode(made.binder.write()));
+          if (r.deleted) _emitDeleted(binders.file.path);
           if (!r.deleted && r.outcome != DeleteOutcome.absent) {
             debugPrint('Keeping the binder file: it changed');
             // It stays in the folder, so discovery must not list it as new.
@@ -4642,7 +4718,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _afterSaves(() async {
       final latest = s.binder;
       if (latest != null) {
-        await BinderStore(Directory(path)).save(latest);
+        await _saveBinderFile(path, latest);
         _binderText[_key(path)] = latest.write();
       }
     }, what: 'binder cover edit of $path').catchError((Object e) {
@@ -4713,6 +4789,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         );
         read = BinderFound(made);
         text = made.write(); // what `create` wrote
+        _emitPublished(binders.file.path, null, () => text!);
       }
       // A binder whose file can't be read still lists its pages, read-only.
       final binder = read is BinderFound ? read.binder : null;
@@ -5430,13 +5507,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Saves run one after another, so an older version never lands last. The
   // job never throws: how it ended is the result. [seq] is the snapshot of the
   // page's session the save is for.
-  Future<SaveResult> _enqueueSave(NotedPage page, int seq) {
+  Future<SaveResult> _enqueueSave(NotedPage page, int seq, {bool wantIdentity = false}) {
     final s = _session;
     final session = s != null && s.pageId == page.id && !s.ended ? s : null;
-    return _afterSaves(() => _saveNow(page, seq, session), what: 'save of page ${page.id}', pages: {page.id});
+    return _afterSaves(
+      () => _saveNow(page, seq, session, wantIdentity: wantIdentity),
+      what: 'save of page ${page.id}',
+      pages: {page.id},
+    );
   }
 
-  Future<SaveResult> _saveNow(NotedPage page, int seq, SaveSession? session) async {
+  // [wantIdentity]: the result carries the identity of what landed, hashed from
+  // the text in hand before the lock (mergeRemote asks).
+  Future<SaveResult> _saveNow(NotedPage page, int seq, SaveSession? session, {bool wantIdentity = false}) async {
     // A snapshot a Discard threw away is never published.
     if (session != null && seq < session.floor) return const SaveResult(SaveEnd.skipped);
     // The open page's place may be gone or locked: nothing can be written, so
@@ -5460,10 +5543,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final path = st.pathFor(page.id);
       final key = _key(path);
       var landed = false;
+      ContentIdentity? identity;
       for (var attempt = 0; !landed; attempt++) {
         if (attempt >= _maxWriteTries) {
           // The file changed under every attempt: the edits are kept.
-          return await _saveFailed(loc, st, toSave, savedSeq, session, reason: 'the page file keeps changing');
+          final r = await _saveFailed(loc, st, toSave, savedSeq, session, reason: 'the page file keeps changing');
+          return SaveResult(r.end, r.keep, null, true);
         }
         final isOpen = session != null && identical(session, _session) && _current?.page.id == page.id;
         if (isOpen) {
@@ -5490,7 +5575,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         try {
           // Over exactly the file last seen, checked at the moment of replacing
           // (0128): a version that landed since is not overwritten.
-          landed = await _writeIfUnchanged(loc, toSave, known);
+          final w = await _writeIfUnchangedFull(loc, toSave, known, wantIdentity: wantIdentity);
+          landed = w.landed;
+          identity = w.identity;
         } on FolderUnavailableException {
           return await _saveFailed(loc, st, toSave, savedSeq, session, folderGone: true);
         } on FileSystemException catch (e) {
@@ -5514,7 +5601,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (_current?.page.id == toSave.id && (session == null || identical(session, _session))) _base = toSave;
       _touch(loc);
       if (session != null) await _retireOwn(session, st, toSave, savedSeq);
-      return const SaveResult(SaveEnd.landed);
+      return SaveResult(SaveEnd.landed, null, identity);
     } on NotebookException {
       // The location can't be written now (checked inside the write).
       return session == null
@@ -6637,7 +6724,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final key = _key(st.pathFor(id));
     // One at a time with a scan of the folder, which would put the set-aside
     // file back (see _underFolderLock). The job is the single store call.
-    final r = await _underFolderLock(st, () => st.deleteIfUnchanged(id, expectedText));
+    final r = await _underFolderLock(st, () async {
+      final path = st.pathFor(id);
+      final r = await st.deleteIfUnchanged(id, expectedText);
+      if (r.deleted) _emitDeleted(path);
+      return r;
+    });
     if (r.deleted || r.outcome == DeleteOutcome.absent) {
       _known.remove(key);
       _pathId.remove(key);
@@ -6657,9 +6749,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }) async {
     await _assertCanWrite(loc);
     final st = _storeOf(loc);
+    final identity = _identityOf(() => text);
     if (!await st.saveNewText(page, text, beforePublish: beforePublish)) return false;
     final path = st.pathFor(page.id);
     final key = _key(path);
+    _emitPublished(path, identity, () => text);
     _known[key] = text;
     _pathId[key] = page.id;
     if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
@@ -6719,8 +6813,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<bool> _writeNew(String loc, NotedPage page, {Future<void> Function()? beforePublish}) async {
     await _assertCanWrite(loc);
     final st = _storeOf(loc);
+    final identity = _identityOf(() => writePage(page));
     if (!await st.saveNew(page, beforePublish: beforePublish)) return false;
-    final key = _key(st.pathFor(page.id));
+    final path = st.pathFor(page.id);
+    final key = _key(path);
+    _emitPublished(path, identity, () => writePage(page));
     _known[key] = writePage(page);
     _pathId[key] = page.id;
     if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
@@ -6733,32 +6830,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // (0128). Both go through _underFolderLock: one at a time per folder. The job
   // is a single store call, never another locked call, so they can't wait on
   // each other.
-  final Map<String, Future<void>> _folderLocks = {};
-
-  // The same folder under any spelling (trailing separator, case on Windows,
-  // symbolic links when it exists).
-  String _lockKey(Directory d) {
-    var p = _normalizePath(d.path);
-    try {
-      if (d.existsSync()) p = _normalizePath(d.resolveSymbolicLinksSync());
-    } on FileSystemException {
-      // Keep the normalised path.
-    }
-    return _key(p);
-  }
-
-  Future<T> _underFolderLock<T>(PageStore st, Future<T> Function() job) {
-    final key = _lockKey(st.directory);
-    final run = (_folderLocks[key] ?? Future<void>.value()).then((_) => job());
-    final done = run.then<void>((_) {}, onError: (_) {});
-    _folderLocks[key] = done;
-    unawaited(
-      done.whenComplete(() {
-        if (identical(_folderLocks[key], done)) _folderLocks.remove(key);
-      }),
-    );
-    return run;
-  }
+  Future<T> _underFolderLock<T>(PageStore st, Future<T> Function() job) =>
+      folderLocks.run(st.directory, job);
 
   Future<List<PageEntry>> _scan(PageStore st, {bool createFolder = true, bool sweep = true}) {
     // A store made again (a binder opened again) is told which files were chosen.
@@ -6797,21 +6870,248 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // file) at the moment of replacing, the only way a page file that may have
   // changed is written: false, with nothing written, when it does not (see
   // PageStore.saveIfUnchanged; the caller rereads, merges and tries again).
-  Future<bool> _writeIfUnchanged(String loc, NotedPage page, String? expectedText) async {
+  Future<bool> _writeIfUnchanged(String loc, NotedPage page, String? expectedText) async =>
+      (await _writeIfUnchangedFull(loc, page, expectedText)).landed;
+
+  // As [_writeIfUnchanged], and reports the identity of what was published
+  // (computed from the text in hand before the lock, when the feed is live or
+  // [wantIdentity]). With [onlyAtPath], nothing is written when the page's file
+  // is at another path inside the lock job ([_WriteOutcome.pathMoved]). The
+  // feed event is added inside the job, after the store call succeeded, so
+  // events are in the lock's order; no listener code runs there.
+  Future<_WriteOutcome> _writeIfUnchangedFull(
+    String loc,
+    NotedPage page,
+    String? expectedText, {
+    bool wantIdentity = false,
+    String? onlyAtPath,
+  }) async {
     _assertWritable(loc);
     final st = _storeOf(loc);
+    final published = wantIdentity || _feedLive ? identityOfForTest(utf8.encode(writePage(page))) : null;
+    var pathMoved = false;
+    String? publishedAt;
     // The check is made inside the lock, right before the replace.
     final result = await _underFolderLock(st, () async {
       await _assertCanWrite(loc);
-      return st.saveIfUnchanged(page, expectedText);
+      final path = st.pathFor(page.id);
+      if (onlyAtPath != null && _key(path) != _key(onlyAtPath)) {
+        pathMoved = true;
+        return null;
+      }
+      final r = await st.saveIfUnchanged(page, expectedText);
+      if (r.replaced) {
+        publishedAt = path;
+        // A listener that subscribed after the check above: hashed inside the
+        // emit's guard, so nothing can throw after the landed write.
+        _emitPublished(path, published, () => writePage(page));
+      }
+      return r;
     });
-    if (!result.replaced) return false;
-    final key = _key(st.pathFor(page.id));
+    if (pathMoved) return const _WriteOutcome(landed: false, pathMoved: true);
+    if (!result!.replaced) return const _WriteOutcome(landed: false);
+    final key = _key(publishedAt ?? st.pathFor(page.id));
     _known[key] = writePage(page);
     _pathId[key] = page.id;
     if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
     onPageContent?.call(loc, page);
-    return true;
+    return _WriteOutcome(landed: true, identity: published);
+  }
+
+  // Merging a remote version (sync stage 1) ----------------------------------
+
+  /// Three-way merges [remote], a version of the page file at [path] that
+  /// [base] was the common ancestor of, into the notebook's page and saves the
+  /// result over exactly the file that was read (compare-and-swap, 0128). The
+  /// bytes are page files; nothing here parses anything else. [remoteTime] is
+  /// the remote file's time for the merge (default: now).
+  ///
+  /// [RemoteMergeOutcome.changed]: the file kept changing, the save was
+  /// skipped, or the page is busy. [RemoteMergeOutcome.refused]: any other
+  /// failure, with a reason. Neither writes anything through this call, and it
+  /// never writes blind. A closed page is merged in one save-chain job; the open
+  /// page takes the merge in the editor (not an undo step) and saves through its
+  /// normal save.
+  ///
+  /// Never call it inside a [FolderLocks] job on the page's folder (it awaits a
+  /// write on that folder: a deadlock; asserted in debug builds), nor inside a
+  /// save-chain job.
+  Future<RemoteMergeResult> mergeRemote(
+    String path,
+    List<int> base,
+    List<int> remote, {
+    int? remoteTime,
+  }) async {
+    assert(
+      !FolderLocks.isHeld(File(path).parent),
+      'mergeRemote runs inside a FolderLocks job on its own folder',
+    );
+    assert(!_chain.insideJob, 'mergeRemote runs inside a save-chain job: it would wait on itself');
+    if (_disposed) return const RemoteMergeResult.refused('the notebook is closed');
+    try {
+      await flush();
+      final loc = _locationOf(path);
+      if (loc == null) return const RemoteMergeResult.refused('the file is not in a joined location');
+      final NotedPage basePage;
+      final NotedPage remotePage;
+      try {
+        basePage = readPage(utf8.decode(base));
+      } on Object {
+        return const RemoteMergeResult.refused('the base version can not be read');
+      }
+      try {
+        remotePage = readPage(utf8.decode(remote));
+      } on Object {
+        return const RemoteMergeResult.refused('the remote version can not be read');
+      }
+      final id = remotePage.id;
+      if (basePage.id != id) return const RemoteMergeResult.refused('the base holds another page');
+      final time = remoteTime ?? DateTime.now().millisecondsSinceEpoch;
+      for (var round = 0; round < _maxWriteTries; round++) {
+        final c = _current;
+        final RemoteMergeResult? r;
+        if (c != null && c.page.id == id) {
+          r = await _mergeRemoteOpen(loc, path, id, basePage, remotePage, time);
+        } else {
+          final queuedOn = _chain.generation;
+          // A test seam: the page may be opened here, before the job is queued.
+          await syncHook?.call('merge-remote-closed', path);
+          r = await _afterSaves(
+            () => _mergeRemoteClosed(loc, path, id, basePage, remotePage, time, queuedOn),
+            what: 'merge of remote page $id',
+            pages: {id},
+          );
+        }
+        // Null: the page was opened (or closed) while this waited; try the other path.
+        if (r != null) return r;
+      }
+      return const RemoteMergeResult.changed();
+    } on NotebookException catch (e) {
+      return RemoteMergeResult.refused(e.message);
+    } on Object catch (e) {
+      return RemoteMergeResult.refused(describeError(e));
+    }
+  }
+
+  // The path rule: the page is tracked at [path] in [loc], and that is the file
+  // its store writes. A same-id duplicate or an unchosen file is never merged.
+  String? _remotePathProblem(String loc, String path, String id, PageStore st) {
+    final key = _key(path);
+    if (_pathId[key] != id || _loc[id] != loc || _key(st.pathFor(id)) != key) {
+      return 'the file is not the one this page is saved in';
+    }
+    return null;
+  }
+
+  // The page is closed: one chain job from the read to the compare-and-swap, so
+  // an open of the page can't interleave. Null: the page is open now.
+  Future<RemoteMergeResult?> _mergeRemoteClosed(
+    String loc,
+    String path,
+    String id,
+    NotedPage basePage,
+    NotedPage remotePage,
+    int time,
+    int queuedOn,
+  ) async {
+    for (var attempt = 0; attempt < _maxWriteTries; attempt++) {
+      if (_current?.page.id == id) return null;
+      // A page held by a save or a move isn't merged under it, except one that
+      // waited on the very save that holds it (as the AI's closed write).
+      final heldByItsOwnQueue = queuedOn != _chain.generation && _busy[id] == _busyDetached;
+      if (_busy.containsKey(id) && !heldByItsOwnQueue) return const RemoteMergeResult.changed();
+      final st = _storeOf(loc);
+      if (_isLocked(loc)) return const RemoteMergeResult.refused('the location is read-only');
+      final problem = _remotePathProblem(loc, path, id, st);
+      if (problem != null) return RemoteMergeResult.refused(problem);
+      final String text;
+      final NotedPage mine;
+      try {
+        text = await st.readText(id);
+        mine = readPage(text);
+      } on Object {
+        return const RemoteMergeResult.refused('the page file can not be read');
+      }
+      if (mine.id != id) return const RemoteMergeResult.refused('the page file holds another page');
+      final merged = mergePage(basePage, mine, remotePage, _pageCodecs(id), theirsTime: time).page;
+      if (writePage(merged) == text) {
+        // Nothing to write, but the file may have been replaced since the
+        // watcher last looked: the live state takes it in as after a landing.
+        // A file the notebook already holds as it is changes nothing, and must
+        // not count as an edit of the binder.
+        final key = _key(path);
+        if (_known[key] != text) {
+          _known[key] = text;
+          _pathId[key] = id;
+          _setConflict(id, hasConflicts(merged));
+          onPageContent?.call(loc, merged);
+          _metas[id] = merged.meta;
+          _touch(loc);
+          _rebuildTree();
+        }
+        return RemoteMergeResult.merged(identityOfForTest(utf8.encode(text)), wrote: false);
+      }
+      final w = await _writeIfUnchangedFull(loc, merged, text, wantIdentity: true, onlyAtPath: path);
+      if (w.pathMoved) return const RemoteMergeResult.refused('the file is not the one this page is saved in');
+      if (!w.landed) continue; // the file changed: read and merge again
+      _metas[id] = merged.meta;
+      _touch(loc);
+      _rebuildTree();
+      return RemoteMergeResult.merged(w.identity, wrote: true);
+    }
+    return const RemoteMergeResult.changed();
+  }
+
+  // The page is open: merge into the editor with the unsaved edits, then save
+  // through the normal save, which rereads the file and merges what arrived.
+  Future<RemoteMergeResult?> _mergeRemoteOpen(
+    String loc,
+    String path,
+    String id,
+    NotedPage basePage,
+    NotedPage remotePage,
+    int time,
+  ) async {
+    // No await from here to the apply.
+    final c = _current;
+    if (c == null || c.page.id != id) return null;
+    final key = _key(path);
+    if (!_isOpenFile(loc, key)) return const RemoteMergeResult.refused('the file is not the one this page is saved in');
+    if (_isLocked(loc)) return const RemoteMergeResult.refused('the location is read-only');
+    final st = _storeOf(loc);
+    final problem = _remotePathProblem(loc, path, id, st);
+    if (problem != null) return RemoteMergeResult.refused(problem);
+    if (c.readOnly || _diskBlockId == id || _preview != null || (_trouble.isTrouble && _trouble.pageId == id)) {
+      return const RemoteMergeResult.refused('the open page can not be saved now');
+    }
+    if (_busy.containsKey(id)) return const RemoteMergeResult.changed();
+    final knownBefore = _known[key]; // the file as last seen, before the merge
+    final merged = mergePage(basePage, c.page, remotePage, _pageCodecs(id), theirsTime: time).page;
+    final changed = writePage(merged) != writePage(c.page);
+    if (changed) c.applyExternal(merged); // not an undo step
+    // The save of the merged page (or of the page as it is when nothing
+    // changed), which reports how it ended.
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    final pending = _pendingSave;
+    final NotedPage toSave;
+    final int seq;
+    if (pending != null && pending.id == id) {
+      _pendingSave = null;
+      toSave = pending;
+      seq = _pendingSeq;
+    } else {
+      toSave = c.page;
+      seq = _session?.seq ?? 0;
+    }
+    final res = await _enqueueSave(toSave, seq, wantIdentity: true);
+    if (res.end == SaveEnd.landed) {
+      // "Wrote": the file now differs from what the notebook last saw there.
+      final before = knownBefore == null ? null : identityOfForTest(utf8.encode(knownBefore));
+      return RemoteMergeResult.merged(res.identity, wrote: res.identity != before);
+    }
+    if (res.end == SaveEnd.skipped || res.keepsChanging) return const RemoteMergeResult.changed();
+    return const RemoteMergeResult.refused('the page could not be saved; the edits are kept');
   }
 
   // External changes (0020) ---------------------------------------------------
@@ -6932,6 +7232,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _checking = job;
     return job;
   }
+
+  /// Runs [job] as a save-chain job.
+  @visibleForTesting
+  Future<T> runOnChainForTest<T>(Future<T> Function() job) => _afterSaves(job, what: 'test job');
+
+  /// Runs the check of [path] as a save-chain job, as a save's own check runs
+  /// it (inside a job, where queuing on the chain would wait on itself).
+  @visibleForTesting
+  Future<bool> checkFileInChainForTest(String path) => _afterSaves(() => _checkFile(path), what: 'check of $path');
 
   /// Looks at a binder's `noted-binder.json` ([path]) after it may have been
   /// changed by someone else.
@@ -7418,39 +7727,72 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   ) async {
     final id = copy.id;
     final st = _storeOf(loc);
-    final c = _current;
-    final isOpen = c != null && c.page.id == id && _loc[id] == loc;
-    final NotedPage original;
-    final String? failure;
-    if (isOpen) {
-      // Merge into the page on screen, keeping unsaved edits, and save it.
-      original = c.page;
+    bool openHere() {
+      final c = _current;
+      return c != null && c.page.id == id && _loc[id] == loc;
+    }
+
+    // The page on screen: merge into it, keeping unsaved edits, and save it.
+    Future<String?> openBranch(CanvasController c) async {
+      final original = c.page;
       final merged = mergeConflictCopy(original, copy, modules.codecs, copyTime: time).page;
       if (writePage(merged) != writePage(original)) c.applyExternal(merged);
       await flush();
-      failure = verifyConflictCopyMerge(readPage(await st.readText(id)), original, copy);
-    } else {
+      return verifyConflictCopyMerge(readPage(await st.readText(id)), original, copy);
+    }
+
+    // The page is closed: one chain job from the read of the original to
+    // `_applyClosed`, so an open of the page can't run between the read and the
+    // write and install the page as it was before. [open] is set when the page
+    // turned out to be open after all (checked first, inside the job).
+    Future<({bool open, String? failure})> closedBranch() async {
+      if (openHere()) return (open: true, failure: null);
       final text = await File(originalPath).readAsString();
-      original = readPage(text);
+      final original = readPage(text);
       final merged = mergeConflictCopy(original, copy, modules.codecs, copyTime: time).page;
       final out = writePage(merged);
-      if (out != text) {
-        // Make the store write to the file the original was read from.
-        if (_key(st.pathFor(id)) != _key(originalPath)) await _scan(st);
-        // Replace the original only if it still holds exactly what the merge
-        // read, checked at the moment of replacing (0128); if not, merge again.
-        await syncHook?.call('original-read', originalPath);
-        if (!await _writeIfUnchanged(loc, merged, text)) throw const _SourceChanged();
-        final back = await st.readText(id);
-        if (back != out) throw const FormatException('the saved page differs from what was written');
-        failure = verifyConflictCopyMerge(readPage(back), original, copy);
-        if (_loc[id] != loc) {
-          await _applyClosed(merged, loc, _key(originalPath), originalPath);
-        }
+      if (out == text) return (open: false, failure: verifyConflictCopyMerge(readPage(text), original, copy));
+      // Make the store write to the file the original was read from.
+      if (_key(st.pathFor(id)) != _key(originalPath)) await _scan(st);
+      // Replace the original only if it still holds exactly what the merge
+      // read, checked at the moment of replacing (0128); if not, merge again.
+      await syncHook?.call('original-read', originalPath);
+      if (!await _writeIfUnchanged(loc, merged, text)) throw const _SourceChanged();
+      final back = await st.readText(id);
+      if (back != out) throw const FormatException('the saved page differs from what was written');
+      final failure = verifyConflictCopyMerge(readPage(back), original, copy);
+      if (_loc[id] != loc) {
+        await _applyClosed(merged, loc, _key(originalPath), originalPath);
+      }
+      return (open: false, failure: failure);
+    }
+
+    String? failure;
+    var settled = false;
+    for (var round = 0; round < 3 && !settled; round++) {
+      final c = _current;
+      if (c != null && openHere()) {
+        failure = await openBranch(c);
+        settled = true;
+        continue;
+      }
+      // Inside a chain job already (a save's own check) the job can't queue on
+      // the chain and wait: it runs inline, as it always did.
+      final ({bool open, String? failure}) r;
+      if (_chain.insideJob) {
+        r = await closedBranch();
       } else {
-        failure = verifyConflictCopyMerge(readPage(text), original, copy);
+        // A test seam: the page may be opened here, before the job is queued.
+        await syncHook?.call('conflict-copy-closed', copyPath);
+        r = await _afterSaves(closedBranch, what: 'conflict-copy merge of page $id', pages: {id});
+      }
+      if (!r.open) {
+        failure = r.failure;
+        settled = true;
       }
     }
+    // Opened and closed again every round: leave the copy for the next check.
+    if (!settled) throw const _SourceChanged();
     if (failure != null) throw FormatException(failure);
     // Delete the copy only if it is still exactly what was merged.
     await syncHook?.call('copy-merged', copyPath);
@@ -7466,10 +7808,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (now != consumed) throw const _SourceChanged();
     // Deleted only if it still holds exactly the text that was merged, checked
     // at the moment of deleting (0128); a copy that changed since is merged again.
-    final deleted = await _underFolderLock(
-      st,
-      () => deleteFileIfUnchanged(copyPath, utf8.encode(consumed)),
-    );
+    final deleted = await _underFolderLock(st, () async {
+      final r = await deleteFileIfUnchanged(copyPath, utf8.encode(consumed));
+      if (r.deleted) _emitDeleted(copyPath);
+      return r;
+    });
     if (!deleted.deleted && deleted.outcome != DeleteOutcome.absent) throw const _SourceChanged();
   }
 
@@ -8421,6 +8764,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Page [id] stops being busy, but only if it is busy for [why] (it may be
   // held by something else meanwhile).
+  /// Marks page [id] busy (or free) as a move or a detached save would.
+  @visibleForTesting
+  void setBusyForTest(String id, bool busy) {
+    if (busy) {
+      _busy[id] = _busyMoving;
+    } else {
+      _busy.remove(id);
+    }
+  }
+
   void _free(String id, String why) {
     if (_busy[id] == why) _busy.remove(id);
   }
@@ -9046,8 +9399,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
       }
       final target = PageStore(dir);
+      final copyIdentity = _identityOf(() => writePage(copy));
       if (!await target.saveNew(copy)) {
         throw const NotebookException('A file for the copy already exists, so nothing was written.');
+      }
+      // Reported only if the picked folder is a joined location.
+      if (_locationOf(target.pathFor(newPageId)) != null) {
+        _emitPublished(target.pathFor(newPageId), copyIdentity, () => writePage(copy));
       }
       if (await target.readText(newPageId) != writePage(copy)) {
         throw const NotebookException('The copy was not written correctly.');
@@ -9279,6 +9637,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _current?.dispose();
     _attachments?.dispose();
     unawaited(_notices.close());
+    unawaited(_changes.close());
     tools.dispose();
     super.dispose();
   }
