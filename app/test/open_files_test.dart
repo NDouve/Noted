@@ -280,6 +280,10 @@ void main() {
     });
 
     group('a copy that arrives after its folder was joined', () {
+      // Closing a page queues a look at its chosen file (R7); this waits for
+      // it, so a test that then changes that file isn't racing a read of it.
+      Future<void> settled(Notebook nb) => nb.checkFile('settled.txt');
+
       // A page called Original in [dir] (a binder when [binder]); the notebook
       // joins the folder, then a copy called Copy appears beside it.
       Future<({Notebook nb, String id, String orig, String copy})> setup(
@@ -424,6 +428,7 @@ void main() {
         final s = await setup(dir, dir);
         await openExistingFile(s.nb, s.copy);
         await s.nb.open(await s.nb.createPage());
+        await settled(s.nb);
         final copyText = File(s.copy).readAsStringSync();
         File(s.copy).deleteSync();
         await s.nb.checkFile(s.copy);
@@ -461,6 +466,7 @@ void main() {
         final s = await setup(dir, dir);
         await openExistingFile(s.nb, s.copy);
         await s.nb.open(await s.nb.createPage());
+        await settled(s.nb);
         final copyText = File(s.copy).readAsStringSync();
         File(s.copy).deleteSync();
         await s.nb.checkFile(s.copy);
@@ -478,6 +484,7 @@ void main() {
         final s = await setup(dir, dir);
         await openExistingFile(s.nb, s.copy);
         await s.nb.open(await s.nb.createPage());
+        await settled(s.nb);
         final copyText = File(s.copy).readAsStringSync();
         File(s.copy).deleteSync();
         await s.nb.checkFile(s.copy);
@@ -509,6 +516,7 @@ void main() {
           final s = await setup(dir, dir);
           await openExistingFile(s.nb, s.copy);
           await s.nb.open(await s.nb.createPage());
+          await settled(s.nb);
           final copyText = File(s.copy).readAsStringSync();
           File(s.copy).deleteSync();
           await s.nb.checkFile(s.copy);
@@ -534,6 +542,7 @@ void main() {
         File(shaped).writeAsBytesSync(File(s.orig).readAsBytesSync());
         await s.nb.checkFile(shaped);
         await s.nb.open(await s.nb.createPage());
+        await settled(s.nb);
         File(s.copy).deleteSync();
         await s.nb.checkFile(s.copy);
         await s.nb.checkFolders();
@@ -722,6 +731,7 @@ void main() {
         final path = s.nb.binders.single.path;
         // The binder's folder goes away and comes back: its store is made again.
         await s.nb.open(await s.nb.createPage());
+        await settled(s.nb);
         dir.renameSync('${dir.path}-away');
         await s.nb.checkFolders();
         Directory('${dir.path}-away').renameSync(dir.path);
