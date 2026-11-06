@@ -243,7 +243,7 @@ final class NotedLibrary {
         try {
           final page = readPage(_decode(bytes));
           names[e.path] = page.id;
-          final name = e.path.split(RegExp(r'[\/]')).last;
+          final name = e.path.split(RegExp(r'[\\/]')).last;
           final exact = name == '${page.id}.canvas';
           final seen = byId[page.id];
           if (seen == null || (exact && !seen.$2)) byId[page.id] = (page, exact, e.path);

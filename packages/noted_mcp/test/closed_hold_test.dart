@@ -430,6 +430,22 @@ void main() {
       expect(readLog(data), isEmpty);
     });
 
+    test('a same-id copy that sorts first never stands for the page: the canonical file is read and written', () async {
+      writeStore(data, [writer()], allowClosed());
+      final path = aiOpenPath();
+      final copy = '${data.path}/pages/${Ids.aiOpen}-NOTED-MCP-x1.canvas'; // "-" sorts before "."
+      final stale = page(Ids.aiOpen, 'Stale copy', ai: 'open', nodes: [box('aiA', aiBoxTypeId, aiBoxData('stale copy text'), const Bounds(0, 100, 100, 40))]);
+      File(copy).writeAsStringSync(writePage(stale));
+      final copyBefore = File(copy).readAsStringSync();
+      final read = await toolbox().readBox('aiA');
+      expect(read.text, contains('okapi from A'));
+      expect(read.text, isNot(contains('stale copy text')));
+      final out = await append(toolbox());
+      expect(out.isError, isFalse, reason: out.text);
+      expect(File(path).readAsStringSync(), contains('new words'));
+      expect(File(copy).readAsStringSync(), copyBefore);
+    });
+
     test('8. a missing lock file refuses the write: open Noted once', () async {
       writeStore(data, [writer()], allowClosed());
       File('${data.path}/$aiRunningLockFileName').deleteSync();
