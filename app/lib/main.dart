@@ -101,15 +101,22 @@ Future<void> main(List<String> args) async {
   final settings = AppSettings(defaultSettingsFile());
   final notebook = buildAppNotebook(settings: settings, recoveryLock: recoveryLock);
   FileClipboard.read = readClipboardFiles;
-  final services = await startAiServices(notebook, defaultAiDataFolder());
   final openFiles = OpenFileService(notebook);
   // Null in a build without NOTED_MS_CLIENT_ID: no Microsoft sign-in at all.
   final microsoft = MicrosoftAccount.create();
-  if (microsoft != null) unawaited(microsoft.start(settings: settings));
-  runApp(NotedApp(notebook: notebook, settings: settings, aiLink: services.link, runningLock: services.lock, openFiles: openFiles, microsoft: microsoft));
-  await notebook.load();
-  // Files named on the command line, then those a second launch hands over.
-  if (!isMobilePlatform) unawaited(openFiles.start(args));
+  await openWhenOwned(
+    notebook,
+    defaultAiDataFolder(),
+    show: runApp,
+    settings: settings,
+    openFiles: openFiles,
+    microsoft: microsoft,
+    args: args,
+    // Its first-launch clean-up can write settings.json: not before the lock.
+    onOwned: () {
+      if (microsoft != null) unawaited(microsoft.start(settings: settings));
+    },
+  );
   // After the first frame, so the window can show the questions.
   WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(notebook.askPendingAiApprovals()));
 }
@@ -199,8 +206,8 @@ Notebook buildAppNotebook({
       : AiAccessService(
           dataFolder: defaultAiDataFolder(binders),
           pageOfBox: (id) => notebook.aiPageOfBox(id),
-          // Another Noted may change the codes or the log: show it.
-          pollInterval: const Duration(seconds: 3),
+          // Polling (which trims the log and prunes codes) starts in
+          // openWhenOwned, once the running lock is held.
         );
   return notebook = Notebook(
     PageStore(pagesDirectory ?? defaultPagesDirectory()),
@@ -219,16 +226,48 @@ Notebook buildAppNotebook({
   );
 }
 
-/// Starts what `noted_mcp` relies on: the running lock and the local link.
-/// Neither runs on mobile (0129), which has no MCP server; both are null then.
-Future<({AiRunningLock? lock, AiLinkServer? link})> startAiServices(Notebook notebook, Directory dataFolder) async {
-  if (isMobilePlatform) return (lock: null, link: null);
-  // Held until the app exits: it tells noted_mcp that Noted is running.
-  final runningLock = appRunningLock = AiRunningLock(dataFolder)..acquire();
-  // If another process held it for too long, keep trying, with a warning
-  // on screen until it is ours.
-  if (!runningLock.held) runningLock.startRetrying();
-  return (lock: runningLock, link: await startAiLink(notebook, dataFolder));
+/// Starts the app in the one order that keeps `noted_mcp` out of an open page
+/// (run 2026-11-06-02):
+///
+/// 1. try the running lock once; if another process holds it, [show] a
+///    [WaitingForLockApp] and wait for it with no limit (a server's hold ends
+///    within seconds), so nothing is built, read or written meanwhile;
+/// 2. start the access service's polling (it trims the log and prunes revoked
+///    codes, both writes) and, unless [startLink] is false, the local link, so
+///    a link that answers implies the lock is held;
+/// 3. [show] the app, then load the notebook and open the files named in [args].
+///
+/// On mobile there is no lock, no link and no MCP server (0129), so nothing waits.
+Future<({AiRunningLock? lock, AiLinkServer? link})> openWhenOwned(
+  Notebook notebook,
+  Directory dataFolder, {
+  required void Function(Widget) show,
+  bool startLink = true,
+  AppSettings? settings,
+  OpenFileService? openFiles,
+  MicrosoftAccount? microsoft,
+  List<String> args = const [],
+  VoidCallback? onOwned,
+}) async {
+  AiRunningLock? lock;
+  if (!isMobilePlatform) {
+    // Held until the app exits: it tells noted_mcp that Noted is running.
+    lock = appRunningLock = AiRunningLock(dataFolder);
+    if (!lock.acquire(tries: 1)) {
+      show(WaitingForLockApp(lock: lock));
+      await lock.waitHeld();
+      // Disposed while waiting: never poll, link or load without the lock.
+      if (!lock.held) return (lock: lock, link: null);
+    }
+    notebook.aiAccess?.startPolling(const Duration(seconds: 3));
+  }
+  onOwned?.call();
+  final link = lock != null && startLink ? await startAiLink(notebook, dataFolder) : null;
+  show(NotedApp(notebook: notebook, settings: settings, aiLink: link, runningLock: lock, openFiles: openFiles, microsoft: microsoft));
+  await notebook.load();
+  // Files named on the command line, then those a second launch hands over.
+  if (!isMobilePlatform) unawaited(openFiles?.start(args));
+  return (lock: lock, link: link);
 }
 
 /// Starts the local link the MCP server writes through (invariant 4), with
@@ -345,21 +384,6 @@ class _NotedAppState extends State<NotedApp> {
     );
   }
 
-  // The warning across the top while the running lock isn't held.
-  Widget _withRunningWarning(Widget child) {
-    final lock = widget.runningLock;
-    if (lock == null) return child;
-    return Column(
-      children: [
-        ListenableBuilder(
-          listenable: lock,
-          builder: (context, _) => lock.held ? const SizedBox.shrink() : const AiRunningLockBanner(),
-        ),
-        Expanded(child: child),
-      ],
-    );
-  }
-
   Widget _materialApp(bool touch) {
     return MaterialApp(
       title: 'Noted',
@@ -368,7 +392,7 @@ class _NotedAppState extends State<NotedApp> {
       theme: buildNotedTheme(Brightness.light, touch: touch),
       darkTheme: buildNotedTheme(Brightness.dark, touch: touch),
       themeMode: _settings.themeMode,
-      builder: (context, child) => InputModeScope(child: _withRunningWarning(child!)),
+      builder: (context, child) => InputModeScope(child: child!),
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,

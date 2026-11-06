@@ -8,6 +8,8 @@ import 'dart:io';
 
 import 'package:noted_core/noted_core_read.dart';
 
+import 'running_probe.dart';
+
 /// The one way the server asks the app for anything (invariant 4): a request
 /// over the local link (`ai_link.dart` in the core, protocol `ai-link/2`).
 /// Every request that carries a code goes this way, so the app checks the
@@ -123,9 +125,11 @@ final class AiLinkClient {
 
   Future<({int port, String nonce})?> _readLink() async {
     try {
-      final f = File('${dataDir.path}${Platform.pathSeparator}$aiLinkFileName');
-      if (!await f.exists()) return null;
-      return readAiLink(await f.readAsString());
+      // Never the running-lock file itself (a synced link to it).
+      final identity = await LockIdentity.of(dataDir);
+      final bytes = await identity.readBytes('${dataDir.path}${Platform.pathSeparator}$aiLinkFileName');
+      if (bytes == null) return null;
+      return readAiLink(utf8.decode(bytes));
     } on Object {
       return null;
     }

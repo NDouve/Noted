@@ -11,6 +11,8 @@ import 'package:noted_core/noted_core_read.dart';
 // ignore: implementation_imports
 import 'package:noted_core/src/storage/exclusive_publish.dart' show publishExclusive;
 
+import 'running_probe.dart' show LockIdentity;
+
 /// What happened to a page file given to [ClosedWriter.replacePage].
 enum PageReplace {
   /// The new text is in place.
@@ -159,19 +161,31 @@ final class ClosedWriter {
   /// [PageReplace.busy]. The server never deletes a kept copy. If publishing
   /// fails, the aside is put back the same exclusive way (kept as a conflict
   /// copy if that is not possible) and the answer is [PageReplace.refused].
-  Future<PageReplace> replacePage(String path, {required List<int> expected, required List<int> text}) async {
+  Future<PageReplace> replacePage(
+    String path, {
+    required List<int> expected,
+    required List<int> text,
+    bool Function()? alive,
+    bool Function()? mayCommit,
+  }) async {
+    bool up() => alive == null || alive();
     File? tmp;
     try {
       final file = await _checked(path);
       if (file == null) return PageReplace.refused;
-      if (!_same(await file.readAsBytes(), expected)) return PageReplace.changed;
+      if (!up()) return PageReplace.busy;
+      final first = await file.readAsBytes();
+      if (!up()) return PageReplace.busy;
+      if (!_same(first, expected)) return PageReplace.changed;
       final name = path.split(RegExp(r'[\\/]')).last;
       final stem = name.substring(0, name.length - pageExtension.length);
       // A random name, created exclusively: two writers never share a file.
       final made = File('${file.parent.path}$_sep.$name.noted_mcp-$pid-${_suffix()}.tmp');
       await made.create(exclusive: true);
       tmp = made;
+      if (!up()) return PageReplace.busy;
       await tmp.writeAsBytes(text, flush: true);
+      if (!up()) return PageReplace.busy;
       // Probe: can this volume publish exclusively at all (hard links on
       // POSIX)? Publishing the finished file to a second temporary name finds
       // out with the page untouched; if it throws, the answer is `refused`
@@ -180,8 +194,11 @@ final class ClosedWriter {
       final probe = File('${file.parent.path}$_sep.$name.noted_mcp-$pid-${_suffix()}.tmp');
       if (!await publish(tmp, probe.path)) return PageReplace.refused;
       tmp = probe;
+      if (!up()) return PageReplace.busy;
       final aside = File('${file.parent.path}$_sep$stem-NOTED-MCP-${_suffix()}$pageExtension');
       if (beforeAside != null) await beforeAside!();
+      // The last step before the page changes: the caller says whether the hold still stands.
+      if (mayCommit != null && !mayCommit()) return PageReplace.busy;
       await file.rename(aside.path);
       // From here the aside holds the page's previous bytes: it is removed
       // only after the new text is published, and otherwise put back or kept.
@@ -236,6 +253,8 @@ final class ClosedWriter {
   Future<File?> _checked(String path) async {
     if (!path.endsWith(pageExtension)) return null;
     if (await FileSystemEntity.type(path, followLinks: false) != FileSystemEntityType.file) return null;
+    // A hard link to the running-lock file (POSIX): never opened by this server.
+    if (await (await LockIdentity.of(dataDir)).isLock(path)) return null;
     final file = File(path);
     final realParent = _norm(await file.parent.resolveSymbolicLinks());
     for (final f in folders) {

@@ -221,6 +221,8 @@ void main() {
 
     // Noted closes (its link stops, and this test holds no running lock):
     // noted_mcp checks approved codes itself against the saved store.
+    // The app leaves its lock file in the data folder; without it a closed write is refused.
+    File('${data.path}/noted-running.lock').writeAsStringSync('');
     await nb.flush();
     await link.dispose();
     linkStopped = true;

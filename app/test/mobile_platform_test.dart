@@ -236,7 +236,7 @@ void main() {
       );
       addTearDown(nb.dispose);
       final data = await Directory('${root.path}/data').create();
-      final s = await startAiServices(nb, data);
+      final s = await openWhenOwned(nb, data, show: (_) {});
       expect(s.lock, isNull);
       expect(s.link, isNull);
       expect(data.listSync(), isEmpty);
@@ -251,7 +251,7 @@ void main() {
       );
       addTearDown(nb.dispose);
       final data = await Directory('${root.path}/data').create();
-      final s = await startAiServices(nb, data);
+      final s = await openWhenOwned(nb, data, show: (_) {});
       addTearDown(() async {
         await s.link?.dispose();
         s.lock?.dispose();

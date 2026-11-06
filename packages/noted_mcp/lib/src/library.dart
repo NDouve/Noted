@@ -7,6 +7,8 @@ import 'dart:io';
 
 import 'package:noted_core/noted_core_read.dart';
 
+import 'running_probe.dart';
+
 /// Where Noted keeps this device's files: `settings.json`, `binders.json`
 /// and the default `pages` folder (`%APPDATA%\Noted` on Windows,
 /// `~/.noted` elsewhere), as the app finds them.
@@ -56,12 +58,43 @@ final class LibraryLocation {
   String get name => binder == null ? 'Pages' : (binder!.title.trim().isEmpty ? 'Binder' : binder!.title.trim());
 }
 
+/// What a folder listing found.
+enum FolderState { absent, failed, listed }
+
+/// One folder as listed by a library load: its state and, if listed, each
+/// `*.canvas` path with the page id it read as (null if unreadable).
+final class FolderListing {
+  FolderListing(this.state, [Map<String, String?>? pageIds, Map<String, String>? stats])
+    : pageIds = pageIds ?? const {},
+      stats = stats ?? const {};
+
+  final FolderState state;
+  final Map<String, String?> pageIds;
+
+  /// Each listed file's size and modified time, as one string.
+  final Map<String, String> stats;
+}
+
+/// The bytes and listings a load worked from, kept only for a closed write
+/// (`keepSources`), so that it can show under its hold that the eligibility
+/// inputs did not change. An absent file is recorded as null.
+final class LibrarySources {
+  final Map<String, List<int>?> files = {};
+  final Map<String, FolderListing> listings = {};
+}
+
 /// Every saved page this device can reach, read from the page files only
 /// (never from a running app's screen), with the AI access of each.
 ///
 /// Reading never writes: no folder is created, no file is changed.
 final class NotedLibrary {
-  NotedLibrary._(this.pages, this.folders);
+  NotedLibrary._(this.pages, this.folders, this.standalone, this.sources);
+
+  /// The standalone folders (one tree together).
+  final List<String> standalone;
+
+  /// Kept bytes and listings, only after a load with `keepSources`.
+  final LibrarySources? sources;
 
   /// The folders the library listed (standalone folders and binders). The
   /// closed-app writer may replace page files in these folders only.
@@ -81,10 +114,12 @@ final class NotedLibrary {
   /// Reads the folders listed by the app in [dataDir]: its `pages` folder,
   /// the default page folder in `settings.json`, and the standalone folders
   /// and binders in `binders.json`.
-  static Future<NotedLibrary> load(Directory dataDir) async {
+  static Future<NotedLibrary> load(Directory dataDir, {bool keepSources = false}) async {
     final sep = Platform.pathSeparator;
-    final settings = await _readJson(File('${dataDir.path}${sep}settings.json'));
-    final binders = await _readJson(File('${dataDir.path}${sep}binders.json'));
+    final identity = await LockIdentity.of(dataDir);
+    final kept = keepSources ? LibrarySources() : null;
+    final settings = await _readJson(identity, '${dataDir.path}${sep}settings.json', kept);
+    final binders = await _readJson(identity, '${dataDir.path}${sep}binders.json', kept);
     final standalone = <String>{
       '${dataDir.path}${sep}pages',
       if (settings['defaultPageFolder'] case final String p when p.isNotEmpty) p,
@@ -95,22 +130,22 @@ final class NotedLibrary {
     final loose = <(NotedPage, LibraryLocation, String)>[];
     for (final path in standalone) {
       final loc = LibraryLocation(path);
-      for (final (p, file) in await _readPages(Directory(path))) {
+      for (final (p, file) in await _readPages(identity, Directory(path), kept)) {
         loose.add((p, loc, file));
       }
     }
     pages.addAll(_withAccess(loose, binder: null, locked: false));
     for (final path in _strings(binders['binders'])) {
-      final binder = await _readBinder(Directory(path));
+      final binder = await _readBinder(identity, Directory(path), kept);
       // A binder that can't be read is left out whole. A locked one is kept,
       // marked: page AI never sees its pages, but its AI boxes stay reachable
       // by their codes.
       if (binder == null) continue;
       final loc = LibraryLocation(path, binder: binder);
-      final own = [for (final (p, file) in await _readPages(Directory(path))) (p, loc, file)];
+      final own = [for (final (p, file) in await _readPages(identity, Directory(path), kept)) (p, loc, file)];
       pages.addAll(_withAccess(own, binder: binder, locked: isLockedBinder(binder)));
     }
-    return NotedLibrary._(pages, [...standalone, ..._strings(binders['binders'])]);
+    return NotedLibrary._(pages, [...standalone, ..._strings(binders['binders'])], standalone.toList(), kept);
   }
 
   static List<LibraryPage> _withAccess(
@@ -152,49 +187,80 @@ final class NotedLibrary {
   static Iterable<String> _strings(Object? list) =>
       list is List ? list.whereType<String>().where((s) => s.isNotEmpty) : const [];
 
-  static Future<Map<String, Object?>> _readJson(File f) async {
+  static String _decode(List<int> bytes) => utf8.decode(bytes);
+
+  /// The page id [bytes] read as, or null if they don't read as a page.
+  static String? pageIdOf(List<int> bytes) {
     try {
-      if (!await f.exists()) return const {};
-      final json = jsonDecode(await f.readAsString());
+      return readPage(_decode(bytes)).id;
+    } on Object {
+      return null;
+    }
+  }
+
+  static Future<Map<String, Object?>> _readJson(LockIdentity identity, String path, LibrarySources? kept) async {
+    final bytes = await identity.readBytes(path);
+    kept?.files[path] = bytes;
+    if (bytes == null) return const {};
+    try {
+      final json = jsonDecode(_decode(bytes));
       return json is Map<String, Object?> ? json : const {};
     } on Object {
       return const {};
     }
   }
 
-  static Future<Binder?> _readBinder(Directory dir) async {
-    final f = File('${dir.path}${Platform.pathSeparator}$binderFileName');
+  static Future<Binder?> _readBinder(LockIdentity identity, Directory dir, LibrarySources? kept) async {
+    final bytes = await identity.readBytes(binderFilePath(dir.path));
+    kept?.files[binderFilePath(dir.path)] = bytes;
+    if (bytes == null) return null;
     try {
-      if (!await f.exists()) return null;
-      return Binder.parse(await f.readAsString());
+      return Binder.parse(_decode(bytes));
     } on Object {
       return null;
     }
   }
 
+  /// The binder file of the binder folder [folder].
+  static String binderFilePath(String folder) => '$folder${Platform.pathSeparator}$binderFileName';
+
   /// The pages in [dir]: each `*.canvas` file that reads as a page. A
   /// conflict copy (another file with the same page id) is skipped in
   /// favour of `<id>.canvas`.
-  static Future<List<(NotedPage, String)>> _readPages(Directory dir) async {
-    final byId = <String, (NotedPage, bool, String)>{};
+  static Future<List<(NotedPage, String)>> _readPages(
+    LockIdentity identity,
+    Directory dir,
+    LibrarySources? kept,
+  ) async {
+    final found = <(NotedPage, String)>[];
+    final names = <String, String?>{};
+    final stats = <String, String>{};
     try {
-      if (!await dir.exists()) return const [];
+      if (!await dir.exists()) {
+        kept?.listings[dir.path] = FolderListing(FolderState.absent);
+        return const [];
+      }
       await for (final e in dir.list()) {
         if (e is! File || !e.path.endsWith('.canvas')) continue;
+        stats[e.path] = await fileSignature(e.path);
+        final bytes = await identity.readBytes(e.path);
+        kept?.files[e.path] = bytes;
+        names[e.path] = null;
+        if (bytes == null) continue;
         try {
-          final page = readPage(await e.readAsString());
-          final name = e.path.split(RegExp(r'[\\/]')).last;
-          final exact = name == '${page.id}.canvas';
-          final seen = byId[page.id];
-          if (seen == null || (exact && !seen.$2)) byId[page.id] = (page, exact, e.path);
+          final page = readPage(_decode(bytes));
+          names[e.path] = page.id;
+          found.add((page, e.path));
         } on Object {
           // Unreadable: not given out.
         }
       }
     } on FileSystemException {
+      kept?.listings[dir.path] = FolderListing(FolderState.failed);
       return const [];
     }
-    return [for (final (p, _, path) in byId.values) (p, path)];
+    kept?.listings[dir.path] = FolderListing(FolderState.listed, names, stats);
+    return choosePages(found);
   }
 }
 
@@ -204,4 +270,29 @@ final class NotedLibrary {
 bool isLockedBinder(Binder binder) {
   final f = binder.fields;
   return f['locked']?.text == 'true' || f.containsKey('encryption') || f.containsKey('password');
+}
+
+/// A file's size and modified time as one string, for telling a rewritten file
+/// from one left alone ('-' if it can't be examined).
+Future<String> fileSignature(String path) async {
+  try {
+    final s = await File(path).stat();
+    return '${s.size}/${s.modified.microsecondsSinceEpoch}';
+  } on Object {
+    return '-';
+  }
+}
+
+/// One entry per page id from the page files found in a folder, in any order: a
+/// conflict copy (another file with the same page id) is skipped in favour of
+/// `<id>.canvas`; otherwise the first found is kept.
+List<(NotedPage, String)> choosePages(Iterable<(NotedPage, String)> found) {
+  final byId = <String, (NotedPage, bool, String)>{};
+  for (final (page, path) in found) {
+    final name = path.split(RegExp(r'[\\/]')).last;
+    final exact = name == '${page.id}.canvas';
+    final seen = byId[page.id];
+    if (seen == null || (exact && !seen.$2)) byId[page.id] = (page, exact, path);
+  }
+  return [for (final (p, _, path) in byId.values) (p, path)];
 }
