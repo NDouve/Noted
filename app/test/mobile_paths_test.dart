@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -840,23 +841,22 @@ void _recoveryTests() {
   test('the pass stops before the transaction limit; the next listing finishes it (note 6)', () async {
     await writeOld(oldFolder('pages'), _page('p1', 'one'), t1);
     await writeOld(oldFolder('binders/Work'), _page('p2', 'two'), t1);
-    // The limit is real time (a timer and a stopwatch), so a slow machine must
-    // not matter: the limit is long, the hook waits until 80% of it has passed
-    // on a stopwatch started before the transaction (the pass stops at 75%),
-    // and the last 20% is left for the rest of the work.
+    // A fake time source: the limit's timer never fires and "out of time"
+    // (75% of the limit) reads a clock that only the hook moves, so a slow
+    // machine cannot change the outcome.
     const limit = Duration(seconds: 4);
-    final clock = Stopwatch()..start();
+    var now = Duration.zero;
     var slow = true;
     final s = store(
       hook: (p) async {
         if (slow && p == 'tmp-written') {
           slow = false;
-          while (clock.elapsed * 5 < limit * 4) {
-            await Future<void>.delayed(const Duration(milliseconds: 20));
-          }
+          now += limit * 0.8;
         }
       },
-    );
+    )
+      ..uptime = (() => now)
+      ..timerFactory = ((d, cb) => Timer(const Duration(hours: 1), cb));
     final l = await s.transaction((tx) => tx.list(), limit: limit);
     expect(titles(l), {'one', 'two'});
     expect(l.entries, hasLength(2));
