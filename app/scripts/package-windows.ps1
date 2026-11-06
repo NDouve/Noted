@@ -97,7 +97,11 @@ $zip = Join-Path $app 'build\Noted-windows-x64.zip'
 if (-not $SkipBuild) {
   Push-Location $app
   try {
-    flutter build windows --release
+    # Microsoft sign-in is built in only when NOTED_MS_CLIENT_ID is set (the
+    # id is never committed); without it the build hides sign-in.
+    $defines = @()
+    if ($env:NOTED_MS_CLIENT_ID) { $defines += "--dart-define=NOTED_MS_CLIENT_ID=$env:NOTED_MS_CLIENT_ID" }
+    flutter build windows --release @defines
     if ($LASTEXITCODE -ne 0) { throw "flutter build failed ($LASTEXITCODE)" }
   } finally {
     Pop-Location

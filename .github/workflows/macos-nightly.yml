@@ -37,7 +37,7 @@ jobs:
       # Unsigned: no team or certificate is configured.
       - name: Build macOS
         working-directory: app
-        run: flutter build macos --release
+        run: flutter build macos --release --dart-define=NOTED_MS_CLIENT_ID=${{ vars.NOTED_MS_CLIENT_ID }}
 
       - name: Zip Noted.app
         working-directory: app/build/macos/Build/Products/Release
@@ -52,7 +52,7 @@ jobs:
 
       - name: Build iOS (unsigned)
         working-directory: app
-        run: flutter build ipa --release --no-codesign
+        run: flutter build ipa --release --no-codesign --dart-define=NOTED_MS_CLIENT_ID=${{ vars.NOTED_MS_CLIENT_ID }}
 
       # flutter build ipa --no-codesign leaves an .xcarchive; the app is the
       # one .app inside it.
