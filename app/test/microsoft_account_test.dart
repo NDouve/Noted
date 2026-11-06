@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -335,6 +336,63 @@ void main() {
         firstLaunchCleanup: () async => deletes++,
       );
       expect(deletes, 2);
+    });
+
+    test('a flag that failed to save is saved by the next sign-in once storage recovers', () async {
+      final dir = Directory.systemTemp.createTempSync('noted_keychain');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final blocker = File('${dir.path}/settings')..writeAsStringSync('x');
+      final file = File('${dir.path}/settings/settings.json');
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      var deletes = 0;
+      final account = _account(MemoryTokenStore());
+      addTearDown(account.dispose);
+      await account.start(
+        settings: AppSettings(file),
+        firstLaunchCleanup: () async => deletes++,
+      );
+      await account.signIn();
+      expect(account.error, "Noted couldn't prepare sign-in. Try again.");
+
+      blocker.deleteSync(); // storage recovers
+      await account.signIn();
+      expect(account.error, isNull);
+      expect(account.state, AuthState.signedIn);
+      expect(AppSettings(file).keychainCleaned, isTrue);
+      expect(deletes, 1); // only the save was retried
+    });
+
+    test('a sign-in while the clean-up is still running ends signed in with its token kept', () async {
+      final dir = Directory.systemTemp.createTempSync('noted_keychain');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final file = File('${dir.path}/settings.json')..writeAsStringSync('{}');
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final store = MemoryTokenStore();
+      final gate = Completer<void>();
+      final account = _account(store);
+      addTearDown(account.dispose);
+      final started = account.start(
+        settings: AppSettings(file),
+        firstLaunchCleanup: () => gate.future,
+      );
+      final signing = account.signIn(); // before the clean-up has finished
+      gate.complete();
+      await started;
+      await signing;
+      expect(account.error, isNull);
+      expect(account.state, AuthState.signedIn);
+      expect(AppSettings(file).keychainCleaned, isTrue);
+      expect(await store.read(AuthSession.refreshKey('t.o')), 'R');
+    });
+
+    test('markKeychainCleaned leaves the flag unset when the save fails', () {
+      final dir = Directory.systemTemp.createTempSync('noted_keychain');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      File('${dir.path}/blocker').writeAsStringSync('x');
+      final s = AppSettings(File('${dir.path}/blocker/settings.json'));
+      expect(s.markKeychainCleaned(), isFalse);
+      expect(s.keychainCleaned, isFalse);
+      expect(s.markKeychainCleaned(), isFalse); // a retry is not fooled
     });
 
     test(
