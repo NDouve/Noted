@@ -316,11 +316,14 @@ class RecoveryStore {
     _index.add(e);
   }
 
-  void _indexRemove(RecoveryEntry e) {
-    // A retired generation with an old-form twin that could not be deleted: the
-    // twin is retired with it, so no later listing offers it again.
-    final twin = _twinOf[e.gen];
+  // A retired generation with an old-form twin that could not be deleted: the
+  // twin is retired with it, so no later listing offers it again.
+  void _retireTwin(String gen) {
+    final twin = _twinOf[gen];
     if (twin != null) _landedOld.add(twin);
+  }
+
+  void _indexRemove(RecoveryEntry e) {
     _index.removeWhere((x) => x.file.path == e.file.path && x.gen == e.gen);
     if (!_index.any((x) => x.gen == e.gen)) _landed.remove(e.gen);
   }
@@ -572,6 +575,7 @@ class RecoveryStore {
     final stored = storedPath(folder, windows: windows);
     File? target;
     String? selectedGen;
+    String? replacedGen;
     for (var k = 1; target == null; k++) {
       final f = _slot(folder, page.id, k);
       if (!await f.exists()) {
@@ -582,6 +586,7 @@ class RecoveryStore {
       final e = await _peek(f);
       if (e != null && e.key == key && e.id == page.id) {
         selectedGen = _generationOf(e.folder, e.time, e.base, e.text);
+        replacedGen = selectedGen;
         if (replaceable != null && !replaceable.contains(selectedGen)) {
           throw const RecoveryRefused('the recovery folder holds an entry for this page that Noted did not write');
         }
@@ -607,6 +612,8 @@ class RecoveryStore {
       _stemOf(target.path),
       directory,
     );
+    // The generation this one replaced is retired, and so is its old-form twin.
+    if (replacedGen != null) _retireTwin(replacedGen);
     _indexPut(written);
     return written;
   }
@@ -1096,7 +1103,7 @@ class RecoveryStore {
           // No hard links here (exFAT/FAT, some network or FUSE storage): the
           // entry can't be moved without risking another one. The old file stays.
           if (deleteOnStop) await _tryDelete(tmp);
-          throw const FormatException("can't be moved to the current folder form on this storage; it is kept as it is");
+          throw const FormatException("couldn't be moved to the current folder form; it is kept as it is");
         }
         if (done) {
           await hook?.call('rekey-published');
@@ -1137,6 +1144,7 @@ class RecoveryStore {
       await hook?.call('delete');
       if (tx?.abandoned ?? false) throw const RecoveryTimeout();
       await f.delete();
+      _retireTwin(entry.gen);
       _indexRemove(entry);
     }
   }

@@ -894,6 +894,28 @@ void _recoveryTests() {
     expect(s.isLanded(l.entries.single.gen), isTrue, reason: 'still landed: replay only deletes it');
   });
 
+  test('a newer keep that replaces a twinned entry\'s slot retires the undeletable old-form twin too', () async {
+    await writeOld(oldFolder('pages'), _page('p1', 'one'), t1);
+    final s = store();
+    s.deleteForTest = (path, expected) async => throw FileSystemException('held', path);
+    final x = (await s.list()).entries.single;
+    // The closed writer merges X and writes over X's slot.
+    final y = await s.write(
+      folder: x.folder,
+      page: _page('p1', 'two'),
+      baseText: null,
+      time: t1.add(const Duration(hours: 1)),
+      replaceable: {x.gen},
+    );
+    List<String> offered(RecoveryListing l) => [
+      for (final e in l.entries)
+        if (!s.isLanded(e.gen)) e.page.meta.title,
+    ];
+    expect(offered(await s.list()), ['two'], reason: 'the old generation is not offered beside its replacement');
+    await s.delete(y);
+    expect(offered(await s.list()), isEmpty, reason: 'nor after the replacement landed and was deleted');
+  });
+
   test('a re-key temp that cannot be read is reported and kept', () async {
     rec.createSync(recursive: true);
     final tmp = File('${rec.path}/p1-abc.rekey.1-1.tmp')..writeAsStringSync('{"format":2,');
