@@ -1914,7 +1914,7 @@ class _Run {
   /// The listed path of the section at [folder] (normalised), as the notebook has it.
   String _listedPath(String folder) => nb.binders.firstWhere((b) => _norm(b.path) == folder).path;
 
-  Future<void> _binderStep() async {
+  Future<void> _binderStep({String? force}) async {
     const order = [
       'found/live',
       'found/restart',
@@ -1923,8 +1923,9 @@ class _Run {
       'duplicate/twoRoots',
       'openCopy',
       'upgrade',
+      'lockedList',
     ];
-    final kind = order[(seed + _binderStepCount++) % order.length];
+    final kind = force ?? order[(seed + _binderStepCount++) % order.length];
     trace.add('binder step: $kind');
     switch (kind) {
       case 'found/live':
@@ -1991,6 +1992,12 @@ class _Run {
           }
           expect(refused, isNotNull, reason: 'seed $seed: a copy of a listed binder is refused ($f)');
         }
+      case 'lockedList':
+        await _lockedList(damaged: _brng.nextBool());
+      case 'lockedList/locked':
+        await _lockedList(damaged: false);
+      case 'lockedList/damaged':
+        await _lockedList(damaged: true);
       case 'upgrade':
         await nb.flush();
         await nb.discoveryIdle;
@@ -2015,7 +2022,65 @@ class _Run {
           ..addAll(_devFolders.values.toSet().difference(listedIds));
     }
     await verify('binder step $kind');
-    kinds.add('binder:$kind');
+    kinds.add(kind.startsWith('lockedList') ? 'binder:lockedList' : 'binder:$kind');
+  }
+
+  // A launch that can't read binders.json (locked, or damaged), then a retry that
+  // can: binder changes are refused meanwhile, nothing is written, and after the
+  // retry a removal is recorded and a restart agrees.
+  Future<void> _lockedList({required bool damaged}) async {
+    final target = await _someFound();
+    final path = _devReal[target]!;
+    await nb.flush();
+    await nb.discoveryIdle;
+    final original = settings.readAsBytesSync();
+    _drop();
+    if (damaged) settings.writeAsStringSync('{oops');
+    final held = settings.readAsBytesSync();
+    nb = _make();
+    _spare.add(nb);
+    var fired = 0;
+    nb.binderHook = (point, p) async {
+      if (point != 'settings-read') return;
+      fired++;
+      if (!damaged) throw FileSystemException('locked by another program', p);
+    };
+    await nb.load();
+    expect(fired, 1, reason: 'seed $seed: the read hook fired');
+    expect(nb.settingsHoldForTest, damaged ? 'damaged' : 'locked', reason: 'seed $seed');
+    expect(nb.binders, isEmpty, reason: 'seed $seed: hidden while held');
+    // With every page in a binder or folder that is hidden, load makes a page.
+    final made = nb.currentId;
+    if (made != null && !model.containsKey(made)) {
+      model[made] = _MPage('pages');
+      nb.current!.insertBox(_opaqueBox());
+      _addBox(model[made]!, nb.current!);
+      await nb.flush();
+    }
+    final fresh = Directory('${root.path}${sep}New${++_binderCounter}')..createSync();
+    for (final change in [
+      () => nb.addBinder(fresh.path),
+      () => nb.createPage(folderPath: fresh.path),
+      () => nb.removeBinder(path),
+    ]) {
+      Object? refused;
+      try {
+        await change();
+      } on NotebookException catch (e) {
+        refused = e;
+      }
+      expect(refused, isNotNull, reason: 'seed $seed: a change while held is refused');
+    }
+    fresh.deleteSync(recursive: true);
+    expect(settings.readAsBytesSync(), held, reason: 'seed $seed: nothing was written while held');
+    await nb.retrySettings(); // the retries the refusals started end first
+    if (damaged) settings.writeAsBytesSync(original);
+    nb.binderHook = null;
+    expect(await nb.retrySettings(), isTrue, reason: 'seed $seed: the retry adopts the list');
+    await nb.discoveryIdle;
+    await nb.removeBinder(_listedPath(target));
+    _removedIds.add(_foundListed.remove(target)!);
+    await _opRestart();
   }
 
 
@@ -2223,7 +2288,7 @@ const _expectedKinds = {
   'vanish:restart/deletedWhileAway', 'vanish:live/replayFails',
   'vanish:restart/replayFails', 'restart', //
   'binder:found/live', 'binder:found/restart', 'binder:removeRestart', 'binder:movedElsewhere', //
-  'binder:duplicate/twoRoots', 'binder:openCopy', 'binder:upgrade', //
+  'binder:duplicate/twoRoots', 'binder:openCopy', 'binder:upgrade', 'binder:lockedList', //
 };
 
 final Set<String> _seen = {};
@@ -2342,6 +2407,17 @@ void main() {
       await run.start();
     });
     tearDown(() => run.stop());
+
+    // Run 2026-11-06-03: a binders.json that can't be read at launch is held;
+    // changes are refused, nothing is written, and after the retry a removal is
+    // recorded and a restart agrees with the files.
+    for (final variant in ['locked', 'damaged']) {
+      test('a $variant binder list: changes are refused until it can be read, then the model and a restart agree', () async {
+        await run._binderStep(force: 'lockedList/$variant');
+        await run.verify('after the $variant list', fresh: true);
+        expect(run.kinds, contains('binder:lockedList'));
+      });
+    }
 
     // Run 2026-11-05-03, area-data-integrity R-1: a hash-named destination file
     // that is damaged or short is kept as .damaged-<hex>, in every outcome, and

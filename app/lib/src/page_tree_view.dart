@@ -523,7 +523,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         ],
       ),
     );
-    if (ok ?? false) await _nb.removeBinder(b.path);
+    if (ok ?? false) await _guard(() => _nb.removeBinder(b.path));
   }
 
   Widget _endTarget(ThemeData theme) {

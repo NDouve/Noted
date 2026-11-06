@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:noted/main.dart' show buildModules;
+import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_lock.dart';
 import 'package:noted_core/noted_core.dart';
@@ -102,6 +103,8 @@ class TroubleWorld {
     Duration backoffMax = const Duration(hours: 1),
     Directory? recovery,
     Future<String?> Function()? pick,
+    AppSettings? appSettings,
+    Duration? settingsRetryFirst,
   }) {
     final nb = Notebook(
       storeFor(pages),
@@ -117,6 +120,8 @@ class TroubleWorld {
       busyReadWindow: busyWindow,
       backoffFirst: backoffFirst,
       backoffMax: backoffMax,
+      settings: appSettings,
+      settingsRetryFirst: settingsRetryFirst ?? const Duration(hours: 1),
     );
     opened.add(nb);
     return nb;
