@@ -480,8 +480,8 @@ class _Run {
   Future<void> _useContainer(String name) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     resetDeviceStorage();
-    final d = Directory('${root.path}${sep}$name${sep}Documents')..createSync(recursive: true);
-    final s = Directory('${root.path}${sep}$name${sep}Support')..createSync(recursive: true);
+    final d = Directory('${root.path}$sep$name${sep}Documents')..createSync(recursive: true);
+    final s = Directory('${root.path}$sep$name${sep}Support')..createSync(recursive: true);
     await initDeviceStorage(documents: () async => d, cache: () async => s, support: () async => s);
   }
 

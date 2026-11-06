@@ -12,7 +12,6 @@ import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/device_storage.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_store.dart';
-import 'package:noted_canvas/noted_canvas.dart' show Bounds;
 import 'package:noted_core/noted_core.dart';
 
 import 'support/trouble_world.dart';
