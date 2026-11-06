@@ -1647,7 +1647,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0116 — Reading while Noted is closed, and the server's access log
 - **Date:** 2026-11-01
-- **Status:** Active (approved by the maintainer; amends 0110)
+- **Status:** Active (approved by the maintainer; amends 0110); amended by 0144
 - **Decision:**
   - **Is Noted running?** The app holds an exclusive OS lock on `noted-running.lock` in its data folder for its whole life (opened without truncating; a few quick retries at start, then every 3 s, with a banner "Noted can't tell AI tools it's running…" while it isn't held). `noted_mcp` treats Noted as running if that lock is held, or if `ai-link.json`'s port answers the nonce greeting. Only when neither holds is Noted closed. When Noted is running but its link doesn't answer, the server answers "Noted is running but didn't answer; try again." and never falls back to the closed path.
   - **Closed-app reads:** `noted_mcp` verifies Reader and Writer codes itself against the saved `ai-access.json`: SHA-256 of the key in constant time, expiry, approval, role and target. It computes the same grants as the app (0110) from saved files: Privileged pages a page or binder code covers (one tree over all standalone folders, one per binder), minus Guarded and tightened pages and locked or unreadable binders; a box code reads that box only, with no page information. A missing store answers the "Open Noted" message; a damaged one "Noted can't read its codes. Open Noted to fix it."
@@ -1658,7 +1658,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0117 — Writer permissions and writes while Noted is closed
 - **Date:** 2026-11-01
-- **Status:** Active (approved by the maintainer; amends 0104 and 0108; Box API 0.10 approved by the maintainer); write eligibility amended by 0128; how it writes amended by 0131
+- **Status:** Active (approved by the maintainer; amends 0104 and 0108; Box API 0.10 approved by the maintainer); write eligibility amended by 0128; how it writes amended by 0131; Noted starting during a write amended by 0144
 - **Decision:**
   - **Writer permission** per AI box, chosen in its connections panel: **Append only** (default), **Edit** (append, and change its own AI-written text), **Full** (also replace the whole box, and replacing with nothing empties it). Stored locally as `"writerPermission"` per box in `ai-access.json`; absent or unknown reads as Append only. The app enforces it on link writes, before any question and again just before applying; `noted_mcp` enforces it on closed-app writes. A mode it doesn't allow answers `not_permitted`.
   - **Modes** on the wire and in `write_box`: `append`, `replace_ai`, `replace`. **Box API 0.10:** `AiWriteMode.replaceAiText` removes every block whose AI mark still matches it (0104) and puts the new blocks where the first such run was (or at the end), keeping every user-written block in place byte for byte. Because the mark survives bold, a to-do tick or a level change, Edit can replace such a block; once the user changes a block's words or type it is theirs. The panel says so.
@@ -1806,7 +1806,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0129 — iPad and Android test builds
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer; extends 0018; amended by 0130). The mobile adaptations listed below are built (0130).
+- **Status:** Active (approved by the maintainer; extends 0018; amended by 0130; mobile sync started by 0145). The mobile adaptations listed below are built (0130).
 - **Decision:**
   - **Scope:** iPad and Android test builds for testing pen, touch and layout: sideloaded, notes stored on the device, no mobile sync yet.
   - **Projects:** `app/ios` and `app/android`, id `io.github.ndouve.noted`, minimum iPadOS/iOS 15 (needed by `file_selector`) and Android 8 (API 26). iPad uses all four orientations. Android paste uses pasteboard's file provider, limited to the app's cache folder. Android library plugins that compile against an older SDK than the app (for example `keyboard_height_plugin`, through `appflowy_editor`) are raised to the app's compile SDK at build time.
@@ -2033,6 +2033,33 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Alternatives considered:**
   - Clearing the pending delete before Undo and restoring it on every failure path (each new exit path could lose it again).
   - Giving up the pages after a failed Undo with an error only (they exist nowhere else).
+
+## 0144 — A closed-app MCP write holds Noted's running lock until it publishes; Noted owns the lock before its link or any page
+- **Date:** 2026-11-06
+- **Status:** Active (finding accepted and the reading of "running" decided by the maintainer's PM chat; built from the reviewed design `2026-11-06-01-mcp-closed-start`; details decided by the build team; amends 0116 and 0117)
+- **Decision:**
+  - **Running** means Noted holds `noted-running.lock`, or its link answers. A missing lock file refuses a closed write ("Open Noted once, then try again.").
+  - **The server holds the lock across the write.** A closed write takes the shared lock just before reading the page and releases it after publishing or giving up. One process-wide gate owns every open, lock and close of the file, so a read tool's probe can't drop a write's hold. The app's exclusive lock and the shared lock exclude each other.
+  - **A 5 s limit**, from taking the lock to the step that first changes the page (`mayCommit`, just before the move aside), is a timer: when it fires the hold is released and the write ends `busy`. Temp-file operations already under way may finish, and their clean-up run, after Noted has started; they never touch a page file.
+  - **Under the hold** the server checks the link again (if it answers, the write goes to the app), re-runs the code, approval, permission and closed-write checks on a fresh `ai-access.json`, and compares `settings.json`, `binders.json`, the binder file and the parent pages' files by bytes, and the page's folder listings. A listed file is re-read if it is new, was unreadable, or its size or modified time changed. Any difference ends the attempt; the retry's own checks refuse it. A replacement that keeps a file's size and modified time is not caught (rare).
+  - **Server reads never open the lock file** through a link (identity check on Linux and macOS).
+  - **The app** takes its lock before it starts its link, its AI-access polling, the Microsoft start or loads any page. Until it holds the lock it shows only a waiting screen with a notice (after 1 s) and Quit, retries every 250 ms without a limit, and writes nothing. The old banner and the retries after load are removed.
+- **Rationale:** "Noted is closed" was decided once and acted on later, so a write could land after Noted had started and opened the page.
+- **Alternatives considered:** going ahead after a time limit at start (a write could still land under an open page); starting the link before the lock (an in-flight write could publish while the link answers); re-checking only `ai-access.json` (binder or parent settings changed in between would be missed); turning closed writes off until fixed.
+
+## 0145 — Microsoft sign-in (OneDrive sync stage 2)
+- **Date:** 2026-11-06
+- **Status:** Active (approved by the maintainer on 2026-11-05: dependencies, packages, scope, redirects; details decided by the build team; amends 0129's "no mobile sync yet")
+- **Decision:**
+  - **Flow:** authorization code with PKCE (S256), public client, authority `common`, scope `Files.ReadWrite offline_access openid profile`. iOS, Android and macOS use `flutter_appauth` 13.0.0 (`authorize()` only) with the redirect `io.github.ndouve.noted://auth`; Windows and Linux use the system browser and a loopback listener on 127.0.0.1 and ::1 with `http://localhost:<port>/noted-auth`. The code exchange and refresh are in the pure-Dart package `packages/noted_auth` (`http` 1.6.0, `crypto` 3.0.7).
+  - **Tokens:** the refresh token is kept with `flutter_secure_storage` 11.0.0, one key per account; the access token stays in memory. A rotated token is written and read back before the old one is dropped. `invalid_grant` or a storage failure means Sign in again. One refresh runs for concurrent callers. Sign-out removes the stored token and touches nothing on OneDrive.
+  - **Backups:** Android excludes the plugin's storage files from backup and device transfer. iOS deletes Noted's keychain items once per install, after saving the `keychainCleaned` flag in `settings.json`.
+  - **Client id:** passed as `--dart-define=NOTED_MS_CLIENT_ID`, from the Actions variable in CI; never committed. A build without it shows no sign-in.
+  - **Reach:** only from Settings, About Noted, tapping its first line five times ("Microsoft account (preview)").
+  - **Boundary:** tests fail if `noted_core` or `noted_mcp` reaches `noted_auth` (invariant 4).
+  - **Windows dependency override:** `flutter_secure_storage_windows` is pinned to 4.1.0, because 4.2.x needs `win32` 6, which `file_picker` doesn't allow yet.
+- **Rationale:** mobile sync needs a Microsoft account; signing in through the system browser reuses an existing web session.
+- **Alternatives considered:** MSAL (no first-party Flutter binding; Android redirect tied to the signing key); platform channels instead of the two plugins (about one more run); the app-folder scope (can't reach the existing folder).
 
 ---
 
