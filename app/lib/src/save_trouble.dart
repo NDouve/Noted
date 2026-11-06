@@ -5,6 +5,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:noted_core/noted_core.dart' show ContentIdentity;
+
 /// The pieces of R-1 v5 (failed saves never lose edits) that don't need the
 /// notebook: the save chain (L1), the open page's session, the outcome of a
 /// recovery write, the retry backoff, error classification and the state the
@@ -194,9 +196,16 @@ class KeepOutcome {
 enum SaveEnd { landed, failed, blocked, skipped }
 
 class SaveResult {
-  const SaveResult(this.end, [this.keep]);
+  const SaveResult(this.end, [this.keep, this.identity, this.keepsChanging = false]);
 
   final SaveEnd end;
+
+  /// The identity of the file as written, set when [end] is [SaveEnd.landed]
+  /// and the caller asked for it (or the change feed is live).
+  final ContentIdentity? identity;
+
+  /// Set when the save gave up because the file kept changing.
+  final bool keepsChanging;
 
   /// What happened to the edits when [end] is [SaveEnd.failed] or blocked.
   final KeepOutcome? keep;
