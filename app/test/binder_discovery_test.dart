@@ -11,9 +11,12 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/foundation.dart';
 import 'package:noted/main.dart';
+import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/open_files.dart';
+import 'package:noted/src/recovery_store.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -52,18 +55,25 @@ class _VanishingStore extends PageStore {
   }
 }
 
-// A settings file that exists but can't be read (a lock).
+// A settings file that exists but can't be read (a lock) until [unlocked],
+// when both reads go to the real file.
 class _LockedFile implements File {
   _LockedFile(this.real);
 
   final File real;
+  bool unlocked = false;
 
   @override
-  Future<bool> exists() async => true;
+  Future<bool> exists() async => unlocked ? real.exists() : true;
 
   @override
-  Future<String> readAsString({Encoding encoding = utf8}) async =>
-      throw FileSystemException('locked by another program', real.path);
+  Future<String> readAsString({Encoding encoding = utf8}) async => unlocked
+      ? real.readAsString(encoding: encoding)
+      : throw FileSystemException('locked by another program', real.path);
+
+  @override
+  Future<Uint8List> readAsBytes() async =>
+      unlocked ? real.readAsBytes() : throw FileSystemException('locked by another program', real.path);
 
   @override
   String get path => real.path;
@@ -87,6 +97,24 @@ class _LockedFile implements File {
     Encoding encoding = utf8,
     bool flush = false,
   }) => real.writeAsString(contents, mode: mode, encoding: encoding, flush: flush);
+}
+
+// The binder test seam: counts every point that fires, throws a lock at
+// `settings-read` while [locked], and runs [on] for a point.
+class _Hooks {
+  bool locked = false;
+  final fired = <String, int>{};
+  final on = <String, Future<void> Function(String path)>{};
+
+  int count(String point) => fired[point] ?? 0;
+
+  Future<void> call(String point, String path) async {
+    fired[point] = count(point) + 1;
+    if (point == 'settings-read' && locked) {
+      throw FileSystemException('locked by another program', path);
+    }
+    await on[point]?.call(path);
+  }
 }
 
 Binder mkBinder({required String title, required String id}) =>
@@ -148,6 +176,9 @@ void main() {
     Directory? templates,
     bool watch = false,
     Duration? interval,
+    Duration? retryFirst,
+    AppSettings? settings,
+    Future<String?> Function()? pick,
   }) {
     final nb = Notebook(
       PageStore(Directory(at(pagesRel))),
@@ -160,6 +191,9 @@ void main() {
       watchDebounce: const Duration(milliseconds: 50),
       discoveryDebounce: const Duration(milliseconds: 50),
       folderCheckInterval: interval ?? const Duration(seconds: 3),
+      settingsRetryFirst: retryFirst ?? const Duration(hours: 1),
+      settings: settings,
+      pickFolder: pick,
     );
     opened.add(nb);
     return nb;
@@ -693,14 +727,6 @@ void main() {
         },
       );
 
-      test('a damaged binders.json is an upgrade', () async {
-        await binderAt('binders/U', a1);
-        settingsFile().writeAsStringSync('{oops');
-        final nb = await start();
-        expect(nb.binders, isEmpty);
-        expect(saved()['removedBinders'], [a1]);
-        expect(File(at('binders.json.bad')).existsSync(), isTrue);
-      });
     });
 
     test('13: binderIds are recorded, pruned and adopted; unknown fields are kept', () async {
@@ -864,22 +890,6 @@ void main() {
         await nb.discoveryIdle;
         expect(sawRow, isTrue);
         expect(nb.binders.single.unreadable, isEmpty);
-      });
-
-      test('a binders.json that can\'t be read at launch: no discovery and the file is left alone', () async {
-        await binderAt('binders/U', a1);
-        writeSettings({'format': 1, 'binders': <String>[]});
-        final before = settingsFile().readAsBytesSync();
-        final nb = await start(file: _LockedFile(settingsFile()));
-        await nb.discoverBinders();
-        expect(nb.binders, isEmpty);
-        nb.dispose();
-        opened.remove(nb);
-        expect(settingsFile().readAsBytesSync(), before);
-        // Control: readable, the same state is an upgrade that records it.
-        final ok = await start();
-        expect(ok.binders, isEmpty);
-        expect(saved()['removedBinders'], [a1]);
       });
 
       test('a found add between the open check and addBinder still adopts the page file (0137)', () async {
@@ -1209,5 +1219,730 @@ void main() {
         expect(File('${dir.path}/$binderFileName').readAsBytesSync(), bytes, reason: 'the file is never written');
       },
     );
+  });
+
+  group('an unreadable binders.json is held, never written', () {
+    const loadingMsg = 'Noted is still loading its binder list. Try again in a moment.';
+    const lockedMsg = "Noted can't read its binder list right now. Try again in a moment.";
+    const lockedNote =
+        "Noted can't read its binder list (binders.json) right now, so binders and extra page folders are "
+        'hidden. They will appear when it can be read.';
+    const checkingNote = 'Noted is checking whether its binder list was deleted.';
+    const mobileNote =
+        "Noted can't read its binder list. Binders and extra page folders stay hidden until it can be read.";
+    const emptyList = '{"format":1,"binders":[],"binderIds":{}}';
+
+    String damagedNote([File? f]) =>
+        "Noted's binder list (binders.json in ${(f ?? settingsFile()).parent.path}) is damaged, so binders and "
+        "extra page folders are hidden and can't be added or removed. Put back a readable copy, or delete the "
+        'file to start a new list; your binder and page folders are not changed.';
+
+    List<String> heldNotes(Notebook nb) => [
+      for (final n in nb.discoveryNotes)
+        if (n.path.endsWith('binders.json')) n.reason,
+    ];
+
+    Future<void> refused(Future<Object?> Function() action, [String msg = lockedMsg]) => expectLater(
+      action(),
+      throwsA(isA<NotebookException>().having((e) => e.message, 'message', msg)),
+    );
+
+    Future<void> until(bool Function() done, {String? what}) async {
+      final end = DateTime.now().add(const Duration(seconds: 10));
+      while (!done()) {
+        if (DateTime.now().isAfter(end)) fail('timed out waiting for ${what ?? 'a condition'}');
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    }
+
+    // The settings file lists B1 (a1) with an id for it, a removed id (a2) and an
+    // unknown field; R1 (a2, removed) and U (a3, not listed) sit in the default
+    // binder folder.
+    Future<String> lockedSetup() async {
+      final b1 = await binderAt('other/B1', a1, pages: ['b1p']);
+      await binderAt('binders/R1', a2);
+      await binderAt('binders/U', a3);
+      writeSettings({
+        'format': 1,
+        'binders': [b1],
+        'binderIds': {b1: a1},
+        'removedBinders': [a2],
+        'x': 'keep',
+      });
+      return b1;
+    }
+
+    Future<(Notebook, _Hooks)> startHeld({
+      bool locked = true,
+      File? file,
+      AppSettings? settings,
+      Duration? retryFirst,
+      Duration? interval,
+      Future<String?> Function()? pick,
+    }) async {
+      final hooks = _Hooks()..locked = locked;
+      final nb = make(file: file, settings: settings, retryFirst: retryFirst, interval: interval, pick: pick);
+      nb.binderHook = hooks.call;
+      await nb.load();
+      await nb.discoveryIdle;
+      return (nb, hooks);
+    }
+
+    List<String> tmpFiles() => [
+      for (final e in root.listSync())
+        if (e.path.endsWith('.tmp')) e.path,
+    ];
+
+    test('1: a locked list: no binder is listed, changes are refused, the file is never written', () async {
+      await lockedSetup();
+      Directory(at('chosen')).createSync();
+      Directory(at('existing')).createSync();
+      final before = settingsFile().readAsBytesSync();
+      var picked = 0;
+      final settings = AppSettings(null)..defaultPageFolder = at('chosen');
+      final (nb, hooks) = await startHeld(
+        settings: settings,
+        pick: () async {
+          picked++;
+          return at('other/B2');
+        },
+      );
+      expect(hooks.count('settings-read'), 1, reason: 'the hook fired');
+      expect(nb.binders, isEmpty);
+      expect(heldNotes(nb), [lockedNote]);
+      await refused(() => nb.createBinder());
+      await refused(() => nb.openBinder());
+      await refused(() => nb.newBinderInFolder());
+      await refused(() => nb.addBinder(at('other/B2')));
+      await refused(() => nb.addStandaloneFolder(at('newfolder')));
+      await refused(() => nb.removeStandaloneFolder(nb.standaloneFolders.single.path));
+      await refused(() => nb.createPage(folderPath: at('newfolder')));
+      await refused(() => nb.setDefaultPageFolder(at('existing')));
+      expect(settings.defaultPageFolder, at('chosen'), reason: 'refused before settings.json changes');
+      expect(picked, 0);
+      expect(Directory(at('binders/New binder')).existsSync(), isFalse);
+      expect(Directory(at('newfolder')).existsSync(), isFalse);
+      await nb.discoverBinders();
+      expect(nb.binders, isEmpty);
+      expect(hooks.count('settings-read'), greaterThan(1), reason: 'each refusal started a retry');
+      nb.dispose();
+      opened.remove(nb);
+      expect(settingsFile().readAsBytesSync(), before);
+      // Control: readable, the same file lists B1 and finds U (R1 stays removed).
+      final ok = await start();
+      expect(idsOf(ok), [a1, a3]);
+      expect(saved()['x'], 'keep');
+    });
+
+    test('1: a locked file object (the unlocked switch hands reads to the real file)', () async {
+      await lockedSetup();
+      final before = settingsFile().readAsBytesSync();
+      final locked = _LockedFile(settingsFile());
+      final nb = await start(file: locked);
+      expect(nb.binders, isEmpty);
+      expect(heldNotes(nb), [lockedNote]);
+      await refused(() => nb.addBinder(at('other/B2')));
+      expect(settingsFile().readAsBytesSync(), before);
+      locked.unlocked = true;
+      expect(await nb.retrySettings(), isTrue);
+      expect(idsOf(nb), contains(a1));
+    });
+
+    test('1: a real lock held by another handle', () async {
+      await lockedSetup();
+      final before = settingsFile().readAsBytesSync();
+      final raf = settingsFile().openSync(mode: FileMode.append);
+      raf.lockSync(FileLock.exclusive);
+      try {
+        final nb = await start();
+        expect(nb.binders, isEmpty);
+        await refused(() => nb.addBinder(at('other/B2')));
+        raf.unlockSync();
+        expect(await nb.retrySettings(), isTrue);
+        expect(idsOf(nb), contains(a1));
+        expect(settingsFile().readAsBytesSync().take(before.length), before);
+      } finally {
+        raf.closeSync();
+      }
+    }, skip: !Platform.isWindows ? 'a lock stops reads only on Windows' : null);
+
+    for (final (name, bytes) in [
+      ('{oops', utf8.encode('{oops')),
+      ('invalid UTF-8', [0xff, 0xfe, 0x7b]),
+    ]) {
+      test('2: a damaged list ($name) is never renamed or replaced, and discovery records nothing', () async {
+        await binderAt('binders/U', a1);
+        settingsFile().writeAsBytesSync(bytes);
+        final (nb, hooks) = await startHeld(locked: false, interval: const Duration(milliseconds: 20));
+        expect(hooks.count('settings-read'), 1, reason: 'the hook fired');
+        expect(nb.settingsHoldForTest, 'damaged');
+        expect(nb.binders, isEmpty);
+        expect(heldNotes(nb), [damagedNote()]);
+        await refused(() => nb.createBinder());
+        await refused(() => nb.addBinder(at('other/B2')));
+        await Future<void>.delayed(const Duration(milliseconds: 150)); // folder ticks
+        await nb.discoverBinders();
+        expect(nb.binders, isEmpty);
+        expect(File(at('binders.json.bad')).existsSync(), isFalse);
+        expect(settingsFile().readAsBytesSync(), bytes);
+        nb.dispose();
+        opened.remove(nb);
+        expect(settingsFile().readAsBytesSync(), bytes);
+        expect([for (final e in root.listSync()) e.path.split(RegExp(r'[\\/]')).last], isNot(contains(startsWith('binders.json.'))));
+      });
+    }
+
+    test('2: a damaged list under a mobile platform has a factual notice only', () async {
+      settingsFile().writeAsStringSync('{oops');
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        final (nb, _) = await startHeld(locked: false);
+        expect(heldNotes(nb), [mobileNote]);
+        final text = heldNotes(nb).single.toLowerCase();
+        for (final word in ['reinstall', 'not changed', 'unchanged', 'kept', 'safe']) {
+          expect(text, isNot(contains(word)));
+        }
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    group('2: the list is deleted', () {
+      Future<(Notebook, _Hooks, DateTime Function())> deleted({String settingsName = 'binders.json'}) async {
+        await binderAt('binders/U', a1);
+        final file = File(at(settingsName));
+        file.parent.createSync(recursive: true);
+        file.writeAsStringSync('{oops');
+        final (nb, hooks) = await startHeld(locked: false, file: file);
+        final t = DateTime(2030);
+        nb.now = () => t;
+        file.deleteSync();
+        return (nb, hooks, () => t);
+      }
+
+      test('held at first, then a new empty list is published exclusively and U is found', () async {
+        var t = DateTime(2030);
+        await binderAt('binders/U', a1);
+        settingsFile().writeAsStringSync('{oops');
+        final (nb, hooks) = await startHeld(locked: false);
+        nb.now = () => t;
+        settingsFile().deleteSync();
+        expect(await nb.retrySettings(), isFalse);
+        expect(nb.settingsHoldForTest, 'damaged');
+        expect(heldNotes(nb), [checkingNote]);
+        t = t.add(const Duration(seconds: 2));
+        expect(await nb.retrySettings(), isFalse, reason: 'a second not-found within the window confirms nothing');
+        expect(settingsFile().existsSync(), isFalse);
+        expect(hooks.count('settings-publish'), 0);
+        await refused(() => nb.addBinder(at('other/B2')));
+        t = t.add(const Duration(seconds: 30));
+        expect(await nb.retrySettings(), isTrue);
+        expect(hooks.count('settings-publish'), 1, reason: 'the hook fired');
+        expect(settingsFile().readAsStringSync(), emptyList);
+        expect(tmpFiles(), isEmpty);
+        await nb.discoveryIdle;
+        expect(idsOf(nb), [a1], reason: 'U is added as found');
+        expect(heldNotes(nb), isEmpty);
+        // A restart reads the new file as current: a binder found later is listed.
+        final again = await restart(nb);
+        await binderAt('binders/W', a2);
+        await again.discoverBinders();
+        expect(idsOf(again), [a1, a2]);
+      });
+
+      test('with the folder gone it stays held and nothing is created', () async {
+        final (nb, hooks, now) = await deleted(settingsName: 'app/binders.json');
+        Directory(at('app')).deleteSync(recursive: true);
+        var t = now();
+        for (var i = 0; i < 3; i++) {
+          t = t.add(const Duration(seconds: 40));
+          final at0 = t;
+          nb.now = () => at0;
+          expect(await nb.retrySettings(), isFalse);
+        }
+        expect(nb.settingsHoldForTest, 'damaged');
+        expect(Directory(at('app')).existsSync(), isFalse);
+        expect(hooks.count('settings-publish'), 0);
+      });
+
+      test('a file that arrives at the publish is never replaced; the next retry adopts it', () async {
+        final b1 = await binderAt('other/B1', a1);
+        final (nb, hooks, now) = await deleted();
+        const arrival = '{"format":1,"binders":[],"binderIds":{},"x":"arrived"}';
+        hooks.on['settings-publish'] = (_) async => settingsFile().writeAsStringSync(arrival);
+        var t = now();
+        expect(await nb.retrySettings(), isFalse);
+        t = t.add(const Duration(seconds: 31));
+        nb.now = () => t;
+        expect(await nb.retrySettings(), isFalse);
+        expect(hooks.count('settings-publish'), 1, reason: 'the hook fired');
+        expect(settingsFile().readAsStringSync(), arrival, reason: 'nothing was replaced');
+        expect(tmpFiles(), isEmpty, reason: 'the temp of the lost race is gone');
+        expect(nb.settingsHoldForTest, 'damaged');
+        writeSettings({
+          'format': 1,
+          'binders': [b1],
+          'binderIds': {b1: a1},
+          'x': 'arrived',
+        });
+        expect(await nb.retrySettings(), isTrue);
+        expect(idsOf(nb), contains(a1));
+        expect(saved()['x'], 'arrived');
+      });
+
+      test('a publish that throws deletes its temp, keeps the hold and says so', () async {
+        final (nb, hooks, now) = await deleted();
+        hooks.on['settings-publish'] = (p) async => throw FileSystemException('disk full', p);
+        expect(await nb.retrySettings(), isFalse);
+        nb.now = () => now().add(const Duration(seconds: 31));
+        expect(await nb.retrySettings(), isFalse);
+        expect(hooks.count('settings-publish'), 1, reason: 'the hook fired');
+        expect(tmpFiles(), isEmpty);
+        expect(settingsFile().existsSync(), isFalse);
+        expect(nb.settingsHoldForTest, 'locked');
+        expect(heldNotes(nb).single, startsWith(lockedNote));
+        expect(heldNotes(nb).single, contains('disk full'));
+        await refused(() => nb.addBinder(at('other/B2')));
+      });
+
+      test('not found once, then a valid file reappears: it is adopted and no empty list is written', () async {
+        final b1 = await binderAt('other/B1', a1);
+        final (nb, hooks, _) = await deleted();
+        expect(await nb.retrySettings(), isFalse);
+        expect(heldNotes(nb), [checkingNote]);
+        writeSettings({
+          'format': 1,
+          'binders': [b1],
+          'binderIds': {b1: a1},
+          'x': 'back',
+        });
+        final bytes = settingsFile().readAsBytesSync();
+        expect(await nb.retrySettings(), isTrue);
+        expect(idsOf(nb), contains(a1));
+        expect(hooks.count('settings-publish'), 0);
+        expect(settingsFile().readAsBytesSync(), bytes);
+      });
+    });
+
+    group('3: a retry that succeeds', () {
+      for (final trigger in ['the timer', 'retrySettings()', 'a refused hand change']) {
+        test('by $trigger: B1 is listed, U is found, r1 and x are kept, and reads stop', () async {
+          final b1 = await lockedSetup();
+          final (nb, hooks) = await startHeld(retryFirst: const Duration(milliseconds: 40));
+          expect(nb.binders, isEmpty);
+          hooks.locked = false;
+          switch (trigger) {
+            case 'the timer':
+              await until(() => nb.settingsHoldForTest == null, what: 'the timer to retry');
+            case 'retrySettings()':
+              expect(await nb.retrySettings(), isTrue);
+            default:
+              await refused(() => nb.createBinder());
+              await until(() => nb.settingsHoldForTest == null, what: 'the refusal to retry');
+          }
+          await nb.discoveryIdle;
+          expect(idsOf(nb), [a1, a3], reason: 'R1 stays removed');
+          expect(nb.binders.firstWhere((b) => k(b.path) == k(b1)).available, isTrue);
+          expect(heldNotes(nb), isEmpty);
+          expect(saved()['x'], 'keep');
+          expect(saved()['removedBinders'], contains(a2));
+          final reads = hooks.count('settings-read');
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          expect(hooks.count('settings-read'), reads, reason: 'no read after success');
+        });
+      }
+
+      test('a damaged list, then repaired: adopted, and no .bad exists', () async {
+        final b1 = await binderAt('other/B1', a1);
+        settingsFile().writeAsStringSync('{oops');
+        final (nb, _) = await startHeld(locked: false);
+        expect(nb.settingsHoldForTest, 'damaged');
+        writeSettings({
+          'format': 1,
+          'binders': [b1],
+          'binderIds': {b1: a1},
+        });
+        expect(await nb.retrySettings(), isTrue);
+        expect(idsOf(nb), [a1]);
+        expect(File(at('binders.json.bad')).existsSync(), isFalse);
+      });
+
+      test('the chosen default page folder listed as a binder becomes a binder, not a folder', () async {
+        final c = await binderAt('chosen', a4, pages: ['cp']);
+        final settings = AppSettings(null)..defaultPageFolder = c;
+        writeSettings({
+          'format': 1,
+          'binders': [c],
+          'binderIds': {c: a4},
+        });
+        final (nb, hooks) = await startHeld(settings: settings);
+        expect(nb.binders, isEmpty);
+        hooks.locked = false;
+        expect(nb.standaloneFolders.map((f) => k(f.path)), [k(c)], reason: 'held: the chosen folder only');
+        expect(await nb.retrySettings(), isTrue);
+        expect(nb.standaloneFolders, isEmpty);
+        expect(idsOf(nb), [a4]);
+        expect(nb.pageTitleOf('cp'), 'Page cp');
+      });
+    });
+
+    test('4: a change refused while locked is accepted after the retry; nothing is lost', () async {
+      final b1 = await lockedSetup();
+      final b2 = await binderAt('other/B2', a4);
+      final (nb, hooks) = await startHeld();
+      await refused(() => nb.addBinder(b2));
+      hooks.locked = false;
+      expect(await nb.retrySettings(), isTrue);
+      await nb.addBinder(b2);
+      final s = saved();
+      expect((s['binders'] as List).map((p) => k(p as String)), [k(b1), k(b2)]);
+      expect((s['binderIds'] as Map).values, [a1, a4]);
+      expect(s['removedBinders'], [a2]);
+      expect(s['x'], 'keep');
+      final again = await restart(nb);
+      expect(idsOf(again), [a1, a3, a4]);
+    });
+
+    test('5: while a retry opens binders, hand changes are refused; afterwards they succeed', () async {
+      await lockedSetup();
+      final b2 = await binderAt('other/B2', a4);
+      Directory(at('sa')).createSync();
+      final (nb, hooks) = await startHeld();
+      hooks.locked = false;
+      final gate = Completer<void>();
+      hooks.on['settings-adopt'] = (_) => gate.future;
+      final retry = nb.retrySettings();
+      await until(() => hooks.count('settings-adopt') == 1, what: 'the retry to reach B1');
+      await refused(() => nb.addBinder(b2));
+      await refused(() => nb.removeStandaloneFolder(at('sa')));
+      gate.complete();
+      expect(await retry, isTrue);
+      await nb.addBinder(b2);
+      await nb.addStandaloneFolder(at('sa'));
+      await nb.removeStandaloneFolder(nb.standaloneFolders.single.path);
+      expect(idsOf(nb), contains(a4));
+    });
+
+    test('6: the backstop: a held list is never saved', () async {
+      await lockedSetup();
+      final before = settingsFile().readAsBytesSync();
+      final (nb, _) = await startHeld();
+      await nb.saveSettingsForTest();
+      expect(settingsFile().readAsBytesSync(), before);
+      expect(tmpFiles(), isEmpty);
+      expect(nb.everythingReadable, isFalse, reason: 'held');
+    });
+
+    group('7: a retry waits for load', () {
+      test('it does not read until load ends, then adopts the list', () async {
+        await lockedSetup();
+        final hooks = _Hooks()..locked = true;
+        final nb = make();
+        nb.binderHook = hooks.call;
+        final gate = Completer<void>();
+        hooks.on['settings-loaded'] = (_) => gate.future;
+        final loading = nb.load();
+        await until(() => hooks.count('settings-loaded') == 1, what: 'load to settle the hold');
+        expect(nb.settingsHoldForTest, 'locked');
+        hooks.locked = false;
+        final retry = nb.retrySettings();
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        expect(hooks.count('settings-read'), 1, reason: 'no second read during load');
+        gate.complete();
+        await loading;
+        expect(await retry, isTrue);
+        expect(hooks.count('settings-read'), 2);
+        expect(idsOf(nb), contains(a1));
+      });
+
+      test('conflict copies queued by load do not deadlock a retry started during load', () async {
+        await lockedSetup();
+        final codec = modules.codecs.codecFor('noted.note')!;
+        BoxRecord noteBox(String text, Bounds b) => commitBox(createBox(codec, b), codec, codec.decode(doc(text), 1));
+        final st = PageStore(Directory(at('pages')));
+        for (final id in ['c1', 'c2']) {
+          final page = NotedPage.create(PageMeta.create(id: id, title: id, order: 0));
+          await st.save(page);
+          File(at('pages/$id-PC2.canvas')).writeAsStringSync(
+            writePage(page.insertNode(noteBox('copy of $id', const Bounds(400, 10, 200, 40)))),
+          );
+        }
+        final hooks = _Hooks()..locked = true;
+        final nb = make();
+        nb.binderHook = hooks.call;
+        final gate = Completer<void>();
+        hooks.on['settings-loaded'] = (_) => gate.future;
+        final loading = nb.load();
+        await until(() => hooks.count('settings-loaded') == 1, what: 'load to settle the hold');
+        hooks.locked = false;
+        final retry = nb.retrySettings();
+        gate.complete();
+        await Future.wait([loading, retry]).timeout(const Duration(seconds: 20));
+        expect(File(at('pages/c1-PC2.canvas')).existsSync(), isFalse, reason: 'merged by load');
+        expect(idsOf(nb), contains(a1));
+      });
+    });
+
+    test('8: a hand add before the launch read is refused; the file is byte-identical after load', () async {
+      writeSettings({'format': 1, 'binders': <String>[], 'binderIds': <String, Object?>{}, 'x': 1});
+      final before = settingsFile().readAsBytesSync();
+      final nb = make();
+      await refused(() => nb.createBinder(), loadingMsg);
+      expect(Directory(at('binders/New binder')).existsSync(), isFalse);
+      await nb.load();
+      await nb.discoveryIdle;
+      expect(settingsFile().readAsBytesSync(), before);
+    });
+
+    test('9: the cause changes between retries: the notice follows it, the refusal stays', () async {
+      settingsFile().writeAsStringSync('{"format":1,"binders":[]}');
+      final (nb, hooks) = await startHeld();
+      expect(heldNotes(nb), [lockedNote]);
+      hooks.locked = false;
+      settingsFile().writeAsStringSync('{oops');
+      expect(await nb.retrySettings(), isFalse);
+      expect(heldNotes(nb), [damagedNote()]);
+      await refused(() => nb.addBinder(at('other/B2')));
+      settingsFile().writeAsStringSync('{"format":1,"binders":[]}');
+      expect(await nb.retrySettings(), isTrue);
+      expect(heldNotes(nb), isEmpty);
+    });
+
+    test('12: a hand add while load opens binders is refused with the loading message', () async {
+      final b1 = await binderAt('other/B1', a1);
+      final b2 = await binderAt('other/B2', a4);
+      writeSettings({
+        'format': 1,
+        'binders': [b1],
+        'binderIds': {b1: a1},
+      });
+      final before = settingsFile().readAsBytesSync();
+      final hooks = _Hooks();
+      final nb = make();
+      nb.binderHook = hooks.call;
+      final gate = Completer<void>();
+      hooks.on['load-open'] = (_) => gate.future;
+      final loading = nb.load();
+      await until(() => hooks.count('load-open') == 1, what: 'load to reach B1');
+      await refused(() => nb.addBinder(b2), loadingMsg);
+      expect(settingsFile().readAsBytesSync(), before);
+      gate.complete();
+      await loading;
+      await nb.addBinder(b2);
+      expect(saved()['binders'], hasLength(2));
+    });
+
+    test('F6: load throws before the list is settled: the hold becomes locked and a retry is armed', () async {
+      final b1 = await binderAt('other/B1', a1);
+      writeSettings({
+        'format': 1,
+        'binders': [b1],
+        'binderIds': {b1: a1},
+      });
+      final before = settingsFile().readAsBytesSync();
+      final hooks = _Hooks();
+      final nb = make();
+      nb.binderHook = hooks.call;
+      hooks.on['load-open'] = (p) async => throw StateError('stop');
+      await expectLater(nb.load(), throwsA(isA<StateError>()));
+      expect(hooks.count('load-open'), 1, reason: 'the hook fired');
+      expect(nb.settingsHoldForTest, 'locked');
+      expect(nb.settingsDelayForTest, isNotNull, reason: 'the timer is armed');
+      await refused(() => nb.addBinder(at('other/B2')));
+      expect(settingsFile().readAsBytesSync(), before);
+    });
+
+    test('a retry after a partial load lists each binder and page once', () async {
+      final b1 = await binderAt('other/B1', a1, pages: ['b1p', 'b1q']);
+      final b2 = await binderAt('other/B2', a4, pages: ['b2p']);
+      writeSettings({
+        'format': 1,
+        'binders': [b1, b2],
+        'binderIds': {b1: a1, b2: a4},
+      });
+      final hooks = _Hooks();
+      final nb = make();
+      nb.binderHook = hooks.call;
+      var failing = true;
+      hooks.on['load-open'] = (p) async {
+        if (failing && k(p) == k(b2)) throw StateError('stop');
+      };
+      await expectLater(nb.load(), throwsA(isA<StateError>()));
+      expect(hooks.count('load-open'), 2, reason: 'the hook fired for both');
+      failing = false;
+      expect(await nb.retrySettings(), isTrue);
+      expect(nb.binders.map((b) => k(b.path)), [k(b1), k(b2)]);
+      expect(treeOf(nb.binders.first), ['b1p:Page b1p', 'b1q:Page b1q']);
+      for (final b in nb.binders) {
+        expect(b.unreadable, isEmpty, reason: 'no false duplicates');
+      }
+      expect([for (final u in nb.unreadable) u.reason], isEmpty);
+    });
+
+    group('backoff, single flight and dispose', () {
+      test('the wait doubles up to 60 s and stays there', () {
+        var d = const Duration(seconds: 2);
+        final seen = <int>[];
+        for (var i = 0; i < 8; i++) {
+          seen.add(d.inSeconds);
+          d = Notebook.nextSettingsDelay(d);
+        }
+        expect(seen, [2, 4, 8, 16, 32, 60, 60, 60]);
+      });
+
+      test('failed retries double the armed wait', () async {
+        await lockedSetup();
+        final (nb, hooks) = await startHeld(retryFirst: const Duration(milliseconds: 10));
+        final seen = <int>{};
+        await until(() {
+          final d = nb.settingsDelayForTest;
+          if (d != null) seen.add(d.inMilliseconds);
+          return seen.contains(80);
+        }, what: 'the wait to reach 80 ms');
+        expect(seen.every((m) => const [10, 20, 40, 80, 160].contains(m)), isTrue, reason: '$seen');
+        expect(hooks.count('settings-read'), greaterThan(2));
+      });
+
+      test('two calls at once run one read and share the result', () async {
+        await lockedSetup();
+        final (nb, hooks) = await startHeld();
+        hooks.locked = false;
+        final before = hooks.count('settings-read');
+        final a = nb.retrySettings();
+        final b = nb.retrySettings();
+        expect(identical(a, b), isTrue);
+        expect(await a, isTrue);
+        expect(hooks.count('settings-read'), before + 1);
+      });
+
+      test('dispose cancels the timer', () async {
+        await lockedSetup();
+        final (nb, hooks) = await startHeld(retryFirst: const Duration(milliseconds: 40));
+        nb.dispose();
+        opened.remove(nb);
+        final reads = hooks.count('settings-read');
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        expect(hooks.count('settings-read'), reads);
+      });
+    });
+
+    test('F4: everythingReadable is false while the list is held and true after', () async {
+      await lockedSetup();
+      final (nb, hooks) = await startHeld();
+      expect(nb.everythingReadable, isFalse);
+      hooks.locked = false;
+      expect(await nb.retrySettings(), isTrue);
+      expect(nb.everythingReadable, isTrue);
+    });
+
+    test('14: a retry that restores only a folder builds the tree, watches it, merges copies and replays recovery', () async {
+      final codec = modules.codecs.codecFor('noted.note')!;
+      BoxRecord noteBox(String text, Bounds b) => commitBox(createBox(codec, b), codec, codec.decode(doc(text), 1));
+      final s = Directory(at('S'))..createSync();
+      final page = NotedPage.create(PageMeta.create(id: 'sp', title: 'SP', order: 0));
+      await PageStore(s).save(page);
+      final copyBox = noteBox('from the copy', const Bounds(400, 10, 200, 40));
+      final keptBox = noteBox('kept edit', const Bounds(400, 100, 200, 40));
+      File(at('S/sp-PC2.canvas')).writeAsStringSync(writePage(page.insertNode(copyBox)));
+      final rec = defaultRecoveryDirectory(settingsFile());
+      await RecoveryStore(rec).write(
+        folder: s.path,
+        page: page.insertNode(keptBox),
+        baseText: writePage(page),
+        time: DateTime.now(),
+      );
+      writeSettings({
+        'format': 1,
+        'binders': <String>[],
+        'binderIds': <String, Object?>{},
+        'standaloneFolders': [s.path],
+      });
+      final hooks = _Hooks()..locked = true;
+      final nb = make(watch: true);
+      nb.binderHook = hooks.call;
+      await nb.load();
+      await nb.discoveryIdle;
+      expect(nb.pageTitleOf('sp'), isNull, reason: 'hidden while held');
+      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      hooks.locked = false;
+      expect(await nb.retrySettings(), isTrue);
+      expect(nb.tree.roots.map((m) => m.id), contains('sp'), reason: 'P is in the tree');
+      expect(File(at('S/sp-PC2.canvas')).existsSync(), isFalse, reason: 'the copy is merged and removed');
+      expect((await nb.pendingRecovery()).entries, isEmpty, reason: 'the entry is replayed and retired');
+      await nb.flush();
+      final merged = await PageStore(s).load('sp');
+      expect(merged.node(copyBox.id), isNotNull);
+      expect(merged.node(keptBox.id), isNotNull);
+      // The folder is watched: an outside edit of the page is merged.
+      await PageStore(s).save(merged.withMeta(merged.meta.withTitle('Edited outside')));
+      await until(() => nb.pageTitleOf('sp') == 'Edited outside', what: 'the watcher to see the edit');
+    });
+
+    test('15: a page in a binder and in the chosen folder is chosen as after a restart', () async {
+      final b1 = await binderAt('other/B1', a1, pages: ['p']);
+      final c = Directory(at('chosen'))..createSync();
+      await PageStore(c).save(NotedPage.create(PageMeta.create(id: 'p', title: 'Copy in folder', order: 0)));
+      writeSettings({
+        'format': 1,
+        'binders': [b1],
+        'binderIds': {b1: a1},
+      });
+      final settings = AppSettings(null)..defaultPageFolder = c.path;
+      final hooks = _Hooks()..locked = true;
+      final nb = make(settings: settings);
+      nb.binderHook = hooks.call;
+      await nb.load();
+      await nb.discoveryIdle;
+      expect(nb.pageTitleOf('p'), 'Copy in folder', reason: 'held: only the folder is open');
+      expect(nb.currentId, 'p');
+      hooks.locked = false;
+      expect(await nb.retrySettings(), isTrue);
+      expect(nb.pageTitleOf('p'), 'Page p', reason: 'the binder copy wins, as in load');
+      expect(nb.currentId, 'p', reason: 'the page the user was on stays open');
+      List<String> problems(Notebook n) => [
+        for (final u in n.unreadable) u.reason,
+        for (final b in n.binders) ...[for (final u in b.unreadable) u.reason],
+      ];
+      final afterRetry = problems(nb);
+      nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      await nb.flush();
+      expect((await PageStore(Directory(b1)).load('p')).nodes.whereType<BoxRecord>(), hasLength(1));
+      expect((await PageStore(c).load('p')).nodes.whereType<BoxRecord>(), isEmpty);
+      // The same choice after a restart.
+      nb.dispose();
+      opened.remove(nb);
+      final again = make(settings: settings);
+      await again.load();
+      await again.discoveryIdle;
+      expect(again.pageTitleOf('p'), 'Page p');
+      expect(problems(again), afterRetry);
+    });
+
+    test('N-4: kept files of a page in a hidden binder are not called pageless, and land after the retry', () async {
+      final b1 = await binderAt('other/B1', a1, pages: ['kp']);
+      writeSettings({
+        'format': 1,
+        'binders': [b1],
+        'binderIds': {b1: a1},
+      });
+      final bytes = utf8.encode('kept file');
+      final name = '${contentHash(bytes)}.txt';
+      final kept = Directory('${defaultRecoveryDirectory(settingsFile()).path}/kp.assets')..createSync(recursive: true);
+      File('${kept.path}/$name').writeAsBytesSync(bytes);
+      final hooks = _Hooks()..locked = true;
+      final nb = make();
+      nb.binderHook = hooks.call;
+      await nb.load();
+      await nb.discoveryIdle;
+      expect(hooks.count('settings-read'), 1, reason: 'the hook fired');
+      expect(nb.recoveryProblems.where((p) => p.contains('no page to go with')), isEmpty);
+      await nb.checkFolders();
+      expect(nb.recoveryProblems.where((p) => p.contains('no page to go with')), isEmpty);
+      hooks.locked = false;
+      expect(await nb.retrySettings(), isTrue);
+      expect(File('$b1/kp.assets/$name').readAsBytesSync(), bytes);
+      expect(kept.existsSync(), isFalse);
+      expect(nb.recoveryProblems, isEmpty);
+    });
   });
 }
