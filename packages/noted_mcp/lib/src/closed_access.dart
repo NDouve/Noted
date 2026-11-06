@@ -554,7 +554,7 @@ final class ClosedAccess {
         if (expired()) return null;
         final id = bytes == null ? null : NotedLibrary.pageIdOf(bytes);
         // Now a page of the chain (or the missing parent), or no longer one it was.
-        if ((id != null && ids.contains(id)) || (was != null && ids.contains(was) && id != was)) return false;
+        if (id != was && ((id != null && ids.contains(id)) || (was != null && ids.contains(was)))) return false;
       }
     }
     return true;
