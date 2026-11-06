@@ -34,6 +34,10 @@ const String lockUnusableText =
 /// What the AI is told when the running-lock file isn't there.
 const String openNotedOnceText = 'Open Noted once, then try again.';
 
+/// The access log's `result` for a box code refused because its page has more
+/// than one copy.
+const String aiMcpResultAmbiguous = 'ambiguous';
+
 /// How long a closed write may hold the running lock, from the moment it is
 /// taken until the page is first changed (run 2026-11-06-02).
 const Duration defaultClosedHoldLimit = Duration(seconds: 5);
@@ -202,9 +206,9 @@ final class ClosedAccess {
       return _error(AiLinkCode.noBox);
     }
     final writer = ClosedWriter(dataDir: dataDir, folders: const []);
-    Future<AiLinkResponse> done(AiLinkCode c, [AiCodeTarget? target]) async {
-      await _log(writer, code, target ?? code.target, op, c.wire);
-      return _error(c);
+    Future<AiLinkResponse> done(AiLinkCode c, [AiCodeTarget? target, String? message, String? result]) async {
+      await _log(writer, code, target ?? code.target, op, result ?? c.wire);
+      return message == null ? _error(c) : AiLinkError(c, message);
     }
 
     if (!code.canRead) return done(AiLinkCode.wrongRole);
@@ -212,7 +216,13 @@ final class ClosedAccess {
     switch (code.target.kind) {
       case AiCodeTargetKind.box:
         if (action != AiLinkAction.readBox) return done(AiLinkCode.wrongRole);
-        final page = _pageOfBox(library, code.target.id, code.target.page);
+        final found = _pageOfBox(library, code.target.id, code.target.page);
+        // A page with more than one copy: the server can't tell which one the
+        // app chose, so it reads none (the hint is checked before any lookup).
+        if (found.ambiguous) {
+          return done(AiLinkCode.notWritable, null, ambiguousPageText, aiMcpResultAmbiguous);
+        }
+        final page = found.page;
         if (page == null) return done(AiLinkCode.noBox);
         final target = AiCodeTarget.box(code.target.id, page: page.id);
         await _log(writer, code, target, op, aiMcpResultOk);
@@ -227,16 +237,19 @@ final class ClosedAccess {
   }
 
   // The page holding box [boxId]: [hint] if it has it, else the first page
-  // (by id) that does.
-  LibraryPage? _pageOfBox(NotedLibrary library, String boxId, String? hint) {
+  // (by id) that does. [ambiguous]: the hint, or the page found, has more than
+  // one copy (the hint is checked first, so a hint page with copies never
+  // falls back to another page that holds the same box id).
+  ({LibraryPage? page, bool ambiguous}) _pageOfBox(NotedLibrary library, String boxId, String? hint) {
     bool has(LibraryPage p) => p.page.node(boxId) is BoxRecord;
+    if (hint != null && library.isAmbiguous(hint)) return (page: null, ambiguous: true);
     final h = hint == null ? null : library.page(hint);
-    if (h != null && has(h)) return h;
+    if (h != null && has(h)) return (page: h, ambiguous: false);
     final all = [...library.pages]..sort((a, b) => a.id.compareTo(b.id));
     for (final p in all) {
-      if (has(p)) return p;
+      if (has(p)) return (page: p, ambiguous: library.isAmbiguous(p.id));
     }
-    return null;
+    return (page: null, ambiguous: false);
   }
 
   // Whether two pages are in the same page tree: the app and the library keep
@@ -331,21 +344,32 @@ final class ClosedAccess {
     final code = r.code!;
     final view = r.view!;
     final writer0 = ClosedWriter(dataDir: dataDir, folders: const []);
-    Future<ClosedWriteResult> done(AiLinkCode c, [LibraryPage? page, String? message]) async {
-      await _log(writer0, code, AiCodeTarget.box(boxId, page: page?.id ?? code.target.page), op, c.wire);
+    Future<ClosedWriteResult> done(AiLinkCode c, [LibraryPage? page, String? message, String? result]) async {
+      await _log(writer0, code, AiCodeTarget.box(boxId, page: page?.id ?? code.target.page), op, result ?? c.wire);
       return ClosedWriteResult.response(message == null ? _error(c) : AiLinkError(c, message));
     }
 
     final denied = _denied(code, view, boxId, mode, null);
     if (denied != null) return done(denied.code, null, denied.message);
     final library = await NotedLibrary.load(dataDir, keepSources: true);
-    final page = _pageOfBox(library, boxId, code.target.page);
+    Future<ClosedWriteResult> ambiguous([LibraryPage? page]) =>
+        done(AiLinkCode.notWritable, page, ambiguousPageText, aiMcpResultAmbiguous);
+    final found = _pageOfBox(library, boxId, code.target.page);
+    if (found.ambiguous) return ambiguous(found.page);
+    final page = found.page;
     if (page == null || page.path == null) return done(AiLinkCode.noBox);
     final deniedOnPage = _denied(code, view, boxId, mode, page);
     if (deniedOnPage != null) return done(deniedOnPage.code, page, deniedOnPage.message);
+    final chain = _chain(library, page);
+    // Before any hold: the page, a page above it or the page its chain ended
+    // at has more than one copy, so its access, settings and bytes can't be
+    // taken from the copy the server picked.
+    if (chain.pages.any((p) => library.isAmbiguous(p.id)) ||
+        (chain.endId != null && library.isAmbiguous(chain.endId!))) {
+      return ambiguous(page);
+    }
     final box = page.page.node(boxId);
     if (box is! BoxRecord || box.typeId != aiBoxTypeId || isEncrypted(box)) return done(AiLinkCode.notWritable, page);
-    final chain = _chain(library, page);
     if (!effectiveBoxTypeAllowed(box.typeId, chain.metas, binder: page.location.binder).allowed) {
       return done(AiLinkCode.notWritable, page);
     }
@@ -402,7 +426,7 @@ final class ClosedAccess {
       if (expired) return _Refusal(AiLinkCode.busy, page);
       final nowDenied = _denied(again.code!, again.view!, boxId, mode, page);
       if (nowDenied != null) return _Refusal(nowDenied.code, page, nowDenied.message);
-      final same = await _eligibilityUnchanged(library, chain, () => expired);
+      final same = await _eligibilityUnchanged(library, page, chain, () => expired);
       if (same == null) return _Refusal(AiLinkCode.busy, page);
       if (!same) return attempt == 0 ? null : _Refusal(AiLinkCode.busy, page);
       // ---- The read and the write -----------------------------------------
@@ -495,9 +519,10 @@ final class ClosedAccess {
     return null;
   }
 
-  // Keeps, of what the library load read, only what this write's decision
-  // used: the two JSON files, the page's binder file, the chain parents' files
-  // and the listings of the page's tree.
+  // Keeps, of what the library load read, what this write's decision used:
+  // the two JSON files, the page's binder file and the chain parents' files
+  // (by their bytes), every binder file (by whether it could be read) and every
+  // folder's listing, since a copy in any listed folder can make an id ambiguous.
   void _pruneSources(NotedLibrary library, LibraryPage page, _Chain chain) {
     final s = library.sources;
     if (s == null) return;
@@ -510,12 +535,7 @@ final class ClosedAccess {
         if (p.path != null) p.path!,
     };
     s.files.removeWhere((path, _) => !keep.contains(path));
-    final folders = _treeFolders(library, page).toSet();
-    s.listings.removeWhere((path, _) => !folders.contains(path));
   }
-
-  static List<String> _treeFolders(NotedLibrary library, LibraryPage page) =>
-      page.location.binder == null ? library.standalone : [page.location.path];
 
   static bool _sameBytes(List<int>? a, List<int>? b) {
     if (a == null || b == null) return a == null && b == null;
@@ -528,8 +548,17 @@ final class ClosedAccess {
 
   // Under the hold: whether every input of the eligibility decision is as the
   // pre-check read it. True: unchanged. False: a difference. Null: [expired]
-  // says the hold is over.
-  Future<bool?> _eligibilityUnchanged(NotedLibrary library, _Chain chain, bool Function() expired) async {
+  // says the hold is over. A difference is any change that could change which
+  // ids are ambiguous for the page or its chain: a binder file's readability,
+  // a listing's state, or a new or changed `.canvas` file in any listed folder
+  // that can't be used and may carry any id, or reads as (or may be) one of the
+  // chain's ids. Only new or changed files are read again.
+  Future<bool?> _eligibilityUnchanged(
+    NotedLibrary library,
+    LibraryPage page,
+    _Chain chain,
+    bool Function() expired,
+  ) async {
     final s = library.sources;
     if (s == null) return false;
     final identity = await LockIdentity.of(dataDir);
@@ -538,23 +567,37 @@ final class ClosedAccess {
       if (expired()) return null;
       if (!_sameBytes(now, e.value)) return false;
     }
+    for (final e in s.binderReadable.entries.toList()) {
+      final now = await identity.readBytes(e.key) != null;
+      if (expired()) return null;
+      if (now != e.value) return false;
+    }
     final ids = <String>{for (final p in chain.pages) p.id, ?chain.endId};
+    final own = <String>{for (final p in chain.pages) ?p.path};
     for (final e in s.listings.entries.toList()) {
       final (state, names) = await _list(Directory(e.key));
       if (expired()) return null;
       if (state != e.value.state) return false;
       if (state != FolderState.listed) continue;
       for (final (name, sig) in names) {
-        // Left alone since the pre-check (same size and modified time) and read as a
-        // page then: not looked at again. A replacement that keeps both its size and
-        // its modified time is a known rare gap (a sync client restoring mtimes).
-        final was = e.value.pageIds[name];
+        // Left alone since the pre-check (same size and modified time): not looked at
+        // again. A replacement that keeps both its size and its modified time is a
+        // known rare gap (a sync client restoring mtimes).
+        final was = e.value.carried[name];
         if (was != null && e.value.stats[name] == sig) continue;
         final bytes = await identity.readBytes(name);
         if (expired()) return null;
-        final id = bytes == null ? null : NotedLibrary.pageIdOf(bytes);
-        // Now a page of the chain (or the missing parent), or no longer one it was.
-        if (id != was && ((id != null && ids.contains(id)) || (was != null && ids.contains(was)))) return false;
+        final now = fileIdsOf(name, bytes, parsedId: bytes == null ? null : NotedLibrary.pageIdOf(bytes));
+        // A file that can't be used and may be any page.
+        if (now.unknown) return false;
+        // A page of the chain itself, rewritten by another writer: only a
+        // change of what it is counts (the write re-reads it and guards it).
+        if (own.contains(name)) {
+          if (was == null || now != was) return false;
+          continue;
+        }
+        // New or changed, and now (or before) one of the chain's ids.
+        if (now.ids.any(ids.contains) || (was != null && was.ids.any(ids.contains))) return false;
       }
     }
     return true;
