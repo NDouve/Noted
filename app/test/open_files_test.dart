@@ -9,7 +9,38 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/open_files.dart';
+import 'package:noted/src/save_trouble.dart';
 import 'package:noted_core/noted_core.dart';
+
+typedef _S = ({Notebook nb, String id, String orig, String copy});
+
+/// A page store whose compare-and-delete of [failDelete] fails, like a source
+/// drive that went away.
+class _FailDeleteStore extends PageStore {
+  _FailDeleteStore(super.directory);
+
+  final Set<String> failDelete = {};
+
+  @override
+  Future<DeleteResult> deleteIfUnchanged(
+    String pageId,
+    String expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    Future<void> Function()? beforeDelete,
+    void Function()? beforeRestore,
+  }) {
+    if (failDelete.contains(pageId)) throw const FileSystemException('drive gone');
+    return super.deleteIfUnchanged(
+      pageId,
+      expectedText,
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforeDelete: beforeDelete,
+      beforeRestore: beforeRestore,
+    );
+  }
+}
 
 void main() {
   late Directory root;
@@ -31,13 +62,22 @@ void main() {
   });
 
   // A notebook of its own (own pages folder and binders.json).
-  Notebook make(String name, [Directory? pagesDir]) {
+  Notebook make(
+    String name, [
+    Directory? pagesDir,
+    bool recovery = false,
+    PageStore Function(Directory)? storeFactory,
+  ]) {
     final nb = Notebook(
       PageStore(pagesDir ?? Directory('${root.path}/$name-pages')),
       buildModules(),
       saveDelay: Duration.zero,
       bindersFile: File('${root.path}/$name/binders.json'),
       watchFiles: false,
+      storeFactory: storeFactory ?? PageStore.new,
+      // A short window, so a locked open page is blocked at once.
+      busyReadWindow: const Duration(milliseconds: 200),
+      recoveryDirectory: recovery ? Directory('${root.path}/$name-recovery') : null,
     );
     opened.add(nb);
     return nb;
@@ -290,6 +330,7 @@ void main() {
         Directory dir,
         Directory copyDir, {
         bool binder = false,
+        bool recovery = false,
       }) async {
         final other = make('other');
         await other.load();
@@ -302,7 +343,7 @@ void main() {
         }
         await other.rename(id, 'Original');
         await other.flush();
-        final nb = make('main', pages);
+        final nb = make('main', pages, recovery);
         await nb.load();
         if (binder) {
           await nb.addBinder(dir.path);
@@ -752,6 +793,453 @@ void main() {
         expect(s.nb.currentId, s.id);
         expect(s.nb.pageTitleOf(s.id), 'Original');
         expect(s.nb.unreadable, isEmpty);
+      });
+
+      group('a rescan never redirects a chosen page to its duplicate', () {
+        Future<T> whileLocked<T>(String path, Future<T> Function() body) async {
+          final raf = File(path).openSync(mode: FileMode.append)..lockSync(FileLock.exclusive);
+          try {
+            return await body();
+          } finally {
+            raf.unlockSync();
+            raf.closeSync();
+          }
+        }
+
+        // The copy is chosen, then the page is left for another one.
+        Future<void> leave(_S s) async {
+          await openExistingFile(s.nb, s.copy);
+          await s.nb.open(await s.nb.createPage());
+          await settled(s.nb);
+        }
+
+        String loc0(Notebook nb) => nb.standaloneFolders.first.path;
+        List<int> bytes(String p) => File(p).readAsBytesSync();
+        List<String> reasons(Notebook nb) => [for (final u in nb.unreadable) u.reason];
+
+        // The text of a page of its own (another id), written by another notebook.
+        Future<({String id, String text})> foreignPage() async {
+          final o = make('foreign');
+          await o.load();
+          final yDir = await Directory('${root.path}/Y').create();
+          final yid = await o.createPage(folderPath: yDir.path);
+          await o.rename(yid, 'Why');
+          await o.flush();
+          return (id: yid, text: File('${yDir.path}/$yid.canvas').readAsStringSync());
+        }
+
+        void truncate(String path) {
+          final t = File(path).readAsStringSync();
+          File(path).writeAsStringSync(t.substring(0, t.length ~/ 2));
+        }
+
+        Future<void> editAndFlush(Notebook nb, String id, String title) async {
+          await nb.rename(id, title);
+          await nb.flush();
+        }
+
+        const winOnly = 'byte-range locks only block reads on Windows';
+
+        test('1 locked during a rescan: opening fails, then the choice survives', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          final origBytes = bytes(s.orig);
+          await leave(s);
+          await whileLocked(s.copy, () async {
+            await s.nb.scanLocationForTest(loc0(s.nb));
+            await expectLater(s.nb.open(s.id), throwsA(anything));
+          });
+          await s.nb.scanLocationForTest(loc0(s.nb));
+          await s.nb.open(s.id);
+          expect(s.nb.pageTitleOf(s.id), 'Copy');
+          await editAndFlush(s.nb, s.id, 'Edited');
+          expect(File(s.copy).readAsStringSync(), contains('Edited'));
+          expect(bytes(s.orig), origBytes);
+        }, skip: Platform.isWindows ? null : winOnly);
+
+        test('2 truncated during a rescan: opening fails, then the choice survives', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          final origBytes = bytes(s.orig);
+          await leave(s);
+          final whole = File(s.copy).readAsStringSync();
+          truncate(s.copy);
+          await s.nb.scanLocationForTest(loc0(s.nb));
+          await expectLater(s.nb.open(s.id), throwsA(anything));
+          File(s.copy).writeAsStringSync(whole);
+          await s.nb.scanLocationForTest(loc0(s.nb));
+          await s.nb.open(s.id);
+          expect(s.nb.pageTitleOf(s.id), 'Copy');
+          expect(bytes(s.orig), origBytes);
+        });
+
+        test('3 a damaged chosen file found by a check, then the other file changes', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          await leave(s);
+          final whole = File(s.copy).readAsStringSync();
+          truncate(s.copy);
+          await s.nb.checkFile(s.copy);
+          File(s.orig).writeAsStringSync(File(s.orig).readAsStringSync().replaceAll('Original', 'Retitled'));
+          await s.nb.checkFile(s.orig);
+          expect(s.nb.pageTitleOf(s.id), isNull, reason: 'the other file is a duplicate, not the page');
+          expect(reasons(s.nb), contains('duplicate page id ${s.id}'));
+          final retitled = bytes(s.orig);
+          File(s.copy).writeAsStringSync(whole);
+          await s.nb.checkFolders(); // no watcher event: the check looks at the chosen file again
+          expect(s.nb.pageTitleOf(s.id), 'Copy');
+          await s.nb.open(s.id);
+          await editAndFlush(s.nb, s.id, 'Edited');
+          expect(File(s.copy).readAsStringSync(), contains('Edited'));
+          expect(bytes(s.orig), retitled);
+        });
+
+        for (final truncated in [false, true]) {
+          test(
+            '4${truncated ? 'b' : ''} the open page, its file ${truncated ? 'truncated' : 'locked'} at a rescan: '
+            'the save is blocked and the other file is untouched',
+            () async {
+              final dir = await Directory('${root.path}/Elsewhere').create();
+              final s = await setup(dir, dir);
+              final origBytes = bytes(s.orig);
+              await openExistingFile(s.nb, s.copy);
+              final whole = File(s.copy).readAsStringSync();
+              Future<void> damaged() async {
+                await s.nb.scanLocationForTest(loc0(s.nb));
+                await editAndFlush(s.nb, s.id, 'Edited');
+                expect(s.nb.readOnlyReason, contains(truncated ? "isn't a valid page file" : "couldn't be read"));
+                expect(bytes(s.orig), origBytes);
+              }
+
+              if (truncated) {
+                truncate(s.copy);
+                await damaged();
+                File(s.copy).writeAsStringSync(whole);
+              } else {
+                await whileLocked(s.copy, damaged);
+              }
+              await s.nb.checkFolders();
+              await s.nb.flush();
+              expect(s.nb.readOnlyReason, isNull);
+              expect(File(s.copy).readAsStringSync(), contains('Edited'));
+              expect(bytes(s.orig), origBytes);
+            },
+            skip: !truncated && !Platform.isWindows ? winOnly : null,
+          );
+        }
+
+        for (final truncated in [false, true]) {
+          test(
+            '5${truncated ? 'b' : ''} delete and move are refused while the chosen file is '
+            '${truncated ? 'truncated' : 'locked'} after a rescan',
+            () async {
+              final dir = await Directory('${root.path}/Elsewhere').create();
+              final s = await setup(dir, dir);
+              final origBytes = bytes(s.orig);
+              final bDir = await Directory('${root.path}/Bnd').create();
+              final target = await s.nb.addBinder(bDir.path);
+              await leave(s);
+              Future<void> refused() async {
+                await s.nb.scanLocationForTest(loc0(s.nb));
+                await expectLater(s.nb.delete(s.id), throwsA(anything));
+                await expectLater(s.nb.moveToLocation(s.id, binderPath: target.path), throwsA(anything));
+              }
+
+              if (truncated) {
+                truncate(s.copy);
+                await refused();
+              } else {
+                await whileLocked(s.copy, refused);
+              }
+              expect(File(s.orig).existsSync(), isTrue);
+              expect(bytes(s.orig), origBytes);
+              expect(File('${bDir.path}/${s.id}.canvas').existsSync(), isFalse);
+            },
+            skip: !truncated && !Platform.isWindows ? winOnly : null,
+          );
+        }
+
+        test('6 a deleted chosen file falls back to the other one only after confirmation', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          await leave(s);
+          File(s.copy).deleteSync();
+          await s.nb.checkFile(s.copy);
+          await s.nb.scanLocationForTest(loc0(s.nb));
+          expect(s.nb.standaloneFolders.first.store!.pathFor(s.id), endsWith('copy-of-${s.id}.canvas'));
+          expect(s.nb.pageTitleOf(s.id), isNull);
+          await s.nb.checkFolders();
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+          await s.nb.open(s.id);
+          await editAndFlush(s.nb, s.id, 'Edited');
+          expect(File(s.orig).readAsStringSync(), contains('Edited'));
+        });
+
+        test('6b the rescan runs before any check saw the chosen file go', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          await leave(s);
+          File(s.copy).deleteSync();
+          await s.nb.scanLocationForTest(loc0(s.nb));
+          expect(s.nb.standaloneFolders.first.store!.pathFor(s.id), endsWith('copy-of-${s.id}.canvas'));
+          expect(reasons(s.nb), contains('duplicate page id ${s.id}'));
+          await s.nb.checkFolders();
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+          await s.nb.open(s.id);
+          await editAndFlush(s.nb, s.id, 'Edited');
+          expect(File(s.orig).readAsStringSync(), contains('Edited'));
+        });
+
+        test('7 a page Noted moves keeps its choice: an outside change to the moved file is merged', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          final bDir = await Directory('${root.path}/Bnd').create();
+          final target = await s.nb.addBinder(bDir.path);
+          await leave(s);
+          expect(await s.nb.moveToLocation(s.id, binderPath: target.path), isTrue);
+          final moved = '${bDir.path}/${s.id}.canvas';
+          expect(File(moved).readAsStringSync(), contains('Copy'));
+          File(moved).writeAsStringSync(File(moved).readAsStringSync().replaceAll('Copy', 'Outside'));
+          await s.nb.checkFile(moved);
+          expect(s.nb.pageTitleOf(s.id), 'Outside');
+          expect(s.nb.binders.firstWhere((b) => b.path == target.path).unreadable, isEmpty);
+        });
+
+        test('7b a move that rolls back puts the chosen file back under its own name', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final bDir = await Directory('${root.path}/Bnd').create();
+          final other = make('other');
+          await other.load();
+          final id = await other.createPage(folderPath: dir.path);
+          await other.rename(id, 'Original');
+          final sub = await other.createPage(parentId: id);
+          await other.flush();
+          late _FailDeleteStore source;
+          final nb = make('main', pages, false, (d) {
+            final st = _FailDeleteStore(d);
+            if (d.path == dir.path) source = st;
+            return st;
+          });
+          await nb.load();
+          await nb.addStandaloneFolder(dir.path);
+          final target = await nb.addBinder(bDir.path);
+          final orig = '${dir.path}/$id.canvas';
+          final copy = '${dir.path}/copy-of-$id.canvas';
+          File(copy).writeAsStringSync(File(orig).readAsStringSync().replaceAll('Original', 'Copy'));
+          final origBytes = bytes(orig);
+          final copyBytes = bytes(copy);
+          await openExistingFile(nb, copy);
+          await nb.open(await nb.createPage());
+          await settled(nb);
+          source.failDelete.add(sub);
+          await expectLater(nb.moveToLocation(id, binderPath: target.path), throwsA(isA<NotebookException>()));
+          expect(bytes(copy), copyBytes, reason: 'the chosen file is back under its own name');
+          expect(bytes(orig), origBytes);
+          expect(File('${bDir.path}/$id.canvas').existsSync(), isFalse);
+          source.failDelete.clear();
+          await nb.open(id);
+          expect(nb.pageTitleOf(id), 'Copy');
+        });
+
+        test('9 the chosen file replaced by another page, then a rescan', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          final y = await foreignPage();
+          await leave(s);
+          File(s.copy).writeAsStringSync(y.text);
+          await s.nb.scanLocationForTest(loc0(s.nb));
+          await s.nb.open(s.id);
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+          expect(File(s.copy).readAsStringSync(), y.text);
+          await settled(s.nb); // the release queued a check of the file: no watcher event needed
+          expect(s.nb.pageTitleOf(y.id), 'Why');
+          expect(s.nb.tree.roots.map((r) => r.id), containsAll([s.id, y.id]));
+          await s.nb.checkFile(s.copy);
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+          expect(File(s.copy).readAsStringSync(), y.text);
+        });
+
+        test('10 the chosen file replaced by another page, a check, then the other file changes', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          final y = await foreignPage();
+          await leave(s);
+          File(s.copy).writeAsStringSync(y.text);
+          await s.nb.checkFile(s.copy);
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+          expect(s.nb.tree.roots.map((r) => r.id), contains(s.id));
+          File(s.orig).writeAsStringSync(File(s.orig).readAsStringSync().replaceAll('Original', 'Newer'));
+          await s.nb.checkFile(s.orig);
+          expect(s.nb.pageTitleOf(s.id), 'Newer');
+        });
+
+        test('11 the open page whose file now holds another page: the save is blocked', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir, recovery: true);
+          final y = await foreignPage();
+          final origBytes = bytes(s.orig);
+          await openExistingFile(s.nb, s.copy);
+          File(s.copy).writeAsStringSync(y.text);
+          await s.nb.scanLocationForTest(loc0(s.nb));
+          await editAndFlush(s.nb, s.id, 'Edited');
+          expect(s.nb.readOnlyReason, contains('holds a different page'));
+          expect(bytes(s.orig), origBytes);
+          expect(File(s.copy).readAsStringSync(), y.text);
+          expect(s.nb.recoveryStoreForTest!.entriesOfPage(s.id), isNotEmpty);
+        });
+
+        test('12 the page file now holds another page: opening never shows it, and the choice is let go', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          final y = await foreignPage();
+          await leave(s);
+          File(s.copy).writeAsStringSync(y.text); // no watcher event, no check yet
+          await expectLater(
+            s.nb.open(s.id),
+            throwsA(isA<PageFormatException>().having((e) => e.message, 'message', contains('holds a different page'))),
+          );
+          expect(File(s.copy).readAsStringSync(), y.text);
+          // The failed open let go of the choice: the check it queued settles it.
+          await settled(s.nb);
+          await s.nb.open(s.id);
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+          expect(File(s.copy).readAsStringSync(), y.text);
+        });
+
+        test('12b the page open on its file, the file replaced, the page closed and opened again', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          final y = await foreignPage();
+          await openExistingFile(s.nb, s.copy);
+          File(s.copy).writeAsStringSync(y.text);
+          await s.nb.open(await s.nb.createPage());
+          // Before or after the queued check, never Y's content under this page.
+          try {
+            await s.nb.open(s.id);
+            expect(s.nb.pageTitleOf(s.id), 'Original');
+          } on PageFormatException catch (e) {
+            expect(e.message, contains('holds a different page'));
+          }
+          await settled(s.nb);
+          await s.nb.open(s.id);
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+          expect(File(s.copy).readAsStringSync(), y.text);
+        });
+
+        test('12c kept edits and a file that now holds another page: a preview, the other file untouched', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir, recovery: true);
+          final y = await foreignPage();
+          final origBytes = bytes(s.orig);
+          await leave(s);
+          final base = readPage(File(s.copy).readAsStringSync());
+          final keep = await s.nb.keepClosedForTest(base.withMeta(base.meta.withTitle('Kept')), base, dir.path);
+          expect(keep.safe, isTrue);
+          File(s.copy).writeAsStringSync(y.text);
+          await s.nb.open(s.id);
+          expect(s.nb.trouble.kind, TroubleKind.preview);
+          expect(s.nb.trouble.reason, contains('holds a different page'));
+          expect(File(s.copy).readAsStringSync(), y.text);
+          expect(bytes(s.orig), origBytes);
+          // While the preview is open the other file stays unchosen.
+          await settled(s.nb);
+          expect(reasons(s.nb), contains('duplicate page id ${s.id}'));
+          // Closing it rechecks the file, which lets go of the choice.
+          await s.nb.open(await s.nb.createPage());
+          await settled(s.nb);
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+          expect(File(s.copy).readAsStringSync(), y.text);
+        });
+
+        for (final binder in [true, false]) {
+          test('13${binder ? '' : 'b'} ${binder ? 'a binder' : 'a folder'} away and back without the chosen file', () async {
+            final dir = await Directory('${root.path}/Work').create();
+            final s = await setup(dir, dir, binder: binder);
+            final origBytes = bytes(s.orig);
+            await leave(s);
+            final away = '${dir.path}-away';
+            dir.renameSync(away);
+            await s.nb.checkFolders();
+            Directory(away).renameSync(dir.path);
+            final aside = '${root.path}/aside.canvas';
+            File(s.copy).renameSync(aside);
+            await s.nb.checkFolders();
+            expect(s.nb.pageTitleOf(s.id), isNull, reason: 'the other file does not take the page');
+            File(aside).renameSync(s.copy);
+            await s.nb.checkFolders();
+            await s.nb.open(s.id);
+            expect(s.nb.pageTitleOf(s.id), 'Copy');
+            expect(bytes(s.orig), origBytes);
+          });
+        }
+
+        test('14 the chosen file replaced by a copy of a page that has a file of its own', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          final yid = await s.nb.createPage(folderPath: dir.path);
+          await s.nb.rename(yid, 'Why');
+          await s.nb.flush();
+          final yFile = '${dir.path}/$yid.canvas';
+          final yBytes = bytes(yFile);
+          await leave(s);
+          File(s.copy).writeAsBytesSync(yBytes);
+          await s.nb.checkFile(s.copy);
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+          expect(s.nb.tree.roots.map((r) => r.id), contains(s.id));
+          expect(reasons(s.nb), contains('duplicate page id $yid'));
+          expect(bytes(yFile), yBytes);
+        });
+
+        test('15 a closed page header is never changed in a file that holds another page', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          final yid = await s.nb.createPage(folderPath: dir.path);
+          await s.nb.flush();
+          final yFile = '${dir.path}/$yid.canvas';
+          final yBytes = bytes(yFile);
+          await leave(s);
+          File(s.copy).writeAsBytesSync(yBytes); // no check yet
+          await expectLater(s.nb.setAiAccess(s.id, AiAccess.open), throwsA(isA<NotebookException>()));
+          expect(bytes(yFile), yBytes);
+          expect(bytes(s.copy), yBytes);
+        });
+
+        test('16 the AI read of a page refuses a file that holds another page, then the check settles it', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          final yid = await s.nb.createPage(folderPath: dir.path);
+          await s.nb.flush();
+          await s.nb.setAiAccess(s.id, AiAccess.open);
+          await leave(s);
+          File(s.copy).writeAsBytesSync(bytes('${dir.path}/$yid.canvas'));
+          expect(await s.nb.aiSavedPage(s.id), isNull);
+          await settled(s.nb); // the refusal queued a check of the file
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+        });
+
+        for (final binder in [true, false]) {
+          test(
+            '17${binder ? '' : 'b'} ${binder ? 'a binder' : 'a folder'} away and back with the open page\'s file holding another page',
+            () async {
+              final dir = await Directory('${root.path}/Work').create();
+              final s = await setup(dir, dir, binder: binder, recovery: true);
+              final y = await foreignPage();
+              final origBytes = bytes(s.orig);
+              await openExistingFile(s.nb, s.copy);
+              s.nb.current!.updateMeta(s.nb.current!.page.meta.withTitle('Unsaved'));
+              final away = '${dir.path}-away';
+              dir.renameSync(away);
+              await s.nb.checkFolders();
+              Directory(away).renameSync(dir.path);
+              File(s.copy).writeAsStringSync(y.text);
+              await s.nb.checkFolders();
+              expect(s.nb.readOnlyReason, contains('holds a different page'));
+              expect(File(s.copy).readAsStringSync(), y.text);
+              expect(bytes(s.orig), origBytes);
+              expect(s.nb.recoveryStoreForTest!.entriesOfPage(s.id), isNotEmpty);
+            },
+          );
+        }
       });
     });
 

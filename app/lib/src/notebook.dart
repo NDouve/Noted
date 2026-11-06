@@ -933,7 +933,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       } on NotebookException {
         continue;
       }
-      pages.add(SearchablePage(e.key, e.value, () => st.load(e.key)));
+      pages.add(SearchablePage(e.key, e.value, () => _loadPage(st, e.key)));
     }
     if (_defaultGone) {
       skipped.add(const NotSearched('Pages', 'Folder not found. It may be on another device.'));
@@ -4491,7 +4491,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (inBinder) _assertWritable(binder!); // the binder's folder is not written when damaged
     final dir = _templatesDirFor(inBinder ? binder : null);
     await flush();
-    final page = await _storeOf(loc).load(pageId);
+    final page = await _loadPage(_storeOf(loc), pageId);
     final title = page.meta.title.trim();
     final template = NotedTemplate.forPage(
       name: name.trim().isNotEmpty ? name.trim() : (title.isEmpty ? 'Untitled page' : title),
@@ -4553,7 +4553,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final id in ids) {
       if (!ordered.contains(id)) ordered.add(id);
     }
-    final pages = [for (final id in ordered) await st.load(id)];
+    final pages = [for (final id in ordered) await _loadPage(st, id)];
     final template = NotedTemplate.forBinder(
       name: name.trim().isNotEmpty ? name.trim() : section.title,
       binder: binder,
@@ -5115,7 +5115,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final loc = _loc[pageId];
     if (loc == null) return null;
     try {
-      final n = (await _storeOf(loc).load(pageId)).node(boxId);
+      final n = (await _loadPage(_storeOf(loc), pageId)).node(boxId);
       return n is BoxRecord ? n : null;
     } on Object {
       return null; // not readable: not found
@@ -5188,7 +5188,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     try {
       // What the file holds now: let the pending save land, then read it.
       await flush();
-      return await _afterSaves(() => _storeOf(loc).load(pageId));
+      return await _afterSaves(() => _loadPage(_storeOf(loc), pageId));
     } on Object {
       return null;
     }
@@ -5253,7 +5253,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       readOnly = c.readOnly;
     } else {
       try {
-        page = await _storeOf(loc).load(pageId);
+        page = await _loadPage(_storeOf(loc), pageId);
       } on Object {
         return AiLinkResponse.error(AiLinkCode.noBox);
       }
@@ -5398,7 +5398,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final NotedPage page;
     try {
       st = _storeOf(loc);
-      page = await st.load(pageId);
+      page = await _loadPage(st, pageId);
     } on Object {
       return AiLinkResponse.error(AiLinkCode.noBox);
     }
@@ -6867,6 +6867,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // How many times a write that finds its file changed rereads, merges and
   // tries again before it gives up.
   static const int _maxWriteTries = 5;
+
+  // Reads page [id] through the store, which refuses a file that holds another
+  // page (so that page's content is never served under this id). A refusal
+  // queues a check of the file, which settles what page the file is.
+  Future<NotedPage> _loadPage(PageStore st, String id) async {
+    try {
+      return await st.load(id);
+    } on PageFormatException catch (e) {
+      if (e.message == _holdsOtherPage && !_disposed) unawaited(checkFile(st.pathFor(id)));
+      rethrow;
+    }
+  }
 
   // Writes a page that is new (a fresh id): nothing may be at its path, and a
   // file that is there is never written over.
