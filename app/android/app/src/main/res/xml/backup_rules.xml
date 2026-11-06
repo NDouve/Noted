@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Android 11 and older auto-backup. The Microsoft sign-in token store
-     (flutter_secure_storage's shared preferences) is not backed up: its
-     keystore keys don't come back on a restore, so the copy would be useless. -->
+     (flutter_secure_storage 11: the data, the wrapped AES key and the cipher
+     configuration, all in shared preferences) is not backed up: its keystore
+     keys don't come back on a restore, so the copy would be useless. -->
 <full-backup-content>
     <exclude domain="sharedpref" path="FlutterSecureStorage.xml"/>
+    <exclude domain="sharedpref" path="FlutterSecureKeyStorage.xml"/>
+    <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration.xml"/>
+    <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration:FlutterSecureStorage.xml"/>
 </full-backup-content>
