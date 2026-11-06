@@ -226,6 +226,18 @@ void main() {
       });
     });
 
+    test('does not delete anything when the flag cannot be written', () async {
+      final dir = Directory.systemTemp.createTempSync('noted_keychain');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      // The settings folder is a file, so nothing can be saved there.
+      File('${dir.path}/blocker').writeAsStringSync('x');
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      var runs = 0;
+      final settings = AppSettings(File('${dir.path}/blocker/settings.json'));
+      await clearKeychainOnFirstLaunch(settings, () async => runs++);
+      expect(runs, 0);
+    });
+
     test(
       'never runs on other platforms, or when the settings cannot be saved',
       () async {
