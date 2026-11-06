@@ -586,13 +586,27 @@ void main() {
       expect(await reads(Ids.public), isTrue);
     });
 
-    test('R2. a truncated file with a box id before the header id counts for the page id', () async {
-      const boxId = 'a0000000000000ff';
-      final other = mk('Other');
-      File('${other.path}/weird.canvas').writeAsStringSync(
-        '{"nodes":[{"id":"$boxId","type":"text","x":0,"y":0,"width":9,"height":9,"text":"t"}],'
-        '"noted":{"format":1,"id":"${Ids.public}","title":"cut"',
+    // The real text of page [id], cut after its header's page id (the header is
+    // written last, after every box).
+    String cutAfterId(String id, {bool reachId = true}) {
+      final text = writePage(
+        page(
+          id,
+          'cut',
+          nodes: [
+            box('a0000000000000ff', 'noted.note', simpleNote('x'), _small),
+          ],
+        ),
       );
+      final mark = '"pageId":"$id"';
+      final at = text.indexOf(mark);
+      return text.substring(0, reachId ? at + mark.length : at);
+    }
+
+    test('R2. a truncated file with a box id before the header id counts for the page id', () async {
+      final other = mk('Other');
+      File('${other.path}/weird.canvas')
+          .writeAsStringSync(cutAfterId(Ids.public));
       setLists(standalone: [other.path]);
       final lib = await load();
       expect(lib.ambiguous, {
@@ -601,16 +615,47 @@ void main() {
       expect(await reads(Ids.public), isFalse);
     });
 
-    test('R2. a truncated file that never reaches the header id counts for its name\'s id', () async {
+    test(
+      'R2. a half-written copy named "X - Copy.canvas" makes X ambiguous',
+      () async {
+        final other = mk('Other');
+        File('${other.path}/${Ids.public} - Copy.canvas')
+            .writeAsStringSync(cutAfterId(Ids.public));
+        setLists(standalone: [other.path]);
+        final lib = await load();
+        expect(lib.ambiguous, {Ids.public});
+        expect(await reads(Ids.public), isFalse);
+        expect(await reads(Ids.publicChild), isFalse);
+      },
+    );
+
+    test('R2. a truncated file that never reaches the header id counts for its name\'s id only', () async {
       final other = mk('Other');
-      File('${other.path}/${Ids.public}-DEVICE-1.canvas').writeAsStringSync(
-        '{"nodes":[{"id":"${Ids.binderPage}","type":"text","x":0,"y":0,"width":9,"height":9,"text":"t"}],"noted":',
-      );
+      File('${other.path}/${Ids.public}-DEVICE-1.canvas')
+          .writeAsStringSync(cutAfterId(Ids.binderPage, reachId: false));
+      File('${other.path}/${Ids.public} - Copy.canvas')
+          .writeAsStringSync(cutAfterId(Ids.binderPage, reachId: false));
       setLists(standalone: [other.path]);
       final lib = await load();
-      expect(lib.ambiguous, {
-        Ids.public,
-      }, reason: 'the name\'s id; a box id counts for nothing');
+      expect(
+        lib.ambiguous,
+        {Ids.public},
+        reason: 'the name\'s id; a box id and a name without an id count for nothing',
+      );
+      expect(lib.allAmbiguous, isFalse);
+    });
+
+    test('a readable file that does not parse counts for its header id and its name\'s id', () async {
+      final other = mk('Other');
+      File('${other.path}/${Ids.publicChild}-X.canvas')
+          .writeAsStringSync(cutAfterId(Ids.public));
+      setLists(standalone: [other.path]);
+      expect((await load()).ambiguous, {Ids.public, Ids.publicChild});
+    });
+
+    test('an uppercase name carries no id: unreadable, it falls under the unknown rule', () async {
+      expect(nameIds('/x/A0000000000000A1.canvas'), isEmpty);
+      expect(fileIdsOf('/x/A0000000000000A1.canvas', null).unknown, isTrue);
     });
 
     test('B1. a file that can\'t be read and has no id in its name makes every id ambiguous', () async {
@@ -720,46 +765,62 @@ void main() {
       expect(nameIds('/x/${Ids.public}.txt'), isEmpty);
     });
 
-    test('scanHeaderId reads only the header\'s id field', () {
-      String page(String top) =>
-          '{"nodes":[{"id":"box1","noted":{"id":"inner","type":"t"}}],$top}';
-      expect(
-        scanHeaderId(page('"noted":{"format":1,"id":"p1","title":"x"}')),
-        'p1',
+    test('scanHeaderId reads only the header\'s pageId, on real page text', () {
+      // The real layout: nodes, edges, then the header last, with the page id
+      // under `pageId`; a box carries its own `noted` object.
+      final text = writePage(
+        page(
+          'a0000000000000a1',
+          'Title',
+          nodes: [box('b1', 'noted.note', simpleNote('x'), _small)],
+        ),
       );
-      expect(scanHeaderId('{"noted":{"id":"p2"},"nodes":[]}'), 'p2');
+      expect(scanHeaderId(text), 'a0000000000000a1');
+      final at =
+          text.indexOf('"pageId":"a0000000000000a1"') +
+          '"pageId":"a0000000000000a1"'.length;
       expect(
-        scanHeaderId(page('"noted":{"format":1,"id":"p3"')),
-        'p3',
-        reason: 'cut short after the id',
+        scanHeaderId(text.substring(0, at)),
+        'a0000000000000a1',
+        reason: 'cut short right after the id',
       );
       expect(
-        scanHeaderId(page('"noted":{"format":1,"title":"x"')),
-        isNull,
-        reason: 'the id was not reached',
-      );
-      expect(
-        scanHeaderId(page('"noted":{"format":1,"id":"p4')),
+        scanHeaderId(text.substring(0, at - 5)),
         isNull,
         reason: 'cut inside the id',
       );
       expect(
-        scanHeaderId('{"id":"top","nodes":[]}'),
+        scanHeaderId(text.substring(0, text.indexOf('"pageId"'))),
         isNull,
-        reason: 'a top-level id is not the header\'s',
+        reason: 'the id was not reached',
+      );
+      expect(scanHeaderId('﻿$text'), 'a0000000000000a1');
+      expect(
+        scanHeaderId(text.replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')),
+        'a0000000000000a1',
+      );
+      // Not another object's field.
+      expect(
+        scanHeaderId('{"pageId":"top","nodes":[]}'),
+        isNull,
+        reason: 'a top-level pageId is not the header\'s',
       );
       expect(
-        scanHeaderId('{"nodes":[{"noted":{"id":"inner"}}]}'),
+        scanHeaderId('{"nodes":[{"noted":{"pageId":"inner"}}]}'),
         isNull,
         reason: 'a box header is not the page header',
       );
       expect(
+        scanHeaderId('{"noted":{"id":"p2"}}'),
+        isNull,
+        reason: 'the field is pageId, not id',
+      );
+      expect(
         scanHeaderId(
-          page('"noted":{"title":"say \\"id\\":\\"fake\\" ok","id":"p5"}'),
+          '{"noted":{"title":"say \\"pageId\\":\\"fake\\" ok","pageId":"p5"}}',
         ),
         'p5',
       );
-      expect(scanHeaderId('\uFEFF{"noted":{"id":"p6"}}'), 'p6');
       expect(scanHeaderId(''), isNull);
       expect(scanHeaderId('not json at all'), isNull);
     });
@@ -889,7 +950,7 @@ void main() {
             if (a != 0) return;
             final f = '${root.path}/Taxes/mystery.canvas';
             File(f).writeAsStringSync('{}');
-            await makeUnreadable(f);
+            if (!await makeUnreadable(f)) return;
           },
         ),
         'aiT',
@@ -905,9 +966,8 @@ void main() {
           toolbox(
             beforeHold: (a) async {
               if (a == 0) {
-                File(
-                  '${root.path}/Taxes/${Ids.privBinderPage}-COPY.canvas',
-                ).writeAsStringSync('{}');
+                File('${root.path}/Taxes/${Ids.privBinderPage}-COPY.canvas')
+                    .writeAsStringSync('{}');
               }
             },
           ),
@@ -915,6 +975,62 @@ void main() {
         );
         expect(out.isError, isFalse, reason: out.text);
         expect(File(path).readAsStringSync(), contains('new words'));
+      },
+    );
+  });
+
+  group('a folder listed as standalone and as a binder', () {
+    test(
+      'R-1. the reconciled access reaches the pages under it in another folder',
+      () async {
+        // P says Open, in the Privileged Taxes binder that is also listed as standalone:
+        // Open as a standalone page, Privileged in the binder, so Privileged.
+        const parent = 'd100000000000002';
+        const child = 'd100000000000003';
+        save('${root.path}/Taxes', page(parent, 'Open in Taxes', ai: 'open'));
+        final other = mk('Other');
+        save(
+          other.path,
+          page(child, 'Child elsewhere', parent: parent, ai: 'open'),
+        );
+        setLists(standalone: [other.path, '${root.path}/Taxes']);
+        final lib = await load();
+        expect(lib.ambiguous, isEmpty);
+        expect(lib.page(parent)!.access, AiAccess.privileged);
+        expect(
+          lib.page(child)!.access,
+          AiAccess.privileged,
+          reason: 'never looser than its ancestor',
+        );
+        expect(await reads(child), isFalse);
+      },
+    );
+
+    test(
+      'item 5. a closed write honours the box type the binder disallows',
+      () async {
+        const id = 'f000000000000040';
+        final trips = '${root.path}/Trips';
+        save(trips, aiPage(id, 'aiT', ai: null));
+        final binderFile = File('$trips/$binderFileName');
+        binderFile.writeAsStringSync(
+          Binder.parse(binderFile.readAsStringSync())
+              .withBoxType(aiBoxTypeId, false)
+              .write(),
+        );
+        writeStore(data, [writerBox('aiT', id)], allowClosed('aiT'));
+        final path = pagePath(id, trips);
+        final before = File(path).readAsBytesSync();
+        expect(
+          (await append(toolbox(), 'aiT')).isError,
+          isTrue,
+          reason: 'only a binder: AI boxes are off',
+        );
+        // Listed as standalone too: the first entry has no binder, but the binder's disallow still holds.
+        setLists(standalone: [trips]);
+        final out = await append(toolbox(), 'aiT');
+        expect(out.isError, isTrue);
+        expect(File(path).readAsBytesSync(), before);
       },
     );
   });
