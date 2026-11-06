@@ -6,7 +6,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:noted_core/noted_core.dart';
 
 import 'device_storage.dart';
@@ -68,6 +68,7 @@ String recoveryLocationKey(String path, {bool? windows}) {
 /// converted to the layout above by [RecoveryStore.list].
 class RecoveryEntry {
   RecoveryEntry._(
+    this.storedFolder,
     this.folder,
     this.pageId,
     this.time,
@@ -78,7 +79,12 @@ class RecoveryEntry {
     this._dir,
   );
 
-  /// The folder the page belongs in.
+  /// The folder as written in the entry's file: on mobile `@documents/...`, or
+  /// an absolute path of an older app container (see [resolveStoredPath]).
+  /// Every generation hash is over this string.
+  final String storedFolder;
+
+  /// The folder the page belongs in, as a path of this container.
   final String folder;
   final String pageId;
   final DateTime time;
@@ -97,7 +103,7 @@ class RecoveryEntry {
 
   /// Names this generation: a hash of its time, base and page text. Two
   /// entries with the same [gen] hold the same edits.
-  late final String gen = RecoveryStore.generationOf(folder, time, baseText, pageText);
+  late final String gen = RecoveryStore._generationOf(storedFolder, time, baseText, pageText);
 }
 
 /// An entry was not replaced because the slot holds something that isn't one
@@ -130,7 +136,7 @@ class RecoveryListing {
 
 // A parsed entry file.
 class _Env {
-  _Env(this.folder, this.id, this.time, this.timeOk, this.base, this.text, this.key);
+  _Env(this.folder, this.id, this.time, this.timeOk, this.base, this.text, this.key, this.rawKey);
   final String folder;
   final String id;
   final DateTime time;
@@ -139,7 +145,14 @@ class _Env {
   final bool timeOk;
   final String? base;
   final String text;
+
+  /// The location key ([RecoveryStore._locKey]): equal for every form of one
+  /// folder.
   final String key;
+
+  /// The key of the folder string as written ([RecoveryStore._key]): two files
+  /// whose raw keys differ are of different forms.
+  final String rawKey;
 }
 
 /// The recovery folder: one entry per page and location, never deleted except
@@ -190,7 +203,7 @@ class RecoveryStore {
         c.completeError(const RecoveryTimeout());
         return;
       }
-      final tx = RecoveryTx._(this);
+      final tx = RecoveryTx._(this, limit ?? transactionLimit);
       final over = Completer<void>();
       final timer = Timer(limit ?? transactionLimit, () {
         if (!c.isCompleted) {
@@ -233,9 +246,16 @@ class RecoveryStore {
 
   Future<T> _serial<T>(Future<T> Function(RecoveryTx tx) f) => transaction(f);
 
-  /// The generation hash of an entry with these parts.
-  static String generationOf(String folder, DateTime time, String? base, String pageText) =>
-      contentHash(utf8.encode(jsonEncode([folder, time.toUtc().toIso8601String(), base, pageText])));
+  // The generation hash of an entry with these parts, over the folder as
+  // stored in its file.
+  static String _generationOf(String storedFolder, DateTime time, String? base, String pageText) =>
+      contentHash(utf8.encode(jsonEncode([storedFolder, time.toUtc().toIso8601String(), base, pageText])));
+
+  /// The generation hash of an entry for [resolvedFolder] (a path of this
+  /// container) with these parts: the hash of the entry [write] would make.
+  /// The only way for a caller to compute one.
+  String generationFor(String resolvedFolder, DateTime time, String? base, String pageText) =>
+      _generationOf(storedPath(resolvedFolder, windows: windows), time, base, pageText);
 
   // The entries this process knows of: built by every listing and kept
   // current by every write and delete. This process is the only writer, so
@@ -247,6 +267,13 @@ class RecoveryStore {
   // Generations whose page landed but whose entry could not be deleted yet.
   final Set<String> _landed = {};
 
+  // An old-form file whose re-keyed twin exists but which could not be deleted:
+  // the twin's generation -> the old file's. When the twin lands, so did the
+  // old file's generation (build note 3): it is not re-keyed again, and its
+  // entry is offered as landed.
+  final Map<String, String> _twinOf = {};
+  final Set<String> _landedOld = {};
+
   /// Whether a listing has filled the index.
   bool get indexed => _indexed;
 
@@ -255,10 +282,10 @@ class RecoveryStore {
 
   /// The entries of [pageId] in [folder], from the index.
   List<RecoveryEntry> entriesFor(String folder, String pageId) {
-    final k = _key(folder);
+    final k = _locKey(folder);
     return [
       for (final e in _index)
-        if (e.pageId == pageId && _key(e.folder) == k) e,
+        if (e.pageId == pageId && _locKey(e.storedFolder) == k) e,
     ];
   }
 
@@ -272,7 +299,11 @@ class RecoveryStore {
   bool isLanded(String gen) => _landed.contains(gen);
 
   /// Marks [gen] as landed: open and replay delete it and merge nothing.
-  void markLanded(String gen) => _landed.add(gen);
+  void markLanded(String gen) {
+    _landed.add(gen);
+    final old = _twinOf[gen];
+    if (old != null) _landedOld.add(old);
+  }
 
   /// The landed generations that are still in the index.
   List<RecoveryEntry> get landedEntries => [
@@ -283,6 +314,13 @@ class RecoveryStore {
   void _indexPut(RecoveryEntry e) {
     _index.removeWhere((x) => x.file.path == e.file.path);
     _index.add(e);
+  }
+
+  // A retired generation with an old-form twin that could not be deleted: the
+  // twin is retired with it, so no later listing offers it again.
+  void _retireTwin(String gen) {
+    final twin = _twinOf[gen];
+    if (twin != null) _landedOld.add(twin);
   }
 
   void _indexRemove(RecoveryEntry e) {
@@ -303,11 +341,32 @@ class RecoveryStore {
     return safe.length > 40 ? safe.substring(0, 40) : safe;
   }
 
-  String _key(String folder) => recoveryLocationKey(folder, windows: windows);
+  // The key of a folder string as written. An `@documents/` string is its own
+  // key (never resolved against the working directory); case is folded on
+  // Windows only.
+  String _key(String folder) {
+    if (isDocumentsForm(folder)) return (windows ?? Platform.isWindows) ? folder.toLowerCase() : folder;
+    return recoveryLocationKey(folder, windows: windows);
+  }
 
-  // The name of the entry of [pageId] in [folder].
-  String _name(String folder, String pageId) =>
+  // The folder in the form a new file is written in.
+  String _canon(String folder) => storedPath(resolveStoredPath(folder, windows: windows), windows: windows);
+
+  // The location key: the same for a folder in any form (stored, old absolute
+  // or resolved). Used for every comparison of locations.
+  String _locKey(String folder) => _key(_canon(folder));
+
+  // Whether [folder] is an old form of a location: absolute where this build
+  // writes `@documents/` (a path of an older app container). Never on desktop.
+  bool _isOldForm(String folder) => !isDocumentsForm(folder) && _canon(folder) != folder;
+
+  // The name of the entry of [pageId] in [folder] as written: the name its file
+  // was given, which [_checkIdentity] checks.
+  String _rawName(String folder, String pageId) =>
       '${_safe(pageId)}-${_fnv('${_key(folder)}|$pageId').toRadixString(16)}';
+
+  // The name a new entry of [pageId] in [folder] gets.
+  String _name(String folder, String pageId) => _rawName(_canon(folder), pageId);
 
   // The name entries had before the layout changed: it folded case on every
   // platform.
@@ -318,8 +377,9 @@ class RecoveryStore {
 
   // The k-th file an entry of [folder] and [id] may have: the name, then
   // `<name>_dup2`, `_dup3`, ...
-  File _slot(String folder, String id, int k) {
-    final n = _name(folder, id);
+  // With [raw], by the name of [folder] as written, not its canonical form.
+  File _slot(String folder, String id, int k, {bool raw = false}) {
+    final n = raw ? _rawName(folder, id) : _name(folder, id);
     return File(_path(k == 1 ? n : '${n}_dup$k', 'entry'));
   }
 
@@ -339,7 +399,7 @@ class RecoveryStore {
     await hook?.call('tmp-written');
     if (checkSlot) {
       final now = await _peek(f);
-      final nowGen = now == null ? (await f.exists() ? '?' : null) : generationOf(now.folder, now.time, now.base, now.text);
+      final nowGen = now == null ? (await f.exists() ? '?' : null) : _generationOf(now.folder, now.time, now.base, now.text);
       if ((tx?.abandoned ?? false) || nowGen != selectedGen) {
         await _tryDelete(tmp);
         if (tx?.abandoned ?? false) throw const RecoveryTimeout();
@@ -350,6 +410,51 @@ class RecoveryStore {
     // the newest edit, and the next listing promotes it.
     await tmp.rename(f.path);
   }
+
+  // Writes [text] to a unique tmp and publishes it at the free slot [f] without
+  // replacing anything. False if a file is at [f] now (the tmp is removed).
+  Future<bool> _atomicNew(File f, String text) async {
+    final tmp = File('${f.path}.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
+    try {
+      await tmp.writeAsString(text, flush: true);
+    } on Object {
+      await _tryDelete(tmp);
+      rethrow;
+    }
+    // A failure injected here stands for a crash: the complete tmp stays.
+    await hook?.call('tmp-written');
+    var published = false;
+    try {
+      published = await _moveToFree(tmp, f);
+      return published;
+    } finally {
+      // A refused or failed publish leaves no tmp behind.
+      if (!published) await _tryDelete(tmp);
+    }
+  }
+
+  // Whether anything is at [f]'s path: a file, a directory, or a link (also a
+  // dangling one). A slot like that is never published into.
+  static bool _occupied(File f) => FileSystemEntity.typeSync(f.path, followLinks: false) != FileSystemEntityType.notFound;
+
+  // Moves the finished file [from] to the free slot [to] without replacing
+  // anything. False if something is there now. Where the volume can't do an
+  // exclusive publish (no hard links) and the slot is still free, it renames,
+  // as the store always did: only for files of the same form (cross-form moves
+  // call [publishExclusive] themselves).
+  Future<bool> _moveToFree(File from, File to) async {
+    try {
+      return await publishExclusive(from, to.path);
+    } on FileSystemException {
+      if (_occupied(to)) return false;
+      await from.rename(to.path);
+      return true;
+    }
+  }
+
+  // Looks at the next slot after a lost publish: the same one again if
+  // something is there now, else the following one (never a busy loop).
+  static int _afterLostPublish(File slot, int k) => _occupied(slot) ? k - 1 : k;
 
   static Future<void> _tryDelete(File f) async {
     try {
@@ -380,11 +485,18 @@ class RecoveryStore {
   static bool _stands(_Env held, String text, String? base, DateTime? time) =>
       (held.text == text && held.base == base) || (time != null && held.timeOk && held.time.isAfter(time));
 
+  // [_stands] between files of one form. Between files whose raw folder strings
+  // differ (an old absolute form and the new one) only identity (same page and
+  // base) makes one redundant: a later time never does (cross-form rule).
+  bool _standsFrom(_Env held, String rawKey, String text, String? base, DateTime? time) =>
+      held.rawKey == rawKey ? _stands(held, text, base, time) : (held.text == text && held.base == base);
+
   // Whether an entry already holds what an old metadata file holds.
   bool _jsonHeld(_Env e, ({String folder, String id, DateTime? time, String? base}) m) =>
-      e.key == _key(m.folder) &&
+      e.key == _locKey(m.folder) &&
       e.id == m.id &&
-      (e.base == m.base || (m.time != null && e.timeOk && e.time.isAfter(m.time!)));
+      (e.base == m.base ||
+          (e.rawKey == _key(m.folder) && m.time != null && e.timeOk && e.time.isAfter(m.time!)));
 
   // Parses an entry file's text. Throws a FormatException if it isn't one.
   _Env _parse(String text) {
@@ -398,7 +510,7 @@ class RecoveryStore {
       throw const FormatException('missing fields');
     }
     final t = _tryTime(meta['time']);
-    return _Env(folder, id, t ?? _time(null), t != null, b as String?, page, _key(folder));
+    return _Env(folder, id, t ?? _time(null), t != null, b as String?, page, _locKey(folder), _key(folder));
   }
 
   // The envelope of an entry file, only if [list] would accept it: the
@@ -408,7 +520,7 @@ class RecoveryStore {
   Future<_Env?> _peek(File f) async {
     try {
       final env = _parse(await f.readAsString());
-      _checkIdentity(_stemOf(f.path), _name(env.folder, env.id), env.id, readPage(env.text), env.base);
+      _checkIdentity(_stemOf(f.path), _rawName(env.folder, env.id), env.id, readPage(env.text), env.base);
       return env;
     } on Object {
       return null;
@@ -453,15 +565,17 @@ class RecoveryStore {
     try {
       // An entry of the old layout for this page is converted first, so the
       // new generation replaces it, not sits beside it.
-      await _migrate([], []);
+      await _migrate([], [], tx);
     } on Object {
       // Never let it stop the edit from being kept.
     }
     // The entry of this page and location, or a free name; an entry of
     // another location or page (or one that can't be read) is never replaced.
-    final key = _key(folder);
+    final key = _locKey(folder);
+    final stored = storedPath(folder, windows: windows);
     File? target;
     String? selectedGen;
+    String? replacedGen;
     for (var k = 1; target == null; k++) {
       final f = _slot(folder, page.id, k);
       if (!await f.exists()) {
@@ -471,7 +585,8 @@ class RecoveryStore {
       if (freshSlot) continue;
       final e = await _peek(f);
       if (e != null && e.key == key && e.id == page.id) {
-        selectedGen = generationOf(e.folder, e.time, e.base, e.text);
+        selectedGen = _generationOf(e.folder, e.time, e.base, e.text);
+        replacedGen = selectedGen;
         if (replaceable != null && !replaceable.contains(selectedGen)) {
           throw const RecoveryRefused('the recovery folder holds an entry for this page that Noted did not write');
         }
@@ -481,13 +596,14 @@ class RecoveryStore {
     final text = writePage(page);
     await _atomic(
       target,
-      _encode(folder, page.id, time.toUtc().toIso8601String(), baseText, text),
+      _encode(stored, page.id, time.toUtc().toIso8601String(), baseText, text),
       checkSlot: true,
       selectedGen: selectedGen,
       tx: tx,
     );
     final written = RecoveryEntry._(
-      folder,
+      stored,
+      resolveStoredPath(stored, windows: windows),
       page.id,
       time.toUtc(),
       baseText,
@@ -496,6 +612,8 @@ class RecoveryStore {
       _stemOf(target.path),
       directory,
     );
+    // The generation this one replaced is retired, and so is its old-form twin.
+    if (replacedGen != null) _retireTwin(replacedGen);
     _indexPut(written);
     return written;
   }
@@ -570,7 +688,7 @@ class RecoveryStore {
   // `<name>_dup<n>`; but one whose time can't be read stays as it is. Old
   // files that can't be converted stay, and are described in [problems] and
   // [damaged].
-  Future<void> _migrate(List<String> problems, List<UnreadablePage> damaged) async {
+  Future<void> _migrate(List<String> problems, List<UnreadablePage> damaged, [RecoveryTx? tx]) async {
     final bases = <String>{};
     await for (final f in directory.list()) {
       if (f is! File) continue;
@@ -608,18 +726,24 @@ class RecoveryStore {
         final text = await pageFile.readAsString();
         _checkIdentity(stem, _legacyName(m.folder, m.id), m.id, readPage(text), m.base);
         final content = _encode(m.folder, m.id, (m.time ?? _time(null)).toIso8601String(), m.base, text);
-        final key = _key(m.folder);
-        File? target;
+        final key = _locKey(m.folder);
+        final rawKey = _key(m.folder);
         var already = false;
+        // The slots of the entry's own raw name: an old-form entry is
+        // converted in its own form and moved by the re-key pass.
         for (var k = 1; ; k++) {
-          final f = _slot(m.folder, m.id, k);
-          if (!await f.exists()) {
-            target = f;
-            break;
+          final f = _slot(m.folder, m.id, k, raw: true);
+          if (tx?.abandoned ?? false) throw const RecoveryTimeout();
+          if (!_occupied(f)) {
+            // Taken without replacing anything; if something appeared
+            // meanwhile, the same slot is looked at again.
+            if (await _atomicNew(f, content)) break;
+            k = _afterLostPublish(f, k);
+            continue;
           }
           final e = await _peek(f);
           if (e == null || e.key != key || e.id != m.id) continue;
-          if (_stands(e, text, m.base, m.time)) {
+          if (_standsFrom(e, rawKey, text, m.base, m.time)) {
             already = true;
             break;
           }
@@ -629,10 +753,10 @@ class RecoveryStore {
             );
           }
         }
-        if (!already) await _atomic(target!, content);
         await hook?.call('envelope-published');
         await _removeLegacy(base, pageFirst: already);
       } on Object catch (e) {
+        if (e is RecoveryTimeout) rethrow;
         _report(problems, damaged, base, _why(e));
       }
     }
@@ -655,7 +779,7 @@ class RecoveryStore {
   // has the same page and base or a strictly later time; with the same time
   // and other content it is kept under the next free name. One whose time
   // can't be read, and the rest, are kept and reported.
-  Future<void> _settleTmps(List<String> problems, List<UnreadablePage> damaged) async {
+  Future<void> _settleTmps(List<String> problems, List<UnreadablePage> damaged, [RecoveryTx? tx]) async {
     final tmps = <File>[];
     await for (final f in directory.list()) {
       if (f is File && f.path.endsWith('.tmp')) tmps.add(f);
@@ -664,12 +788,14 @@ class RecoveryStore {
     List<_Env>? envs;
     for (final f in tmps) {
       final file = f.path.split(RegExp(r'[\\/]')).last;
+      // A re-key temp is settled by the re-key pass, never renamed over anything.
+      if (file.contains(_rekeyMark)) continue;
       try {
         final text = await f.readAsString();
         final at = file.indexOf('.entry.');
         if (at >= 0) {
           final env = _parse(text);
-          _checkIdentity(file.substring(0, at), _name(env.folder, env.id), env.id, readPage(env.text), env.base);
+          _checkIdentity(file.substring(0, at), _rawName(env.folder, env.id), env.id, readPage(env.text), env.base);
           // Another slot of this page and location may already hold exactly
           // this; the tmp must not be renamed over an older slot then.
           envs ??= await _envelopes();
@@ -677,21 +803,28 @@ class RecoveryStore {
             await f.delete();
             continue;
           }
+          // Only the slots of its own raw name: an old-form tmp never meets a
+          // new-key slot here (the re-key pass moves it).
           for (var k = 1; ; k++) {
-            final target = _slot(env.folder, env.id, k);
-            if (!await target.exists()) {
-              await f.rename(target.path);
-              envs = null; // the entries changed
-              break;
+            if (tx?.abandoned ?? false) throw const RecoveryTimeout();
+            final target = _slot(env.folder, env.id, k, raw: true);
+            if (!_occupied(target)) {
+              // Never over a file that appeared meanwhile.
+              if (await _moveToFree(f, target)) {
+                envs = null; // the entries changed
+                break;
+              }
+              k = _afterLostPublish(target, k);
+              continue;
             }
             final e = await _peek(target);
             if (e == null || e.key != env.key || e.id != env.id) continue;
-            if (_stands(e, env.text, env.base, env.timeOk ? env.time : null)) {
+            if (_standsFrom(e, env.rawKey, env.text, env.base, env.timeOk ? env.time : null)) {
               await f.delete();
               break;
             }
             if (!env.timeOk) throw const FormatException('its time can\'t be read, so it is kept');
-            if (e.timeOk && env.time.isAfter(e.time)) {
+            if (e.rawKey == env.rawKey && e.timeOk && env.time.isAfter(e.time)) {
               await f.rename(target.path);
               envs = null;
               break;
@@ -717,6 +850,7 @@ class RecoveryStore {
           throw const FormatException('an unfinished write was left here');
         }
       } on Object catch (e) {
+        if (e is RecoveryTimeout) rethrow;
         _report(problems, damaged, f.path, _why(e));
       }
     }
@@ -726,7 +860,7 @@ class RecoveryStore {
   /// disagree, are reported, not removed, and are never offered.
   ///
   /// Refreshes the index from what it finds.
-  Future<RecoveryListing> list() => _serial((tx) => _listNow());
+  Future<RecoveryListing> list() => _serial((tx) => _listNow(tx));
 
   /// Fills the index from the entry files as they are, without settling,
   /// converting or deleting anything: for a process that doesn't hold the
@@ -740,8 +874,8 @@ class RecoveryStore {
           final env = _parse(await f.readAsString());
           final page = readPage(env.text);
           final stem = _stemOf(f.path);
-          _checkIdentity(stem, _name(env.folder, env.id), env.id, page, env.base);
-          entries.add(RecoveryEntry._(env.folder, env.id, env.time, env.base, env.text, page, stem, directory));
+          _checkIdentity(stem, _rawName(env.folder, env.id), env.id, page, env.base);
+          entries.add(_entryOf(env, page, stem));
         } on Object {
           // Reported by a real listing; not offered here.
         }
@@ -753,10 +887,22 @@ class RecoveryStore {
   /// Reads [entry]'s file again: true only if it holds exactly this generation.
   Future<bool> verify(RecoveryEntry entry) => _serial((tx) async {
     final e = await _peek(entry.file);
-    return e != null && generationOf(e.folder, e.time, e.base, e.text) == entry.gen;
+    return e != null && _generationOf(e.folder, e.time, e.base, e.text) == entry.gen;
   });
 
-  Future<RecoveryListing> _listNow() async {
+  RecoveryEntry _entryOf(_Env env, NotedPage page, String stem) => RecoveryEntry._(
+    env.folder,
+    resolveStoredPath(env.folder, windows: windows),
+    env.id,
+    env.time,
+    env.base,
+    env.text,
+    page,
+    stem,
+    directory,
+  );
+
+  Future<RecoveryListing> _listNow(RecoveryTx tx) async {
     await hook?.call('list');
     final entries = <RecoveryEntry>[];
     final problems = <String>[];
@@ -768,9 +914,15 @@ class RecoveryStore {
 
     // Settling a tmp can publish the entry that an old half-file waits for, so
     // the old files are looked at again afterwards; only that pass reports.
-    await _migrate([], []);
-    await _settleTmps(problems, damaged);
-    await _migrate(problems, damaged);
+    // A crashed delete-if-unchanged left an entry under a set-aside name: put
+    // it back first, so nothing below sees the entry as missing.
+    await sweepAsideFiles(directory, extension: '.entry');
+    await _migrate([], [], tx);
+    await _settleTmps(problems, damaged, tx);
+    await _migrate(problems, damaged, tx);
+    // Entries of an old app container are moved to the current key before the
+    // index is built, so no replay ever sees both keys.
+    await _rekeyPass(tx, problems, damaged);
     final names = <String>[];
     await for (final f in directory.list()) {
       if (f is File && f.path.endsWith('.entry')) {
@@ -782,17 +934,189 @@ class RecoveryStore {
       try {
         final env = _parse(await File('$base.entry').readAsString());
         final page = readPage(env.text);
-        _checkIdentity(stem, _name(env.folder, env.id), env.id, page, env.base);
-        entries.add(RecoveryEntry._(env.folder, env.id, env.time, env.base, env.text, page, stem, directory));
-        if (stem != _name(env.folder, env.id)) {
+        _checkIdentity(stem, _rawName(env.folder, env.id), env.id, page, env.base);
+        entries.add(_entryOf(env, page, stem));
+        if (stem != _rawName(env.folder, env.id)) {
           _report(problems, damaged, base, 'kept under a separate name because another entry had its name');
         }
       } on Object catch (e) {
         _report(problems, damaged, base, _why(e));
       }
     }
+    if (tx.abandoned) throw const RecoveryTimeout();
+    await _listOnce(entries);
+    for (final e in entries) {
+      if (_landedOld.contains(e.gen)) _landed.add(e.gen);
+    }
     _setIndex(entries);
     return RecoveryListing(entries, problems, damaged);
+  }
+
+  // The same generation (page, location, base and text) in two forms is listed
+  // once: the copy in the current form stays, the other is deleted if it is
+  // unchanged. Copies of one form are left as they are.
+  Future<void> _listOnce(List<RecoveryEntry> entries) async {
+    final groups = <String, List<RecoveryEntry>>{};
+    for (final e in entries) {
+      final id = contentHash(utf8.encode(jsonEncode([e.pageId, _locKey(e.storedFolder), e.baseText, e.pageText])));
+      (groups[id] ??= []).add(e);
+    }
+    for (final g in groups.values) {
+      if (g.length < 2) continue;
+      final keep = g.where((e) => !_isOldForm(e.storedFolder)).firstOrNull;
+      if (keep == null) continue;
+      for (final other in g) {
+        if (identical(other, keep) || _key(other.storedFolder) == _key(keep.storedFolder)) continue;
+        try {
+          final r = await (deleteForTest ?? deleteFileIfUnchanged)(other.file.path, await other.file.readAsBytes());
+          if (!r.deleted && r.outcome != DeleteOutcome.absent) continue; // changed: keep listing it
+        } on FileSystemException {
+          // Can't be deleted now: listed once all the same, and landed with its twin.
+          _twinOf[keep.gen] = other.gen;
+        }
+        entries.remove(other);
+      }
+    }
+  }
+
+  static const _rekeyMark = '.rekey.';
+
+  /// Test seam: replaces the delete-if-unchanged of an old-form file by the
+  /// re-key pass and by the listing of one generation once (for instance to
+  /// throw a [FileSystemException], as a file held open does).
+  @visibleForTesting
+  Future<DeleteResult> Function(String path, List<int> expected)? deleteForTest;
+
+  // Moves the entries of an old app container to the current key (mobile only):
+  // see the design note. Each step is safe to stop at; an old file is deleted
+  // only after its twin was published exclusively and read back.
+  Future<void> _rekeyPass(RecoveryTx tx, List<String> problems, List<UnreadablePage> damaged) async {
+    if (!isMobilePlatform) return;
+    // Re-key temps of an earlier pass: published to a free slot, or removed if
+    // the same generation is held. Never renamed over anything.
+    final temps = <File>[];
+    final olds = <File>[];
+    await for (final f in directory.list()) {
+      if (f is! File) continue;
+      if (f.path.endsWith('.tmp') && f.path.contains(_rekeyMark)) temps.add(f);
+      if (f.path.endsWith('.entry')) olds.add(f);
+    }
+    temps.sort((a, b) => a.path.compareTo(b.path));
+    olds.sort((a, b) => a.path.compareTo(b.path));
+    for (final t in temps) {
+      if (tx.abandoned || tx.outOfTime) return;
+      try {
+        final env = _parse(await t.readAsString());
+        // The temp is named after the old file, so its name is not checked.
+        final n = _rawName(env.folder, env.id);
+        _checkIdentity(n, n, env.id, readPage(env.text), env.base);
+        await _publishOrHeld(t, env, tx, deleteOnStop: false);
+      } on Object catch (e) {
+        // Locked, or not a complete entry: left where it is (the old file is
+        // still the copy) and reported.
+        _report(problems, damaged, t.path, _why(e));
+      }
+    }
+    for (final old in olds) {
+      if (tx.abandoned || tx.outOfTime) return;
+      final List<int> bytes;
+      final _Env env;
+      try {
+        bytes = await old.readAsBytes();
+        env = _parse(utf8.decode(bytes));
+        _checkIdentity(_stemOf(old.path), _rawName(env.folder, env.id), env.id, readPage(env.text), env.base);
+      } on Object {
+        continue; // reported by the listing
+      }
+      if (!_isOldForm(env.folder)) continue;
+      final oldGen = _generationOf(env.folder, env.time, env.base, env.text);
+      // A generation that landed (the replay could not delete its entry) is
+      // left for deletion, never re-keyed into a new generation that would
+      // replay again.
+      if (_landedOld.contains(oldGen) || _landed.contains(oldGen)) continue;
+      try {
+        await _rekeyOne(tx, old, bytes, env, oldGen);
+      } on FileSystemException {
+        // Locked or full: the old file stays the copy; the next listing retries.
+      } on FormatException catch (e) {
+        _report(problems, damaged, old.path, e.message);
+      }
+    }
+  }
+
+  Future<void> _rekeyOne(RecoveryTx tx, File old, List<int> bytes, _Env env, String oldGen) async {
+    final newFolder = _canon(env.folder);
+    final meta = Map<String, Object?>.of(jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>);
+    meta['folder'] = newFolder;
+    final tmp = File('${directory.path}${Platform.pathSeparator}${_stemOf(old.path)}$_rekeyMark'
+        '${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
+    try {
+      await tmp.writeAsString(jsonEncode(meta), flush: true);
+    } on Object {
+      await _tryDelete(tmp);
+      rethrow;
+    }
+    // A failure injected here stands for a crash: the temp stays.
+    await hook?.call('tmp-written');
+    final twin = _Env(newFolder, env.id, env.time, env.timeOk, env.base, env.text, _locKey(newFolder), _key(newFolder));
+    final slot = await _publishOrHeld(tmp, twin, tx);
+    if (slot == null) return; // abandoned or out of time: the old file stays
+    // Read back: only a twin that holds the page, base and text lets the old
+    // file go; one we published must be the same generation.
+    final back = await _peek(slot.file);
+    if (back == null) return;
+    final newGen = _generationOf(back.folder, back.time, back.base, back.text);
+    if (slot.published && newGen != _generationOf(newFolder, env.time, env.base, env.text)) return;
+    if (tx.abandoned) return;
+    await hook?.call('rekey-before-delete');
+    if (tx.abandoned || tx.outOfTime) return;
+    try {
+      final r = await (deleteForTest ?? deleteFileIfUnchanged)(old.path, bytes);
+      if (r.outcome == DeleteOutcome.changed || r.outcome == DeleteOutcome.changedKept) return;
+    } on FileSystemException {
+      // The twin exists: this generation is one, and lands once.
+      _twinOf[newGen] = oldGen;
+    }
+  }
+
+  // Publishes the re-key temp [tmp] (the entry [env], in the current form) at
+  // the first free slot, or removes it if a slot already holds the same page,
+  // location, base and text. Returns the slot that holds the generation, or
+  // null (the temp is then removed or, if unreadable, left).
+  Future<({File file, bool published})?> _publishOrHeld(
+    File tmp,
+    _Env env,
+    RecoveryTx tx, {
+    bool deleteOnStop = true,
+  }) async {
+    for (var k = 1; ; k++) {
+      if (tx.abandoned || tx.outOfTime) {
+        if (deleteOnStop) await _tryDelete(tmp);
+        return null;
+      }
+      final slot = _slot(env.folder, env.id, k);
+      if (!_occupied(slot)) {
+        final bool done;
+        try {
+          done = await publishExclusive(tmp, slot.path);
+        } on FileSystemException {
+          // No hard links here (exFAT/FAT, some network or FUSE storage): the
+          // entry can't be moved without risking another one. The old file stays.
+          if (deleteOnStop) await _tryDelete(tmp);
+          throw const FormatException("couldn't be moved to the current folder form; it is kept as it is");
+        }
+        if (done) {
+          await hook?.call('rekey-published');
+          return (file: slot, published: true);
+        }
+        continue; // taken meanwhile: the next slot, with the same temp
+      }
+      final e = await _peek(slot);
+      if (e != null && e.key == env.key && e.id == env.id && e.text == env.text && e.base == env.base) {
+        await _tryDelete(tmp);
+        return (file: slot, published: false);
+      }
+    }
   }
 
   void _setIndex(List<RecoveryEntry> entries) {
@@ -820,6 +1144,7 @@ class RecoveryStore {
       await hook?.call('delete');
       if (tx?.abandoned ?? false) throw const RecoveryTimeout();
       await f.delete();
+      _retireTwin(entry.gen);
       _indexRemove(entry);
     }
   }
@@ -827,14 +1152,20 @@ class RecoveryStore {
 
 /// What a recovery transaction can do ([RecoveryStore.transaction]).
 class RecoveryTx {
-  RecoveryTx._(this.store);
+  RecoveryTx._(this.store, this._limit);
 
   final RecoveryStore store;
+  final Duration _limit;
+  final Stopwatch _clock = Stopwatch()..start();
+
+  /// Whether most of the transaction's time is used: long work that can be
+  /// finished by a later listing stops here rather than exceed the limit.
+  bool get outOfTime => _clock.elapsed * 4 > _limit * 3;
 
   /// Set when the transaction timed out: it must not change the folder any more.
   bool abandoned = false;
 
-  Future<RecoveryListing> list() => store._listNow();
+  Future<RecoveryListing> list() => store._listNow(this);
 
   Future<RecoveryEntry> write({
     required String folder,
@@ -858,7 +1189,7 @@ class RecoveryTx {
   /// Reads [entry]'s file again: true only if it holds exactly this generation.
   Future<bool> verify(RecoveryEntry entry) async {
     final e = await store._peek(entry.file);
-    return e != null && RecoveryStore.generationOf(e.folder, e.time, e.base, e.text) == entry.gen;
+    return e != null && RecoveryStore._generationOf(e.folder, e.time, e.base, e.text) == entry.gen;
   }
 }
 

@@ -114,9 +114,10 @@ class AppSettings extends ChangeNotifier {
     _write();
   }
 
+  // A stored folder, as a path of this container (see [resolveStoredPath]).
   String? _folder(String key) {
     final v = _raw[key];
-    return v is String && v.isNotEmpty ? v : null;
+    return v is String && v.isNotEmpty ? resolveStoredPath(v) : null;
   }
 
   void _setFolder(String key, String? value) {
@@ -125,7 +126,7 @@ class AppSettings extends ChangeNotifier {
     if (value == null) {
       _raw.remove(key);
     } else {
-      _raw[key] = value;
+      _raw[key] = storedPath(value);
     }
     notifyListeners();
     _write();
@@ -172,6 +173,12 @@ class AppSettings extends ChangeNotifier {
       'format': format is int ? format : settingsFormatVersion,
       'theme': _theme.value,
     }..remove('aiConnections');
+    // The folders are saved in the stored form (an old absolute one is converted
+    // here, at the first save after the change).
+    for (final k in const ['defaultPageFolder', 'defaultBinderFolder']) {
+      final v = _raw[k];
+      if (v is String && v.isNotEmpty) _raw[k] = storedPath(resolveStoredPath(v));
+    }
     try {
       f.parent.createSync(recursive: true);
       final tmp = File('${f.path}.tmp');

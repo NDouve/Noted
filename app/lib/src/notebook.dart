@@ -4243,7 +4243,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final list = _settings['standaloneFolders']?.decode();
     return [
       for (final p in list is List ? list : const [])
-        if (p is String && p.isNotEmpty) p,
+        if (p is String && p.isNotEmpty) resolveStoredPath(p),
     ];
   }
 
@@ -4262,7 +4262,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final list = _settings['binders']?.decode();
       return [
         for (final p in list is List ? list : const [])
-          if (p is String && p.isNotEmpty) p,
+          if (p is String && p.isNotEmpty) resolveStoredPath(p),
       ];
     } on FormatException {
       // Damaged: treated as an upgrade, the side on which no binder appears
@@ -4284,7 +4284,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final map = _settings['binderIds']?.decode();
     return {
       for (final e in (map is Map ? map : const {}).entries)
-        if (e.key is String && e.value is String && (e.value as String).isNotEmpty) e.key as String: e.value as String,
+        if (e.key is String && e.value is String && (e.value as String).isNotEmpty) resolveStoredPath(e.key as String): e.value as String,
     };
   }
 
@@ -4320,13 +4320,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final f = bindersFile;
     if (f == null) return;
     final paths = _binders.keys.toList();
-    final folders = _folders.keys.toList();
+    // Stored in the codec's form (relative to the documents folder on mobile).
+    final storedPaths = [for (final p in paths) storedPath(p)];
+    final folders = [for (final p in _folders.keys) storedPath(p)];
     // `binderIds` is never written while an upgrade is open (the next launch
     // must still be one) and always once it is closed, even as `{}`.
     final ids = (_settingsKind == _SettingsKind.fresh || _settingsKind == _SettingsKind.current)
         ? {
             for (final p in paths)
-              p: ?_binderIds[_key(p)],
+              storedPath(p): ?_binderIds[_key(p)],
           }
         : null;
     final removed = List<String>.of(_removedBinders);
@@ -4343,7 +4345,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       _settings = _settings
           .set('format', RawJson.encode(1))
-          .set('binders', RawJson.encode(paths));
+          .set('binders', RawJson.encode(storedPaths));
       if (folders.isNotEmpty || _settings.containsKey('standaloneFolders')) {
         _settings = _settings.set('standaloneFolders', RawJson.encode(folders));
       }
@@ -5299,7 +5301,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       );
     }
     final time = DateTime.now().toUtc();
-    final gen = RecoveryStore.generationOf(folder, time, baseText, writePage(page));
+    final gen = rec.generationFor(folder, time, baseText, writePage(page));
     // Recorded before writing: a tmp file that gets promoted is recognised.
     session.own[gen] = seq;
     final replaceable = {...session.own.keys, for (final e in entries) e.gen};

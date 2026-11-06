@@ -402,7 +402,7 @@ void main() {
       );
       expect(
         e.gen,
-        RecoveryStore.generationOf('${dir.path}/pages', t, null, writePage(page('one'))),
+        store.generationFor('${dir.path}/pages', t, null, writePage(page('one'))),
       );
       final listed = (await store.list()).entries.single;
       expect(listed.gen, e.gen);
