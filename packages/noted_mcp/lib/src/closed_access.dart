@@ -538,6 +538,9 @@ final class ClosedAccess {
       '${dataDir.path}${sep}settings.json',
       '${dataDir.path}${sep}binders.json',
       if (page.location.binder != null) NotedLibrary.binderFilePath(page.location.path),
+      // A folder listed both ways: the binder file of the other entry too.
+      for (final p in library.pages)
+        if (p.path == page.path && p.location.binder != null) NotedLibrary.binderFilePath(p.location.path),
       for (final p in chain.pages.skip(1))
         if (p.path != null) p.path!,
     };

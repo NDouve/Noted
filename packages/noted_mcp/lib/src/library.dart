@@ -279,7 +279,19 @@ final class NotedLibrary {
             up = pages[k].page.meta.parentId;
           }
           final p = pages[i];
-          if (a != p.access) pages[i] = LibraryPage(p.page, p.location, a, locked: p.locked, path: p.path);
+          // A page under a locked page of its tree is locked too.
+          var l = p.locked;
+          final seenL = <String>{p.id};
+          var upL = p.page.meta.parentId;
+          while (!l && upL != null && seenL.add(upL)) {
+            final k = at[upL];
+            if (k == null) break;
+            l = pages[k].locked;
+            upL = pages[k].page.meta.parentId;
+          }
+          if (a != p.access || l != p.locked) {
+            pages[i] = LibraryPage(p.page, p.location, a, locked: l, path: p.path);
+          }
         }
       }
     }

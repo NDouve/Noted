@@ -943,6 +943,9 @@ void main() {
     });
 
     test('N2. a new file that can\'t be read and has no id, arriving under the hold, refuses the write', () async {
+      // First: can this platform make a file unreadable at all (a probe outside every listed folder)?
+      File('${root.path}/probe.txt').writeAsStringSync('x');
+      if (!await makeUnreadable('${root.path}/probe.txt')) return;
       final before = File(path).readAsBytesSync();
       final out = await append(
         toolbox(
@@ -950,7 +953,7 @@ void main() {
             if (a != 0) return;
             final f = '${root.path}/Taxes/mystery.canvas';
             File(f).writeAsStringSync('{}');
-            if (!await makeUnreadable(f)) return;
+            await makeUnreadable(f);
           },
         ),
         'aiT',
@@ -1033,5 +1036,46 @@ void main() {
         expect(File(path).readAsBytesSync(), before);
       },
     );
+
+    test('a binder file changed under the hold (AI boxes now disallowed) refuses a write to a folder listed both ways', () async {
+      const id = 'f000000000000041';
+      final trips = '${root.path}/Trips';
+      save(trips, aiPage(id, 'aiU', ai: null));
+      setLists(standalone: [trips]);
+      writeStore(data, [writerBox('aiU', id)], allowClosed('aiU'));
+      final path = pagePath(id, trips);
+      final before = File(path).readAsBytesSync();
+      final binderFile = File('$trips/$binderFileName');
+      final out = await append(
+        toolbox(
+          beforeHold: (a) async {
+            if (a != 0) return;
+            binderFile.writeAsStringSync(
+              Binder.parse(binderFile.readAsStringSync())
+                  .withBoxType(aiBoxTypeId, false)
+                  .write(),
+            );
+          },
+        ),
+        'aiU',
+      );
+      expect(out.isError, isTrue);
+      expect(File(path).readAsBytesSync(), before);
+    });
+
+    test('a page under a page of a locked binder, in another folder, is locked too', () async {
+      const parent = 'e100000000000001';
+      const child = 'e100000000000002';
+      save('${root.path}/Vault', page(parent, 'Vault parent', ai: 'open'));
+      final other = mk('Other');
+      save(
+        other.path,
+        page(child, 'Child elsewhere', parent: parent, ai: 'open'),
+      );
+      setLists(standalone: ['${root.path}/Vault', other.path]);
+      final lib = await load();
+      expect(lib.page(child)!.locked, isTrue);
+      expect(await reads(child), isFalse);
+    });
   });
 }
