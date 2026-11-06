@@ -840,16 +840,24 @@ void _recoveryTests() {
   test('the pass stops before the transaction limit; the next listing finishes it (note 6)', () async {
     await writeOld(oldFolder('pages'), _page('p1', 'one'), t1);
     await writeOld(oldFolder('binders/Work'), _page('p2', 'two'), t1);
+    // The limit is real time (a timer and a stopwatch), so a slow machine must
+    // not matter: the limit is long, the hook waits until 80% of it has passed
+    // on a stopwatch started before the transaction (the pass stops at 75%),
+    // and the last 20% is left for the rest of the work.
+    const limit = Duration(seconds: 4);
+    final clock = Stopwatch()..start();
     var slow = true;
     final s = store(
       hook: (p) async {
         if (slow && p == 'tmp-written') {
           slow = false;
-          await Future<void>.delayed(const Duration(milliseconds: 350));
+          while (clock.elapsed * 5 < limit * 4) {
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+          }
         }
       },
     );
-    final l = await s.transaction((tx) => tx.list(), limit: const Duration(milliseconds: 400));
+    final l = await s.transaction((tx) => tx.list(), limit: limit);
     expect(titles(l), {'one', 'two'});
     expect(l.entries, hasLength(2));
     expect(others(), isEmpty, reason: 'no temp is left');
