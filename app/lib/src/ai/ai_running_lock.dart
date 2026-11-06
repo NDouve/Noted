@@ -150,8 +150,8 @@ const String waitingForHolderMessage =
 
 /// What it says while the lock file can't be opened or locked at all.
 const String waitingUnusableMessage =
-    "Noted can't use its running-lock file (access denied, or a disk error), so it can't tell AI apps that it's "
-    "running and won't open your pages. Check that Noted's data folder can be written to, then quit and start Noted again.";
+    "Noted can't use its running-lock file, so it can't tell AI apps it's running and won't open your pages. "
+    'Check that its data folder is writable, then restart Noted.';
 
 /// Shown instead of the app until it holds the running lock (run 2026-11-06-02):
 /// nothing here reads a page, answers the link or writes a file. After
