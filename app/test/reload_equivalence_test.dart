@@ -103,7 +103,9 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/foundation.dart' show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:noted/main.dart';
+import 'package:noted/src/device_storage.dart';
 import 'package:noted/src/attachment_copy.dart' show attachmentAfterHashHook, attachmentBeforeCreateHook, damagedCopyName;
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/open_files.dart';
@@ -375,9 +377,14 @@ final String _goodName = attachmentFileName(contentHash(_goodBytes), 'bin');
 // One sequence
 
 class _Run {
-  _Run(this.seed) : rng = Random(seed);
+  _Run(this.seed, {this.mobile = false}) : rng = Random(seed);
 
   final int seed;
+
+  /// A phone or tablet layout (iOS override): the folders sit in one app
+  /// container, `<root>/c1/Documents/Noted/...`, which [containerMove] renames.
+  /// The random sequences don't use it; the container probes do.
+  final bool mobile;
   final Random rng;
   final List<String> trace = [];
 
@@ -416,14 +423,27 @@ class _Run {
 
   Future<void> start() async {
     root = await Directory.systemTemp.createTemp('noted_reload');
-    rec = Directory('${root.path}${sep}rec');
-    settings = File('${root.path}${sep}app${sep}binders.json');
-    dirs = {
-      'pages': await Directory('${root.path}${sep}pages').create(),
-      'x': await Directory('${root.path}${sep}Elsewhere').create(),
-      'a': await Directory('${root.path}${sep}Alpha').create(),
-      'b': await Directory('${root.path}${sep}Beta').create(),
-    };
+    if (mobile) {
+      await _useContainer('c1');
+      final n = '${root.path}${sep}c1${sep}Documents${sep}Noted';
+      rec = Directory('${root.path}${sep}c1${sep}Support${sep}Noted${sep}recovery');
+      settings = File('$n${sep}binders.json');
+      dirs = {
+        'pages': await Directory('$n${sep}pages').create(recursive: true),
+        'x': await Directory('$n${sep}other').create(recursive: true),
+        'a': await Directory('$n${sep}binders${sep}a').create(recursive: true),
+        'b': await Directory('$n${sep}binders${sep}b').create(recursive: true),
+      };
+    } else {
+      rec = Directory('${root.path}${sep}rec');
+      settings = File('${root.path}${sep}app${sep}binders.json');
+      dirs = {
+        'pages': await Directory('${root.path}${sep}pages').create(),
+        'x': await Directory('${root.path}${sep}Elsewhere').create(),
+        'a': await Directory('${root.path}${sep}Alpha').create(),
+        'b': await Directory('${root.path}${sep}Beta').create(),
+      };
+    }
     nb = _make();
     await nb.load();
     final first = nb.currentId!;
@@ -456,7 +476,18 @@ class _Run {
     await verify('set-up');
   }
 
+  /// Makes container [name] the app's (iOS override, documents and support).
+  Future<void> _useContainer(String name) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    resetDeviceStorage();
+    final d = Directory('${root.path}${sep}$name${sep}Documents')..createSync(recursive: true);
+    final s = Directory('${root.path}${sep}$name${sep}Support')..createSync(recursive: true);
+    await initDeviceStorage(documents: () async => d, cache: () async => s, support: () async => s);
+  }
+
   Future<void> stop() async {
+    debugDefaultTargetPlatformOverride = null;
+    resetDeviceStorage();
     for (final n in {nb, ..._spare}) {
       if (_gone.add(n)) n.dispose();
     }
@@ -1664,6 +1695,69 @@ class _Run {
     expect((await nb.pendingRecovery()).entries, isEmpty, reason: 'the entry was not replayed');
   }
 
+  // ---- the app container changes (mobile) ---------------------------------------
+
+  /// An edit pending on a page of the second standalone folder, which goes away
+  /// (as a folder on a drive that isn't there): the edit is kept in recovery
+  /// and the app quits with the entry waiting. With [asOldBuild] the entry is
+  /// written in the absolute form of the build before relative paths. Returns
+  /// where the folder was moved to.
+  String? vanishedId;
+
+  Future<String> _vanishAndQuit({bool asOldBuild = false}) async {
+    final inLoc = model.entries.where((e) => e.value.loc == 'x').toList();
+    final id = inLoc[rng.nextInt(inLoc.length)].key;
+    final m = model[id]!;
+    vanishedId = id;
+    trace.add('vanish x with an edit pending on ${_short(id)}, then quit${asOldBuild ? ' (old build)' : ''}');
+    _kind = 'vanish:quit';
+    await nb.open(id);
+    _addBox(m, nb.current!);
+    final dir = dirs['x']!;
+    final awayDir = '${dir.path}-away';
+    await _busyRetry(() async => dir.renameSync(awayDir));
+    if (asOldBuild) debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    try {
+      await nb.flush();
+    } finally {
+      if (asOldBuild) debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    }
+    expect((await nb.pendingRecovery()).entries.map((e) => e.pageId), [id], reason: 'the edit was not kept for recovery');
+    _drop();
+    return awayDir;
+  }
+
+  /// The container is replaced between two launches: the app's folders are
+  /// renamed from `c1` to `c2`, the device storage is found again, and a fresh
+  /// notebook is loaded. [awayDir] (a folder [_vanishAndQuit] moved away) is
+  /// put back where it belongs in the new container before the launch. The
+  /// notebook is closed first (it runs with watchFiles off, so there are no
+  /// watchers to close; Windows refuses to rename a watched folder).
+  Future<void> containerMove({String? awayDir, Future<void> Function()? beforeLoad}) async {
+    trace.add('container:move');
+    _kind = 'container:move';
+    await nb.flush();
+    _drop();
+    final from = '${root.path}${sep}c1';
+    final to = '${root.path}${sep}c2';
+    String moved(String p) => p.startsWith(from) ? '$to${p.substring(from.length)}' : p;
+    await _busyRetry(() async => Directory(from).renameSync(to));
+    await _useContainer('c2');
+    rec = Directory(moved(rec.path));
+    settings = File(moved(settings.path));
+    pathA = moved(pathA);
+    pathB = moved(pathB);
+    for (final k in dirs.keys.toList()) {
+      dirs[k] = Directory(moved(dirs[k]!.path));
+    }
+    _stores.clear();
+    if (awayDir != null) await _busyRetry(() async => Directory(moved(awayDir)).renameSync(dirs['x']!.path));
+    await beforeLoad?.call();
+    nb = _make();
+    _spare.add(nb);
+    await nb.load();
+  }
+
   // ---- restart ----------------------------------------------------------------
 
   Future<void> _opRestart() async {
@@ -1875,10 +1969,13 @@ class _Run {
     final wantListed = {_norm(pathA), _norm(pathB), ..._foundListed.keys};
     expect(listed, wantListed, reason: '$where: the binders listed');
     final file = jsonDecode(settings.readAsStringSync()) as Map<String, Object?>;
-    final ids = {for (final e in (file['binderIds']! as Map).entries) _norm(e.key as String): e.value as String};
+    final ids = {
+      for (final e in (file['binderIds']! as Map).entries) _norm(resolveStoredPath(e.key as String)): e.value as String,
+    };
     expect(ids, {_norm(pathA): _idA, _norm(pathB): _idB, ..._foundListed}, reason: '$where: binderIds in binders.json');
     final removed = {...((file['removedBinders'] as List?) ?? const []).cast<String>()};
     expect(removed, _removedIds, reason: '$where: removedBinders in binders.json');
+    if (mobile) return; // the checks below know the desktop layout
     // Discovery creates nothing: no directory and no binder file beyond what
     // the model made.
     final tops = {
@@ -2106,6 +2203,69 @@ void main() {
     final missing = _expectedKinds.difference(_seen);
     expect(missing, isEmpty, reason: 'steps the seeds never made (reached: $_seen)');
   });
+
+  group('the app container changes between launches (iOS paths, run 2026-11-05-05)', () {
+    for (final oldBuild in [false, true]) {
+      final by = oldBuild ? ' written by the build before relative paths' : '';
+      test(
+        'a container:move after a vanish step left an entry$by: every page, binder and edit is still there and no entry is pending',
+        () async {
+          final run = _Run(910, mobile: true);
+          try {
+            await run.start();
+            final away = await run._vanishAndQuit(asOldBuild: oldBuild);
+            await run.containerMove(awayDir: away);
+            await run.verify('after the container change', fresh: true);
+            await run._opRestart();
+            await run.verify('after a restart', fresh: true);
+          } finally {
+            await run.stop();
+          }
+        },
+        timeout: const Timeout(Duration(minutes: 3)),
+      );
+    }
+  });
+
+  test(
+    'R-1: an ordinary .entry.*.tmp of the old build beside a different, later entry at the new key: both edits land, no entry is pending',
+    () async {
+      final run = _Run(911, mobile: true);
+      try {
+        await run.start();
+        final away = await run._vanishAndQuit(asOldBuild: true);
+        // The old build's rename failed: the complete entry is left as a tmp.
+        final entry = run.rec.listSync().whereType<File>().singleWhere((f) => f.path.endsWith('.entry'));
+        entry.renameSync('${entry.path}.1-1.tmp');
+        await run.containerMove(
+          awayDir: away,
+          beforeLoad: () async {
+            // After the change a save of the same page failed: a different,
+            // later entry sits at the new key.
+            final id = run.vanishedId!;
+            final text = File(run._pathOf(id)).readAsStringSync();
+            final y = run._newBox(run._text('later'));
+            await RecoveryStore(run.rec).write(
+              folder: run.dirs['x']!.path,
+              page: readPage(text).insertNode(y),
+              baseText: text,
+              time: DateTime.now().add(const Duration(minutes: 1)),
+            );
+            run.model[id]!.boxes[y.id] = _val(y);
+          },
+        );
+        // The listing at launch reported the second entry as kept under a separate
+        // name (it is, until replay lands it); that report is not refreshed until
+        // the next launch, so the live notebook's problem list is not compared.
+        expect((await run.nb.pendingRecovery()).entries, isEmpty, reason: 'both entries were replayed');
+        await run._verifyDisk('R-1');
+        await run._verifyFresh('R-1');
+      } finally {
+        await run.stop();
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
 
   group('probes of the faults on their own', () {
     late _Run run;
