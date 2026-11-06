@@ -79,7 +79,7 @@ class SaveChain {
     final c = Completer<T>();
     root.tail = root.tail.then((_) async {
       try {
-        c.complete(await job());
+        c.complete(await runZoned(job, zoneValues: {this: true}));
       } on Object catch (e, s) {
         c.completeError(e, s);
       } finally {
@@ -89,6 +89,11 @@ class SaveChain {
     });
     return c.future;
   }
+
+  /// Whether the current code runs inside a job of this chain (any chain
+  /// root). A job that queued another on the chain and waited would wait on
+  /// itself; such code runs inline instead.
+  bool get insideJob => Zone.current[this] == true;
 
   /// Completes when everything queued so far has finished, or when the chain
   /// is detached.

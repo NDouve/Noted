@@ -6918,6 +6918,180 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return _WriteOutcome(landed: true, identity: published);
   }
 
+  // Merging a remote version (sync stage 1) ----------------------------------
+
+  /// Three-way merges [remote], a version of the page file at [path] that
+  /// [base] was the common ancestor of, into the notebook's page and saves the
+  /// result over exactly the file that was read (compare-and-swap, 0128). The
+  /// bytes are page files; nothing here parses anything else. [remoteTime] is
+  /// the remote file's time for the merge (default: now).
+  ///
+  /// [RemoteMergeOutcome.changed]: the file kept changing, the save was
+  /// skipped, or the page is busy. [RemoteMergeOutcome.refused]: any other
+  /// failure, with a reason. Neither writes anything through this call, and it
+  /// never writes blind. A closed page is merged in one save-chain job; the open
+  /// page takes the merge in the editor (not an undo step) and saves through its
+  /// normal save.
+  ///
+  /// Never call it inside a [FolderLocks] job on the page's folder (it awaits a
+  /// write on that folder: a deadlock; asserted in debug builds), nor inside a
+  /// save-chain job.
+  Future<RemoteMergeResult> mergeRemote(
+    String path,
+    List<int> base,
+    List<int> remote, {
+    int? remoteTime,
+  }) async {
+    assert(
+      !FolderLocks.isHeld(File(path).parent),
+      'mergeRemote runs inside a FolderLocks job on its own folder',
+    );
+    if (_disposed) return const RemoteMergeResult.refused('the notebook is closed');
+    try {
+      await flush();
+      final loc = _locationOf(path);
+      if (loc == null) return const RemoteMergeResult.refused('the file is not in a joined location');
+      final NotedPage basePage;
+      final NotedPage remotePage;
+      try {
+        basePage = readPage(utf8.decode(base));
+      } on Object {
+        return const RemoteMergeResult.refused('the base version can not be read');
+      }
+      try {
+        remotePage = readPage(utf8.decode(remote));
+      } on Object {
+        return const RemoteMergeResult.refused('the remote version can not be read');
+      }
+      final id = remotePage.id;
+      if (basePage.id != id) return const RemoteMergeResult.refused('the base holds another page');
+      final time = remoteTime ?? DateTime.now().millisecondsSinceEpoch;
+      for (var round = 0; round < _maxWriteTries; round++) {
+        final c = _current;
+        final RemoteMergeResult? r;
+        if (c != null && c.page.id == id) {
+          r = await _mergeRemoteOpen(loc, path, id, basePage, remotePage, time);
+        } else {
+          final queuedOn = _chain.generation;
+          r = await _afterSaves(
+            () => _mergeRemoteClosed(loc, path, id, basePage, remotePage, time, queuedOn),
+            what: 'merge of remote page $id',
+            pages: {id},
+          );
+        }
+        // Null: the page was opened (or closed) while this waited; try the other path.
+        if (r != null) return r;
+      }
+      return const RemoteMergeResult.changed();
+    } on NotebookException catch (e) {
+      return RemoteMergeResult.refused(e.message);
+    } on Object catch (e) {
+      return RemoteMergeResult.refused(describeError(e));
+    }
+  }
+
+  // The path rule: the page is tracked at [path] in [loc], and that is the file
+  // its store writes. A same-id duplicate or an unchosen file is never merged.
+  String? _remotePathProblem(String loc, String path, String id, PageStore st) {
+    final key = _key(path);
+    if (_pathId[key] != id || _loc[id] != loc || _key(st.pathFor(id)) != key) {
+      return 'the file is not the one this page is saved in';
+    }
+    return null;
+  }
+
+  // The page is closed: one chain job from the read to the compare-and-swap, so
+  // an open of the page can't interleave. Null: the page is open now.
+  Future<RemoteMergeResult?> _mergeRemoteClosed(
+    String loc,
+    String path,
+    String id,
+    NotedPage basePage,
+    NotedPage remotePage,
+    int time,
+    int queuedOn,
+  ) async {
+    for (var attempt = 0; attempt < _maxWriteTries; attempt++) {
+      if (_current?.page.id == id) return null;
+      // A page held by a save or a move isn't merged under it, except one that
+      // waited on the very save that holds it (as the AI's closed write).
+      final heldByItsOwnQueue = queuedOn != _chain.generation && _busy[id] == _busyDetached;
+      if (_busy.containsKey(id) && !heldByItsOwnQueue) return const RemoteMergeResult.changed();
+      final st = _storeOf(loc);
+      if (_isLocked(loc)) return const RemoteMergeResult.refused('the location is read-only');
+      final problem = _remotePathProblem(loc, path, id, st);
+      if (problem != null) return RemoteMergeResult.refused(problem);
+      final String text;
+      final NotedPage mine;
+      try {
+        text = await st.readText(id);
+        mine = readPage(text);
+      } on Object {
+        return const RemoteMergeResult.refused('the page file can not be read');
+      }
+      if (mine.id != id) return const RemoteMergeResult.refused('the page file holds another page');
+      final merged = mergePage(basePage, mine, remotePage, _pageCodecs(id), theirsTime: time).page;
+      if (writePage(merged) == text) {
+        return RemoteMergeResult.merged(identityOfForTest(utf8.encode(text)), wrote: false);
+      }
+      final w = await _writeIfUnchangedFull(loc, merged, text, wantIdentity: true, onlyAtPath: path);
+      if (w.pathMoved) return const RemoteMergeResult.refused('the file is not the one this page is saved in');
+      if (!w.landed) continue; // the file changed: read and merge again
+      _metas[id] = merged.meta;
+      _touch(loc);
+      _rebuildTree();
+      return RemoteMergeResult.merged(w.identity, wrote: true);
+    }
+    return const RemoteMergeResult.changed();
+  }
+
+  // The page is open: merge into the editor with the unsaved edits, then save
+  // through the normal save, which rereads the file and merges what arrived.
+  Future<RemoteMergeResult?> _mergeRemoteOpen(
+    String loc,
+    String path,
+    String id,
+    NotedPage basePage,
+    NotedPage remotePage,
+    int time,
+  ) async {
+    // No await from here to the apply.
+    final c = _current;
+    if (c == null || c.page.id != id) return null;
+    final key = _key(path);
+    if (!_isOpenFile(loc, key)) return const RemoteMergeResult.refused('the file is not the one this page is saved in');
+    if (_isLocked(loc)) return const RemoteMergeResult.refused('the location is read-only');
+    final st = _storeOf(loc);
+    final problem = _remotePathProblem(loc, path, id, st);
+    if (problem != null) return RemoteMergeResult.refused(problem);
+    if (c.readOnly || _diskBlockId == id || _preview != null || (_trouble.isTrouble && _trouble.pageId == id)) {
+      return const RemoteMergeResult.refused('the open page can not be saved now');
+    }
+    if (_busy.containsKey(id)) return const RemoteMergeResult.changed();
+    final merged = mergePage(basePage, c.page, remotePage, _pageCodecs(id), theirsTime: time).page;
+    final changed = writePage(merged) != writePage(c.page);
+    if (changed) c.applyExternal(merged); // not an undo step
+    // The save of the merged page (or of the page as it is when nothing
+    // changed), which reports how it ended.
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    final pending = _pendingSave;
+    final NotedPage toSave;
+    final int seq;
+    if (pending != null && pending.id == id) {
+      _pendingSave = null;
+      toSave = pending;
+      seq = _pendingSeq;
+    } else {
+      toSave = c.page;
+      seq = _session?.seq ?? 0;
+    }
+    final res = await _enqueueSave(toSave, seq, wantIdentity: true);
+    if (res.end == SaveEnd.landed) return RemoteMergeResult.merged(res.identity, wrote: true);
+    if (res.end == SaveEnd.skipped || res.keepsChanging) return const RemoteMergeResult.changed();
+    return const RemoteMergeResult.refused('the page could not be saved; the edits are kept');
+  }
+
   // External changes (0020) ---------------------------------------------------
 
   /// Whether the page [id] has a conflicted box, on screen or in its file.
@@ -7522,39 +7696,67 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   ) async {
     final id = copy.id;
     final st = _storeOf(loc);
-    final c = _current;
-    final isOpen = c != null && c.page.id == id && _loc[id] == loc;
-    final NotedPage original;
-    final String? failure;
-    if (isOpen) {
-      // Merge into the page on screen, keeping unsaved edits, and save it.
-      original = c.page;
+    bool openHere() {
+      final c = _current;
+      return c != null && c.page.id == id && _loc[id] == loc;
+    }
+
+    // The page on screen: merge into it, keeping unsaved edits, and save it.
+    Future<String?> openBranch(CanvasController c) async {
+      final original = c.page;
       final merged = mergeConflictCopy(original, copy, modules.codecs, copyTime: time).page;
       if (writePage(merged) != writePage(original)) c.applyExternal(merged);
       await flush();
-      failure = verifyConflictCopyMerge(readPage(await st.readText(id)), original, copy);
-    } else {
+      return verifyConflictCopyMerge(readPage(await st.readText(id)), original, copy);
+    }
+
+    // The page is closed: one chain job from the read of the original to
+    // `_applyClosed`, so an open of the page can't run between the read and the
+    // write and install the page as it was before. [open] is set when the page
+    // turned out to be open after all (checked first, inside the job).
+    Future<({bool open, String? failure})> closedBranch() async {
+      if (openHere()) return (open: true, failure: null);
       final text = await File(originalPath).readAsString();
-      original = readPage(text);
+      final original = readPage(text);
       final merged = mergeConflictCopy(original, copy, modules.codecs, copyTime: time).page;
       final out = writePage(merged);
-      if (out != text) {
-        // Make the store write to the file the original was read from.
-        if (_key(st.pathFor(id)) != _key(originalPath)) await _scan(st);
-        // Replace the original only if it still holds exactly what the merge
-        // read, checked at the moment of replacing (0128); if not, merge again.
-        await syncHook?.call('original-read', originalPath);
-        if (!await _writeIfUnchanged(loc, merged, text)) throw const _SourceChanged();
-        final back = await st.readText(id);
-        if (back != out) throw const FormatException('the saved page differs from what was written');
-        failure = verifyConflictCopyMerge(readPage(back), original, copy);
-        if (_loc[id] != loc) {
-          await _applyClosed(merged, loc, _key(originalPath), originalPath);
-        }
-      } else {
-        failure = verifyConflictCopyMerge(readPage(text), original, copy);
+      if (out == text) return (open: false, failure: verifyConflictCopyMerge(readPage(text), original, copy));
+      // Make the store write to the file the original was read from.
+      if (_key(st.pathFor(id)) != _key(originalPath)) await _scan(st);
+      // Replace the original only if it still holds exactly what the merge
+      // read, checked at the moment of replacing (0128); if not, merge again.
+      await syncHook?.call('original-read', originalPath);
+      if (!await _writeIfUnchanged(loc, merged, text)) throw const _SourceChanged();
+      final back = await st.readText(id);
+      if (back != out) throw const FormatException('the saved page differs from what was written');
+      final failure = verifyConflictCopyMerge(readPage(back), original, copy);
+      if (_loc[id] != loc) {
+        await _applyClosed(merged, loc, _key(originalPath), originalPath);
+      }
+      return (open: false, failure: failure);
+    }
+
+    String? failure;
+    var settled = false;
+    for (var round = 0; round < 3 && !settled; round++) {
+      final c = _current;
+      if (c != null && openHere()) {
+        failure = await openBranch(c);
+        settled = true;
+        continue;
+      }
+      // Inside a chain job already (a save's own check) the job can't queue on
+      // the chain and wait: it runs inline, as it always did.
+      final r = _chain.insideJob
+          ? await closedBranch()
+          : await _afterSaves(closedBranch, what: 'conflict-copy merge of page $id', pages: {id});
+      if (!r.open) {
+        failure = r.failure;
+        settled = true;
       }
     }
+    // Opened and closed again every round: leave the copy for the next check.
+    if (!settled) throw const _SourceChanged();
     if (failure != null) throw FormatException(failure);
     // Delete the copy only if it is still exactly what was merged.
     await syncHook?.call('copy-merged', copyPath);
