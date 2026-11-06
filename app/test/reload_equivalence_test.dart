@@ -110,13 +110,17 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/foundation.dart' show TargetPlatform, debugDefaultTargetPlatformOverride;
+import 'package:flutter/widgets.dart' show Widget;
 import 'package:noted/main.dart';
+import 'package:noted/src/ai/ai_access_service.dart';
+import 'package:noted/src/ai/ai_running_lock.dart' show WaitingForLockApp;
 import 'package:noted/src/device_storage.dart';
 import 'package:noted/src/attachment_copy.dart' show attachmentAfterHashHook, attachmentBeforeCreateHook, damagedCopyName;
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/open_files.dart';
 import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
+import 'package:noted_box_ai/noted_box_ai.dart';
 import 'package:noted_box_attachments/noted_box_attachments.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
@@ -2805,5 +2809,186 @@ void main() {
         expect(dest.any((e) => e.page.node(y.id) != null), isTrue, reason: 'a kept box is in the target recovery');
       }
     });
+  });
+
+  // Run 2026-11-06-02, task 1 (area-data-integrity-6 R-1): a closed-app MCP write
+  // can't land after Noted starts. The write runs in a child process through a
+  // real `NotedToolbox` (packages/noted_mcp/test/support/closed_write_child.dart),
+  // the app side through `openWhenOwned`; after each part the model must match the
+  // files and a fresh notebook, with no conflict copy and no conflicted box.
+  group('mcp:startDuringClosedWrite', () {
+    late _Run run;
+    late Directory appDir;
+    late AiAccessService service;
+    late String writerCode;
+    late String pageId;
+    late String pagePath;
+    final cleanups = <Future<void> Function()>[];
+
+    setUp(() async {
+      run = _Run(901);
+      await run.start();
+      appDir = run.settings.parent;
+      // A model page in binder a, with an AI box that allows closed writes.
+      pageId = run.model.entries.firstWhere((e) => e.value.loc == 'a').key;
+      pagePath = run._pathOf(pageId);
+      await run.nb.open(pageId);
+      const codec = AiCodec();
+      final box = BoxRecord.create(
+        id: 'aibox',
+        typeId: aiBoxTypeId,
+        dataVersion: codec.dataVersion,
+        bounds: const Bounds(40, 40, 400, 120),
+        data: RawJson.encode(codec.encode(codec.create())),
+        snapshotText: '',
+        rev: 'r0',
+      );
+      run.nb.current!.insertBox(box);
+      run.model[pageId]!.boxes['aibox'] = _val(box);
+      await run.nb.flush();
+      File('${appDir.path}${run.sep}noted-running.lock').writeAsStringSync('');
+      service = AiAccessService(dataFolder: appDir);
+      writerCode = await service.connect('aibox', role: AiCodeRole.writer, label: 'Probe chat');
+      service.store.approveCode(parseAiToken(writerCode)!.id);
+      await service.setWriterPermission('aibox', AiWriterPermission.append);
+      await service.setClosedWrites('aibox', true);
+      // Nothing is open: the app is closed.
+      run._drop();
+    });
+    tearDown(() async {
+      for (final c in cleanups.reversed) {
+        try {
+          await c();
+        } on Object {
+          // Best effort.
+        }
+      }
+      cleanups.clear();
+      service.dispose();
+      await run.stop();
+    });
+
+    // The child process, with its lines.
+    Future<({Process process, StreamIterator<String> lines, List<String> seen})> child({
+      List<String> pauses = const [],
+      String content = 'child wrote this',
+    }) async {
+      final p = await Process.start(
+        'dart',
+        ['run', 'test/support/closed_write_child.dart', appDir.path, 'aibox', writerCode, 'append', content, ...pauses],
+        workingDirectory: '../packages/noted_mcp',
+        runInShell: true,
+      );
+      p.stderr.drain<void>();
+      cleanups.add(() async {
+        await p.stdin.close();
+        if (Platform.isWindows) {
+          Process.runSync('taskkill', ['/PID', '${p.pid}', '/T', '/F']);
+        } else {
+          p.kill();
+        }
+      });
+      return (
+        process: p,
+        lines: StreamIterator(p.stdout.transform(utf8.decoder).transform(const LineSplitter())),
+        seen: <String>[],
+      );
+    }
+
+    // Reads lines until one starts with [prefix]; returns it.
+    Future<String> until(({Process process, StreamIterator<String> lines, List<String> seen}) c, String prefix) async {
+      while (await c.lines.moveNext().timeout(const Duration(seconds: 120))) {
+        c.seen.add(c.lines.current);
+        if (c.lines.current.startsWith(prefix)) return c.lines.current;
+      }
+      fail('the child ended without "$prefix"; it said ${c.seen}');
+    }
+
+    Map<String, Object?> resultOf(String line) => jsonDecode(line.substring('result:'.length)) as Map<String, Object?>;
+
+    Future<void> freshNotebook() async {
+      run._drop();
+      run.nb = run._make();
+      run._spare.add(run.nb);
+      await run.nb.load();
+    }
+
+    test('Noted starting during a closed write waits for it: the write lands whole, nothing is conflicted', () async {
+      final c = await child(pauses: ['pause-replace']);
+      await until(c, 'at-replace'); // under the hold
+      // Noted starts now.
+      run.nb = run._make();
+      run._spare.add(run.nb);
+      var loaded = false;
+      unawaited(run.nb.loaded.then((_) => loaded = true));
+      final shown = <Widget>[];
+      final started = openWhenOwned(run.nb, appDir, show: shown.add);
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      expect(shown.single, isA<WaitingForLockApp>(), reason: 'the app waits for the lock');
+      expect(loaded, isFalse, reason: 'load has not started');
+      expect(File('${appDir.path}${run.sep}ai-link.json').existsSync(), isFalse, reason: 'the link has not started');
+      c.process.stdin.writeln('go');
+      final result = resultOf(await until(c, 'result:'));
+      expect(result['error'], isFalse, reason: '${result['text']}');
+      final r = await started.timeout(const Duration(seconds: 30));
+      cleanups.add(() async {
+        await r.link?.dispose();
+        r.lock?.dispose();
+      });
+      expect(shown.last, isA<NotedApp>());
+      await run.nb.loaded;
+      // The model gets the AI box's new text.
+      final m = run.model[pageId]!;
+      m.boxes['aibox'] = (text: '${m.boxes['aibox']!.text}child wrote this', bounds: m.boxes['aibox']!.bounds);
+      await run.verify('after the closed write and the start', fresh: true);
+      await r.link?.dispose();
+      r.lock?.dispose();
+      cleanups.clear();
+    });
+
+    test('with Noted already owning the lock the write is sent to the link, which is not up: one retry, then busy', () async {
+      final before = File(pagePath).readAsBytesSync();
+      final shown = <Widget>[];
+      run.nb = run._make();
+      run._spare.add(run.nb);
+      final r = await openWhenOwned(run.nb, appDir, show: shown.add, startLink: false);
+      cleanups.add(() async => r.lock?.dispose());
+      expect(r.link, isNull);
+      final c = await child();
+      final result = resultOf(await until(c, 'result:'));
+      expect(result['error'], isTrue);
+      // The same text the server gives for a lock that is held with no answer.
+      expect(result['text'], "Noted is running but didn't answer; try again.");
+      expect(c.seen.where((l) => l.startsWith('send:')), ['send:1', 'send:2'], reason: 'one retry');
+      expect(c.seen, isNot(contains('at-hold')), reason: 'the write never took its own hold');
+      expect(File(pagePath).readAsBytesSync(), before);
+      await run.verify('after the refused write', fresh: true);
+      r.lock?.dispose();
+      cleanups.clear();
+    });
+
+    for (final change in ['closed writes turned off', 'binder disallows AI boxes']) {
+      test('a change before the hold ($change) refuses the write: page and model are unchanged', () async {
+        final before = File(pagePath).readAsBytesSync();
+        final binderFile = File('${run.dirs['a']!.path}${run.sep}noted-binder.json');
+        final binderBefore = binderFile.readAsBytesSync();
+        final c = await child(pauses: ['pause-hold']);
+        await until(c, 'at-hold');
+        if (change == 'closed writes turned off') {
+          await service.setClosedWrites('aibox', false);
+        } else {
+          final b = Binder.parse(utf8.decode(binderBefore)).withBoxType(aiBoxTypeId, false);
+          binderFile.writeAsStringSync(b.write());
+        }
+        c.process.stdin.writeln('go');
+        final result = resultOf(await until(c, 'result:'));
+        expect(result['error'], isTrue);
+        expect(result['text'], contains(change == 'closed writes turned off' ? 'closed' : 'does not take writes'));
+        expect(File(pagePath).readAsBytesSync(), before);
+        binderFile.writeAsBytesSync(binderBefore); // restored
+        await freshNotebook();
+        await run.verify('after the refused write', fresh: true);
+      });
+    }
   });
 }
