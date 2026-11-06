@@ -223,6 +223,18 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     }
   }
 
+  /// Like [_guard], for an Undo: its outcome is shown queued, behind the
+  /// message on screen, so it never hides a newer delete's Deleted bar (whose
+  /// closing by hide would discard that delete).
+  Future<void> _guardUndo(DeletedPages d) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      await _nb.undoDelete(d);
+    } on NotebookException catch (e) {
+      _report(messenger, e, queued: true);
+    }
+  }
+
   // Shows [e] in a SnackBar. [queued]: behind the message on screen, not in
   // place of it.
   void _report(ScaffoldMessengerState? messenger, NotebookException e, {bool queued = false}) {
@@ -238,7 +250,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
             // Pages that only exist in memory: Undo writes them back.
             action: held == null
                 ? null
-                : SnackBarAction(label: 'Undo', onPressed: () => _guard(() => _nb.undoDelete(held))),
+                : SnackBarAction(label: 'Undo', onPressed: () => _guardUndo(held)),
           ),
         )
         .closed
@@ -947,9 +959,12 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
               label: 'Undo',
               onPressed: () async {
                 undoPressed = true;
-                await _guard(() => _nb.undoDelete(deleted));
-                // A partial Undo keeps the delete for another try: offer it again.
-                if (mounted && _nb.isPendingDelete(deleted)) _showDeletedBar(messenger, deleted, title, again: true);
+                await _guardUndo(deleted);
+                // A failed Undo holds the delete with its own bar; only a delete
+                // that is still pending and not held gets this bar again.
+                if (mounted && _nb.isPendingDelete(deleted) && !_nb.isHeldDelete(deleted)) {
+                  _showDeletedBar(messenger, deleted, title, again: true);
+                }
               },
             ),
           ),
@@ -958,7 +973,11 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         .then((reason) {
           // Only the delete Undo can still reach is dropped; a newer delete
           // has already dropped this one.
-          if (!undoPressed && reason != SnackBarClosedReason.action && _nb.isPendingDelete(deleted)) {
+          // A held entry is never dropped by the expiry; only its own bar's X does.
+          if (!undoPressed &&
+              reason != SnackBarClosedReason.action &&
+              _nb.isPendingDelete(deleted) &&
+              !_nb.isHeldDelete(deleted)) {
             _nb.discardDeleted(deleted);
           }
         });
