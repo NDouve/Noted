@@ -120,10 +120,13 @@ class AppSettings extends ChangeNotifier {
   /// couldn't be read.
   bool get keychainCleaned => _raw['keychainCleaned'] == true;
 
-  set keychainCleaned(bool value) {
-    if (keychainCleaned == value || _readFailed) return;
-    _raw = {..._raw, 'keychainCleaned': value};
-    _write();
+  /// Sets the flag and saves it; false if it could not be saved (or the file was
+  /// unreadable), in which case the flag is not trusted.
+  bool markKeychainCleaned() {
+    if (_readFailed) return false;
+    if (keychainCleaned) return true;
+    _raw = {..._raw, 'keychainCleaned': true};
+    return _write();
   }
 
   // A stored folder, as a path of this container (see [resolveStoredPath]).

@@ -147,6 +147,8 @@ Future<void> clearKeychainOnFirstLaunch(
 ) async {
   if (defaultTargetPlatform != TargetPlatform.iOS) return;
   if (settings.keychainCleaned || !settings.canRememberNotes) return;
-  settings.keychainCleaned = true;
+  // The flag first, and only a saved flag lets the items go: if it could not
+  // be saved the clean-up would repeat and sign the user out at every launch.
+  if (!settings.markKeychainCleaned()) return;
   await deleteAll();
 }
