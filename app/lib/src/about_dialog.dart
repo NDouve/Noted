@@ -93,7 +93,7 @@ class _MicrosoftSection extends StatelessWidget {
       AuthState.signedOut => 'Signed out',
       AuthState.signedIn =>
         'Signed in as ${microsoft.displayName ?? 'your Microsoft account'}',
-      AuthState.signInAgain => 'Sign in again',
+      AuthState.signInAgain => 'Session expired',
     };
     final busy = microsoft.busy;
     return Column(

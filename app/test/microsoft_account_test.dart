@@ -176,7 +176,7 @@ void main() {
     await openAbout(t);
     await tapAbout(t, 5);
     expect(account.state, AuthState.signInAgain);
-    expect(find.byKey(const ValueKey('ms-status')), findsOneWidget);
+    expect(find.text('Session expired'), findsOneWidget);
     expect(find.text('Sign in again'), findsWidgets);
     expect(find.byKey(const ValueKey('ms-sign-in')), findsOneWidget);
     expect(find.byKey(const ValueKey('ms-sign-out')), findsOneWidget);

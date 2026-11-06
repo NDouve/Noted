@@ -6,7 +6,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart'
-    show Command, NotedMenuHeading, NotedMenuItem, NotedMetrics, ToolbarStyle;
+    show Command, NotedMenuDivider, NotedMenuHeading, NotedMenuItem, NotedMetrics, ToolbarStyle;
 
 import 'about_dialog.dart';
 import 'app_commands.dart';
@@ -102,13 +102,15 @@ class SettingsMenu extends StatelessWidget {
                   icon: Icons.folder_open_rounded,
                 ),
               ],
-              if (microsoft != null)
+              if (microsoft != null) ...[
+                const NotedMenuDivider(),
                 const NotedMenuItem<String>(
                   key: ValueKey('settings-about'),
                   value: _aboutId,
                   label: 'About Noted',
                   icon: Icons.info_outline_rounded,
                 ),
+              ],
             ];
           },
         ),
