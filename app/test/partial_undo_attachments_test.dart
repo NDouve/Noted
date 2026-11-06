@@ -92,7 +92,14 @@ void main() {
     expect(nb.isPendingDelete(deleted), isTrue, reason: 'Undo can be tried again');
     expect(saved.existsSync(), isTrue);
 
-    await nb.discardPendingDelete(); // the bar timed out, or the app is closing
+    // A failed Undo holds its entry (0141): a bar timing out or the closing
+    // app's discard doesn't reach it; only the held bar's X lets it go.
+    await nb.discardPendingDelete();
+    expect(nb.isHeldDelete(deleted), isTrue, reason: 'a held entry outlives the pending-delete discard');
+    expect(saved.existsSync(), isTrue);
+
+    nb.discardDeleted(deleted); // the held bar's X
+    await realIoWait();
     expect(nb.isPendingDelete(deleted), isFalse);
     expect(saved.existsSync(), isTrue, reason: 'the folder the message points to is not removed');
     expect(saved.readAsBytesSync(), [1, 2, 3]);
