@@ -304,7 +304,9 @@ class NotedTypography extends ThemeExtension<NotedTypography> {
 ///   surfaceContainerHigh = surface (toolbar, menus, dialogs),
 ///   surfaceContainerHighest = surface-hover;
 /// - inverseSurface = text, onInverseSurface = surface, inversePrimary =
-///   accent; surfaceTint = transparent (no Material elevation tint);
+///   accent (the snackbar's own action colour is set in [notedThemeData]: the
+///   other theme's accent, for AA contrast on the inverted surface);
+///   surfaceTint = transparent (no Material elevation tint);
 /// - shadow and scrim = black.
 ColorScheme notedColorScheme(Brightness brightness) {
   final c = brightness == Brightness.dark
@@ -545,6 +547,14 @@ ThemeData notedThemeData(Brightness brightness, {bool touch = false}) {
         vertical: metrics.space1,
       ),
       waitDuration: const Duration(milliseconds: 500),
+    ),
+    // Snackbar (README, "Mapping to Flutter"): background = inverseSurface =
+    // text, close icon = surface, action = the other theme's accent. The stock
+    // inversePrimary is this theme's own accent, which fails AA on the
+    // inverted surface.
+    snackBarTheme: SnackBarThemeData(
+      actionTextColor: (dark ? DesignColors.light : DesignColors.dark).accent,
+      closeIconColor: tokens.surface,
     ),
     extensions: [colors, metrics, type],
   );
