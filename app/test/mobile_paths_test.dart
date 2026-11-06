@@ -7,9 +7,15 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:noted/main.dart' show buildModules;
+import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/device_storage.dart';
+import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_store.dart';
+import 'package:noted_canvas/noted_canvas.dart' show Bounds;
 import 'package:noted_core/noted_core.dart';
+
+import 'support/trouble_world.dart';
 
 // The mobile relative paths (sync stage 1): the codec, the notebook and the
 // recovery store. The codec is tested here with POSIX-shaped iOS paths.
@@ -112,6 +118,350 @@ void main() {
   });
 
   group('recovery re-key', _recoveryTests);
+  group('notebook', _notebookTests);
+  group('B1: generation hashes', _b1Tests);
+  group('guards', _guardTests);
+}
+
+// Guards: these describe today's behaviour and pass on main as well. Desktop
+// files must stay byte for byte the same, and a build that doesn't know the
+// relative form must read it without harm.
+void _guardTests() {
+  late Directory root;
+  final opened = <Notebook>[];
+
+  setUp(() async => root = await Directory.systemTemp.createTemp('noted_mobile_guard'));
+
+  tearDown(() async {
+    for (final nb in opened) {
+      nb.dispose();
+    }
+    opened.clear();
+    debugDefaultTargetPlatformOverride = null;
+    resetDeviceStorage();
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    if (root.existsSync()) await root.delete(recursive: true);
+  });
+
+  Notebook build(AppSettings settings) {
+    final nb = Notebook(
+      PageStore(Directory('${root.path}/pages')..createSync(recursive: true)),
+      buildModules(),
+      saveDelay: const Duration(hours: 1),
+      bindersFile: File('${root.path}/app/binders.json'),
+      recoveryDirectory: Directory('${root.path}/app/recovery'),
+      settings: settings,
+      folderCheckInterval: Duration.zero,
+    );
+    opened.add(nb);
+    return nb;
+  }
+
+  test('6: desktop files are byte for byte what main writes (binders.json, settings.json, recovery entry and tmp)', () async {
+    final settings = AppSettings(File('${root.path}/app/settings.json'));
+    final nb = build(settings);
+    await nb.load();
+    final a = await nb.createBinder(name: 'A');
+    final other = Directory('${root.path}/other')..createSync();
+    await nb.setDefaultPageFolder(other.path);
+    settings.theme = ThemeSetting.dark;
+    await nb.flush();
+    final p = a.path;
+    final f = nb.standaloneFolders.single.path;
+    final id = a.binder!.id;
+    expect(
+      File('${root.path}/app/binders.json').readAsStringSync(),
+      '{"format":1,"binders":[${jsonEncode(p)}],'
+      '"binderIds":{${jsonEncode(p)}:${jsonEncode(id)}},"standaloneFolders":[${jsonEncode(f)}]}\n',
+    );
+    expect(
+      File('${root.path}/app/settings.json').readAsStringSync(),
+      '{"defaultPageFolder":${jsonEncode(f)},"format":1,"theme":"dark"}',
+    );
+
+    // A recovery entry: its name and bytes, and the tmp a failed rename leaves.
+    final rec = Directory('${root.path}/rec');
+    final folder = '${root.path}/pages';
+    final time = DateTime.utc(2026, 10, 25, 10);
+    final page = _page('p1', 'one');
+    final text = writePage(page);
+    final expected = jsonEncode({
+      'format': 2,
+      'folder': folder,
+      'pageId': 'p1',
+      'time': '2026-10-25T10:00:00.000Z',
+      'base': null,
+      'page': text,
+    });
+    var h = 0xcbf29ce484222325;
+    final key = File(folder).absolute.path.replaceAll(r'\', '/');
+    for (final u in utf8.encode('${Platform.isWindows ? key.toLowerCase() : key}|p1')) {
+      h = ((h ^ u) * 0x100000001b3) & 0x7fffffffffffffff;
+    }
+    final name = 'p1-${h.toRadixString(16)}';
+    final s = RecoveryStore(rec);
+    await s.write(folder: folder, page: page, baseText: null, time: time);
+    expect(File('${rec.path}/$name.entry').readAsStringSync(), expected);
+    // A failed rename: a directory sits where the entry goes.
+    File('${rec.path}/$name.entry').deleteSync();
+    Directory('${rec.path}/$name.entry').createSync();
+    await expectLater(s.write(folder: folder, page: page, baseText: null, time: time), throwsA(anything));
+    final tmps = [
+      for (final e in rec.listSync())
+        if (e is File && e.path.contains('.entry.') && e.path.endsWith('.tmp')) e,
+    ];
+    expect(tmps, hasLength(1));
+    expect(tmps.single.readAsStringSync(), expected);
+  });
+
+  test('7: a build that does not know @documents/ reads the new format harmlessly (codec off)', () async {
+    final b = File('${root.path}/app/binders.json')..createSync(recursive: true);
+    b.writeAsStringSync(
+      '{"format":1,"binders":["@documents/Noted/binders/Work"],"standaloneFolders":["@documents/Noted/other"],'
+      '"binderIds":{"@documents/Noted/binders/Work":"b1"}}\n',
+    );
+    final s = File('${root.path}/app/settings.json');
+    s.writeAsStringSync('{"format":1,"theme":"system","defaultPageFolder":"@documents/Noted/pages","defaultBinderFolder":"@documents/Noted/binders"}');
+    final settings = AppSettings(s);
+    expect(settings.defaultPageFolder, '@documents/Noted/pages');
+    expect(settings.defaultBinderFolder, '@documents/Noted/binders');
+    final before = [for (final e in root.listSync(recursive: true)) e.path]..sort();
+    final nb = build(settings);
+    await nb.load();
+    expect(nb.binders.single.available, isFalse);
+    expect(nb.standaloneFolders, isNotEmpty);
+    expect(nb.standaloneFolders.every((f) => !f.available), isTrue);
+    // A real folder is added: binders.json is saved.
+    final real = Directory('${root.path}/real')..createSync();
+    await nb.addStandaloneFolder(real.path);
+    await nb.flush();
+    settings.theme = ThemeSetting.dark;
+    // Nothing was created for the dead folders, nothing deleted.
+    expect(Directory('@documents').existsSync(), isFalse);
+    expect(Directory('${root.path}/@documents').existsSync(), isFalse);
+    final after = [for (final e in root.listSync(recursive: true)) e.path]..sort();
+    final added = after.where((p) => !before.contains(p)).map((p) => p.replaceAll(r'\', '/')).toList();
+    expect(added.where((p) => p.contains('@documents')), isEmpty);
+    expect(before.every(after.contains), isTrue);
+    // The raw strings are kept when the files are saved again.
+    final j = jsonDecode(b.readAsStringSync()) as Map<String, Object?>;
+    expect(j['binders'], ['@documents/Noted/binders/Work']);
+    // An older build normalises these against its working directory (nothing is created; the folders stay unavailable).
+    expect(j['standaloneFolders'], hasLength(3));
+    expect((j['standaloneFolders']! as List).where((p) => (p as String).endsWith('@documents/Noted/other')), hasLength(1));
+    expect((j['binderIds']! as Map).keys, ['@documents/Noted/binders/Work']);
+    final sj = jsonDecode(s.readAsStringSync()) as Map<String, Object?>;
+    expect(sj['defaultPageFolder'], '@documents/Noted/pages');
+    expect(sj['defaultBinderFolder'], '@documents/Noted/binders');
+  });
+}
+
+// Generation hashes are over the folder as stored, so a replacement of one's own
+// generation is never refused as foreign (iOS, no container change).
+void _b1Tests() {
+  late TroubleWorld w;
+
+  setUp(() async {
+    w = TroubleWorld();
+    await w.init();
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    resetDeviceStorage();
+    // The test root is the documents folder: the pages are `@documents/pages`.
+    await initDeviceStorage(documents: () async => w.root, cache: () async => w.root, support: () async => w.root);
+  });
+
+  tearDown(() async {
+    debugDefaultTargetPlatformOverride = null;
+    resetDeviceStorage();
+    await w.dispose();
+  });
+
+  String norm(String p) => p.replaceAll(r'\', '/');
+
+  test('a store write may replace an entry in an @documents folder that it holds the generation of', () async {
+    final s = RecoveryStore(w.rec);
+    final folder = '${w.root.path}/pages';
+    final t1 = DateTime.utc(2026, 10, 25, 10);
+    final first = await s.write(folder: folder, page: _page('p1', 'one'), baseText: null, time: t1);
+    expect(first.file.readAsStringSync(), contains('"folder":"@documents/pages"'));
+    expect(first.gen, s.generationFor(folder, t1, null, first.pageText));
+    final second = await s.write(
+      folder: folder,
+      page: _page('p1', 'two'),
+      baseText: null,
+      time: t1.add(const Duration(minutes: 1)),
+      replaceable: {first.gen},
+    );
+    final listed = (await s.list()).entries;
+    expect(listed, hasLength(1));
+    expect(listed.single.gen, second.gen);
+    expect(norm(listed.single.folder), norm(folder));
+  });
+
+  test('an open page gets two recovery keeps in a row; the second replaces the first', () async {
+    final nb = w.make();
+    await w.editedPage(nb);
+    w.storeFor(w.pages).failWith = accessDenied();
+    await nb.flush();
+    final first = (await nb.pendingRecovery()).entries.single;
+    expect(first.file.readAsStringSync(), contains('"folder":"@documents/pages"'));
+    nb.current!.createBoxAt(const Bounds(90, 90, 0, 0));
+    await nb.flush();
+    final entries = (await nb.pendingRecovery()).entries;
+    expect(entries, hasLength(1), reason: 'the second keep replaced the first, it was not refused as foreign');
+    expect(entries.single.gen, isNot(first.gen));
+    expect(entries.single.pageText, writePage(nb.current!.page));
+    expect(w.recFiles(), hasLength(1));
+  });
+
+  test('moving a page with kept edits between two @documents locations succeeds; its entry is under the new location', () async {
+    final nb = w.make();
+    final id = await w.editedPage(nb);
+    w.storeFor(w.pages).failWith = accessDenied();
+    await nb.flush();
+    await nb.addStandaloneFolder(w.other.path);
+    expect((await nb.pendingRecovery()).entries, hasLength(1));
+    await nb.createPage(); // leave the page
+    expect(await nb.moveToFolder(id, w.other.path), isTrue);
+    final entries = (await nb.pendingRecovery()).entries;
+    expect(entries, hasLength(1));
+    expect(norm(entries.single.folder), norm(w.other.path));
+    expect(entries.single.file.readAsStringSync(), contains('"folder":"@documents/other"'));
+    expect(w.recFiles(), hasLength(1));
+  });
+}
+
+// The notebook on a changing container: binders.json and settings.json as the
+// build before this change wrote them (absolute), then a new container.
+void _notebookTests() {
+  late Directory root;
+  late AppSettings settings;
+  final opened = <Notebook>[];
+
+  Directory docs(String c) => Directory('${root.path}/$c/Documents');
+  String support(String c) => '${root.path}/$c/Support';
+
+  Future<void> container(String c) async {
+    resetDeviceStorage();
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    final d = docs(c)..createSync(recursive: true);
+    final s = Directory(support(c))..createSync(recursive: true);
+    await initDeviceStorage(documents: () async => d, cache: () async => s, support: () async => s);
+  }
+
+  Notebook build(String c) {
+    final d = docs(c).path;
+    settings = AppSettings(File('${support(c)}/Noted/settings.json'));
+    final nb = Notebook(
+      PageStore(Directory('$d/Noted/pages')..createSync(recursive: true)),
+      buildModules(),
+      saveDelay: const Duration(hours: 1),
+      bindersFile: File('$d/Noted/binders.json'),
+      recoveryDirectory: Directory('${support(c)}/Noted/recovery'),
+      settings: settings,
+      folderCheckInterval: Duration.zero,
+    );
+    opened.add(nb);
+    return nb;
+  }
+
+  void close(Notebook nb) {
+    nb.dispose();
+    opened.remove(nb);
+  }
+
+  String norm(String p) => p.replaceAll(r'\', '/');
+
+  Map<String, Object?> readJson(File f) => jsonDecode(f.readAsStringSync()) as Map<String, Object?>;
+
+  // Rewrites the stored `@documents/` strings of c as the absolute paths of
+  // the build before this change.
+  void absolutize(String c) {
+    String abs(String s) =>
+        s.startsWith('@documents/') ? '${docs(c).path}/${s.substring('@documents/'.length)}' : s;
+    final b = File('${docs(c).path}/Noted/binders.json');
+    final j = readJson(b);
+    j['binders'] = [for (final p in j['binders']! as List) abs(p as String)];
+    if (j['standaloneFolders'] != null) {
+      j['standaloneFolders'] = [for (final p in j['standaloneFolders']! as List) abs(p as String)];
+    }
+    j['binderIds'] = {for (final e in (j['binderIds']! as Map).entries) abs(e.key as String): e.value};
+    b.writeAsStringSync(jsonEncode(j));
+    final s = File('${support(c)}/Noted/settings.json');
+    final sj = readJson(s);
+    for (final k in ['defaultPageFolder', 'defaultBinderFolder']) {
+      if (sj[k] != null) sj[k] = abs(sj[k]! as String);
+    }
+    s.writeAsStringSync(jsonEncode(sj));
+  }
+
+  setUp(() async {
+    root = await Directory.systemTemp.createTemp('noted_mobile_nb');
+  });
+
+  tearDown(() async {
+    for (final nb in opened) {
+      nb.dispose();
+    }
+    opened.clear();
+    debugDefaultTargetPlatformOverride = null;
+    resetDeviceStorage();
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    if (root.existsSync()) await root.delete(recursive: true);
+  });
+
+  test('1: after a container change every binder, folder and default is found; the next save writes @documents/ forms', () async {
+    await container('c1');
+    var nb = build('c1');
+    await nb.load();
+    final a = await nb.createBinder(name: 'A');
+    final b = await nb.createBinder(name: 'B');
+    final other = Directory('${docs('c1').path}/Noted/other')..createSync();
+    await nb.setDefaultPageFolder(other.path);
+    final pa = await nb.createPage(binderPath: a.path);
+    final pb = await nb.createPage(binderPath: b.path);
+    final po = await nb.createPage(folderPath: other.path);
+    final ids = {a.binder!.id, b.binder!.id};
+    await nb.flush();
+    close(nb);
+    settings.theme = ThemeSetting.dark; // writes settings.json
+    final saved = readJson(File('${docs('c1').path}/Noted/binders.json'));
+    expect((saved['binders']! as List).first, startsWith('@documents/Noted/binders/'));
+    absolutize('c1');
+    expect(File('${docs('c1').path}/Noted/binders.json').readAsStringSync(), isNot(contains('@documents')));
+
+    // The app container changes: the old folder is gone.
+    docs('c1').parent.renameSync(docs('c2').parent.path);
+    await container('c2');
+    nb = build('c2');
+    await nb.load();
+
+    expect(nb.binders, hasLength(2));
+    expect(nb.binders.every((s) => s.available), isTrue);
+    expect({for (final s in nb.binders) s.binder!.id}, ids);
+    expect(nb.standaloneFolders.single.available, isTrue);
+    bool has(String id) => nb.tree[id] != null || nb.binders.any((s) => s.tree[id] != null);
+    expect([pa, pb, po].map(has), everyElement(isTrue));
+    expect(norm(nb.newPageFolderPath), norm('${docs('c2').path}/Noted/other'));
+    expect(settings.defaultPageFolder, isNotNull);
+    expect(norm(settings.defaultPageFolder!), norm('${docs('c2').path}/Noted/other'));
+    final fresh = await nb.createPage();
+    await nb.flush();
+    expect(File('${docs('c2').path}/Noted/other/$fresh.canvas').existsSync(), isTrue);
+
+    // The next ordinary save writes the relative forms; nothing was removed.
+    await nb.createBinder(name: 'C');
+    await nb.flush();
+    final j = readJson(File('${docs('c2').path}/Noted/binders.json'));
+    expect(j['binders'], everyElement(startsWith('@documents/Noted/binders/')));
+    expect(j['binders'], hasLength(3));
+    expect((j['binderIds']! as Map).keys, everyElement(startsWith('@documents/Noted/binders/')));
+    expect(j['standaloneFolders'], ['@documents/Noted/other']);
+    expect(j['removedBinders'] ?? const [], isEmpty);
+    expect(File('${docs('c2').path}/Noted/binders.json').readAsStringSync(), isNot(contains('c1')));
+    settings.theme = ThemeSetting.light;
+    expect(readJson(File('${support('c2')}/Noted/settings.json'))['defaultPageFolder'], '@documents/Noted/other');
+  });
 }
 
 NotedPage _page(String id, String title) => NotedPage.create(PageMeta.create(id: id, title: title, order: 0));
@@ -362,6 +712,48 @@ void _recoveryTests() {
       expect(e2.file.readAsBytesSync(), before);
       expect(others(), isEmpty);
     });
+  });
+
+  test('a read-back that does not match keeps the old file (note 5)', () async {
+    await writeOld(oldFolder('pages'), _page('p1', 'one'), t1);
+    final old = entryFiles().single;
+    final oldBytes = old.readAsBytesSync();
+    final s = store(
+      hook: (p) async {
+        if (p != 'rekey-published') return;
+        // Something else replaced the twin before it was read back.
+        for (final f in entryFiles()) {
+          if (f.path != old.path) f.writeAsStringSync('garbage');
+        }
+      },
+    );
+    await s.list();
+    expect(old.existsSync(), isTrue);
+    expect(old.readAsBytesSync(), oldBytes);
+  });
+
+  test('the pass stops before the transaction limit; the next listing finishes it (note 6)', () async {
+    await writeOld(oldFolder('pages'), _page('p1', 'one'), t1);
+    await writeOld(oldFolder('binders/Work'), _page('p2', 'two'), t1);
+    var slow = true;
+    final s = store(
+      hook: (p) async {
+        if (slow && p == 'tmp-written') {
+          slow = false;
+          await Future<void>.delayed(const Duration(milliseconds: 350));
+        }
+      },
+    );
+    final l = await s.transaction((tx) => tx.list(), limit: const Duration(milliseconds: 400));
+    expect(titles(l), {'one', 'two'});
+    expect(l.entries, hasLength(2));
+    expect(others(), isEmpty, reason: 'no temp is left');
+    final done = await store().list();
+    expect(done.entries, hasLength(2));
+    expect(entryFiles(), hasLength(2));
+    for (final f in entryFiles()) {
+      expect(f.readAsStringSync(), contains('@documents/'));
+    }
   });
 
   test('a persistent delete failure: the generation is listed once and replays once, in two listings of a session', () async {
