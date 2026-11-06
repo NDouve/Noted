@@ -346,6 +346,26 @@ void main() {
       expect(File(path).existsSync(), isFalse);
     });
 
+    test('a page opened ahead of the queued job takes the merge in the editor (in-job re-check)', () async {
+      await start();
+      final (id, box) = await closedPageWithBox();
+      final added = noteBox('from the copy', at: const Bounds(400, 10, 200, 40));
+      final path = copyPath(id, 'DESKTOP-4QK2N8L');
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      // The page is opened after the check decided "closed" and before its job
+      // is queued; the job must see it open.
+      nb.syncHook = (point, _) async {
+        if (point == 'conflict-copy-closed') await nb.open(id);
+      };
+      await nb.checkFile(path);
+      nb.syncHook = null;
+      expect(nb.currentId, id);
+      expect(nb.current!.page.nodes.map((n) => n.id).toSet(), {box.id, added.id});
+      expect(File(path).existsSync(), isFalse);
+      await nb.flush();
+      expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
+    });
+
     test('a page opened before the job runs takes the merge in the editor', () async {
       await start();
       final (id, box) = await closedPageWithBox();

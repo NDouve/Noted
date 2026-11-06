@@ -391,6 +391,7 @@ void main() {
       final before = c.canUndo;
       final r = await nb.mergeRemote(pathOf(id), bytes(base), bytes(base.insertNode(remote)));
       expect(r.outcome, RemoteMergeOutcome.merged, reason: '$r');
+      expect(r.wrote, isTrue);
       expect(nb.current, same(c));
       expect(ids(c.page), {mine.id, remote.id});
       expect(ids(onDisk(id)), {mine.id, remote.id});
@@ -427,6 +428,7 @@ void main() {
       final r = await nb.mergeRemote(pathOf(id), bytes(base), bytes(base));
       expect(r.outcome, RemoteMergeOutcome.merged, reason: '$r');
       expect(r.identity, await ContentIdentity.ofFile(pathOf(id)));
+      expect(r.wrote, isFalse, reason: 'the file did not change');
     });
   });
 
@@ -553,6 +555,53 @@ void main() {
       expect(r.outcome, RemoteMergeOutcome.refused, reason: '$r');
       expect(textOf(id), before);
       expect(File(dupPath).readAsStringSync(), before);
+    });
+  });
+
+  group('live state and re-checks', () {
+    test('a no-op merge takes in a file replaced unobserved: title, parent and tree are live', () async {
+      await start();
+      final (id, _, base) = await closedPage();
+      final parent = nb.currentId!;
+      final replaced = base.withMeta(base.meta.withTitle('Replaced outside').withParent(parent));
+      await busyRetry(() => other.save(replaced)); // the watcher is not told
+      expect(nb.tree[id]!.title, isNot('Replaced outside'));
+      final r = await nb.mergeRemote(pathOf(id), bytes(replaced), bytes(replaced));
+      expect(r.outcome, RemoteMergeOutcome.merged, reason: '$r');
+      expect(r.wrote, isFalse);
+      expect(nb.tree[id]!.title, 'Replaced outside');
+      expect(nb.tree.descendantsOf(parent), contains(id));
+    });
+
+    test('a page opened before the merge job runs takes the merge in the editor (in-job re-check)', () async {
+      await start();
+      final (id, box, base) = await closedPage();
+      final remote = noteBox('remote', at: const Bounds(600, 10, 200, 40));
+      // With the chain idle the open leaves its page without a save and queues
+      // its job at once; the merge decides "closed" meanwhile and queues behind it.
+      final open = nb.open(id);
+      final merge = nb.mergeRemote(pathOf(id), bytes(base), bytes(base.insertNode(remote)));
+      final r = await merge;
+      await open;
+      expect(r.outcome, RemoteMergeOutcome.merged, reason: '$r');
+      expect(nb.currentId, id);
+      expect(ids(nb.current!.page), {box.id, remote.id}, reason: 'the editor holds the merge');
+      await nb.flush();
+      expect(ids(onDisk(id)), {box.id, remote.id});
+    });
+
+    test('mergeRemote inside a save-chain job fails the debug assert', () async {
+      await start();
+      final (id, _, base) = await closedPage();
+      Object? thrown;
+      await nb.runOnChainForTest(() async {
+        try {
+          await nb.mergeRemote(pathOf(id), bytes(base), bytes(base));
+        } on Object catch (e) {
+          thrown = e;
+        }
+      });
+      expect(thrown, isA<AssertionError>());
     });
   });
 

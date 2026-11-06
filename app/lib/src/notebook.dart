@@ -6888,7 +6888,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }) async {
     _assertWritable(loc);
     final st = _storeOf(loc);
-    var published = wantIdentity || _feedLive ? identityOfForTest(utf8.encode(writePage(page))) : null;
+    final published = wantIdentity || _feedLive ? identityOfForTest(utf8.encode(writePage(page))) : null;
     var pathMoved = false;
     String? publishedAt;
     // The check is made inside the lock, right before the replace.
@@ -6902,9 +6902,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final r = await st.saveIfUnchanged(page, expectedText);
       if (r.replaced) {
         publishedAt = path;
-        // A listener that subscribed after the check above: hash here.
-        if (_feedLive) published ??= identityOfForTest(utf8.encode(writePage(page)));
-        _emitPublished(path, published);
+        // A listener that subscribed after the check above: hashed inside the
+        // emit's guard, so nothing can throw after the landed write.
+        _emitPublished(path, published, () => writePage(page));
       }
       return r;
     });
@@ -6946,6 +6946,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       !FolderLocks.isHeld(File(path).parent),
       'mergeRemote runs inside a FolderLocks job on its own folder',
     );
+    assert(!_chain.insideJob, 'mergeRemote runs inside a save-chain job: it would wait on itself');
     if (_disposed) return const RemoteMergeResult.refused('the notebook is closed');
     try {
       await flush();
@@ -7032,6 +7033,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (mine.id != id) return const RemoteMergeResult.refused('the page file holds another page');
       final merged = mergePage(basePage, mine, remotePage, _pageCodecs(id), theirsTime: time).page;
       if (writePage(merged) == text) {
+        // Nothing to write, but the file may have been replaced since the
+        // watcher last looked: the live state takes it in as after a landing.
+        final key = _key(path);
+        _known[key] = text;
+        _pathId[key] = id;
+        _setConflict(id, hasConflicts(merged));
+        onPageContent?.call(loc, merged);
+        _metas[id] = merged.meta;
+        _touch(loc);
+        _rebuildTree();
         return RemoteMergeResult.merged(identityOfForTest(utf8.encode(text)), wrote: false);
       }
       final w = await _writeIfUnchangedFull(loc, merged, text, wantIdentity: true, onlyAtPath: path);
@@ -7068,6 +7079,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       return const RemoteMergeResult.refused('the open page can not be saved now');
     }
     if (_busy.containsKey(id)) return const RemoteMergeResult.changed();
+    final knownBefore = _known[key]; // the file as last seen, before the merge
     final merged = mergePage(basePage, c.page, remotePage, _pageCodecs(id), theirsTime: time).page;
     final changed = writePage(merged) != writePage(c.page);
     if (changed) c.applyExternal(merged); // not an undo step
@@ -7087,7 +7099,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       seq = _session?.seq ?? 0;
     }
     final res = await _enqueueSave(toSave, seq, wantIdentity: true);
-    if (res.end == SaveEnd.landed) return RemoteMergeResult.merged(res.identity, wrote: true);
+    if (res.end == SaveEnd.landed) {
+      // "Wrote": the file now differs from what the notebook last saw there.
+      final before = knownBefore == null ? null : identityOfForTest(utf8.encode(knownBefore));
+      return RemoteMergeResult.merged(res.identity, wrote: res.identity != before);
+    }
     if (res.end == SaveEnd.skipped || res.keepsChanging) return const RemoteMergeResult.changed();
     return const RemoteMergeResult.refused('the page could not be saved; the edits are kept');
   }
@@ -7210,6 +7226,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _checking = job;
     return job;
   }
+
+  /// Runs [job] as a save-chain job.
+  @visibleForTesting
+  Future<T> runOnChainForTest<T>(Future<T> Function() job) => _afterSaves(job, what: 'test job');
 
   /// Runs the check of [path] as a save-chain job, as a save's own check runs
   /// it (inside a job, where queuing on the chain would wait on itself).
@@ -7752,9 +7772,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       // Inside a chain job already (a save's own check) the job can't queue on
       // the chain and wait: it runs inline, as it always did.
-      final r = _chain.insideJob
-          ? await closedBranch()
-          : await _afterSaves(closedBranch, what: 'conflict-copy merge of page $id', pages: {id});
+      final ({bool open, String? failure}) r;
+      if (_chain.insideJob) {
+        r = await closedBranch();
+      } else {
+        // A test seam: the page may be opened here, before the job is queued.
+        await syncHook?.call('conflict-copy-closed', copyPath);
+        r = await _afterSaves(closedBranch, what: 'conflict-copy merge of page $id', pages: {id});
+      }
       if (!r.open) {
         failure = r.failure;
         settled = true;

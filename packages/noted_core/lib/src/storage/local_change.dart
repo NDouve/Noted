@@ -49,7 +49,10 @@ class RemoteMergeResult {
   /// nothing was written and the file was not read back).
   final ContentIdentity? identity;
 
-  /// Whether the merge changed the file.
+  /// Whether the merge changed the file: for a closed page, the merged text
+  /// differs from what was read; for the open page, the file now differs from
+  /// what the notebook last saw there (a disk change that arrived during the
+  /// save counts).
   final bool wrote;
 
   final String? reason;

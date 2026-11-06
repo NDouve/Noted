@@ -2444,6 +2444,30 @@ void main() {
     }
   });
 
+  test('a no-op mergeRemote after an unobserved disk change: live metas equal the files and a fresh notebook', () async {
+    final run = _Run(924);
+    try {
+      await run.start();
+      await run.nb.flush();
+      final id = run.model.keys.firstWhere((i) => i != run.nb.currentId);
+      final m = run.model[id]!;
+      final replaced = run._disk(id);
+      final title = 'Replaced outside s${run.seed}';
+      final next = replaced.withMeta(replaced.meta.withTitle(title));
+      await run._externalWrite(id, next); // the watcher is not told
+      m.title = title;
+      final bytes = utf8.encode(writePage(next));
+      final r = await run.nb.mergeRemote(run._pathOf(id), bytes, bytes);
+      expect(r.outcome, RemoteMergeOutcome.merged, reason: '$r');
+      expect(r.wrote, isFalse);
+      await run.verify('after the no-op merge', fresh: true);
+      await run._opRestart();
+      await run.verify('after a restart', fresh: true);
+    } finally {
+      await run.stop();
+    }
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
   test('a page opened during the merge of its conflict copy: an edit keeps the copy, and the files and a restart agree', () async {
     final run = _Run(923);
     try {
