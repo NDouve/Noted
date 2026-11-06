@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/gestures.dart';
@@ -56,6 +57,10 @@ class _FailingStore extends PageStore {
   final Set<String> failDelete = {};
   final Set<String> failNew = {};
 
+  // The next restore waits for [holdNew]; [reachedNew] completes when it is there.
+  Completer<void>? holdNew;
+  Completer<void>? reachedNew;
+
   @override
   Future<DeleteResult> deleteIfUnchanged(
     String pageId,
@@ -77,7 +82,13 @@ class _FailingStore extends PageStore {
   }
 
   @override
-  Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish}) {
+  Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish}) async {
+    final gate = holdNew;
+    if (gate != null) {
+      holdNew = null;
+      reachedNew?.complete();
+      await gate.future;
+    }
     if (failNew.contains(page.id)) throw const FileSystemException('destination gone');
     return super.saveNewText(page, text, beforePublish: beforePublish);
   }
@@ -100,6 +111,7 @@ class _SpyNotebook extends Notebook {
   bool partialUndo = false;
   bool undoing = false; // the real Undo takes the delete out of reach while it runs
   int undoCalls = 0;
+  bool undoRunning = false; // the real Undo is in flight
   DeletedPages? undone;
 
   @override
@@ -118,7 +130,12 @@ class _SpyNotebook extends Notebook {
       undoing = false;
       throw const NotebookException('still available to Undo', needsAction: true);
     }
-    await super.undoDelete(deleted);
+    undoRunning = true;
+    try {
+      await super.undoDelete(deleted);
+    } finally {
+      undoRunning = false;
+    }
   }
 
   @override
@@ -526,6 +543,141 @@ void main() {
     await tester.runAsync(() => tester.tap(find.text('Undo')));
     await until(tester, () => File('${dir.path}/$b.canvas').existsSync());
     expect(rootIds(), contains(b));
+    await finish(tester);
+  });
+
+  // The bar of a failed Undo: the pages are held in memory, with Undo.
+  Finder heldBar() => find.textContaining('held in memory only');
+
+  testWidgets('7: a failed Undo from the Deleted bar holds the pages; the expiry does not reach them, its X lets them go',
+      (tester) async {
+    late _FailingStore failing;
+    await start(tester, store: (d) => failing = _FailingStore(d));
+    final spy = nb as _SpyNotebook;
+    await deleteVia(tester, b);
+    failing.failNew.add(b);
+
+    await tester.runAsync(() => tester.tap(find.text('Undo')));
+    await until(tester, () => heldBar().evaluate().isNotEmpty, what: 'the held bar');
+    await tester.pump(const Duration(milliseconds: 600));
+    final held = spy.undone!;
+    expect(nb.isHeldDelete(held), isTrue);
+    expect(find.text('Undo'), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 11));
+    await tester.pump(const Duration(seconds: 1));
+    expect(heldBar(), findsOneWidget, reason: 'a held bar stays until acted on');
+    expect(find.text("Some pages weren't restored"), findsNothing, reason: 'no second Deleted bar');
+    expect(nb.isPendingDelete(held), isTrue);
+
+    await tester.tap(find.byIcon(Icons.close));
+    await settle(tester);
+    expect(nb.isPendingDelete(held), isFalse, reason: 'its X lets the pages go');
+    await finish(tester);
+  });
+
+  // Deletes page [id] (titled [title]) through its menu and waits for its
+  // Deleted bar, with the clock frozen so the bar cannot time out meanwhile.
+  Future<void> deleteAndWait(WidgetTester tester, String id, String title) async {
+    await rightClick(tester, id);
+    await tester.tap(find.text('Delete'));
+    await settle(tester);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Delete'));
+    await tester.pump();
+    await until(tester, () => find.text('Deleted "$title"').evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 600));
+  }
+
+  // A newer delete's bar is up while the Undo of an earlier one (paused at its
+  // write by [gate]) ends: that bar stays, its Undo works, and the outcome of
+  // the first follows it.
+  Future<void> newerBarSurvives(
+    WidgetTester tester,
+    _FailingStore failing,
+    Future<void> Function() pressFirstUndo, {
+    required bool firstStaysHeld,
+  }) async {
+    final spy = nb as _SpyNotebook;
+    final release = failing.holdNew = Completer<void>();
+    failing.reachedNew = Completer<void>();
+    addTearDown(() {
+      if (!release.isCompleted) release.complete();
+    });
+    await pressFirstUndo();
+    await until(tester, () => failing.reachedNew!.isCompleted, what: "the first Undo to reach its write");
+    await deleteAndWait(tester, c, 'Gamma'); // the newer delete's bar
+    final discardedBefore = spy.discarded.length;
+
+    release.complete();
+    await until(tester, () => !spy.undoRunning, what: 'the first Undo to end');
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(find.text('Deleted "Gamma"'), findsOneWidget, reason: 'the newer delete\'s bar was not hidden');
+    expect(spy.discarded.length, discardedBefore, reason: 'the newer delete was not discarded');
+    await tester.runAsync(() => tester.tap(find.text('Undo')));
+    await until(tester, () => rootIds().contains(c), what: 'the newer delete to be undone');
+    expect(File('${dir.path}/$c.canvas').existsSync(), isTrue);
+    if (firstStaysHeld) {
+      await until(tester, () => heldBar().evaluate().isNotEmpty, what: 'the held bar to follow');
+    }
+  }
+
+  testWidgets('8a: a failed Undo from the Deleted bar leaves a newer delete\'s bar alone', (tester) async {
+    late _FailingStore failing;
+    await start(tester, store: (d) => failing = _FailingStore(d));
+    await deleteVia(tester, b);
+    failing.failNew.add(b);
+
+    await newerBarSurvives(
+      tester,
+      failing,
+      () => tester.runAsync(() => tester.tap(find.text('Undo'))),
+      firstStaysHeld: true,
+    );
+
+    failing.failNew.clear();
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.runAsync(() => tester.tap(find.text('Undo')));
+    await until(tester, () => File('${dir.path}/$b.canvas').existsSync(), what: 'the held pages to come back');
+    expect(rootIds(), contains(b));
+    await finish(tester);
+  });
+
+  testWidgets('8b: a retry from the held bar that fails leaves a newer delete\'s bar alone', (tester) async {
+    late _FailingStore failing;
+    await start(tester, store: (d) => failing = _FailingStore(d));
+    await deleteVia(tester, b);
+    failing.failNew.add(b);
+    await tester.runAsync(() => tester.tap(find.text('Undo')));
+    await until(tester, () => heldBar().evaluate().isNotEmpty, what: 'the held bar');
+    await tester.pump(const Duration(milliseconds: 600));
+
+    await newerBarSurvives(
+      tester,
+      failing,
+      () => tester.runAsync(() => tester.tap(find.text('Undo'))),
+      firstStaysHeld: true,
+    );
+    expect(heldBar(), findsOneWidget);
+    await finish(tester);
+  });
+
+  testWidgets('8c: an Undo that succeeds with a note leaves a newer delete\'s bar alone', (tester) async {
+    late _FailingStore failing;
+    await start(tester, store: (d) => failing = _FailingStore(d));
+    final text = File('${dir.path}/$b.canvas').readAsStringSync();
+    await deleteVia(tester, b);
+    // A sync client puts the page's file back: Undo merges into it and says so.
+    File('${dir.path}/$b.canvas').writeAsStringSync(text);
+
+    await newerBarSurvives(
+      tester,
+      failing,
+      () => tester.runAsync(() => tester.tap(find.text('Undo'))),
+      firstStaysHeld: false,
+    );
+
+    await until(tester, () => find.textContaining('A newer file was already').evaluate().isNotEmpty, what: 'the note');
     await finish(tester);
   });
 
