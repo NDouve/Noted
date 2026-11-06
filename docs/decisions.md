@@ -2065,7 +2065,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0146 — An unreadable or damaged binders.json is held: binder changes are refused until it can be read, and the file is never rewritten or renamed
 - **Date:** 2026-11-06
-- **Status:** Active (option chosen by the maintainer's PM chat; built from the reviewed design `2026-11-06-02-binders-unreadable-v2`; details decided by the build team; amends 0050's "A corrupt list is renamed to `binders.json.bad` before it is replaced")
+- **Status:** Active (option chosen by the maintainer's PM chat; built from the reviewed design `2026-11-06-02-binders-unreadable-v2`; details decided by the build team; supersedes 0050's "A corrupt list is renamed to `binders.json.bad` before it is replaced")
 - **Decision:**
   - **Held list:** when `binders.json` can't be read at launch, the list is held:
     - a lock or other I/O error means locked;
@@ -2080,7 +2080,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Notices:** the "Can't open" list says why binders are hidden. On mobile, the damaged notice states the fact only, with no remedy. On desktop it says to put back a readable copy or delete the file.
   - **No `.bad` copy** is made any more.
 - **Rationale:** binder list changes were written from lists never filled from the file, so a locked or damaged list was overwritten or renamed away, losing binders and removed ids.
-- **Alternatives considered:** an in-memory journal with placeholders, `.bad` copies and a merge (parked after three review rounds as too large); renaming a damaged file automatically (it could move a repaired file aside).
+- **Alternatives considered:** an in-memory journal with placeholders, `.bad` copies and a merge (too large); renaming a damaged file automatically (it could move a repaired file aside).
 
 ---
 
