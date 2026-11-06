@@ -22,11 +22,16 @@ Noted is an open-source, OneNote-style notebook built with Flutter (Dart) from o
 - Never commit personal information: no real names other than the maintainer's handle, no email addresses, device serials, employer details or account identifiers.
 - Build tooling and run history live in a separate private repository.
 
+## Writing
+
+Docs, READMEs, UI text and reports: say it once, in the fewest words that stay exact. No marketing, no restating, no explaining what the reader already knows. Describe only what is built; planned features go in the roadmap, not the README.
+
 ## "Curate" means updating `docs/decisions.md`
 
 When the maintainer says **curate**, update `docs/decisions.md` and nothing else.
 - Keep it factual, neutral and app-focused, with no personal context, opinions or discussion history.
 - Append new entries in chronological order using the next number, each with: date, status, decision, rationale, and alternatives considered.
+- The status says who decided: the maintainer, or the build team (the PM or the maintainer's PM chat). The maintainer reviews build-team entries monthly and keeps or supersedes them.
 - Never delete an entry. Mark a replaced entry superseded and point it to the entry that replaces it.
 
 ## Licensing
@@ -68,13 +73,13 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 - AI boxes, AI writing through the app, and per-box codes (Writer and Reader, with new-connection approval, ask before each write, an activity log and expiry); Privileged pages and binders use Reader codes
 - the Page settings and Binder settings panel (background, images and files, AI access, box types allowed)
 - module availability per page and binder (a disallowed box type behaves like a switched-off module)
-- iPad and Android test builds (sideloaded, notes stored on the device, no mobile sync yet)
-- OneDrive sync for iPad and Android, built in stages: Microsoft sign-in (scope `Files.ReadWrite offline_access openid profile`, signed off 2026-11-05), then the OneDrive module
+- iPad and Android test builds (sideloaded, notes stored on the device)
+- Microsoft sign-in and OneDrive sync for the iPad and Android builds, through Microsoft Graph (in progress; `runs/designs/2026-11-05-onedrive-sync.md` in the build repository)
 
 **Out of scope until the maintainer starts the next phase:**
 - binder passwords and encryption
 - per-AI rules, tiers and lanes
-- integrations (other than the OneDrive sync sign-in above)
+- other integrations, and Microsoft sign-in for anything beyond OneDrive sync
 - conflict copies from providers other than OneDrive
 - customizable toolbars (user-arranged or scripted)
 - reMarkable
