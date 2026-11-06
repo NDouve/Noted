@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:convert' show utf8;
 import 'dart:io';
+import 'dart:math' show Random;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
@@ -399,6 +400,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     this.backoffFirst = const Duration(seconds: 2),
     this.backoffMax = const Duration(seconds: 30),
     this.discoveryDebounce = const Duration(seconds: 1),
+    this.settingsRetryFirst = const Duration(seconds: 2),
+    this.settingsAbsentConfirm = const Duration(seconds: 30),
   }) {
     _chain.onDetachedJobEnded = _oldJobEnded;
   }
@@ -710,7 +713,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// after the folder was scanned and before the binder is listed; `adopted`
   /// after the binder file of a listed folder was taken over; `root-list` before
   /// a root is listed (throw to make that fail); `claimed`
-  /// in a template's creation after its binder file was written).
+  /// in a template's creation after its binder file was written; `settings-read`
+  /// before every read of `binders.json`: throw a [FileSystemException] to make
+  /// it fail as a lock; `load-open` before each listed binder is opened by load;
+  /// `settings-loaded` just after load settled the hold, before the tree is built;
+  /// `settings-adopt` before each open when a retry adopts the list;
+  /// `settings-publish` before a new list is published after an absence).
   @visibleForTesting
   Future<void> Function(String point, String path)? binderHook;
 
@@ -737,7 +745,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   final Map<DeletedPages, Future<void>> _undoing = {};
   String? _coverPath;
   RawObject _settings = RawObject.empty;
-  bool _settingsCorrupt = false;
   // Why binder list changes are refused now (null: they are accepted). It starts
   // as pending and is settled by load once the listed binders and folders are
   // open.
@@ -1059,14 +1066,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     try {
       await _load();
     } finally {
+      // A load that stopped before the list was settled leaves it held.
+      if (_settingsHeld == _SettingsHold.pending) _settingsHeld = _SettingsHold.locked;
       if (!_loaded.isCompleted) _loaded.complete();
+      _armSettingsTimer();
     }
   }
 
   // Completes when the first load is over; AI writes wait for it.
   final Completer<void> _loaded = Completer<void>();
-
-  Future<bool> retrySettings() async => false;
 
   Future<void> _load() async {
     final entries = await _scan(store);
@@ -1078,31 +1086,29 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _adoptDefault(entries);
     _binderIds.clear();
     _removedBinders.clear();
-    final listed = await _readBinderPaths();
-    // An older build removed a binder after the ids were recorded: its path
-    // left `binders` but its id is still a key of `binderIds`. That is a removal
-    // (before the key is pruned by the next write).
-    final listedKeys = {for (final p in listed) _key(p)};
-    final recorded = _readRecordedIds();
-    for (final e in recorded.entries) {
-      if (!listedKeys.contains(_key(e.key))) _markRemoved(e.value);
+    _settingsKind = _SettingsKind.fresh;
+    _SettingsHold? launchHold;
+    var adopted = (listed: const <String>[], recorded: const <String, String>{});
+    final settingsFile = bindersFile;
+    if (settingsFile != null) {
+      final read = await _readSettingsBytes(settingsFile);
+      if (read.file case final f?) {
+        adopted = _adoptSettings(f);
+      } else if (!read.notFound) {
+        // No file at all is a new install; anything else is held.
+        launchHold = read.hold;
+        debugPrint('Reading ${settingsFile.path} failed: ${read.error}');
+      }
     }
-    for (final path in listed) {
-      _binders[path] = await _openBinder(path);
-      final id = recorded.entries.where((e) => _key(e.key) == _key(path)).firstOrNull?.value;
-      if (id != null) _binderIds[_key(path)] = id;
-      _recordBinderId(path, _binders[path]!.binder);
-    }
+    await _openListed(adopted, 'load-open');
     // A default page folder chosen in the settings is a standalone folder in
     // use, so the pages already there are listed.
-    final chosen = settings?.defaultPageFolder;
-    for (final raw in [..._readFolderPaths(), ?chosen]) {
-      final path = _normalizePath(raw);
-      if (path == defaultFolderPath || _folders.containsKey(path)) continue;
-      if (_binders.keys.any((b) => _key(b) == _key(path))) continue;
-      _folders[path] = await _openFolder(path);
-    }
-    _settingsHeld = null;
+    await _openListedFolders();
+    // The list is trusted (or refused) only now: until every listed binder
+    // and folder is open, a hand change would be saved over what isn't there
+    // yet.
+    _settingsHeld = launchHold;
+    await _binderSeam('settings-loaded', settingsFile?.path ?? '');
     _rebuildTree();
     _syncWatchers();
     _startFolderTimer();
@@ -1119,6 +1125,398 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Binders other devices made are looked for once the notebook is shown;
     // found binders are added in their own jobs, never inside startup.
     unawaited(discoverBinders());
+  }
+
+  // The binder list on hold (the launch read, and retries) -----------------------
+
+  /// How long after a load that left the list held its first retry waits. Each
+  /// failed retry doubles the wait, up to a minute.
+  final Duration settingsRetryFirst;
+
+  /// How long after a first "no such file" a later one confirms that the list
+  /// was deleted.
+  final Duration settingsAbsentConfirm;
+
+  /// Test seam: the clock that times the confirmation of a missing list.
+  @visibleForTesting
+  DateTime Function() now = DateTime.now;
+
+  /// The wait after [d] when a retry fails: doubled, up to a minute.
+  @visibleForTesting
+  static Duration nextSettingsDelay(Duration d) {
+    final doubled = d * 2;
+    return doubled > const Duration(seconds: 60) ? const Duration(seconds: 60) : doubled;
+  }
+
+  /// Why binder and folder changes are refused now: `pending` (the launch read
+  /// is not settled), `locked`, `damaged`, or null.
+  @visibleForTesting
+  String? get settingsHoldForTest => _settingsHeld?.name;
+
+  /// The wait before the next timed retry, if one is armed.
+  @visibleForTesting
+  Duration? get settingsDelayForTest => _settingsDelay;
+
+  /// Calls [_saveSettings], to show that a held list is never written.
+  @visibleForTesting
+  Future<void> saveSettingsForTest() => _saveSettings();
+
+  /// How many times a retry has asked the open page to leave.
+  @visibleForTesting
+  int leaveAttemptsForTest = 0;
+
+  Future<bool>? _retrying;
+  Timer? _settingsTimer;
+  Duration? _settingsDelay;
+  // Set when a retry has chosen the next wait itself, so the timer keeps it.
+  bool _settingsDelaySet = false;
+  // When the file was first not found, while that is unconfirmed.
+  DateTime? _absentSince;
+  // The page that couldn't be left when a retry adopted the list, while it
+  // stays open with its save failing: no retry runs meanwhile.
+  String? _blockedPageId;
+  bool _adoptBlocked = false;
+  // What the last attempt to start a new list said, for the notice.
+  String? _heldDetail;
+
+  // One read of `binders.json`: the parsed file, "not found", or why it can't
+  // be read (locked, or damaged: not valid text or JSON).
+  Future<_SettingsRead> _readSettingsBytes(File f) async {
+    try {
+      await _binderSeam('settings-read', f.path);
+      final bytes = await f.readAsBytes();
+      return _SettingsRead.read(RawObject.parse(utf8.decode(bytes)));
+    } on PathNotFoundException catch (e) {
+      return _SettingsRead.notFound(e);
+    } on FileSystemException catch (e) {
+      return _SettingsRead.failed(_SettingsHold.locked, e);
+    } on FormatException catch (e) {
+      return _SettingsRead.failed(_SettingsHold.damaged, e);
+    }
+  }
+
+  // Takes the lists, ids and removed ids out of the settings file [f] into
+  // memory, replacing anything an earlier, interrupted adoption left. Returns
+  // the listed binder folders and the ids the file records for them.
+  _Adopted _adoptSettings(RawObject f) {
+    for (final path in _binders.keys.toList()) {
+      _undoOpen(path);
+      if (_coverPath == path) _coverPath = null;
+    }
+    _binders.clear();
+    _binderIds.clear();
+    _removedBinders.clear();
+    _settings = f;
+    _settingsKind = f.containsKey('binderIds') ? _SettingsKind.current : _SettingsKind.upgrade;
+    final removed = f['removedBinders']?.decode();
+    for (final id in removed is List ? removed : const []) {
+      if (id is String && id.isNotEmpty && !_removedBinders.contains(id)) _removedBinders.add(id);
+    }
+    final list = f['binders']?.decode();
+    final listed = [
+      for (final p in list is List ? list : const [])
+        if (p is String && p.isNotEmpty) resolveStoredPath(p),
+    ];
+    // An older build removed a binder after the ids were recorded: its path
+    // left `binders` but its id is still a key of `binderIds`. That is a removal
+    // (before the key is pruned by the next write).
+    final listedKeys = {for (final p in listed) _key(p)};
+    final recorded = _readRecordedIds();
+    for (final e in recorded.entries) {
+      if (!listedKeys.contains(_key(e.key))) _markRemoved(e.value);
+    }
+    return (listed: listed, recorded: recorded);
+  }
+
+  // Opens each listed binder. [point] is the test seam called before each.
+  Future<void> _openListed(_Adopted a, String point) async {
+    for (final path in a.listed) {
+      await _binderSeam(point, path);
+      if (_disposed) return;
+      final section = await _openBinder(path);
+      if (_disposed) return;
+      _binders[path] = section;
+      final id = a.recorded.entries.where((e) => _key(e.key) == _key(path)).firstOrNull?.value;
+      if (id != null) _binderIds[_key(path)] = id;
+      _recordBinderId(path, section.binder);
+    }
+  }
+
+  // Opens the standalone folders the settings list and the default page folder
+  // chosen there; one that is a binder, or open already, is skipped.
+  Future<void> _openListedFolders([String? point]) async {
+    final chosen = settings?.defaultPageFolder;
+    for (final raw in [..._readFolderPaths(), ?chosen]) {
+      final path = _normalizePath(raw);
+      if (path == defaultFolderPath || _folders.containsKey(path)) continue;
+      if (_binders.keys.any((b) => _key(b) == _key(path))) continue;
+      if (point != null) await _binderSeam(point, path);
+      if (_disposed) return;
+      final folder = await _openFolder(path);
+      if (_disposed) return;
+      _folders[path] = folder;
+    }
+  }
+
+  /// Reads `binders.json` again while binder and folder changes are refused,
+  /// and when it can be read, adopts it and lifts the refusal. Only one runs at
+  /// a time: a call while one runs returns that call's result. True once the
+  /// list is adopted. Never throws.
+  Future<bool> retrySettings() {
+    final running = _retrying;
+    if (running != null) return running;
+    final held = _settingsHeld;
+    if (_disposed || held == null || held == _SettingsHold.pending) return Future.value(false);
+    final run = _retryOnce();
+    _retrying = run;
+    unawaited(run.whenComplete(() {
+      if (identical(_retrying, run)) _retrying = null;
+    }));
+    return run;
+  }
+
+  Future<bool> _retryOnce() async {
+    try {
+      // Outside the queue: during load the queue is busy with the merges of
+      // conflict copies, which a job waiting for load would deadlock.
+      await loaded;
+      if (_disposed || _settingsHeld == null) return false;
+      return await _queued<bool>(_retryJob) ?? false;
+    } on Object catch (e, s) {
+      debugPrint('Reading the binder list again failed: $e\n$s');
+      return false;
+    }
+  }
+
+  void _armSettingsTimer() {
+    _settingsTimer?.cancel();
+    _settingsTimer = null;
+    final held = _settingsHeld;
+    if (_disposed || held == null || held == _SettingsHold.pending) return;
+    final delay = _settingsDelay ??= settingsRetryFirst;
+    _settingsTimer = Timer(delay, () async {
+      _settingsTimer = null;
+      _settingsDelaySet = false;
+      final ok = await retrySettings();
+      if (ok || _disposed || _settingsHeld == null) return;
+      // A retry that chose the wait itself (a first "not found") keeps it.
+      if (!_settingsDelaySet) _settingsDelay = nextSettingsDelay(delay);
+      _settingsDelaySet = false;
+      _armSettingsTimer();
+    });
+  }
+
+  // One retry, inside the queue.
+  Future<bool> _retryJob() async {
+    final f = bindersFile;
+    final held = _settingsHeld;
+    if (_disposed || f == null || held == null || held == _SettingsHold.pending) return false;
+    // The page that couldn't be left stays; nothing changes until it saves or
+    // another page is opened.
+    final blocked = _blockedPageId;
+    if (blocked != null) {
+      if (currentId == blocked && _trouble.isTrouble && _trouble.pageId == blocked) return false;
+      _blockedPageId = null;
+      _adoptBlocked = false;
+    }
+    final read = await _readSettingsBytes(f);
+    if (_disposed) return false;
+    var file = read.file;
+    if (file == null) {
+      if (!read.notFound) {
+        _absentSince = null;
+        _heldDetail = null;
+        _settingsHeld = read.hold;
+        debugPrint('Reading ${f.path} failed: ${read.error}');
+        notifyListeners();
+        return false;
+      }
+      file = await _settleAbsence(f);
+      if (file == null) return false;
+    } else {
+      _absentSince = null;
+    }
+    return _adoptRead(file);
+  }
+
+  // The file was not found. Returns the bytes of a new empty list if its
+  // absence is confirmed and it was created, else null with the hold kept.
+  Future<RawObject?> _settleAbsence(File f) async {
+    // A folder that is gone or can't be listed says nothing about the file.
+    try {
+      if (!await f.parent.exists()) throw FileSystemException('The folder was not found', f.parent.path);
+      await f.parent.list().isEmpty;
+    } on FileSystemException {
+      _absentSince = null;
+      notifyListeners();
+      return null;
+    }
+    final t = now();
+    final since = _absentSince;
+    if (since == null) {
+      // A sync client may be replacing the file: look again soon.
+      _absentSince = t;
+      _settingsDelay = settingsRetryFirst;
+      _settingsDelaySet = true;
+      _armSettingsTimer();
+      notifyListeners();
+      return null;
+    }
+    if (t.difference(since) < settingsAbsentConfirm) return null;
+    const text = '{"format":1,"binders":[],"binderIds":{}}';
+    final tmp = File('${f.path}.$pid-${_randomHex()}.tmp');
+    Future<void> dropTemp() async {
+      try {
+        if (await tmp.exists()) await tmp.delete();
+      } on FileSystemException catch (e) {
+        debugPrint('Removing ${tmp.path} failed: $e');
+      }
+    }
+
+    try {
+      await tmp.writeAsString(text, flush: true);
+      await _binderSeam('settings-publish', f.path);
+      if (!await publishExclusive(tmp, f.path)) {
+        // Something arrived: the next retry reads it.
+        await dropTemp();
+        _absentSince = null;
+        notifyListeners();
+        return null;
+      }
+    } on FileSystemException catch (e) {
+      await dropTemp();
+      _absentSince = null;
+      _settingsHeld = _SettingsHold.locked;
+      _heldDetail = 'Starting a new list failed: ${e.osError?.message ?? e.message}.';
+      notifyListeners();
+      return null;
+    } on Object {
+      await dropTemp();
+      rethrow;
+    }
+    _absentSince = null;
+    return RawObject.parse(text);
+  }
+
+  static String _randomHex() {
+    final r = Random.secure();
+    return [for (var i = 0; i < 4; i++) r.nextInt(1 << 16).toRadixString(16).padLeft(4, '0')].join();
+  }
+
+  // Takes the readable list [f] over, in load's order, while the hold keeps
+  // hand changes out, then lifts the hold. False if it stopped (the hold stays).
+  Future<bool> _adoptRead(RawObject f) async {
+    // 1. Folders and binders already open come out first, as load has them
+    // not yet open: a page in both a binder and the chosen folder is then
+    // chosen as load chooses it, and the page on screen is saved first.
+    final here = {..._folders.keys, ..._binders.keys};
+    bool openHere() {
+      final id = currentId;
+      return (id != null && here.contains(_loc[id])) || (_orphanLoc != null && here.contains(_orphanLoc));
+    }
+
+    String? wasOpen;
+    var left = false;
+    if (openHere()) {
+      wasOpen = currentId;
+      leaveAttemptsForTest++;
+      if (!await _leaveOpenPage(stayIfUnsafe: true)) {
+        // Its edits are safe nowhere: nothing is asked and nothing changed.
+        if (_disposed) return false;
+        _blockedPageId = wasOpen;
+        _adoptBlocked = true;
+        notifyListeners();
+        return false;
+      }
+      if (_disposed) return false;
+      if (currentId == wasOpen) {
+        _disposeCurrent();
+      } else if (openHere()) {
+        _blockedPageId = currentId;
+        _adoptBlocked = true;
+        notifyListeners();
+        return false;
+      }
+      left = true;
+    }
+    _blockedPageId = null;
+    _adoptBlocked = false;
+    for (final path in _folders.keys.toList()) {
+      final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
+      for (final id in ids) {
+        _forgetPage(id);
+      }
+      _folders.remove(path);
+      final key = _key(path);
+      _pendingCopies.removeWhere((p) => _key(File(p).parent.path) == key);
+    }
+    // 2. and 3. The lists, ids and removed ids.
+    final adopted = _adoptSettings(f);
+    // 4. Open, in load's order.
+    await _openListed(adopted, 'settings-adopt');
+    if (_disposed) return false;
+    await _openListedFolders('settings-adopt');
+    if (_disposed) return false;
+    // 5. Every restored location, binders and folders alike.
+    _rebuildTree();
+    _syncWatchers();
+    await _mergePendingCopies(inQueue: true);
+    for (final loc in [..._binders.keys, ..._folders.keys]) {
+      if (_disposed) return false;
+      await _recoverPending(onlyLoc: loc);
+    }
+    if (_disposed) return false;
+    // Release.
+    _settingsHeld = null;
+    _heldDetail = null;
+    _absentSince = null;
+    _settingsTimer?.cancel();
+    _settingsTimer = null;
+    _settingsDelay = null;
+    notifyListeners();
+    unawaited(discoverBinders());
+    // 6. The page the user was on, or a fallback if it is gone. The hold is
+    // lifted, so a page made in the chosen folder is not refused.
+    if (left && _current == null && _orphanLoc == null) {
+      try {
+        if (wasOpen != null && _metas.containsKey(wasOpen)) {
+          await open(wasOpen);
+        } else {
+          await _openFallback(_standalone);
+        }
+      } on Object catch (e) {
+        debugPrint('Reopening a page after the binder list was read failed: $e');
+      }
+    }
+    return true;
+  }
+
+  // The notice for the "Can't open" list while the list is held.
+  List<UnreadablePage> get _heldNotes {
+    final held = _settingsHeld;
+    final f = bindersFile;
+    if (held == null || held == _SettingsHold.pending || f == null) return const [];
+    const locked =
+        "Noted can't read its binder list (binders.json) right now, so binders and extra page folders are "
+        'hidden. They will appear when it can be read.';
+    final String text;
+    if (_adoptBlocked) {
+      text =
+          'Noted can read its binder list, but the open page cannot be saved yet, so binders and extra page '
+          'folders stay hidden. They will appear once the open page saves or another page is opened.';
+    } else if (_absentSince != null) {
+      text = 'Noted is checking whether its binder list was deleted.';
+    } else if (held == _SettingsHold.locked) {
+      text = _heldDetail == null ? locked : '$locked $_heldDetail';
+    } else if (isMobilePlatform) {
+      text = "Noted can't read its binder list. Binders and extra page folders stay hidden until it can be read.";
+    } else {
+      text =
+          "Noted's binder list (binders.json in ${f.parent.path}) is damaged, so binders and extra page folders "
+          "are hidden and can't be added or removed. Put back a readable copy, or delete the file to start a new "
+          'list; your binder and page folders are not changed.';
+    }
+    return [UnreadablePage(f.path, text)];
   }
 
   // A page for an empty notebook: in the default page folder, or in the
@@ -1327,6 +1725,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// away or has a damaged binder file, and no page file is unreadable. What
   /// depends on the whole notebook (the access-loss note) waits for this.
   bool get everythingReadable =>
+      _settingsHeld == null &&
       !_defaultGone &&
       _unreadable.isEmpty &&
       _folders.values.every((f) => f.available && f.unreadable.isEmpty) &&
@@ -4372,38 +4771,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     ];
   }
 
-  Future<List<String>> _readBinderPaths() async {
-    _settingsKind = _SettingsKind.fresh;
-    final f = bindersFile;
-    if (f == null) return const [];
-    try {
-      if (!await f.exists()) return const [];
-      _settings = RawObject.parse(await f.readAsString());
-      _settingsKind = _settings.containsKey('binderIds') ? _SettingsKind.current : _SettingsKind.upgrade;
-      final removed = _settings['removedBinders']?.decode();
-      for (final id in removed is List ? removed : const []) {
-        if (id is String && id.isNotEmpty && !_removedBinders.contains(id)) _removedBinders.add(id);
-      }
-      final list = _settings['binders']?.decode();
-      return [
-        for (final p in list is List ? list : const [])
-          if (p is String && p.isNotEmpty) resolveStoredPath(p),
-      ];
-    } on FormatException {
-      // Damaged: treated as an upgrade, the side on which no binder appears
-      // unasked (it is kept as `.bad` by the next write).
-      _settingsCorrupt = true;
-      _settingsKind = _SettingsKind.upgrade;
-      return const [];
-    } on FileSystemException catch (e) {
-      // Exists but can't be read now (a lock): no removal is known, so no
-      // binder is added this session, and discovery never writes the file.
-      debugPrint('Reading ${f.path} failed: $e');
-      _settingsKind = _SettingsKind.unreadable;
-      return const [];
-    }
-  }
-
   // The binder ids recorded in `binders.json`, by the folder as listed.
   Map<String, String> _readRecordedIds() {
     final map = _settings['binderIds']?.decode();
@@ -4463,15 +4830,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final removed = List<String>.of(_removedBinders);
     await _afterSaves(() async {
       await f.parent.create(recursive: true);
-      if (_settingsCorrupt) {
-        // Keep the damaged file instead of overwriting it.
-        try {
-          await f.rename('${f.path}.bad');
-        } on FileSystemException catch (e) {
-          debugPrint('Keeping ${f.path} failed: $e');
-        }
-        _settingsCorrupt = false;
-      }
       _settings = _settings
           .set('format', RawJson.encode(1))
           .set('binders', RawJson.encode(storedPaths));
@@ -6116,7 +6474,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     if (unmatched.isNotEmpty) {
       final waiting = {for (final e in (await rec.list()).entries) e.pageId};
-      final settled = !_defaultGone &&
+      final settled = _settingsHeld == null &&
+          !_defaultGone &&
           _folders.values.every((f) => f.available) &&
           _binders.values.every((b) => b.available);
       for (final MapEntry(key: kept, value: id) in unmatched.entries) {
@@ -7351,7 +7710,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// A call while a pass runs asks for one more pass after it. The result
   /// completes when the pass (and the adds of the binders it found) is over.
   Future<void> discoverBinders() {
-    if (_disposed || _settingsKind == _SettingsKind.unreadable) return discoveryIdle;
+    if (_disposed || _settingsHeld != null) return discoveryIdle;
     final running = _discovering;
     if (running != null) {
       _discoverAgain = true;
@@ -7666,6 +8025,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// add: one id in more than one folder, and binders recorded as removed by
   /// the first pass of an upgrade.
   List<UnreadablePage> get discoveryNotes => [
+    ..._heldNotes,
     ..._capNotes,
     for (final d in _duplicateIds.values)
       UnreadablePage(
@@ -7726,7 +8086,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // On every folder tick: the fresh folders (seen without a binder file) are
   // statted for 10 minutes; every [_backstopTicks]th tick is a backstop pass.
   void _discoveryTick() {
-    if (_disposed || _settingsKind == _SettingsKind.unreadable) return;
+    if (_disposed || _settingsHeld != null) return;
     _folderTicks++;
     final backstop = _folderTicks >= _backstopTicks;
     if (backstop) _folderTicks = 0;
@@ -8895,6 +9255,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _backoff.dispose();
     unawaited(_keptNotices.close());
     _folderTimer?.cancel();
+    _settingsTimer?.cancel();
     for (final t in _debounce.values) {
       t.cancel();
     }
@@ -8933,7 +9294,7 @@ class _Freeze {
 // What `binders.json` looked like at load: no file (a new install), a file
 // that already records binder ids, or one that doesn't (written by an older
 // build: an upgrade, see Notebook.discoverBinders).
-enum _SettingsKind { fresh, current, upgrade, unreadable }
+enum _SettingsKind { fresh, current, upgrade }
 
 // Why binder list changes are refused (see Notebook.settingsHeld): the launch
 // read isn't settled yet, the file is locked or can't be read now, or it is
@@ -8951,4 +9312,21 @@ class _Candidate {
 
   /// An I/O failure (a lock, an offline placeholder): says nothing about the file.
   final bool failed;
+}
+
+// What load or a retry adopts from `binders.json`: the listed binder folders
+// and the ids the file records for them.
+typedef _Adopted = ({List<String> listed, Map<String, String> recorded});
+
+// One read of `binders.json`: the parsed file, a missing file, or why it
+// can't be read.
+class _SettingsRead {
+  _SettingsRead.read(RawObject this.file) : notFound = false, hold = null, error = null;
+  _SettingsRead.notFound(this.error) : file = null, notFound = true, hold = null;
+  _SettingsRead.failed(_SettingsHold this.hold, this.error) : file = null, notFound = false;
+
+  final RawObject? file;
+  final bool notFound;
+  final _SettingsHold? hold;
+  final Object? error;
 }

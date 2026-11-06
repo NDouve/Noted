@@ -359,6 +359,8 @@ class _NotedAppState extends State<NotedApp> {
         return AppExitResponse.exit;
       },
       onHide: widget.notebook.flush,
+      // A binder list that could not be read is read again.
+      onResume: () => unawaited(widget.notebook.retrySettings()),
     );
   }
 
