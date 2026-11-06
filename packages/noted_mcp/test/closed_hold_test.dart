@@ -801,4 +801,66 @@ void main() {
       expect(chosen.single.$1.meta.title, 'Canonical');
     }
   });
+
+  group('LockIdentity: which paths are the lock file', () {
+    late Directory dir;
+    late String lock;
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync('noted_identity');
+      lock = '${dir.path}${Platform.pathSeparator}$aiRunningLockFileName';
+      File(lock).writeAsStringSync('');
+      File('${dir.path}${Platform.pathSeparator}other.canvas').writeAsStringSync('x');
+    });
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    String p(String name) => '${dir.path}${Platform.pathSeparator}$name';
+
+    test('the lock file itself and an unrelated file', () async {
+      final id = await LockIdentity.forLockFile(lock);
+      expect(await id.isLock(lock), isTrue);
+      expect(await id.isLock(p('other.canvas')), isFalse);
+      expect(await id.isLock(p('missing.canvas')), isFalse);
+    });
+
+    // `FileSystemEntity.identical` says a link and its target differ (its
+    // documentation), so the decision resolves links first. Skipped where the
+    // platform won't create a link without privileges.
+    test('a symlink to the lock file is the lock file (the decision test 16 depends on)', () async {
+      try {
+        Link(p('x.canvas')).createSync(lock);
+      } on FileSystemException {
+        markTestSkipped('this machine cannot create symlinks');
+        return;
+      }
+      final id = await LockIdentity.forLockFile(lock);
+      expect(await id.isLock(p('x.canvas')), isTrue);
+      expect(await id.readBytes(p('x.canvas')), isNull, reason: 'a link to the lock file is never opened');
+      // A link to something else, and a dangling one, are not the lock file.
+      Link(p('y.canvas')).createSync(p('other.canvas'));
+      Link(p('z.canvas')).createSync(p('gone'));
+      expect(await id.isLock(p('y.canvas')), isFalse);
+      expect(await id.isLock(p('z.canvas')), isFalse);
+      // The lock path reached through a link to its folder is the same file.
+      final viaFolder = Directory('${dir.path}${Platform.pathSeparator}..${Platform.pathSeparator}${dir.uri.pathSegments.where((s) => s.isNotEmpty).last}');
+      expect(await id.isLock('${viaFolder.path}${Platform.pathSeparator}$aiRunningLockFileName'), isTrue);
+    });
+
+    test('a hard link to the lock file is the lock file', () async {
+      final r = Platform.isWindows
+          ? await Process.run('fsutil', ['hardlink', 'create', p('h.canvas'), lock])
+          : await Process.run('ln', [lock, p('h.canvas')]);
+      if (r.exitCode != 0) {
+        markTestSkipped('this machine cannot create hard links');
+        return;
+      }
+      final id = await LockIdentity.forLockFile(lock);
+      expect(await id.isLock(p('h.canvas')), isTrue);
+    });
+
+    test('with no lock file nothing is refused', () async {
+      File(lock).deleteSync();
+      final id = await LockIdentity.forLockFile(lock);
+      expect(await id.isLock(p('other.canvas')), isFalse);
+    });
+  });
 }

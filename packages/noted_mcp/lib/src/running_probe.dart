@@ -198,13 +198,19 @@ final class LockIdentity {
   /// (or on Windows) nothing is ever refused.
   static Future<LockIdentity> of(Directory dataDir) async {
     if (Platform.isWindows) return none;
-    final path = LockGate.lockPath(dataDir);
+    return forLockFile(LockGate.lockPath(dataDir));
+  }
+
+  /// The identity for the lock file at [path], on any platform (the decision
+  /// itself is tested on Windows through this). Absent: nothing is refused.
+  /// The lock path is resolved through its own links once, so it is never a link.
+  static Future<LockIdentity> forLockFile(String path) async {
     try {
       if (await FileSystemEntity.type(path) == FileSystemEntityType.notFound) return none;
+      return LockIdentity._(await File(path).resolveSymbolicLinks());
     } on Object {
       return none;
     }
-    return LockIdentity._(path);
   }
 
   /// Whether [path] is the lock file itself.
@@ -212,7 +218,11 @@ final class LockIdentity {
     final lock = _lockPath;
     if (lock == null) return false;
     try {
-      return await FileSystemEntity.identical(path, lock);
+      // `identical` compares a link with its target as different, so a path is
+      // resolved through its links first: a symlink to the lock file is the lock
+      // file, and a hard link is caught by `identical` itself (same inode).
+      final real = await File(path).resolveSymbolicLinks();
+      return await FileSystemEntity.identical(real, lock);
     } on Object {
       // Can't tell: a file that exists is skipped (fail closed); one that is gone is not,
       // and nor is any file if the lock file itself is gone (it can't be opened then).
