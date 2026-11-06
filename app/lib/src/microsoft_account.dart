@@ -178,7 +178,8 @@ class MicrosoftAccount extends ChangeNotifier {
 /// deletes its own sign-in. Returns false if the clean-up was due and did not
 /// finish (the caller must not restore or sign in); a delete that throws is
 /// rethrown. Does nothing, and returns true, on other platforms or when the
-/// settings can't be saved (it would run every launch).
+/// settings couldn't be read or can't be saved (a reinstall wipes the container,
+/// so a missing file is a first launch, but an unreadable one is not).
 Future<bool> clearKeychainOnFirstLaunch(
   AppSettings settings,
   Future<void> Function() deleteAll,

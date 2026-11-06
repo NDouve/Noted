@@ -273,16 +273,16 @@ void main() {
         settings: AppSettings(file),
         firstLaunchCleanup: () async {
           deletes++;
-          await store.delete(AuthSession.accountRecordKey);
+          // A fresh account written first must survive: only the old keys go.
+          await store.write(AuthSession.accountRecordKey, '{"key":"n.p","name":"New"}');
+          await store.write(AuthSession.refreshKey('n.p'), 'R-new');
           await store.delete(AuthSession.refreshKey('t.o'));
         },
       );
       expect(deletes, 1);
       expect(AppSettings(file).keychainCleaned, isTrue);
-      expect(next.state, AuthState.signedOut);
-      await next.signIn();
-      expect(next.error, isNull);
       expect(next.state, AuthState.signedIn);
+      expect(next.session.accountKey, 'n.p');
     });
 
     test('a sign-in in the same session retries a failed delete first', () async {
@@ -342,18 +342,40 @@ void main() {
       () async {
         var runs = 0;
         debugDefaultTargetPlatformOverride = TargetPlatform.android;
-        await clearKeychainOnFirstLaunch(AppSettings(null), () async => runs++);
+        expect(
+          await clearKeychainOnFirstLaunch(AppSettings(null), () async => runs++),
+          isTrue,
+        );
         debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
         final dir = Directory.systemTemp.createTempSync('noted_keychain');
         addTearDown(() => dir.deleteSync(recursive: true));
         final broken = File('${dir.path}/settings.json')
           ..writeAsStringSync('{ nope');
-        await clearKeychainOnFirstLaunch(
-          AppSettings(broken),
-          () async => runs++,
+        expect(
+          await clearKeychainOnFirstLaunch(
+            AppSettings(broken),
+            () async => runs++,
+          ),
+          isTrue,
         );
         expect(runs, 0);
       },
     );
+
+    test('on Android start restores a stored account without cleaning', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final store = MemoryTokenStore();
+      await store.write(AuthSession.accountRecordKey, '{"key":"t.o","name":"Ada"}');
+      await store.write(AuthSession.refreshKey('t.o'), 'R');
+      var runs = 0;
+      final account = _account(store);
+      addTearDown(account.dispose);
+      await account.start(
+        settings: AppSettings(null),
+        firstLaunchCleanup: () async => runs++,
+      );
+      expect(runs, 0);
+      expect(account.state, AuthState.signedIn);
+    });
   });
 }
