@@ -187,12 +187,18 @@ final class NotedLibrary {
     // Every listed folder is listed and counted first, whatever its binder
     // file says; a file is counted once however it is reached.
     final scans = <String, _FolderScan>{};
+    final bySpelling = <String, _FolderScan>{};
     final counts = <String, Set<String>>{};
     for (final path in [...standalone, ...binderPaths]) {
       final key = await normalizedPath(path);
-      if (scans.containsKey(key)) continue;
+      final done = scans[key];
+      if (done != null) {
+        bySpelling[path] = done;
+        continue;
+      }
       final s = await _scanFolder(identity, path, kept);
       scans[key] = s;
+      bySpelling[path] = s;
       if (s.state == FolderState.failed) allAmbiguous = true;
       for (final e in s.carried.entries) {
         if (e.value.unknown) allAmbiguous = true;
@@ -208,14 +214,15 @@ final class NotedLibrary {
         if (e.value.length > 1) e.key,
     };
     bool isAmb(String id) => allAmbiguous || ambiguous.contains(id);
-    Future<_FolderScan> scanOf(String path) async => scans[await normalizedPath(path)]!;
+    // By the spelling `distinct` fixed for each folder.
+    _FolderScan scanOf(String path) => bySpelling[path] ?? _FolderScan(FolderState.failed, const [], const {});
 
     final pages = <LibraryPage>[];
     // Standalone folders share one tree, as in the app.
     final loose = <(NotedPage, LibraryLocation, String)>[];
     for (final path in standalone) {
       final loc = LibraryLocation(path);
-      for (final (p, file) in choosePages((await scanOf(path)).found)) {
+      for (final (p, file) in choosePages(scanOf(path).found)) {
         loose.add((p, loc, file));
       }
     }
@@ -230,7 +237,7 @@ final class NotedLibrary {
       // by their codes.
       if (binder == null) continue;
       final loc = LibraryLocation(path, binder: binder);
-      final own = [for (final (p, file) in choosePages((await scanOf(path)).found)) (p, loc, file)];
+      final own = [for (final (p, file) in choosePages(scanOf(path).found)) (p, loc, file)];
       final made = _withAccess(own, binder: binder, locked: isLockedBinder(binder), isAmb: isAmb);
       for (final p in made) {
         if (standalone.contains(path) && p.path != null) alsoStandalone[p.path!] = pages.length;
@@ -249,6 +256,32 @@ final class NotedLibrary {
       final locked = a.locked || b.locked;
       pages[i] = LibraryPage(a.page, a.location, access, locked: locked, path: a.path);
       pages[j] = LibraryPage(b.page, b.location, access, locked: locked, path: b.path);
+    }
+    // The reconciled access reaches every page under a reconciled page, in its
+    // own tree: a page is never looser than any ancestor's.
+    if (alsoStandalone.isNotEmpty) {
+      final trees = <String?, List<int>>{};
+      for (var i = 0; i < pages.length; i++) {
+        final b = pages[i].location.binder;
+        trees.putIfAbsent(b == null ? null : pages[i].location.path, () => []).add(i);
+      }
+      for (final idx in trees.values) {
+        final at = {for (final i in idx) pages[i].id: i};
+        final base = {for (final i in idx) pages[i].id: pages[i].access};
+        for (final i in idx) {
+          var a = base[pages[i].id]!;
+          final seen = <String>{pages[i].id};
+          var up = pages[i].page.meta.parentId;
+          while (up != null && seen.add(up)) {
+            final k = at[up];
+            if (k == null) break;
+            a = AiAccess.strictest(a, base[up]!);
+            up = pages[k].page.meta.parentId;
+          }
+          final p = pages[i];
+          if (a != p.access) pages[i] = LibraryPage(p.page, p.location, a, locked: p.locked, path: p.path);
+        }
+      }
     }
     return NotedLibrary._(pages, [...standalone, ...binderPaths], standalone, kept, ambiguous, allAmbiguous);
   }
@@ -398,23 +431,22 @@ final class _FolderScan {
   final Map<String, FileIds> carried;
 }
 
-final RegExp _idShape = RegExp(r'^[0-9a-f]{16}$', caseSensitive: false);
+final RegExp _idShape = RegExp(r'^[0-9a-f]{16}$');
 
 /// The ids the `.canvas` file [path] with [bytes] (null: can't be read)
 /// counts for, so that a copy the server can't use still makes its id
 /// ambiguous:
 /// - a file that parses counts only for [parsedId];
 /// - one that doesn't, but reads, counts for the id in its header (found by
-///   [scanHeaderId]), else for the page ids its name carries ([nameIds]);
-///   with none it isn't a page and counts for nothing;
+///   [scanHeaderId]) and for the page ids its name carries ([nameIds]), both;
+///   with neither it isn't a page and counts for nothing;
 /// - one that can't be read counts for its name's ids; with none it may be
 ///   any page ([FileIds.unknown]).
 FileIds fileIdsOf(String path, List<int>? bytes, {String? parsedId}) {
   if (parsedId != null) return FileIds({parsedId});
   if (bytes != null) {
     final scanned = scanHeaderId(utf8.decode(bytes, allowMalformed: true));
-    if (scanned != null) return FileIds({scanned});
-    return FileIds(nameIds(path));
+    return FileIds({?scanned, ...nameIds(path)});
   }
   final ids = nameIds(path);
   return FileIds(ids, unknown: ids.isEmpty);
@@ -440,9 +472,9 @@ Set<String> nameIds(String path) {
   };
 }
 
-/// The `id` of the page header (the top-level `noted` object) in [text], which
+/// The `pageId` of the page header (the top-level `noted` object) in [text], which
 /// may be cut short or damaged elsewhere; null if it isn't reached. Never an
-/// `id` of any other object (a box's, say).
+/// `pageId` of any other object (a box's, say).
 String? scanHeaderId(String text) {
   var i = text.isNotEmpty && text.codeUnitAt(0) == 0xFEFF ? 1 : 0;
   final n = text.length;
@@ -508,7 +540,7 @@ String? scanHeaderId(String text) {
         i++;
         key = s;
         // The header's own id: the `id` key of the top-level `noted` object.
-        if (s == 'id' && open.length == 2 && under[1] == 'noted') {
+        if (s == 'pageId' && open.length == 2 && under[1] == 'noted') {
           skipSpace();
           if (i < n && text[i] == '"') {
             final v = readString();

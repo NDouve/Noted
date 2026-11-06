@@ -361,16 +361,22 @@ final class ClosedAccess {
     final deniedOnPage = _denied(code, view, boxId, mode, page);
     if (deniedOnPage != null) return done(deniedOnPage.code, page, deniedOnPage.message);
     final chain = _chain(library, page);
+    // A folder listed as standalone and as a binder has an entry in each tree
+    // for the same file: the box type must be allowed in both.
+    final others = [
+      for (final p in library.pages)
+        if (p.path == page.path && !identical(p, page)) (_chain(library, p), p.location.binder),
+    ];
     // Before any hold: the page, a page above it or the page its chain ended
     // at has more than one copy, so its access, settings and bytes can't be
     // taken from the copy the server picked.
-    if (chain.pages.any((p) => library.isAmbiguous(p.id)) ||
-        (chain.endId != null && library.isAmbiguous(chain.endId!))) {
-      return ambiguous(page);
-    }
+    bool chainAmbiguous(_Chain c) =>
+        c.pages.any((p) => library.isAmbiguous(p.id)) || (c.endId != null && library.isAmbiguous(c.endId!));
+    if (chainAmbiguous(chain) || others.any((o) => chainAmbiguous(o.$1))) return ambiguous(page);
     final box = page.page.node(boxId);
     if (box is! BoxRecord || box.typeId != aiBoxTypeId || isEncrypted(box)) return done(AiLinkCode.notWritable, page);
-    if (!effectiveBoxTypeAllowed(box.typeId, chain.metas, binder: page.location.binder).allowed) {
+    if (!effectiveBoxTypeAllowed(box.typeId, chain.metas, binder: page.location.binder).allowed ||
+        others.any((o) => !effectiveBoxTypeAllowed(box.typeId, o.$1.metas, binder: o.$2).allowed)) {
       return done(AiLinkCode.notWritable, page);
     }
     if (box.isConflicted) return done(AiLinkCode.conflict, page);
@@ -453,6 +459,7 @@ final class ClosedAccess {
         page.page.meta.parentId,
         chain.metas.skip(1).toList(),
         page.location.binder,
+        [for (final o in others) (o.$1.metas.skip(1).toList(), o.$2)],
       );
       // The page moved under another parent since the library load: look again.
       if (next == null) return attempt == 0 ? null : _Refusal(AiLinkCode.busy, page);
@@ -655,6 +662,7 @@ final class ClosedAccess {
     String? parentId,
     List<PageMeta> parents,
     Binder? binder,
+    List<(List<PageMeta>, Binder?)> otherViews,
   ) {
     final String text;
     try {
@@ -676,7 +684,8 @@ final class ClosedAccess {
     final box = page.node(boxId);
     if (box is! BoxRecord) return AiLinkCode.noBox;
     if (box.typeId != aiBoxTypeId || isEncrypted(box)) return AiLinkCode.notWritable;
-    if (!effectiveBoxTypeAllowed(box.typeId, [page.meta, ...parents], binder: binder).allowed) {
+    if (!effectiveBoxTypeAllowed(box.typeId, [page.meta, ...parents], binder: binder).allowed ||
+        otherViews.any((v) => !effectiveBoxTypeAllowed(box.typeId, [page.meta, ...v.$1], binder: v.$2).allowed)) {
       return AiLinkCode.notWritable;
     }
     if (box.isConflicted) return AiLinkCode.conflict;
