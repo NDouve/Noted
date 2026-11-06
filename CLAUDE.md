@@ -69,11 +69,12 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 - the Page settings and Binder settings panel (background, images and files, AI access, box types allowed)
 - module availability per page and binder (a disallowed box type behaves like a switched-off module)
 - iPad and Android test builds (sideloaded, notes stored on the device, no mobile sync yet)
+- OneDrive sync for iPad and Android, built in stages: Microsoft sign-in (scope `Files.ReadWrite offline_access openid profile`, signed off 2026-11-05), then the OneDrive module
 
 **Out of scope until the maintainer starts the next phase:**
 - binder passwords and encryption
 - per-AI rules, tiers and lanes
-- integrations and Microsoft sign-in
+- integrations (other than the OneDrive sync sign-in above)
 - conflict copies from providers other than OneDrive
 - customizable toolbars (user-arranged or scripted)
 - reMarkable
