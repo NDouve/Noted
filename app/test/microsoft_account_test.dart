@@ -226,7 +226,7 @@ void main() {
       });
     });
 
-    test('does not delete anything when the flag cannot be written', () async {
+    test('the flag cannot be written: the items go, the clean-up is not done', () async {
       final dir = Directory.systemTemp.createTempSync('noted_keychain');
       addTearDown(() => dir.deleteSync(recursive: true));
       // The settings folder is a file, so nothing can be saved there.
@@ -234,8 +234,107 @@ void main() {
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
       var runs = 0;
       final settings = AppSettings(File('${dir.path}/blocker/settings.json'));
-      await clearKeychainOnFirstLaunch(settings, () async => runs++);
-      expect(runs, 0);
+      final done = await clearKeychainOnFirstLaunch(settings, () async => runs++);
+      expect(runs, 1);
+      expect(done, isFalse);
+    });
+
+    test('a failed delete leaves the flag unset, blocks restore and sign-in, and the next start retries', () async {
+      final dir = Directory.systemTemp.createTempSync('noted_keychain');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final file = File('${dir.path}/settings.json');
+      file.writeAsStringSync('{"format":1}');
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final store = MemoryTokenStore();
+      await store.write(AuthSession.accountRecordKey, '{"key":"t.o","name":"Old"}');
+      await store.write(AuthSession.refreshKey('t.o'), 'R-old');
+      var signIns = 0;
+      final account = _account(store, flow: (_) async {
+        signIns++;
+        return const AuthGrant(code: 'c', codeVerifier: 'v', redirectUri: 'r');
+      });
+      addTearDown(account.dispose);
+      await account.start(
+        settings: AppSettings(file),
+        firstLaunchCleanup: () async => throw StateError('keychain'),
+      );
+      expect(AppSettings(file).keychainCleaned, isFalse);
+      expect(account.state, AuthState.signedOut); // the old account is not restored
+      await account.signIn(); // retries the clean-up, which fails again
+      expect(account.error, "Noted couldn't prepare sign-in. Try again.");
+      expect(signIns, 0);
+      expect(account.state, AuthState.signedOut);
+
+      // The next start, with a working delete.
+      var deletes = 0;
+      final next = _account(store);
+      addTearDown(next.dispose);
+      await next.start(
+        settings: AppSettings(file),
+        firstLaunchCleanup: () async {
+          deletes++;
+          // A fresh account written first must survive: only the old keys go.
+          await store.write(AuthSession.accountRecordKey, '{"key":"n.p","name":"New"}');
+          await store.write(AuthSession.refreshKey('n.p'), 'R-new');
+          await store.delete(AuthSession.refreshKey('t.o'));
+        },
+      );
+      expect(deletes, 1);
+      expect(AppSettings(file).keychainCleaned, isTrue);
+      expect(next.state, AuthState.signedIn);
+      expect(next.session.accountKey, 'n.p');
+    });
+
+    test('a sign-in in the same session retries a failed delete first', () async {
+      final dir = Directory.systemTemp.createTempSync('noted_keychain');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final file = File('${dir.path}/settings.json')..writeAsStringSync('{}');
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      var fail = true;
+      final account = _account(MemoryTokenStore());
+      addTearDown(account.dispose);
+      await account.start(
+        settings: AppSettings(file),
+        firstLaunchCleanup: () async {
+          if (fail) throw StateError('keychain');
+        },
+      );
+      fail = false;
+      await account.signIn();
+      expect(account.error, isNull);
+      expect(account.state, AuthState.signedIn);
+      expect(AppSettings(file).keychainCleaned, isTrue);
+    });
+
+    test('a flag that cannot be saved after a good delete blocks restore and sign-in', () async {
+      final dir = Directory.systemTemp.createTempSync('noted_keychain');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      File('${dir.path}/blocker').writeAsStringSync('x');
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final store = MemoryTokenStore();
+      await store.write(AuthSession.accountRecordKey, '{"key":"t.o","name":"Old"}');
+      await store.write(AuthSession.refreshKey('t.o'), 'R-old');
+      var deletes = 0;
+      final account = _account(store);
+      addTearDown(account.dispose);
+      await account.start(
+        settings: AppSettings(File('${dir.path}/blocker/settings.json')),
+        firstLaunchCleanup: () async => deletes++,
+      );
+      expect(account.state, AuthState.signedOut);
+      await account.signIn();
+      expect(account.error, "Noted couldn't prepare sign-in. Try again.");
+      expect(account.state, AuthState.signedOut);
+      expect(deletes, 1); // not repeated in this session
+
+      // The next start retries (the flag was never saved).
+      final next = _account(store);
+      addTearDown(next.dispose);
+      await next.start(
+        settings: AppSettings(File('${dir.path}/blocker/settings.json')),
+        firstLaunchCleanup: () async => deletes++,
+      );
+      expect(deletes, 2);
     });
 
     test(
@@ -243,18 +342,40 @@ void main() {
       () async {
         var runs = 0;
         debugDefaultTargetPlatformOverride = TargetPlatform.android;
-        await clearKeychainOnFirstLaunch(AppSettings(null), () async => runs++);
+        expect(
+          await clearKeychainOnFirstLaunch(AppSettings(null), () async => runs++),
+          isTrue,
+        );
         debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
         final dir = Directory.systemTemp.createTempSync('noted_keychain');
         addTearDown(() => dir.deleteSync(recursive: true));
         final broken = File('${dir.path}/settings.json')
           ..writeAsStringSync('{ nope');
-        await clearKeychainOnFirstLaunch(
-          AppSettings(broken),
-          () async => runs++,
+        expect(
+          await clearKeychainOnFirstLaunch(
+            AppSettings(broken),
+            () async => runs++,
+          ),
+          isTrue,
         );
         expect(runs, 0);
       },
     );
+
+    test('on Android start restores a stored account without cleaning', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final store = MemoryTokenStore();
+      await store.write(AuthSession.accountRecordKey, '{"key":"t.o","name":"Ada"}');
+      await store.write(AuthSession.refreshKey('t.o'), 'R');
+      var runs = 0;
+      final account = _account(store);
+      addTearDown(account.dispose);
+      await account.start(
+        settings: AppSettings(null),
+        firstLaunchCleanup: () async => runs++,
+      );
+      expect(runs, 0);
+      expect(account.state, AuthState.signedIn);
+    });
   });
 }

@@ -80,20 +80,50 @@ class MicrosoftAccount extends ChangeNotifier {
   /// Why the last sign-in or sign-out failed, in plain words; null if it didn't.
   String? get error => _error;
 
+  // Set by start(); until the iOS clean-up has succeeded in this session the
+  // account is not restored and sign-in is refused.
+  AppSettings? _settings;
+  Future<void> Function()? _cleanup;
+  bool _ready = true;
+  bool _deleted = false;
+  bool _saveFailed = false;
+
+  /// Runs the clean-up if it is due. True when sign-in may go ahead: nothing to
+  /// clean, or the items were deleted and the flag saved.
+  Future<bool> _prepare() async {
+    final settings = _settings;
+    if (settings == null || _ready) return true;
+    // A flag that failed to save stays set in the settings object in memory,
+    // which would then pass for saved; so it is not retried before the next
+    // launch.
+    if (_saveFailed) return false;
+    try {
+      final delete = _cleanup ?? SecureTokenStore.deleteEverything;
+      _ready = await clearKeychainOnFirstLaunch(settings, () async {
+        await delete();
+        _deleted = true;
+      });
+      if (!_ready && _deleted) _saveFailed = true;
+    } on Object {
+      _ready = false;
+    }
+    return _ready;
+  }
+
   /// Reads the stored account (after, on iOS, the one-time keychain
-  /// clean-up). Never throws.
+  /// clean-up). Never throws. If the clean-up fails the account is not
+  /// restored and sign-in is refused until a later start succeeds.
   Future<void> start({
     AppSettings? settings,
     Future<void> Function()? firstLaunchCleanup,
   }) async {
+    _settings = settings;
+    _cleanup = firstLaunchCleanup;
+    _ready = settings == null;
+    _deleted = false;
+    _saveFailed = false;
     try {
-      if (settings != null) {
-        await clearKeychainOnFirstLaunch(
-          settings,
-          firstLaunchCleanup ?? SecureTokenStore.deleteEverything,
-        );
-      }
-      await session.restore();
+      if (await _prepare()) await session.restore();
     } on Object {
       // A store that can't be read already leaves the state at sign in again.
     }
@@ -106,7 +136,11 @@ class MicrosoftAccount extends ChangeNotifier {
     _error = null;
     notifyListeners();
     try {
-      await session.signIn(await flow(config));
+      if (await _prepare()) {
+        await session.signIn(await flow(config));
+      } else {
+        _error = "Noted couldn't prepare sign-in. Try again.";
+      }
     } on AuthException catch (e) {
       _error = e.message;
     } on Object {
@@ -137,18 +171,21 @@ class MicrosoftAccount extends ChangeNotifier {
 
 /// iOS keeps keychain items when the app is deleted, so a reinstall would find
 /// the last install's token. On the first launch of an install (no flag in the
-/// settings yet) Noted deletes its own keychain items, then sets the flag. The
-/// flag is `keychainCleaned` in `settings.json`; without a sync journal yet it
-/// is what says "this install has been cleaned". Does nothing on other
-/// platforms, or when the settings can't be saved (it would run every launch).
-Future<void> clearKeychainOnFirstLaunch(
+/// settings yet) Noted deletes its own keychain items, then saves the flag. The
+/// flag is `keychainCleaned` in `settings.json`; it is true only after a delete
+/// succeeded and the flag was saved, so a failure of either is retried. No
+/// token of this install can exist before the flag is saved, so a retry never
+/// deletes its own sign-in. Returns false if the clean-up was due and did not
+/// finish (the caller must not restore or sign in); a delete that throws is
+/// rethrown. Does nothing, and returns true, on other platforms or when the
+/// settings couldn't be read (a reinstall wipes the container,
+/// so a missing file is a first launch, but an unreadable one is not).
+Future<bool> clearKeychainOnFirstLaunch(
   AppSettings settings,
   Future<void> Function() deleteAll,
 ) async {
-  if (defaultTargetPlatform != TargetPlatform.iOS) return;
-  if (settings.keychainCleaned || !settings.canRememberNotes) return;
-  // The flag first, and only a saved flag lets the items go: if it could not
-  // be saved the clean-up would repeat and sign the user out at every launch.
-  if (!settings.markKeychainCleaned()) return;
+  if (defaultTargetPlatform != TargetPlatform.iOS) return true;
+  if (settings.keychainCleaned || !settings.canRememberNotes) return true;
   await deleteAll();
+  return settings.markKeychainCleaned();
 }

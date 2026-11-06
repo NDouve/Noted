@@ -55,6 +55,8 @@ http.Response grantError(String error) =>
 class FailingStore extends MemoryTokenStore {
   bool failWrites = false;
   bool failReads = false;
+  bool failDeletes = false;
+  Completer<void>? deleteGate; // the next delete waits for this (once)
   bool dropWrites = false; // writes succeed but nothing is kept
   Completer<void>? writeGate; // a write waits for this before it lands
 
@@ -62,6 +64,15 @@ class FailingStore extends MemoryTokenStore {
   Future<String?> read(String key) async {
     if (failReads) throw StateError('read');
     return super.read(key);
+  }
+
+  @override
+  Future<void> delete(String key) async {
+    final gate = deleteGate;
+    deleteGate = null;
+    await gate?.future;
+    if (failDeletes) throw StateError('delete');
+    return super.delete(key);
   }
 
   @override
@@ -161,26 +172,44 @@ void main() {
     expect(store.values[AuthSession.refreshKey(key)], 'R2');
   });
 
+  Future<void> expectStorageSignInAgain(
+    AuthSession s,
+    FakeEndpoint e,
+    List<Future<String>> calls,
+  ) async {
+    for (final c in calls) {
+      await expectLater(
+        c,
+        throwsA(
+          isA<AuthException>().having(
+            (x) => x.kind,
+            'kind',
+            AuthErrorKind.storage,
+          ),
+        ),
+      );
+    }
+    expect(s.state, AuthState.signInAgain);
+    // In-memory tokens are gone: nothing is served without signing in again.
+    await expectLater(s.accessToken(), throwsA(isA<AuthException>()));
+    expect(e.forms, hasLength(2));
+  }
+
   test(
-    'rotation with a failing store write keeps the old refresh token',
+    'rotation with a failing store write means sign in again and drops the stored token',
     () async {
       final e = FakeEndpoint((f, n) async => ok(tokens('A$n', 'R$n')));
       final s = session(e);
       await s.signIn(grant);
       store.failWrites = true;
       clock = clock.add(const Duration(hours: 2));
-      expect(await s.accessToken(), 'A2'); // the new access token still works
-      expect(store.values[AuthSession.refreshKey(key)], 'R1');
-      expect(s.state, AuthState.signedIn);
-      store.failWrites = false;
-      clock = clock.add(const Duration(hours: 2));
-      await s.accessToken();
-      expect(e.forms.last['refresh_token'], 'R1'); // the old one still works
+      await expectStorageSignInAgain(s, e, [s.accessToken()]);
+      expect(store.values[AuthSession.refreshKey(key)], isNull);
     },
   );
 
   test(
-    'rotation whose read-back differs puts the old refresh token back',
+    'rotation whose read-back differs means sign in again and drops the stored token',
     () async {
       final e = FakeEndpoint((f, n) async => ok(tokens('A$n', 'R$n')));
       final s = session(e);
@@ -188,10 +217,35 @@ void main() {
       store.dropWrites =
           true; // the write "succeeds" but the read-back is the old value
       clock = clock.add(const Duration(hours: 2));
-      await s.accessToken();
-      expect(store.values[AuthSession.refreshKey(key)], 'R1');
+      await expectStorageSignInAgain(s, e, [s.accessToken()]);
+      expect(store.values[AuthSession.refreshKey(key)], isNull);
     },
   );
+
+  test(
+    'a failed best-effort delete after a rotation failure is still sign in again',
+    () async {
+      final e = FakeEndpoint((f, n) async => ok(tokens('A$n', 'R$n')));
+      final s = session(e);
+      await s.signIn(grant);
+      store.failWrites = true;
+      store.failDeletes = true;
+      clock = clock.add(const Duration(hours: 2));
+      await expectStorageSignInAgain(s, e, [s.accessToken()]);
+    },
+  );
+
+  test('callers waiting on a refresh whose rotation fails get the same outcome', () async {
+    final e = FakeEndpoint((f, n) async => ok(tokens('A$n', 'R$n')));
+    final s = session(e);
+    await s.signIn(grant);
+    final rejected = await s.accessToken();
+    store.failWrites = true;
+    final calls = [
+      for (var i = 0; i < 3; i++) s.tokenAfterRejection(rejected),
+    ];
+    await expectStorageSignInAgain(s, e, calls);
+  });
 
   test(
     'a refresh answer without a new refresh token keeps the stored one',
@@ -334,12 +388,68 @@ void main() {
     expect(store.values, isEmpty);
     store.writeGate = null;
     gate.complete();
-    await refresh;
+    await expectLater(refresh, throwsA(isA<AuthException>()));
     expect(s.state, AuthState.signedOut);
     expect(
       store.values,
       isEmpty,
     ); // the late write did not bring the token back
+  });
+
+  test('signing out while the rotation failure deletes the token stays signed out', () async {
+    final e = FakeEndpoint((f, n) async => ok(tokens('A$n', 'R$n')));
+    final s = session(e);
+    await s.signIn(grant);
+    clock = clock.add(const Duration(hours: 2));
+    store.failWrites = true;
+    final gate = store.deleteGate = Completer<void>();
+    final refresh = s.accessToken();
+    final outcome = expectLater(
+      refresh,
+      throwsA(
+        isA<AuthException>().having(
+          (x) => x.kind,
+          'kind',
+          AuthErrorKind.signInRequired,
+        ),
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    await s.signOut();
+    gate.complete();
+    await outcome;
+    expect(s.state, AuthState.signedOut);
+  });
+
+  test('signing out during a rotation fails every waiter with sign in required', () async {
+    final e = FakeEndpoint((f, n) async => ok(tokens('A$n', 'R$n')));
+    final s = session(e);
+    await s.signIn(grant);
+    final rejected = await s.accessToken();
+    final gate = store.writeGate = Completer<void>();
+    final calls = [
+      for (var i = 0; i < 3; i++) s.tokenAfterRejection(rejected),
+    ];
+    final outcomes = [
+      for (final c in calls)
+        expectLater(
+          c,
+          throwsA(
+            isA<AuthException>().having(
+              (x) => x.kind,
+              'kind',
+              AuthErrorKind.signInRequired,
+            ),
+          ),
+        ),
+    ];
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    await s.signOut();
+    store.writeGate = null;
+    gate.complete();
+    await Future.wait(outcomes);
+    expect(s.state, AuthState.signedOut);
+    expect(store.values, isEmpty);
   });
 
   test('sign out removes the stored tokens and needs no network', () async {

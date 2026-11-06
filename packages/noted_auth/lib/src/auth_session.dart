@@ -4,6 +4,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'auth_exception.dart';
 import 'id_token.dart';
@@ -45,8 +46,7 @@ class AuthGrant {
 /// - Refreshing is single-flight: callers that find the token expired or
 ///   rejected at the same time wait on one request.
 /// - A rotated refresh token is written, read back, and only then trusted. If
-///   that fails the old one stays, and it still works (Microsoft doesn't revoke
-///   it when it issues a new one).
+///   that fails the session goes to sign in again.
 class AuthSession {
   AuthSession({
     required this._tokens,
@@ -299,21 +299,31 @@ class AuthSession {
         'Sign in to Microsoft to continue.',
       );
     }
+    final fresh = res.refreshToken;
+    if (fresh != null && fresh != old) await _rotate(key, fresh);
+    // Signed out during the store calls: keep nothing in memory, and fail every
+    // waiter the same way.
+    if (_accountKey != key) {
+      throw const AuthException(
+        AuthErrorKind.signInRequired,
+        'Sign in to Microsoft to continue.',
+      );
+    }
     _accessToken = res.accessToken;
     _expiresAt = _now().add(res.expiresIn);
-    final fresh = res.refreshToken;
-    if (fresh != null && fresh != old) await _rotate(key, old, fresh);
     return res.accessToken;
   }
 
-  // Write the new token, read it back; only then is the old one let go. If
-  // either step fails the old token is put back (best effort) and kept: it
-  // is still valid, so the session carries on with it.
+  // Write the new token, read it back; only then is it trusted. If either step
+  // fails the stored token is in an unknown state (the old one may be revoked),
+  // so the session goes to sign in again: the tokens in memory are dropped, the
+  // stored one is deleted (best effort) and the refresh fails, for every caller
+  // waiting on it.
   //
   // Signing out can happen while a store call is out. After each one the
   // session is checked again, and if the account is gone the key is deleted, so
   // a late write can't bring a signed-out token back.
-  Future<void> _rotate(String key, String old, String fresh) async {
+  Future<void> _rotate(String key, String fresh) async {
     try {
       await _store.write(refreshKey(key), fresh);
       if (await _signedOutMeanwhile(key)) return;
@@ -321,15 +331,28 @@ class AuthSession {
       if (await _signedOutMeanwhile(key)) return;
       if (back == fresh) return;
     } on Object {
-      // Falls through to the restore below.
+      // Handled below, like a read-back that differs.
     }
     if (await _signedOutMeanwhile(key)) return;
+    _accessToken = null;
+    _expiresAt = null;
     try {
-      await _store.write(refreshKey(key), old);
-    } on Object {
-      // Nothing more can be done; the next refresh finds whichever is there.
+      await _store.delete(refreshKey(key));
+    } on Object catch (e) {
+      developer.log('Could not delete the stored sign-in: $e', name: 'noted_auth');
     }
-    await _signedOutMeanwhile(key);
+    // Signed out while the delete was out: that is signed out, not sign in again.
+    if (_accountKey != key) {
+      throw const AuthException(
+        AuthErrorKind.signInRequired,
+        'Sign in to Microsoft to continue.',
+      );
+    }
+    _set(AuthState.signInAgain);
+    throw const AuthException(
+      AuthErrorKind.storage,
+      'Noted could not save the sign-in on this device. Sign in again.',
+    );
   }
 
   // True, after deleting [key]'s token, if the account was signed out.
