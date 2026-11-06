@@ -205,10 +205,10 @@ void main() {
       bool? during;
       final ok = await append(
         toolbox(
-          limit: const Duration(seconds: 3),
+          limit: const Duration(seconds: 6),
           beforeHold: (_) async {
             slow = true;
-            await Future<void>.delayed(const Duration(milliseconds: 3500));
+            await Future<void>.delayed(const Duration(milliseconds: 6500));
           },
           beforeReplace: (_) async => during = await canHold(),
         ),
