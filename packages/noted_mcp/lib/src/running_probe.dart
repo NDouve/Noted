@@ -235,6 +235,19 @@ final class LockIdentity {
     }
   }
 
+  /// Whether [path] is known to be the lock file or a link to it (a sync
+  /// client may leave one among the page files): false when it can't be told,
+  /// unlike [isLock], which then fails closed. Such a path is not a page file.
+  Future<bool> isLockFile(String path) async {
+    final lock = _lockPath;
+    if (lock == null) return false;
+    try {
+      return await FileSystemEntity.identical(await File(path).resolveSymbolicLinks(), lock);
+    } on Object {
+      return false;
+    }
+  }
+
   /// [path]'s bytes, or null if it is absent, unreadable or the lock file.
   Future<List<int>?> readBytes(String path) async {
     try {

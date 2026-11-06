@@ -421,7 +421,10 @@ final class NotedLibrary {
             // Doesn't parse: not given out, but it may be a copy (fileIdsOf).
           }
         }
-        carried[e.path] = fileIdsOf(e.path, bytes, parsedId: parsed);
+        // The lock file (or a link to it) is not a page file: it counts for nothing.
+        carried[e.path] = bytes == null && await identity.isLockFile(e.path)
+            ? const FileIds({})
+            : fileIdsOf(e.path, bytes, parsedId: parsed);
       }
     } on FileSystemException {
       kept?.listings[dir.path] = FolderListing(FolderState.failed);

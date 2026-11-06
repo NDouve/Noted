@@ -597,7 +597,11 @@ final class ClosedAccess {
         if (was != null && e.value.stats[name] == sig) continue;
         final bytes = await identity.readBytes(name);
         if (expired()) return null;
-        final now = fileIdsOf(name, bytes, parsedId: bytes == null ? null : NotedLibrary.pageIdOf(bytes));
+        // The lock file (or a link to it) is not a page file: it counts for nothing.
+        final now = bytes == null && await identity.isLockFile(name)
+            ? const FileIds({})
+            : fileIdsOf(name, bytes, parsedId: bytes == null ? null : NotedLibrary.pageIdOf(bytes));
+        if (expired()) return null;
         // A file that can't be used and may be any page.
         if (now.unknown) return false;
         // A page of the chain itself, rewritten by another writer: only a

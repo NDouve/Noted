@@ -839,6 +839,69 @@ void main() {
       expect(await reads(Ids.publicChild), isFalse);
     });
 
+    // A link to the running-lock file among the page files: a symbolic link
+    // where those are allowed, else a hard link (NTFS, through fsutil).
+    bool linkToLock(String path) {
+      final lock = '${data.path}/$aiRunningLockFileName';
+      try {
+        if (Platform.isWindows) {
+          final r = Process.runSync('fsutil', [
+            'hardlink',
+            'create',
+            path.replaceAll('/', r'\'),
+            lock.replaceAll('/', r'\'),
+          ]);
+          if (r.exitCode != 0) throw const FileSystemException('no hard link');
+        } else {
+          Link(path).createSync(lock);
+        }
+        return true;
+      } on Object {
+        markTestSkipped('this platform cannot link to the lock file');
+        return false;
+      }
+    }
+
+    test(
+      'a link to the running-lock file among the page files counts for nothing: no id is ambiguous (Linux and macOS)',
+      () async {
+        if (!linkToLock('${pagesDir()}/x.canvas')) return;
+        final other = mk('Other');
+        if (!linkToLock('${other.path}/${Ids.public}.canvas')) return;
+        setLists(standalone: [other.path]);
+        final lib = await load();
+        expect(lib.allAmbiguous, isFalse, reason: 'not an unreadable file');
+        expect(
+          lib.ambiguous,
+          isEmpty,
+          reason: 'not a copy, even under a page id\'s name',
+        );
+        expect(await reads(Ids.public), isTrue);
+      },
+      skip: Platform.isWindows
+          ? 'Windows reads no lock identity: its locks belong to a handle'
+          : false,
+    );
+
+    test(
+      'isLockFile tells the lock file and a link to it from any other file',
+      () async {
+        final lock = '${data.path}/$aiRunningLockFileName';
+        final id = await LockIdentity.forLockFile(lock);
+        expect(await id.isLockFile(lock), isTrue);
+        if (!linkToLock('${pagesDir()}/x.canvas')) return;
+        expect(await id.isLockFile('${pagesDir()}/x.canvas'), isTrue);
+        expect(await id.readBytes('${pagesDir()}/x.canvas'), isNull);
+        expect(await id.isLockFile(pagePath(Ids.public)), isFalse);
+        expect(
+          await id.isLockFile('${pagesDir()}/missing.canvas'),
+          isFalse,
+          reason: 'can\'t be told: false, so it stays fail closed',
+        );
+        expect(await LockIdentity.none.isLockFile(lock), isFalse);
+      },
+    );
+
     test('N4. the same folder listed under two spellings is counted once and serves its pages', () async {
       setLists(
         standalone: [
