@@ -363,6 +363,46 @@ void main() {
       expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
     });
 
+    test('a check started by a timer made inside a chain job still queues on the chain', () async {
+      await start();
+      final (id, box) = await closedPageWithBox();
+      final a = noteBox('copy one', at: const Bounds(400, 10, 200, 40));
+      final b = noteBox('copy two', at: const Bounds(400, 100, 200, 40));
+      final path1 = copyPath(id, 'DESKTOP-1');
+      final path2 = copyPath(id, 'DESKTOP-2');
+      final base = await other.load(id);
+      await writeCopy(path1, base.insertNode(a));
+      await writeCopy(path2, base.insertNode(b));
+      final paused = Completer<void>();
+      final resume = Completer<void>();
+      Future<void>? second;
+      var calls = 0;
+      nb.syncHook = (point, _) async {
+        if (point != 'original-read') return;
+        if (++calls == 1) {
+          // Inside the first merge's chain job: a timer that starts the next
+          // check after the job has ended.
+          Timer(const Duration(milliseconds: 30), () => second = nb.checkFile(path2));
+          return;
+        }
+        paused.complete();
+        await resume.future;
+      };
+      await nb.checkFile(path1);
+      await paused.future;
+      expect(second, isNotNull);
+      var opened = false;
+      final open = nb.open(id).then((_) => opened = true);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(opened, isFalse, reason: 'the second merge holds the chain: it was queued, not run inline');
+      resume.complete();
+      await second;
+      await open;
+      nb.syncHook = null;
+      expect(nb.current!.page.nodes.map((n) => n.id).toSet(), {box.id, a.id, b.id});
+      expect(File(path1).existsSync() || File(path2).existsSync(), isFalse);
+    });
+
     test('a check that runs inside a chain job and meets a copy of a closed page completes', () async {
       await start();
       final (id, box) = await closedPageWithBox();

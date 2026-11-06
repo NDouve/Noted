@@ -42,9 +42,18 @@ class FolderLocks {
   /// one job doesn't block the next. The entry is removed when idle.
   Future<T> run<T>(Directory folder, Future<T> Function() job) {
     final key = keyOf(folder);
-    final held = <String>{...?(Zone.current[_zoneKey] as Set<String>?), key};
+    final hold = _Hold(key);
+    final held = <_Hold>[...?(Zone.current[_zoneKey] as List<_Hold>?), hold];
     final run = (_tails[key] ?? Future<void>.value()).then(
-      (_) => runZoned(job, zoneValues: {_zoneKey: held}),
+      (_) => runZoned(() async {
+        try {
+          return await job();
+        } finally {
+          // A timer or future made inside the job outlives it, and its zone
+          // still carries the hold: only an active hold counts.
+          hold.active = false;
+        }
+      }, zoneValues: {_zoneKey: held}),
     );
     final done = run.then<void>((_) {}, onError: (_) {});
     _tails[key] = done;
@@ -56,10 +65,22 @@ class FolderLocks {
     return run;
   }
 
-  /// Whether the current code runs inside a job on [folder] (any instance).
-  static bool isHeld(Directory folder) =>
-      (Zone.current[_zoneKey] as Set<String>?)?.contains(keyOf(folder)) ?? false;
+  /// Whether the current code runs inside a job on [folder] (any instance)
+  /// that has not finished yet.
+  static bool isHeld(Directory folder) {
+    final held = Zone.current[_zoneKey] as List<_Hold>?;
+    if (held == null) return false;
+    final key = keyOf(folder);
+    return held.any((h) => h.active && h.key == key);
+  }
 
   /// How many folders have a job running or queued.
   int get busyCount => _tails.length;
+}
+
+/// One running job's hold on a folder; cleared when the job ends.
+class _Hold {
+  _Hold(this.key);
+  final String key;
+  bool active = true;
 }

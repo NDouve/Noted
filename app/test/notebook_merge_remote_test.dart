@@ -332,6 +332,21 @@ void main() {
       expect(onDisk(id).nodes.where((n) => n.id == remote.id), hasLength(1));
     });
 
+    test('a busy open page: changed, the editor and file untouched', () async {
+      await start();
+      final id = nb.currentId!; // open
+      await nb.flush();
+      final base = readPage(textOf(id));
+      nb.setBusyForTest(id, true);
+      final before = textOf(id);
+      final shown = writePage(nb.current!.page);
+      final r = await nb.mergeRemote(pathOf(id), bytes(base), bytes(base.insertNode(noteBox('remote'))));
+      expect(r.outcome, RemoteMergeOutcome.changed, reason: '$r');
+      expect(textOf(id), before);
+      expect(writePage(nb.current!.page), shown);
+      nb.setBusyForTest(id, false);
+    });
+
     test('a move in progress is not failed by a landing merge: changed, and the move completes', () async {
       await start();
       final folder = await Directory.systemTemp.createTemp('noted_merge_remote_mv');

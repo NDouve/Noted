@@ -78,11 +78,13 @@ class SaveChain {
     root.live.add(j);
     final c = Completer<T>();
     root.tail = root.tail.then((_) async {
+      final token = _InJob();
       try {
-        c.complete(await runZoned(job, zoneValues: {this: true}));
+        c.complete(await runZoned(job, zoneValues: {this: token}));
       } on Object catch (e, s) {
         c.completeError(e, s);
       } finally {
+        token.active = false;
         root.live.remove(j);
         if (root.detached && pages.isNotEmpty) onDetachedJobEnded?.call(pages);
       }
@@ -93,7 +95,7 @@ class SaveChain {
   /// Whether the current code runs inside a job of this chain (any chain
   /// root). A job that queued another on the chain and waited would wait on
   /// itself; such code runs inline instead.
-  bool get insideJob => Zone.current[this] == true;
+  bool get insideJob => (Zone.current[this] as _InJob?)?.active ?? false;
 
   /// Completes when everything queued so far has finished, or when the chain
   /// is detached.
@@ -355,4 +357,10 @@ class KeptNotice {
   final String pageId;
   final String title;
   final String reason;
+}
+
+// Marks the code of one running chain job; cleared when the job ends, so a
+// timer or future made inside it and run later is not "inside" any more.
+class _InJob {
+  bool active = true;
 }

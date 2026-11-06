@@ -8733,6 +8733,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Page [id] stops being busy, but only if it is busy for [why] (it may be
   // held by something else meanwhile).
+  /// Marks page [id] busy (or free) as a move or a detached save would.
+  @visibleForTesting
+  void setBusyForTest(String id, bool busy) {
+    if (busy) {
+      _busy[id] = _busyMoving;
+    } else {
+      _busy.remove(id);
+    }
+  }
+
   void _free(String id, String why) {
     if (_busy[id] == why) _busy.remove(id);
   }

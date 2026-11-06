@@ -119,5 +119,30 @@ void main() {
       });
       expect(FolderLocks.isHeld(dir), isFalse);
     });
+
+    test('a timer made inside a job and fired after it ended is not held', () async {
+      final locks = FolderLocks();
+      final fired = Completer<(bool, bool)>();
+      late bool insideAtStart;
+      await locks.run(dir, () async {
+        insideAtStart = FolderLocks.isHeld(dir);
+        Timer(const Duration(milliseconds: 30), () {
+          fired.complete((FolderLocks.isHeld(dir), insideAtStart));
+        });
+      });
+      final (heldLater, startedHeld) = await fired.future;
+      expect(startedHeld, isTrue);
+      expect(heldLater, isFalse);
+    });
+
+    test('a timer made inside a job and fired while it still runs is held', () async {
+      final locks = FolderLocks();
+      final fired = Completer<bool>();
+      await locks.run(dir, () async {
+        Timer(const Duration(milliseconds: 10), () => fired.complete(FolderLocks.isHeld(dir)));
+        await fired.future;
+      });
+      expect(await fired.future, isTrue);
+    });
   });
 }
