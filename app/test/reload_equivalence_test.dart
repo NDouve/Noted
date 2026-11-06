@@ -89,6 +89,12 @@
 //     checks that attachments which cannot go back are handed to recovery's
 //     kept files and come back after a later delete and a restart.
 //
+// 16. An Undo whose write of a page fails does not hold the page (0141, run
+//     2026-11-06-01): the write error escapes and the delete is forgotten. The
+//     steps `delete:failUndo:retry` and `delete:failUndo:quit` fail ("the failed
+//     Undo should hold the page", or the page missing after a reload), and so do
+//     the two regression probes of the same name.
+//
 // Wait for watchers: none is used. The notebook runs with `watchFiles` off,
 // and the steps call `checkFile` and `checkFolders` themselves, the way the
 // watcher would, so a step is over when its calls return. Folder renames and
@@ -390,8 +396,8 @@ class _Run {
 
   /// The kind of the step being made, and the kinds of the steps that finished
   /// (a step that did nothing, for want of a page to act on, has none).
-  String? _kind;
   final List<String> kinds = [];
+  String? _kind;
   final Map<String, _MPage> model = {};
   final Map<String, _Chaos> _stores = {};
   late final ModuleRegistry modules = buildModules();
@@ -1569,7 +1575,14 @@ class _Run {
   // ---- delete, with undo ------------------------------------------------------
 
   Future<void> _opDelete() async {
-    final variant = _pick(['undo', 'undo', 'keep', 'syncAtDelete', 'failDelete', 'failDelete']);
+    var variant = _pick(['undo', 'undo', 'keep', 'syncAtDelete', 'failDelete', 'failDelete']);
+    if (variant == 'undo') {
+      // Some Undos fail on one page (a generator of its own, so the choices of
+      // the steps above stay the ones they were).
+      final u = _urng.nextInt(5);
+      if (u < 2) variant = 'failUndo:retry';
+      if (u == 2) variant = 'failUndo:quit';
+    }
     // A fault on the last page of a subtree is the one that needs a put-back.
     final parents = [
       for (final e in model.entries)
@@ -1627,10 +1640,59 @@ class _Run {
       model.addAll(snapshot);
     } else if (variant == 'keep') {
       nb.discardDeleted(deleted!);
+    } else if (variant.startsWith('failUndo')) {
+      await _failUndo(variant, deleted!, removed.last, st);
+      model.addAll(snapshot);
+      if (variant == 'failUndo:quit') {
+        // The held page is back as an `-undo-` copy beside its place, which a
+        // fresh notebook reads as the page; the other pages are as they were.
+        await _verifyFresh('after quitting with a page held (seed $seed)');
+        // The sequence goes on from a restart with the copy put in the page's
+        // place, as its owner would (the model has a file for the page, not
+        // for a copy). This hides nothing the checks look for: the fresh-notebook
+        // verify above ran before the rename, with the copy as the only file of
+        // the page, and the disk check after the restart still requires exactly
+        // the model's files, so a stray or missing file would fail it.
+        final copies = dirs[model[removed.last]!.loc]!
+            .listSync()
+            .whereType<File>()
+            .where((f) => f.path.contains('-undo-'))
+            .toList();
+        expect(copies, hasLength(1), reason: 'quitting wrote one copy, of the held page');
+        copies.single.renameSync(_pathOf(removed.last));
+        final kind = _kind;
+        await _opRestart();
+        _kind = kind;
+      }
     }
     // Pages kept in the model whose parent is gone are roots now.
     for (final p in model.values) {
       if (p.parent != null && !model.containsKey(p.parent)) p.parent = null;
+    }
+  }
+
+  /// Regression (run 2026-11-06-01, 0141): an Undo whose write of [victim]
+  /// fails used to rethrow and forget the delete, so the page was in no file
+  /// after a reload. It must hold the page. `failUndo:retry`: a second Undo
+  /// writes it. `failUndo:quit`: quitting writes it beside its place as an
+  /// `-undo-` copy, which a fresh notebook lists as the page.
+  Future<void> _failUndo(String variant, DeletedPages deleted, String victim, _Chaos st) async {
+    st.failNew.add(victim);
+    Object? error;
+    try {
+      await nb.undoDelete(deleted);
+    } on Object catch (e) {
+      error = e;
+    }
+    st.failNew.clear();
+    expect(error, isA<PagesNotRestoredException>(), reason: 'the failed Undo should hold the page: $error');
+    expect(nb.isHeldDelete(deleted), isTrue);
+    if (variant == 'failUndo:retry') {
+      await nb.undoDelete(deleted);
+      expect(nb.isPendingDelete(deleted), isFalse, reason: 'the second Undo wrote the held page');
+    } else {
+      expect(await nb.prepareToExit(), isTrue);
+      expect(nb.isPendingDelete(deleted), isFalse);
     }
   }
 
@@ -1813,6 +1875,7 @@ class _Run {
   // never a removed one, and must create nothing.
 
   late final Random _brng = Random(seed * 31 + 7);
+  late final Random _urng = Random(seed * 17 + 3); // which Undos fail (_opDelete)
   int _binderStepCount = 0;
   int _binderCounter = 0;
   late String _idA;
@@ -2150,6 +2213,7 @@ const _expectedKinds = {
   'move:plain', 'move:pendingEdit', 'move:failDestination', 'move:failSourceDelete',
   'move:syncAtSource', //
   'delete:undo', 'delete:keep', 'delete:syncAtDelete', 'delete:failDelete', //
+  'delete:failUndo:retry', 'delete:failUndo:quit', //
   'vanish:live/plain', 'vanish:restart/plain', 'vanish:live/syncWhileAway',
   'vanish:restart/syncWhileAway', 'vanish:live/deletedWhileAway',
   'vanish:restart/deletedWhileAway', 'vanish:live/replayFails',
@@ -2475,6 +2539,35 @@ void main() {
         expect(run.trashChildren(), isEmpty);
       },
     );
+
+    // Run 2026-11-06-01, task 2 (0141): an Undo that fails on a page keeps it held.
+    // Without the change the write error escapes and the delete is forgotten: the
+    // page is in no file after a reload.
+    for (final quit in [false, true]) {
+      test(
+        'regression: an Undo whose write fails holds the page (${quit ? 'failUndo:quit: quitting writes it beside its place' : 'failUndo:retry: a second Undo writes it'})',
+        () async {
+          final parent = run.model.keys.first;
+          final gone = run._subtree(parent);
+          final snapshot = {for (final p in gone) p: run.model[p]!};
+          final deleted = await run.nb.delete(parent);
+          for (final p in gone) {
+            run.model.remove(p);
+          }
+          await run._failUndo(quit ? 'failUndo:quit' : 'failUndo:retry', deleted, gone.last, run.storeOf('pages'));
+          run.model.addAll(snapshot);
+          if (quit) {
+            await run._verifyFresh('after quitting with a page held');
+            final copies = run.dirs['pages']!.listSync().whereType<File>().where((f) => f.path.contains('-undo-'));
+            expect(copies, hasLength(1), reason: 'one copy, of the held page');
+            expect(copies.single.path, contains(gone.last));
+            copies.single.renameSync(run._pathOf(gone.last));
+            await run._opRestart();
+          }
+          await run.verify('after the failed Undo', fresh: true);
+        },
+      );
+    }
 
     test('theirs reorders the nodes while mine has an unsaved addition after the first: it follows it (0132)', () async {
       final id = run.model.keys.first;

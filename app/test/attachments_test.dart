@@ -722,7 +722,11 @@ void main() {
         expect(asset(pages, a).readAsBytesSync(), bytes, reason: 'A is restored');
         expect(inTrashB.readAsBytesSync(), bytes);
 
-        await nb.discardPendingDelete(); // the bar really expires: _removeSetAside runs
+        await nb.discardPendingDelete(); // an expiry does not reach a held entry
+        expect(nb.isHeldDelete(deleted), isTrue);
+        expect(inTrashB.readAsBytesSync(), bytes, reason: 'its set-aside is still there');
+        nb.discardDeleted(deleted); // the user lets it go (the held bar's X): _removeSetAside runs
+        await Future<void>.delayed(const Duration(milliseconds: 300));
         expect(nb.isPendingDelete(deleted), isFalse);
         expect(inTrashB.readAsBytesSync(), bytes, reason: 'B\'s kept folder keeps its bytes');
         expect(trashFiles().where((f) => f.path.contains(a)), isEmpty, reason: 'A\'s trash folder is gone');
@@ -776,7 +780,11 @@ void main() {
       store.broken = false;
       expect(nb.isPendingDelete(deleted), isTrue);
       expect(asset(pages, b).readAsBytesSync(), bytes, reason: 'B\'s attachment is back');
-      await nb.discardPendingDelete(); // a real expiry
+      await nb.discardPendingDelete(); // an expiry does not reach a held entry
+      expect(nb.isHeldDelete(deleted), isTrue);
+      expect(inTrashA.readAsBytesSync(), [8, 8], reason: 'the kept set-aside of A is still there');
+      nb.discardDeleted(deleted); // the user lets it go: _removeSetAside runs
+      await Future<void>.delayed(const Duration(milliseconds: 300));
       expect(inTrashA.readAsBytesSync(), [8, 8], reason: 'A\'s kept folder stays');
       expect(trashFiles().where((f) => f.path.contains(b)), isEmpty, reason: 'B\'s trash folder is removed');
       expect(asset(pages, a).readAsBytesSync(), bytes);
