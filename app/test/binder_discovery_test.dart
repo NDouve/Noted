@@ -1779,6 +1779,33 @@ void main() {
       expect([for (final u in nb.unreadable) u.reason], isEmpty);
     });
 
+    test('a retry forgets the pages of a binder the list no longer holds', () async {
+      final b1 = await binderAt('other/B1', a1, pages: ['b1p']);
+      final b2 = await binderAt('other/B2', a4, pages: ['b2p']);
+      writeSettings({
+        'format': 1,
+        'binders': [b1, b2],
+        'binderIds': {b1: a1, b2: a4},
+      });
+      final hooks = _Hooks();
+      final nb = make();
+      nb.binderHook = hooks.call;
+      hooks.on['load-open'] = (p) async {
+        if (k(p) == k(b2)) throw StateError('stop');
+      };
+      await expectLater(nb.load(), throwsA(isA<StateError>()));
+      expect(nb.pageTitleOf('b1p'), 'Page b1p', reason: 'B1 was open when load stopped');
+      writeSettings({
+        'format': 1,
+        'binders': [b2],
+        'binderIds': {b2: a4},
+      });
+      expect(await nb.retrySettings(), isTrue);
+      expect(nb.binders.map((b) => k(b.path)), [k(b2)]);
+      expect(nb.pageTitleOf('b1p'), isNull);
+      expect(nb.pageTitleOf('b2p'), 'Page b2p');
+    });
+
     group('backoff, single flight and dispose', () {
       test('the wait doubles up to 60 s and stays there', () {
         var d = const Duration(seconds: 2);
