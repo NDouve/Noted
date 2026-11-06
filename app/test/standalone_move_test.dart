@@ -245,7 +245,8 @@ void main() {
       await tester.runAsync(() => g.up());
       // The move copies, verifies and deletes real files: wait for its result,
       // not for a fixed number of rounds of real IO.
-      for (var i = 0; i < 600 && !(has(extra, a) && !has(pages, a)); i++) {
+      bool moved() => has(extra, a) && !has(pages, a) && nb.tree.childrenOf(x).any((p) => p.id == a) && !nb.isBusy(a);
+      for (var i = 0; i < 600 && !moved(); i++) {
         await tester.pump(const Duration(milliseconds: 50));
         await tester.runAsync(() => realIoPause(50));
       }
