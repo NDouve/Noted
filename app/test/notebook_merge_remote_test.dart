@@ -6,7 +6,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
@@ -89,7 +88,7 @@ void main() {
   late PageStore other;
   late ModuleRegistry modules;
   late List<LocalChange> events;
-  late StreamSubscription<LocalChange> sub;
+
   final sep = Platform.pathSeparator;
   final extra = <Directory>[];
 
@@ -107,7 +106,7 @@ void main() {
     events = [];
     await nb.load();
     await other.scan();
-    if (listen) sub = nb.localChanges.listen(events.add);
+    if (listen) nb.localChanges.listen(events.add);
   }
 
   tearDown(() async {
