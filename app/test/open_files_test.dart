@@ -56,6 +56,10 @@ void main() {
   tearDown(() async {
     for (final nb in opened) {
       await nb.flush();
+      // Checks a release queued (twice: a check can queue the next) are done
+      // before the folder goes.
+      await nb.checkFile('settled.txt');
+      await nb.checkFile('settled.txt');
       nb.dispose();
     }
     await root.delete(recursive: true);

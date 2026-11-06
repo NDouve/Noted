@@ -9175,7 +9175,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final rec = _recovery;
     final folder = _normalizePath(st.directory.path);
     final first = await _afterSaves<({bool done, List<RecoveryEntry> landed, bool ownsBusy})>(() async {
-      final (:text, :readError) = await _readForOpen(st, id);
+      final (:text, :readError, page: parsed) = await _readForOpen(st, id);
       if (readError?.why == _holdsOtherPage) sawOtherPage();
       await syncHook?.call('open-read', st.pathFor(id));
       final entries = rec == null ? const <RecoveryEntry>[] : rec.entriesFor(folder, id);
@@ -9184,7 +9184,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final NotedPage page;
       try {
         if (text == null) throw readError!;
-        page = readPage(text);
+        page = parsed ?? readPage(text);
       } on _FileUnreadable catch (e) {
         if (pending == 0) throw e.cause;
         _installPreview(
@@ -9237,7 +9237,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     await _afterSaves(() async {
-      final (:text, :readError) = await _readForOpen(st, id);
+      final (:text, :readError, page: parsed) = await _readForOpen(st, id);
       if (readError?.why == _holdsOtherPage) sawOtherPage();
       final pending = rec == null
           ? const <RecoveryEntry>[]
@@ -9245,7 +9245,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final NotedPage page;
       try {
         if (text == null) throw readError!;
-        page = readPage(text);
+        page = parsed ?? readPage(text);
       } on _FileUnreadable catch (e) {
         if (pending.isEmpty) throw e.cause;
         _installPreview(id, loc, st, null, null, pending, unreadable: e.why);
@@ -9281,23 +9281,25 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // text: the other page is never installed under [id].
   static const String _holdsOtherPage = 'the page file holds a different page';
 
-  Future<({String? text, _FileUnreadable? readError})> _readForOpen(PageStore st, String id) async {
+  Future<({String? text, _FileUnreadable? readError, NotedPage? page})> _readForOpen(PageStore st, String id) async {
     try {
       final text = await st.readText(id);
+      NotedPage? page;
       try {
-        if (readPage(text).id != id) {
-          return (text: null, readError: _FileUnreadable(const PageFormatException(_holdsOtherPage), _holdsOtherPage));
-        }
+        page = readPage(text);
       } on PageFormatException {
         // Damaged or newer: the callers tell which, as before.
       }
-      return (text: text, readError: null);
+      if (page != null && page.id != id) {
+        return (text: null, readError: _FileUnreadable(const PageFormatException(_holdsOtherPage), _holdsOtherPage), page: null);
+      }
+      return (text: text, readError: null, page: page);
     } on PathNotFoundException catch (e) {
-      return (text: null, readError: _FileUnreadable(e, "the page file isn't there"));
+      return (text: null, readError: _FileUnreadable(e, "the page file isn't there"), page: null);
     } on FileSystemException catch (e) {
-      return (text: null, readError: _FileUnreadable(e, "the page file can't be read"));
+      return (text: null, readError: _FileUnreadable(e, "the page file can't be read"), page: null);
     } on FormatException catch (e) {
-      return (text: null, readError: _FileUnreadable(e, "the page file isn't a valid page file"));
+      return (text: null, readError: _FileUnreadable(e, "the page file isn't a valid page file"), page: null);
     }
   }
 
