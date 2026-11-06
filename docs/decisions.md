@@ -556,7 +556,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0050 — Binder file and binders.json
 - **Date:** 2026-10-25
-- **Status:** Active; the damaged-binder display is superseded by 0060
+- **Status:** Active; the damaged-binder display is superseded by 0060; the corrupt-list rename is superseded by 0146
 - **Decision:**
   - **The binder file:** `noted-binder.json` in the binder folder: `{"format":1,"binderId":"<16 hex>","title":"…","description":"…","owner":"…","color":"#AARRGGBB","created":<ms since the epoch>}`.
     - It is read and written so unknown fields round-trip byte for byte.
@@ -2060,6 +2060,27 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Windows dependency override:** `flutter_secure_storage_windows` is pinned to 4.1.0, because 4.2.x needs `win32` 6, which `file_picker` doesn't allow yet.
 - **Rationale:** mobile sync needs a Microsoft account; signing in through the system browser reuses an existing web session.
 - **Alternatives considered:** MSAL (no first-party Flutter binding; Android redirect tied to the signing key); platform channels instead of the two plugins (about one more run); the app-folder scope (can't reach the existing folder).
+
+---
+
+## 0146 — An unreadable or damaged binders.json is held: binder changes are refused until it can be read, and the file is never rewritten or renamed
+- **Date:** 2026-11-06
+- **Status:** Active (option chosen by the maintainer's PM chat; built from the reviewed design `2026-11-06-02-binders-unreadable-v2`; details decided by the build team; amends 0050's "A corrupt list is renamed to `binders.json.bad` before it is replaced")
+- **Decision:**
+  - **Held list:** when `binders.json` can't be read at launch, the list is held:
+    - a lock or other I/O error means locked;
+    - invalid JSON or invalid UTF-8 means damaged.
+  - **While held:**
+    - binders and extra page folders are hidden, and discovery is off;
+    - adding or removing a binder or an extra page folder is refused with "Noted can't read its binder list right now. Try again in a moment.";
+    - the file is never written, renamed, copied or deleted.
+  - **Before the launch read:** the same changes are refused with "Noted is still loading its binder list. Try again in a moment.", until load has opened the listed binders and folders.
+  - **Retries:** the file is read again on a timer (2 s, doubling to 60 s), on app resume and on each refused change. A successful read adopts the list in load's order, binders before folders, and then discovery runs.
+  - **A missing file during a session:** it counts as absent only when it is seen missing twice at least 30 s apart and its folder still lists. The app then creates `{"format":1,"binders":[],"binderIds":{}}` exclusively, never over anything.
+  - **Notices:** the "Can't open" list says why binders are hidden. On mobile, the damaged notice states the fact only, with no remedy. On desktop it says to put back a readable copy or delete the file.
+  - **No `.bad` copy** is made any more.
+- **Rationale:** binder list changes were written from lists never filled from the file, so a locked or damaged list was overwritten or renamed away, losing binders and removed ids.
+- **Alternatives considered:** an in-memory journal with placeholders, `.bad` copies and a merge (parked after three review rounds as too large); renaming a damaged file automatically (it could move a repaired file aside).
 
 ---
 
