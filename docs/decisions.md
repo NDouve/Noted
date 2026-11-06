@@ -1989,7 +1989,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0141 — A failed delete says only what is kept; pages recovery didn't take are held with Undo
 - **Date:** 2026-11-05
-- **Status:** Active (amends 0132)
+- **Status:** Active (amends 0132); failed Undos and a failed rollback navigation amended by 0143
 - **Decision:**
   - **Each page is checked.** When deleting a page and its subpages fails part way and a deleted page can't be put back, recovery is asked to keep it, and the message says "Recovery holds the content of …" only for the pages it took.
   - **Pages recovery didn't take are held.** They stay in memory with their attachments protected from clean-up, and the message stays on screen with Undo, which writes them back exclusively (a conflict copy beside any file in the way). The message comes back if another one replaces it; closing or swiping it lets them go.
@@ -2017,6 +2017,22 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - A bare relative path (ambiguous with today's working-directory meaning).
   - Rewriting the settings files at launch (more writes; conversion on read is idempotent).
   - Letting a later entry at the new key supersede an old one (it never saw the old edits). Known trade-off, as in 0131: a box deleted in the newer version can reappear when both are merged.
+
+---
+
+## 0143 — Deleted pages stay held until they are written back or let go, even when Undo or the rollback's navigation fails
+- **Date:** 2026-11-06
+- **Status:** Active (the failed-Undo and rollback-navigation findings accepted by the maintainer; built from the reviewed design `2026-11-06-01-undo-p0s`; the details below decided by the PM; amends 0141)
+- **Decision:**
+  - **Rule.** Deleted pages that exist only in memory leave memory only once they are written back (their page file or an `-undo-` conflict copy), recovery keeps them, or the user lets them go. An unfinished restoration never counts as letting them go.
+  - **A failed delete is preserved first.** When a delete fails part way, the pages recovery didn't take are held before anything else runs: checking kept pages, removing the trash folder, rebuilding the tree, reopening the page and opening a fallback page. A failure in any of those only adds to the message (for example "No page could be opened (…)."), and never stops the pages being held.
+  - **Undo keeps its delete until it ends.** While an Undo runs, its delete stays pending (or held), and no newer delete, closing bar or quit discard can let it go. Every Undo is waited for at quit, within the quit time limit. An Undo that can't write every page back, for any reason (the place is unavailable, a write fails, an unexpected error), holds the pages it didn't restore, with 0141's message and Undo. A second Undo of the same delete waits for the first.
+  - **Letting held pages go** happens only through the held message's close button or swipe, or the quit question. A Deleted bar timing out, a newer delete and quit's pending-delete discard don't reach a held delete.
+  - **An Undo's result never replaces a newer delete's Deleted bar**: it is shown after it.
+- **Rationale:** a rollback whose fallback page couldn't be opened, and an ordinary Undo whose page couldn't be written back, both dropped the only copy of the deleted pages without recovery, Undo or a question.
+- **Alternatives considered:**
+  - Clearing the pending delete before Undo and restoring it on every failure path (each new exit path could lose it again).
+  - Giving up the pages after a failed Undo with an error only (they exist nowhere else).
 
 ---
 
