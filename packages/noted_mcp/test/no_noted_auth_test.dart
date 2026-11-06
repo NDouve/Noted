@@ -7,30 +7,45 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 // Invariant 4: the MCP server has no sign-in or token code, and neither does
-// the core it is built on. Microsoft sign-in lives in noted_auth, which
-// neither noted_mcp nor anything it depends on may name. This test fails if
-// this package's pubspec.yaml (dependencies, dev_dependencies and
-// dependency_overrides alike) or a pubspec.lock beside it or at the
-// workspace root names noted_auth, or any file under lib/ imports it.
+// the core it is built on. Microsoft sign-in lives in noted_auth. This test
+// fails if noted_auth is reachable from this package: it walks this package's
+// pubspec.yaml and, recursively, the pubspec.yaml of every dependency given
+// by a path (dependencies, dev_dependencies and dependency_overrides alike;
+// in a pub workspace the members are path dependencies too), and fails if any
+// of them names noted_auth. It also fails if a file under lib/ imports it.
+// (pubspec.lock is no use here: a workspace lock doesn't list path packages.)
 void main() {
   // flutter test runs from the package folder.
-  final lockFiles = [File('pubspec.lock'), File('../../pubspec.lock')];
+  final named = RegExp(r'(^|[^A-Za-z0-9_])noted_auth([^A-Za-z0-9_]|$)');
+  final pathDep = RegExp(
+    r'^\s+path:\s*[\x27"]?([^\x27"\s#]+)',
+    multiLine: true,
+  );
 
-  test('pubspec.yaml does not name noted_auth', () {
-    expect(
-      File('pubspec.yaml').readAsStringSync(),
-      isNot(contains('noted_auth')),
-    );
-  });
-
-  test('no pubspec.lock names noted_auth', () {
-    for (final f in lockFiles.where((f) => f.existsSync())) {
-      expect(
-        f.readAsStringSync(),
-        isNot(contains('noted_auth')),
-        reason: f.path,
-      );
+  /// Every pubspec.yaml reachable from [start] through path dependencies.
+  List<File> reachable(File start) {
+    final seen = <String>{};
+    final files = <File>[];
+    final todo = [start];
+    while (todo.isNotEmpty) {
+      final f = todo.removeLast();
+      if (!seen.add(f.absolute.path) || !f.existsSync()) continue;
+      files.add(f);
+      for (final m in pathDep.allMatches(f.readAsStringSync())) {
+        todo.add(File('${f.parent.path}/${m.group(1)}/pubspec.yaml'));
+      }
     }
+    return files;
+  }
+
+  test('noted_auth is not reachable through any pubspec.yaml', () {
+    final files = reachable(File('pubspec.yaml'));
+    expect(files, isNotEmpty);
+    final offenders = [
+      for (final f in files)
+        if (named.hasMatch(f.readAsStringSync())) f.path,
+    ];
+    expect(offenders, isEmpty);
   });
 
   test('nothing under lib/ imports package:noted_auth', () {
@@ -38,8 +53,7 @@ void main() {
       for (final f in Directory(
         'lib',
       ).listSync(recursive: true).whereType<File>())
-        if (f.path.endsWith('.dart') &&
-            f.readAsStringSync().contains('noted_auth'))
+        if (f.path.endsWith('.dart') && named.hasMatch(f.readAsStringSync()))
           f.path,
     ];
     expect(offenders, isEmpty);
