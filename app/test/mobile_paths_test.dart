@@ -847,6 +847,7 @@ void _recoveryTests() {
     const limit = Duration(seconds: 4);
     var now = Duration.zero;
     var slow = true;
+    Duration? timerLimit;
     final s = store(
       hook: (p) async {
         if (slow && p == 'tmp-written') {
@@ -857,10 +858,12 @@ void _recoveryTests() {
     )
       ..uptime = (() => now)
       ..timerFactory = ((d, cb) {
-        expect(d, limit);
+        timerLimit = d;
         return Timer(const Duration(hours: 1), cb);
       });
-    return s.transaction((tx) => tx.list(), limit: limit);
+    final l = await s.transaction((tx) => tx.list(), limit: limit);
+    expect(timerLimit, limit, reason: 'the limit timer gets the limit');
+    return l;
   }
 
   test('the pass stops before the transaction limit; the next listing finishes it (note 6)', () async {
