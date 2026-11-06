@@ -2101,6 +2101,40 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Rationale:** a clean-up marked done before it ran could restore the previous install's account. A rotation whose storage failed kept the user signed in on a token that might not be stored.
 - **Alternatives considered:** saving the flag before deleting (a failed delete was then never retried); keeping the old token after a failed rotation write (it hides the storage failure that 0145 says means Sign in again).
 
+## 0148 — OneDrive sync stage 1: one folder lock, a feed of local writes and a remote merge; closed merges run on the save queue
+- **Date:** 2026-11-06
+- **Status:** Active (design approved by the maintainer's PM chat; details decided by the build team)
+- **Decision:**
+  - **One folder lock.** Every page write, delete and scan in a folder runs under one shared per-folder lock (`FolderLocks`, in noted_core), which the sync engine will share. Nested jobs on the same folder queue, as before.
+  - **A feed of local writes.** The notebook reports each page or binder file it publishes or deletes, with the path and the content identity of what it wrote, in the lock's order. Failed writes report nothing. Attachments, templates, files a scan puts back, kept copies and the app-support files are not reported; the sync engine must find those another way.
+  - **Remote merge.** A remote version of a page is merged per box with the local file and saved only through the compare-and-swap write, and only to the file the page is saved in. Nothing is written for a page that is read-only, previewed, blocked, busy, or whose file holds another page; types not allowed on the page stay raw. A merge that writes nothing still brings the page's title, place and conflict state up to date.
+  - **Closed merges on the save queue.** A merge into a page that isn't open (a remote merge or a OneDrive conflict copy) runs as one job on the save queue, from reading the file to saving it. An open of that page waits for it and shows the merged result; a page that was opened before the job runs is merged in the editor instead.
+  - Nothing calls the remote merge yet except tests. No file, name or format is new.
+- **Rationale:** the sync engine must never overwrite a change it hasn't seen, and must know exactly what Noted wrote. A page opened between reading and saving a closed merge showed the old page, and its next save dropped the merge.
+- **Alternatives considered:** a lock per notebook only (the engine needs the same lock); rereading files to learn what was written (racy and slower); merging bytes in the engine (it would have to parse page content).
+
+## 0149 — A chosen same-id file keeps its page through rescans, damage and replacement
+- **Date:** 2026-11-06
+- **Status:** Active (decided by the build team from the reviewed chosen-duplicate design, revision 7; amends 0137 and 0138)
+- **Decision:**
+  - **Rescans keep the choice (amends 0137, 0138).** A chosen file that is locked, half-written or invalid during a scan or a check keeps its page, and the other file with that id stays listed as the duplicate. A chosen file seen missing is given up only after a later folder check confirms it, while its folder is present. When the chosen file reads again, the next folder check puts the page back from it.
+  - **A file that now holds another page.** The choice is given up and the other file with the id takes the page, unless the page is open or busy; then its next save is blocked as "it holds a different page". Opening, reading for AI, search or templates, delete, move and closed-page changes never use a file that holds another page in place of this one.
+  - **Noted's own moves carry the choice**, and a move's rollback puts the chosen file back at its own name.
+  - **Known gap:** deleting a chosen page that has another copy and then pressing Undo brings it back as an `-undo-` copy beside the other file, not at the chosen file's name. Nothing is overwritten.
+- **Rationale:** a sync client briefly holding the chosen file used to move the page, its saves, deletes and moves to the other copy.
+- **Alternatives considered:** persisting the choice (0137 keeps it in memory only); treating any read failure as absence (the reported failure).
+
+## 0150 — The MCP server serves a page with more than one copy as Guarded
+- **Date:** 2026-11-06
+- **Status:** Active (rule decided by the maintainer's PM chat; details decided by the build team)
+- **Decision:**
+  - **More than one copy.** A page id with more than one page file in the folders and binders Noted lists is Guarded for page AI, whatever its headers say, and so is every page under it. A box code for an AI box on it is refused, and so is a closed-app write to it or under it: "This box's page has more than one copy in Noted's folders, so it can't be read or written until only one is left." Writes while Noted runs go to the app, unchanged.
+  - **What counts.** A file that reads as a page counts for its own id. One that can't be parsed counts for the id in its header or its name. One that can't be read at all and carries no id, a folder that can't be listed, or a `settings.json` or `binders.json` that exists but can't be read, makes every page Guarded for that request. A link to Noted's running lock counts for nothing. A folder that is absent counts nothing (known gap: a copy the app chose there is not seen).
+  - **A folder listed both as a page folder and as a binder** is counted once, and each page gets the stricter of the two accesses and box-type rules, down to the pages under it.
+  - A closed-app write checks every listed folder again under its hold.
+- **Rationale:** the app's choice between copies lives only in its memory (0137), so the server could serve the copy the user didn't choose, under that copy's access.
+- **Alternatives considered:** the app telling the server its choice over the link (covers only a running app); preferring `<id>.canvas` (the previous behaviour).
+
 ---
 
 ## Open items
