@@ -18,7 +18,7 @@ subprojects {
 // Some transitive plugins (for example keyboard_height_plugin, via
 // appflowy_editor) compile against an old SDK, which fails the AAR metadata
 // check of newer AndroidX dependencies. We can't patch them, so raise their
-// compileSdk to the app's (36 if that can't be read). Only raised, never
+// compileSdk to the app's (37 if that can't be read). Only raised, never
 // lowered, and preview SDKs are left alone.
 subprojects {
     if (project.name != "app") {
@@ -31,7 +31,7 @@ subprojects {
                             .findProject(":app")
                             ?.extensions
                             ?.findByType(com.android.build.api.dsl.ApplicationExtension::class.java)
-                            ?.compileSdk ?: 36
+                            ?.compileSdk ?: 37
                     if (ext.compileSdkPreview == null && (ext.compileSdk ?: 0) < target) {
                         ext.compileSdk = target
                     }
