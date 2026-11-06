@@ -132,12 +132,13 @@ module knows is shown from its snapshot and not rewritten.
   back unchanged from `encode`. Decode defensively: a missing or mistyped field
   takes a default, and bad data must not crash the page.
 - **The snapshot is what everyone else sees.** `snapshotText` (0035) is shown on
-  devices where your module is off or missing, is what search indexes, and is
-  what an AI reads. Keep it accurate after every change. It must not contain
+  devices where your module is off or missing, and is what search indexes. The
+  MCP server renders notes, AI boxes, images, files and drawings itself and shows
+  any other type as `[unsupported box]`. Keep it accurate after every change. It must not contain
   secrets or anything the user would not want visible without your module.
 - **AI exposure is explicit.** `aiExposure` has no default. Return `AiText` for
   ordinary content, `AiPlaceholder` when the AI should know a box exists but not
-  what is in it, and `AiHidden` for nothing at all.
+  what is in it, and `AiHidden` for nothing at all. The MCP server doesn't call it today.
 - **Encrypted content (invariant 3).** Encrypted content exists as plaintext only
   in the on-screen editor state of an unlocked box. It must never reach the
   page model, disk, autosave, a persistent undo history, search indexes, logs,
@@ -150,5 +151,4 @@ module knows is shown from its snapshot and not rewritten.
 - **The MCP server reads saved data only (invariant 4).** It is a separate
   executable with no key access and no decryption code, and AI-facing output is
   never built from the live screen. This is another reason the codec stays
-  free of Flutter and the snapshot stays correct: what is saved is what an AI
-  sees.
+  free of Flutter.
