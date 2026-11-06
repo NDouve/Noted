@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -1244,6 +1245,142 @@ void main() {
             },
           );
         }
+
+        test('18 the chosen file replaced by the content of a page that has a chosen file of its own', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          // Q has a copy C chosen too.
+          final q = await s.nb.createPage(folderPath: dir.path);
+          await s.nb.rename(q, 'Why');
+          await s.nb.flush();
+          final c = '${dir.path}/copy-of-$q.canvas';
+          File(c).writeAsStringSync(File('${dir.path}/$q.canvas').readAsStringSync().replaceAll('Why', 'QCopy'));
+          await openExistingFile(s.nb, c);
+          expect(s.nb.pageTitleOf(q), 'QCopy');
+          await leave(s);
+          final origBytes = bytes(s.orig);
+          final qBytes = bytes(c);
+          File(s.copy).writeAsBytesSync(qBytes);
+          await s.nb.checkFile(s.copy);
+          expect(s.nb.pageTitleOf(s.id), 'Original', reason: 'P returns through the other file');
+          expect(s.nb.tree.roots.map((r) => r.id), contains(s.id));
+          await s.nb.checkFolders();
+          await s.nb.checkFolders();
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+          expect(s.nb.pageTitleOf(q), 'QCopy');
+          expect(bytes(s.orig), origBytes);
+          expect(bytes(s.copy), qBytes);
+        });
+
+        test('12d the page closed with its file replaced: before the queued check, opening gives the error', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          final y = await foreignPage();
+          await openExistingFile(s.nb, s.copy);
+          File(s.copy).writeAsStringSync(y.text);
+          final gate = Completer<void>();
+          s.nb.syncHook = (point, path) async {
+            if (point == 'check-start' && path.endsWith('copy-of-${s.id}.canvas')) await gate.future;
+          };
+          await s.nb.open(await s.nb.createPage()); // closing queues a check of the file, held at its start
+          await expectLater(
+            s.nb.open(s.id),
+            throwsA(isA<PageFormatException>().having((e) => e.message, 'message', contains('holds a different page'))),
+          );
+          expect(File(s.copy).readAsStringSync(), y.text);
+          gate.complete();
+          await settled(s.nb);
+          await s.nb.open(s.id);
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+        });
+
+        test('a check that straddles the removal of its folder applies nothing', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+          File(s.orig).writeAsStringSync(File(s.orig).readAsStringSync().replaceAll('Original', 'Retitled'));
+          final gate = Completer<void>();
+          final reached = Completer<void>();
+          s.nb.syncHook = (point, path) async {
+            if (point == 'check-start' && path == s.orig) {
+              reached.complete();
+              await gate.future;
+            }
+          };
+          final check = s.nb.checkFile(s.orig);
+          await reached.future; // the check is under way, before it reads the file
+          await s.nb.removeStandaloneFolder(dir.path);
+          expect(s.nb.pageTitleOf(s.id), isNull);
+          gate.complete();
+          await check;
+          expect(s.nb.pageTitleOf(s.id), isNull, reason: 'the removed folder gets no page back');
+          expect(s.nb.tree.roots.map((r) => r.id), isNot(contains(s.id)));
+        });
+
+        test('a move that frees the page rechecks its chosen file: the replaced file lets the other one in', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          final y = await foreignPage();
+          final bDir = await Directory('${root.path}/Bnd').create();
+          final target = await s.nb.addBinder(bDir.path);
+          await leave(s);
+          s.nb.syncHook = (point, path) async {
+            if (point == 'move-rekeyed') File(s.copy).writeAsStringSync(y.text);
+          };
+          await expectLater(s.nb.moveToLocation(s.id, binderPath: target.path), throwsA(isA<NotebookException>()));
+          s.nb.syncHook = null;
+          await settled(s.nb); // no explicit check of the file: freeing the page queued it
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+          expect(File(s.copy).readAsStringSync(), y.text);
+        });
+
+        test('a chosen file dropped as damaged and then gone is settled by its page, not forgotten', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          await leave(s);
+          truncate(s.copy);
+          await s.nb.checkFile(s.copy); // listed unreadable, no longer in the index
+          File(s.copy).deleteSync();
+          await s.nb.checkFile(s.copy); // seen gone once, found by the page's choice
+          expect(s.nb.pageTitleOf(s.id), isNull);
+          await s.nb.checkFolders();
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+        });
+
+        test('a chosen file whose last known text equals what is there is still looked at again', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          final y = await foreignPage();
+          await leave(s);
+          truncate(s.copy);
+          await s.nb.checkFile(s.copy); // listed unreadable
+          File(s.copy).writeAsStringSync(y.text);
+          s.nb.setKnownTextForTest(s.copy, y.text); // as a replay that found it holding another page leaves it
+          await s.nb.checkFolders();
+          expect(s.nb.pageTitleOf(s.id), 'Original');
+          expect(s.nb.pageTitleOf(y.id), 'Why');
+        });
+
+        test('a page opened as a preview while the confirming read runs keeps its choice', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir, recovery: true);
+          await leave(s);
+          final base = readPage(File(s.copy).readAsStringSync());
+          final keep = await s.nb.keepClosedForTest(base.withMeta(base.meta.withTitle('Kept')), base, dir.path);
+          expect(keep.safe, isTrue);
+          File(s.copy).deleteSync();
+          await s.nb.scanLocationForTest(loc0(s.nb)); // seen gone once, registered still
+          s.nb.syncHook = (point, path) async {
+            if (point == 'confirm-gone-read') {
+              s.nb.syncHook = null;
+              await s.nb.open(s.id);
+            }
+          };
+          await s.nb.checkFolders();
+          expect(s.nb.currentId, s.id);
+          expect(s.nb.trouble.kind, TroubleKind.preview);
+          expect(reasons(s.nb), contains('duplicate page id ${s.id}'), reason: 'the other file is still not the page');
+        });
       });
     });
 

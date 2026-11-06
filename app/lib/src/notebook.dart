@@ -6516,8 +6516,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         await _deleteEntry(rec, e);
         if (now == null || unreadable != null) {
           // Listed as a page that can't be opened, like any file that turns
-          // unreadable.
-          _known[key] = back;
+          // unreadable. A file that holds another page keeps no last known
+          // text, so a later check looks at it again (and lets go of a choice).
+          if (now != null) {
+            _known.remove(key);
+          } else {
+            _known[key] = back;
+          }
           final notice = 'The edits kept for $label were saved, but the page was then changed '
               'and can no longer be read ($unreadable)';
           _landedProblems[id] = (path: path, why: notice);
@@ -6997,6 +7002,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   /// Whether the notebook still tracks the file at [path] (its last known
   /// text or its page id).
+  @visibleForTesting
+  void setKnownTextForTest(String path, String text) => _known[_key(path)] = text;
+
   @visibleForTesting
   bool knowsFileForTest(String path) => _known.containsKey(_key(path)) || _pathId.containsKey(_key(path));
 
@@ -7577,6 +7585,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!path.endsWith(PageStore.extension)) return false;
     final loc = _locationOf(path);
     if (loc == null) return false;
+    await syncHook?.call('check-start', path);
     final key = _key(path);
     final file = File(path);
     final openId = _current?.page.id;
@@ -7676,6 +7685,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     // A chosen file seen missing before and back now is taken back.
     if (_goneChosen[page.id] case final g? when _key(g) == key) _goneChosen.remove(page.id);
+    // The file holds this page: another page's choice of it is let go first,
+    // whatever this page's own duplicate classification below says.
+    await _releaseOthersAt(key, page.id);
     final chosen = _adoptedFiles[page.id];
     if (chosen != null && _key(chosen) != key && _choiceHeld(page.id)) {
       // Another file was chosen for this id (see [adoptUnlistedPageFile]):
@@ -8022,6 +8034,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         back = null;
         present = File(path).existsSync();
       }
+      await syncHook?.call('confirm-gone-read', path);
+      // The page may have been opened or made busy while the file was read.
+      if (id == currentId || _busy.containsKey(id)) continue;
       if (_goneChosen[id] != path) continue;
       final chosen = _adoptedFiles[id];
       if (chosen == null || _key(chosen) != _key(path)) {
@@ -8094,6 +8109,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  // The file at [key] holds page [id]: it can't stay the chosen file of another
+  // page (unless that page is open or busy), whose duplicate is promoted.
+  Future<void> _releaseOthersAt(String key, String id) async {
+    var released = false;
+    for (final e in _adoptedFiles.entries.toList()) {
+      if (e.key == id || _key(e.value) != key || e.key == currentId || _busy.containsKey(e.key)) continue;
+      _releaseChoice(e.key, e.value);
+      released = true;
+    }
+    if (released) await _promoteReleased();
+  }
+
   /// The file can't be read as a page. An open page stays as it is; any
   /// other page is taken out of the tree and listed as one that can't be
   /// opened.
@@ -8149,13 +8176,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final id = page.id;
     // This file holds page [id] now: it can't stay the chosen file of another
     // page (unless that page is open or busy), whose duplicate is promoted.
-    var releasedHere = false;
-    for (final e in _adoptedFiles.entries.toList()) {
-      if (e.key == id || _key(e.value) != key || e.key == currentId || _busy.containsKey(e.key)) continue;
-      _releaseChoice(e.key, e.value);
-      releasedHere = true;
-    }
-    if (releasedHere) await _promoteReleased();
+    await _releaseOthersAt(key, id);
     final elsewhere = _pathId.entries.where((e) => e.value == id && e.key != key);
     if (elsewhere.isNotEmpty) {
       // Two files claim the page id; keep the first and list this one.
@@ -8985,6 +9006,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         await _promoteReleased();
         continue;
       }
+      // Looked at afresh: a last known text that equals what is there (kept
+      // from a read that listed the file unreadable) must not end the check.
+      _known.remove(_key(path));
       try {
         await _checkFile(path);
       } on Object catch (e) {
