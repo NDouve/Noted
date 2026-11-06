@@ -432,10 +432,15 @@ void main() {
 
     test('a same-id copy that sorts first never stands for the page: the canonical file is read and written', () async {
       writeStore(data, [writer()], allowClosed());
+      // The copy is written before the canonical file (and the selection itself is
+      // unit-tested below with copy-first paths, so no listing order is relied on).
       final path = aiOpenPath();
+      final canonical = File(path).readAsStringSync();
+      File(path).deleteSync();
       final copy = '${data.path}/pages/${Ids.aiOpen}-NOTED-MCP-x1.canvas'; // "-" sorts before "."
       final stale = page(Ids.aiOpen, 'Stale copy', ai: 'open', nodes: [box('aiA', aiBoxTypeId, aiBoxData('stale copy text'), const Bounds(0, 100, 100, 40))]);
       File(copy).writeAsStringSync(writePage(stale));
+      File(path).writeAsStringSync(canonical);
       final copyBefore = File(copy).readAsStringSync();
       final read = await toolbox().readBox('aiA');
       expect(read.text, contains('okapi from A'));
@@ -676,6 +681,38 @@ void main() {
       expect(File(path).readAsStringSync(), before);
     });
 
+    test('14f. a file that held another page at the pre-check and now holds the missing parent is looked at again', () async {
+      const parentId = 'f000000000000082';
+      final q = page('f000000000000091', 'Unrelated Q', ai: 'open');
+      final slot = '${data.path}/pages/slot.canvas';
+      File(slot).writeAsStringSync(writePage(q));
+      final child = page(
+        'f000000000000081',
+        'Child',
+        parent: parentId,
+        ai: 'open',
+        nodes: [box('aiN', aiBoxTypeId, aiBoxData('kid'), const Bounds(0, 0, 100, 40))],
+      );
+      final path = '${data.path}/pages/${child.id}.canvas';
+      File(path).writeAsStringSync(writePage(child));
+      writeStore(data, [writer(box: 'aiN', page: child.id)], allowClosed('full', 'aiN'));
+      final before = File(path).readAsStringSync();
+      var holds = 0;
+      final out = await toolbox(
+        beforeHold: (_) async {
+          holds++;
+          // Q's file is replaced by the missing parent P, which disallows AI boxes
+          // (a different size, so the stat compare sees it).
+          final p = page(parentId, 'The parent, with a longer title than Q has', ai: 'open');
+          File(slot).writeAsStringSync(writePage(p.withMeta(p.meta.withBoxType(aiBoxTypeId, false))));
+        },
+      ).writeBox(boxId: 'aiN', code: token(idWriter), mode: 'append', content: 'words');
+      expect(holds, 1);
+      expect(out.isError, isTrue);
+      expect(out.text, contains('does not take writes'));
+      expect(File(path).readAsStringSync(), before);
+    });
+
     test('14e. identical bytes with a new mtime are no difference: the write lands on the first attempt, under the hold', () async {
       final g = page('f000000000000070', 'Parent', ai: 'open');
       final c = aiPage('f000000000000071', parent: g.id);
@@ -746,4 +783,22 @@ void main() {
     expect(out.isError, isFalse, reason: out.text);
   }, skip: Platform.isWindows ? 'POSIX locks are per process; a link to the lock file matters only there' : false);
 
+
+  test('choosePages keeps the canonical file whatever order the files come in, with Windows paths', () {
+    const id = Ids.aiOpen;
+    final canon = page(id, 'Canonical', ai: 'open');
+    final copy = page(id, 'Copy', ai: 'open');
+    const folder = r'C:\Users\x\pages';
+    final copyPath = '$folder\\$id-NOTED-MCP-x1.canvas';
+    final canonPath = '$folder\\$id.canvas';
+    for (final order in [
+      [(copy, copyPath), (canon, canonPath)],
+      [(canon, canonPath), (copy, copyPath)],
+    ]) {
+      final chosen = choosePages(order);
+      expect(chosen, hasLength(1));
+      expect(chosen.single.$2, canonPath);
+      expect(chosen.single.$1.meta.title, 'Canonical');
+    }
+  });
 }
