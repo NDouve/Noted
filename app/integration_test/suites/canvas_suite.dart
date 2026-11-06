@@ -217,9 +217,6 @@ void canvasSuite() {
           addNote(s, [para('box')], x: p.dx, y: p.dy);
         }
         await s.pump(500);
-        // 154: Fit all brings all boxes into view.
-        await t.tap(await toolbarButton(t, 'canvas.fitAll'));
-        await s.pump(500);
         // The toolbar and canvas settle over a few frames (the tab bar
         // animates), so measure the viewport only once they stop changing.
         Future<Size> settledViewport() async {
@@ -231,9 +228,13 @@ void canvasSuite() {
             last = now;
             await s.pump(100);
           }
-          return last!;
+          fail('viewport did not settle: $last');
         }
 
+        // 154: Fit all brings all boxes into view.
+        await settledViewport();
+        await t.tap(await toolbarButton(t, 'canvas.fitAll'));
+        await s.pump(500);
         var viewport = await settledViewport();
         final visible = canvasState(t).view!.visible(viewport);
         for (final b in s.nb.current!.page.nodes.whereType<BoxRecord>()) {
