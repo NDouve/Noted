@@ -7512,7 +7512,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// that survives.
   Future<void> filesChanged(Iterable<String> paths) async {
     final list = paths.toList();
-    if (list.isEmpty) return;
     for (final path in list) {
       if (_disposed) return;
       try {
@@ -7884,12 +7883,38 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // is there it is a duplicate, as a scan lists it (never merged in);
         // once that file is gone the page moves to this one.
         final own = _storeOf(loc).pathFor(page.id);
-        if (_key(own) != key && File(own).existsSync()) {
+        final ownKey = _key(own);
+        if (_folderName(path) == '${page.id}${PageStore.extension}') {
+          // The page's own name is back while it is shown from another file:
+          // it goes to the file with its name, as a reload lists it, and the
+          // file it was shown from is a duplicate.
+          _dropUnreadable(loc, path, rebuild: false);
+          _pathId.removeWhere((k, v) => v == page.id);
+          _known.remove(ownKey);
+          _pathId[key] = page.id;
+          _storeOf(loc).adopt(page.id, path);
+          if (File(own).existsSync()) {
+            _knownUnreadable(loc, ownKey, own, 'duplicate page id ${page.id}');
+          }
+          _disposeCurrent();
+          try {
+            await _openFresh(page.id);
+          } on Object catch (e) {
+            debugPrint('Opening page ${page.id} at its own file failed: $e');
+          }
+          if (_current == null && !_disposed) await _fallbackAfterFailedOpen(loc);
+          onPageContent?.call(loc, page);
+          _rebuildTree();
+          return false;
+        }
+        if (ownKey != key && File(own).existsSync()) {
           _known.remove(key);
           _knownUnreadable(loc, key, path, 'duplicate page id ${page.id}');
           return false;
         }
         _dropUnreadable(loc, path, rebuild: false);
+        _known.remove(ownKey);
+        _pathId.removeWhere((k, v) => v == page.id);
         _pathId[key] = page.id;
         // The store follows, so the page can be opened again from this file.
         _storeOf(loc).adopt(page.id, path);
@@ -8028,7 +8053,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final old = _binders[at];
     _dropUnreadable(loc, path, rebuild: false);
     _loc[id] = loc;
-    _pathId.removeWhere((k, v) => v == id);
+    for (final e in _pathId.entries.where((e) => e.value == id).toList()) {
+      _pathId.remove(e.key);
+      _known.remove(e.key);
+    }
     _pathId[key] = id;
     _metas[id] = page.meta;
     final st = _storeOf(loc);
@@ -8039,9 +8067,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on Object catch (e) {
       debugPrint('Opening page $id at its new place failed: $e');
     }
+    if (_current == null && !_disposed) await _fallbackAfterFailedOpen(loc);
     if (old != null) _touch(at);
+    onPageContent?.call(loc, page);
     _rebuildTree();
     return true;
+  }
+
+  // No page is open after a page failed to open at its new place: another one
+  // is, as after a binder moved.
+  Future<void> _fallbackAfterFailedOpen(String loc) async {
+    try {
+      await _openFallback(loc);
+    } on Object catch (e) {
+      debugPrint('Opening a page after the move failed: $e');
+    }
   }
 
   // [path] in a pull-only place holds [text]: if it is a conflict copy of a
@@ -9631,6 +9671,47 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _disposeCurrent();
   }
 
+  // A pull-only page that stayed open while its file was removed has no file
+  // (nor an aside of one, which counts as present) and no other tracked file
+  // with its id: once it is left its row goes, as a reload has it, and a file
+  // listed as a duplicate of the page takes its place. Nothing is done for any
+  // other page.
+  void _dropGhostRow(String id) {
+    final loc = _loc[id];
+    if (loc == null || !_pullOnly(loc) || _pathId.containsValue(id)) return;
+    try {
+      final file = _storeOf(loc).pathFor(id);
+      if (File(file).existsSync() || _hasAside(file)) return;
+    } on NotebookException {
+      return;
+    }
+    _forgetPage(id);
+    _touch(loc);
+    _rebuildTree();
+    // A page with a chosen file keeps its choice until a folder check settles it.
+    if (_disposed || _adoptedFiles.containsKey(id)) return;
+    unawaited(
+      _promoteDuplicate(id).catchError((Object e) {
+        debugPrint('Promoting a duplicate of page $id failed: $e');
+      }),
+    );
+  }
+
+  // Whether [file] has an aside beside it that a killed replace left.
+  bool _hasAside(String file) {
+    final name = _folderName(file);
+    try {
+      for (final f in File(file).parent.listSync(followLinks: false)) {
+        if (f is! File) continue;
+        final n = _folderName(f.path);
+        if (n.startsWith('$name.') && (n.endsWith(asideSuffix) || n.endsWith(verifiedSuffix))) return true;
+      }
+    } on FileSystemException {
+      return true; // can't tell: present
+    }
+    return false;
+  }
+
   // Closes the page on screen without saving it.
   void _disposeCurrent() {
     _session?.ended = true;
@@ -9641,6 +9722,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final closing = _current?.page.id;
     _current?.dispose();
     _current = null;
+    if (closing != null) _dropGhostRow(closing);
     _attachments?.dispose();
     _attachments = null;
     _base = null;
