@@ -14,6 +14,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
+import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/attachment_copy.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_attachments.dart';
@@ -161,8 +162,12 @@ class _World {
     bool watch = false,
     Duration leaveSave = const Duration(seconds: 5),
     List<String>? roots,
+    AppSettings? appSettings,
+    Future<String?> Function()? pick,
   }) {
     final nb = Notebook(
+      settings: appSettings,
+      pickFolder: pick,
       PageStore(pages),
       modules,
       saveDelay: Duration.zero,
@@ -433,7 +438,7 @@ void main() {
       nb.attachments!.addListener(() => told++);
       final page = w.read(path).insertNode(_box(w.modules, 'bpulled0000001', 'pulled'));
       await w.engineWrite(nb, path, writePage(page));
-      await nb.filesChanged([path]);
+      await nb.filesChanged([path, '${w.work.path}/${assetsFolderName(w.pB)}/x']);
       expect(boxTexts(nb.current!.page)['bpulled0000001'], 'pulled');
       expect(nb.current!.readOnly, isTrue);
       expect(told, greaterThan(0), reason: 'the attachments are told');
@@ -511,6 +516,10 @@ void main() {
       expect(nb.treeOfPage(w.pB)[w.pB], isNotNull);
       expect(nb.treeOfPage(w.pB2)[w.pB2], isNotNull);
       expect(nb.currentId, w.pB);
+      expect(boxTexts(nb.current!.page)['bcopybox000001'], 'from the copy');
+      // The page can be left and opened again from the surviving file.
+      await nb.open(w.pB2);
+      await nb.open(w.pB);
       expect(boxTexts(nb.current!.page)['bcopybox000001'], 'from the copy');
       // What a restart shows.
       final fresh = w.pull();
@@ -643,6 +652,315 @@ void main() {
       await nb.discoverBinders();
       expect(nb.binders.single.path, oldPath, reason: 'as before: listed where it was, with a note of where it went');
       expect(nb.binderMovedTo(oldPath), isNotEmpty);
+    });
+  });
+
+  group('review follow-ups', () {
+    Future<Directory> rename(String from, String to) async {
+      await busyRetry(() async => Directory(from).renameSync(to));
+      return Directory(to);
+    }
+
+    Set<String> listed(Notebook n) => {
+      for (final b in n.binders)
+        for (final r in b.tree.roots) ...[r.id, ...b.tree.descendantsOf(r.id)],
+    };
+    Set<String> dupes(Notebook n) => {
+      for (final b in n.binders)
+        for (final u in b.unreadable) '${_name(u.path)} ${u.reason}',
+    };
+
+    for (final copyFirst in [false, true]) {
+      test('a page listed from its copy is handed to the original, reported ${copyFirst ? 'copy first' : 'original first'}', () async {
+        // Only the copy holds the page when the notebook loads.
+        final orig = w.path(w.work, w.pB2);
+        final copyPath = '${w.work.path}/${w.pB2}-DESKTOP-9.canvas';
+        File(orig).renameSync(copyPath);
+        final nb = w.pull();
+        await nb.load();
+        expect(nb.binderOfPage(w.pB2), w.work.path);
+        final page = w.read(copyPath);
+        await w.engineWrite(nb, orig, writePage(page));
+        await w.engineWrite(nb, copyPath, writePage(page.insertNode(_box(w.modules, 'bchanged000001', 'changed'))));
+        await nb.filesChanged(copyFirst ? [copyPath, orig] : [orig, copyPath]);
+        expect(nb.binderOfPage(w.pB2), w.work.path, reason: 'the page stays listed');
+        final fresh = w.pull();
+        await fresh.load();
+        expect(listed(nb), listed(fresh));
+        expect(dupes(nb), dupes(fresh));
+        expect(fresh.binderOfPage(w.pB2), w.work.path);
+      });
+    }
+
+    test('a promoted open page can be opened again, and stays on moved.canvas when moved-PC.canvas arrives', () async {
+      final nb = w.pull();
+      await nb.load();
+      await nb.open(w.pB);
+      final orig = w.path(w.work, w.pB);
+      final moved = '${w.work.path}/moved.canvas';
+      await w.engineWrite(nb, moved, File(orig).readAsStringSync());
+      await w.engineDelete(nb, orig);
+      await nb.filesChanged([orig, moved]);
+      await nb.open(w.pB2);
+      await nb.open(w.pB);
+      expect(nb.currentId, w.pB);
+      final box = _box(w.modules, 'bpc000000000001', 'from the PC');
+      final pc = '${w.work.path}/moved-PC.canvas';
+      await w.engineWrite(nb, pc, writePage(w.read(moved).insertNode(box)));
+      await nb.filesChanged([pc]);
+      expect(boxTexts(nb.current!.page).containsKey('bpc000000000001'), isFalse);
+      expect(dupes(nb), {'moved-PC.canvas duplicate page id ${w.pB}'});
+      await nb.open(w.pB2);
+      await nb.open(w.pB);
+      expect(boxTexts(nb.current!.page).containsKey('bpc000000000001'), isFalse, reason: 'reopened from moved.canvas');
+    });
+
+    test('an open page moved to a writable folder only gets a duplicate; to another pull-only folder it is opened afresh', () async {
+      final nb = w.pull();
+      await nb.load();
+      await nb.addStandaloneFolder(w.other.path);
+      await nb.open(w.pB);
+      final orig = w.path(w.work, w.pB);
+      final text = File(orig).readAsStringSync();
+      // Into a writable folder: a duplicate; the page stays as it is.
+      final away = '${w.other.path}/away.canvas';
+      await w.engineWrite(nb, away, writePage(w.read(orig).insertNode(_box(w.modules, 'bwritable00001', 'w'))));
+      await w.engineDelete(nb, orig);
+      await nb.filesChanged([away, orig]);
+      expect(nb.isPullOnlyPage(w.pB), isTrue);
+      expect(boxTexts(nb.current!.page).containsKey('bwritable00001'), isFalse);
+      File(away).deleteSync();
+      await nb.filesChanged([away]);
+      // Into another pull-only folder, with new content and attachments beside it.
+      final src = Directory('${w.work.path}/${assetsFolderName(w.pB)}');
+      final dst = Directory('${w.acct.path}/${assetsFolderName(w.pB)}')..createSync();
+      for (final f in src.listSync().whereType<File>()) {
+        f.copySync('${dst.path}/${_name(f.path)}');
+      }
+      final crossed = readPage(text).insertNode(_box(w.modules, 'bxfer000000001', 'crossed over'));
+      final to = '${w.acct.path}/crossed.canvas';
+      await w.engineWrite(nb, to, writePage(crossed));
+      await nb.filesChanged([to, orig]);
+      expect(nb.currentId, w.pB);
+      expect(boxTexts(nb.current!.page)['bxfer000000001'], 'crossed over');
+      expect(nb.isPullOnlyPage(w.pB), isTrue);
+      expect(nb.attachments!.folder.path.replaceAll(r'\', '/'), dst.path.replaceAll(r'\', '/'), reason: 'attachments are read beside the new file');
+      final fresh = w.pull();
+      await fresh.load();
+      await fresh.open(w.pB);
+      expect(boxTexts(fresh.current!.page), boxTexts(nb.current!.page));
+      expect(fresh.attachments!.folder.path, nb.attachments!.folder.path);
+      final read = await nb.attachments!.readVerified(_World.goodName, size: _World.good.length);
+      expect(read.state, AttachmentState.ok);
+    });
+
+    test('a pass that read one candidate and failed on another re-homes nothing', () async {
+      final nb = w.pull();
+      await nb.load();
+      final oldPath = w.work.path;
+      await rename(oldPath, '${w.acct.path}/Work moved');
+      Directory('${w.acct.path}/Bad').createSync();
+      File('${w.acct.path}/Bad/$binderFileName').writeAsStringSync('{}');
+      nb.binderHook = (point, path) async {
+        if (point == 'candidate-read' && path.contains('Bad')) throw FileSystemException('locked', path);
+      };
+      await nb.discoverBinders();
+      expect(nb.binders.single.path, oldPath);
+      nb.binderHook = null;
+      await nb.discoverBinders();
+      expect(nb.binders.single.path.endsWith('Work moved'), isTrue);
+    });
+
+    test('an aside of the binder file counts as the binder file', () async {
+      final nb = w.pull();
+      await nb.load();
+      final oldPath = w.work.path;
+      final text = File('$oldPath/$binderFileName').readAsStringSync();
+      await rename(oldPath, '${w.acct.path}/Work moved');
+      Directory(oldPath).createSync();
+      File('$oldPath/$binderFileName.1a2b.cas-old').writeAsStringSync(text);
+      await nb.checkFolders();
+      expect(nb.binders.single.missing, isFalse, reason: 'a replace under way is not "gone"');
+      await nb.discoverBinders();
+      expect(nb.binders.single.path, oldPath);
+    });
+
+    test('a failed open of the new place puts the old listing back, and the cover follows a re-home', () async {
+      final nb = w.pull();
+      await nb.load();
+      nb.showCover(w.work.path);
+      final oldPath = w.work.path;
+      await rename(oldPath, '${w.acct.path}/Work moved');
+      nb.binderHook = (point, path) async {
+        if (point == 'parsed') throw FileSystemException('locked', path);
+      };
+      await nb.discoverBinders();
+      nb.binderHook = null;
+      expect(nb.binders.single.path, oldPath);
+      expect(nb.binderOfPage(w.pB), oldPath, reason: 'its pages are listed as before');
+      expect(nb.coverPath, oldPath);
+      await nb.discoverBinders();
+      expect(nb.binders.single.path.endsWith('Work moved'), isTrue);
+      expect(nb.coverPath, nb.binders.single.path);
+      expect(nb.binderOfPage(w.pB), nb.binders.single.path);
+    });
+
+    test('the job checks again: a binder file that is back stops the re-home', () async {
+      final nb = w.pull();
+      await nb.load();
+      final oldPath = w.work.path;
+      final text = File('$oldPath/$binderFileName').readAsStringSync();
+      await rename(oldPath, '${w.acct.path}/Work moved');
+      final hold = Completer<void>();
+      final reached = Completer<void>();
+      nb.syncHook = (point, _) async {
+        if (point != 'check-start') return;
+        reached.complete();
+        await hold.future;
+      };
+      final busy = nb.checkFile(w.path(w.work, w.pB));
+      await reached.future;
+      final d = nb.discoverBinders();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      Directory(oldPath).createSync();
+      File('$oldPath/$binderFileName').writeAsStringSync(text);
+      nb.syncHook = null;
+      hold.complete();
+      await busy;
+      await d;
+      expect(nb.binders.single.path, oldPath);
+    });
+
+    test('a pass cut by the folder cap re-homes nothing', () async {
+      final nb = w.pull();
+      await nb.load();
+      await nb.discoveryIdle;
+      await rename(w.work.path, '${w.acct.path}/A moved');
+      Directory('${w.acct.path}/Z other').createSync();
+      nb.setDiscoveryLimitsForTest(folders: 1);
+      await nb.discoverBinders();
+      expect(nb.binders.single.path, w.work.path);
+      nb.setDiscoveryLimitsForTest(folders: 1000);
+      await nb.discoverBinders();
+      expect(nb.binders.single.path.endsWith('A moved'), isTrue);
+    });
+
+    test('with two roots, a place under the other root is not the same root', () async {
+      final ro2 = Directory('${w.top.path}/onedrive_b')..createSync();
+      final nb = w.pull(roots: [w.ro.path, ro2.path]);
+      await nb.load();
+      await nb.discoveryIdle;
+      await nb.addStandaloneFolder(ro2.path);
+      await rename(w.work.path, '${ro2.path}/Moved');
+      await nb.checkFolders();
+      await nb.discoverBinders();
+      expect(nb.binders.single.path, w.work.path);
+      expect(nb.binderMovedTo(w.work.path), isNotEmpty, reason: 'it was found there, and not taken for the same place');
+    });
+
+    test('a sibling folder that only shares the prefix is not under the root', () async {
+      final nb = w.pull();
+      final sibling = Directory('${w.top.path}/onedrive2/B')..createSync(recursive: true);
+      await nb.load();
+      final s = await nb.addBinder(sibling.path);
+      expect(nb.isPullOnlyLocation(s.path), isFalse);
+      await nb.setBinderAiAccess(s.path, AiAccess.open);
+      expect(nb.binderAiAccess(s.path), AiAccess.open);
+    });
+
+    test('the list position of a re-homed binder is kept', () async {
+      final nb = w.pull();
+      await nb.load();
+      final other = Directory('${w.acct.path}/Other')..createSync();
+      await BinderStore(other).create(Binder.create(title: 'Other', color: binderPalette.first));
+      await nb.addBinder(other.path);
+      expect(nb.binders.map((b) => _name(b.path)), ['Work', 'Other']);
+      await rename(w.work.path, '${w.acct.path}/Work moved');
+      await nb.discoverBinders();
+      expect(nb.binders.map((b) => _name(b.path)), ['Work moved', 'Other']);
+    });
+
+    test('the note for a page left behind goes with the old folder', () async {
+      final nb = w.pull();
+      await nb.load();
+      await nb.open(w.pB);
+      final moved = Directory('${w.acct.path}/Work moved')..createSync();
+      File('${w.work.path}/$binderFileName').renameSync('${moved.path}/$binderFileName');
+      File(w.path(w.work, w.pB2)).renameSync(w.path(moved, w.pB2));
+      await nb.discoverBinders();
+      expect(nb.discoveryNotes.map((n) => n.reason), contains(contains('stayed in the old folder')));
+      await busyRetry(() async => w.work.deleteSync(recursive: true));
+      expect(nb.discoveryNotes.map((n) => n.reason), isNot(contains(contains('stayed in the old folder'))));
+    });
+
+    test('a folder check alone takes a binder with no binder file to "gone", keeps its pages and does not open it again', () async {
+      final nb = w.pull();
+      await nb.load();
+      await nb.open(w.pB);
+      File('${w.work.path}/$binderFileName').deleteSync();
+      await nb.checkFolders();
+      expect(nb.binders.single.missing, isTrue);
+      expect(nb.currentId, w.pB);
+      await nb.checkFolders();
+      expect(nb.binderOfPage(w.pB2), w.work.path, reason: 'its rows stay listed');
+      expect(nb.currentId, w.pB);
+    });
+
+    test('a scan never makes a missing pull-only folder', () async {
+      final nb = w.pull();
+      await nb.load();
+      await busyRetry(() async => w.work.deleteSync(recursive: true));
+      await expectLater(nb.scanLocationForTest(w.work.path), throwsA(isA<FileSystemException>()));
+      expect(w.work.existsSync(), isFalse);
+    });
+
+    test('a copy out of a pull-only folder (template, a copy elsewhere) does not sweep its source', () async {
+      final assets = Directory('${w.work.path}/${assetsFolderName(w.pB)}');
+      File('${assets.path}/${_World.goodName}.123-4.tmp').writeAsBytesSync(_World.good);
+      final before = hashTree(assets);
+      final out = Directory('${w.top.path}/out')..createSync();
+      final nb = w.pull(pick: () async => out.path);
+      await nb.load();
+      await nb.open(w.pB);
+      await nb.savePageAsTemplate(w.pB, name: 'App-wide');
+      expect(hashTree(assets), before, reason: 'a template made from it');
+      await nb.saveCopyElsewhere();
+      expect(hashTree(assets), before, reason: 'a copy elsewhere');
+      // And a copy into a pull-only folder is refused.
+      final nb2 = w.pull(pick: () async => '${w.acct.path}/Copy');
+      await nb2.load();
+      await nb2.open(w.pB);
+      await expectLater(nb2.saveCopyElsewhere(), _refused);
+      expect(Directory('${w.acct.path}/Copy').existsSync(), isFalse);
+    });
+
+    test('a binder made in a pull-only folder is refused, by hand and by template', () async {
+      final settings = AppSettings(File('${w.top.path}/app/settings.json'));
+      settings.defaultBinderFolder = w.acct.path;
+      final nb = w.pull(appSettings: settings);
+      await nb.load();
+      await expectLater(nb.createBinder(), _refused);
+      final template = NotedTemplate.forBinder(
+        name: 'T',
+        binder: Binder.create(title: 'T', color: binderPalette.first),
+        pages: const [],
+      );
+      await expectLater(nb.createBinderFromTemplate(template, '${w.acct.path}/NewB'), _refused);
+      expect(Directory('${w.acct.path}/NewB').existsSync(), isFalse);
+      expect(Directory('${w.acct.path}/New binder').existsSync(), isFalse, reason: 'no folder made for it');
+    });
+
+    test('filesChanged with no paths, or none under an assets folder, does not tell the attachments', () async {
+      final nb = w.pull();
+      await nb.load();
+      await nb.open(w.pB);
+      var told = 0;
+      nb.attachments!.addListener(() => told++);
+      await nb.filesChanged(const []);
+      await nb.filesChanged([w.path(w.work, w.pB)]);
+      expect(told, 0);
+      await nb.filesChanged(['${w.work.path}/${assetsFolderName(w.pB)}/${_World.goodName}']);
+      expect(told, 1);
     });
   });
 }

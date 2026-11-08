@@ -7511,7 +7511,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// duplicates of its page are looked at again, so the page moves to the file
   /// that survives.
   Future<void> filesChanged(Iterable<String> paths) async {
-    for (final path in paths.toList()) {
+    final list = paths.toList();
+    if (list.isEmpty) return;
+    for (final path in list) {
       if (_disposed) return;
       try {
         await _fileChanged(path);
@@ -7519,7 +7521,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         debugPrint('Looking at $path failed: $e');
       }
     }
-    if (!_disposed) _attachments?.filesChanged();
+    // As the watcher does: only a path in or about an assets folder.
+    if (!_disposed && list.any((p) => p.contains('.assets'))) _attachments?.filesChanged();
   }
 
   Future<void> _fileChanged(String path) async {
@@ -7888,10 +7891,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
         _dropUnreadable(loc, path, rebuild: false);
         _pathId[key] = page.id;
+        // The store follows, so the page can be opened again from this file.
+        _storeOf(loc).adopt(page.id, path);
       }
       _mergeOpen(page, text, time);
       final cp = _current;
       if (saveAfterMerge && cp != null && cp.page.id == page.id) _pageChanged(cp.page);
+    } else if (await _openPageSurvivesElsewhere(page, loc, key, path)) {
+      // handled: listed as a duplicate, or the page was opened afresh there
     } else {
       await _applyClosed(page, loc, key, path);
     }
@@ -7994,6 +8001,49 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  // The open page of a pull-only place has its id in a file of another place
+  // [loc]. While its own file is there, or when [loc] can be written, that file
+  // is a duplicate, never a new home for the page. Once its own file is gone
+  // the page moves: it is closed without a save (it has no edits) and opened
+  // afresh from the survivor, so its content, base and attachments are rebuilt.
+  // False if this does not apply.
+  Future<bool> _openPageSurvivesElsewhere(NotedPage page, String loc, String key, String path) async {
+    final id = page.id;
+    final cur = _current;
+    final at = _loc[id];
+    if (cur == null || cur.page.id != id || _preview != null || at == null || at == loc || !_pullOnly(at)) {
+      return false;
+    }
+    String? own;
+    try {
+      own = _storeOf(at).pathFor(id);
+    } on NotebookException {
+      own = null;
+    }
+    if (!_pullOnly(loc) || (own != null && File(own).existsSync())) {
+      _known.remove(key);
+      _knownUnreadable(loc, key, path, 'duplicate page id $id');
+      return true;
+    }
+    final old = _binders[at];
+    _dropUnreadable(loc, path, rebuild: false);
+    _loc[id] = loc;
+    _pathId.removeWhere((k, v) => v == id);
+    _pathId[key] = id;
+    _metas[id] = page.meta;
+    final st = _storeOf(loc);
+    st.adopt(id, path);
+    _disposeCurrent();
+    try {
+      await _openFresh(id);
+    } on Object catch (e) {
+      debugPrint('Opening page $id at its new place failed: $e');
+    }
+    if (old != null) _touch(at);
+    _rebuildTree();
+    return true;
+  }
+
   // [path] in a pull-only place holds [text]: if it is a conflict copy of a
   // file with the same page id, it is listed as a duplicate of that page and
   // nothing is merged or written. True if it was one.
@@ -8004,8 +8054,30 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on PageFormatException {
       return false;
     }
-    if (await PageStore.findConflictOriginal(path, copy) == null) return false;
+    final original = await PageStore.findConflictOriginal(path, copy);
+    if (original == null) return false;
     if (_disposed) return true;
+    if (_pathId[key] == copy.id && copy.id != currentId) {
+      // This copy is the file listed for the page (it was alone, or reported
+      // before its original): the page is handed to the original, not evicted.
+      NotedPage? op;
+      try {
+        op = readPage(await File(original).readAsString());
+      } on Object {
+        op = null;
+      }
+      if (_disposed) return true;
+      if (op != null && op.id == copy.id) {
+        _pathId.remove(key);
+        _known.remove(key);
+        if (_loc[copy.id] == loc) {
+          _metas.remove(copy.id);
+          _loc.remove(copy.id);
+          _conflicts.remove(copy.id);
+        }
+        await _applyClosed(op, loc, _key(original), original);
+      }
+    }
     _known.remove(key);
     _knownUnreadable(loc, key, path, 'duplicate page id ${copy.id}');
     return true;
@@ -8621,7 +8693,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // OneDrive folder was renamed or moved. Decided only by a pass that saw
     // every root and read every file, and before the `movedTo` branch below.
     final rehomes = <({String id, String from, String to})>[];
-    if (_readOnlyRoots.isNotEmpty && readsOk && rootsOk) {
+    // (A pass cut short by the root or folder cap did not see every root.)
+    if (_readOnlyRoots.isNotEmpty && readsOk && rootsOk && capNotes.isEmpty) {
       for (final e in found.entries.toList()) {
         final from = listedIds[e.key];
         if (from == null || !_pullOnly(from) || e.value.length != 1) continue;
@@ -8742,7 +8815,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // Notes about open pages a re-homed binder left behind, by old folder (G6).
-  final Map<String, UnreadablePage> _rehomeNotes = {};
+  final Map<String, ({UnreadablePage note, String id})> _rehomeNotes = {};
 
   Future<void> _rehomeInTurn(List<({String id, String from, String to})> list) async {
     for (final r in list) {
@@ -8795,7 +8868,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _pathId.addAll(keptPaths);
       _known.addAll(keptKnown);
     }
-
+    final fromDir = _key(from);
+    final keptAdopted = {
+      for (final e in _adoptedFiles.entries)
+        if (_key(File(e.value).parent.path) == fromDir) e.key: e.value,
+    };
+    final keptGone = {for (final i in keptAdopted.keys) i: ?_goneChosen[i]};
     _dropAdoptionsIn(from);
     for (final i in ids) {
       _forgetPage(i);
@@ -8805,12 +8883,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       fresh = await _openBinder(to, createFolder: false, sweep: false);
     } on Object {
       putBack();
+      _adoptedFiles.addAll(keptAdopted);
+      _goneChosen.addAll(keptGone);
       rethrow;
     }
     if (_disposed) return;
     if (!identical(_binders[from], old) || !fresh.available || fresh.binder?.id != id) {
       _undoOpen(to);
-      if (identical(_binders[from], old)) putBack();
+      if (identical(_binders[from], old)) {
+        putBack();
+        _adoptedFiles.addAll(keptAdopted);
+        _goneChosen.addAll(keptGone);
+      }
       return;
     }
     // The destination is registered in the place of the old one, in the same
@@ -8847,10 +8931,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // Its file stayed in the old folder: the page closes, with a note.
         final title = _titleOrUntitled(keptMetas[openId]?.title ?? '');
         _disposeCurrent();
-        _rehomeNotes[fromKey] = UnreadablePage(
-          from,
-          'The page "$title" stayed in the old folder of binder "${fresh.title}" when it moved, '
-          'so it was closed.',
+        _rehomeNotes[fromKey] = (
+          note: UnreadablePage(
+            from,
+            'The page "$title" stayed in the old folder of binder "${fresh.title}" when it moved, '
+            'so it was closed.',
+          ),
+          id: openId,
         );
       }
     }
@@ -8919,7 +9006,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   List<UnreadablePage> get discoveryNotes => [
     ..._heldNotes,
     ..._capNotes,
-    ..._rehomeNotes.values,
+    // A note goes once the old folder is gone or the page is listed again.
+    for (final r in _rehomeNotes.values)
+      if (!_loc.containsKey(r.id) && Directory(r.note.path).existsSync()) r.note,
     for (final d in _duplicateIds.values)
       UnreadablePage(
         d.folders.first,
@@ -9196,6 +9285,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> _binderBack(String path) async {
     final old = _binders[path];
     if (old == null) return;
+    // A pull-only binder is read before anything is dropped: with no binder
+    // file it stays "gone", listed, with its rows (G6).
+    if (_pullOnly(path) && !File('$path${Platform.pathSeparator}$binderFileName').existsSync()) return;
     for (final e in _loc.entries.where((e) => e.value == path && e.key != currentId).toList()) {
       _forgetPage(e.key);
     }
@@ -10063,6 +10155,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final chosen = await pick();
     if (chosen == null) return '';
     final dir = Directory(_normalizePath(chosen));
+    // Nothing is made in a pull-only folder.
+    if (_pullOnly(dir.path)) throw const NotebookException(_pullOnlyMessage);
     final newPageId = newId();
     final copy = page.withMeta(page.meta.withId(newPageId).withPlacement(parentId: null, order: 0));
     final left = <String>[];
