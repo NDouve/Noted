@@ -374,9 +374,11 @@ void main() {
       events.clear();
       final gate = Completer<void>();
       late Future<void> held;
+      final reached = Completer<void>();
       nb.syncHook = (point, path) async {
         if (point == 'undo-copy-before-publish') {
           held = locks.run(pages, () => gate.future);
+          reached.complete();
         }
       };
       var done = false;
@@ -384,6 +386,8 @@ void main() {
           .undoDelete(deleted)
           .then<void>((_) {}, onError: (_) {})
           .whenComplete(() => done = true);
+      // The temp write takes as long as it takes on a loaded machine.
+      await reached.future.timeout(const Duration(seconds: 20));
       await pump();
       await pump();
       expect(done, isFalse);
