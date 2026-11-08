@@ -2146,6 +2146,27 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Rationale:** test builds have no other way to get notes off the device.
 - **Alternatives considered:** an export command (more to build).
 
+## 0152 — New pages, restores, template pages and copies are published under the folder lock
+- **Date:** 2026-11-08
+- **Status:** Active (option chosen by the maintainer's PM chat; details decided by the build team; makes 0148's "every page write" true for page files)
+- **Decision:**
+  - **Under the lock.** Each publish of a new page, restored text, a binder-template page, a saved copy and an Undo conflict copy runs with its change-feed event as one job on the folder's lock, and so does the delete in a binder-creation rollback. The can-write check is made again inside the job, so a location that stops being writable during the wait gets nothing.
+  - **A stalled folder.** A save that hangs in a folder now also holds up new pages, Undo and moves into that folder until it ends, as it already did for renames and deletes. Other folders and quit aren't held up.
+  - **Quit.** A delete rollback waiting on the lock counts as a running Undo, so quit waits for it up to its limit and then asks. An exit copy waiting on the lock is covered the same way.
+- **Rationale:** the sync engine relies on a held lock meaning nothing else publishes in that folder.
+- **Alternatives considered:** correcting 0148 to leave exclusive publishes outside the lock (the engine couldn't rely on exclusive access); a time limit on the lock (a larger design).
+
+## 0153 — An unusable binder file of a folder listed both ways makes its pages Guarded and locked; the MCP server's stricter rules reach every entry of a page
+- **Date:** 2026-11-08
+- **Status:** Active (finding accepted by the maintainer's PM chat; details decided by the build team; extends 0150)
+- **Decision:**
+  - **Box types.** A closed-app write takes the box-type rules of every ancestor in a folder listed both ways, also when the page itself is in another folder, and rechecks those binder files by bytes under its hold.
+  - **An unusable binder file.** A binder file that is missing, unreadable, damaged or of a newer format, in a folder also listed as a page folder, makes that folder's pages and everything under them Guarded and locked. A closed-app write to one is refused: "This box's page is in a binder whose file can't be read, so it can't be written until the file is fixed." (log result `binder_unusable`).
+  - **Every entry of a file.** Access and locks are reconciled across a file's entries and carried down each tree, repeatedly until nothing changes, so a page's binder entry can't stay more open than its other entry.
+  - **Reads by box code** are unchanged: 0111 and 0150 refuse them only for a page with more than one copy.
+- **Rationale:** a binder file the server couldn't use dropped its rules, so writes and reads went through that the binder would have refused.
+- **Alternatives considered:** refusing only closed writes (reads and listings still served the pages).
+
 ---
 
 ## Open items
