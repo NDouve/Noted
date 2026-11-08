@@ -17,9 +17,7 @@ import 'package:noted/src/device_storage.dart';
 import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/onedrive_sync.dart';
-import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
-import 'package:noted_sync/noted_sync.dart';
 
 import '../../packages/noted_sync/test/fake_graph.dart';
 import 'support/onedrive_world.dart';
