@@ -9,7 +9,7 @@ library;
 export 'src/clock.dart';
 export 'src/graph_client.dart';
 export 'src/remote_item.dart';
-export 'src/journal.dart' show JournalUnreadable;
+export 'src/journal.dart' show JournalUnreadable, syncJournalFile;
 export 'src/pull_engine.dart';
 export 'src/remote_tree.dart' show isSafeName;
 export 'src/types.dart';

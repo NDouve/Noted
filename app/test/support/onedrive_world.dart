@@ -86,6 +86,12 @@ class FakeRunner implements SyncRunner {
   /// What the next round returns.
   RoundResult Function() next = RoundResult.new;
 
+  /// While set, an answer waits for it (before the question changes).
+  Completer<void>? answerHold;
+
+  /// The question after an answer.
+  GuardQuestion? nextQuestion;
+
   /// Thrown by the next answer (a journal that can't be saved).
   Object? answerError;
 
@@ -110,7 +116,9 @@ class FakeRunner implements SyncRunner {
     final err = answerError;
     if (err != null) throw err;
     answers.add((q, remove));
-    guardQuestion = null;
+    final hold = answerHold;
+    if (hold != null) await hold.future;
+    guardQuestion = nextQuestion;
     changed();
     return answerResult;
   }
@@ -189,6 +197,7 @@ class SpyNotebook extends Notebook {
   Future<void> checkFolders() async {
     log.add('checkFolders');
     if (failing.contains('checkFolders')) throw StateError('checkFolders');
+    if (passThrough) await super.checkFolders();
   }
 
   @override

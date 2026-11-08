@@ -257,7 +257,8 @@ class _HomeState extends State<Home> {
     }
     // The answer goes to the pull that asked, and only counts once saved.
     final saved = await sync.answerGuard(q, remove: remove, source: source);
-    _guardShown = null;
+    // Not when a newer question already has its dialog: keep that one.
+    if (_prompt == null) _guardShown = null;
     if (saved) {
       _guardAnswered = q;
       // A different question that came up meanwhile is asked next.

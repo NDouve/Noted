@@ -146,18 +146,23 @@ class PullEngine {
     var any = false;
     try {
       if (j == null) return null;
+      // What this answer adds, to take it back if it can't be saved: an answer
+      // that is not on disk must not act later.
+      final added = <String>[];
+      final target = remove ? j.approved : j.kept;
       for (final p in q.paths) {
         final key = _guardKeys[p];
         if (key == null) continue;
         any = true;
-        if (remove) {
-          j.approved.add(key);
-        } else {
-          j.kept.add(key);
-        }
+        if (target.add(key)) added.add(key);
       }
       if (any) {
-        await _save();
+        try {
+          await _save();
+        } catch (_) {
+          added.forEach(target.remove);
+          rethrow;
+        }
         _question = null;
         _notify();
       }

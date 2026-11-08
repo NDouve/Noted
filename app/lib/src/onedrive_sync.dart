@@ -365,7 +365,7 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
       // The folder is made only before the pull has ever run (the first choice,
       // or a kill before the first round). Once the journal exists a folder
       // that is gone was removed on this device, and is not made again (G11).
-      final journal = File('${oneDriveStateDir(support, key, c.itemId).path}${Platform.pathSeparator}journal.json');
+      final journal = syncJournalFile(oneDriveStateDir(support, key, c.itemId));
       if (!await dir.exists()) {
         if (await journal.exists()) {
           _problem = 'the OneDrive folder is missing on this device';
@@ -373,6 +373,8 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
         }
         await dir.create(recursive: true);
       }
+      // A folder that was listed while it was missing comes back with a folder check.
+      await notebook.checkFolders();
       await notebook.addStandaloneFolder(dir.path);
     } on NotebookException catch (e) {
       _problem = e.message;

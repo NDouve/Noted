@@ -5,6 +5,8 @@
 // The OneDrive screens (sync stage 3): the folder browser, the section of the
 // hidden Microsoft entry in About, and the guard's question.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/about_dialog.dart';
@@ -426,6 +428,48 @@ void main() {
       await t.tap(find.byKey(const ValueKey('onedrive-guard-keep')));
       await t.pumpAndSettle();
       expect(w.runner.answers.length, 1);
+      await finish(t);
+    });
+
+    testWidgets('a dialog closed from outside is no answer, and it is asked again at the next change', (t) async {
+      await build(t);
+      await ask(t, q);
+      t.state<NavigatorState>(find.byType(Navigator)).popUntil((r) => r.isFirst);
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('onedrive-guard')), findsNothing);
+      expect(w.runner.answers, isEmpty, reason: 'closing is not an answer');
+      await t.runAsync(() async {
+        w.runner.changed();
+        await Future<void>.delayed(Duration.zero);
+      });
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('onedrive-guard')), findsOneWidget);
+      await t.tap(find.byKey(const ValueKey('onedrive-guard-keep')));
+      await t.pumpAndSettle();
+      expect(w.runner.answers.length, 1);
+      await finish(t);
+    });
+
+    testWidgets('a new question during the answer\'s round keeps its dialog (no flicker)', (t) async {
+      await build(t);
+      await ask(t, q);
+      final hold = Completer<void>();
+      final next = GuardQuestion(['x.canvas']);
+      w.runner.answerHold = hold;
+      w.runner.nextQuestion = next;
+      await t.tap(find.byKey(const ValueKey('onedrive-guard-keep')));
+      await t.pumpAndSettle();
+      // The follow-up round asks something new while the answer is still running.
+      await ask(t, next);
+      expect(find.text('OneDrive says 1 page was removed.'), findsOneWidget);
+      final before = t.element(find.byKey(const ValueKey('onedrive-guard')));
+      hold.complete();
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('onedrive-guard')), findsOneWidget);
+      expect(identical(t.element(find.byKey(const ValueKey('onedrive-guard'))), before), isTrue, reason: 'not closed and reopened');
+      await t.tap(find.byKey(const ValueKey('onedrive-guard-keep')));
+      await t.pumpAndSettle();
+      expect(w.runner.answers.map((a) => a.$1), [q, next]);
       await finish(t);
     });
 

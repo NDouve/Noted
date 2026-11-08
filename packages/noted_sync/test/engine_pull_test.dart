@@ -253,6 +253,43 @@ void main() {
       expect(Directory(h.path('B')).existsSync(), isFalse);
     });
 
+    for (final remove in [true, false]) {
+      test('${remove ? 'Remove' : 'Keep'}: an answer that could not be saved is taken back, and asked again', () async {
+        seedMany(30);
+        h.fake.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
+        h.fake.addFile('Noted/B/q.canvas', Harness.b('Q'));
+        await h.round();
+        h.fake.delete('Noted/B');
+        await h.round();
+        h.clock.advance(const Duration(seconds: 31));
+        await h.round();
+        final q = h.engine.guardQuestion!;
+        // The journal cannot be written: its temporary name is a folder.
+        final block = Directory('${syncJournalFile(h.state).path}.tmp')..createSync();
+        await expectLater(h.engine.answerGuard(q, remove: remove), throwsA(isA<FileSystemException>()));
+        expect(h.has('B/q.canvas'), isTrue, reason: 'nothing deleted by an answer that is not saved');
+        expect(h.engine.guardQuestion, q, reason: 'the question stays');
+        block.deleteSync();
+        // Saving works again: the next round asks again, and still deletes nothing.
+        await h.round();
+        h.clock.advance(const Duration(seconds: 31));
+        await h.round();
+        expect(h.engine.guardQuestion, q);
+        expect(h.engine.status.state, SyncState.guardWaiting);
+        expect(h.has('B/q.canvas'), isTrue);
+        expect(h.has('B/noted-binder.json'), isTrue);
+        // And a restart does not know the lost answer either.
+        h.restart();
+        await h.round();
+        expect(h.engine.guardQuestion, q);
+        expect(h.has('B/q.canvas'), isTrue);
+        // A saved answer then works as ever.
+        final done = await h.engine.answerGuard(h.engine.guardQuestion!, remove: remove);
+        expect(done, isNotNull);
+        expect(h.has('B/q.canvas'), !remove);
+      });
+    }
+
     test('Keep leaves them and does not ask again', () async {
       seedMany(30);
       h.fake.addFile('Noted/B/noted-binder.json', Harness.b('{}'));

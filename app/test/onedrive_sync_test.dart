@@ -372,6 +372,32 @@ void main() {
       expect(w.nb.standaloneFolders.length, 1);
     });
 
+    sTest('a folder that was listed while it was missing comes back, and the pull goes on', (t) async {
+      await build(t, pageInFolder: true);
+      w.nb.passThrough = true;
+      await t.runAsync(() async {
+        // Listed, then removed on the device and noticed by the notebook.
+        await w.nb.addStandaloneFolder(w.workingCopy.path);
+        final journal = syncJournalFile(oneDriveStateDir(w.support, w.accountKey, oneDriveRootId));
+        await journal.parent.create(recursive: true);
+        await journal.writeAsString('{}');
+        await w.workingCopy.delete(recursive: true);
+        await w.nb.checkFolders();
+      });
+      expect(w.nb.standaloneFolders.single.available, isFalse);
+      await start(t);
+      expect(w.sync.statusLine, 'Paused: the OneDrive folder is missing on this device');
+      // Back on the device (a restored copy): Check now lists it again.
+      await t.runAsync(() async {
+        await w.workingCopy.create(recursive: true);
+        await w.sync.checkNow();
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      });
+      expect(w.sync.statusLine, isNot(startsWith('Paused')));
+      expect(w.nb.standaloneFolders.single.available, isTrue);
+      expect(w.runner.rounds, 1);
+    });
+
     sTest('a hostile item id in chosen.json stays inside the working folder', (t) async {
       final hostile = jsonEncode({'driveId': 'd', 'itemId': '../../evil', 'path': 'x'});
       await build(t, chosen: false, chosenText: hostile);
@@ -423,6 +449,7 @@ void main() {
       await build(t);
       await start(t);
       w.nb.changedPaths.clear();
+      w.nb.log.clear();
       final gate = Completer<void>();
       w.runner.hold = gate;
       w.runner.next = () => _round(paths: ['/x/a.canvas']);

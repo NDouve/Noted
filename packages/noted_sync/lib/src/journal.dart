@@ -316,7 +316,7 @@ class JournalStore {
 
   final Directory dir;
 
-  File get file => File('${dir.path}${Platform.pathSeparator}journal.json');
+  File get file => syncJournalFile(dir);
 
   /// The saved journal, or null when there is none. Throws
   /// [JournalUnreadable] when a file is there that can't be read.
@@ -402,3 +402,6 @@ class BlobStore {
     }
   }
 }
+
+/// The journal file in a state folder (see `syncStateDir`).
+File syncJournalFile(Directory stateDir) => File('${stateDir.path}${Platform.pathSeparator}journal.json');
