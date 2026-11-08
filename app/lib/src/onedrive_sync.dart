@@ -7,7 +7,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/widgets.dart';
-import 'package:noted_auth/noted_auth.dart' show AuthException, AuthState;
+import 'package:noted_auth/noted_auth.dart' show AuthErrorKind, AuthException, AuthState;
 import 'package:noted_sync/noted_sync.dart';
 
 import 'device_storage.dart';
@@ -147,8 +147,13 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
             : await session.accessToken();
         last = t;
         return t;
-      } on AuthException {
-        throw const SignedOutException();
+      } on AuthException catch (e) {
+        // Only a lost sign-in is "signed out"; an unreachable endpoint or an
+        // unreadable store pauses the round.
+        if (e.kind == AuthErrorKind.signInRequired || e.kind == AuthErrorKind.invalidGrant) {
+          throw const SignedOutException();
+        }
+        throw GraphException(e.message);
       }
     }
 
@@ -203,7 +208,7 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
   bool _wasSignedIn = false;
   bool _loaded = false;
   bool _foreground = true;
-  bool _busy = false;
+  Future<void>? _current;
   bool _lastFailed = false;
   bool _disposed = false;
   DateTime? _lastChecked;
@@ -223,7 +228,7 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
   bool get hasProblem => _problem != null;
 
   /// A round is running.
-  bool get checking => _busy || _runner?.status.state == SyncState.running;
+  bool get checking => _current != null || _runner?.status.state == SyncState.running;
 
   GuardQuestion? get guardQuestion => _runner?.guardQuestion;
   List<SyncIssue> get issues => _runner?.issues ?? const [];
@@ -317,10 +322,7 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
     if (_disposed) return;
     _reschedule();
     notifyListeners();
-    if (_wantPoll && _runner != null && _foreground) {
-      _wantPoll = false;
-      unawaited(_poll());
-    }
+    if (_wantPoll && _runner != null && _foreground) unawaited(_poll());
   }
 
   void _teardown() {
@@ -360,7 +362,17 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
     _problem = null;
     try {
       final dir = oneDriveWorkingCopy(workingRoot, key, c.itemId);
-      await dir.create(recursive: true);
+      // The folder is made only before the pull has ever run (the first choice,
+      // or a kill before the first round). Once the journal exists a folder
+      // that is gone was removed on this device, and is not made again (G11).
+      final journal = File('${oneDriveStateDir(support, key, c.itemId).path}${Platform.pathSeparator}journal.json');
+      if (!await dir.exists()) {
+        if (await journal.exists()) {
+          _problem = 'the OneDrive folder is missing on this device';
+          return;
+        }
+        await dir.create(recursive: true);
+      }
       await notebook.addStandaloneFolder(dir.path);
     } on NotebookException catch (e) {
       _problem = e.message;
@@ -443,20 +455,48 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(_evaluate());
   }
 
-  /// Runs a round now (the *Check now* button). Skipped during a round.
-  Future<void> checkNow() => _poll();
+  /// Runs a round now (the *Check now* button). Skipped during a round. With
+  /// no runner (the folder was missing) it looks for the folder again.
+  Future<void> checkNow() {
+    if (_runner == null) return _evaluate();
+    return _poll();
+  }
+
+  /// Whether a round or an answer is running.
+  bool get _working => _current != null;
+
+  /// The source of the question, so a dialog can tell which pull asked.
+  Object? get guardSource => _runner;
 
   /// One round, then what the notebook needs to see its result (G3): the
   /// changed files, in a `finally` so a round that fails part-way still
   /// reports what it applied; after a round that applied something, and on the
   /// 5-minute tick after a failed round, a folder check and then binder
-  /// discovery. Never overlaps itself.
-  Future<void> _poll({bool idleTick = false}) async {
+  /// discovery. Never overlaps itself or an answer: a call during one is
+  /// skipped, and a poll that was wanted (a resume, a sign-in) is run when the
+  /// round ends.
+  Future<void> _poll({bool idleTick = false}) {
     final runner = _runner;
-    if (runner == null || _busy || _disposed) return;
-    if (microsoft.state != AuthState.signedIn) return;
-    _busy = true;
+    if (runner == null || _working || _disposed) return Future<void>.value();
+    if (microsoft.state != AuthState.signedIn) return Future<void>.value();
+    _wantPoll = false;
+    return _begin(() => _round(runner, idleTick));
+  }
+
+  // Marks the controller busy for [job]; when it ends, a wanted poll goes.
+  Future<void> _begin(Future<void> Function() job) {
+    final done = job().whenComplete(() {
+      _current = null;
+      if (_disposed) return;
+      notifyListeners();
+      if (_wantPoll && _runner != null && _foreground) unawaited(_poll());
+    });
+    _current = done;
     notifyListeners();
+    return done;
+  }
+
+  Future<void> _round(SyncRunner runner, bool idleTick) async {
     RoundResult? result;
     var failed = false;
     try {
@@ -473,12 +513,10 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
     }
     try {
       final applied = result != null && result.changedPaths.isNotEmpty;
-      if (applied || (idleTick && _lastFailed)) await _lookAgain();
+      if (!_disposed && (applied || (idleTick && _lastFailed))) await _lookAgain();
     } finally {
       _lastFailed = failed;
       if (runner.status.state == SyncState.idle) _lastChecked = _now();
-      _busy = false;
-      if (!_disposed) notifyListeners();
     }
   }
 
@@ -489,6 +527,7 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
     } on Object catch (e) {
       debugPrint('OneDrive: the folder check failed: ${e.runtimeType}');
     }
+    if (_disposed) return;
     try {
       await notebook.discoverBinders();
     } on Object catch (e) {
@@ -497,38 +536,50 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Answers the guard's question: remove the listed pages here too, or keep
-  /// them. The round that follows is reported like any other: its changed
+  /// them. [source] is the [guardSource] the question came from; an answer for
+  /// another pull (the account changed) is refused. Waits for a round that is
+  /// running. The round that follows is reported like any other: its changed
   /// files go to the notebook in a `finally`, then the folder check and
-  /// discovery if it applied something.
-  Future<void> answerGuard(GuardQuestion q, {required bool remove}) async {
-    final runner = _runner;
-    if (runner == null) return;
-    _busy = true;
-    notifyListeners();
-    RoundResult? result;
-    try {
-      try {
-        result = await runner.answerGuard(q, remove: remove);
-      } finally {
-        if (result != null) await _tell(result);
-      }
-      if (result != null && result.changedPaths.isNotEmpty) await _lookAgain();
-    } finally {
-      _busy = false;
-      if (!_disposed) notifyListeners();
+  /// discovery if it applied something. False when the answer was refused or
+  /// could not be saved (the question stays).
+  Future<bool> answerGuard(GuardQuestion q, {required bool remove, Object? source}) async {
+    while (_current != null) {
+      await _current;
     }
+    final runner = _runner;
+    if (runner == null || _disposed) return false;
+    if (source != null && !identical(source, runner)) return false;
+    var saved = false;
+    await _begin(() async {
+      RoundResult? result;
+      try {
+        try {
+          result = await runner.answerGuard(q, remove: remove);
+          saved = true;
+        } finally {
+          if (result != null) await _tell(result);
+        }
+        if (result != null && result.changedPaths.isNotEmpty && !_disposed) await _lookAgain();
+      } on Object catch (e) {
+        debugPrint('OneDrive: the answer could not be saved: ${e.runtimeType}');
+      }
+    });
+    return saved;
   }
 
   // The notebook hears what a round changed.
   Future<void> _tell(RoundResult result) async {
+    if (_disposed) return;
     try {
       await notebook.filesChanged(result.changedPaths);
     } on Object catch (e) {
       debugPrint('OneDrive: telling the notebook failed: ${e.runtimeType}');
     }
   }
+
   @override
   void dispose() {
+    if (_disposed) return;
     _disposed = true;
     if (_loaded) {
       WidgetsBinding.instance.removeObserver(this);

@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/device_storage.dart';
 import 'package:noted/src/onedrive_sync.dart';
+import 'package:noted_auth/noted_auth.dart' show AuthErrorKind, AuthException;
 import 'package:noted_sync/noted_sync.dart';
 
 import 'support/onedrive_world.dart';
@@ -33,9 +34,18 @@ void main() {
     bool pageInFolder = false,
     String? chosenText,
     DateTime Function()? now,
+    Duration pollOpen = oneDrivePollOpen,
+    Duration pollIdle = oneDrivePollIdle,
   }) async {
     await t.runAsync(() async {
-      w = await OneDriveWorld.create(chosen: chosen, pageInFolder: pageInFolder, chosenText: chosenText, now: now);
+      w = await OneDriveWorld.create(
+        chosen: chosen,
+        pageInFolder: pageInFolder,
+        chosenText: chosenText,
+        now: now,
+        pollOpen: pollOpen,
+        pollIdle: pollIdle,
+      );
     });
   }
 
@@ -336,6 +346,190 @@ void main() {
       w.runner.status = const SyncStatus(SyncState.idle);
       await t.runAsync(() => w.account.signOut());
       expect(w.sync.statusLine, 'Signed out');
+    });
+  });
+
+  group('review fixes', () {
+    sTest('a working copy removed on this device is not made again once the pull has run', (t) async {
+      await build(t);
+      await t.runAsync(() async {
+        final journal = File('${oneDriveStateDir(w.support, w.accountKey, oneDriveRootId).path}/journal.json');
+        await journal.parent.create(recursive: true);
+        await journal.writeAsString('{}');
+      });
+      await start(t);
+      expect(w.workingCopy.existsSync(), isFalse, reason: 'not made again');
+      expect(w.runner.rounds, 0);
+      expect(w.nb.standaloneFolders, isEmpty);
+      expect(w.sync.statusLine, 'Paused: the OneDrive folder is missing on this device');
+      // It comes back: Check now looks again.
+      await t.runAsync(() async {
+        await w.workingCopy.create(recursive: true);
+        await w.sync.checkNow();
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      });
+      expect(w.runner.rounds, 1);
+      expect(w.nb.standaloneFolders.length, 1);
+    });
+
+    sTest('a hostile item id in chosen.json stays inside the working folder', (t) async {
+      final hostile = jsonEncode({'driveId': 'd', 'itemId': '../../evil', 'path': 'x'});
+      await build(t, chosen: false, chosenText: hostile);
+      await start(t);
+      final copy = w.sync.workingCopy!;
+      expect(copy.path, startsWith(w.workingRoot.path));
+      expect(RegExp(r'^[0-9a-f]{64}$').hasMatch(copy.path.split(RegExp(r'[\\/]')).last), isTrue, reason: 'hashed');
+      expect(copy.existsSync(), isTrue);
+      expect(Directory('${w.top.path}/evil').existsSync(), isFalse);
+      expect(Directory('${w.workingRoot.path}/evil').existsSync(), isFalse);
+    });
+
+    sTest('the file is written, whole, before the folder is added; a failed write leaves none', (t) async {
+      await build(t, chosen: false);
+      await start(t);
+      // A write that cannot go through (its temporary name is taken) leaves no file.
+      await t.runAsync(() => Directory('${w.chosenFile.path}.tmp').create(recursive: true));
+      const root = ChosenRoot(driveId: 'drv1', itemId: oneDriveRootId, path: 'Documents/Notes');
+      await t.runAsync(() => w.sync.choose(root));
+      expect(w.chosenFile.existsSync(), isFalse);
+      expect(w.sync.chosen, isNull);
+      expect(w.sync.statusLine, contains("couldn't be saved"));
+      await t.runAsync(() => Directory('${w.chosenFile.path}.tmp').delete());
+      // Then the file is there, and parses, when the folder is added.
+      ChosenRoot? atAdd;
+      w.nb.onAddFolder = (_) => atAdd = ChosenRoot.fromJson(jsonDecode(w.chosenFile.readAsStringSync()));
+      await t.runAsync(() => w.sync.choose(root));
+      expect(atAdd?.itemId, oneDriveRootId);
+    });
+
+    sTest('a page open in the OneDrive folder speeds the polling up by itself', (t) async {
+      await build(
+        t,
+        pageInFolder: true,
+        pollOpen: const Duration(milliseconds: 40),
+        pollIdle: const Duration(minutes: 10),
+      );
+      await t.runAsync(() async {
+        await w.sync.start();
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        expect(w.runner.rounds, 1, reason: 'idle: the launch round only');
+        await w.nb.open(oneDrivePageId);
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        expect(w.runner.rounds, greaterThan(2));
+      });
+    });
+
+    sTest('a round that ends after dispose tells the notebook nothing', (t) async {
+      await build(t);
+      await start(t);
+      w.nb.changedPaths.clear();
+      final gate = Completer<void>();
+      w.runner.hold = gate;
+      w.runner.next = () => _round(paths: ['/x/a.canvas']);
+      unawaited(w.sync.checkNow());
+      await t.pump();
+      w.sync.dispose();
+      gate.complete();
+      await settle(t);
+      expect(w.nb.changedPaths, isEmpty);
+      expect(w.nb.log, isNot(contains('checkFolders')));
+    });
+
+    sTest('a poll wanted during a round runs when the round ends', (t) async {
+      await build(t);
+      await start(t);
+      await foregroundAgain(t);
+      final gate = Completer<void>();
+      w.runner.hold = gate;
+      unawaited(w.sync.checkNow());
+      await t.pump();
+      final base = w.runner.rounds;
+      w.sync.didChangeAppLifecycleState(AppLifecycleState.paused);
+      w.sync.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await settle(t);
+      expect(w.runner.rounds, base, reason: 'not while a round runs');
+      w.runner.hold = null;
+      gate.complete();
+      await settle(t);
+      expect(w.runner.rounds, base + 1, reason: 'the resume was not forgotten');
+    });
+
+    sTest('an answer waits for the round that is running', (t) async {
+      await build(t);
+      await start(t);
+      final gate = Completer<void>();
+      w.runner.hold = gate;
+      unawaited(w.sync.checkNow());
+      await t.pump();
+      final q = GuardQuestion(['a.canvas']);
+      final answered = w.sync.answerGuard(q, remove: false);
+      await settle(t);
+      expect(w.runner.answers, isEmpty);
+      w.runner.hold = null;
+      gate.complete();
+      await settle(t);
+      expect(await answered, isTrue);
+      expect(w.runner.answers, [(q, false)]);
+    });
+
+    sTest('an answer that cannot be saved, or is for another pull, is refused', (t) async {
+      await build(t);
+      await start(t);
+      final q = GuardQuestion(['a.canvas']);
+      w.nb.changedPaths.clear();
+      expect(await w.sync.answerGuard(q, remove: true, source: Object()), isFalse);
+      expect(w.runner.answers, isEmpty);
+      w.runner.answerError = StateError('disk full');
+      expect(await w.sync.answerGuard(q, remove: true, source: w.sync.guardSource), isFalse);
+      expect(w.nb.changedPaths, isEmpty);
+      expect(w.sync.checking, isFalse);
+      w.runner.answerError = null;
+      expect(await w.sync.answerGuard(q, remove: true, source: w.sync.guardSource), isTrue);
+    });
+
+    sTest('a notebook that fails to hear a round does not stop the next one', (t) async {
+      await build(t);
+      await start(t);
+      w.nb.failing.add('filesChanged');
+      await w.sync.checkNow();
+      expect(w.sync.checking, isFalse);
+      final before = w.runner.rounds;
+      await w.sync.checkNow();
+      expect(w.runner.rounds, before + 1);
+    });
+
+    sTest('a failed folder check does not skip discovery', (t) async {
+      await build(t);
+      await start(t);
+      w.nb.failing.add('checkFolders');
+      w.nb.log.clear();
+      w.runner.next = () => _round(paths: ['/x/a.canvas']);
+      await w.sync.checkNow();
+      expect(w.nb.log, ['filesChanged', 'checkFolders', 'discoverBinders']);
+    });
+
+    testWidgets('only a lost sign-in reads as signed out; an unreachable endpoint pauses the round', (t) async {
+      late TestTokens tokens;
+      late OneDriveSync sync;
+      await t.runAsync(() async {
+        w = await OneDriveWorld.create(chosen: false);
+        final account = await signedInAccount(tokens: (c) => tokens = TestTokens(c, expiresIn: Duration.zero));
+        sync = OneDriveSync.create(
+          notebook: w.nb,
+          microsoft: account,
+          workingRoot: w.workingRoot,
+          support: w.support,
+          graphOrigin: Uri.parse('http://127.0.0.1:9'),
+        );
+        tokens.refreshError = const AuthException(AuthErrorKind.unreachable, 'offline');
+        await expectLater(sync.folders.listFolders(), throwsA(isA<GraphException>()));
+        tokens.refreshError = const AuthException(AuthErrorKind.invalidGrant, 'gone');
+        await expectLater(sync.folders.listFolders(), throwsA(isA<SignedOutException>()));
+        sync.dispose();
+        w.sync.dispose();
+        w.nb.dispose();
+        await w.top.delete(recursive: true);
+      });
     });
   });
 

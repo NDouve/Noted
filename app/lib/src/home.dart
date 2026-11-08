@@ -197,7 +197,9 @@ class _HomeState extends State<Home> {
 
   OneDriveSync? _sync;
   GuardQuestion? _guardShown;
+  Object? _guardSource;
   GuardQuestion? _guardAnswered;
+  GuardPrompt? _prompt;
 
   @override
   void didChangeDependencies() {
@@ -205,14 +207,28 @@ class _HomeState extends State<Home> {
     final sync = OneDriveScope.maybeOf(context);
     if (sync == _sync) return;
     _sync?.removeListener(_guardChanged);
+    _dropPrompt();
     _sync = sync;
     sync?.addListener(_guardChanged);
     _guardChanged();
   }
 
-  // The OneDrive pull asks once per question, whichever screen is up.
+  // Takes the dialog away, if one is up, without answering it.
+  void _dropPrompt() {
+    _prompt?.close();
+    _prompt = null;
+    _guardShown = null;
+    _guardSource = null;
+  }
+
+  // The OneDrive pull asks once per question, whichever screen is up. One
+  // dialog at a time: it goes when its question changes or goes, and a new
+  // question gets a new dialog.
   void _guardChanged() {
-    final q = _sync?.guardQuestion;
+    final sync = _sync;
+    final q = sync?.guardQuestion;
+    final source = sync?.guardSource;
+    if (_prompt != null && (q != _guardShown || !identical(source, _guardSource))) _dropPrompt();
     if (q == null) {
       _guardShown = null;
       _guardAnswered = null;
@@ -220,22 +236,40 @@ class _HomeState extends State<Home> {
     }
     if (q == _guardShown || q == _guardAnswered || !mounted) return;
     _guardShown = q;
+    _guardSource = source;
     // After this frame: the listener can fire while the tree is building.
-    WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_askGuard(q)));
+    WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_askGuard(q, source)));
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
-  Future<void> _askGuard(GuardQuestion q) async {
+  Future<void> _askGuard(GuardQuestion q, Object? source) async {
     final sync = _sync;
-    if (!mounted || sync == null || _guardShown != q) return;
-    final remove = await showOneDriveGuardDialog(context, q);
-    if (remove == null) return;
-    _guardAnswered = q;
+    if (!mounted || sync == null || _guardShown != q || !identical(_guardSource, source) || _prompt != null) return;
+    final prompt = showOneDriveGuardDialog(context, q);
+    _prompt = prompt;
+    final remove = await prompt.answer;
+    if (!identical(_prompt, prompt)) return; // taken away: its question changed
+    _prompt = null;
+    if (remove == null) {
+      // Closed without an answer: ask again at the next change.
+      _guardShown = null;
+      return;
+    }
+    // The answer goes to the pull that asked, and only counts once saved.
+    final saved = await sync.answerGuard(q, remove: remove, source: source);
     _guardShown = null;
-    await sync.answerGuard(q, remove: remove);
-    // A different question that came up meanwhile is asked next.
-    if (mounted) _guardChanged();
+    if (saved) {
+      _guardAnswered = q;
+      // A different question that came up meanwhile is asked next.
+      if (mounted) _guardChanged();
+    } else if (mounted) {
+      // Not asked again at once: the next change of the pull asks.
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        const SnackBar(content: Text("Your answer couldn't be saved. OneDrive will ask again.")),
+      );
+    }
   }
+
 
   @override
   void dispose() {

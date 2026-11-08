@@ -69,6 +69,9 @@ void main() {
       await open(t, _tree());
       expect(title(t), 'OneDrive');
       expect(find.text('Documents'), findsOneWidget);
+      expect(find.byIcon(Icons.folder_rounded), findsWidgets, reason: 'the rounded icon set');
+      expect(find.byIcon(Icons.folder_outlined), findsNothing);
+      expect(t.getSize(find.byKey(const ValueKey('picker-folder-D'))).height, greaterThanOrEqualTo(44));
       expect(find.text('Pictures'), findsOneWidget);
       expect(t.widget<Text>(find.byKey(const ValueKey('picker-hint'))).data, contains("top level of OneDrive can't be chosen"));
       expect(t.widget<FilledButton>(find.byKey(const ValueKey('picker-use'))).onPressed, isNull);
@@ -111,7 +114,7 @@ void main() {
       await open(t, _tree());
       await into(t, 'D');
       await into(t, 'B');
-      expect(find.text('This folder is a binder. Choose the folder that holds it.'), findsOneWidget);
+      expect(find.text('This is a binder. Choose the folder that holds it.'), findsOneWidget);
       expect(t.widget<FilledButton>(find.byKey(const ValueKey('picker-use'))).onPressed, isNull);
       await t.tap(find.byKey(const ValueKey('picker-use')), warnIfMissed: false);
       await t.pumpAndSettle();
@@ -142,6 +145,7 @@ void main() {
       final f = _FailingFolders();
       await open(t, f);
       expect(find.byKey(const ValueKey('picker-error')), findsOneWidget);
+      expect(find.byKey(const ValueKey('picker-hint')), findsNothing, reason: 'no top-level hint under an error');
       f.fail = false;
       f.children[null] = [FakeFolders.folder('P', 'Pictures')];
       await t.tap(find.byKey(const ValueKey('picker-retry')));
@@ -351,6 +355,77 @@ void main() {
       await t.tap(find.byKey(const ValueKey('onedrive-guard-keep')));
       await t.pumpAndSettle();
       expect(w.runner.answers.length, 2);
+      await finish(t);
+    });
+
+    testWidgets('system Back and a tap outside do not close it', (t) async {
+      await build(t);
+      await ask(t, q);
+      await t.binding.handlePopRoute();
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('onedrive-guard')), findsOneWidget, reason: 'Back');
+      await t.tapAt(const Offset(2, 2));
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('onedrive-guard')), findsOneWidget, reason: 'outside');
+      expect(w.runner.answers, isEmpty);
+      await t.tap(find.byKey(const ValueKey('onedrive-guard-keep')));
+      await t.pumpAndSettle();
+      expect(w.runner.answers.length, 1, reason: 'it can still be answered');
+      await finish(t);
+    });
+
+    testWidgets('one dialog at a time: a changed question replaces it and a gone one closes it', (t) async {
+      await build(t);
+      await ask(t, q);
+      await ask(t, GuardQuestion(['x.canvas']));
+      expect(find.byKey(const ValueKey('onedrive-guard')), findsOneWidget);
+      expect(find.text('OneDrive says 1 page was removed.'), findsOneWidget);
+      expect(find.text('OneDrive says 2 pages were removed.'), findsNothing);
+      w.runner.guardQuestion = null;
+      await t.runAsync(() async {
+        w.runner.changed();
+        await Future<void>.delayed(Duration.zero);
+      });
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('onedrive-guard')), findsNothing);
+      expect(w.runner.answers, isEmpty, reason: 'closing is not an answer');
+      await finish(t);
+    });
+
+    testWidgets('keeping is the filled button, removing the destructive one, and the list scrolls', (t) async {
+      await build(t);
+      await ask(t, q);
+      expect(t.widget(find.byKey(const ValueKey('onedrive-guard-keep'))), isA<FilledButton>());
+      final remove = t.widget<OutlinedButton>(find.byKey(const ValueKey('onedrive-guard-remove')));
+      expect(remove.style?.foregroundColor?.resolve({}), Theme.of(t.element(find.byKey(const ValueKey('onedrive-guard')))).colorScheme.error);
+      expect(
+        find.descendant(of: find.byKey(const ValueKey('onedrive-guard')), matching: find.byType(Scrollbar)),
+        findsOneWidget,
+      );
+      await t.tap(find.byKey(const ValueKey('onedrive-guard-keep')));
+      await t.pumpAndSettle();
+      await finish(t);
+    });
+
+    testWidgets('an answer that cannot be saved says so, and the question is asked again', (t) async {
+      await build(t);
+      w.runner.answerError = StateError('disk full');
+      await ask(t, q);
+      await t.tap(find.byKey(const ValueKey('onedrive-guard-keep')));
+      await t.pumpAndSettle();
+      expect(find.text("Your answer couldn't be saved. OneDrive will ask again."), findsOneWidget);
+      expect(w.runner.answers, isEmpty);
+      expect(find.byKey(const ValueKey('onedrive-guard')), findsNothing);
+      w.runner.answerError = null;
+      await t.runAsync(() async {
+        w.runner.changed();
+        await Future<void>.delayed(Duration.zero);
+      });
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('onedrive-guard')), findsOneWidget, reason: 'asked again at the next change');
+      await t.tap(find.byKey(const ValueKey('onedrive-guard-keep')));
+      await t.pumpAndSettle();
+      expect(w.runner.answers.length, 1);
       await finish(t);
     });
 

@@ -132,6 +132,8 @@ class _BinderCoverState extends State<BinderCover> {
         controller: c,
         focusNode: focusNode,
         readOnly: widget.notebook.isPullOnlyLocation(widget.path),
+        // Dimmed, like the settings of a pull-only binder, so it does not look editable.
+        enabled: !widget.notebook.isPullOnlyLocation(widget.path),
         maxLines: maxLines,
         minLines: 1,
         decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
@@ -182,6 +184,7 @@ class _BinderCoverState extends State<BinderCover> {
                       key: const ValueKey('cover-read-only'),
                       style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                     ),
+                    SizedBox(height: NotedMetrics.of(context).space2),
                   ],
                   SizedBox(height: NotedMetrics.of(context).space3),
                   _field('cover-title', 'Title', _title, focusNode: _titleFocus),
@@ -192,7 +195,9 @@ class _BinderCoverState extends State<BinderCover> {
                   SizedBox(height: NotedMetrics.of(context).space4),
                   Text('Color', style: theme.textTheme.labelMedium),
                   SizedBox(height: NotedMetrics.of(context).space2),
-                  Wrap(
+                  Opacity(
+                    opacity: pullOnly ? 0.4 : 1,
+                    child: Wrap(
                     spacing: NotedMetrics.of(context).space2,
                     runSpacing: NotedMetrics.of(context).space2,
                     children: [
@@ -219,6 +224,7 @@ class _BinderCoverState extends State<BinderCover> {
                           ),
                         ),
                     ],
+                  ),
                   ),
                   SizedBox(height: NotedMetrics.of(context).space6),
                   Text('Last edited', style: theme.textTheme.labelMedium),

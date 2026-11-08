@@ -11,7 +11,7 @@ import 'package:noted_sync/noted_sync.dart' show FolderHint, RemoteItem;
 import 'onedrive_sync.dart';
 
 /// The refusal shown for a folder that is itself a binder.
-const String binderFolderRefusal = 'This folder is a binder. Choose the folder that holds it.';
+const String binderFolderRefusal = 'This is a binder. Choose the folder that holds it.';
 
 /// Opens the full-screen folder browser; returns the folder the user chose,
 /// or null if they went back.
@@ -147,7 +147,7 @@ class _OneDriveFolderPickerState extends State<OneDriveFolderPicker> {
     final hint = _hint;
     final refused = hint != null && hint.holdsBinderFile;
     final note = open == null
-        ? "Open a folder to use it. The top level of OneDrive can't be chosen."
+        ? (_error != null ? null : "Open a folder to use it. The top level of OneDrive can't be chosen.")
         : refused
         ? binderFolderRefusal
         : hint == null
@@ -158,7 +158,7 @@ class _OneDriveFolderPickerState extends State<OneDriveFolderPicker> {
         leading: IconButton(
           key: const ValueKey('picker-up'),
           tooltip: open == null ? 'Close' : 'Up',
-          icon: Icon(open == null ? Icons.close : Icons.arrow_back),
+          icon: Icon(open == null ? Icons.close_rounded : Icons.arrow_back_rounded),
           onPressed: _up,
         ),
         title: Text(open?.name ?? 'OneDrive', key: const ValueKey('picker-title')),
@@ -180,13 +180,13 @@ class _OneDriveFolderPickerState extends State<OneDriveFolderPicker> {
                     children: [
                       for (final f in _items)
                         SizedBox(
-                          height: m.rowSize,
+                          height: m.rowSize < 44 ? 44 : m.rowSize, // at least the touch target
                           child: ListTile(
                             key: ValueKey('picker-folder-${f.id}'),
                             dense: true,
-                            leading: const Icon(Icons.folder_outlined),
+                            leading: const Icon(Icons.folder_rounded),
                             title: Text(f.name ?? ''),
-                            trailing: const Icon(Icons.chevron_right),
+                            trailing: const Icon(Icons.chevron_right_rounded),
                             onTap: () => _into(f),
                           ),
                         ),

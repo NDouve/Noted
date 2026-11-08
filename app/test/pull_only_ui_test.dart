@@ -107,6 +107,7 @@ void main() {
     expect(find.text(Notebook.pullOnlyMessage), findsOneWidget);
     for (final k in ['cover-title', 'cover-description', 'cover-owner']) {
       expect(tester.widget<TextField>(find.byKey(ValueKey(k))).readOnly, isTrue, reason: k);
+      expect(tester.widget<TextField>(find.byKey(ValueKey(k))).enabled, isFalse, reason: '$k looks read-only');
     }
     final before = nb.binders.single.binder!.color;
     await tester.tap(find.byKey(ValueKey('cover-color-${binderPalette.last}')));

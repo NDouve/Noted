@@ -1,4 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Microsoft sign-in and the OneDrive pull talk to Microsoft over HTTPS. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="Noted"
         android:name="${applicationName}"

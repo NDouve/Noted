@@ -25,15 +25,19 @@ String _jwt(Map<String, Object?> claims) {
   return '${part({'alg': 'none'})}.${part(claims)}.sig';
 }
 
-/// A token endpoint that always says yes; the access token is `A`.
-class _Tokens extends TokenClient {
-  _Tokens(super.config);
+/// A token endpoint that says yes (the access token is `A`) until [refreshError]
+/// is set; with a short [expiresIn] every token request refreshes.
+class TestTokens extends TokenClient {
+  TestTokens(super.config, {this.expiresIn = const Duration(hours: 1)});
+
+  final Duration expiresIn;
+  AuthException? refreshError;
 
   TokenResponse get _ok => TokenResponse(
     accessToken: 'A',
     refreshToken: 'R',
     idToken: _jwt({'tid': 't', 'oid': 'o', 'name': 'Ada Test'}),
-    expiresIn: const Duration(hours: 1),
+    expiresIn: expiresIn,
   );
 
   @override
@@ -44,15 +48,19 @@ class _Tokens extends TokenClient {
   }) async => _ok;
 
   @override
-  Future<TokenResponse> refresh(String refreshToken) async => _ok;
+  Future<TokenResponse> refresh(String refreshToken) async {
+    final e = refreshError;
+    if (e != null) throw e;
+    return _ok;
+  }
 }
 
 /// An account over a real session with a fake token endpoint, signed in.
-Future<MicrosoftAccount> signedInAccount() async {
+Future<MicrosoftAccount> signedInAccount({TestTokens Function(AuthConfig)? tokens}) async {
   const config = AuthConfig(clientId: 'test-client');
   final account = MicrosoftAccount(
     config: config,
-    session: AuthSession(tokens: _Tokens(config), store: MemoryTokenStore()),
+    session: AuthSession(tokens: (tokens ?? TestTokens.new)(config), store: MemoryTokenStore()),
     flow: (_) async => const AuthGrant(code: 'c', codeVerifier: 'v', redirectUri: 'r'),
   );
   await account.signIn();
@@ -78,6 +86,9 @@ class FakeRunner implements SyncRunner {
   /// What the next round returns.
   RoundResult Function() next = RoundResult.new;
 
+  /// Thrown by the next answer (a journal that can't be saved).
+  Object? answerError;
+
   /// What answering the guard returns (the round that follows).
   RoundResult? answerResult = RoundResult();
 
@@ -96,6 +107,8 @@ class FakeRunner implements SyncRunner {
 
   @override
   Future<RoundResult?> answerGuard(GuardQuestion q, {required bool remove}) async {
+    final err = answerError;
+    if (err != null) throw err;
     answers.add((q, remove));
     guardQuestion = null;
     changed();
@@ -143,6 +156,18 @@ class SpyNotebook extends Notebook {
   /// Also do what the real notebook does for the changed files.
   bool passThrough = false;
 
+  /// Made to throw by the next call of that name.
+  final Set<String> failing = {};
+
+  /// Called with the path before a standalone folder is added.
+  void Function(String path)? onAddFolder;
+
+  @override
+  Future<String> addStandaloneFolder(String path) {
+    onAddFolder?.call(path);
+    return super.addStandaloneFolder(path);
+  }
+
   final List<String> log = [];
   final List<List<String>> changedPaths = [];
 
@@ -150,12 +175,20 @@ class SpyNotebook extends Notebook {
   Future<void> filesChanged(Iterable<String> paths) async {
     changedPaths.add(paths.toList());
     log.add('filesChanged');
+    if (failing.contains('filesChanged')) throw StateError('filesChanged');
     if (passThrough) await super.filesChanged(paths);
+  }
+
+  @override
+  Future<void> load() {
+    log.add('load');
+    return super.load();
   }
 
   @override
   Future<void> checkFolders() async {
     log.add('checkFolders');
+    if (failing.contains('checkFolders')) throw StateError('checkFolders');
   }
 
   @override
