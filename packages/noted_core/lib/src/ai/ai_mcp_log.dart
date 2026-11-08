@@ -33,7 +33,8 @@ const String aiMcpResultPendingApproval = 'pending_approval';
 ///
 /// `code` is the code's id (16 hex characters), never the key. `result` is
 /// [aiMcpResultOk], an [AiLinkCode] wire value (`not_permitted`, `expired`,
-/// …) or [aiMcpResultPendingApproval].
+/// …), `ambiguous`, `binder_unusable` (the MCP server's own refusals) or
+/// [aiMcpResultPendingApproval].
 final class AiMcpLogEntry {
   const AiMcpLogEntry({
     required this.time,

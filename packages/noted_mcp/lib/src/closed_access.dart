@@ -369,16 +369,11 @@ final class ClosedAccess {
         done(AiLinkCode.notWritable, page, ambiguousPageText, aiMcpResultAmbiguous);
     final found = _pageOfBox(library, boxId, code.target.page);
     if (found.ambiguous) return ambiguous(found.page);
-    final first = found.page;
-    if (first == null || first.path == null) return done(AiLinkCode.noBox);
-    // Whichever entry was found, work from the standalone one when the file has
-    // both: its tree reaches every folder the parents may be in.
-    final page = first.location.binder == null
-        ? first
-        : library.pages.firstWhere(
-            (p) => p.path == first.path && p.location.binder == null,
-            orElse: () => first,
-          );
+    final page = found.page;
+    if (page == null || page.path == null) return done(AiLinkCode.noBox);
+    // [_pageOfBox] gives the standalone entry when the file has both (the
+    // library lists those first, and the fallback orders them first): its tree
+    // reaches every folder the parents may be in.
     final deniedOnPage = _denied(code, view, boxId, mode, page);
     if (deniedOnPage != null) return done(deniedOnPage.code, page, deniedOnPage.message);
     final chain = _chain(library, page);
@@ -564,7 +559,7 @@ final class ClosedAccess {
 
   // Keeps, of what the library load read, what this write's decision used:
   // the two JSON files, the page's binder file and the chain parents' files
-  // (by their bytes), every binder file (by whether it could be read) and every
+  // (by their bytes), every binder file (by whether it could be used: present, readable and parsing) and every
   // folder's listing, since a copy in any listed folder can make an id ambiguous.
   void _pruneSources(NotedLibrary library, LibraryPage page, _Chain chain) {
     final s = library.sources;
