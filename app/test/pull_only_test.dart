@@ -849,10 +849,13 @@ void main() {
       final ro2 = Directory('${w.top.path}/onedrive_b')..createSync();
       final nb = w.pull(roots: [w.ro.path, ro2.path]);
       await nb.load();
+      await nb.discoveryIdle;
       await nb.addStandaloneFolder(ro2.path);
       await rename(w.work.path, '${ro2.path}/Moved');
+      await nb.checkFolders();
       await nb.discoverBinders();
       expect(nb.binders.single.path, w.work.path);
+      expect(nb.binderMovedTo(w.work.path), isNotEmpty, reason: 'it was found there, and not taken for the same place');
     });
 
     test('a sibling folder that only shares the prefix is not under the root', () async {
@@ -944,6 +947,7 @@ void main() {
       );
       await expectLater(nb.createBinderFromTemplate(template, '${w.acct.path}/NewB'), _refused);
       expect(Directory('${w.acct.path}/NewB').existsSync(), isFalse);
+      expect(Directory('${w.acct.path}/New binder').existsSync(), isFalse, reason: 'no folder made for it');
     });
 
     test('filesChanged with no paths, or none under an assets folder, does not tell the attachments', () async {
