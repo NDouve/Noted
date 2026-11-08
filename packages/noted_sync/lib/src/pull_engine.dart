@@ -122,8 +122,9 @@ class PullEngine {
   }
 
   /// Answers the question: [remove] removes the listed paths here too, else
-  /// they are kept here. Only paths still in the plan count.
-  Future<void> answerGuard(GuardQuestion q, {required bool remove}) async {
+  /// they are kept here. Only paths still in the plan count. Returns the round
+  /// that follows (null if no listed path was still in the plan).
+  Future<RoundResult?> answerGuard(GuardQuestion q, {required bool remove}) async {
     // One answer at a time, and never while a round is running.
     while (true) {
       final running = _running;
@@ -140,7 +141,7 @@ class PullEngine {
     final j = _journal;
     var any = false;
     try {
-      if (j == null) return;
+      if (j == null) return null;
       for (final p in q.paths) {
         final key = _guardKeys[p];
         if (key == null) continue;
@@ -160,7 +161,7 @@ class PullEngine {
       _answering = null;
       done.complete();
     }
-    if (any) await runRound();
+    return any ? await runRound() : null;
   }
 
   void dispose() {

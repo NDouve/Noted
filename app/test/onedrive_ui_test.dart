@@ -70,7 +70,7 @@ void main() {
       expect(title(t), 'OneDrive');
       expect(find.text('Documents'), findsOneWidget);
       expect(find.text('Pictures'), findsOneWidget);
-      expect(find.byKey(const ValueKey('picker-hint')), findsNothing, reason: 'the drive root has no hint');
+      expect(t.widget<Text>(find.byKey(const ValueKey('picker-hint'))).data, contains("top level of OneDrive can't be chosen"));
       expect(t.widget<FilledButton>(find.byKey(const ValueKey('picker-use'))).onPressed, isNull);
 
       await into(t, 'D');

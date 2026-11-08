@@ -243,7 +243,9 @@ void main() {
       await h.round();
       expect(h.engine.guardQuestion, q);
       expect(h.has('B/q.canvas'), isTrue);
-      await h.engine.answerGuard(q, remove: true);
+      final answered = await h.engine.answerGuard(q, remove: true);
+      expect(changedRel(h, answered!), containsAll(['B/q.canvas', 'B/noted-binder.json']), reason: 'the round after the answer is returned');
+      expect(await h.engine.answerGuard(q, remove: true), isNull, reason: 'nothing left in the plan: no round');
       expect(h.has('B/q.canvas'), isFalse);
       expect(h.has('B/noted-binder.json'), isFalse);
       expect(h.engine.guardQuestion, isNull);

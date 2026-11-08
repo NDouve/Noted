@@ -269,17 +269,49 @@ void main() {
       expect(w.nb.log, contains('checkFolders'));
     });
 
-    sTest('answering the guard to remove looks at the folders afterwards', (t) async {
+    sTest('answering the guard reports the round it ran, like any other round', (t) async {
       await build(t);
       await start(t);
       final q = GuardQuestion(['a.canvas']);
       w.nb.log.clear();
+      w.runner.answerResult = _round(paths: ['/x/a.canvas']);
       await w.sync.answerGuard(q, remove: true);
       expect(w.runner.answers, [(q, true)]);
-      expect(w.nb.log, ['checkFolders', 'discoverBinders']);
+      expect(w.nb.changedPaths.last, ['/x/a.canvas']);
+      expect(w.nb.log, ['filesChanged', 'checkFolders', 'discoverBinders']);
+      // A round that applied nothing only reports its (empty) files; no round at all, nothing.
       w.nb.log.clear();
+      w.runner.answerResult = _round();
+      await w.sync.answerGuard(q, remove: false);
+      expect(w.nb.log, ['filesChanged']);
+      w.nb.log.clear();
+      w.runner.answerResult = null;
       await w.sync.answerGuard(q, remove: false);
       expect(w.nb.log, isEmpty);
+    });
+
+    sTest('after Remove them here too, a page whose original was removed moves to its duplicate (G3)', (t) async {
+      await build(t, pageInFolder: true);
+      w.nb.passThrough = true;
+      final copy = File('${w.workingCopy.path}/$oneDrivePageId-DESKTOP-9.canvas');
+      final orig = File('${w.workingCopy.path}/$oneDrivePageId.canvas');
+      await t.runAsync(() async {
+        await copy.writeAsString(await orig.readAsString());
+        await w.sync.start();
+      });
+      await t.pump();
+      final folder = w.nb.standaloneFolders.single;
+      expect(folder.unreadable.map((u) => u.reason), ['duplicate page id $oneDrivePageId'], reason: 'listed as a duplicate');
+      // The engine removes the original after the answer; the round reports it.
+      final q = GuardQuestion(['$oneDrivePageId.canvas']);
+      w.runner.answerResult = _round(paths: [orig.path]);
+      await t.runAsync(() async {
+        await orig.delete();
+        await w.sync.answerGuard(q, remove: true);
+      });
+      await t.pump();
+      expect(folder.unreadable, isEmpty, reason: 'the page moved to the surviving file');
+      expect(w.nb.pageTitleOf(oneDrivePageId), 'From OneDrive');
     });
   });
 

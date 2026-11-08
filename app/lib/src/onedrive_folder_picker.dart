@@ -147,7 +147,7 @@ class _OneDriveFolderPickerState extends State<OneDriveFolderPicker> {
     final hint = _hint;
     final refused = hint != null && hint.holdsBinderFile;
     final note = open == null
-        ? null
+        ? "Open a folder to use it. The top level of OneDrive can't be chosen."
         : refused
         ? binderFolderRefusal
         : hint == null

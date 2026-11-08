@@ -47,7 +47,7 @@ abstract class SyncRunner {
 
   /// One round; never throws.
   Future<RoundResult> runRound();
-  Future<void> answerGuard(GuardQuestion q, {required bool remove});
+  Future<RoundResult?> answerGuard(GuardQuestion q, {required bool remove});
   void dispose();
 }
 
@@ -67,7 +67,7 @@ class EngineRunner implements SyncRunner {
   @override
   Future<RoundResult> runRound() => engine.runRound();
   @override
-  Future<void> answerGuard(GuardQuestion q, {required bool remove}) => engine.answerGuard(q, remove: remove);
+  Future<RoundResult?> answerGuard(GuardQuestion q, {required bool remove}) => engine.answerGuard(q, remove: remove);
   @override
   void dispose() => engine.dispose();
 }
@@ -468,11 +468,7 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
     } finally {
       if (result != null) {
         failed = result.error != null;
-        try {
-          await notebook.filesChanged(result.changedPaths);
-        } on Object catch (e) {
-          debugPrint('OneDrive: telling the notebook failed: ${e.runtimeType}');
-        }
+        await _tell(result);
       }
     }
     try {
@@ -501,22 +497,36 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Answers the guard's question: remove the listed pages here too, or keep
-  /// them. The round that follows is the engine's own, so its result isn't
-  /// seen here; the notebook looks at its folders after a removal.
+  /// them. The round that follows is reported like any other: its changed
+  /// files go to the notebook in a `finally`, then the folder check and
+  /// discovery if it applied something.
   Future<void> answerGuard(GuardQuestion q, {required bool remove}) async {
     final runner = _runner;
     if (runner == null) return;
     _busy = true;
     notifyListeners();
+    RoundResult? result;
     try {
-      await runner.answerGuard(q, remove: remove);
-      if (remove) await _lookAgain();
+      try {
+        result = await runner.answerGuard(q, remove: remove);
+      } finally {
+        if (result != null) await _tell(result);
+      }
+      if (result != null && result.changedPaths.isNotEmpty) await _lookAgain();
     } finally {
       _busy = false;
       if (!_disposed) notifyListeners();
     }
   }
 
+  // The notebook hears what a round changed.
+  Future<void> _tell(RoundResult result) async {
+    try {
+      await notebook.filesChanged(result.changedPaths);
+    } on Object catch (e) {
+      debugPrint('OneDrive: telling the notebook failed: ${e.runtimeType}');
+    }
+  }
   @override
   void dispose() {
     _disposed = true;

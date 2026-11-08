@@ -78,6 +78,9 @@ class FakeRunner implements SyncRunner {
   /// What the next round returns.
   RoundResult Function() next = RoundResult.new;
 
+  /// What answering the guard returns (the round that follows).
+  RoundResult? answerResult = RoundResult();
+
   /// While set, a round waits for it.
   Completer<void>? hold;
 
@@ -92,10 +95,11 @@ class FakeRunner implements SyncRunner {
   }
 
   @override
-  Future<void> answerGuard(GuardQuestion q, {required bool remove}) async {
+  Future<RoundResult?> answerGuard(GuardQuestion q, {required bool remove}) async {
     answers.add((q, remove));
     guardQuestion = null;
     changed();
+    return answerResult;
   }
 
   @override
@@ -136,6 +140,9 @@ class SpyNotebook extends Notebook {
     super.folderCheckInterval,
   });
 
+  /// Also do what the real notebook does for the changed files.
+  bool passThrough = false;
+
   final List<String> log = [];
   final List<List<String>> changedPaths = [];
 
@@ -143,6 +150,7 @@ class SpyNotebook extends Notebook {
   Future<void> filesChanged(Iterable<String> paths) async {
     changedPaths.add(paths.toList());
     log.add('filesChanged');
+    if (passThrough) await super.filesChanged(paths);
   }
 
   @override
