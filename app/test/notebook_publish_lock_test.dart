@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/save_trouble.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/busy_retry.dart';
@@ -35,6 +36,19 @@ class HookedStore extends PageStore {
     return super.deleteIfUnchanged(pageId, expectedText);
   }
 
+  /// Makes every saveNewText fail while set.
+  bool failNewText = false;
+
+  @override
+  Future<bool> saveNewText(
+    NotedPage page,
+    String text, {
+    Future<void> Function()? beforePublish,
+  }) async {
+    if (failNewText) throw const FileSystemException('destination gone');
+    return super.saveNewText(page, text, beforePublish: beforePublish);
+  }
+
   @override
   Future<bool> saveNew(
     NotedPage page, {
@@ -57,18 +71,23 @@ void main() {
   late Directory copiesDir;
   final sep = Platform.pathSeparator;
 
-  setUp(() async {
-    root = await Directory.systemTemp.createTemp('noted_publock');
-    pages = await Directory('${root.path}${sep}pages').create();
-    copiesDir = await Directory('${root.path}${sep}Copies').create();
+  final stores = <String, HookedStore>{};
+
+  // (Re)builds the notebook; [rec] turns recovery on.
+  Future<void> build({Directory? rec}) async {
+    nb.dispose();
+    stores.clear();
     store = HookedStore(pages);
+    stores[FolderLocks.keyOf(pages)] = store;
     locks = FolderLocks();
     nb = Notebook(
       store,
       buildModules(),
       saveDelay: const Duration(hours: 1),
       folderLocks: locks,
-      storeFactory: (d) => d.path == pages.path ? store : HookedStore(d),
+      recoveryDirectory: rec,
+      storeFactory: (d) =>
+          stores.putIfAbsent(FolderLocks.keyOf(d), () => HookedStore(d)),
       pickFolder: () async => copiesDir.path,
       templatesDirectory: Directory('${root.path}${sep}templates'),
     );
@@ -77,6 +96,15 @@ void main() {
     nb.localChanges.listen(events.add);
     await pump();
     events.clear();
+  }
+
+  setUp(() async {
+    root = await Directory.systemTemp.createTemp('noted_publock');
+    pages = await Directory('${root.path}${sep}pages').create();
+    copiesDir = await Directory('${root.path}${sep}Copies').create();
+    store = HookedStore(pages);
+    nb = Notebook(store, buildModules());
+    await build();
   });
 
   tearDown(() async {
@@ -227,22 +255,26 @@ void main() {
   /// first is put back by a rollback; the lock is held from the failing
   /// delete on. Returns the delete, the gate and the page being put back.
   Future<(Future<Object?>, Completer<void>, Future<void>, String)>
-  rollbackHeld() async {
-    final parent = nb.currentId!;
-    final child = await nb.createPage(parentId: parent);
-    await nb.createPage(); // the open page is neither
+  rollbackHeld({String? binderPath, Directory? dir}) async {
+    final s = dir == null ? store : stores[FolderLocks.keyOf(dir)]!;
+    final parent = binderPath == null
+        ? nb.currentId!
+        : await nb.createPage(binderPath: binderPath);
+    await nb.createPage(parentId: parent);
+    if (binderPath == null) await nb.createPage(); // the open page is neither
     await nb.flush();
     await pump();
     final gate = Completer<void>();
     late Future<void> held;
     var calls = 0;
-    var firstId = '';
-    store.onDelete = () {
+    s.onDelete = () {
       if (++calls == 1) return;
-      held = locks.run(pages, () => gate.future); // queued behind this delete
+      held = locks.run(
+        dir ?? pages,
+        () => gate.future,
+      ); // queued behind this delete
       throw const FileSystemException('delete failed');
     };
-    firstId = child; // order is checked below from what is missing
     events.clear();
     final result = nb
         .delete(parent)
@@ -253,7 +285,7 @@ void main() {
     }
     expect(calls, 2);
     await pump();
-    return (result, gate, held, firstId);
+    return (result, gate, held, parent);
   }
 
   test(
@@ -437,5 +469,127 @@ void main() {
       hasLength(1),
     );
     nb2.dispose();
+  });
+
+  List<FileSystemEntity> published(Directory d, {String? containing}) => d
+      .listSync()
+      .where(
+        (e) =>
+            e.path.endsWith('.canvas') &&
+            (containing == null || e.path.contains(containing)),
+      )
+      .toList();
+
+  test('quit during a delete rollback that waits for the folder lock asks and keeps the page', () async {
+    await build(rec: Directory('${root.path}${sep}rec'));
+    final (result, gate, held, parent) = await rollbackHeld();
+    expect(File(pagePath(parent)).existsSync(), isFalse);
+    final asked = <UserQuestion>[];
+    nb.questioner = (q, title) async {
+      asked.add(q);
+      return false; // stay
+    };
+    final stay = await nb.prepareToExit(
+      limit: const Duration(milliseconds: 300),
+    );
+    expect(stay, isFalse);
+    expect(asked, [UserQuestion.leaveAndLose]);
+    expect(published(pages, containing: '-undo-'), isEmpty);
+    gate.complete();
+    await held;
+    expect(await result.timeout(const Duration(seconds: 10)), isNotNull);
+    await pump();
+    expect(File(pagePath(parent)).existsSync(), isTrue);
+    expect(published(pages, containing: '-undo-'), isEmpty);
+  });
+
+  test('a binder removed while a new page waits for the lock: nothing is published', () async {
+    final src = await Directory('${root.path}${sep}Src').create();
+    final section = await nb.addBinder(src.path);
+    await pump();
+    events.clear();
+    final gate = Completer<void>();
+    final held = locks.run(src, () => gate.future);
+    Object? error;
+    final create = nb
+        .createPage(binderPath: section.path)
+        .then<void>((_) {}, onError: (Object e) => error = e);
+    await pump();
+    await nb.removeBinder(section.path).timeout(const Duration(seconds: 10));
+    events.clear();
+    gate.complete();
+    await held;
+    await create.timeout(const Duration(seconds: 10));
+    expect(error, isA<NotebookException>());
+    expect(published(src), isEmpty);
+    expect(events.where((e) => e.path.endsWith('.canvas')), isEmpty);
+  });
+
+  test('a binder removed while a delete rollback waits for the lock: the restore publishes nothing', () async {
+    await build(rec: Directory('${root.path}${sep}rec'));
+    final src = await Directory('${root.path}${sep}Src').create();
+    final section = await nb.addBinder(src.path);
+    final (result, gate, held, parent) = await rollbackHeld(
+      binderPath: section.path,
+      dir: src,
+    );
+    await nb.removeBinder(section.path).timeout(const Duration(seconds: 10));
+    events.clear();
+    gate.complete();
+    await held;
+    await result.timeout(const Duration(seconds: 10));
+    await pump();
+    expect(File(pagePath(parent, src)).existsSync(), isFalse);
+    expect(
+      events.where(
+        (e) =>
+            e.kind == LocalChangeKind.published &&
+            e.path.endsWith('$parent.canvas'),
+      ),
+      isEmpty,
+    );
+  });
+
+  test('quit with held pages and a stalled folder lock: stay, then the copy is published once on release', () async {
+    final parent = nb.currentId!;
+    await nb.createPage(parentId: parent);
+    await nb.createPage();
+    await nb.flush();
+    await pump();
+    var calls = 0;
+    store.onDelete = () {
+      if (++calls > 1) throw const FileSystemException('delete failed');
+    };
+    store.failNewText = true;
+    Object? error;
+    try {
+      await nb.delete(parent);
+    } on Object catch (e) {
+      error = e;
+    }
+    expect(error, isA<PagesNotRestoredException>());
+    store.onDelete = null;
+    store.failNewText = false;
+    await pump();
+    events.clear();
+    final gate = Completer<void>();
+    final held = locks.run(pages, () => gate.future);
+    nb.questioner = (q, title) async => false; // stay
+    final stay = await nb.prepareToExit(
+      limit: const Duration(milliseconds: 300),
+    );
+    expect(stay, isFalse);
+    expect(published(pages, containing: '-undo-'), isEmpty);
+    gate.complete();
+    await held;
+    await pump();
+    await pump();
+    expect(published(pages, containing: '-undo-'), hasLength(1));
+    expect(
+      events.where(
+        (e) => e.kind == LocalChangeKind.published && e.path.contains('-undo-'),
+      ),
+      hasLength(1),
+    );
   });
 }

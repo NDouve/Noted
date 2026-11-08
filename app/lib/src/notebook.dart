@@ -2573,41 +2573,49 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Not through recovery, whose replay would take the file as the newer page.
       final copied = <int, String>{};
       final direct = <int>[];
-      for (final i in deletedNow) {
-        try {
-          if (await _restoreText(loc, pages[i], texts[i])) {
-            _metas[ids[i]] = pages[i].meta;
-            _loc[ids[i]] = loc;
-          } else {
-            // A file appeared at its path meanwhile. Unless it holds exactly
-            // the deleted version, that version is not in the folder: it is
-            // published beside the file as a copy, never over it (0053).
-            String? there;
-            try {
-              there = await st.readText(ids[i]);
-            } on Object {
-              there = null;
-            }
-            if (there != texts[i]) {
-              final copy = await _publishConflictCopy(st, pages[i]);
-              if (copy != null) {
-                copied[i] = _baseName(copy);
-              } else {
-                direct.add(i);
+      // Registered while the pages are only in memory (a stalled folder lock can
+      // hold the restore for long), so exit waits for it, is bounded and asks.
+      final rollbackDone = Completer<void>();
+      _undoRuns[rollbackDone.future] = DeletedPages._([for (final i in deletedNow) pages[i]], null, loc, {});
+      try {
+        for (final i in deletedNow) {
+          try {
+            if (await _restoreText(loc, pages[i], texts[i])) {
+              _metas[ids[i]] = pages[i].meta;
+              _loc[ids[i]] = loc;
+            } else {
+              // A file appeared at its path meanwhile. Unless it holds exactly
+              // the deleted version, that version is not in the folder: it is
+              // published beside the file as a copy, never over it (0053).
+              String? there;
+              try {
+                there = await st.readText(ids[i]);
+              } on Object {
+                there = null;
+              }
+              if (there != texts[i]) {
+                final copy = await _publishConflictCopy(st, pages[i]);
+                if (copy != null) {
+                  copied[i] = _baseName(copy);
+                } else {
+                  direct.add(i);
+                }
+              }
+              try {
+                await _checkFile(st.pathFor(ids[i])); // read as any change
+              } on Object catch (e) {
+                debugPrint('Reading the file at page ${ids[i]} after a failed delete failed: $e');
               }
             }
-            try {
-              await _checkFile(st.pathFor(ids[i])); // read as any change
-            } on Object catch (e) {
-              debugPrint('Reading the file at page ${ids[i]} after a failed delete failed: $e');
-            }
+          } on Object catch (e) {
+            debugPrint('Putting back page ${ids[i]} after a failed delete failed: $e');
+            stuck.add(i);
           }
-        } on Object catch (e) {
-          debugPrint('Putting back page ${ids[i]} after a failed delete failed: $e');
-          stuck.add(i);
         }
+      } finally {
+        _undoRuns.remove(rollbackDone.future);
+        rollbackDone.complete();
       }
-
       for (var i = 0; i < ids.length; i++) {
         final dir = stash[ids[i]];
         if (dir == null) continue;
