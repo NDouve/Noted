@@ -153,6 +153,9 @@ void main() {
   Map<String, Object?> allowClosed(String box) => {
     box: {'closedWrites': true, 'writerPermission': 'append'},
   };
+  void disallowAi(File binderFile) => binderFile.writeAsStringSync(
+    Binder.parse(binderFile.readAsStringSync()).withBoxType(aiBoxTypeId, false).write(),
+  );
   Future<ToolOutput> append(NotedToolbox t, String box) => t.writeBox(
     boxId: box,
     code: token(idWriter),
@@ -1124,6 +1127,83 @@ void main() {
       );
       expect(out.isError, isTrue);
       expect(File(path).readAsBytesSync(), before);
+    });
+
+    // A parent P in Trips (listed as a binder and as standalone), and the AI box
+    // page (id [childId], box 'aiV') in another standalone folder, [depth] pages
+    // below P. Returns the child's file path and Trips' binder file.
+    ({String path, File binderFile}) layout({int depth = 1, bool disallow = true}) {
+      const parent = 'f000000000000050';
+      const mid = 'f000000000000051';
+      const childId = 'f000000000000052';
+      final trips = '${root.path}/Trips';
+      save(trips, page(parent, 'Parent in Trips', ai: 'open'));
+      final other = mk('Other');
+      if (depth == 2) save(other.path, page(mid, 'Middle', parent: parent, ai: 'open'));
+      save(
+        other.path,
+        aiPage(childId, 'aiV', parent: depth == 2 ? mid : parent, ai: 'open'),
+      );
+      setLists(standalone: [trips, other.path]);
+      writeStore(data, [writerBox('aiV', childId)], allowClosed('aiV'));
+      final binderFile = File('$trips/$binderFileName');
+      if (disallow) disallowAi(binderFile);
+      return (path: pagePath(childId, other.path), binderFile: binderFile);
+    }
+
+    test('a closed write to a child in another folder honours the binder rules of its parent\'s folder', () async {
+      final l = layout();
+      final before = File(l.path).readAsBytesSync();
+      final out = await append(toolbox(), 'aiV');
+      expect(out.isError, isTrue);
+      expect(File(l.path).readAsBytesSync(), before);
+    });
+
+    test('the same for a grandchild: the rule goes down the whole chain', () async {
+      final l = layout(depth: 2);
+      final before = File(l.path).readAsBytesSync();
+      final out = await append(toolbox(), 'aiV');
+      expect(out.isError, isTrue);
+      expect(File(l.path).readAsBytesSync(), before);
+    });
+
+    test('control: the binder allows AI boxes, so the write to the child works', () async {
+      final l = layout(disallow: false);
+      final out = await append(toolbox(), 'aiV');
+      expect(out.isError, isFalse, reason: out.text);
+      expect(File(l.path).readAsStringSync(), contains('new words'));
+    });
+
+    test('the parent folder\'s binder file changed under the hold (AI boxes now disallowed) refuses the write', () async {
+      final l = layout(disallow: false);
+      final before = File(l.path).readAsBytesSync();
+      final out = await append(
+        toolbox(
+          beforeHold: (a) async {
+            if (a == 0) disallowAi(l.binderFile);
+          },
+        ),
+        'aiV',
+      );
+      expect(out.isError, isTrue);
+      expect(File(l.path).readAsBytesSync(), before);
+    });
+
+    test('the parent folder\'s binder file unreadable under the hold refuses the write', () async {
+      final l = layout(disallow: false);
+      File('${root.path}/probe.txt').writeAsStringSync('x');
+      if (!await makeUnreadable('${root.path}/probe.txt')) return;
+      final before = File(l.path).readAsBytesSync();
+      final out = await append(
+        toolbox(
+          beforeHold: (a) async {
+            if (a == 0) await makeUnreadable(l.binderFile.path);
+          },
+        ),
+        'aiV',
+      );
+      expect(out.isError, isTrue);
+      expect(File(l.path).readAsBytesSync(), before);
     });
 
     test('a page under a page of a locked binder, in another folder, is locked too', () async {

@@ -366,6 +366,13 @@ final class ClosedAccess {
     final others = [
       for (final p in library.pages)
         if (p.path == page.path && !identical(p, page)) (_chain(library, p), p.location.binder),
+      // The same for every page above it: a parent in a folder listed both ways
+      // also has its binder entry, whose binder rules reach this page too. The
+      // view's metas start with the page's own, as the other views' do.
+      for (final a in chain.pages.skip(1))
+        for (final p in library.pages)
+          if (a.path != null && p.path == a.path && !identical(p, a) && p.location.binder != null)
+            (_viewBelow(page, _chain(library, p)), p.location.binder),
     ];
     // Before any hold: the page, a page above it or the page its chain ended
     // at has more than one copy, so its access, settings and bytes can't be
@@ -379,9 +386,17 @@ final class ClosedAccess {
         others.any((o) => !effectiveBoxTypeAllowed(box.typeId, o.$1.metas, binder: o.$2).allowed)) {
       return done(AiLinkCode.notWritable, page);
     }
+    // A binder file that can't be read leaves its binder out of the library, and
+    // with it the box-type rules of that binder: for the page and every page
+    // above it, a folder listed as a binder whose file can't be read refuses.
+    final readable = library.sources?.binderReadable;
+    if (readable != null &&
+        [page, ...chain.pages.skip(1)].any((p) => readable[NotedLibrary.binderFilePath(p.location.path)] == false)) {
+      return done(AiLinkCode.notWritable, page);
+    }
     if (box.isConflicted) return done(AiLinkCode.conflict, page);
     if (page.locked) return done(AiLinkCode.locked, page);
-    _pruneSources(library, page, chain);
+    _pruneSources(library, page, chain, [for (final o in others) ...o.$1.pages.skip(1)]);
 
     final writer = ClosedWriter(dataDir: dataDir, folders: library.folders);
     final aiMode = switch (mode) {
@@ -530,7 +545,7 @@ final class ClosedAccess {
   // the two JSON files, the page's binder file and the chain parents' files
   // (by their bytes), every binder file (by whether it could be read) and every
   // folder's listing, since a copy in any listed folder can make an id ambiguous.
-  void _pruneSources(NotedLibrary library, LibraryPage page, _Chain chain) {
+  void _pruneSources(NotedLibrary library, LibraryPage page, _Chain chain, List<LibraryPage> viewPages) {
     final s = library.sources;
     if (s == null) return;
     final sep = Platform.pathSeparator;
@@ -541,7 +556,11 @@ final class ClosedAccess {
       // A folder listed both ways: the binder file of the other entry too.
       for (final p in library.pages)
         if (p.path == page.path && p.location.binder != null) NotedLibrary.binderFilePath(p.location.path),
-      for (final p in chain.pages.skip(1))
+      // And the binder file of each folder a parent is listed in both ways.
+      for (final a in chain.pages.skip(1))
+        for (final p in library.pages)
+          if (a.path != null && p.path == a.path && p.location.binder != null) NotedLibrary.binderFilePath(p.location.path),
+      for (final p in [...chain.pages.skip(1), ...viewPages])
         if (p.path != null) p.path!,
     };
     s.files.removeWhere((path, _) => !keep.contains(path));
@@ -635,6 +654,9 @@ final class ClosedAccess {
   // The page's chain for module availability: the page, then its parents in
   // its own folder or binder; and the id the chain ended at, if that page was
   // missing.
+  _Chain _viewBelow(LibraryPage page, _Chain above) =>
+      _Chain([page.page.meta, ...above.metas], above.pages, above.endId);
+
   _Chain _chain(NotedLibrary library, LibraryPage page) {
     final same = {
       for (final p in library.pages)
