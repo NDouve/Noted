@@ -2167,6 +2167,23 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Rationale:** a binder file the server couldn't use dropped its rules, so writes and reads went through that the binder would have refused.
 - **Alternatives considered:** refusing only closed writes (reads and listings still served the pages).
 
+## 0154 — OneDrive sync stage 3: a read-only pull on iPad and Android
+- **Date:** 2026-11-08
+- **Status:** Active (scope decided by the maintainer's PM chat from the approved sync design; details decided by the build team from the reviewed note `2026-11-08-01-sync-stage3`; amends 0064 for this one folder tree)
+- **Decision:**
+  - **Where.** Phones and tablets only, behind the hidden Microsoft section of About. A chosen OneDrive folder is copied to `<documents>/Noted/onedrive/<account>/<root item id>/`, listed as a standalone folder, with binders as its immediate subfolders. Its state is in `<support>/onedrive/<account>/<root item id>/`. The top level of OneDrive and a folder that is itself a binder can't be chosen. There is no way yet to choose another folder or stop.
+  - **Read-only.** Everything under `<documents>/Noted/onedrive/` is pull-only, computed from the path and not saved: pages list and open, saves, moves, deletes, binder and template changes and conflict-copy merges are refused with "This OneDrive folder is read-only on this device for now.", and reading writes nothing there. Nothing goes back to OneDrive.
+  - **Rounds.** A delta round is folded in full and stored only at its `deltaLink`, then the stored remote tree is compared with the journal by case-folded path, so every poll also retries. Polls: launch, resume, 10 s with a OneDrive page open, 5 minutes otherwise, and *Check now*, foreground only. A folder delta the service refuses falls back to drive-root delta.
+  - **Local differences win.** Nothing is replaced or deleted unless the local file equals its last pulled version, checked under the shared folder lock immediately before. A file that differs, or has no pulled version, is left alone and listed.
+  - **Deletes.** A remote delete takes effect only if still planned at least 30 seconds later. More than 10 files, more than 20 % of tracked files other than attachments, or a whole binder, asks first: *Remove them here too* or *Keep them here*. A deleted root pauses sync and removes nothing. Attachments are never deleted by a pull.
+  - **Moves.** A file with the same item id at a new path is copied, verified, then its old file is removed, with a kept copy in the state folder until a file with its bytes is confirmed. Attachments are copied and their source stays. A binder folder's other files move before its binder file, and a pull-only binder is re-homed when its folder holds no binder file and exactly one new path under the same root holds its id.
+  - **Showing changes.** Mobile has no folder watching (0129), so the app reports each round's paths to the notebook, including after a failed round. An open page reloads; a conflict copy is listed as a duplicate.
+  - **Remote values are untrusted.** Names that would leave the root are skipped and listed. Paths in the journal are checked when it is read, and an unreadable journal pauses sync and is never overwritten. The token goes only to the Graph origin, and redirects are followed by hand without it.
+  - **Folders (amends 0064).** The engine creates a tracked folder below the root and removes one once empty. A working copy removed through Files pauses sync and isn't recreated.
+  - **Android** declares `INTERNET` in the release manifest.
+- **Rationale:** the first step of mobile sync that shows a PC's notes on a device, without any way to overwrite them.
+- **Alternatives considered:** keeping both versions with `-remote-` copies (nothing can merge them while the folder is read-only); deleting attachments with their page (a kept page may still need them, and the engine doesn't parse pages); the design's 30 s poll (a change could take two rounds).
+
 ---
 
 ## Open items
