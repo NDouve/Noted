@@ -506,6 +506,193 @@ void main() {
     });
   });
 
+  group('ordinary changes are not held', () {
+    test('a file renamed to a -PC copy while a new item takes its name applies both', () async {
+      seedMany(10);
+      h.fake.addFile('Noted/x.canvas', Harness.b('X old'));
+      await h.round();
+      h.fake.rename('Noted/x.canvas', 'x-PC.canvas');
+      h.fake.addFile('Noted/x.canvas', Harness.b('X new'));
+      for (var i = 0; i < 3; i++) {
+        final r = await h.round();
+        expect(r.error, isNull);
+        h.clock.advance(const Duration(seconds: 31));
+      }
+      expect(h.read('x.canvas'), 'X new');
+      expect(h.read('x-PC.canvas'), 'X old');
+      expect(h.engine.issues, isEmpty);
+    });
+
+    test(
+      'a deleted name taken over by a rename applies, and the old name goes',
+      () async {
+        seedMany(10);
+        h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+        h.fake.addFile('Noted/b.canvas', Harness.b('B'));
+        await h.round();
+        h.fake.delete('Noted/b.canvas');
+        h.fake.rename('Noted/a.canvas', 'b.canvas');
+        for (var i = 0; i < 4; i++) {
+          await h.round();
+          h.clock.advance(const Duration(seconds: 31));
+        }
+        expect(h.read('b.canvas'), 'A');
+        expect(h.has('a.canvas'), isFalse);
+        expect(h.engine.issues, isEmpty);
+      },
+    );
+
+    test('a chain of renames resolves over rounds', () async {
+      seedMany(10);
+      h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+      h.fake.addFile('Noted/b.canvas', Harness.b('B'));
+      await h.round();
+      h.fake.rename('Noted/b.canvas', 'c.canvas');
+      h.fake.rename('Noted/a.canvas', 'b.canvas');
+      for (var i = 0; i < 3; i++) {
+        await h.round();
+      }
+      expect(h.read('c.canvas'), 'B');
+      expect(h.read('b.canvas'), 'A');
+      expect(h.has('a.canvas'), isFalse);
+      expect(h.engine.issues, isEmpty);
+    });
+
+    test('a pending move is listed in every round', () async {
+      seedMany(10);
+      h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+      h.fake.addFile('Noted/b.canvas', Harness.b('B'));
+      await h.round();
+      h.fake.rename('Noted/a.canvas', 'tmp.canvas');
+      h.fake.rename('Noted/b.canvas', 'a.canvas');
+      h.fake.rename('Noted/tmp.canvas', 'b.canvas');
+      for (var i = 0; i < 3; i++) {
+        await h.round();
+        expect(h.engine.issues, hasIssue('a.canvas'));
+        expect(h.engine.issues, hasIssue('b.canvas'));
+      }
+    });
+  });
+
+  group('surviving mutants and the identical-files case', () {
+    test('identical a and b, b removed here, then b deleted and a renamed to b: a stays and is listed', () async {
+      seedMany(10);
+      h.fake.addFile('Noted/a.canvas', Harness.b('SAME'));
+      h.fake.addFile('Noted/b.canvas', Harness.b('SAME'));
+      await h.round();
+      h.file('b.canvas').deleteSync();
+      h.fake.delete('Noted/b.canvas');
+      h.fake.rename('Noted/a.canvas', 'b.canvas');
+      for (var i = 0; i < 4; i++) {
+        await h.round();
+        h.clock.advance(const Duration(seconds: 31));
+      }
+      expect(h.read('a.canvas'), 'SAME', reason: 'the only copy stays');
+      expect(h.has('b.canvas'), isFalse);
+      expect(h.engine.issues, hasIssue('a.canvas'));
+      expect(h.engine.issues, hasIssue('b.canvas'));
+    });
+
+    test('a binder rename goes on when an old page is absent here and its target is taken', () async {
+      seedBinder();
+      await h.round();
+      h.file('B1/q.canvas').deleteSync();
+      h.write('B2/q.canvas', 'mine');
+      h.fake.rename('Noted/B1', 'B2');
+      await h.round();
+      expect(h.has('B2/noted-binder.json'), isTrue);
+      expect(h.read('B2/q.canvas'), 'mine');
+      expect(h.read('B2/p.canvas'), 'P');
+    });
+
+    test('a root-level Templates folder (not the exact name) is a binder folder for locks', () async {
+      h.fake.addFile('Noted/Templates/noted-binder.json', Harness.b('{}'));
+      await h.round();
+      h.fake.addFile('Noted/Templates/x.canvas', Harness.b('X'));
+      Future<RoundResult>? round;
+      var during = <String>[];
+      await h.locks.run(Directory(h.path('Templates')), () async {
+        round = h.round();
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        during = h.tree();
+      });
+      expect(during, ['Templates/noted-binder.json']);
+      await round;
+      expect(h.has('Templates/x.canvas'), isTrue);
+    });
+  });
+
+  group('more checks', () {
+    test('a known item with no parent keeps it, without an error', () async {
+      seedMany(10);
+      await h.round();
+      final id = h.fake.idOf('Noted/p0.canvas');
+      h.fake.noParentRef.add(id);
+      h.fake.replaceFile('Noted/p0.canvas', Harness.b('v2'));
+      final r = await h.round();
+      expect(r.error, isNull);
+      expect(h.read('p0.canvas'), 'v2');
+      expect(h.engine.status.state, SyncState.idle);
+    });
+
+    test('a 401 on a download ends the round as signed out', () async {
+      seedMany(2);
+      h.fake.fail('/content', status: 401, times: 100);
+      final r = await h.round();
+      expect(r.error, isNotNull);
+      expect(h.engine.status.state, SyncState.signedOut);
+    });
+
+    test('a 429 on a download that does not clear ends the round', () async {
+      seedMany(2);
+      h.fake.fail('/content', status: 429, retryAfter: '1', times: 100);
+      final r = await h.round();
+      expect(r.error, isA<GraphThrottled>());
+      expect(h.engine.status.state, SyncState.paused);
+    });
+
+    test(
+      'the root lock blocks a publish into a root-level assets folder',
+      () async {
+        seedMany(2);
+        await h.round();
+        h.fake.addFile('Noted/x.assets/a.bin', Harness.b('A'));
+        Future<RoundResult>? round;
+        var during = <String>[];
+        await h.locks.run(h.work, () async {
+          round = h.round();
+          await Future<void>.delayed(const Duration(milliseconds: 400));
+          during = h.tree();
+        });
+        expect(during, ['p0.canvas', 'p1.canvas']);
+        await round;
+        expect(h.has('x.assets/a.bin'), isTrue);
+      },
+    );
+
+    test(
+      'a root deleted between the seed and the folder delta pauses at the root',
+      () async {
+        seedMany(2);
+        h.fake.folderDeltaNotFound = true;
+        h.fake.onRequest = (path) {
+          if (path.endsWith('/delta')) h.fake.delete('Noted');
+        };
+        await h.round();
+        expect(h.engine.status.state, SyncState.rootGone);
+        expect(h.engine.guardQuestion, isNull);
+      },
+    );
+
+    test('shared-folder shortcuts are left out of the picker', () async {
+      h.fake.addSpecial('Share', 'remoteItem');
+      h.fake.items[h.fake.idOf('Share')]!.folder = true;
+      h.fake.addFolder('Mine');
+      final folders = await h.newGraph().listFolders();
+      expect(folders.map((f) => f.name), ['Mine', 'Noted']);
+    });
+  });
+
   group('bookkeeping', () {
     test('mismatch counts for a path that left the plan are dropped', () async {
       final id = h.fake.addFile('Noted/a.canvas', Harness.b('AAA'));

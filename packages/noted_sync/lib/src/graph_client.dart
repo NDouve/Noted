@@ -228,7 +228,8 @@ class GraphClient {
     final all = await _childrenAt(uri);
     return [
       for (final i in all)
-        if (i.isFolder && !i.deleted) i,
+        // A shortcut to a shared folder is out of scope.
+        if (i.isFolder && !i.deleted && !i.isSpecial) i,
     ]..sort(
       (a, b) =>
           (a.name ?? '').toLowerCase().compareTo((b.name ?? '').toLowerCase()),
@@ -242,6 +243,7 @@ class GraphClient {
     var holds = false;
     final subfolders = <RemoteItem>[];
     for (final k in kids) {
+      if (k.isSpecial) continue;
       final n = (k.name ?? '').toLowerCase();
       if (k.isFolder) {
         subfolders.add(k);
@@ -265,7 +267,10 @@ class GraphClient {
   Future<bool> holdsBinderFile(String itemId, {String? driveId}) async {
     final kids = await children(driveId, itemId);
     return kids.any(
-      (k) => !k.isFolder && (k.name ?? '').toLowerCase() == 'noted-binder.json',
+      (k) =>
+          !k.isFolder &&
+          !k.isSpecial &&
+          (k.name ?? '').toLowerCase() == 'noted-binder.json',
     );
   }
 

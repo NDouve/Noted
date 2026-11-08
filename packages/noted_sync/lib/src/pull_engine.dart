@@ -374,6 +374,11 @@ class PullEngine {
     return r.replaceAll(r'\', '/');
   }
 
+  /// The notebook's own rule for a root-level folder that is not a binder
+  /// (exact, case-sensitive): a dot folder, `*.assets` or `templates`.
+  bool _notABinderFolder(String name) =>
+      name.startsWith('.') || name.endsWith('.assets') || name == 'templates';
+
   /// The folder whose lock covers [rel]: the binder folder for anything in or
   /// under a root-level folder that is not `templates` or `*.assets` (for the
   /// folder itself too, when [folder]), else the root. Decided by the path
@@ -382,7 +387,7 @@ class PullEngine {
     final segs = rel.split('/');
     if (segs.isNotEmpty &&
         (segs.length >= 2 || folder) &&
-        !_isAssetsOrTemplates(segs[0])) {
+        !_notABinderFolder(segs[0])) {
       return _abs(segs[0]);
     }
     return _root;
@@ -489,8 +494,23 @@ class PullEngine {
             page = await graph.deltaStart(driveId, null);
             endpoint = 'drive';
           } on GraphNotFound {
-            // The root item exists (it was just read), so it is the folder
-            // form of delta that this account doesn't have.
+            // Either the folder form of delta isn't there, or the root went
+            // since it was read: look again before choosing.
+            RemoteItem? again;
+            try {
+              again = await graph.getItem(driveId, rootItemId);
+            } on GraphNotFound {
+              again = null;
+            }
+            if (again == null || again.deleted || !again.isFolder) {
+              _setStatus(
+                const SyncStatus(
+                  SyncState.rootGone,
+                  'The OneDrive folder is gone',
+                ),
+              );
+              return null;
+            }
             page = await graph.deltaStart(driveId, null);
             endpoint = 'drive';
           }
@@ -667,13 +687,27 @@ class PullEngine {
         if (e.value.itemId != null && !e.value.retained) e.value.itemId!: e.key,
     };
     final keys = view.desired.keys.toList()..sort();
+    // Whether the item [id] has a record here and is wanted at another path.
+    bool moving(String? id) {
+      if (id == null) return false;
+      final to = desiredIds[id];
+      final from = byId[id];
+      return to != null && from != null && from != to;
+    }
+
     for (final k in keys) {
       final d = view.desired[k]!;
       final rec = j.files[k];
       if (rec != null && rec.itemId == d.item.id && !rec.retained) continue;
       final src = byId[d.item.id];
       if (src == null || src == k) continue;
-      if ((rec != null && !rec.retained) || view.desired.containsKey(src)) {
+      final occupied = rec != null && !rec.retained;
+      // Held only when the item in the way is itself moving (a swap, or a
+      // chain that clears once its tail has moved; the tail has a free
+      // target, so it moves in this round). A stale record at the
+      // target (its item was deleted or replaced) is no obstacle: the row for
+      // that path applies, and the old record is dropped when it lasts.
+      if (occupied && moving(rec.itemId)) {
         _issue(
           d.path,
           'Moved on OneDrive, but something is in the way here; waiting',
@@ -684,6 +718,7 @@ class PullEngine {
           ..add(src);
         continue;
       }
+      if (occupied) continue;
       repaths.add((src, d));
     }
 
@@ -707,6 +742,8 @@ class PullEngine {
       for (final (src, d) in g.value) {
         final rec = j.files[src]!;
         if (d.isAttachment) continue;
+        // An absent old file is no re-path at all (it is handled one by one).
+        if (!_exists(_abs(rec.path))) continue;
         final target = _abs(_localPathFor(d.segs));
         if (!_exists(target)) continue;
         // A target that already holds the same bytes (the engine's own copy
@@ -739,9 +776,12 @@ class PullEngine {
         continue;
       }
       final id = rec.itemId;
-      if (id != null &&
-          (view.skippedIds.contains(id) || desiredIds.containsKey(id))) {
-        continue;
+      if (id != null && view.skippedIds.contains(id)) continue;
+      if (id != null && desiredIds.containsKey(id)) {
+        // Its item lives at another path. Until that path carries the item's
+        // record the move is pending; after, this is a leftover and goes
+        // through the usual delete rules.
+        if (j.files[desiredIds[id]!]?.itemId != id) continue;
       }
       if (view.treePaths.contains(key)) {
         _issue(rec.path, 'No longer mirrored; left here');
@@ -836,10 +876,14 @@ class PullEngine {
       if (inHeldGroup.contains(src) || held.contains(src)) continue;
       await _repath(src, d);
     }
-    // A move that didn't finish leaves its old record: say so.
-    for (final (src, d) in ordered) {
-      final rec = j.files[src];
-      if (rec == null || rec.itemId != d.item.id || rec.retained) continue;
+    // A move that is pending (held, or not finished) leaves its old record:
+    // say so, every round.
+    for (final e in j.files.entries) {
+      final rec = e.value;
+      final id = rec.itemId;
+      if (id == null || rec.retained) continue;
+      final to = desiredIds[id];
+      if (to == null || to == e.key || j.files[to]?.itemId == id) continue;
       if (_roundIssues.any((i) => i.path == rec.path)) continue;
       _issue(rec.path, 'Moved on OneDrive; not moved here yet, will retry');
     }
@@ -1165,14 +1209,18 @@ class PullEngine {
     final remoteSame = _sameRemote(rec, d.item);
     final (state, ident) = await _localState(rel, rec);
     if (remoteSame) {
+      // The record takes the new item only while the local file is the one it
+      // describes: otherwise the old record stays, pending and listed.
       var touched = false;
-      if (rec.itemId != d.item.id) {
-        rec.itemId = d.item.id;
-        touched = true;
-      }
-      if (rec.cTag != d.item.cTag) {
-        rec.cTag = d.item.cTag;
-        touched = true;
+      if (state == _Local.same) {
+        if (rec.itemId != d.item.id) {
+          rec.itemId = d.item.id;
+          touched = true;
+        }
+        if (rec.cTag != d.item.cTag) {
+          rec.cTag = d.item.cTag;
+          touched = true;
+        }
       }
       if (touched) await _save();
       switch (state) {
