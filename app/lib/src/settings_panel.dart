@@ -145,7 +145,15 @@ class _SettingsPanelState extends State<SettingsPanel> {
     final id = _pid;
     if (id != null) return nb.isReadOnlyPage(id);
     final s = _section;
-    return s == null || !s.available;
+    return s == null || !s.available || nb.isPullOnlyLocation(s.path);
+  }
+
+  // Why it is read-only, when it is a pull-only location.
+  bool get _pullOnly {
+    final id = _pid;
+    if (id != null) return nb.isPullOnlyPage(id);
+    final p = _path;
+    return p != null && nb.isPullOnlyLocation(p);
   }
 
   Future<void> _run(Future<void> Function() change) async {
@@ -195,7 +203,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
       children: [
         if (_readOnly) ...[
           Text(
-            'Read-only: changes are off until this is available again.',
+            _pullOnly ? Notebook.pullOnlyMessage : 'Read-only: changes are off until this is available again.',
             key: const ValueKey('settings-read-only'),
             style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
           ),

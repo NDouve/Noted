@@ -480,10 +480,13 @@ Future<bool> sameContent(File a, File b) async {
 /// (a `<hash>.tmp` attachment keeps its name; an unfinished `<hash>.<ext>.tmp`
 /// lands as `<hash>.<ext>`). Leftover unique temporary names in the source are
 /// put back or reported (see [AttachmentCopy.keptAside]).
-Future<void> copyAttachmentTree(Directory from, Directory to, AttachmentCopy r) async {
+///
+/// With [sweepSource] false the leftovers in [from] are not put back or
+/// reported: a source that is only read (a pull-only folder) is never written.
+Future<void> copyAttachmentTree(Directory from, Directory to, AttachmentCopy r, {bool sweepSource = true}) async {
   if (!await from.exists()) return;
   r.sourceExisted = true;
-  await sweepAttachmentLeftovers(from, r);
+  if (sweepSource) await sweepAttachmentLeftovers(from, r);
   if (!await to.exists()) {
     await to.create(recursive: true);
     r.created.add(to.path);
@@ -492,7 +495,7 @@ Future<void> copyAttachmentTree(Directory from, Directory to, AttachmentCopy r) 
   await for (final e in from.list()) {
     final raw = _baseName(e.path);
     if (e is Directory) {
-      await copyAttachmentTree(e, Directory('${to.path}$sep$raw'), r);
+      await copyAttachmentTree(e, Directory('${to.path}$sep$raw'), r, sweepSource: sweepSource);
       continue;
     }
     if (e is! File) continue;

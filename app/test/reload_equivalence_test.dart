@@ -414,6 +414,12 @@ class _Run {
   late String pathB;
   final List<Notebook> _spare = [];
 
+  /// The notebooks made from now on treat the whole harness root as a
+  /// read-only root: every folder and binder in it is pull-only (the default
+  /// folder, location '', is not). Set by the pull-only scenarios after
+  /// [start]; the random sequences never use it.
+  bool pullOnly = false;
+
   /// Kept `.damaged-` files (absolute path to bytes), which must still hold
   /// exactly those bytes, and attachments folders a rolled-back move left in a
   /// place the page is not in.
@@ -513,6 +519,7 @@ class _Run {
     folderCheckInterval: Duration.zero,
     leaveSaveLimit: const Duration(milliseconds: 300),
     storeFactory: (d) => _stores.putIfAbsent(_norm(d.path), () => _Chaos(d)),
+    readOnlyRoots: pullOnly ? [root.path] : const [],
   );
 
   _Chaos storeOf(String loc) {
@@ -2116,6 +2123,7 @@ class _Run {
     };
     final known = {
       'pages', 'Elsewhere', 'Alpha', 'Beta', 'rec', 'app', //
+      for (final d in dirs.values) d.path.split(RegExp(r'[\\/]')).last, // (a binder folder a scenario renamed)
       for (final f in _devFolders.keys)
         if (_norm(File(f).parent.path) == _norm(root.path)) f.split('/').last,
     }.map((s) => s.toLowerCase()).toSet();
@@ -2140,6 +2148,108 @@ class _Run {
       reason: '$where: a binder file nobody made',
     );
   }
+
+  // -- a pull-only location (stage 3, notebook side) ---------------------------
+  //
+  // What the pull does to the working copy: files written and removed under the
+  // shared folder lock, then `filesChanged` (the pull's report), and for a round
+  // that applied something a folder check and a discovery pass.
+
+  /// Writes [text] at [path] atomically, under the folder's lock.
+  Future<void> pullWrite(String path, String text) => _busyRetry(
+    () => nb.folderLocks.run(Directory(File(path).parent.path), () async {
+      final tmp = File('$path.engine.tmp');
+      tmp.writeAsStringSync(text);
+      tmp.renameSync(path);
+    }),
+  );
+
+  Future<void> pullDelete(String path) => _busyRetry(
+    () => nb.folderLocks.run(Directory(File(path).parent.path), () async => File(path).deleteSync()),
+  );
+
+  /// The calls the app makes after a round: the report, then the folder check,
+  /// then discovery.
+  Future<void> afterRound(List<String> paths) async {
+    await nb.filesChanged(paths);
+    await nb.checkFolders();
+    await nb.discoverBinders();
+  }
+
+  /// A fresh notebook over the same folders, as a restart would open them.
+  Future<Notebook> freshNotebook() async {
+    final other = Notebook(
+      PageStore(dirs['pages']!),
+      modules,
+      saveDelay: const Duration(hours: 1),
+      bindersFile: settings,
+      recoveryDirectory: rec,
+      folderCheckInterval: Duration.zero,
+      readOnlyRoots: pullOnly ? [root.path] : const [],
+    );
+    _spare.add(other);
+    _gone.add(other);
+    await other.load();
+    await other.discoveryIdle;
+    return other;
+  }
+
+  /// What a notebook lists: its binders with their state, every listed page with
+  /// its place and title, and the files it can't open, with why. Binders in
+  /// [skip] (by listed path) and the pages in them are left out.
+  List<String> summary(Notebook n, {Set<String> skip = const {}}) {
+    final out = <String>[];
+    final skipKeys = {for (final s in skip) _norm(s)};
+    String where(String? loc) => loc == null ? '-' : _norm(loc);
+    for (final b in n.binders) {
+      if (skipKeys.contains(_norm(b.path))) continue;
+      out.add('binder ${_norm(b.path)} ${b.status.name}');
+      for (final u in b.unreadable) {
+        out.add('unreadable ${_norm(u.path)} ${u.reason}');
+      }
+      for (final r in b.tree.roots) {
+        for (final id in [r.id, ...b.tree.descendantsOf(r.id)]) {
+          out.add('page $id in ${where(b.path)} "${n.pageTitleOf(id)}"');
+        }
+      }
+    }
+    for (final r in n.tree.roots) {
+      for (final id in [r.id, ...n.tree.descendantsOf(r.id)]) {
+        out.add('page $id in ${where(n.binderOfPage(id))} "${n.pageTitleOf(id)}" ${n.folderOfPage(id) == null ? '' : _norm(n.folderOfPage(id)!)}');
+      }
+    }
+    for (final u in n.unreadable) {
+      out.add('unreadable ${_norm(u.path)} ${u.reason}');
+    }
+    return out..sort();
+  }
+
+  /// The live notebook lists exactly what a fresh one does (but for [skip]).
+  Future<void> sameAsReload(String when, {Set<String> skip = const {}}) async {
+    await nb.discoveryIdle;
+    await nb.flush();
+    final other = await freshNotebook();
+    try {
+      expect(summary(nb, skip: skip), summary(other, skip: skip), reason: '$when: the live notebook and a reload list the same');
+      final open = nb.currentId;
+      if (open != null && other.treeOfPage(open)[open] != null) {
+        await other.open(open);
+        expect(
+          boxTexts(nb.current!.page),
+          boxTexts(other.current!.page),
+          reason: '$when: the live editor and a reload show the same page',
+        );
+      }
+    } finally {
+      other.dispose();
+    }
+  }
+
+  /// The box texts of [page], by box id.
+  static Map<String, String> boxTexts(NotedPage page) => {
+    for (final n in page.nodes)
+      if (n is BoxRecord && n.typeId != _opaqueType) n.id: _textOf(n),
+  };
 
   // -- checks -----------------------------------------------------------------
 
@@ -2229,6 +2339,7 @@ class _Run {
       bindersFile: settings,
       recoveryDirectory: rec,
       folderCheckInterval: Duration.zero,
+      readOnlyRoots: pullOnly ? [root.path] : const [],
     );
     _spare.add(other);
     _gone.add(other);
@@ -2505,6 +2616,222 @@ void main() {
       await run.stop();
     }
   }, timeout: const Timeout(Duration(minutes: 3)));
+
+  // OneDrive stage 3 (run 2026-11-08-01), notebook side: the folders below the
+  // harness root are pull-only, so the notebook writes nothing in them. The
+  // pull's work is written directly, under the shared folder lock, then
+  // reported with `filesChanged`, a folder check and a discovery pass; the live
+  // notebook must then list and show what a fresh one does.
+  group('a pull-only location: the live notebook and a reload agree', () {
+    late _Run run;
+    var made = false;
+
+    /// A notebook over the standard world, set up writable and then reopened
+    /// as pull-only, with [openLoc]'s page open.
+    Future<String> begin(int seed, {String openLoc = 'a', void Function(_Run, String)? prepare}) async {
+      run = _Run(seed);
+      made = true;
+      await run.start();
+      await run.nb.flush();
+      final id = run.model.entries.firstWhere((e) => e.value.loc == openLoc).key;
+      prepare?.call(run, id);
+      run.pullOnly = true;
+      await run._opRestart();
+      await run.nb.discoveryIdle;
+      await run.nb.open(id);
+      return id;
+    }
+
+    String pageIn(String loc) => run.model.entries.firstWhere((e) => e.value.loc == loc).key;
+
+    tearDown(() async {
+      if (made) await run.stop();
+      made = false;
+    });
+
+    test('a pull into an open pull-only page', () async {
+      final id = await begin(931);
+      final m = run.model[id]!;
+      final path = run._pathOf(id);
+      final box = run._newBox(run._text('pulled'));
+      final next = run._disk(id).insertNode(box);
+      await run.pullWrite(path, writePage(next));
+      m.boxes[box.id] = _val(box);
+      await run.afterRound([path]);
+      expect(run.nb.current!.readOnly, isTrue);
+      expect(_Run.boxTexts(run.nb.current!.page)[box.id], _val(box).text, reason: 'the editor shows the pulled box');
+      expect(File(path).readAsStringSync(), writePage(next), reason: 'the notebook wrote nothing');
+      await run.verify('after the pull', fresh: true);
+      await run.sameAsReload('after the pull');
+    }, timeout: const Timeout(Duration(minutes: 3)));
+
+    test('a conflict copy arriving for the open page is listed, not merged, and the page follows the survivor', () async {
+      final id = await begin(932);
+      final m = run.model[id]!;
+      final path = run._pathOf(id);
+      final copy = '${run.dirs['a']!.path}${run.sep}$id-DESKTOP-9.canvas';
+      final box = run._newBox(run._text('from the copy'));
+      await run.pullWrite(copy, writePage(run._disk(id).insertNode(box)));
+      await run.afterRound([copy]);
+      expect(_Run.boxTexts(run.nb.current!.page).containsKey(box.id), isFalse, reason: 'not merged');
+      expect(_Run.boxTexts(run.nb.current!.page), {for (final e in m.boxes.entries) e.key: e.value.text});
+      expect(run.summary(run.nb), contains(predicate<String>((s) => s.startsWith('unreadable') && s.endsWith('duplicate page id $id'))));
+      await run.sameAsReload('with the copy beside the original');
+      // The pull then removes the original (the copy is what OneDrive has now).
+      await run.pullDelete(path);
+      await run.afterRound([path]);
+      expect(_Run.boxTexts(run.nb.current!.page)[box.id], _val(box).text, reason: 'the open page follows the surviving file');
+      expect(run.nb.binderOfPage(id), run.pathA);
+      await run.sameAsReload('after the original was removed');
+    }, timeout: const Timeout(Duration(minutes: 3)));
+
+    test('a-b.canvas with no a.canvas changing is a page like any other', () async {
+      await begin(933);
+      final base = pageIn('a');
+      // `<x>-b.canvas` with no `<x>.canvas`, and `<id>-b.canvas` beside an `<id>.canvas` that holds another page.
+      final lone = NotedPage.create(PageMeta.create(id: 'aaaa000000000001', title: 'Lone', order: 9));
+      final beside = NotedPage.create(PageMeta.create(id: 'aaaa000000000002', title: 'Beside', order: 10));
+      final p1 = '${run.dirs['a']!.path}${run.sep}zz-b.canvas';
+      final p2 = '${run.dirs['a']!.path}${run.sep}$base-b.canvas';
+      await run.pullWrite(p1, writePage(lone));
+      await run.pullWrite(p2, writePage(beside));
+      await run.afterRound([p1, p2]);
+      expect(run.nb.binderOfPage('aaaa000000000001'), run.pathA);
+      expect(run.nb.binderOfPage('aaaa000000000002'), run.pathA);
+      expect(run.nb.binders.firstWhere((b) => b.path == run.pathA).unreadable, isEmpty);
+      await run.sameAsReload('after both files arrived');
+    }, timeout: const Timeout(Duration(minutes: 3)));
+
+    test('a re-path and an id-changing move', () async {
+      await begin(934);
+      // A page moves to another file name (copied, then the old file removed).
+      final id = pageIn('b');
+      final old = run._pathOf(id);
+      final moved = '${run.dirs['b']!.path}${run.sep}moved.canvas';
+      await run.pullWrite(moved, File(old).readAsStringSync());
+      await run.nb.filesChanged([moved]);
+      expect(
+        run.summary(run.nb),
+        contains(predicate<String>((s) => s.startsWith('unreadable') && s.endsWith('moved.canvas duplicate page id $id'))),
+        reason: 'the copy is listed beside the original until the old file is removed',
+      );
+      await run.pullDelete(old);
+      await run.afterRound([old, moved]);
+      expect(run.nb.binderOfPage(id), run.pathB, reason: 'the page moved to the surviving file');
+      expect(run.nb.binders.firstWhere((b) => b.path == run.pathB).unreadable, isEmpty);
+      await run.sameAsReload('after the re-path');
+      // A page in another folder is replaced by a page with another id.
+      final oldX = pageIn('x');
+      final from = run._pathOf(oldX);
+      final page = run._disk(oldX);
+      const newId = 'eeee000000000001';
+      final replaced = page.withMeta(page.meta.withId(newId));
+      final to = '${run.dirs['x']!.path}${run.sep}$newId.canvas';
+      await run.pullWrite(to, writePage(replaced));
+      await run.pullDelete(from);
+      await run.afterRound([from, to]);
+      expect(run.nb.pageTitleOf(oldX), isNull);
+      expect(run.nb.pageTitleOf(newId), isNotNull);
+      await run.sameAsReload('after the id changed');
+    }, timeout: const Timeout(Duration(minutes: 3)));
+
+    test('a binder renamed with a page open, content changed and attachments added in the same round', () async {
+      final bytes2 = Uint8List.fromList(List.generate(64, (i) => (i * 5 + 1) % 251));
+      final name2 = attachmentFileName(contentHash(bytes2), 'bin');
+      final id = await begin(935, prepare: (r, id) => r._giveAssets(id, hashFile: true));
+      final m = run.model[id]!;
+      final before = run.nb.attachments!.folder.path;
+      final oldDir = run.dirs['a']!;
+      final oldPage = run._pathOf(id);
+      final oldBinderFile = '${oldDir.path}${run.sep}$binderFileName';
+      // The net effect of the pull's moves: the folder is under its new name.
+      final newDir = '${run.root.path}${run.sep}Alpha moved';
+      await _busyRetry(() async => oldDir.renameSync(newDir));
+      run.dirs['a'] = Directory(newDir);
+      run.pathA = newDir;
+      // The same round: the page changed, and a file was added to its attachments.
+      final box = run._newBox(run._text('pulled'));
+      final page = run._disk(id).insertNode(box);
+      final newPage = run._pathOf(id);
+      await run.pullWrite(newPage, writePage(page));
+      m.boxes[box.id] = _val(box);
+      final newAsset = '${run._assetsPath(id)}${run.sep}$name2';
+      await _busyRetry(
+        () => run.nb.folderLocks.run(run.dirs['a']!, () async => File(newAsset).writeAsBytesSync(bytes2)),
+      );
+      await run.afterRound([
+        '$newDir${run.sep}$binderFileName',
+        newPage,
+        newAsset,
+        oldBinderFile,
+        oldPage,
+      ]);
+
+      expect(run.nb.binders.map((b) => _norm(b.path)), contains(_norm(newDir)));
+      expect(run.nb.binders.map((b) => _norm(b.path)), isNot(contains(_norm(oldDir.path))));
+      expect(run.nb.currentId, id, reason: 'the open page stays open');
+      expect(run.nb.current!.readOnly, isTrue);
+      expect(run.nb.readOnlyReason, Notebook.pullOnlyMessage);
+      expect(run.nb.attachments!.folder.path, isNot(before), reason: 'its attachments are read from the new place');
+      expect(_norm(run.nb.attachments!.folder.path), startsWith(_norm(newDir)));
+      await run.verify('after the rename', fresh: true);
+      await run.sameAsReload('after the rename');
+      // The live editor and the attachment reads equal a fresh notebook's.
+      final other = await run.freshNotebook();
+      try {
+        await other.open(id);
+        expect(_Run.boxTexts(run.nb.current!.page), _Run.boxTexts(other.current!.page));
+        for (final (name, bytes) in [(_goodName, _goodBytes), (name2, bytes2)]) {
+          final live = await run.nb.attachments!.readVerified(name, size: bytes.length);
+          final reread = await other.attachments!.readVerified(name, size: bytes.length);
+          expect(live.state, AttachmentState.ok, reason: 'live read of $name');
+          expect(reread.state, AttachmentState.ok, reason: 'fresh read of $name');
+          expect(live.bytes, reread.bytes);
+          expect(live.bytes, bytes);
+        }
+      } finally {
+        other.dispose();
+      }
+    }, timeout: const Timeout(Duration(minutes: 3)));
+
+    test('a binder file removed with its pages left: the open page and its listing stay, a reload lists no pages', () async {
+      final id = await begin(936, openLoc: 'b');
+      final dir = run.dirs['b']!;
+      final bfile = '${dir.path}${run.sep}$binderFileName';
+      final text = File(bfile).readAsStringSync();
+      final pages = run.model.entries.where((e) => e.value.loc == 'b').map((e) => e.key).toList();
+      await run.pullDelete(bfile);
+      await run.afterRound([bfile]);
+      // Asserted directly: the live notebook keeps the binder, its pages and the open page.
+      final section = run.nb.binders.firstWhere((b) => b.path == run.pathB);
+      expect(section.status, BinderStatus.unavailable);
+      expect(section.missing, isTrue);
+      expect(run.nb.currentId, id);
+      expect(run.nb.current!.readOnly, isTrue);
+      for (final p in pages) {
+        expect(run.nb.treeOfPage(p)[p], isNotNull, reason: 'page $p stays listed');
+      }
+      // A reload shows the binder as having no binder file and lists no pages.
+      final other = await run.freshNotebook();
+      try {
+        final reloaded = other.binders.firstWhere((b) => b.path == run.pathB);
+        expect(reloaded.status, BinderStatus.unavailable);
+        for (final p in pages) {
+          expect(other.binderOfPage(p), isNull);
+        }
+      } finally {
+        other.dispose();
+      }
+      // Everything else is the same as after a reload.
+      await run.sameAsReload('with the binder file removed', skip: {run.pathB});
+      // The pull publishes the binder file again: the binder is back, as a reload has it.
+      await run.pullWrite(bfile, text);
+      await run.afterRound([bfile]);
+      expect(run.nb.binders.firstWhere((b) => b.path == run.pathB).status, BinderStatus.available);
+      expect(run.nb.currentId, id);
+      await run.verify('after the binder file is back', fresh: true);
+    }, timeout: const Timeout(Duration(minutes: 3)));
+  });
 
   group('probes of the faults on their own', () {
     late _Run run;
