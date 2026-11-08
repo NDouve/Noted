@@ -57,14 +57,18 @@ class CountingStore extends PageStore {
   Completer<void>? reachedNew;
   void Function()? onFailDelete;
 
+  // Called by the notebook's 'new-before-publish' hook, outside the folder
+  // lock (a pause inside the store call would hold the lock).
+  Future<void> pauseRestore() async {
+    final gate = holdNew;
+    if (gate == null) return;
+    holdNew = null;
+    reachedNew?.complete();
+    await gate.future;
+  }
+
   @override
   Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish}) {
-    final gate = holdNew;
-    if (gate != null) {
-      holdNew = null;
-      reachedNew?.complete();
-      return gate.future.then((_) => super.saveNewText(page, text, beforePublish: beforePublish));
-    }
     if (failNew.contains(page.id)) throw const FileSystemException('destination gone');
     return super.saveNewText(page, text, beforePublish: beforePublish);
   }
@@ -187,6 +191,7 @@ void main() {
       folderCheckInterval: Duration.zero,
       storeFactory: factory ?? PageStore.new,
     );
+    nb.syncHook = (point, path) => point == 'new-before-publish' ? counting.pauseRestore() : Future<void>.value();
     other = PageStore(dir);
     await nb.load();
     await nb.flush();

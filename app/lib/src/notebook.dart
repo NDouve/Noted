@@ -2573,41 +2573,49 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Not through recovery, whose replay would take the file as the newer page.
       final copied = <int, String>{};
       final direct = <int>[];
-      for (final i in deletedNow) {
-        try {
-          if (await _restoreText(loc, pages[i], texts[i])) {
-            _metas[ids[i]] = pages[i].meta;
-            _loc[ids[i]] = loc;
-          } else {
-            // A file appeared at its path meanwhile. Unless it holds exactly
-            // the deleted version, that version is not in the folder: it is
-            // published beside the file as a copy, never over it (0053).
-            String? there;
-            try {
-              there = await st.readText(ids[i]);
-            } on Object {
-              there = null;
-            }
-            if (there != texts[i]) {
-              final copy = await _publishConflictCopy(st, pages[i]);
-              if (copy != null) {
-                copied[i] = _baseName(copy);
-              } else {
-                direct.add(i);
+      // Registered while the pages are only in memory (a stalled folder lock can
+      // hold the restore for long), so exit waits for it, is bounded and asks.
+      final rollbackDone = Completer<void>();
+      _undoRuns[rollbackDone.future] = DeletedPages._([for (final i in deletedNow) pages[i]], null, loc, {});
+      try {
+        for (final i in deletedNow) {
+          try {
+            if (await _restoreText(loc, pages[i], texts[i])) {
+              _metas[ids[i]] = pages[i].meta;
+              _loc[ids[i]] = loc;
+            } else {
+              // A file appeared at its path meanwhile. Unless it holds exactly
+              // the deleted version, that version is not in the folder: it is
+              // published beside the file as a copy, never over it (0053).
+              String? there;
+              try {
+                there = await st.readText(ids[i]);
+              } on Object {
+                there = null;
+              }
+              if (there != texts[i]) {
+                final copy = await _publishConflictCopy(st, pages[i]);
+                if (copy != null) {
+                  copied[i] = _baseName(copy);
+                } else {
+                  direct.add(i);
+                }
+              }
+              try {
+                await _checkFile(st.pathFor(ids[i])); // read as any change
+              } on Object catch (e) {
+                debugPrint('Reading the file at page ${ids[i]} after a failed delete failed: $e');
               }
             }
-            try {
-              await _checkFile(st.pathFor(ids[i])); // read as any change
-            } on Object catch (e) {
-              debugPrint('Reading the file at page ${ids[i]} after a failed delete failed: $e');
-            }
+          } on Object catch (e) {
+            debugPrint('Putting back page ${ids[i]} after a failed delete failed: $e');
+            stuck.add(i);
           }
-        } on Object catch (e) {
-          debugPrint('Putting back page ${ids[i]} after a failed delete failed: $e');
-          stuck.add(i);
         }
+      } finally {
+        _undoRuns.remove(rollbackDone.future);
+        rollbackDone.complete();
       }
-
       for (var i = 0; i < ids.length; i++) {
         final dir = stash[ids[i]];
         if (dir == null) continue;
@@ -3155,10 +3163,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       try {
         await tmp.writeAsString(text, flush: true);
         await syncHook?.call('undo-copy-before-publish', st.directory.path);
-        if (await publishExclusive(tmp, path)) {
+        final published = await _underFolderLock(st, () async {
+          if (!await publishExclusive(tmp, path)) return false;
           _emitPublished(path, _identityOf(() => text), () => text);
-          return path;
-        }
+          return true;
+        });
+        if (published) return path;
       } on FileSystemException catch (e) {
         debugPrint('Saving the restored page beside its file failed: $e');
       } finally {
@@ -4671,13 +4681,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final p in made.pages) {
         // New ids in a new binder folder: a file already there is not ours.
         final pageIdentity = _identityOf(() => writePage(p));
-        if (!await pages.saveNew(p)) {
+        // One job per page: the publish and its report, under the folder's lock.
+        final published = await folderLocks.run(pages.directory, () async {
+          if (!await pages.saveNew(p)) return false;
+          _emitPublished(pages.pathFor(p.id), pageIdentity, () => writePage(p));
+          return true;
+        });
+        if (!published) {
           throw const NotebookException(
             'A file for one of the new pages already exists, so the binder was not created. '
             'The existing file was left as it is.',
           );
         }
-        _emitPublished(pages.pathFor(p.id), pageIdentity, () => writePage(p));
         written.add(p);
       }
       // Binder templates are app-wide; their pages' images and files follow
@@ -4696,8 +4711,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // was written; anything that changed since is kept.
       for (final p in written) {
         try {
-          final r = await pages.deleteIfUnchanged(p.id, writePage(p));
-          if (r.deleted) _emitDeleted(pages.pathFor(p.id));
+          final r = await folderLocks.run(pages.directory, () async {
+            final r = await pages.deleteIfUnchanged(p.id, writePage(p));
+            if (r.deleted) _emitDeleted(pages.pathFor(p.id));
+            return r;
+          });
           if (!r.deleted && r.outcome != DeleteOutcome.absent) debugPrint('Keeping page ${p.id}: it changed');
         } on Object catch (e2) {
           debugPrint('Removing page ${p.id} failed: $e2');
@@ -6856,10 +6874,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _assertCanWrite(loc);
     final st = _storeOf(loc);
     final identity = _identityOf(() => text);
-    if (!await st.saveNewText(page, text, beforePublish: beforePublish)) return false;
     final path = st.pathFor(page.id);
     final key = _key(path);
-    _emitPublished(path, identity, () => text);
+    // Outside the lock, so a test can pause a publish without holding the folder.
+    await syncHook?.call('new-before-publish', st.directory.path);
+    // The publish and its report are one job, so the feed keeps the lock's order.
+    final published = await _underFolderLock(st, () async {
+      // Checked again inside the lock: the location may have gone while this waited.
+      await _assertCanWrite(loc);
+      if (!await st.saveNewText(page, text, beforePublish: beforePublish)) return false;
+      _emitPublished(path, identity, () => text);
+      return true;
+    });
+    if (!published) return false;
     _known[key] = text;
     _pathId[key] = page.id;
     if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
@@ -6939,10 +6966,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _assertCanWrite(loc);
     final st = _storeOf(loc);
     final identity = _identityOf(() => writePage(page));
-    if (!await st.saveNew(page, beforePublish: beforePublish)) return false;
     final path = st.pathFor(page.id);
     final key = _key(path);
-    _emitPublished(path, identity, () => writePage(page));
+    await syncHook?.call('new-before-publish', st.directory.path);
+    // The publish and its report are one job, so the feed keeps the lock's order.
+    final published = await _underFolderLock(st, () async {
+      // Checked again inside the lock: the location may have gone while this waited.
+      await _assertCanWrite(loc);
+      if (!await st.saveNew(page, beforePublish: beforePublish)) return false;
+      _emitPublished(path, identity, () => writePage(page));
+      return true;
+    });
+    if (!published) return false;
     _known[key] = writePage(page);
     _pathId[key] = page.id;
     if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
@@ -9688,12 +9723,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       final target = PageStore(dir);
       final copyIdentity = _identityOf(() => writePage(copy));
-      if (!await target.saveNew(copy)) {
+      final copied = await folderLocks.run(target.directory, () async {
+        if (!await target.saveNew(copy)) return false;
+        // Reported only if the picked folder is a joined location.
+        if (_locationOf(target.pathFor(newPageId)) != null) {
+          _emitPublished(target.pathFor(newPageId), copyIdentity, () => writePage(copy));
+        }
+        return true;
+      });
+      if (!copied) {
         throw const NotebookException('A file for the copy already exists, so nothing was written.');
-      }
-      // Reported only if the picked folder is a joined location.
-      if (_locationOf(target.pathFor(newPageId)) != null) {
-        _emitPublished(target.pathFor(newPageId), copyIdentity, () => writePage(copy));
       }
       if (await target.readText(newPageId) != writePage(copy)) {
         throw const NotebookException('The copy was not written correctly.');

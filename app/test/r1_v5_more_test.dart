@@ -476,8 +476,13 @@ void main() {
 
     test('a second leave still waiting keeps the page frozen when the first ends in "stay"', () async {
       final (nb, id) = await stuckPage();
+      // The second page goes to another folder, which is joined first (joining
+      // saves the open page, which must not stall yet): a new page in the
+      // stalled folder would wait for the stalled save's folder lock before
+      // its leave began.
+      w.storeFor(w.pages).failWith = null;
+      await nb.addStandaloneFolder(w.other.path);
       w.storeFor(w.pages)
-        ..failWith = null
         ..stall = Completer<void>()
         ..stallId = id;
       nb.current!.createBoxAt(const Bounds(90, 90, 0, 0));
@@ -489,7 +494,7 @@ void main() {
       final old = nb.current!;
       final first = nb.createPage();
       await Future<void>.delayed(const Duration(milliseconds: 150));
-      final second = nb.createPage();
+      final second = nb.createPage(folderPath: w.other.path);
       // The first leave gives up at ~400 ms (Cancel), the second at ~550 ms.
       await first;
       expect(asked, greaterThan(0));
