@@ -2135,6 +2135,16 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Rationale:** the app's choice between copies lives only in its memory (0137), so the server could serve the copy the user didn't choose, under that copy's access.
 - **Alternatives considered:** the app telling the server its choice over the link (covers only a running app); preferring `<id>.canvas` (the previous behaviour).
 
+## 0151 — Notes are visible in the Files app on iPad
+- **Date:** 2026-11-08
+- **Status:** Active (decided by the maintainer's PM chat)
+- **Decision:**
+  - **Keys.** `Info.plist` sets `UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace` to true. The app's documents folder then shows in the Files app under On My iPad > Noted.
+  - **What shows.** Everything under the documents folder: `Noted/pages` (page files, their `<page id>.assets` folders and any temporary or conflict files), `Noted/binders` (the default folder for new binders), `Noted/binders.json` and `Noted/templates`. Settings, `settings.json`, recovery entries, the recovery lock and the cache are in the support and cache folders and do not show. Sign-in tokens are in the keychain and do not show.
+  - **Unchanged.** The sign-in redirect (`CFBundleURLTypes`), the keychain settings and the entitlements.
+- **Rationale:** test builds have no other way to get notes off the device.
+- **Alternatives considered:** an export command (more to build).
+
 ---
 
 ## Open items

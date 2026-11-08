@@ -12,4 +12,6 @@ Mobile builds keep notes on the device.
 ## Builds
 CI (`.github/workflows/ci.yml`) runs analyze and tests and builds Windows and macOS on every push and pull request; pushes to `main` also build an unsigned iOS `.ipa` and an Android `.apk`. Download them from the run's Artifacts (kept 14 days). A nightly workflow also builds macOS and the `.ipa`.
 
+On iPad, the Noted folder shows in the Files app under On My iPad > Noted, so notes can be copied off by hand.
+
 Licensed under MPL-2.0.
