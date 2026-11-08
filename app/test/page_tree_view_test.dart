@@ -61,6 +61,16 @@ class _FailingStore extends PageStore {
   Completer<void>? holdNew;
   Completer<void>? reachedNew;
 
+  // Called by the notebook's 'new-before-publish' hook, outside the folder
+  // lock (a pause inside the store call would hold the lock).
+  Future<void> pauseRestore() async {
+    final gate = holdNew;
+    if (gate == null) return;
+    holdNew = null;
+    reachedNew?.complete();
+    await gate.future;
+  }
+
   @override
   Future<DeleteResult> deleteIfUnchanged(
     String pageId,
@@ -83,12 +93,6 @@ class _FailingStore extends PageStore {
 
   @override
   Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish}) async {
-    final gate = holdNew;
-    if (gate != null) {
-      holdNew = null;
-      reachedNew?.complete();
-      await gate.future;
-    }
     if (failNew.contains(page.id)) throw const FileSystemException('destination gone');
     return super.saveNewText(page, text, beforePublish: beforePublish);
   }
@@ -207,6 +211,10 @@ void main() {
         watchDebounce: const Duration(milliseconds: 40),
         folderCheckInterval: watch ? const Duration(milliseconds: 100) : Duration.zero,
       );
+      final s = nb.store;
+      if (s is _FailingStore) {
+        nb.syncHook = (point, path) => point == 'new-before-publish' ? s.pauseRestore() : Future<void>.value();
+      }
       await nb.load();
       a = nb.currentId!;
       b = await nb.createPage();

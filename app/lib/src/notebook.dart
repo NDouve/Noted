@@ -4671,13 +4671,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final p in made.pages) {
         // New ids in a new binder folder: a file already there is not ours.
         final pageIdentity = _identityOf(() => writePage(p));
-        if (!await pages.saveNew(p)) {
+        // One job per page: the publish and its report, under the folder's lock.
+        final published = await folderLocks.run(pages.directory, () async {
+          if (!await pages.saveNew(p)) return false;
+          _emitPublished(pages.pathFor(p.id), pageIdentity, () => writePage(p));
+          return true;
+        });
+        if (!published) {
           throw const NotebookException(
             'A file for one of the new pages already exists, so the binder was not created. '
             'The existing file was left as it is.',
           );
         }
-        _emitPublished(pages.pathFor(p.id), pageIdentity, () => writePage(p));
         written.add(p);
       }
       // Binder templates are app-wide; their pages' images and files follow
@@ -6856,10 +6861,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _assertCanWrite(loc);
     final st = _storeOf(loc);
     final identity = _identityOf(() => text);
-    if (!await st.saveNewText(page, text, beforePublish: beforePublish)) return false;
     final path = st.pathFor(page.id);
     final key = _key(path);
-    _emitPublished(path, identity, () => text);
+    // Outside the lock, so a test can pause a publish without holding the folder.
+    await syncHook?.call('new-before-publish', st.directory.path);
+    // The publish and its report are one job, so the feed keeps the lock's order.
+    final published = await _underFolderLock(st, () async {
+      if (!await st.saveNewText(page, text, beforePublish: beforePublish)) return false;
+      _emitPublished(path, identity, () => text);
+      return true;
+    });
+    if (!published) return false;
     _known[key] = text;
     _pathId[key] = page.id;
     if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
@@ -6939,10 +6951,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _assertCanWrite(loc);
     final st = _storeOf(loc);
     final identity = _identityOf(() => writePage(page));
-    if (!await st.saveNew(page, beforePublish: beforePublish)) return false;
     final path = st.pathFor(page.id);
     final key = _key(path);
-    _emitPublished(path, identity, () => writePage(page));
+    await syncHook?.call('new-before-publish', st.directory.path);
+    // The publish and its report are one job, so the feed keeps the lock's order.
+    final published = await _underFolderLock(st, () async {
+      if (!await st.saveNew(page, beforePublish: beforePublish)) return false;
+      _emitPublished(path, identity, () => writePage(page));
+      return true;
+    });
+    if (!published) return false;
     _known[key] = writePage(page);
     _pathId[key] = page.id;
     if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
@@ -9688,12 +9706,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       final target = PageStore(dir);
       final copyIdentity = _identityOf(() => writePage(copy));
-      if (!await target.saveNew(copy)) {
+      final copied = await folderLocks.run(target.directory, () async {
+        if (!await target.saveNew(copy)) return false;
+        // Reported only if the picked folder is a joined location.
+        if (_locationOf(target.pathFor(newPageId)) != null) {
+          _emitPublished(target.pathFor(newPageId), copyIdentity, () => writePage(copy));
+        }
+        return true;
+      });
+      if (!copied) {
         throw const NotebookException('A file for the copy already exists, so nothing was written.');
-      }
-      // Reported only if the picked folder is a joined location.
-      if (_locationOf(target.pathFor(newPageId)) != null) {
-        _emitPublished(target.pathFor(newPageId), copyIdentity, () => writePage(copy));
       }
       if (await target.readText(newPageId) != writePage(copy)) {
         throw const NotebookException('The copy was not written correctly.');
