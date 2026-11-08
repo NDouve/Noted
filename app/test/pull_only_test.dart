@@ -963,6 +963,83 @@ void main() {
       expect(told, 1);
     });
   });
+
+  group('left-over fixes', () {
+    test('an open page removed remotely leaves no row once it is left', () async {
+      final nb = w.pull();
+      await nb.load();
+      await nb.open(w.pB);
+      final orig = w.path(w.work, w.pB);
+      await w.engineDelete(nb, orig);
+      await nb.filesChanged([orig]);
+      expect(nb.currentId, w.pB, reason: 'it stays open while it is shown');
+      await nb.open(w.pB2);
+      expect(nb.pageTitleOf(w.pB), isNull, reason: 'the row is gone');
+      expect(nb.treeOfPage(w.pB)[w.pB], isNull);
+      final fresh = w.pull();
+      await fresh.load();
+      expect(fresh.pageTitleOf(w.pB), isNull);
+    });
+
+    test('a page that fails to open at its new place leaves another page open', () async {
+      final nb = w.pull();
+      await nb.load();
+      await nb.open(w.pB);
+      final orig = w.path(w.work, w.pB);
+      final to = '${w.acct.path}/crossed.canvas';
+      await w.engineWrite(nb, to, File(orig).readAsStringSync());
+      await w.engineDelete(nb, orig);
+      final calls = <(String, String)>[];
+      nb.onPageContent = (loc, page) => calls.add((loc, page.id));
+      var thrown = false;
+      nb.syncHook = (point, _) async {
+        if (point == 'open-read' && !thrown) {
+          thrown = true;
+          throw const FileSystemException('locked');
+        }
+      };
+      await nb.filesChanged([orig, to]);
+      nb.syncHook = null;
+      expect(thrown, isTrue);
+      expect(nb.current, isNotNull, reason: 'a fallback page is open');
+      expect(calls.map((c) => c.$2), contains(w.pB), reason: 'the move is told to the search index');
+    });
+
+    test('the page\'s own name returning while it is shown from a copy: it goes back to its own file', () async {
+      final nb = w.pull();
+      await nb.load();
+      await nb.open(w.pB);
+      final orig = w.path(w.work, w.pB);
+      final moved = '${w.work.path}/moved.canvas';
+      await w.engineWrite(nb, moved, File(orig).readAsStringSync());
+      await w.engineDelete(nb, orig);
+      await nb.filesChanged([orig, moved]);
+      final base = w.read(moved);
+      await w.engineWrite(nb, orig, writePage(base.insertNode(_box(w.modules, 'bown000000000001', 'own'))));
+      await nb.filesChanged([orig]);
+      expect(boxTexts(nb.current!.page)['bown000000000001'], 'own');
+      expect(nb.binders.single.unreadable.map((u) => _name(u.path)), ['moved.canvas']);
+      await w.engineWrite(nb, orig, writePage(w.read(orig).insertNode(_box(w.modules, 'bown000000000002', 'later'))));
+      await nb.filesChanged([orig]);
+      expect(boxTexts(nb.current!.page)['bown000000000002'], 'later', reason: 'a later change shows too');
+      await nb.open(w.pB2);
+      await nb.open(w.pB);
+      expect(boxTexts(nb.current!.page)['bown000000000002'], 'later');
+    });
+
+    test('a block of a pull-only page keeps nothing for recovery even when the file text differs', () async {
+      final nb = w.pull();
+      await nb.load();
+      await nb.open(w.pB);
+      final path = w.path(w.work, w.pB);
+      nb.setKnownTextForTest(path, 'not what the page writes');
+      await w.engineWrite(nb, path, '{ not a page');
+      await nb.filesChanged([path]);
+      await nb.refreshRecoveryIndexForTest();
+      expect((await nb.pendingRecovery()).entries, isEmpty);
+      expect(Directory(w.rec.path).existsSync() ? Directory(w.rec.path).listSync() : const [], isEmpty);
+    });
+  });
 }
 
 final Uint8List good2 = Uint8List.fromList([1, 2, 3, 4, 5, 6, 7, 8]);
