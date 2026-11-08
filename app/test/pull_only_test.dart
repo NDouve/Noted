@@ -582,7 +582,7 @@ void main() {
       final moved = await rename(w.work.path, '${w.acct.path}/Work moved');
       final newPath = moved.absolute.path;
       await nb.discoverBinders();
-      expect(nb.binders.map((b) => b.path.replaceAll(r'\', '/').toLowerCase()), ['${moved.absolute.path}'.replaceAll(r'\', '/').toLowerCase()]);
+      expect(nb.binders.map((b) => b.path.replaceAll(r'\', '/').toLowerCase()), [moved.absolute.path.replaceAll(r'\', '/').toLowerCase()]);
       expect(nb.currentId, w.pB);
       expect(nb.current!.readOnly, isTrue);
       expect(nb.binderOfPage(w.pB), nb.binders.single.path);
