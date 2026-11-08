@@ -1,0 +1,25 @@
+name: noted_sync
+description: "Noted's OneDrive pull engine: the Graph client, the sync journal and the read-only pull of a OneDrive folder into a working copy. Pure Dart, no Flutter."
+publish_to: none
+version: 0.1.0
+resolution: workspace
+
+environment:
+  sdk: ^3.13.0
+
+# Pure Dart only (dart:io is fine, Flutter is not). It gets its access token
+# from a callback and never depends on noted_auth. noted_core and noted_mcp
+# must never depend on this package (invariant 4); a test in each of them
+# checks it.
+
+dependencies:
+  # The Graph calls (BSD-3-Clause, the Dart team, publisher dart.dev); the same
+  # pin as noted_auth.
+  http: 1.6.0
+  noted_core:
+    path: ../noted_core
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

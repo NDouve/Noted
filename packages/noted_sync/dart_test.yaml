@@ -1,0 +1,4 @@
+# Per-test timeout, so a hung async test fails instead of waiting forever.
+# A test stuck in a synchronous loop never lets this timer run; tests that
+# guard against that use a watchdog isolate (see the note box tests).
+timeout: 2m
