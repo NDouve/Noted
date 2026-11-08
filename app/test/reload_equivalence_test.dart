@@ -2683,6 +2683,27 @@ void main() {
       expect(_Run.boxTexts(run.nb.current!.page)[box.id], _val(box).text, reason: 'the open page follows the surviving file');
       expect(run.nb.binderOfPage(id), run.pathA);
       await run.sameAsReload('after the original was removed');
+      // The page can be left and opened again from the survivor.
+      await run.nb.open(pageIn('b'));
+      await run.nb.open(id);
+      expect(_Run.boxTexts(run.nb.current!.page)[box.id], _val(box).text, reason: 'reopened from the surviving file');
+      await run.sameAsReload('after reopening');
+    }, timeout: const Timeout(Duration(minutes: 3)));
+
+    test('an open page re-pathed to another file name can be reopened, and a reload agrees', () async {
+      final id = await begin(937);
+      final old = run._pathOf(id);
+      final moved = '${run.dirs['a']!.path}${run.sep}moved.canvas';
+      final box = run._newBox(run._text('with the move'));
+      await run.pullWrite(moved, writePage(run._disk(id).insertNode(box)));
+      await run.pullDelete(old);
+      await run.afterRound([old, moved]);
+      expect(_Run.boxTexts(run.nb.current!.page)[box.id], _val(box).text);
+      await run.sameAsReload('after the re-path');
+      await run.nb.open(pageIn('b'));
+      await run.nb.open(id);
+      expect(_Run.boxTexts(run.nb.current!.page)[box.id], _val(box).text, reason: 'reopened from moved.canvas');
+      await run.sameAsReload('after reopening');
     }, timeout: const Timeout(Duration(minutes: 3)));
 
     test('a-b.canvas with no a.canvas changing is a page like any other', () async {
