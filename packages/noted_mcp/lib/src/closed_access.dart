@@ -38,6 +38,10 @@ const String openNotedOnceText = 'Open Noted once, then try again.';
 /// than one copy.
 const String aiMcpResultAmbiguous = 'ambiguous';
 
+/// The log result of a closed write refused because a binder file of the page's
+/// folder or of a parent's folder is missing, unreadable or damaged.
+const String aiMcpResultBinderUnusable = 'binder_unusable';
+
 /// How long a closed write may hold the running lock, from the moment it is
 /// taken until the page is first changed (run 2026-11-06-02).
 const Duration defaultClosedHoldLimit = Duration(seconds: 5);
@@ -245,7 +249,16 @@ final class ClosedAccess {
     if (hint != null && library.isAmbiguous(hint)) return (page: null, ambiguous: true);
     final h = hint == null ? null : library.page(hint);
     if (h != null && has(h)) return (page: h, ambiguous: false);
-    final all = [...library.pages]..sort((a, b) => a.id.compareTo(b.id));
+    // By id, then the standalone entry before a binder's, then by folder, so
+    // the result never depends on the order the library listed its pages in.
+    final all = [...library.pages]
+      ..sort((a, b) {
+        final byId = a.id.compareTo(b.id);
+        if (byId != 0) return byId;
+        final byTree = (a.location.binder == null ? 0 : 1).compareTo(b.location.binder == null ? 0 : 1);
+        if (byTree != 0) return byTree;
+        return a.location.path.compareTo(b.location.path);
+      });
     for (final p in all) {
       if (has(p)) return (page: p, ambiguous: library.isAmbiguous(p.id));
     }
@@ -356,8 +369,16 @@ final class ClosedAccess {
         done(AiLinkCode.notWritable, page, ambiguousPageText, aiMcpResultAmbiguous);
     final found = _pageOfBox(library, boxId, code.target.page);
     if (found.ambiguous) return ambiguous(found.page);
-    final page = found.page;
-    if (page == null || page.path == null) return done(AiLinkCode.noBox);
+    final first = found.page;
+    if (first == null || first.path == null) return done(AiLinkCode.noBox);
+    // Whichever entry was found, work from the standalone one when the file has
+    // both: its tree reaches every folder the parents may be in.
+    final page = first.location.binder == null
+        ? first
+        : library.pages.firstWhere(
+            (p) => p.path == first.path && p.location.binder == null,
+            orElse: () => first,
+          );
     final deniedOnPage = _denied(code, view, boxId, mode, page);
     if (deniedOnPage != null) return done(deniedOnPage.code, page, deniedOnPage.message);
     final chain = _chain(library, page);
@@ -386,17 +407,17 @@ final class ClosedAccess {
         others.any((o) => !effectiveBoxTypeAllowed(box.typeId, o.$1.metas, binder: o.$2).allowed)) {
       return done(AiLinkCode.notWritable, page);
     }
-    // A binder file that can't be read leaves its binder out of the library, and
-    // with it the box-type rules of that binder: for the page and every page
-    // above it, a folder listed as a binder whose file can't be read refuses.
-    final readable = library.sources?.binderReadable;
-    if (readable != null &&
-        [page, ...chain.pages.skip(1)].any((p) => readable[NotedLibrary.binderFilePath(p.location.path)] == false)) {
-      return done(AiLinkCode.notWritable, page);
+    // A binder file that is missing, can't be read or doesn't parse leaves its
+    // binder out of the library, and with it the box-type rules of that binder:
+    // for the page and every page above it, a folder listed as a binder whose
+    // file can't be used refuses.
+    final usable = library.sources?.binderUsable;
+    if (usable != null && chain.pages.any((p) => usable[NotedLibrary.binderFilePath(p.location.path)] == false)) {
+      return done(AiLinkCode.notWritable, page, binderUnusableText, aiMcpResultBinderUnusable);
     }
     if (box.isConflicted) return done(AiLinkCode.conflict, page);
     if (page.locked) return done(AiLinkCode.locked, page);
-    _pruneSources(library, page, chain, [for (final o in others) ...o.$1.pages.skip(1)]);
+    _pruneSources(library, page, chain);
 
     final writer = ClosedWriter(dataDir: dataDir, folders: library.folders);
     final aiMode = switch (mode) {
@@ -545,7 +566,7 @@ final class ClosedAccess {
   // the two JSON files, the page's binder file and the chain parents' files
   // (by their bytes), every binder file (by whether it could be read) and every
   // folder's listing, since a copy in any listed folder can make an id ambiguous.
-  void _pruneSources(NotedLibrary library, LibraryPage page, _Chain chain, List<LibraryPage> viewPages) {
+  void _pruneSources(NotedLibrary library, LibraryPage page, _Chain chain) {
     final s = library.sources;
     if (s == null) return;
     final sep = Platform.pathSeparator;
@@ -560,7 +581,7 @@ final class ClosedAccess {
       for (final a in chain.pages.skip(1))
         for (final p in library.pages)
           if (a.path != null && p.path == a.path && p.location.binder != null) NotedLibrary.binderFilePath(p.location.path),
-      for (final p in [...chain.pages.skip(1), ...viewPages])
+      for (final p in chain.pages.skip(1))
         if (p.path != null) p.path!,
     };
     s.files.removeWhere((path, _) => !keep.contains(path));
@@ -596,8 +617,8 @@ final class ClosedAccess {
       if (expired()) return null;
       if (!_sameBytes(now, e.value)) return false;
     }
-    for (final e in s.binderReadable.entries.toList()) {
-      final now = await identity.readBytes(e.key) != null;
+    for (final e in s.binderUsable.entries.toList()) {
+      final now = NotedLibrary.binderOf(await identity.readBytes(e.key)) != null;
       if (expired()) return null;
       if (now != e.value) return false;
     }

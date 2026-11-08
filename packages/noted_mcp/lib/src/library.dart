@@ -102,8 +102,9 @@ final class LibrarySources {
   final Map<String, List<int>?> files = {};
   final Map<String, FolderListing> listings = {};
 
-  /// Every listed binder's file: whether its bytes could be read.
-  final Map<String, bool> binderReadable = {};
+  /// Every listed binder's file: whether it could be used (present, readable
+  /// and parsing as a binder).
+  final Map<String, bool> binderUsable = {};
 }
 
 /// Every saved page this device can reach, read from the page files only
@@ -230,12 +231,18 @@ final class NotedLibrary {
     final standaloneCount = pages.length;
     // The binder entries of a folder that is listed as standalone too.
     final alsoStandalone = <String, int>{};
+    final unusableShared = <String>{};
     for (final path in binderPaths) {
       final binder = await _readBinder(identity, Directory(path), kept);
-      // A binder that can't be read is left out whole. A locked one is kept,
-      // marked: page AI never sees its pages, but its AI boxes stay reachable
-      // by their codes.
-      if (binder == null) continue;
+      // A binder that is missing, can't be read or doesn't parse is left out
+      // whole. A locked one is kept, marked: page AI never sees its pages, but
+      // its AI boxes stay reachable by their codes.
+      if (binder == null) {
+        // Its folder also listed as standalone: the binder's rules are unknown,
+        // so those pages are served Guarded and locked (the stricter of the two).
+        if (standalone.contains(path)) unusableShared.add(path);
+        continue;
+      }
       final loc = LibraryLocation(path, binder: binder);
       final own = [for (final (p, file) in choosePages(scanOf(path).found)) (p, loc, file)];
       final made = _withAccess(own, binder: binder, locked: isLockedBinder(binder), isAmb: isAmb);
@@ -257,9 +264,15 @@ final class NotedLibrary {
       pages[i] = LibraryPage(a.page, a.location, access, locked: locked, path: a.path);
       pages[j] = LibraryPage(b.page, b.location, access, locked: locked, path: b.path);
     }
+    for (var i = 0; i < standaloneCount; i++) {
+      final a = pages[i];
+      if (unusableShared.contains(a.location.path)) {
+        pages[i] = LibraryPage(a.page, a.location, AiAccess.guarded, locked: true, path: a.path);
+      }
+    }
     // The reconciled access reaches every page under a reconciled page, in its
     // own tree: a page is never looser than any ancestor's.
-    if (alsoStandalone.isNotEmpty) {
+    if (alsoStandalone.isNotEmpty || unusableShared.isNotEmpty) {
       final trees = <String?, List<int>>{};
       for (var i = 0; i < pages.length; i++) {
         final b = pages[i].location.binder;
@@ -382,7 +395,14 @@ final class NotedLibrary {
   static Future<Binder?> _readBinder(LockIdentity identity, Directory dir, LibrarySources? kept) async {
     final bytes = await identity.readBytes(binderFilePath(dir.path));
     kept?.files[binderFilePath(dir.path)] = bytes;
-    kept?.binderReadable[binderFilePath(dir.path)] = bytes != null;
+    final binder = binderOf(bytes);
+    kept?.binderUsable[binderFilePath(dir.path)] = binder != null;
+    return binder;
+  }
+
+  /// The binder [bytes] read as, or null if there are none, they aren't text
+  /// or they don't parse (damaged, or a newer format).
+  static Binder? binderOf(List<int>? bytes) {
     if (bytes == null) return null;
     try {
       return Binder.parse(_decode(bytes));

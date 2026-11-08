@@ -1206,6 +1206,123 @@ void main() {
       expect(File(l.path).readAsBytesSync(), before);
     });
 
+    void breakBinder(File f, String kind) {
+      switch (kind) {
+        case 'damaged':
+          f.writeAsStringSync('{ not json');
+        case 'newer':
+          final j = jsonDecode(f.readAsStringSync()) as Map<String, Object?>;
+          f.writeAsStringSync(jsonEncode({...j, 'format': 999}));
+        default:
+          f.deleteSync();
+      }
+    }
+
+    for (final kind in ['damaged', 'newer', 'missing']) {
+      test('a $kind binder file of the parent\'s folder: the pages are not served and the child is not written', () async {
+        final l = layout(disallow: false);
+        expect(await reads('f000000000000050'), isTrue, reason: 'served while the binder is fine');
+        expect(await reads('f000000000000052'), isTrue);
+        breakBinder(l.binderFile, kind);
+        expect(await reads('f000000000000050'), isFalse, reason: 'the stricter of the two lists: Guarded');
+        expect(await reads('f000000000000052'), isFalse, reason: 'carried down to the child in another folder');
+        final before = File(l.path).readAsBytesSync();
+        final out = await append(toolbox(), 'aiV');
+        expect(out.isError, isTrue);
+        expect(out.text, binderUnusableText);
+        expect(File(l.path).readAsBytesSync(), before);
+      });
+    }
+
+    test('a binder file damaged under the hold refuses the write', () async {
+      final l = layout(disallow: false);
+      final before = File(l.path).readAsBytesSync();
+      final out = await append(
+        toolbox(
+          beforeHold: (a) async {
+            if (a == 0) breakBinder(l.binderFile, 'damaged');
+          },
+        ),
+        'aiV',
+      );
+      expect(out.isError, isTrue);
+      expect(out.text, binderUnusableText);
+      expect(File(l.path).readAsBytesSync(), before);
+    });
+
+    // C in Bare (listed both ways, allows AI boxes), its parent X in Trips (listed
+    // both ways, AI boxes off): a code with no page hint, in libraries of
+    // several sizes, never writes.
+    for (final filler in [0, 8, 40]) {
+      test('a code with no page hint finds the same page whatever the library size ($filler other pages)', () async {
+        const x = 'f000000000000060';
+        const c = 'f000000000000061';
+        final trips = '${root.path}/Trips';
+        final bare = '${root.path}/Bare';
+        save(trips, page(x, 'X in Trips', ai: 'open'));
+        save(bare, aiPage(c, 'aiV', parent: x, ai: 'open'));
+        final fill = mk('Fill');
+        for (var i = 0; i < filler; i++) {
+          save(fill.path, page('a0000000000${i.toRadixString(16).padLeft(5, '0')}', 'Filler $i', ai: 'open'));
+        }
+        setLists(standalone: [trips, bare, fill.path]);
+        disallowAi(File('$trips/$binderFileName'));
+        writeStore(data, [codeOf(idWriter, const AiCodeTarget.box('aiV'), role: 'writer')], allowClosed('aiV'));
+        final p = pagePath(c, bare);
+        final before = File(p).readAsBytesSync();
+        final out = await append(toolbox(), 'aiV');
+        expect(out.isError, isTrue);
+        expect(File(p).readAsBytesSync(), before);
+      });
+    }
+
+    test('a folder listed under two spellings is one folder: its damaged binder still refuses', () async {
+      final l = layout(disallow: false);
+      // The standalone list spells Trips another way than the binders list does.
+      setLists(standalone: ['${root.path}/Trips/../Trips']);
+      breakBinder(l.binderFile, 'damaged');
+      final before = File(l.path).readAsBytesSync();
+      expect((await append(toolbox(), 'aiV')).isError, isTrue);
+      expect(File(l.path).readAsBytesSync(), before);
+      expect(await reads('f000000000000052'), isFalse);
+    });
+
+    for (final nearerDisallows in [true, false]) {
+      test('two shared folders in one chain: the ${nearerDisallows ? 'nearer' : 'farther'} one disallows AI boxes', () async {
+        const far = 'f000000000000070';
+        const near = 'f000000000000071';
+        const c = 'f000000000000072';
+        final trips = '${root.path}/Trips';
+        final bare = '${root.path}/Bare';
+        save(nearerDisallows ? trips : bare, page(far, 'Far', ai: 'open'));
+        save(nearerDisallows ? bare : trips, page(near, 'Near', parent: far, ai: 'open'));
+        final other = mk('Other');
+        save(other.path, aiPage(c, 'aiV', parent: near, ai: 'open'));
+        // Trips disallows AI boxes; Bare allows them.
+        disallowAi(File('$trips/$binderFileName'));
+        setLists(standalone: [trips, bare, other.path]);
+        writeStore(data, [writerBox('aiV', c)], allowClosed('aiV'));
+        final before = File(pagePath(c, other.path)).readAsBytesSync();
+        expect((await append(toolbox(), 'aiV')).isError, isTrue);
+        expect(File(pagePath(c, other.path)).readAsBytesSync(), before);
+      });
+    }
+
+    test('a loop in the parents ends, and the write is refused', () async {
+      const p = 'f000000000000080';
+      const c = 'f000000000000081';
+      final trips = '${root.path}/Trips';
+      final other = mk('Other');
+      save(trips, page(p, 'Loop parent', parent: c, ai: 'open'));
+      save(other.path, aiPage(c, 'aiV', parent: p, ai: 'open'));
+      disallowAi(File('$trips/$binderFileName'));
+      setLists(standalone: [trips, other.path]);
+      writeStore(data, [writerBox('aiV', c)], allowClosed('aiV'));
+      final before = File(pagePath(c, other.path)).readAsBytesSync();
+      expect((await append(toolbox(), 'aiV')).isError, isTrue);
+      expect(File(pagePath(c, other.path)).readAsBytesSync(), before);
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
     test('a page under a page of a locked binder, in another folder, is locked too', () async {
       const parent = 'e100000000000001';
       const child = 'e100000000000002';
