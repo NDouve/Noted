@@ -3155,10 +3155,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       try {
         await tmp.writeAsString(text, flush: true);
         await syncHook?.call('undo-copy-before-publish', st.directory.path);
-        if (await publishExclusive(tmp, path)) {
+        final published = await _underFolderLock(st, () async {
+          if (!await publishExclusive(tmp, path)) return false;
           _emitPublished(path, _identityOf(() => text), () => text);
-          return path;
-        }
+          return true;
+        });
+        if (published) return path;
       } on FileSystemException catch (e) {
         debugPrint('Saving the restored page beside its file failed: $e');
       } finally {
@@ -4701,8 +4703,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // was written; anything that changed since is kept.
       for (final p in written) {
         try {
-          final r = await pages.deleteIfUnchanged(p.id, writePage(p));
-          if (r.deleted) _emitDeleted(pages.pathFor(p.id));
+          final r = await folderLocks.run(pages.directory, () async {
+            final r = await pages.deleteIfUnchanged(p.id, writePage(p));
+            if (r.deleted) _emitDeleted(pages.pathFor(p.id));
+            return r;
+          });
           if (!r.deleted && r.outcome != DeleteOutcome.absent) debugPrint('Keeping page ${p.id}: it changed');
         } on Object catch (e2) {
           debugPrint('Removing page ${p.id} failed: $e2');
@@ -6867,6 +6872,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await syncHook?.call('new-before-publish', st.directory.path);
     // The publish and its report are one job, so the feed keeps the lock's order.
     final published = await _underFolderLock(st, () async {
+      // Checked again inside the lock: the location may have gone while this waited.
+      await _assertCanWrite(loc);
       if (!await st.saveNewText(page, text, beforePublish: beforePublish)) return false;
       _emitPublished(path, identity, () => text);
       return true;
@@ -6956,6 +6963,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await syncHook?.call('new-before-publish', st.directory.path);
     // The publish and its report are one job, so the feed keeps the lock's order.
     final published = await _underFolderLock(st, () async {
+      // Checked again inside the lock: the location may have gone while this waited.
+      await _assertCanWrite(loc);
       if (!await st.saveNew(page, beforePublish: beforePublish)) return false;
       _emitPublished(path, identity, () => writePage(page));
       return true;
