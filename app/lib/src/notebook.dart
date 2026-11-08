@@ -9688,7 +9688,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _forgetPage(id);
     _touch(loc);
     _rebuildTree();
-    unawaited(_promoteDuplicate(id));
+    // A page with a chosen file keeps its choice until a folder check settles it.
+    if (_disposed || _adoptedFiles.containsKey(id)) return;
+    unawaited(
+      _promoteDuplicate(id).catchError((Object e) {
+        debugPrint('Promoting a duplicate of page $id failed: $e');
+      }),
+    );
   }
 
   // Whether [file] has an aside beside it that a killed replace left.

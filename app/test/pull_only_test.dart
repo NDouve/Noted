@@ -1107,6 +1107,30 @@ void main() {
       expect(nb.pageTitleOf(w.pB), isNotNull);
     });
   });
+
+  group('a chosen file (0149)', () {
+    for (final open in [false, true]) {
+      test('${open ? 'an open' : 'a closed'} page keeps its chosen file when it is removed, reported and comes back', () async {
+        final nb = w.pull();
+        await nb.load();
+        final orig = w.path(w.work, w.pB);
+        final chosen = '${w.work.path}/chosen.canvas';
+        final text = writePage(w.read(orig).insertNode(_box(w.modules, 'bchosen0000001', 'chosen')));
+        await w.engineWrite(nb, chosen, text);
+        await nb.filesChanged([chosen]);
+        await nb.adoptUnlistedPageFile(chosen, w.pB);
+        if (open) await nb.open(w.pB);
+        await w.engineDelete(nb, chosen);
+        await nb.filesChanged([chosen]);
+        if (open) await nb.open(w.pB2);
+        await w.engineWrite(nb, chosen, text);
+        await nb.filesChanged([chosen]);
+        await nb.checkFolders();
+        await nb.open(w.pB);
+        expect(boxTexts(nb.current!.page)['bchosen0000001'], 'chosen', reason: 'still shown from the chosen file');
+      });
+    }
+  });
 }
 
 final Uint8List good2 = Uint8List.fromList([1, 2, 3, 4, 5, 6, 7, 8]);
