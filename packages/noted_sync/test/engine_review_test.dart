@@ -622,6 +622,134 @@ void main() {
     });
   });
 
+  group('a re-path keeps a durable copy until it is settled', () {
+    Future<void> setUpEdited() async {
+      seedMany(3);
+      h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+      await h.round();
+      h.write('a.canvas', 'A edited in Files');
+      h.fake.rename('Noted/a.canvas', 'b.canvas');
+    }
+
+    test('the destination replaced just before the delete: the source stays, both are listed, nothing is lost', () async {
+      await setUpEdited();
+      h.engine = h.newEngine(
+        onStep: (s) {
+          if (s == 'movingWritten') h.write('b.canvas', 'someone else');
+        },
+      );
+      final r = await h.round();
+      expect(h.read('a.canvas'), 'A edited in Files');
+      expect(h.read('b.canvas'), 'someone else');
+      expect(changedRel(h, r), isNot(contains('a.canvas')));
+      expect(
+        h.issueText().join('\n'),
+        contains('Changed while it was being moved'),
+      );
+      expect(readJournal()['moving'], isNull);
+      expect(
+        (readJournal()['files'] as Map).containsKey('a.canvas'),
+        isTrue,
+        reason: 'the record is kept',
+      );
+      expect(h.stateFiles('keep'), isEmpty);
+    });
+
+    test('killed between the delete and the record move, with the destination changed: the kept copy returns', () async {
+      await setUpEdited();
+      await killed('oldDeleted');
+      expect(h.has('a.canvas'), isFalse);
+      expect(h.stateFiles('keep'), hasLength(1));
+      h.write('b.canvas', 'someone else');
+      await h.round();
+      expect(h.read('a.canvas'), 'A edited in Files');
+      expect(h.read('b.canvas'), 'someone else');
+      expect(h.engine.issues, hasIssue('a.canvas'));
+      expect(h.stateFiles('keep'), isEmpty);
+      expect(readJournal()['moving'], isNull);
+    });
+
+    test('killed likewise, with the old path taken by another file: it is put back beside it, never over it', () async {
+      await setUpEdited();
+      await killed('oldDeleted');
+      h.write('b.canvas', 'someone else');
+      h.write('a.canvas', 'squatter');
+      await h.round();
+      expect(h.read('a.canvas'), 'squatter');
+      final copies = h.tree().where((p) => p.contains('a-recovered-')).toList();
+      expect(copies, hasLength(1));
+      expect(h.read(copies.single), 'A edited in Files');
+      expect(h.stateFiles('keep'), isEmpty);
+    });
+
+    test(
+      'a kept copy that no moving entry names is swept at the end of a round',
+      () async {
+        seedMany(2);
+        await h.round();
+        Directory('${h.state.path}/keep').createSync(recursive: true);
+        final stray = File('${h.state.path}/keep/${'ab' * 32}')
+          ..writeAsStringSync('stray');
+        await h.round();
+        expect(stray.existsSync(), isFalse);
+      },
+    );
+
+    test('an entry that can not be settled keeps its copy through the end of the round, and is settled later', () async {
+      await setUpEdited();
+      await killed('oldDeleted');
+      h.write('b.canvas', 'someone else');
+      h.engine = h.newEngine(
+        onStep: (s) {
+          if (s == 'restoreCopy') throw const FileSystemException('injected');
+        },
+      );
+      await h.round();
+      expect(readJournal()['moving'], isNotNull);
+      expect(h.stateFiles('keep'), hasLength(1));
+      expect(h.has('a.canvas'), isFalse);
+      h.restart();
+      await h.round();
+      expect(h.read('a.canvas'), 'A edited in Files');
+      expect(h.stateFiles('keep'), isEmpty);
+      expect(readJournal()['moving'], isNull);
+    });
+
+    test(
+      'a kept copy a moving entry names survives the sweep until settled',
+      () async {
+        await setUpEdited();
+        await killed('movingWritten');
+        final name = (readJournal()['moving'] as Map)['kp'] as String;
+        expect(h.stateFiles('keep').single, endsWith(name));
+      },
+    );
+
+    for (final bad in ['zz', '../x', '', 'A' * 64]) {
+      test('a bad kept-copy name "$bad" is unreadable', () async {
+        await setUpEdited();
+        await killed('movingWritten');
+        final j = readJournal();
+        (j['moving'] as Map)['kp'] = bad;
+        writeJournal(j);
+        h.restart();
+        final r = await h.round();
+        expect(r.error, isA<JournalUnreadable>());
+      });
+    }
+
+    test('a missing kept-copy name is unreadable', () async {
+      await setUpEdited();
+      await killed('movingWritten');
+      final j = readJournal();
+      (j['moving'] as Map).remove('kp');
+      writeJournal(j);
+      h.restart();
+      final r = await h.round();
+      expect(r.error, isA<JournalUnreadable>());
+    });
+  });
+
   group('more checks', () {
     test('a known item with no parent keeps it, without an error', () async {
       seedMany(10);
