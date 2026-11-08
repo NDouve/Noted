@@ -22,6 +22,11 @@ String noSuchPage(String id) => 'No page with id "$id".';
 const String ambiguousPageText =
     "This box's page has more than one copy in Noted's folders, so it can't be read or written until only one is left.";
 
+/// What the AI is told for a closed write whose page, or a page above it, is in
+/// a folder listed as a binder whose file can't be used.
+const String binderUnusableText =
+    "This box's page is in a binder whose file can't be read, so it can't be written until the file is fixed.";
+
 /// The text for a box that isn't there, or that the AI may not read.
 String noSuchBox(String id) => 'No box with id "$id".';
 

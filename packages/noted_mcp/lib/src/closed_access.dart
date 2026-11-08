@@ -38,6 +38,10 @@ const String openNotedOnceText = 'Open Noted once, then try again.';
 /// than one copy.
 const String aiMcpResultAmbiguous = 'ambiguous';
 
+/// The log result of a closed write refused because a binder file of the page's
+/// folder or of a parent's folder is missing, unreadable or damaged.
+const String aiMcpResultBinderUnusable = 'binder_unusable';
+
 /// How long a closed write may hold the running lock, from the moment it is
 /// taken until the page is first changed (run 2026-11-06-02).
 const Duration defaultClosedHoldLimit = Duration(seconds: 5);
@@ -245,7 +249,16 @@ final class ClosedAccess {
     if (hint != null && library.isAmbiguous(hint)) return (page: null, ambiguous: true);
     final h = hint == null ? null : library.page(hint);
     if (h != null && has(h)) return (page: h, ambiguous: false);
-    final all = [...library.pages]..sort((a, b) => a.id.compareTo(b.id));
+    // By id, then the standalone entry before a binder's, then by folder, so
+    // the result never depends on the order the library listed its pages in.
+    final all = [...library.pages]
+      ..sort((a, b) {
+        final byId = a.id.compareTo(b.id);
+        if (byId != 0) return byId;
+        final byTree = (a.location.binder == null ? 0 : 1).compareTo(b.location.binder == null ? 0 : 1);
+        if (byTree != 0) return byTree;
+        return a.location.path.compareTo(b.location.path);
+      });
     for (final p in all) {
       if (has(p)) return (page: p, ambiguous: library.isAmbiguous(p.id));
     }
@@ -358,6 +371,9 @@ final class ClosedAccess {
     if (found.ambiguous) return ambiguous(found.page);
     final page = found.page;
     if (page == null || page.path == null) return done(AiLinkCode.noBox);
+    // [_pageOfBox] gives the standalone entry when the file has both (the
+    // library lists those first, and the fallback orders them first): its tree
+    // reaches every folder the parents may be in.
     final deniedOnPage = _denied(code, view, boxId, mode, page);
     if (deniedOnPage != null) return done(deniedOnPage.code, page, deniedOnPage.message);
     final chain = _chain(library, page);
@@ -366,6 +382,13 @@ final class ClosedAccess {
     final others = [
       for (final p in library.pages)
         if (p.path == page.path && !identical(p, page)) (_chain(library, p), p.location.binder),
+      // The same for every page above it: a parent in a folder listed both ways
+      // also has its binder entry, whose binder rules reach this page too. The
+      // view's metas start with the page's own, as the other views' do.
+      for (final a in chain.pages.skip(1))
+        for (final p in library.pages)
+          if (a.path != null && p.path == a.path && !identical(p, a) && p.location.binder != null)
+            (_viewBelow(page, _chain(library, p)), p.location.binder),
     ];
     // Before any hold: the page, a page above it or the page its chain ended
     // at has more than one copy, so its access, settings and bytes can't be
@@ -378,6 +401,14 @@ final class ClosedAccess {
     if (!effectiveBoxTypeAllowed(box.typeId, chain.metas, binder: page.location.binder).allowed ||
         others.any((o) => !effectiveBoxTypeAllowed(box.typeId, o.$1.metas, binder: o.$2).allowed)) {
       return done(AiLinkCode.notWritable, page);
+    }
+    // A binder file that is missing, can't be read or doesn't parse leaves its
+    // binder out of the library, and with it the box-type rules of that binder:
+    // for the page and every page above it, a folder listed as a binder whose
+    // file can't be used refuses.
+    final usable = library.sources?.binderUsable;
+    if (usable != null && chain.pages.any((p) => usable[NotedLibrary.binderFilePath(p.location.path)] == false)) {
+      return done(AiLinkCode.notWritable, page, binderUnusableText, aiMcpResultBinderUnusable);
     }
     if (box.isConflicted) return done(AiLinkCode.conflict, page);
     if (page.locked) return done(AiLinkCode.locked, page);
@@ -528,7 +559,7 @@ final class ClosedAccess {
 
   // Keeps, of what the library load read, what this write's decision used:
   // the two JSON files, the page's binder file and the chain parents' files
-  // (by their bytes), every binder file (by whether it could be read) and every
+  // (by their bytes), every binder file (by whether it could be used: present, readable and parsing) and every
   // folder's listing, since a copy in any listed folder can make an id ambiguous.
   void _pruneSources(NotedLibrary library, LibraryPage page, _Chain chain) {
     final s = library.sources;
@@ -541,6 +572,10 @@ final class ClosedAccess {
       // A folder listed both ways: the binder file of the other entry too.
       for (final p in library.pages)
         if (p.path == page.path && p.location.binder != null) NotedLibrary.binderFilePath(p.location.path),
+      // And the binder file of each folder a parent is listed in both ways.
+      for (final a in chain.pages.skip(1))
+        for (final p in library.pages)
+          if (a.path != null && p.path == a.path && p.location.binder != null) NotedLibrary.binderFilePath(p.location.path),
       for (final p in chain.pages.skip(1))
         if (p.path != null) p.path!,
     };
@@ -577,8 +612,8 @@ final class ClosedAccess {
       if (expired()) return null;
       if (!_sameBytes(now, e.value)) return false;
     }
-    for (final e in s.binderReadable.entries.toList()) {
-      final now = await identity.readBytes(e.key) != null;
+    for (final e in s.binderUsable.entries.toList()) {
+      final now = NotedLibrary.binderOf(await identity.readBytes(e.key)) != null;
       if (expired()) return null;
       if (now != e.value) return false;
     }
@@ -635,6 +670,9 @@ final class ClosedAccess {
   // The page's chain for module availability: the page, then its parents in
   // its own folder or binder; and the id the chain ended at, if that page was
   // missing.
+  _Chain _viewBelow(LibraryPage page, _Chain above) =>
+      _Chain([page.page.meta, ...above.metas], above.pages, above.endId);
+
   _Chain _chain(NotedLibrary library, LibraryPage page) {
     final same = {
       for (final p in library.pages)

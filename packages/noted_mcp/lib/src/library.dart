@@ -102,8 +102,9 @@ final class LibrarySources {
   final Map<String, List<int>?> files = {};
   final Map<String, FolderListing> listings = {};
 
-  /// Every listed binder's file: whether its bytes could be read.
-  final Map<String, bool> binderReadable = {};
+  /// Every listed binder's file: whether it could be used (present, readable
+  /// and parsing as a binder).
+  final Map<String, bool> binderUsable = {};
 }
 
 /// Every saved page this device can reach, read from the page files only
@@ -230,12 +231,18 @@ final class NotedLibrary {
     final standaloneCount = pages.length;
     // The binder entries of a folder that is listed as standalone too.
     final alsoStandalone = <String, int>{};
+    final unusableShared = <String>{};
     for (final path in binderPaths) {
       final binder = await _readBinder(identity, Directory(path), kept);
-      // A binder that can't be read is left out whole. A locked one is kept,
-      // marked: page AI never sees its pages, but its AI boxes stay reachable
-      // by their codes.
-      if (binder == null) continue;
+      // A binder that is missing, can't be read or doesn't parse is left out
+      // whole. A locked one is kept, marked: page AI never sees its pages, but
+      // its AI boxes stay reachable by their codes.
+      if (binder == null) {
+        // Its folder also listed as standalone: the binder's rules are unknown,
+        // so those pages are served Guarded and locked (the stricter of the two).
+        if (standalone.contains(path)) unusableShared.add(path);
+        continue;
+      }
       final loc = LibraryLocation(path, binder: binder);
       final own = [for (final (p, file) in choosePages(scanOf(path).found)) (p, loc, file)];
       final made = _withAccess(own, binder: binder, locked: isLockedBinder(binder), isAmb: isAmb);
@@ -244,53 +251,75 @@ final class NotedLibrary {
         pages.add(p);
       }
     }
-    // A folder listed both as standalone and as a binder is served with the
-    // stricter of its two accesses, in both trees (nothing more openly than
-    // either list alone would).
     for (var i = 0; i < standaloneCount; i++) {
       final a = pages[i];
-      final j = a.path == null ? null : alsoStandalone[a.path!];
-      if (j == null) continue;
-      final b = pages[j];
-      final access = AiAccess.strictest(a.access, b.access);
-      final locked = a.locked || b.locked;
-      pages[i] = LibraryPage(a.page, a.location, access, locked: locked, path: a.path);
-      pages[j] = LibraryPage(b.page, b.location, access, locked: locked, path: b.path);
+      if (unusableShared.contains(a.location.path)) {
+        pages[i] = LibraryPage(a.page, a.location, AiAccess.guarded, locked: true, path: a.path);
+      }
     }
-    // The reconciled access reaches every page under a reconciled page, in its
-    // own tree: a page is never looser than any ancestor's.
-    if (alsoStandalone.isNotEmpty) {
+    // A folder listed both as standalone and as a binder is served with the
+    // stricter of its two accesses, in both trees (nothing more openly than
+    // either list alone would), and the reconciled access reaches every page
+    // under a reconciled page in its own tree (a page is never looser than any
+    // ancestor's, and a locked page locks the pages under it). A child's other
+    // entry, in another shared folder, is then tightened in turn, so both steps
+    // repeat until nothing changes. They only tighten, so the loop ends (also
+    // for parents that loop).
+    if (alsoStandalone.isNotEmpty || unusableShared.isNotEmpty) {
+      final byFile = <String, List<int>>{};
       final trees = <String?, List<int>>{};
       for (var i = 0; i < pages.length; i++) {
-        final b = pages[i].location.binder;
-        trees.putIfAbsent(b == null ? null : pages[i].location.path, () => []).add(i);
+        final p = pages[i];
+        if (p.path != null) byFile.putIfAbsent(p.path!, () => []).add(i);
+        trees.putIfAbsent(p.location.binder == null ? null : p.location.path, () => []).add(i);
       }
-      for (final idx in trees.values) {
-        final at = {for (final i in idx) pages[i].id: i};
-        final base = {for (final i in idx) pages[i].id: pages[i].access};
-        for (final i in idx) {
-          var a = base[pages[i].id]!;
-          final seen = <String>{pages[i].id};
-          var up = pages[i].page.meta.parentId;
-          while (up != null && seen.add(up)) {
-            final k = at[up];
-            if (k == null) break;
-            a = AiAccess.strictest(a, base[up]!);
-            up = pages[k].page.meta.parentId;
-          }
+      var changed = true;
+      while (changed) {
+        changed = false;
+        void set(int i, AiAccess a, bool l) {
           final p = pages[i];
-          // A page under a locked page of its tree is locked too.
-          var l = p.locked;
-          final seenL = <String>{p.id};
-          var upL = p.page.meta.parentId;
-          while (!l && upL != null && seenL.add(upL)) {
-            final k = at[upL];
-            if (k == null) break;
-            l = pages[k].locked;
-            upL = pages[k].page.meta.parentId;
+          if (a == p.access && l == p.locked) return;
+          pages[i] = LibraryPage(p.page, p.location, a, locked: l, path: p.path);
+          changed = true;
+        }
+
+        // The entries of one file share the strictest access and any lock.
+        for (final idx in byFile.values) {
+          if (idx.length < 2) continue;
+          var a = pages[idx.first].access;
+          var l = false;
+          for (final i in idx) {
+            a = AiAccess.strictest(a, pages[i].access);
+            l = l || pages[i].locked;
           }
-          if (a != p.access || l != p.locked) {
-            pages[i] = LibraryPage(p.page, p.location, a, locked: l, path: p.path);
+          for (final i in idx) {
+            set(i, a, l);
+          }
+        }
+        for (final idx in trees.values) {
+          final at = {for (final i in idx) pages[i].id: i};
+          final base = {for (final i in idx) pages[i].id: pages[i].access};
+          for (final i in idx) {
+            var a = base[pages[i].id]!;
+            final seen = <String>{pages[i].id};
+            var up = pages[i].page.meta.parentId;
+            while (up != null && seen.add(up)) {
+              final k = at[up];
+              if (k == null) break;
+              a = AiAccess.strictest(a, base[up]!);
+              up = pages[k].page.meta.parentId;
+            }
+            final p = pages[i];
+            var l = p.locked;
+            final seenL = <String>{p.id};
+            var upL = p.page.meta.parentId;
+            while (!l && upL != null && seenL.add(upL)) {
+              final k = at[upL];
+              if (k == null) break;
+              l = pages[k].locked;
+              upL = pages[k].page.meta.parentId;
+            }
+            set(i, a, l);
           }
         }
       }
@@ -382,7 +411,14 @@ final class NotedLibrary {
   static Future<Binder?> _readBinder(LockIdentity identity, Directory dir, LibrarySources? kept) async {
     final bytes = await identity.readBytes(binderFilePath(dir.path));
     kept?.files[binderFilePath(dir.path)] = bytes;
-    kept?.binderReadable[binderFilePath(dir.path)] = bytes != null;
+    final binder = binderOf(bytes);
+    kept?.binderUsable[binderFilePath(dir.path)] = binder != null;
+    return binder;
+  }
+
+  /// The binder [bytes] read as, or null if there are none, they aren't text
+  /// or they don't parse (damaged, or a newer format).
+  static Binder? binderOf(List<int>? bytes) {
     if (bytes == null) return null;
     try {
       return Binder.parse(_decode(bytes));
