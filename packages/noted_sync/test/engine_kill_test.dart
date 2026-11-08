@@ -288,7 +288,7 @@ void main() {
       });
     });
 
-    test('killed after the old file is deleted, with the new one changed through Files: the kept copy returns to the old path', () async {
+    test('killed after the old file is deleted, with the new one changed through Files: the edit stays; OneDrive has the old bytes, so nothing is restored', () async {
       seedMany(3);
       h.fake.addFile('Noted/a.canvas', Harness.b('A'));
       await h.round();
@@ -297,8 +297,7 @@ void main() {
       h.write('b.canvas', 'B edited');
       await h.round();
       expect(h.read('b.canvas'), 'B edited');
-      expect(h.read('a.canvas'), 'A');
-      expect(h.engine.issues, hasIssue('a.canvas'));
+      expect(h.has('a.canvas'), isFalse);
       expect(h.stateFiles('keep'), isEmpty);
       expect(h.engine.issues, hasIssue('b.canvas'));
     });

@@ -180,6 +180,9 @@ class PullEngine {
     try {
       await _round();
     } catch (e) {
+      // What the start of the round listed (a copy put back, say) stays.
+      final extra = _roundIssues.where((i) => !_issues.contains(i)).toList();
+      if (extra.isNotEmpty) _issues = [..._issues, ...extra];
       if (e is! _PauseRound) r.error = e;
       _setStatus(_statusFor(e));
       return r;
@@ -680,21 +683,38 @@ class PullEngine {
 
   Future<bool> _confirmMoving(Moving m) async {
     final oldAbs = _abs(m.oldPath);
-    if (await _hasIdentity(_abs(m.newPath), m.identity) ||
+    final newAbs = _abs(m.newPath);
+    if (await _hasIdentity(newAbs, m.identity) ||
         await _hasIdentity(oldAbs, m.identity)) {
       return true;
     }
+    final j = _journal!;
+    // A snapshot that is what OneDrive had needs no restoring: only one with
+    // local edits does.
+    final rec = j.files[m.oldKey] ?? j.files[m.newKey];
+    if (rec?.base == m.identity) return true;
     final keep = _keep.fileFor(m.keep);
     if (!keep.existsSync() ||
         await ContentIdentity.ofFile(keep.path) != m.identity) {
       _issue(m.oldPath, 'The earlier copy of this page could not be found');
       return true;
     }
-    final dir = oldAbs.substring(0, oldAbs.length - _basename(oldAbs).length);
+    // Back at the old path if its folder is there and the name is free; else
+    // beside it, or beside the new path when the old folder is gone.
+    final oldFolderThere = File(oldAbs).parent.existsSync();
+    final String name = _basename(oldAbs);
+    final dot = name.lastIndexOf('.');
+    final ext = dot > 0 ? name.substring(dot) : '';
+    final String lockRel = oldFolderThere ? m.oldPath : m.newPath;
+    final String folderAbs = oldFolderThere
+        ? oldAbs.substring(0, oldAbs.length - name.length)
+        : newAbs.substring(0, newAbs.length - _basename(newAbs).length);
     String sibling() =>
-        '$dir${conflictCopyName(_basename(oldAbs), label: 'recovered')}';
+        '$folderAbs${conflictCopyName(name, label: 'recovered', extension: ext)}';
     var target = oldAbs;
-    if (_exists(oldAbs) || _asidePresent(oldAbs)) target = sibling();
+    if (!oldFolderThere || _exists(oldAbs) || _asidePresent(oldAbs)) {
+      target = sibling();
+    }
     for (var attempt = 0; attempt < 5; attempt++) {
       final tmp = _newTmp('rs');
       try {
@@ -702,7 +722,7 @@ class PullEngine {
         await keep.copy(tmp.path);
         final dest = target;
         final ok = await locks.run(
-          Directory(_lockDirForRel(m.oldPath)),
+          Directory(_lockDirForRel(lockRel)),
           () => publishExclusive(tmp, dest),
         );
         if (ok && await _hasIdentity(dest, m.identity)) {
@@ -1508,8 +1528,17 @@ class PullEngine {
         return;
       }
       final identity = await ContentIdentity.ofFile(copy.path);
-      // A durable copy of the snapshot, before anything can be deleted.
-      await _keep.put(copy, identity.sha256);
+      final isAttachment = d.isAttachment || isAttachmentPath(srcKey);
+      if (!isAttachment) {
+        // A durable copy of the snapshot, before anything can be deleted (an
+        // attachment's source is never deleted, so it needs none).
+        try {
+          await _keep.put(copy, identity.sha256);
+        } on FileSystemException catch (e) {
+          _issue(oldRel, 'Can\'t keep a copy before moving it: ${e.message}');
+          return;
+        }
+      }
       final newDir = Directory(_lockDirForRel(newRel));
       String? problem;
       try {
@@ -1538,7 +1567,7 @@ class PullEngine {
         return;
       }
       _step('repathCopied');
-      if (d.isAttachment || isAttachmentPath(srcKey)) {
+      if (isAttachment) {
         // Attachments are copied, never moved: a kept page may still need them.
         _changed(newAbs);
         final moved = rec.copy()
