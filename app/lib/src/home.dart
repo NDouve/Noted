@@ -9,6 +9,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:noted_canvas/noted_canvas.dart';
+import 'package:noted_sync/noted_sync.dart' show GuardQuestion;
 
 import 'ai_access_note.dart';
 import 'app_commands.dart';
@@ -24,6 +25,8 @@ import 'search_panel.dart';
 import 'settings_panel.dart';
 import 'page_tree_view.dart';
 import 'microsoft_account.dart';
+import 'onedrive_guard_dialog.dart';
+import 'onedrive_sync.dart';
 import 'settings_menu.dart';
 
 /// The snack bar for an attachment notice. A long one (it names a file and
@@ -192,8 +195,51 @@ class _HomeState extends State<Home> {
     if (scaffold != null && scaffold.isDrawerOpen) scaffold.closeDrawer();
   }
 
+  OneDriveSync? _sync;
+  GuardQuestion? _guardShown;
+  GuardQuestion? _guardAnswered;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final sync = OneDriveScope.maybeOf(context);
+    if (sync == _sync) return;
+    _sync?.removeListener(_guardChanged);
+    _sync = sync;
+    sync?.addListener(_guardChanged);
+    _guardChanged();
+  }
+
+  // The OneDrive pull asks once per question, whichever screen is up.
+  void _guardChanged() {
+    final q = _sync?.guardQuestion;
+    if (q == null) {
+      _guardShown = null;
+      _guardAnswered = null;
+      return;
+    }
+    if (q == _guardShown || q == _guardAnswered || !mounted) return;
+    _guardShown = q;
+    // After this frame: the listener can fire while the tree is building.
+    WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_askGuard(q)));
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  Future<void> _askGuard(GuardQuestion q) async {
+    final sync = _sync;
+    if (!mounted || sync == null || _guardShown != q) return;
+    final remove = await showOneDriveGuardDialog(context, q);
+    if (remove == null) return;
+    _guardAnswered = q;
+    _guardShown = null;
+    await sync.answerGuard(q, remove: remove);
+    // A different question that came up meanwhile is asked next.
+    if (mounted) _guardChanged();
+  }
+
   @override
   void dispose() {
+    _sync?.removeListener(_guardChanged);
     _search.removeListener(_searchChanged);
     _titleHighlight.dispose();
     unawaited(_notices?.cancel());

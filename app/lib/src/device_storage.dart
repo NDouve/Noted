@@ -5,6 +5,7 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:noted_sync/noted_sync.dart' show safePathPart, syncStateDir;
 import 'package:path_provider/path_provider.dart' as pp;
 
 /// Test-only: `flutter test` reports Android as the platform, which would run
@@ -174,3 +175,30 @@ String resolveStoredPath(String stored, {bool? windows, String? documents, bool 
   final base = d.endsWith('/') || d.endsWith(r'\') ? d.substring(0, d.length - 1) : d;
   return '$base$sep${a.sublist(n).join(sep)}';
 }
+
+/// The folder that holds the OneDrive working copies on a device,
+/// `<documents>/Noted/onedrive`; null on desktop (or before
+/// [initDeviceStorage] has run). Everything under it is read-only on this
+/// device while the sync only pulls (OneDrive sync stage 3, G1).
+Directory? deviceOneDriveRoot() {
+  final d = _documents;
+  if (!isMobilePlatform || d == null) return null;
+  return Directory('${d.path}${_sep}Noted${_sep}onedrive');
+}
+
+/// The working copy of one OneDrive folder, `root/account key/root item
+/// id`. Both parts come from the server, so each goes through
+/// [safePathPart] (G8). [root] is [deviceOneDriveRoot].
+Directory oneDriveWorkingCopy(Directory root, String accountKey, String rootItemId) =>
+    Directory([root.path, safePathPart(accountKey), safePathPart(rootItemId)].join(_sep));
+
+/// The state folder of one OneDrive folder (journal, `tmp/`, `base/`):
+/// `<support>/onedrive/<account key>/<root item id>`, outside the working copy
+/// (G10). [support] is the folder that holds settings, [deviceSupportDirectory].
+Directory oneDriveStateDir(Directory support, String accountKey, String rootItemId) =>
+    syncStateDir(support, accountKey, rootItemId);
+
+/// The file that remembers which OneDrive folder an account chose,
+/// `<support>/onedrive/<account key>/chosen.json`.
+File oneDriveChosenFile(Directory support, String accountKey) =>
+    File([support.path, 'onedrive', safePathPart(accountKey), 'chosen.json'].join(_sep));
