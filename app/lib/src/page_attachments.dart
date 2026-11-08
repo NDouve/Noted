@@ -61,10 +61,16 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     this.picker,
     this.opener,
     bool watch = true,
+    this.readOnly = false,
   }) : _storage = storage,
        _watch = watch {
     _startWatching();
   }
+
+  /// The page is in a pull-only location: reading writes nothing. A missing
+  /// file isn't looked for among kept copies, a damaged one is shown as
+  /// damaged and not set aside, and nothing is stored.
+  final bool readOnly;
 
   /// The folder that holds the page file.
   final Directory pageFolder;
@@ -163,6 +169,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     // A page that was moved or deleted closed its store first: a late write
     // must not recreate the assets folder at the old place.
     if (_disposed) throw FileSystemException('The page is closed', pageFolder.path);
+    if (readOnly) throw FileSystemException('This page is read-only', pageFolder.path);
     final hash = contentHash(bytes);
     final name = attachmentFileName(hash, extension);
     final want = storage ?? this.storage;
@@ -311,7 +318,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     for (final d in [folder, if (!pageFolderOnly) ?recoveryFolder]) {
       final f = _in(d, fileName);
       var type = FileSystemEntity.typeSync(f.path, followLinks: false);
-      if (type == FileSystemEntityType.notFound && await restoreKeptCopy(d, fileName, hash, size)) {
+      if (!readOnly && type == FileSystemEntityType.notFound && await restoreKeptCopy(d, fileName, hash, size)) {
         type = FileSystemEntity.typeSync(f.path, followLinks: false);
         filesChanged();
       }
@@ -333,6 +340,11 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
           case AttachmentState.syncing:
             out = const VerifiedAttachment(AttachmentState.syncing);
           case AttachmentState.damaged:
+            if (readOnly) {
+              // Shown as damaged, not renamed: nothing is written here.
+              out = const VerifiedAttachment(AttachmentState.damaged);
+              break;
+            }
             final r = await setAsideDamaged(f, c.found!);
             if (r.leftAt != fileName) filesChanged();
             out = VerifiedAttachment(AttachmentState.damaged, keptAs: r.name, leftAt: r.leftAt);

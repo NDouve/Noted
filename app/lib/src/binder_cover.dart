@@ -131,6 +131,7 @@ class _BinderCoverState extends State<BinderCover> {
         key: ValueKey(key),
         controller: c,
         focusNode: focusNode,
+        readOnly: widget.notebook.isPullOnlyLocation(widget.path),
         maxLines: maxLines,
         minLines: 1,
         decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
@@ -150,6 +151,7 @@ class _BinderCoverState extends State<BinderCover> {
         if (section == null || binder == null) return SizedBox();
         final color = binderPageColor(context, binder.color);
         final last = section.lastEdited;
+        final pullOnly = widget.notebook.isPullOnlyLocation(widget.path);
         return Align(
           alignment: Alignment.topLeft,
           child: SingleChildScrollView(
@@ -174,6 +176,13 @@ class _BinderCoverState extends State<BinderCover> {
                       ),
                     ],
                   ),
+                  if (pullOnly) ...[
+                    Text(
+                      Notebook.pullOnlyMessage,
+                      key: const ValueKey('cover-read-only'),
+                      style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                    ),
+                  ],
                   SizedBox(height: NotedMetrics.of(context).space3),
                   _field('cover-title', 'Title', _title, focusNode: _titleFocus),
                   SizedBox(height: NotedMetrics.of(context).space4),
@@ -192,7 +201,7 @@ class _BinderCoverState extends State<BinderCover> {
                           message: hex,
                           child: InkResponse(
                             key: ValueKey('cover-color-$hex'),
-                            onTap: () => widget.notebook.updateBinder(widget.path, color: hex),
+                            onTap: pullOnly ? null : () => widget.notebook.updateBinder(widget.path, color: hex),
                             child: Container(
                               width: NotedMetrics.of(context).row,
                               height: NotedMetrics.of(context).row,

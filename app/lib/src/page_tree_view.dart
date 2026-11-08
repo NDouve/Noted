@@ -418,7 +418,9 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       key: ValueKey('binder-header-${b.path}'),
       // Dropping a page on a binder header moves it (and its subpages) in.
       onWillAcceptWithDetails: (d) =>
-          _nb.treeOfPage(d.data)[d.data] != null && !_nb.isReadOnlyPage(d.data),
+          _nb.treeOfPage(d.data)[d.data] != null &&
+          !_nb.isReadOnlyPage(d.data) &&
+          !_nb.isPullOnlyLocation(b.path),
       onMove: (_) {
         if (_hoverHeader != b.path) setState(() => _hoverHeader = b.path);
       },
@@ -592,7 +594,9 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     final key = _rowKeys.putIfAbsent(p.id, () => GlobalKey());
     final hover = _hoverRow == p.id ? _hoverZone : null;
     final indent = NotedMetrics.of(context).space2 + depth * sidebarIndent;
-    // Pages of a binder whose file can't be read: greyed, to view only.
+    // Pages of a binder whose file can't be read: greyed, to view only. A
+    // pull-only page (OneDrive) is just as unchangeable but is not greyed: it
+    // is there to be read, so it has no drag or edit menu and no more.
     final locked = _nb.isReadOnlyPage(p.id);
 
     final content = SidebarRow(
@@ -600,7 +604,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       depth: depth,
       selected: selected,
       highlight: hover == DropZone.into,
-      disabled: locked,
+      disabled: locked && !_nb.isPullOnlyPage(p.id),
       conflict: _nb.hasConflict(p.id),
       conflictKey: ValueKey('page-conflict-${p.id}'),
       chevron: divider
