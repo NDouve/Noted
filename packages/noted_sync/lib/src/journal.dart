@@ -162,6 +162,7 @@ class Moving {
     required this.newKey,
     required this.newPath,
     required this.identity,
+    required this.keep,
   });
 
   factory Moving.fromJson(Map<String, dynamic> j) => Moving(
@@ -170,6 +171,7 @@ class Moving {
     newKey: j['nk'] as String,
     newPath: j['np'] as String,
     identity: ContentIdentity(j['len'] as int, j['sha'] as String),
+    keep: j['kp'] as String,
   );
 
   final String oldKey;
@@ -178,7 +180,12 @@ class Moving {
   final String newPath;
   final ContentIdentity identity;
 
+  /// The name (SHA-256, lowercase hex) of the durable copy of the snapshot in
+  /// the state folder's `keep/`, written before this entry.
+  final String keep;
+
   Map<String, dynamic> toJson() => {
+    'kp': keep,
     'ok': oldKey,
     'op': oldPath,
     'nk': newKey,
@@ -281,6 +288,10 @@ class Journal {
       final m = Moving.fromJson((j['moving'] as Map).cast<String, dynamic>());
       _checkRelative(m.oldPath, 'a moving path');
       _checkRelative(m.newPath, 'a moving path');
+      final hex = RegExp(r'^[0-9a-f]{64}$');
+      if (!hex.hasMatch(m.keep) || !hex.hasMatch(m.identity.sha256)) {
+        throw JournalUnreadable('a moving entry has a bad copy name');
+      }
       out.moving = m;
     }
     for (final e in (j['mismatches'] as Map).entries) {
@@ -364,6 +375,15 @@ class BlobStore {
     } on FileSystemException {
       if (!await has(sha)) rethrow;
       await part.delete();
+    }
+  }
+
+  /// Deletes the blob named [sha], if it is there.
+  Future<void> remove(String sha) async {
+    try {
+      await fileFor(sha).delete();
+    } on FileSystemException {
+      // Already gone, or swept later.
     }
   }
 

@@ -73,7 +73,8 @@ class PullEngine {
   /// A seam for tests: called at each named step of a round, and free to
   /// throw to stand for a kill there (or to edit a file, as the Files app
   /// would). The core's own hooks are passed through as `replaceBeforePublish`,
-  /// `replaceBeforeRestore`, `deleteBeforeDelete` and `deleteBeforeRestore`.
+  /// `replaceBeforeRestore`, `deleteBeforeDelete` and `deleteBeforeRestore`; `restoreCopy` is before a kept
+  /// copy is put back.
   /// Steps: `deltaFetched`, `mapSaved`,
   /// `downloaded`, `blobWritten`, `published`, `journalSaved`, `deleted`,
   /// `repathCopied`, `movingWritten`, `oldDeleted`.
@@ -86,6 +87,9 @@ class PullEngine {
   final JournalStore _store;
   final BlobStore _blobs;
   final Directory _tmpDir;
+  late final BlobStore _keep = BlobStore(
+    Directory('${stateDir.path}${Platform.pathSeparator}keep'),
+  );
   final StreamController<void> _changes = StreamController<void>.broadcast();
 
   Journal? _journal;
@@ -177,6 +181,9 @@ class PullEngine {
     try {
       await _round();
     } catch (e) {
+      // What the start of the round listed (a copy put back, say) stays.
+      final extra = _roundIssues.where((i) => !_issues.contains(i)).toList();
+      if (extra.isNotEmpty) _issues = [..._issues, ...extra];
       if (e is! _PauseRound) r.error = e;
       _setStatus(_statusFor(e));
       return r;
@@ -627,6 +634,18 @@ class PullEngine {
 
   // --- The re-path journal step --------------------------------------------
 
+  Future<bool> _hasIdentity(String abs, ContentIdentity id) async {
+    try {
+      if (FileSystemEntity.typeSync(abs, followLinks: false) !=
+          FileSystemEntityType.file) {
+        return false;
+      }
+      return await ContentIdentity.ofFile(abs) == id;
+    } on FileSystemException {
+      return false;
+    }
+  }
+
   Future<void> _completeMoving() async {
     final j = _journal!;
     final m = j.moving;
@@ -634,26 +653,118 @@ class PullEngine {
     final rec = j.files[m.oldKey];
     final oldAbs = _abs(m.oldPath);
     final newAbs = _abs(m.newPath);
-    var done = false;
-    if (rec != null && !j.files.containsKey(m.newKey)) {
-      final oldGone = !_exists(oldAbs) && !_asidePresent(oldAbs);
-      if (oldGone && _exists(newAbs)) {
-        try {
-          if (await ContentIdentity.ofFile(newAbs) == m.identity) {
-            j.files.remove(m.oldKey);
-            rec.path = m.newPath;
-            j.files[m.newKey] = rec;
-            done = true;
-          }
-        } on FileSystemException {
-          // Redone below.
-        }
-      }
+    final oldGone = !_exists(oldAbs) && !_asidePresent(oldAbs);
+    if (rec != null &&
+        !j.files.containsKey(m.newKey) &&
+        oldGone &&
+        await _hasIdentity(newAbs, m.identity)) {
+      j.files.remove(m.oldKey);
+      rec.path = m.newPath;
+      j.files[m.newKey] = rec;
+      await _save();
+      _notify();
     }
-    // Anything else is redone from a fresh snapshot by the plan.
+    // Whatever else is left is redone from a fresh snapshot by the plan, but
+    // first a file with the snapshot's bytes must be on disk.
+    await _settleMoving();
+  }
+
+  /// Confirms a file with the entry's bytes is on disk (putting the kept copy
+  /// back when neither the new nor the old path has them), then clears the
+  /// entry and drops the kept copy. Until confirmed the entry stays.
+  Future<void> _settleMoving() async {
+    final j = _journal!;
+    final m = j.moving;
+    if (m == null) return;
+    if (!await _confirmMoving(m)) return;
     j.moving = null;
     await _save();
-    if (done) _notify();
+    await _keep.remove(m.keep);
+  }
+
+  Future<bool> _confirmMoving(Moving m) async {
+    final oldAbs = _abs(m.oldPath);
+    final newAbs = _abs(m.newPath);
+    if (await _hasIdentity(newAbs, m.identity) ||
+        await _hasIdentity(oldAbs, m.identity)) {
+      return true;
+    }
+    final j = _journal!;
+    // A snapshot that is what OneDrive had needs no restoring: only one with
+    // local edits does.
+    final rec = j.files[m.oldKey] ?? j.files[m.newKey];
+    if (rec?.base == m.identity) return true;
+    final keep = _keep.fileFor(m.keep);
+    if (!keep.existsSync() ||
+        await ContentIdentity.ofFile(keep.path) != m.identity) {
+      _issue(m.oldPath, 'The earlier copy of this page could not be found');
+      return true;
+    }
+    // Back at the old path if its folder is there and the name is free; else
+    // beside it, or beside the new path when the old folder is gone.
+    final oldFolderThere = File(oldAbs).parent.existsSync();
+    final String name = _basename(oldAbs);
+    final dot = name.lastIndexOf('.');
+    final ext = dot > 0 ? name.substring(dot) : '';
+    final String lockRel = oldFolderThere ? m.oldPath : m.newPath;
+    final String folderAbs = oldFolderThere
+        ? oldAbs.substring(0, oldAbs.length - name.length)
+        : newAbs.substring(0, newAbs.length - _basename(newAbs).length);
+    String sibling() =>
+        '$folderAbs${conflictCopyName(name, label: 'recovered', extension: ext)}';
+    var target = oldAbs;
+    if (!oldFolderThere || _exists(oldAbs) || _asidePresent(oldAbs)) {
+      target = sibling();
+    }
+    for (var attempt = 0; attempt < 5; attempt++) {
+      final tmp = _newTmp('rs');
+      try {
+        _step('restoreCopy');
+        await keep.copy(tmp.path);
+        final dest = target;
+        final ok = await locks.run(
+          Directory(_lockDirForRel(lockRel)),
+          () => publishExclusive(tmp, dest),
+        );
+        if (ok && await _hasIdentity(dest, m.identity)) {
+          _changed(dest);
+          _issue(
+            _relOf(dest),
+            'Put back: the new copy of this page changed before the old one was removed',
+          );
+          return true;
+        }
+      } on FileSystemException {
+        return false;
+      } finally {
+        _dropTemp(tmp);
+      }
+      target = sibling();
+    }
+    return false;
+  }
+
+  /// Under the locks of both paths (the new folder's first, when they differ),
+  /// deletes the old file only if the new one still holds [identity]. Null
+  /// when the new one changed: nothing is deleted.
+  Future<DeleteResult?> _deleteChecked(
+    String oldRel,
+    String newRel,
+    ContentIdentity identity,
+  ) {
+    final oldAbs = _abs(oldRel);
+    final newAbs = _abs(newRel);
+    Future<DeleteResult?> job() async {
+      if (!await _hasIdentity(newAbs, identity)) return null;
+      return deleteFileIfMatches(oldAbs, identity: identity);
+    }
+
+    final oldDir = Directory(_lockDirForRel(oldRel));
+    final newDir = Directory(_lockDirForRel(newRel));
+    if (FolderLocks.keyOf(oldDir) == FolderLocks.keyOf(newDir)) {
+      return locks.run(oldDir, job);
+    }
+    return locks.run(newDir, () => locks.run(oldDir, job));
   }
 
   // --- Applying ------------------------------------------------------------
@@ -912,6 +1023,7 @@ class PullEngine {
 
     await _pruneFolders(view);
     await _listStrays(view);
+    await _keep.sweep({if (j.moving != null) j.moving!.keep});
     await _blobs.sweep({
       for (final r in j.files.values)
         if (r.blob && r.base != null) r.base!.sha256,
@@ -1370,6 +1482,13 @@ class PullEngine {
 
   Future<void> _repath(String srcKey, DesiredFile d) async {
     final j = _journal!;
+    if (j.moving != null) {
+      _issue(
+        j.files[srcKey]!.path,
+        'An earlier move is not settled yet; waiting',
+      );
+      return;
+    }
     final rec = j.files[srcKey]!;
     final oldRel = rec.path;
     final oldAbs = _abs(oldRel);
@@ -1410,6 +1529,17 @@ class PullEngine {
         return;
       }
       final identity = await ContentIdentity.ofFile(copy.path);
+      final isAttachment = d.isAttachment || isAttachmentPath(srcKey);
+      if (!isAttachment) {
+        // A durable copy of the snapshot, before anything can be deleted (an
+        // attachment's source is never deleted, so it needs none).
+        try {
+          await _keep.put(copy, identity.sha256);
+        } on FileSystemException catch (e) {
+          _issue(oldRel, 'Can\'t keep a copy before moving it: ${e.message}');
+          return;
+        }
+      }
       final newDir = Directory(_lockDirForRel(newRel));
       String? problem;
       try {
@@ -1438,7 +1568,7 @@ class PullEngine {
         return;
       }
       _step('repathCopied');
-      if (d.isAttachment || isAttachmentPath(srcKey)) {
+      if (isAttachment) {
         // Attachments are copied, never moved: a kept page may still need them.
         _changed(newAbs);
         final moved = rec.copy()
@@ -1457,33 +1587,34 @@ class PullEngine {
         newKey: d.key,
         newPath: newRel,
         identity: identity,
+        keep: identity.sha256,
       );
       await _save();
       _step('movingWritten');
-      final DeleteResult res;
+      final DeleteResult? res;
       try {
-        res = await locks.run(
-          Directory(_lockDirForRel(oldRel)),
-          () => deleteFileIfMatches(oldAbs, identity: identity),
-        );
+        res = await _deleteChecked(oldRel, newRel, identity);
       } on FileSystemException catch (e) {
         _issue(oldRel, 'Can\'t remove the old copy: ${e.message}');
         await _sweepFolder(File(oldAbs).parent);
+        await _settleMoving();
         return;
       }
       _step('oldDeleted');
-      if (res.outcome == DeleteOutcome.deleted ||
+      if (res == null) {
+        _issue(newRel, 'Changed while it was being moved; both copies stay');
+      } else if (res.outcome == DeleteOutcome.deleted ||
           res.outcome == DeleteOutcome.absent) {
         if (res.deleted) _changed(oldAbs);
         j.files.remove(srcKey);
         rec.path = newRel;
         rec.itemId = d.item.id;
         j.files[d.key] = rec;
+        await _save();
       } else {
         _issue(oldRel, 'Changed after it was copied; both copies stay');
       }
-      j.moving = null;
-      await _save();
+      await _settleMoving();
     } finally {
       _dropTemp(copy);
     }

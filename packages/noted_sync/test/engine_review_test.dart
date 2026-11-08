@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -619,6 +620,274 @@ void main() {
       expect(during, ['Templates/noted-binder.json']);
       await round;
       expect(h.has('Templates/x.canvas'), isTrue);
+    });
+  });
+
+  group('a re-path keeps a durable copy until it is settled', () {
+    Future<void> setUpEdited() async {
+      seedMany(3);
+      h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+      await h.round();
+      h.write('a.canvas', 'A edited in Files');
+      h.fake.rename('Noted/a.canvas', 'b.canvas');
+    }
+
+    test('the destination replaced just before the delete: the source stays, both are listed, nothing is lost', () async {
+      await setUpEdited();
+      h.engine = h.newEngine(
+        onStep: (s) {
+          if (s == 'movingWritten') h.write('b.canvas', 'someone else');
+        },
+      );
+      final r = await h.round();
+      expect(h.read('a.canvas'), 'A edited in Files');
+      expect(h.read('b.canvas'), 'someone else');
+      expect(changedRel(h, r), isNot(contains('a.canvas')));
+      expect(
+        h.issueText().join('\n'),
+        contains('Changed while it was being moved'),
+      );
+      expect(readJournal()['moving'], isNull);
+      expect(
+        (readJournal()['files'] as Map).containsKey('a.canvas'),
+        isTrue,
+        reason: 'the record is kept',
+      );
+      expect(h.stateFiles('keep'), isEmpty);
+    });
+
+    test('killed between the delete and the record move, with the destination changed: the kept copy returns', () async {
+      await setUpEdited();
+      await killed('oldDeleted');
+      expect(h.has('a.canvas'), isFalse);
+      expect(h.stateFiles('keep'), hasLength(1));
+      h.write('b.canvas', 'someone else');
+      await h.round();
+      expect(h.read('a.canvas'), 'A edited in Files');
+      expect(h.read('b.canvas'), 'someone else');
+      expect(h.engine.issues, hasIssue('a.canvas'));
+      expect(h.stateFiles('keep'), isEmpty);
+      expect(readJournal()['moving'], isNull);
+    });
+
+    test('killed likewise, with the old path taken by another file: it is put back beside it, never over it', () async {
+      await setUpEdited();
+      await killed('oldDeleted');
+      h.write('b.canvas', 'someone else');
+      h.write('a.canvas', 'squatter');
+      await h.round();
+      expect(h.read('a.canvas'), 'squatter');
+      final copies = h.tree().where((p) => p.contains('a-recovered-')).toList();
+      expect(copies, hasLength(1));
+      expect(h.read(copies.single), 'A edited in Files');
+      expect(h.stateFiles('keep'), isEmpty);
+    });
+
+    test(
+      'a kept copy that no moving entry names is swept at the end of a round',
+      () async {
+        seedMany(2);
+        await h.round();
+        Directory('${h.state.path}/keep').createSync(recursive: true);
+        final stray = File('${h.state.path}/keep/${'ab' * 32}')
+          ..writeAsStringSync('stray');
+        await h.round();
+        expect(stray.existsSync(), isFalse);
+      },
+    );
+
+    test('an unwritable keep folder does not end the round: attachments copy, pages are listed and retried', () async {
+      seedBinder();
+      await h.round();
+      h.fake.rename('Noted/B1', 'B2');
+      Directory(h.state.path).createSync(recursive: true);
+      File('${h.state.path}/keep').writeAsStringSync('a file, not a folder');
+      final r = await h.round();
+      expect(r.error, isNull);
+      expect(h.engine.status.state, SyncState.idle);
+      expect(h.read('B2/p.assets/a.bin'), 'AAA');
+      expect(h.engine.issues, hasIssue('B1/p.canvas'));
+      expect(h.read('B1/p.canvas'), 'P');
+      File('${h.state.path}/keep').deleteSync();
+      await h.round();
+      expect(h.read('B2/p.canvas'), 'P');
+      expect(h.has('B2/noted-binder.json'), isTrue);
+      expect(h.engine.status.state, SyncState.idle);
+    });
+
+    test('an attachment re-path takes no kept copy', () async {
+      seedBinder();
+      await h.round();
+      h.fake.rename('Noted/B1', 'B2');
+      var seenKeep = false;
+      // The first re-path is the attachment (keys sort before p.canvas).
+      var first = true;
+      h.engine = h.newEngine(
+        onStep: (s) {
+          if (s == 'repathCopied' && first) {
+            first = false;
+            seenKeep =
+                Directory('${h.state.path}/keep').existsSync() &&
+                Directory('${h.state.path}/keep').listSync().isNotEmpty;
+          }
+        },
+      );
+      await h.round();
+      expect(seenKeep, isFalse);
+    });
+
+    test('the delete waits for the destination folder lock too', () async {
+      seedBinder();
+      await h.round();
+      h.fake.rename('Noted/B1', 'B2');
+      final release = Completer<void>();
+      var held = false;
+      h.engine = h.newEngine(
+        onStep: (s) {
+          if (s == 'movingWritten' && !held) {
+            held = true;
+            unawaited(
+              h.locks.run(Directory(h.path('B2')), () => release.future),
+            );
+          }
+        },
+      );
+      final round = h.round();
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      expect(h.has('B1/p.canvas'), isTrue, reason: 'the delete is waiting');
+      release.complete();
+      await round;
+      expect(h.has('B1/p.canvas'), isFalse);
+      expect(h.read('B2/p.canvas'), 'P');
+    });
+
+    test(
+      'a restored copy of a binder file or an image keeps its extension',
+      () async {
+        // Binder file: old path taken, destination changed.
+        seedBinder();
+        await h.round();
+        h.write('B1/noted-binder.json', '{"id":"b","edited":true}');
+        h.fake.rename('Noted/B1', 'B2');
+        await killed('oldDeleted', nth: 3);
+        expect(h.has('B1/noted-binder.json'), isFalse);
+        h.write('B2/noted-binder.json', 'someone else');
+        h.write('B1/noted-binder.json', 'squatter');
+        await h.round();
+        final copies = h
+            .tree()
+            .where((p) => p.contains('-recovered-'))
+            .toList();
+        expect(copies, hasLength(1));
+        expect(
+          copies.single,
+          matches(RegExp(r'^B1/noted-binder-recovered-[0-9a-f]+\.json$')),
+        );
+        expect(h.engine.issues, hasIssue(copies.single));
+      },
+    );
+
+    test(
+      'when the old folder is gone the kept copy is put beside the new path',
+      () async {
+        seedBinder();
+        await h.round();
+        h.write('B1/q.canvas', 'Q edited in Files');
+        h.fake.rename('Noted/B1', 'B2');
+        await killed('oldDeleted', nth: 2);
+        h.write('B2/q.canvas', 'someone else');
+        for (final e in Directory(h.path('B1')).listSync(recursive: true)) {
+          if (e is File) e.deleteSync();
+        }
+        Directory(h.path('B1')).deleteSync(recursive: true);
+        await h.round();
+        expect(readJournal()['moving'], isNull);
+        expect(h.stateFiles('keep'), isEmpty);
+        final copies = h
+            .tree()
+            .where((p) => p.contains('-recovered-'))
+            .toList();
+        expect(copies, hasLength(1));
+        expect(copies.single, startsWith('B2/q-recovered-'));
+        expect(h.read(copies.single), 'Q edited in Files');
+      },
+    );
+
+    test('a put-back listed at the start of a round stays listed when the fetch then fails', () async {
+      await setUpEdited();
+      await killed('oldDeleted');
+      h.write('b.canvas', 'someone else');
+      h.fake.fail('/delta', lose: true);
+      final r = await h.round();
+      expect(r.error, isNotNull);
+      expect(h.read('a.canvas'), 'A edited in Files');
+      expect(h.engine.issues, hasIssue('a.canvas'));
+    });
+
+    test('a snapshot that is what OneDrive had is not restored', () async {
+      seedMany(3);
+      h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+      await h.round();
+      h.fake.rename('Noted/a.canvas', 'b.canvas');
+      await killed('oldDeleted');
+      h.write('b.canvas', 'someone else');
+      await h.round();
+      expect(h.has('a.canvas'), isFalse);
+      expect(h.stateFiles('keep'), isEmpty);
+    });
+
+    test('an entry that can not be settled keeps its copy through the end of the round, and is settled later', () async {
+      await setUpEdited();
+      await killed('oldDeleted');
+      h.write('b.canvas', 'someone else');
+      h.engine = h.newEngine(
+        onStep: (s) {
+          if (s == 'restoreCopy') throw const FileSystemException('injected');
+        },
+      );
+      await h.round();
+      expect(readJournal()['moving'], isNotNull);
+      expect(h.stateFiles('keep'), hasLength(1));
+      expect(h.has('a.canvas'), isFalse);
+      h.restart();
+      await h.round();
+      expect(h.read('a.canvas'), 'A edited in Files');
+      expect(h.stateFiles('keep'), isEmpty);
+      expect(readJournal()['moving'], isNull);
+    });
+
+    test(
+      'a kept copy a moving entry names survives the sweep until settled',
+      () async {
+        await setUpEdited();
+        await killed('movingWritten');
+        final name = (readJournal()['moving'] as Map)['kp'] as String;
+        expect(h.stateFiles('keep').single, endsWith(name));
+      },
+    );
+
+    for (final bad in ['zz', '../x', '', 'A' * 64]) {
+      test('a bad kept-copy name "$bad" is unreadable', () async {
+        await setUpEdited();
+        await killed('movingWritten');
+        final j = readJournal();
+        (j['moving'] as Map)['kp'] = bad;
+        writeJournal(j);
+        h.restart();
+        final r = await h.round();
+        expect(r.error, isA<JournalUnreadable>());
+      });
+    }
+
+    test('a missing kept-copy name is unreadable', () async {
+      await setUpEdited();
+      await killed('movingWritten');
+      final j = readJournal();
+      (j['moving'] as Map).remove('kp');
+      writeJournal(j);
+      h.restart();
+      final r = await h.round();
+      expect(r.error, isA<JournalUnreadable>());
     });
   });
 
