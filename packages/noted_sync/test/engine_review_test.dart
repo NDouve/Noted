@@ -574,6 +574,54 @@ void main() {
     });
   });
 
+  group('surviving mutants and the identical-files case', () {
+    test('identical a and b, b removed here, then b deleted and a renamed to b: a stays and is listed', () async {
+      seedMany(10);
+      h.fake.addFile('Noted/a.canvas', Harness.b('SAME'));
+      h.fake.addFile('Noted/b.canvas', Harness.b('SAME'));
+      await h.round();
+      h.file('b.canvas').deleteSync();
+      h.fake.delete('Noted/b.canvas');
+      h.fake.rename('Noted/a.canvas', 'b.canvas');
+      for (var i = 0; i < 4; i++) {
+        await h.round();
+        h.clock.advance(const Duration(seconds: 31));
+      }
+      expect(h.read('a.canvas'), 'SAME', reason: 'the only copy stays');
+      expect(h.has('b.canvas'), isFalse);
+      expect(h.engine.issues, hasIssue('a.canvas'));
+      expect(h.engine.issues, hasIssue('b.canvas'));
+    });
+
+    test('a binder rename goes on when an old page is absent here and its target is taken', () async {
+      seedBinder();
+      await h.round();
+      h.file('B1/q.canvas').deleteSync();
+      h.write('B2/q.canvas', 'mine');
+      h.fake.rename('Noted/B1', 'B2');
+      await h.round();
+      expect(h.has('B2/noted-binder.json'), isTrue);
+      expect(h.read('B2/q.canvas'), 'mine');
+      expect(h.read('B2/p.canvas'), 'P');
+    });
+
+    test('a root-level Templates folder (not the exact name) is a binder folder for locks', () async {
+      h.fake.addFile('Noted/Templates/noted-binder.json', Harness.b('{}'));
+      await h.round();
+      h.fake.addFile('Noted/Templates/x.canvas', Harness.b('X'));
+      Future<RoundResult>? round;
+      var during = <String>[];
+      await h.locks.run(Directory(h.path('Templates')), () async {
+        round = h.round();
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        during = h.tree();
+      });
+      expect(during, ['Templates/noted-binder.json']);
+      await round;
+      expect(h.has('Templates/x.canvas'), isTrue);
+    });
+  });
+
   group('more checks', () {
     test('a known item with no parent keeps it, without an error', () async {
       seedMany(10);

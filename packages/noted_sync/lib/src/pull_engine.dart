@@ -1209,14 +1209,18 @@ class PullEngine {
     final remoteSame = _sameRemote(rec, d.item);
     final (state, ident) = await _localState(rel, rec);
     if (remoteSame) {
+      // The record takes the new item only while the local file is the one it
+      // describes: otherwise the old record stays, pending and listed.
       var touched = false;
-      if (rec.itemId != d.item.id) {
-        rec.itemId = d.item.id;
-        touched = true;
-      }
-      if (rec.cTag != d.item.cTag) {
-        rec.cTag = d.item.cTag;
-        touched = true;
+      if (state == _Local.same) {
+        if (rec.itemId != d.item.id) {
+          rec.itemId = d.item.id;
+          touched = true;
+        }
+        if (rec.cTag != d.item.cTag) {
+          rec.cTag = d.item.cTag;
+          touched = true;
+        }
       }
       if (touched) await _save();
       switch (state) {
