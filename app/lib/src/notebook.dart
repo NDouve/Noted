@@ -7903,6 +7903,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             debugPrint('Opening page ${page.id} at its own file failed: $e');
           }
           if (_current == null && !_disposed) await _fallbackAfterFailedOpen(loc);
+          onPageContent?.call(loc, page);
           _rebuildTree();
           return false;
         }
@@ -9671,19 +9672,38 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // A pull-only page that stayed open while its file was removed has no file
-  // and no other file with its id: once it is left its row goes, as a reload
-  // has it. Nothing is done for any other page.
+  // (nor an aside of one, which counts as present) and no other tracked file
+  // with its id: once it is left its row goes, as a reload has it, and a file
+  // listed as a duplicate of the page takes its place. Nothing is done for any
+  // other page.
   void _dropGhostRow(String id) {
     final loc = _loc[id];
     if (loc == null || !_pullOnly(loc) || _pathId.containsValue(id)) return;
     try {
-      if (File(_storeOf(loc).pathFor(id)).existsSync()) return;
+      final file = _storeOf(loc).pathFor(id);
+      if (File(file).existsSync() || _hasAside(file)) return;
     } on NotebookException {
       return;
     }
     _forgetPage(id);
     _touch(loc);
     _rebuildTree();
+    unawaited(_promoteDuplicate(id));
+  }
+
+  // Whether [file] has an aside beside it that a killed replace left.
+  bool _hasAside(String file) {
+    final name = _folderName(file);
+    try {
+      for (final f in File(file).parent.listSync(followLinks: false)) {
+        if (f is! File) continue;
+        final n = _folderName(f.path);
+        if (n.startsWith('$name.') && (n.endsWith(asideSuffix) || n.endsWith(verifiedSuffix))) return true;
+      }
+    } on FileSystemException {
+      return true; // can't tell: present
+    }
+    return false;
   }
 
   // Closes the page on screen without saving it.

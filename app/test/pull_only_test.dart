@@ -1040,6 +1040,73 @@ void main() {
       expect(Directory(w.rec.path).existsSync() ? Directory(w.rec.path).listSync() : const [], isEmpty);
     });
   });
+
+  group('ghost row guards', () {
+    Future<Notebook> openRemoved(_World w, {void Function(String orig)? beforeLeave}) async {
+      final nb = w.pull();
+      await nb.load();
+      await nb.open(w.pB);
+      final orig = w.path(w.work, w.pB);
+      final text = File(orig).readAsStringSync();
+      await w.engineDelete(nb, orig);
+      await nb.filesChanged([orig]);
+      // The file is published again, unreported.
+      if (beforeLeave != null) {
+        File(orig).writeAsStringSync(text);
+        beforeLeave(orig);
+      }
+      return nb;
+    }
+
+    test('a file that is back on disk keeps the row, and the page opens again', () async {
+      final nb = await openRemoved(w, beforeLeave: (_) {});
+      await nb.open(w.pB2);
+      expect(nb.pageTitleOf(w.pB), isNotNull);
+      await nb.open(w.pB);
+      expect(nb.currentId, w.pB);
+    });
+
+    test('an aside of the page file counts as the file', () async {
+      final nb = await openRemoved(w);
+      final orig = w.path(w.work, w.pB);
+      File('$orig.123-4.cas-old').writeAsStringSync('x');
+      await nb.open(w.pB2);
+      expect(nb.pageTitleOf(w.pB), isNotNull);
+    });
+
+    test('a duplicate in a writable folder takes the page over when the row would go', () async {
+      final nb = w.pull();
+      await nb.load();
+      await nb.addStandaloneFolder(w.other.path);
+      await nb.open(w.pB);
+      final orig = w.path(w.work, w.pB);
+      final away = '${w.other.path}/away.canvas';
+      await w.engineWrite(nb, away, File(orig).readAsStringSync());
+      await nb.filesChanged([away]);
+      await w.engineDelete(nb, orig);
+      await nb.filesChanged([orig]);
+      await nb.open(w.pB2);
+      for (var i = 0; i < 100 && nb.pageTitleOf(w.pB) == null; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      final fresh = w.pull();
+      await fresh.load();
+      await fresh.addStandaloneFolder(w.other.path);
+      expect(fresh.pageTitleOf(w.pB), isNotNull, reason: 'a reload lists it');
+      expect(nb.pageTitleOf(w.pB), isNotNull, reason: 'so does the live notebook');
+    });
+
+    test('with no read-only roots a row stays after leaving', () async {
+      final nb = w.pull(roots: const []);
+      await nb.load();
+      await nb.open(w.pB);
+      final orig = w.path(w.work, w.pB);
+      File(orig).deleteSync();
+      await nb.filesChanged([orig]);
+      await nb.open(w.pB2);
+      expect(nb.pageTitleOf(w.pB), isNotNull);
+    });
+  });
 }
 
 final Uint8List good2 = Uint8List.fromList([1, 2, 3, 4, 5, 6, 7, 8]);
