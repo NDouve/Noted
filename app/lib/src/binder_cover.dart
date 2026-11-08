@@ -131,6 +131,9 @@ class _BinderCoverState extends State<BinderCover> {
         key: ValueKey(key),
         controller: c,
         focusNode: focusNode,
+        readOnly: widget.notebook.isPullOnlyLocation(widget.path),
+        // Dimmed, like the settings of a pull-only binder, so it does not look editable.
+        enabled: !widget.notebook.isPullOnlyLocation(widget.path),
         maxLines: maxLines,
         minLines: 1,
         decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
@@ -150,6 +153,7 @@ class _BinderCoverState extends State<BinderCover> {
         if (section == null || binder == null) return SizedBox();
         final color = binderPageColor(context, binder.color);
         final last = section.lastEdited;
+        final pullOnly = widget.notebook.isPullOnlyLocation(widget.path);
         return Align(
           alignment: Alignment.topLeft,
           child: SingleChildScrollView(
@@ -174,6 +178,14 @@ class _BinderCoverState extends State<BinderCover> {
                       ),
                     ],
                   ),
+                  if (pullOnly) ...[
+                    Text(
+                      Notebook.pullOnlyMessage,
+                      key: const ValueKey('cover-read-only'),
+                      style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                    ),
+                    SizedBox(height: NotedMetrics.of(context).space2),
+                  ],
                   SizedBox(height: NotedMetrics.of(context).space3),
                   _field('cover-title', 'Title', _title, focusNode: _titleFocus),
                   SizedBox(height: NotedMetrics.of(context).space4),
@@ -183,7 +195,9 @@ class _BinderCoverState extends State<BinderCover> {
                   SizedBox(height: NotedMetrics.of(context).space4),
                   Text('Color', style: theme.textTheme.labelMedium),
                   SizedBox(height: NotedMetrics.of(context).space2),
-                  Wrap(
+                  Opacity(
+                    opacity: pullOnly ? 0.4 : 1,
+                    child: Wrap(
                     spacing: NotedMetrics.of(context).space2,
                     runSpacing: NotedMetrics.of(context).space2,
                     children: [
@@ -192,7 +206,7 @@ class _BinderCoverState extends State<BinderCover> {
                           message: hex,
                           child: InkResponse(
                             key: ValueKey('cover-color-$hex'),
-                            onTap: () => widget.notebook.updateBinder(widget.path, color: hex),
+                            onTap: pullOnly ? null : () => widget.notebook.updateBinder(widget.path, color: hex),
                             child: Container(
                               width: NotedMetrics.of(context).row,
                               height: NotedMetrics.of(context).row,
@@ -210,6 +224,7 @@ class _BinderCoverState extends State<BinderCover> {
                           ),
                         ),
                     ],
+                  ),
                   ),
                   SizedBox(height: NotedMetrics.of(context).space6),
                   Text('Last edited', style: theme.textTheme.labelMedium),

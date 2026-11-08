@@ -9,6 +9,8 @@ import 'package:noted_auth/noted_auth.dart' show AuthState;
 import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 
 import 'microsoft_account.dart';
+import 'onedrive_section.dart';
+import 'onedrive_sync.dart' show OneDriveScope;
 
 /// Taps on the about line that uncover the Microsoft account entry.
 const int aboutTapsToReveal = 5;
@@ -153,6 +155,9 @@ class _MicrosoftSection extends StatelessWidget {
             ],
           ],
         ),
+        // Mobile builds only: the controller is null elsewhere.
+        if (state == AuthState.signedIn && OneDriveScope.maybeOf(context) != null)
+          OneDriveSection(sync: OneDriveScope.maybeOf(context)!),
       ],
     );
   }

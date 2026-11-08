@@ -413,9 +413,35 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     this.settingsRetryFirst = const Duration(seconds: 2),
     this.settingsAbsentConfirm = const Duration(seconds: 30),
     FolderLocks? folderLocks,
-  }) : folderLocks = folderLocks ?? FolderLocks() {
+    List<String> readOnlyRoots = const [],
+  }) : folderLocks = folderLocks ?? FolderLocks(),
+       _readOnlyRoots = [for (final r in readOnlyRoots) _normalizePath(r)] {
     _chain.onDetachedJobEnded = _oldJobEnded;
   }
+
+  // Folders whose working copy another program (the OneDrive pull) writes and
+  // this notebook only reads. Empty on a device that never pulls.
+  final List<String> _readOnlyRoots;
+
+  /// Whether [loc] is at or under a read-only root: a pull-only location. It
+  /// stays available, but nothing in it is written (G1 of the stage-3 design).
+  bool _pullOnly(String loc) => _readOnlyRootOf(loc) != null;
+
+  // The read-only root (as its key) that [loc] is at or under, or null.
+  String? _readOnlyRootOf(String loc) {
+    if (_readOnlyRoots.isEmpty || loc == _standalone) return null;
+    final k = _key(loc);
+    for (final r in _readOnlyRoots) {
+      final rk = _key(r);
+      if (k == rk || k.startsWith(rk.endsWith('/') ? rk : '$rk/')) return rk;
+    }
+    return null;
+  }
+
+  static const String _pullOnlyMessage = 'This OneDrive folder is read-only on this device for now.';
+
+  /// What every place that refuses a change to a pull-only location says.
+  static const String pullOnlyMessage = _pullOnlyMessage;
 
   /// The per-folder lock the notebook's page-file writes and scans run under.
   /// Share one with anything else that writes page files in the same folders.
@@ -926,7 +952,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final pages = <SearchablePage>[];
     final skipped = <NotSearched>[];
     for (final e in _loc.entries) {
-      if (_isLocked(e.value)) continue;
+      // A pull-only page is locked for writing only: it is still searched.
+      if (_isLocked(e.value) && !_pullOnly(e.value)) continue;
       final PageStore st;
       try {
         st = _storeOf(e.value);
@@ -994,8 +1021,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return loc != null && _isLocked(loc);
   }
 
+  /// Whether the location [loc] (a binder's folder or a standalone folder) is
+  /// pull-only: at or under a read-only root. It is available and readable,
+  /// but nothing in it is written, moved, renamed or deleted here.
+  bool isPullOnlyLocation(String loc) => _pullOnly(loc);
+
+  /// Whether page [id] is in a pull-only location.
+  bool isPullOnlyPage(String id) {
+    final loc = _loc[id];
+    return loc != null && _pullOnly(loc);
+  }
+
   // A location whose files must not be written.
   bool _isLocked(String loc) {
+    if (_pullOnly(loc)) return true;
     if (loc == _standalone) return _defaultGone;
     final f = _folders[loc];
     if (f != null) return !f.available;
@@ -1004,6 +1043,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   String _lockedMessage(String loc) {
+    if (_pullOnly(loc)) return _pullOnlyMessage;
     final s = _binders[loc];
     if (s != null && s.readOnly) {
       return "This binder's file can't be read, so its pages are read-only.";
@@ -1107,13 +1147,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (f != null) {
       final st = f.store;
       if (!f.available || st == null) {
-        throw const NotebookException('That folder is not available.');
+        throw NotebookException(_pullOnly(loc) ? _pullOnlyMessage : 'That folder is not available.');
       }
       return st;
     }
     // A binder whose file can't be read keeps its store, for reading.
     final st = _binders[loc]?.store;
-    if (st == null) throw const NotebookException('That binder is not available.');
+    if (st == null) {
+      throw NotebookException(_pullOnly(loc) ? _pullOnlyMessage : 'That binder is not available.');
+    }
     return st;
   }
 
@@ -1804,7 +1846,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (id == currentId) return;
     // A page of a binder whose folder is away can't be read.
     if (_binders[_loc[id]]?.missing ?? false) {
-      throw const NotebookException('That binder is not available.');
+      throw NotebookException(isPullOnlyPage(id) ? _pullOnlyMessage : 'That binder is not available.');
     }
     await _closeCurrent();
     await _openFresh(id);
@@ -1819,6 +1861,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     picker: attachmentPicker,
     opener: attachmentOpener,
     watch: watchFiles,
+    readOnly: _pullOnly(loc),
   );
 
   // The page AI access (0100) -------------------------------------------------
@@ -1929,7 +1972,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> setBinderAiAccess(String path, AiAccess? value) async {
     final s = _binders[path];
     final b = s?.binder;
-    if (s == null || b == null || !s.available) return;
+    if (s == null || b == null || !s.available || _isLocked(path)) return;
     final next = b.withAiAccess(value);
     if (identical(next, b)) return;
     s.binder = next;
@@ -2011,7 +2054,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> setBinderBoxType(String path, String typeId, bool? allowed) async {
     final s = _binders[path];
     final b = s?.binder;
-    if (s == null || b == null || !s.available) return;
+    if (s == null || b == null || !s.available || _isLocked(path)) return;
     final next = b.withBoxType(typeId, allowed);
     if (identical(next, b)) return;
     s.binder = next;
@@ -2095,7 +2138,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> setBinderAttachmentStorage(String path, AttachmentStorage value) async {
     final s = _binders[path];
     final b = s?.binder;
-    if (s == null || b == null || !s.available) return;
+    if (s == null || b == null || !s.available || _isLocked(path)) return;
     if (b.attachmentStorage == value) return;
     s.binder = b.withAttachmentStorage(value);
     notifyListeners();
@@ -2130,8 +2173,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   /// Copies the files of [from] into [to] (made if needed) without replacing
   /// anything; see [copyAttachmentTree]. [into] collects what happened.
-  static Future<void> _copyDir(Directory from, Directory to, {AttachmentCopy? into}) =>
-      copyAttachmentTree(from, to, into ?? AttachmentCopy());
+  static Future<void> _copyDir(
+    Directory from,
+    Directory to, {
+    AttachmentCopy? into,
+    bool sweepSource = true,
+  }) => copyAttachmentTree(from, to, into ?? AttachmentCopy(), sweepSource: sweepSource);
 
   /// [_copyDir] for a copy that has no rollback of its own (templates): what it
   /// kept aside or left alone is posted to [attachmentNotices], also when it
@@ -2139,7 +2186,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> _copyDirNotify(Directory from, Directory to, String targetPlace, String sourcePlace) async {
     final copy = AttachmentCopy();
     try {
-      await _copyDir(from, to, into: copy);
+      // A pull-only source is only read: its leftovers are not swept (G15).
+      await _copyDir(from, to, into: copy, sweepSource: !_pullOnly(from.path));
     } finally {
       _postCopyNotices(copy, targetPlace, sourcePlace);
     }
@@ -2332,7 +2380,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (c != null) {
       final loc = _loc[c.page.id];
       if (loc == null) {
-        why = _orphanLoc == null ? null : "This page's folder isn't available, so it is read-only.";
+        why = _orphanLoc == null
+            ? null
+            : _pullOnly(_orphanLoc!)
+            ? _pullOnlyMessage
+            : "This page's folder isn't available, so it is read-only.";
+      } else if (_pullOnly(loc)) {
+        why = _pullOnlyMessage;
       } else if (_isLocked(loc)) {
         why = _binders[loc]?.readOnly ?? false
             ? "This binder's file can't be read, so this page is read-only."
@@ -4017,6 +4071,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// [NotebookException].
   Future<String> _newBinderFolder(String name) async {
     final root = defaultBinderFolderPath;
+    if (_pullOnly(root)) throw const NotebookException(_pullOnlyMessage);
     final builtin = settings?.defaultBinderFolder == null || _key(root) == _key(builtinBinderFolderPath);
     try {
       if (builtin) {
@@ -4130,6 +4185,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _refuseWhileHeld();
     if (path == defaultFolderPath || _folders.containsKey(path)) {
       throw const NotebookException('That folder holds the standalone pages.');
+    }
+    // A binder file is never made in a pull-only folder (opening one is fine).
+    if (_pullOnly(path) && !await BinderStore(Directory(path)).file.exists()) {
+      throw const NotebookException(_pullOnlyMessage);
     }
     await flush();
     final r = await _queued(() => _listBinder(path, found: false));
@@ -4343,7 +4402,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final known = _folders.keys.where((f) => _key(f) == _key(path)).firstOrNull;
     if (known != null) {
       if (_folders[known]!.available) return known;
-      throw const NotebookException('That folder is not available.');
+      throw NotebookException(_pullOnly(known) ? _pullOnlyMessage : 'That folder is not available.');
     }
     _refuseWhileHeld();
     await checkStandaloneFolder(path);
@@ -4423,8 +4482,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (await BinderStore(dir).file.exists()) return unavailable('This folder holds a binder.');
       final pages = storeFactory(dir);
       final entries = await _scan(pages);
-      _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
       final bad = <UnreadablePage>[...entries.whereType<UnreadablePage>()];
+      _takeCopies(path, entries, bad, merge: true);
       for (final e in entries.whereType<ReadablePage>()) {
         if (_metas.containsKey(e.meta.id) || _otherThanChosen(e.meta.id, e.path)) {
           bad.add(UnreadablePage(e.path, 'duplicate page id ${e.meta.id}'));
@@ -4586,6 +4645,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   /// Deletes a template file found by [listTemplates].
   Future<void> deleteTemplate(TemplateItem item) async {
+    final inBinder = item.binderPath;
+    if (inBinder != null && _binders.containsKey(inBinder) && _isLocked(inBinder)) throw NotebookException(_lockedMessage(inBinder));
+    if (_pullOnly(File(item.path).parent.path)) throw const NotebookException(_pullOnlyMessage);
     try {
       await TemplateStore(_templatesDirFor(item.binderPath)).delete(item.path);
       final stem = item.path.endsWith(templateExtension)
@@ -4642,6 +4704,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (path == defaultFolderPath || _folders.containsKey(path)) {
       throw const NotebookException('That folder holds the standalone pages.');
     }
+    if (_pullOnly(path)) throw const NotebookException(_pullOnlyMessage);
     final dir = Directory(path);
     final binders = BinderStore(dir);
     if (_binders.containsKey(path) || await binders.file.exists()) {
@@ -4824,7 +4887,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }) async {
     final s = _binders[path];
     var b = s?.binder;
-    if (s == null || b == null || !s.available) return;
+    if (s == null || b == null || !s.available || _isLocked(path)) return;
     final before = b;
     if (title != null && title != b.title) b = b.withTitle(title);
     if (description != null && description != b.description) b = b.withDescription(description);
@@ -4899,7 +4962,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       var read = once.read;
       String? text = once.text;
       if (read is BinderMissing) {
-        if (!create) return unavailable('No $binderFileName in this folder.');
+        if (!create || _pullOnly(path)) return unavailable('No $binderFileName in this folder.');
         final made = await binders.create(
           Binder.create(
             title: _folderName(path),
@@ -4920,12 +4983,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       final pages = storeFactory(dir);
       final entries = await _scan(pages, createFolder: createFolder, sweep: sweep && _sweepOff == 0);
-      if (binder != null) {
-        // Conflict copies are merged by writing, which a damaged binder forbids.
-        _pendingCopies.addAll(entries.whereType<ConflictCopyPage>().map((c) => c.path));
-      }
       var latest = (await binders.file.lastModified());
       final bad = <UnreadablePage>[...entries.whereType<UnreadablePage>()];
+      // Conflict copies are merged by writing, which a damaged binder forbids.
+      _takeCopies(path, entries, bad, merge: binder != null);
       final section = BinderSection._(
         path,
         binder != null ? BinderStatus.available : BinderStatus.unreadable,
@@ -5645,6 +5706,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // its edits are not saved. They go through the recovery rules like any
     // failed save (a skipped save would let the page be disposed unasked).
     final loc = _loc[page.id] ?? (session != null ? _orphanLoc : null);
+    // A pull-only page has no edits: nothing to save, and nothing to keep.
+    if (loc != null && _pullOnly(loc)) return const SaveResult(SaveEnd.skipped);
     if (loc == null) {
       return session == null
           ? const SaveResult(SaveEnd.skipped)
@@ -6993,6 +7056,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<T> _underFolderLock<T>(PageStore st, Future<T> Function() job) =>
       folderLocks.run(st.directory, job);
 
+  // The conflict copies a scan of [loc] found: merged later when the place can
+  // be written ([merge]); in a pull-only place they are never merged, and are
+  // listed as duplicates of their page (G3).
+  void _takeCopies(String loc, List<PageEntry> entries, List<UnreadablePage> bad, {required bool merge}) {
+    final copies = entries.whereType<ConflictCopyPage>();
+    if (_pullOnly(loc)) {
+      bad.addAll(copies.map((c) => UnreadablePage(c.path, 'duplicate page id ${c.meta.id}')));
+    } else if (merge) {
+      _pendingCopies.addAll(copies.map((c) => c.path));
+    }
+  }
+
   Future<List<PageEntry>> _scan(PageStore st, {bool createFolder = true, bool sweep = true}) {
     // A store made again (a binder opened again) is told which files were chosen.
     final dir = _key(st.directory.path);
@@ -7002,7 +7077,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return _underFolderLock(st, () async {
       // No scan sweeps while a found add runs: set-aside files may belong to a
       // write another device has under way.
-      final entries = await st.scan(createFolder: createFolder, sweep: sweep && _sweepOff == 0);
+      // A pull-only folder is never created by a read (G2).
+      final entries = await st.scan(
+        createFolder: createFolder && !_pullOnly(st.directory.path),
+        sweep: sweep && _sweepOff == 0,
+      );
       // A chosen file that now holds another page: the open or a busy page
       // keeps it (its next save meets that page and is blocked); any other
       // page lets go of the choice, and a duplicate is promoted by the caller.
@@ -7419,6 +7498,57 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return job;
   }
 
+  /// Tells the notebook that the files at [paths] arrived, changed or were
+  /// removed by something other than a watcher (the OneDrive pull on a device
+  /// that has no folder watching). It runs what a watcher event runs for each
+  /// path, one after another and without the debounce, whether or not
+  /// [watchFiles] is on, and completes when all are looked at. It also tells
+  /// the open page's attachments that files arrived.
+  ///
+  /// A page file in a pull-only location that is a conflict copy of a file
+  /// with the same page id is listed as a duplicate and never merged, also for
+  /// the open page. After a file is found removed, the files listed as
+  /// duplicates of its page are looked at again, so the page moves to the file
+  /// that survives.
+  Future<void> filesChanged(Iterable<String> paths) async {
+    final list = paths.toList();
+    for (final path in list) {
+      if (_disposed) return;
+      try {
+        await _fileChanged(path);
+      } on Object catch (e) {
+        debugPrint('Looking at $path failed: $e');
+      }
+    }
+    // As the watcher does: only a path in or about an assets folder.
+    if (!_disposed && list.any((p) => p.contains('.assets'))) _attachments?.filesChanged();
+  }
+
+  Future<void> _fileChanged(String path) async {
+    if (_isBinderFile(path)) {
+      await checkBinderFile(path);
+      return;
+    }
+    if (!path.endsWith(PageStore.extension)) return;
+    final key = _key(path);
+    final id = _pathId[key];
+    await checkFile(path);
+    if (_disposed || id == null) return;
+    if (await FileSystemEntity.type(path) != FileSystemEntityType.notFound) return;
+    // The file is gone: the files listed as duplicates of its page are looked
+    // at again (their last known text is forgotten, so each is read afresh).
+    final dupes = [
+      ..._unreadable,
+      for (final f in _folders.values) ...f.unreadable,
+      for (final b in _binders.values) ...b.unreadable,
+    ].where((u) => u.reason == 'duplicate page id $id' && _key(u.path) != key).map((u) => u.path).toList();
+    for (final d in dupes) {
+      if (_disposed) return;
+      _known.remove(_key(d));
+      await checkFile(d);
+    }
+  }
+
   /// Runs [job] as a save-chain job.
   @visibleForTesting
   Future<T> runOnChainForTest<T>(Future<T> Function() job) => _afterSaves(job, what: 'test job');
@@ -7503,6 +7633,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     if (text == null && unreadable == null) {
       if (section.status == BinderStatus.unavailable) return;
+      if (_pullOnly(section.path)) {
+        // Its pages stay listed and its open page stays open (G6); an aside of
+        // the binder file means a replace is under way, so nothing is decided.
+        if (!await _holdsBinderFile(section.path)) await _binderGone(section);
+        return;
+      }
       await _disableBinder(
         section,
         BinderStatus.unavailable,
@@ -7676,10 +7812,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _fileGone(loc, key, path);
       return false;
     }
-    if (conflictCopyOriginalNames(path.split(RegExp(r'[\\/]')).last).isNotEmpty &&
-        !_isLocked(loc) &&
-        await _tryConflictCopy(loc, key, path, text, time)) {
-      return false;
+    if (conflictCopyOriginalNames(path.split(RegExp(r'[\\/]')).last).isNotEmpty) {
+      if (_pullOnly(loc)) {
+        // Never merged here: a copy with a same-id original is listed as a
+        // duplicate, also for the open page; any other file is handled as usual.
+        if (await _listPullOnlyCopy(loc, key, path, text)) return false;
+      } else if (!_isLocked(loc) && await _tryConflictCopy(loc, key, path, text, time)) {
+        return false;
+      }
     }
     if (_known[key] == text && !wasBlocked) return false;
     final previous = _known[key];
@@ -7738,9 +7878,52 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       saveAfterMerge = _session?.own.isNotEmpty ?? false;
     }
     if (_current?.page.id == page.id && _loc[page.id] == loc && _preview == null) {
+      if (_pullOnly(loc) && !isOpen) {
+        // Another file holding the open page's id. While the page's own file
+        // is there it is a duplicate, as a scan lists it (never merged in);
+        // once that file is gone the page moves to this one.
+        final own = _storeOf(loc).pathFor(page.id);
+        final ownKey = _key(own);
+        if (_folderName(path) == '${page.id}${PageStore.extension}') {
+          // The page's own name is back while it is shown from another file:
+          // it goes to the file with its name, as a reload lists it, and the
+          // file it was shown from is a duplicate.
+          _dropUnreadable(loc, path, rebuild: false);
+          _pathId.removeWhere((k, v) => v == page.id);
+          _known.remove(ownKey);
+          _pathId[key] = page.id;
+          _storeOf(loc).adopt(page.id, path);
+          if (File(own).existsSync()) {
+            _knownUnreadable(loc, ownKey, own, 'duplicate page id ${page.id}');
+          }
+          _disposeCurrent();
+          try {
+            await _openFresh(page.id);
+          } on Object catch (e) {
+            debugPrint('Opening page ${page.id} at its own file failed: $e');
+          }
+          if (_current == null && !_disposed) await _fallbackAfterFailedOpen(loc);
+          onPageContent?.call(loc, page);
+          _rebuildTree();
+          return false;
+        }
+        if (ownKey != key && File(own).existsSync()) {
+          _known.remove(key);
+          _knownUnreadable(loc, key, path, 'duplicate page id ${page.id}');
+          return false;
+        }
+        _dropUnreadable(loc, path, rebuild: false);
+        _known.remove(ownKey);
+        _pathId.removeWhere((k, v) => v == page.id);
+        _pathId[key] = page.id;
+        // The store follows, so the page can be opened again from this file.
+        _storeOf(loc).adopt(page.id, path);
+      }
       _mergeOpen(page, text, time);
       final cp = _current;
       if (saveAfterMerge && cp != null && cp.page.id == page.id) _pageChanged(cp.page);
+    } else if (await _openPageSurvivesElsewhere(page, loc, key, path)) {
+      // handled: listed as a duplicate, or the page was opened afresh there
     } else {
       await _applyClosed(page, loc, key, path);
     }
@@ -7775,7 +7958,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (c == null || c.page.id != openId) return true;
     final text = writePage(c.page);
     // Already blocked: the page is read-only, so its entry is still current.
-    if (_diskBlockId != openId && text != _known[key]) {
+    // (A pull-only page has no edits to keep.)
+    if (_diskBlockId != openId && text != _known[key] && !_pullOnly(loc)) {
       final st = _storeOf(loc);
       final s = _session;
       final keep = _blockKeep = await _keepForRecovery(loc, st, c.page, session: s, seq: s?.seq ?? 0);
@@ -7821,7 +8005,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final c = _current;
     if (id == null || c == null || c.page.id != id) return;
     final loc = _loc[id];
-    if (loc == null || _isLocked(loc)) return;
+    // A pull-only page is looked at too: its file is rewritten by the pull.
+    if (loc == null || (_isLocked(loc) && !_pullOnly(loc))) return;
     await _checkFile(_storeOf(loc).pathFor(id));
   }
 
@@ -7839,6 +8024,103 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final p in paths) {
       await (inQueue ? _checkFile(p) : checkFile(p));
     }
+  }
+
+  // The open page of a pull-only place has its id in a file of another place
+  // [loc]. While its own file is there, or when [loc] can be written, that file
+  // is a duplicate, never a new home for the page. Once its own file is gone
+  // the page moves: it is closed without a save (it has no edits) and opened
+  // afresh from the survivor, so its content, base and attachments are rebuilt.
+  // False if this does not apply.
+  Future<bool> _openPageSurvivesElsewhere(NotedPage page, String loc, String key, String path) async {
+    final id = page.id;
+    final cur = _current;
+    final at = _loc[id];
+    if (cur == null || cur.page.id != id || _preview != null || at == null || at == loc || !_pullOnly(at)) {
+      return false;
+    }
+    String? own;
+    try {
+      own = _storeOf(at).pathFor(id);
+    } on NotebookException {
+      own = null;
+    }
+    if (!_pullOnly(loc) || (own != null && File(own).existsSync())) {
+      _known.remove(key);
+      _knownUnreadable(loc, key, path, 'duplicate page id $id');
+      return true;
+    }
+    final old = _binders[at];
+    _dropUnreadable(loc, path, rebuild: false);
+    _loc[id] = loc;
+    for (final e in _pathId.entries.where((e) => e.value == id).toList()) {
+      _pathId.remove(e.key);
+      _known.remove(e.key);
+    }
+    _pathId[key] = id;
+    _metas[id] = page.meta;
+    final st = _storeOf(loc);
+    st.adopt(id, path);
+    _disposeCurrent();
+    try {
+      await _openFresh(id);
+    } on Object catch (e) {
+      debugPrint('Opening page $id at its new place failed: $e');
+    }
+    if (_current == null && !_disposed) await _fallbackAfterFailedOpen(loc);
+    if (old != null) _touch(at);
+    onPageContent?.call(loc, page);
+    _rebuildTree();
+    return true;
+  }
+
+  // No page is open after a page failed to open at its new place: another one
+  // is, as after a binder moved.
+  Future<void> _fallbackAfterFailedOpen(String loc) async {
+    try {
+      await _openFallback(loc);
+    } on Object catch (e) {
+      debugPrint('Opening a page after the move failed: $e');
+    }
+  }
+
+  // [path] in a pull-only place holds [text]: if it is a conflict copy of a
+  // file with the same page id, it is listed as a duplicate of that page and
+  // nothing is merged or written. True if it was one.
+  Future<bool> _listPullOnlyCopy(String loc, String key, String path, String text) async {
+    final NotedPage copy;
+    try {
+      copy = readPage(text);
+    } on PageFormatException {
+      return false;
+    }
+    final original = await PageStore.findConflictOriginal(path, copy);
+    if (original == null) return false;
+    if (_disposed) return true;
+    if (_pathId[key] == copy.id && copy.id != currentId) {
+      // This copy is the file listed for the page (it was alone, or reported
+      // before its original): the page is handed to the original, not evicted.
+      NotedPage? op;
+      try {
+        op = readPage(await File(original).readAsString());
+      } on Object {
+        op = null;
+      }
+      if (_disposed) return true;
+      if (op != null && op.id == copy.id) {
+        _pathId.remove(key);
+        _known.remove(key);
+        if (_loc[copy.id] == loc) {
+          _metas.remove(copy.id);
+          _loc.remove(copy.id);
+          _conflicts.remove(copy.id);
+        }
+        await _applyClosed(op, loc, _key(original), original);
+      }
+    }
+    _known.remove(key);
+    _knownUnreadable(loc, key, path, 'duplicate page id ${copy.id}');
+    return true;
   }
 
   /// Handles [path] if it is a sync client's conflict copy of another page
@@ -8446,6 +8728,24 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final id = _binderIds[_key(b.path)];
       if (id != null) listedIds[id] = b.path;
     }
+    // A pull-only binder whose folder is gone, or holds no binder file, and
+    // whose id is in exactly one new place under the same read-only root: the
+    // OneDrive folder was renamed or moved. Decided only by a pass that saw
+    // every root and read every file, and before the `movedTo` branch below.
+    final rehomes = <({String id, String from, String to})>[];
+    // (A pass cut short by the root or folder cap did not see every root.)
+    if (_readOnlyRoots.isNotEmpty && readsOk && rootsOk && capNotes.isEmpty) {
+      for (final e in found.entries.toList()) {
+        final from = listedIds[e.key];
+        if (from == null || !_pullOnly(from) || e.value.length != 1) continue;
+        final to = e.value.single.path;
+        if (_readOnlyRootOf(from) != _readOnlyRootOf(to)) continue;
+        if (await _holdsBinderFile(from)) continue;
+        if (_disposed) return;
+        rehomes.add((id: e.key, from: from, to: to));
+        found.remove(e.key);
+      }
+    }
     final alsoIn = <String, List<String>>{};
     final movedTo = <String, List<String>>{};
     final duplicates = <String, ({String title, List<String> folders})>{};
@@ -8515,6 +8815,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_disposed) return;
     if (changed || recorded) notifyListeners();
 
+    if (rehomes.isNotEmpty) {
+      final chain = _rehomeInTurn(rehomes);
+      _discoveryJobs.add(chain);
+      unawaited(chain.whenComplete(() => _discoveryJobs.remove(chain)));
+    }
     // The found adds go one after another: the next is queued on `_checking`
     // only when the previous one has ended, so a hand add waits for at most one.
     if (adds.isNotEmpty) {
@@ -8547,6 +8852,148 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         debugPrint('Adding the binder in ${a.path} failed: $e');
       }
     }
+  }
+
+  // Notes about open pages a re-homed binder left behind, by old folder (G6).
+  final Map<String, ({UnreadablePage note, String id})> _rehomeNotes = {};
+
+  Future<void> _rehomeInTurn(List<({String id, String from, String to})> list) async {
+    for (final r in list) {
+      if (_disposed) return;
+      try {
+        await _queued(() => _rehome(r.id, r.from, r.to));
+      } on Object catch (e) {
+        debugPrint('Moving the binder from ${r.from} to ${r.to} failed: $e');
+      }
+    }
+  }
+
+  // A pull-only binder was renamed or moved under its read-only root (G6): its
+  // folder [from] holds no binder file and the binder with the same id is in
+  // [to]. The old location's pages and id are dropped (not recorded as
+  // removed), [to] is opened as a binder, and the open page, if it was in the
+  // binder, is opened afresh at its new place without a save: a pull-only page
+  // has no edits, so its content, base and attachments are all rebuilt.
+  Future<void> _rehome(String id, String from, String to) async {
+    final old = _binders[from];
+    if (old == null || !identical(_binders[from], old) || !_pullOnly(from)) return;
+    if (_binderIds[_key(from)] != id) return;
+    if (_binders.keys.any((p) => _key(p) == _key(to)) || _claims.contains(_key(to))) return;
+    if (_readOnlyRootOf(from) != _readOnlyRootOf(to)) return;
+    // Checked again now, on disk (an aside of the binder file counts).
+    if (await _holdsBinderFile(from)) return;
+    final read = await BinderStore(Directory(to)).read();
+    if (read is! BinderFound || read.binder.id != id || _disposed) return;
+    if (!identical(_binders[from], old)) return;
+    final ids = [for (final e in _loc.entries) if (e.value == from) e.key];
+    final openId = currentId;
+    final openHere = openId != null && ids.contains(openId);
+    // What is dropped is kept, to put back if [to] turns out not to be usable.
+    final keptMetas = {for (final i in ids) i: _metas[i]};
+    final keptConflicts = {for (final i in ids) if (_conflicts.contains(i)) i};
+    final keptPaths = {
+      for (final e in _pathId.entries)
+        if (ids.contains(e.value)) e.key: e.value,
+    };
+    final keptKnown = {
+      for (final k in keptPaths.keys) k: ?_known[k],
+    };
+    void putBack() {
+      for (final i in ids) {
+        final m = keptMetas[i];
+        if (m != null) _metas[i] = m;
+        _loc[i] = from;
+        if (keptConflicts.contains(i)) _conflicts.add(i);
+      }
+      _pathId.addAll(keptPaths);
+      _known.addAll(keptKnown);
+    }
+    final fromDir = _key(from);
+    final keptAdopted = {
+      for (final e in _adoptedFiles.entries)
+        if (_key(File(e.value).parent.path) == fromDir) e.key: e.value,
+    };
+    final keptGone = {for (final i in keptAdopted.keys) i: ?_goneChosen[i]};
+    _dropAdoptionsIn(from);
+    for (final i in ids) {
+      _forgetPage(i);
+    }
+    final BinderSection fresh;
+    try {
+      fresh = await _openBinder(to, createFolder: false, sweep: false);
+    } on Object {
+      putBack();
+      _adoptedFiles.addAll(keptAdopted);
+      _goneChosen.addAll(keptGone);
+      rethrow;
+    }
+    if (_disposed) return;
+    if (!identical(_binders[from], old) || !fresh.available || fresh.binder?.id != id) {
+      _undoOpen(to);
+      if (identical(_binders[from], old)) {
+        putBack();
+        _adoptedFiles.addAll(keptAdopted);
+        _goneChosen.addAll(keptGone);
+      }
+      return;
+    }
+    // The destination is registered in the place of the old one, in the same
+    // position in the list.
+    final entries = _binders.entries.toList();
+    _binders.clear();
+    for (final e in entries) {
+      if (identical(e.value, old)) {
+        _binders[to] = fresh;
+      } else {
+        _binders[e.key] = e.value;
+      }
+    }
+    _binderIds.remove(_key(from));
+    _binderText.remove(_key(from));
+    _alsoIn = {..._alsoIn}..remove(_key(from));
+    _movedTo = {..._movedTo}..remove(_key(from));
+    _recordBinderId(to, fresh.binder);
+    if (_coverPath == from) _coverPath = to;
+    final last = _lastDeleted;
+    if (last != null && last._location == from) _lastDeleted = null;
+    _dropLandedIn(from);
+    final fromKey = _key(from);
+    _pendingCopies.removeWhere((p) => _key(File(p).parent.path) == fromKey);
+    if (openHere && currentId == openId) {
+      if (_loc[openId] == to) {
+        _disposeCurrent();
+        try {
+          await _openFresh(openId);
+        } on Object catch (e) {
+          debugPrint('Opening page $openId at its new place failed: $e');
+        }
+      } else {
+        // Its file stayed in the old folder: the page closes, with a note.
+        final title = _titleOrUntitled(keptMetas[openId]?.title ?? '');
+        _disposeCurrent();
+        _rehomeNotes[fromKey] = (
+          note: UnreadablePage(
+            from,
+            'The page "$title" stayed in the old folder of binder "${fresh.title}" when it moved, '
+            'so it was closed.',
+          ),
+          id: openId,
+        );
+      }
+    }
+    _syncReadOnly();
+    _rebuildTree();
+    _syncWatchers();
+    await _saveSettings();
+    await _promoteReleased();
+    if (openHere && _current == null && !_disposed) {
+      try {
+        await _openFallback(to);
+      } on Object catch (e) {
+        debugPrint('Opening a page after the binder moved failed: $e');
+      }
+    }
+    if (!_disposed) notifyListeners();
   }
 
   bool _notABinderFolderName(String name) =>
@@ -8599,6 +9046,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   List<UnreadablePage> get discoveryNotes => [
     ..._heldNotes,
     ..._capNotes,
+    // A note goes once the old folder is gone or the page is listed again.
+    for (final r in _rehomeNotes.values)
+      if (!_loc.containsKey(r.id) && Directory(r.note.path).existsSync()) r.note,
     for (final d in _duplicateIds.values)
       UnreadablePage(
         d.folders.first,
@@ -8757,6 +9207,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (!identical(_binders[b.path], b)) continue;
       final exists = await Directory(b.path).exists();
       if (_disposed) return;
+      if (_pullOnly(b.path)) {
+        // A pull-only binder whose binder file is gone is "gone" even when its
+        // folder still holds pages: the open page stays open, and nothing is
+        // opened again until the binder file is on disk (G6).
+        final onDisk = exists && await File('${b.path}${Platform.pathSeparator}$binderFileName').exists();
+        if (_disposed) return;
+        if (b.missing) {
+          if (onDisk) await _binderBack(b.path);
+        } else if (!exists || !(onDisk || await _holdsBinderFile(b.path))) {
+          await _binderGone(b);
+        }
+        continue;
+      }
       if (b.missing) {
         if (exists) await _binderBack(b.path);
       } else if (!exists) {
@@ -8781,6 +9244,26 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await _landKeptAssets(rec);
       if (!_disposed) notifyListeners();
     }
+  }
+
+  // Whether the folder [dir] holds a binder file, or an aside of one that a
+  // killed replace left (which counts as holding it, as for the engine).
+  Future<bool> _holdsBinderFile(String dir) async {
+    try {
+      if (!await Directory(dir).exists()) return false;
+      if (await File('$dir${Platform.pathSeparator}$binderFileName').exists()) return true;
+      await for (final f in Directory(dir).list(followLinks: false)) {
+        if (f is! File) continue;
+        final name = f.path.split(RegExp(r'[\\/]')).last;
+        if (name.startsWith('$binderFileName.') &&
+            (name.endsWith(asideSuffix) || name.endsWith(verifiedSuffix))) {
+          return true;
+        }
+      }
+    } on FileSystemException {
+      return true; // can't tell: not gone
+    }
+    return false;
   }
 
   Future<void> _folderGone(String loc) async {
@@ -8822,10 +9305,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await flush();
     final path = section.path;
     if (_disposed || _binders[path] != section || section.missing) return;
+    // A pull-only binder is also "gone" when only its binder file is (G6).
+    final fileOnly = _pullOnly(path) && await Directory(path).exists();
+    if (_disposed || _binders[path] != section || section.missing) return;
     section
       ..missing = true
       ..status = BinderStatus.unavailable
-      ..reason = 'Folder not found. It may be on another device.';
+      ..reason = fileOnly ? 'No $binderFileName in this folder.' : 'Folder not found. It may be on another device.';
     if (_coverPath == path) _coverPath = null;
     final last = _lastDeleted;
     if (last != null && last._location == path) _lastDeleted = null;
@@ -8839,6 +9325,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> _binderBack(String path) async {
     final old = _binders[path];
     if (old == null) return;
+    // A pull-only binder is read before anything is dropped: with no binder
+    // file it stays "gone", listed, with its rows (G6).
+    if (_pullOnly(path) && !File('$path${Platform.pathSeparator}$binderFileName').existsSync()) return;
     for (final e in _loc.entries.where((e) => e.value == path && e.key != currentId).toList()) {
       _forgetPage(e.key);
     }
@@ -8846,6 +9335,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_disposed || !identical(_binders[path], old)) return;
     if (fresh.missing) return; // gone again
     if (fresh.status == BinderStatus.unavailable) {
+      // A pull-only binder stays "gone", listed, with its open page: it is
+      // never taken apart (G6).
+      if (_pullOnly(path)) return;
       // No binder file (or unusable): as at startup.
       await _disableBinder(old, BinderStatus.unavailable, fresh.reason ?? '');
       return;
@@ -9149,6 +9641,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _busy[p] = _busyDetached;
         _detached[p] = (_detached[p] ?? 0) + n;
       });
+      // A pull-only page has no edits: there is nothing to keep (G1).
+      if (_pullOnly(loc)) return true;
       keep = await _keepForRecovery(loc, st, page, session: session, seq: seq);
       _troubleFrom(session, page, keep, reason: "the drive isn't responding", folderGone: false);
     } else {
@@ -9177,6 +9671,47 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _disposeCurrent();
   }
 
+  // A pull-only page that stayed open while its file was removed has no file
+  // (nor an aside of one, which counts as present) and no other tracked file
+  // with its id: once it is left its row goes, as a reload has it, and a file
+  // listed as a duplicate of the page takes its place. Nothing is done for any
+  // other page.
+  void _dropGhostRow(String id) {
+    final loc = _loc[id];
+    if (loc == null || !_pullOnly(loc) || _pathId.containsValue(id)) return;
+    try {
+      final file = _storeOf(loc).pathFor(id);
+      if (File(file).existsSync() || _hasAside(file)) return;
+    } on NotebookException {
+      return;
+    }
+    _forgetPage(id);
+    _touch(loc);
+    _rebuildTree();
+    // A page with a chosen file keeps its choice until a folder check settles it.
+    if (_disposed || _adoptedFiles.containsKey(id)) return;
+    unawaited(
+      _promoteDuplicate(id).catchError((Object e) {
+        debugPrint('Promoting a duplicate of page $id failed: $e');
+      }),
+    );
+  }
+
+  // Whether [file] has an aside beside it that a killed replace left.
+  bool _hasAside(String file) {
+    final name = _folderName(file);
+    try {
+      for (final f in File(file).parent.listSync(followLinks: false)) {
+        if (f is! File) continue;
+        final n = _folderName(f.path);
+        if (n.startsWith('$name.') && (n.endsWith(asideSuffix) || n.endsWith(verifiedSuffix))) return true;
+      }
+    } on FileSystemException {
+      return true; // can't tell: present
+    }
+    return false;
+  }
+
   // Closes the page on screen without saving it.
   void _disposeCurrent() {
     _session?.ended = true;
@@ -9187,6 +9722,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final closing = _current?.page.id;
     _current?.dispose();
     _current = null;
+    if (closing != null) _dropGhostRow(closing);
     _attachments?.dispose();
     _attachments = null;
     _base = null;
@@ -9701,6 +10237,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final chosen = await pick();
     if (chosen == null) return '';
     final dir = Directory(_normalizePath(chosen));
+    // Nothing is made in a pull-only folder.
+    if (_pullOnly(dir.path)) throw const NotebookException(_pullOnlyMessage);
     final newPageId = newId();
     final copy = page.withMeta(page.meta.withId(newPageId).withPlacement(parentId: null, order: 0));
     final left = <String>[];
@@ -9715,7 +10253,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await dir.create(recursive: true);
       for (final src in sources) {
         try {
-          await _copyDir(src, targetAssets, into: result); // a missing folder copies nothing
+          // A missing folder copies nothing; a pull-only source is not swept.
+          await _copyDir(src, targetAssets, into: result, sweepSource: !_pullOnly(src.path));
         } on Object catch (e) {
           debugPrint('Copying ${src.path} failed: $e');
           left.add(src.path);

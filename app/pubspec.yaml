@@ -37,6 +37,9 @@ dependencies:
   path_provider: 2.1.5
   noted_auth:
     path: ../packages/noted_auth
+  # The OneDrive pull engine (sync stage 3); it runs on mobile only.
+  noted_sync:
+    path: ../packages/noted_sync
   # Microsoft sign-in (OneDrive sync stage 2), both BSD-3-Clause, approved by
   # the maintainer and pinned; neither is from the Flutter team.
   # flutter_appauth opens the system browser sheet on iOS, Android and macOS;

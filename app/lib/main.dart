@@ -31,6 +31,7 @@ import 'src/home.dart';
 import 'src/link_log.dart';
 import 'src/microsoft_account.dart';
 import 'src/notebook.dart';
+import 'src/onedrive_sync.dart';
 import 'src/open_files.dart';
 import 'src/recovery_lock.dart';
 import 'src/recovery_notice.dart';
@@ -104,6 +105,8 @@ Future<void> main(List<String> args) async {
   final openFiles = OpenFileService(notebook);
   // Null in a build without NOTED_MS_CLIENT_ID: no Microsoft sign-in at all.
   final microsoft = MicrosoftAccount.create();
+  // Mobile builds with a client id only: the OneDrive pull (sync stage 3).
+  final sync = buildOneDriveSync(notebook, microsoft);
   await openWhenOwned(
     notebook,
     defaultAiDataFolder(),
@@ -111,6 +114,7 @@ Future<void> main(List<String> args) async {
     settings: settings,
     openFiles: openFiles,
     microsoft: microsoft,
+    sync: sync,
     args: args,
     // Its first-launch clean-up can write settings.json: not before the lock.
     onOwned: () {
@@ -200,6 +204,9 @@ Notebook buildAppNotebook({
   RecoveryLock? recoveryLock,
 }) {
   final binders = bindersFile ?? defaultBindersFile();
+  // The one lock the notebook and the OneDrive pull share (stage 3, G11). On
+  // a device the working copies are read-only here while the sync only pulls.
+  final oneDriveRoot = deviceOneDriveRoot();
   late final Notebook notebook;
   final aiAccess = isMobilePlatform
       ? null
@@ -223,7 +230,20 @@ Notebook buildAppNotebook({
     attachmentPicker: pickAttachments,
     attachmentOpener: openWithDefaultApp,
     recoveryLock: recoveryLock,
+    folderLocks: FolderLocks(),
+    readOnlyRoots: isMobilePlatform && oneDriveRoot != null ? [oneDriveRoot.path] : const [],
   );
+}
+
+/// The OneDrive pull of this build: null on desktop, in a build without a
+/// client id (no [microsoft]) and when the device's folders aren't known.
+/// It uses the notebook's own [FolderLocks].
+OneDriveSync? buildOneDriveSync(Notebook notebook, MicrosoftAccount? microsoft) {
+  if (!isMobilePlatform || microsoft == null) return null;
+  final root = deviceOneDriveRoot();
+  final support = deviceSupportDirectory();
+  if (root == null || support == null) return null;
+  return OneDriveSync.create(notebook: notebook, microsoft: microsoft, workingRoot: root, support: support);
 }
 
 /// Starts the app in the one order that keeps `noted_mcp` out of an open page
@@ -246,6 +266,7 @@ Future<({AiRunningLock? lock, AiLinkServer? link})> openWhenOwned(
   AppSettings? settings,
   OpenFileService? openFiles,
   MicrosoftAccount? microsoft,
+  OneDriveSync? sync,
   List<String> args = const [],
   VoidCallback? onOwned,
 }) async {
@@ -263,8 +284,10 @@ Future<({AiRunningLock? lock, AiLinkServer? link})> openWhenOwned(
   }
   onOwned?.call();
   final link = lock != null && startLink ? await startAiLink(notebook, dataFolder) : null;
-  show(NotedApp(notebook: notebook, settings: settings, aiLink: link, runningLock: lock, openFiles: openFiles, microsoft: microsoft));
+  show(NotedApp(notebook: notebook, settings: settings, aiLink: link, runningLock: lock, openFiles: openFiles, microsoft: microsoft, sync: sync));
   await notebook.load();
+  // Only now: it adds its folder to the loaded notebook and starts polling.
+  if (sync != null) unawaited(sync.start());
   // Files named on the command line, then those a second launch hands over.
   if (!isMobilePlatform) unawaited(openFiles?.start(args));
   return (lock: lock, link: link);
@@ -298,7 +321,7 @@ Future<bool> saveBeforeExit(Notebook notebook) async {
 }
 
 class NotedApp extends StatefulWidget {
-  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock, this.openFiles, this.microsoft});
+  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock, this.openFiles, this.microsoft, this.sync});
 
   final Notebook notebook;
 
@@ -317,6 +340,9 @@ class NotedApp extends StatefulWidget {
 
   /// The Microsoft account of a build with a client id; null hides sign-in.
   final MicrosoftAccount? microsoft;
+
+  /// The OneDrive pull (mobile builds with a client id); null elsewhere.
+  final OneDriveSync? sync;
 
   @override
   State<NotedApp> createState() => _NotedAppState();
@@ -394,7 +420,7 @@ class _NotedAppState extends State<NotedApp> {
       theme: buildNotedTheme(Brightness.light, touch: touch),
       darkTheme: buildNotedTheme(Brightness.dark, touch: touch),
       themeMode: _settings.themeMode,
-      builder: (context, child) => InputModeScope(child: child!),
+      builder: (context, child) => OneDriveScope(sync: widget.sync, child: InputModeScope(child: child!)),
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
