@@ -466,7 +466,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // timer made inside it inherits the zone, but not a live marker.
   Future<T> _asUser<T>(Future<T> Function() action) {
     final mark = _UserAction();
-    return runZoned(action, zoneValues: {_userActionKey: mark}).whenComplete(() => mark.active = false);
+    return runZoned(action, zoneValues: {_userActionKey: mark}).whenComplete(() {
+      mark.active = false;
+      // Work started inside the action may still be queued: its counts go.
+      _folderWaiters -= mark.counted;
+      mark.counted = 0;
+      if (_folderWaiters <= 0 && !_disposed) {
+        _folderWaiters = 0;
+        _waitingForFolder.value = false;
+      }
+    });
   }
 
   final Set<Timer> _waitTimers = {};
@@ -487,13 +496,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _waitTimers.remove(timer);
         timer.cancel();
       }
-      if (counted && --_folderWaiters == 0 && !_disposed) _waitingForFolder.value = false;
+      if (counted && mark.counted > 0) {
+        mark.counted--;
+        if (--_folderWaiters == 0 && !_disposed) _waitingForFolder.value = false;
+      }
       return job();
     });
     timer = Timer(folderWaitNote, () {
       _waitTimers.remove(timer);
-      if (started || _disposed) return;
+      if (started || _disposed || !mark.active) return;
       counted = true;
+      mark.counted++;
       if (++_folderWaiters == 1) _waitingForFolder.value = true;
     });
     _waitTimers.add(timer);
@@ -2470,9 +2483,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// With [focusTitle] the page's title field is asked to take the caret when
   /// the page is shown (see [requestTitleFocus]).
   ///
-  /// While one createPage is pending for the same place, another call is not
-  /// queued: it returns the pending one's result, so stacked clicks make one
-  /// page.
+  /// While one createPage is pending for the same place, any concurrent call is
+  /// not queued: it joins the pending one and returns its result, so there is
+  /// one page.
   Future<String> createPage({
     String? parentId,
     String? binderPath,
@@ -10842,4 +10855,5 @@ class _SettingsRead {
 // A user action in flight; cleared when it ends (see Notebook._asUser).
 class _UserAction {
   bool active = true;
+  int counted = 0; // waits under this marker the note is counting
 }

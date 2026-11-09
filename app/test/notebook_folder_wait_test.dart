@@ -57,6 +57,13 @@ void main() {
     return (gate, locks.run(dir, () => gate.future));
   }
 
+  // Waits until no folder job is running or queued.
+  Future<void> idle() async {
+    for (var i = 0; i < 100 && locks.busyCount > 0; i++) {
+      await _wait(50);
+    }
+  }
+
   List<bool> record() {
     final seen = <bool>[];
     nb.waitingForFolder.addListener(() => seen.add(nb.waitingForFolder.value));
@@ -220,6 +227,37 @@ void main() {
     expect(seen, isEmpty);
     gate.complete();
     await held;
+    await idle();
+  });
+
+  test('work queued during a long action does not keep the note on after the action ends', () async {
+    nb.dispose();
+    await build(watch: true);
+    final x = await Directory('${root.path}${sep}x').create();
+    final (gate1, held1) = hold(x);
+    final create = nb.createPage(folderPath: x.path);
+    await _wait(50);
+    // Queued behind the action's join scan, ahead of its page write.
+    final (gate2, held2) = hold(x);
+    gate1.complete();
+    await held1;
+    await _wait(200);
+    // Queued behind the page write, ahead of the scan the watcher will ask for.
+    final (gate3, held3) = hold(x);
+    final theirs = NotedPage.create(
+      PageMeta.create(id: newId(), parentId: null, title: 'Theirs', order: 0),
+    );
+    await File('${x.path}${sep}theirs copy.canvas').writeAsString(writePage(theirs));
+    await _wait(1800);
+    expect(nb.waitingForFolder.value, isTrue, reason: 'the write and the scan wait');
+    gate2.complete();
+    await held2;
+    await create.timeout(const Duration(seconds: 10));
+    // The action is over; its scan still waits behind gate3.
+    expect(nb.waitingForFolder.value, isFalse);
+    gate3.complete();
+    await held3;
+    await idle();
   });
 
   testWidgets('Home shows the note while waiting and drops it after, and leaves a delete Undo bar alone', (tester) async {

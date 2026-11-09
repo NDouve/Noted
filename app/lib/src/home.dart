@@ -376,11 +376,11 @@ class _HomeState extends State<Home> {
                 child: _sidebar(NotedMetrics.of(context)),
               )
             : null,
-        body: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        body: Stack(
+          fit: StackFit.expand,
           children: [
+            _body(),
             FolderWaitNote(notebook: notebook),
-            Expanded(child: _body()),
           ],
         ),
       ),

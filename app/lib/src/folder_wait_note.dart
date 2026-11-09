@@ -7,9 +7,10 @@ import 'package:noted_canvas/noted_canvas.dart';
 
 import 'notebook.dart';
 
-/// A thin line across the top of the window, shown exactly while an action
-/// waits on a stalled folder ([Notebook.waitingForFolder]). It is not a
-/// snackbar, so it never replaces or closes another notice.
+/// A small chip centred at the top of the window, over the page, shown exactly
+/// while an action waits on a stalled folder ([Notebook.waitingForFolder]).
+/// It overlays the layout (nothing moves) and is not a snackbar, so it never
+/// replaces or closes another notice. Place it in a [Stack].
 class FolderWaitNote extends StatelessWidget {
   const FolderWaitNote({super.key, required this.notebook});
 
@@ -25,26 +26,40 @@ class FolderWaitNote extends StatelessWidget {
       builder: (context, waiting, _) {
         if (!waiting) return const SizedBox.shrink();
         final m = NotedMetrics.of(context);
-        final scheme = Theme.of(context).colorScheme;
+        final theme = Theme.of(context);
         final small = NotedTypography.of(context).small;
-        return Semantics(
-          container: true,
-          liveRegion: true,
-          child: DecoratedBox(
-            key: const ValueKey('waiting-for-folder'),
-            decoration: BoxDecoration(color: NotedColors.of(context).bgSidebar),
-            child: Padding(
-              padding: EdgeInsets.symmetric(horizontal: m.space6, vertical: m.space1),
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: m.icon * 0.7,
-                    height: m.icon * 0.7,
-                    child: const CircularProgressIndicator(strokeWidth: 2),
+        return Positioned(
+          top: m.space2,
+          left: 0,
+          right: 0,
+          child: IgnorePointer(
+            child: Center(
+              child: Semantics(
+                container: true,
+                liveRegion: true,
+                child: DecoratedBox(
+                  key: const ValueKey('waiting-for-folder'),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surface,
+                    border: Border.all(color: theme.dividerColor),
+                    borderRadius: BorderRadius.circular(m.radiusMd),
                   ),
-                  SizedBox(width: m.space2),
-                  Text(text, style: small.copyWith(color: scheme.onSurfaceVariant)),
-                ],
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: m.space3, vertical: m.space1),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: m.icon * 0.7,
+                          height: m.icon * 0.7,
+                          child: const CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        SizedBox(width: m.space2),
+                        Text(text, style: small.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
