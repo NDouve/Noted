@@ -7,7 +7,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 
 import 'notebook.dart';
 
-/// A small chip centred at the top of the window, over the page, shown exactly
+/// A small note centred at the top of the window, over the page, shown exactly
 /// while an action waits on a stalled folder ([Notebook.waitingForFolder]).
 /// It overlays the layout (nothing moves) and is not a snackbar, so it never
 /// replaces or closes another notice. Place it in a [Stack].
