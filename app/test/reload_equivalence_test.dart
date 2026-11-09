@@ -878,12 +878,35 @@ class _Run {
     await _until(() => nb.recoveryStoreForTest!.indexEntries.isEmpty, 'the entries to be replayed');
   }
 
-  Future<void> _until(bool Function() done, String what) async {
+  /// Waits until [done]; [what] is the text of what it waits for, or a function
+  /// that makes it when the wait fails (to say what the state was then).
+  Future<void> _until(bool Function() done, Object what) async {
     final end = DateTime.now().add(const Duration(seconds: 10));
     while (!done()) {
-      if (DateTime.now().isAfter(end)) fail('seed $seed: timed out waiting for $what');
+      if (DateTime.now().isAfter(end)) {
+        fail('seed $seed: timed out waiting for ${what is String Function() ? what() : what}');
+      }
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
+  }
+
+  /// Retry on the preview of page [id], and then the page open for editing.
+  ///
+  /// The notebook's own backoff replays kept changes on a clock of its own. A
+  /// Retry does nothing while the page is busy with such a replay, and a
+  /// Retry that lands the changes can return while the other one is still
+  /// reopening the page. So this waits for the page to be free before it
+  /// retries, and then for the state Retry is meant to reach, rather than
+  /// assuming nothing else is running.
+  Future<void> _retryPreview(String id) async {
+    await _until(() => !nb.isBusy(id), 'a background replay of the page to end');
+    await nb.retryPreview();
+    await _until(
+      () => nb.current?.page.id == id && !nb.trouble.isTrouble && !nb.current!.readOnly,
+      () =>
+          'the page to be open for editing after Retry (trouble ${nb.trouble.kind}, '
+          'busy: ${nb.isBusy(id)}, open: ${nb.currentId == id}, read-only: ${nb.current?.readOnly})',
+    );
   }
 
   // A save fails with the folder there; the page stays; the next Retry lands.
@@ -927,8 +950,7 @@ class _Run {
     expect(nb.trouble.kind, TroubleKind.preview, reason: 'the kept changes are shown, not folded');
     expect(nb.current!.readOnly, isTrue);
     st.publishFailures = 0;
-    await nb.retryPreview();
-    expect(nb.trouble.isTrouble, isFalse);
+    await _retryPreview(id);
     expect(nb.current!.readOnly, isFalse);
     return 'edit:failIoReopenPreview';
   }
@@ -966,8 +988,7 @@ class _Run {
     expect(nb.trouble.kind, TroubleKind.preview);
     expect(nb.current!.page.node(x.id), isNotNull);
     st.publishFailures = 0;
-    await nb.retryPreview();
-    expect(nb.trouble.isTrouble, isFalse);
+    await _retryPreview(id);
     nb.current!.delete(x.id);
     await nb.flush();
     return 'edit:previewDeleteRetire';
