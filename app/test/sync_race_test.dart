@@ -1811,34 +1811,39 @@ void main() {
       expect(entryFiles(), isEmpty, reason: 'the published copy holds this version');
     });
 
-    test('7b: the copy published and a kill before the entry\'s delete: both are replayed, one record, no nesting', () async {
-      await treeWithBoxes(ownRecord: false);
-      final text = writePage(fileVersion);
-      counting.onFailDelete = () => File(pathOf(parent)).writeAsStringSync(text);
-      final gate = Completer<void>();
-      var entryDeletes = 0;
-      nb.recoveryStoreForTest!.hook = (point) async {
-        if (point != 'delete') return;
-        entryDeletes++;
-        await gate.future;
-      };
-      final outcome = startDelete();
-      for (var i = 0; i < 200 && entryDeletes == 0; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-      }
-      expect(entryDeletes, 1, reason: 'the delete of ours was reached');
-      expect(copies(), hasLength(1));
-      await killAndLaunch();
-      // The copy, a page file of the same page, is merged into it as a conflict copy.
-      await nb.checkFolders();
-      final merged = readPage(File(pathOf(parent)).readAsStringSync());
-      expect(merged.node(onlyP), isNotNull);
-      final a = merged.node(boxA)! as BoxRecord;
-      expect(a.conflicts.where((k) => k.node!.text.contains('a in the deleted version')), hasLength(1), reason: 'one record of the deleted version');
-      expect(a.conflicts.where((k) => k.node!.text.contains('conflicts')), isEmpty, reason: 'no nesting');
-      gate.complete();
-      await outcome.timeout(const Duration(seconds: 10));
-    });
+    // The copy, a page file of the same page, is merged as a conflict copy, and
+    // the entry its delete left behind is replayed.
+    for (final own in [false, true]) {
+      test('7b: the copy published, the entry\'s delete fails, then a kill: both are replayed; '
+          '${own ? 'a box with its own record has the version twice, one nested, nothing lost' : 'one record, no nesting'}', () async {
+        await treeWithBoxes(ownRecord: own);
+        final text = writePage(fileVersion);
+        counting.onFailDelete = () => File(pathOf(parent)).writeAsStringSync(text);
+        var entryDeletes = 0;
+        nb.recoveryStoreForTest!.hook = (point) async {
+          if (point != 'delete') return;
+          entryDeletes++;
+          throw const FileSystemException('the delete of the entry failed');
+        };
+        await startDelete();
+        expect(entryDeletes, greaterThan(0), reason: 'the delete of ours was reached');
+        expect(copies(), hasLength(1));
+        expect(entryFiles(), isNotEmpty, reason: 'its delete failed');
+        await killAndLaunch();
+        await nb.checkFolders();
+        expect(entryFiles(), isEmpty, reason: 'the entry was replayed and retired');
+        expect(copies(), isEmpty, reason: 'the copy was merged and removed');
+        final merged = readPage(File(pathOf(parent)).readAsStringSync());
+        expect(merged.node(onlyP), isNotNull);
+        final a = merged.node(boxA)! as BoxRecord;
+        final records = a.conflicts.where((k) => k.node!.text.contains('a in the deleted version'));
+        final nested = a.conflicts.where((k) => k.node!.text.contains('conflicts'));
+        // The normal merge of a copy records the whole box, as it does for
+        // every conflict copy; only the recovery merge strips it.
+        expect(records, hasLength(own ? 2 : 1));
+        expect(nested, hasLength(own ? 1 : 0));
+      });
+    }
 
     test('8: a different file and the copy fails: the entry stays, the page is not held, and replay merges it', () async {
       await treeWithBoxes();
