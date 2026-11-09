@@ -4,9 +4,9 @@
 
 import '../box_api/box_codec.dart';
 import '../box_api/codec_registry.dart';
-import '../json/raw_json.dart';
 import '../model/ids.dart';
 import '../model/page.dart';
+import 'merge_rules.dart';
 import 'page_issues.dart';
 
 /// The outcome of [mergePage].
@@ -141,8 +141,8 @@ PageMerge mergePage(
   }
 
   final merged = NotedPage.fromParts(
-    _mergeTop(base.top, mine.top, theirs.top),
-    _mergeMeta(base.meta, mine.meta, theirs.meta),
+    mergeTop(base.top, mine.top, theirs.top),
+    mergeMeta(base.meta, mine.meta, theirs.meta),
     out,
   );
   return PageMerge(merged, conflicted);
@@ -171,42 +171,7 @@ void _takeTheirOrder(NotedPage base, NotedPage mine, NotedPage theirs, List<Canv
   final t = only(theirs.nodes);
   final o = only(out);
   if (o.length != common.length) return;
-  if (_sameIds(m, b) && !_sameIds(t, b)) {
-    // Each node that isn't common follows the nearest common node before it
-    // in [out] (its anchor) and moves with it; nodes before the first common
-    // node stay first. The nodes after the last common node (the newest boxes,
-    // on top) stay last, after every common node (0132).
-    final byId = {for (final n in out) n.id: n};
-    final atStart = <CanvasNode>[];
-    final after = <String, List<CanvasNode>>{};
-    String? anchor;
-    for (final n in out) {
-      if (common.contains(n.id)) {
-        anchor = n.id;
-      } else if (anchor == null) {
-        atStart.add(n);
-      } else {
-        (after[anchor] ??= []).add(n);
-      }
-    }
-    final last = anchor;
-    out
-      ..clear()
-      ..addAll(atStart);
-    for (final id in t) {
-      out.add(byId[id]!);
-      if (id != last) out.addAll(after[id] ?? const []);
-    }
-    if (last != null) out.addAll(after[last] ?? const []);
-  }
-}
-
-bool _sameIds(List<String> a, List<String> b) {
-  if (a.length != b.length) return false;
-  for (var i = 0; i < a.length; i++) {
-    if (a[i] != b[i]) return false;
-  }
-  return true;
+  if (sameIds(m, b) && !sameIds(t, b)) reorderLike(out, common, t);
 }
 
 bool _same(CanvasNode a, CanvasNode b) => a.toRaw() == b.toRaw();
@@ -315,39 +280,3 @@ BoxRecord? _mergeContent(BoxRecord? b, BoxRecord m, BoxRecord t, CodecRegistry c
   }
   return null;
 }
-
-/// Per field: theirs if mine is unchanged from base, else mine.
-RawObject _mergeFields(
-  RawObject base,
-  RawObject mine,
-  RawObject theirs, {
-  Set<String> skip = const {},
-}) {
-  var out = mine;
-  final keys = <String>{
-    for (final (k, _) in theirs.entries) k,
-    for (final (k, _) in base.entries) k,
-  };
-  for (final k in keys) {
-    if (skip.contains(k)) continue;
-    if (mine[k] != base[k]) continue; // mine changed: keep mine
-    final tv = theirs[k];
-    if (tv == mine[k]) continue;
-    out = tv == null ? out.remove(k) : out.set(k, tv);
-  }
-  return out;
-}
-
-PageMeta _mergeMeta(PageMeta base, PageMeta mine, PageMeta theirs) {
-  final fields = _mergeFields(
-    base.fields,
-    mine.fields,
-    theirs.fields,
-    skip: const {'pageId', 'format'},
-  );
-  if (identical(fields, mine.fields)) return mine;
-  return PageMeta.tryRead(fields) ?? mine;
-}
-
-RawObject _mergeTop(RawObject base, RawObject mine, RawObject theirs) =>
-    _mergeFields(base, mine, theirs, skip: const {'nodes', 'noted'});
