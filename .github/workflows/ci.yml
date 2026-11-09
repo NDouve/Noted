@@ -73,8 +73,20 @@ jobs:
       # tests it started are reported. Failed tests are reported by name, with
       # their own error message (.github/scripts/test_annotations.dart).
       # (Annotations can be read without signing in; the log can't.)
+      #
+      # Where a failure's cause is found:
+      # - the annotation: the exception with its operation, errno and file, the
+      #   file-operation trace for a sharing violation and the test's last
+      #   printed lines;
+      # - the job summary: the same for every failed test, with more output;
+      # - the test-logs artifact: each package's whole log and JSON stream.
+      # On Windows NOTED_IO_TRACE=1 makes the tests note every file operation, so
+      # a sharing violation (errno 32) says what else in the process had the
+      # file (app/test/support/io_trace.dart). Paths and times only, no content.
       - name: Test
         shell: bash
+        env:
+          NOTED_IO_TRACE: ${{ runner.os == 'Windows' && '1' || '' }}
         run: |
           failed=""
           # GitHub shows only 10 error annotations per step. So the summary and
@@ -108,6 +120,7 @@ jobs:
                 # stack trace and printed output (from the JSON event stream,
                 # keyed by test), and its file and line.
                 dart "$GITHUB_WORKSPACE/.github/scripts/test_annotations.dart" "$json" "$dir" >> "$per_test" || true
+                dart "$GITHUB_WORKSPACE/.github/scripts/test_annotations.dart" "$json" "$dir" --summary >> "$GITHUB_STEP_SUMMARY" || true
               fi
               echo "::endgroup::"
             fi
@@ -118,6 +131,19 @@ jobs:
             head -n 4 "$per_test"
             exit 1
           fi
+
+      # Each package's whole log, and its JSON event stream, to read what the
+      # annotation cut.
+      - name: Keep the test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/test-*.log
+            ${{ runner.temp }}/test-*.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   windows-release:
     name: Windows release build
