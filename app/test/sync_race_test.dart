@@ -1990,5 +1990,35 @@ void main() {
       expect(File(pathOf(parent)).readAsStringSync(), text);
       expect(entryFiles(), isEmpty, reason: 'the entry is retired at the next start');
     });
+
+    test('11: the delete of the entry fails: marked landed for the session, retried at quit', () async {
+      await tree();
+      final text = File(pathOf(parent)).readAsStringSync();
+      final store = nb.recoveryStoreForTest!;
+      store.hook = (point) async {
+        if (point == 'delete') throw const FileSystemException('delete failed');
+      };
+      final error = await startDelete();
+      expect(error, isNotNull);
+      expect(File(pathOf(parent)).readAsStringSync(), text);
+      expect(entryFiles(), hasLength(1), reason: 'the entry could not be deleted');
+      expect((await nb.pendingRecovery()).entries, isEmpty, reason: 'it is marked landed, so nothing waits');
+      store.hook = null;
+      expect(await nb.prepareToExit(limit: const Duration(seconds: 3)), isTrue);
+      expect(entryFiles(), isEmpty, reason: 'retried at quit');
+    });
+
+    test('11b: the delete of the entry fails and the app restarts: the entry merges to nothing and retires', () async {
+      await tree();
+      final text = File(pathOf(parent)).readAsStringSync();
+      nb.recoveryStoreForTest!.hook = (point) async {
+        if (point == 'delete') throw const FileSystemException('delete failed');
+      };
+      await startDelete();
+      expect(entryFiles(), hasLength(1));
+      await killAndLaunch();
+      expect(File(pathOf(parent)).readAsStringSync(), text);
+      expect(entryFiles(), isEmpty);
+    });
   });
 }
