@@ -62,4 +62,17 @@ void main() {
       expect(read, greaterThan(marker), reason: 'the read waited for the folder job: ${log.ops}');
     });
   });
+
+  test('a hung job on the folder does not hold the check for long', () async {
+    final other = await nb.createPage();
+    await nb.createPage();
+    await nb.flush();
+    final hung = Completer<void>();
+    unawaited(nb.folderLocks.run(dir, () => hung.future));
+    final watch = Stopwatch()..start();
+    // The check reads the file after a short wait, not when the job ends.
+    await nb.checkFile(store.pathFor(other)).timeout(const Duration(seconds: 5));
+    expect(watch.elapsed, lessThan(const Duration(seconds: 4)));
+    hung.complete();
+  });
 }

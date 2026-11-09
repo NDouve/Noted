@@ -7180,11 +7180,37 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<T> _underFolderLock<T>(PageStore st, Future<T> Function() job) =>
       folderLocks.run(st.directory, job);
 
+  // How long a read of a page file waits for its folder's other jobs.
+  static const Duration _readLockWait = Duration(milliseconds: 500);
+
   // A single read of a page file, taking its turn with the writes and scans of
-  // [folder]. Not queued again when the caller already runs inside a job on the
-  // folder, which would wait on itself.
-  Future<T> _readUnderFolderLock<T>(Directory folder, Future<T> Function() read) =>
-      FolderLocks.isHeld(folder) ? read() : folderLocks.run(folder, read);
+  // [folder] (they are short, so the turn comes at once). A job that has the
+  // folder for longer than [_readLockWait] is hung (a stalled write holds its
+  // lock until it ends, and the reads of that folder must not wait for it), and
+  // the read goes ahead without the lock, as it did before reads took turns.
+  // Not queued at all when the caller already runs inside a job on the folder,
+  // which would wait on itself.
+  Future<T> _readUnderFolderLock<T>(Directory folder, Future<T> Function() read) async {
+    if (FolderLocks.isHeld(folder)) return read();
+    final started = Completer<void>();
+    var abandoned = false;
+    final job = folderLocks.run<T?>(folder, () async {
+      if (abandoned) return null;
+      started.complete();
+      return read();
+    });
+    final timer = Timer(_readLockWait, () {
+      if (started.isCompleted) return;
+      abandoned = true;
+      started.complete();
+    });
+    await started.future;
+    timer.cancel();
+    if (!abandoned) return (await job) as T;
+    // Its turn, when it comes, does nothing.
+    unawaited(job.then<void>((_) {}, onError: (_) {}));
+    return read();
+  }
 
   // The conflict copies a scan of [loc] found: merged later when the place can
   // be written ([merge]); in a pull-only place they are never merged, and are
