@@ -3542,7 +3542,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// Moves [id] next to [targetId], under the same parent, before it or (with
   /// [after]) after it. The target may be in another location (a binder or
   /// another standalone folder): the page then moves to the target's location.
-  Future<bool> moveRelative(String id, String targetId, {required bool after}) async {
+  Future<bool> moveRelative(String id, String targetId, {required bool after}) =>
+      _asUser(() => _moveRelative(id, targetId, after: after));
+
+  Future<bool> _moveRelative(String id, String targetId, {required bool after}) async {
     final to = _loc[targetId];
     final from = _loc[id];
     if (id == targetId || to == null || from == null || !_metas.containsKey(id)) return false;
@@ -4874,6 +4877,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// Creates a page from the page template [template] and opens it, placed
   /// as [createPage] would place it.
   Future<String> createPageFromTemplate(
+    NotedTemplate template, {
+    String? parentId,
+    String? binderPath,
+    String? folderPath,
+    bool focusTitle = false,
+  }) => _asUser(
+    () => _createPageFromTemplate(
+      template,
+      parentId: parentId,
+      binderPath: binderPath,
+      folderPath: folderPath,
+      focusTitle: focusTitle,
+    ),
+  );
+
+  Future<String> _createPageFromTemplate(
     NotedTemplate template, {
     String? parentId,
     String? binderPath,
