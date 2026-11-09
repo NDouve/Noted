@@ -100,11 +100,15 @@ class _WriteOutcome {
 
 // Why a recovery entry could not be applied; it is kept and listed.
 class _ReplayFailure implements Exception {
-  _ReplayFailure(this.why, {this.detail});
+  _ReplayFailure(this.why, {this.detail, this.transient = false});
 
   // The plain reason shown to the user, and the technical detail for the log.
   final String why;
   final String? detail;
+
+  // Not a refusal of the entry: the landed page is waiting to be settled, so the
+  // entry is listed but not offered for discarding as unlandable.
+  final bool transient;
 
   @override
   String toString() => why;
@@ -638,11 +642,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // clean): the path and why. Cleared once the entry is replayed (0077).
   final Map<String, ({String path, String why})> _replayProblems = {};
 
-  // Pages whose recovered edits landed and were retired, but whose page was
-  // changed right after (or couldn't be read back), by page id. One-off: the
-  // entry is gone, so the next pass must not prune it; cleared when the user
-  // opens the page.
+  // Pages whose recovered edits landed and were retired, but whose file was
+  // then changed so that it can no longer be read as the page (the edits are
+  // in a conflict copy), or brought back a foreign node the entry deleted, by
+  // page id. One-off: the entry is gone, so the next pass must not prune it;
+  // cleared when the user opens the page. Changes to boxes, positions and the
+  // header are put right or become a version conflict instead (0130).
   final Map<String, ({String path, String why})> _landedProblems = {};
+
+  // Entries whose merged page has landed but isn't settled yet (a read that
+  // keeps failing, a write that threw), by generation: the text published and
+  // the file it was merged against. A retry settles these without merging
+  // again. Memory only; cleared with the entry.
+  final Map<String, ({String out, NotedPage? theirs})> _landedText = {};
 
   // Kept `<id>.assets` folders that couldn't be landed, or whose page isn't
   // there, by the folder's path: why (0098).
@@ -3163,7 +3175,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         } else {
           victim = k.preexisting ? null : rec.indexEntries.where((x) => x.gen == k.freshGen).firstOrNull;
         }
-        if (victim != null) await _deleteEntry(rec, victim);
+        if (victim != null) {
+          // The page's file went with the entry: a landed, unsettled page is
+          // still that of the new generation.
+          final landed = _landedText[victim.gen];
+          if (landed != null && identical(victim, k.old)) _landedText[k.freshGen] = landed;
+          await _deleteEntry(rec, victim);
+        }
       } on Object catch (e) {
         debugPrint('Settling the kept changes of page ${k.id} failed: $e');
       }
@@ -6598,7 +6616,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on _ReplayFailure catch (ex) {
       debugPrint('Recovered page ${e.pageId} not accepted: ${ex.detail ?? ex.why}');
       _replayProblems[key] = (path: path, why: ex.why);
-      _replayHardFailure.add(e.pageId);
+      if (!ex.transient) _replayHardFailure.add(e.pageId);
     } on Object catch (ex) {
       // A write failure; the reading failures are _ReplayFailures above.
       debugPrint('Recovering page ${e.pageId} failed: $ex');
@@ -6615,6 +6633,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Deletes the entry of a replay that landed, by its exact generation; one
   // that can't be deleted is marked landed (deleted later, never merged).
   Future<void> _deleteEntry(RecoveryStore rec, RecoveryEntry e) async {
+    _landedText.remove(e.gen);
     if (_lockProblem() != null) {
       rec.markLanded(e.gen);
       return;
@@ -6691,22 +6710,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Applies one entry. Returns true once it is replayed and retired, false if
   // it isn't due yet; throws a _ReplayFailure (or anything else) if it can't be
-  // applied, and then it stays. The entry is retired as soon as its page has
-  // landed (the publish went through over exactly what was merged against):
-  // merging it again later, against a page the user has changed since, would
-  // bring back what they deleted. So once it has landed it is retired whatever
-  // the read-back shows; if the read-back is not what landed, the entry's own
-  // edits are looked for in it, and if one is gone (or it can't be read) the
-  // user is told (_landedProblems). Only a page that landed and reads back as
-  // written, but fails the check, stays as an entry. Its kept files are landed
-  // apart (_landKeptAssets, 0098); a re-replay after an interruption before
-  // the retire is harmless, since the merge of a page with itself changes
-  // nothing.
+  // applied, and then it stays. Once the page has landed (the publish went
+  // through over exactly what was merged against) the entry is not merged
+  // again, since a page someone has changed since could get back what they
+  // deleted. It is settled instead (_settleLanded): the file is read back, and
+  // what another writer's overwrite lost of the entry's edits is put right or
+  // recorded as a version conflict. The entry is deleted only once a read shows
+  // its edits are held (0130, 0124). Its kept files are landed apart
+  // (_landKeptAssets, 0098); a re-replay after an interruption before the
+  // retire is harmless: step 5 (settledInFile) takes what the file already
+  // records, and the merge of a page with itself changes nothing.
   Future<bool> _recoverEntry(
     RecoveryStore rec,
     RecoveryEntry e,
     String loc,
-  ) async {    final mine = e.page;
+  ) async {
+    final mine = e.page;
     // The target is the entry's verified identity. The store refuses entries
     // where it disagrees with the page, so this guards against a regression.
     final id = e.pageId;
@@ -6724,8 +6743,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         : _readForReplay(e.baseText!, 'the copy kept with the edits for $label');
     // The page is where the entry says, or the entry is re-keyed (3.7).
     final moved = await _twoKeys(rec, e, loc);
-    if (moved != null) return moved;    final path = st.pathFor(id);
+    if (moved != null) return moved;
+    final path = st.pathFor(id);
     final file = File(path);
+    // Landed before and not settled yet (a read that kept failing, a write that
+    // threw): not merged again, only settled.
+    final landed = _landedText[e.gen];
+    if (landed != null) {
+      final merged = _readForReplay(landed.out, 'the page kept for $label');
+      return _settleLanded(rec, e, loc, st, path, base, mine, landed.theirs, merged, landed.out, label);
+    }
     // Read, merge, publish only over exactly what was merged against (or only
     // if still absent), and read back: the same loop as _saveClosedPage. If the
     // file changed in between (a newer generation landed), merge again; the
@@ -6763,6 +6790,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // An entry with no base (a deleted page kept by a rollback, or a new
       // page) has no common base with a file that stands at its path: that is
       // a conflict copy (0053), merged as one, in its recovery form (0120).
+      // Otherwise what the file learned since the base (a recorded conflict)
+      // is taken as it is, so a repeat replay over it changes nothing.
       final noBase = e.baseText == null;
       final merged = theirs == null
           ? mine
@@ -6774,7 +6803,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               copyTime: e.time.millisecondsSinceEpoch,
               forRecovery: true,
             ).page
-          : mergePage(base, mine, theirs, _pageCodecs(id), theirsTime: time, markLanded: false).page;
+          : mergePage(
+              base,
+              settledInFile(base, mine, theirs),
+              theirs,
+              _pageCodecs(id),
+              theirsTime: time,
+              markLanded: false,
+            ).page;
       final out = writePage(merged);
       if (out != theirsText) {
         await syncHook?.call('recover-before-publish', path);
@@ -6782,14 +6818,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             ? await _writeNew(loc, merged)
             : await _writeIfUnchanged(loc, merged, theirsText);
         if (!published) continue; // the file changed since it was read
+        // The page has landed (the publish only succeeds over exactly what was
+        // merged against). Kept in memory from here, before anything is read
+        // back, so a retry settles instead of merging again.
+        _landedText[e.gen] = (out: out, theirs: theirs);
+        await syncHook?.call('recover-published', path);
+        return _settleLanded(rec, e, loc, st, path, base, mine, theirs, merged, out, label);
       }
-      final wrote = out != theirsText;
-      if (wrote) await syncHook?.call('recover-published', path);
-      // From here on, if [wrote], the page has landed (the publish only
-      // succeeds over exactly what was merged against): the entry is retired
-      // as soon as that is so (0124), whatever the read-back shows. Merging it
-      // again later, against a page someone has changed since, would bring
-      // back what they deleted.
+      // Nothing of ours was written: the merge changed nothing. Read back; the
+      // file must still be what was merged.
       String? back;
       for (var read = 0; back == null; read++) {
         try {
@@ -6799,66 +6836,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             await Future<void>.delayed(const Duration(milliseconds: 50));
             continue; // a lock may pass; a few tries
           }
-          if (!wrote) rethrow;
-          // Landed but can't be read back to check: retired, and listed.
-          debugPrint('Recovered page $id landed but could not be read back to check');
-          await _applyClosed(merged, loc, _key(path), path);
-          await _deleteEntry(rec, e);
-          _landedProblems[id] = (path: path, why: _landedThenChanged(label));
-          return true;
+          rethrow;
         }
       }
       if (back != out) {
-        // Nothing of ours was written: the file changed since it was read.
-        if (!wrote && attempt < 4) continue;
-        if (!wrote) {
-          throw _ReplayFailure(
-            'the saved file of $label keeps changing',
-            detail: 'the page file changed on every attempt to merge into it',
-          );
-        }
-        // Another writer is on top of what landed: not merged again (that
-        // could bring back what they deleted), and the external-change check
-        // picks their file up as it does any other. The entry's own edits are
-        // looked for in what is there; if any is gone, or it can't be read,
-        // the user is told.
-        final key = _key(path);
-        NotedPage? now;
-        String? unreadable;
-        try {
-          now = readPage(back);
-          if (now.id != id) unreadable = 'it holds a different page';
-        } on PageFormatException catch (ex) {
-          unreadable = ex.message;
-        }
-        await _deleteEntry(rec, e);
-        if (now == null || unreadable != null) {
-          // Listed as a page that can't be opened, like any file that turns
-          // unreadable. A file that holds another page keeps no last known
-          // text, so a later check looks at it again (and lets go of a choice).
-          if (now != null) {
-            _known.remove(key);
-          } else {
-            _known[key] = back;
-          }
-          final notice = 'The edits kept for $label were saved, but the page was then changed '
-              'and can no longer be read ($unreadable)';
-          _landedProblems[id] = (path: path, why: notice);
-          _knownUnreadable(
-            loc,
-            key,
-            path,
-            notice,
-          );
-          return true;
-        }
-        await _applyClosed(now, loc, key, path);
-        final lost = _ownEditsMissing(base, mine, now);
-        if (lost != null) {
-          debugPrint('Recovered page $id landed, then changed: $lost');
-          _landedProblems[id] = (path: path, why: _landedThenChanged(label));
-        }
-        return true;
+        // The file changed since it was read.
+        if (attempt < 4) continue;
+        throw _ReplayFailure(
+          'the saved file of $label keeps changing',
+          detail: 'the page file changed on every attempt to merge into it',
+        );
       }
       final result = _readForReplay(back, 'the saved file of $label');
       final why = theirs != null && noBase
@@ -6873,6 +6860,144 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       'the saved file of $label keeps changing',
       detail: 'the page file changed on every attempt to merge into it',
     );
+  }
+
+  // After a replay's write has landed: reads the file back and puts right what
+  // another writer's overwrite lost of the entry's edits, until a read shows
+  // every edit is there or recorded as a conflict (recordLostEdits). Only then
+  // is the entry deleted. A file that can't be read as a page gets the merged
+  // page beside it as a conflict copy (3a); one that can't be read or written
+  // just now keeps the entry, listed and retried (3b); one that is gone gets the
+  // page back (3c). [theirs] is the file the merge was made against, if any.
+  Future<bool> _settleLanded(
+    RecoveryStore rec,
+    RecoveryEntry e,
+    String loc,
+    PageStore st,
+    String path,
+    NotedPage base,
+    NotedPage mine,
+    NotedPage? theirs,
+    NotedPage merged,
+    String out,
+    String label,
+  ) async {
+    final id = e.pageId;
+    final key = _key(path);
+    final noBase = e.baseText == null;
+    // Not settled yet: the entry stays and is listed, and the backoff tries it
+    // again (start-up replay and _replayEntry don't schedule one).
+    Never wait(String why, String detail) {
+      if (!_disposed) _backoff.schedule();
+      throw _ReplayFailure(why, detail: detail, transient: true);
+    }
+
+    for (var round = 0; round < 5; round++) {
+      String? back;
+      String? invalid;
+      var absent = false;
+      Object? readError;
+      for (var read = 0; back == null && invalid == null; read++) {
+        try {
+          back = await st.readText(id);
+        } on FormatException {
+          invalid = 'not valid UTF-8 text';
+        } on FileSystemException catch (ex) {
+          if (read < 2) {
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+            continue; // a lock may pass; a few tries
+          }
+          absent = !await File(path).exists();
+          readError = ex;
+          if (!absent) {
+            // The store reports text that isn't UTF-8 as a failed read too.
+            try {
+              utf8.decode(await File(path).readAsBytes());
+            } on FormatException {
+              invalid = 'not valid UTF-8 text';
+              readError = null;
+            } on FileSystemException {
+              // Locked: not settled yet.
+            }
+          }
+          break;
+        }
+      }
+      if (readError != null) {
+        if (!absent) wait("the saved page of $label can't be checked just now", '$readError');
+        // 3c: the file is gone. The page comes back with its edits, by an
+        // exclusive publish (a file that arrives meanwhile is not overwritten).
+        try {
+          await _writeNew(loc, merged);
+        } on Object catch (ex) {
+          wait("the saved page of $label can't be written back just now", '$ex');
+        }
+        continue;
+      }
+      NotedPage? now;
+      String? unreadable = invalid;
+      if (back != null) {
+        try {
+          now = readPage(back);
+          if (now.id != id) unreadable = 'it holds a different page';
+        } on PageFormatException catch (ex) {
+          unreadable = ex.message;
+        }
+      }
+      if (unreadable != null || now == null) {
+        // 3a: the merged page is published beside the file; the file is listed
+        // as a page that can't be opened, like any file that turns unreadable.
+        final copy = await _publishConflictCopy(st, merged);
+        if (copy == null) wait("the saved page of $label can't be copied beside its file", 'copy not published');
+        final name = copy.split(RegExp(r'[\\/]')).last;
+        final notice = 'The edits kept for $label were saved, but the page was then changed and can no longer '
+            'be read ($unreadable). They are kept in $name';
+        if (now != null) {
+          _known.remove(key);
+        } else if (back != null) {
+          _known[key] = back;
+        }
+        _landedProblems[id] = (path: path, why: notice);
+        await _deleteEntry(rec, e);
+        _knownUnreadable(loc, key, path, notice);
+        return true;
+      }
+      if (back == out) {
+        // The page reads back as written: it must pass the check too. If not,
+        // the entry is merged again (0124's "landed and verified").
+        final why = theirs != null && noBase
+            ? verifyConflictCopyMerge(now, theirs, mine, forRecovery: true)
+            : verifyRecoveredPage(base: base, mine: mine, theirs: theirs, result: now);
+        if (why != null) {
+          _landedText.remove(e.gen);
+          throw _ReplayFailure(_notAllKept(label), detail: why);
+        }
+      }
+      var at = DateTime.now().millisecondsSinceEpoch;
+      try {
+        at = (await File(path).lastModified()).millisecondsSinceEpoch;
+      } on FileSystemException {
+        // The time of now.
+      }
+      final r = recordLostEdits(base, mine, merged, now, at: at, structure: !noBase);
+      if (identical(r.page, now)) {
+        await _applyClosed(now, loc, key, path);
+        if (r.foreignBack) {
+          _landedProblems[id] = (path: path, why: _landedThenChanged(label));
+        }
+        await _deleteEntry(rec, e);
+        return true;
+      }
+      await syncHook?.call('recover-conflict-before-publish', path);
+      var published = false;
+      try {
+        published = await _writeIfUnchanged(loc, r.page, back);
+      } on Object catch (ex) {
+        wait("the saved page of $label can't be written just now", '$ex');
+      }
+      if (published) await syncHook?.call('recover-conflict-published', path);
+    }
+    wait('the saved file of $label keeps changing', 'the page file changed on every attempt to settle the edits');
   }
 
   static String _landedThenChanged(String label) =>

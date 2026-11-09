@@ -8,6 +8,7 @@ import '../box_api/codec_registry.dart';
 import '../json/raw_json.dart';
 import '../model/ids.dart';
 import '../model/page.dart';
+import 'merge_rules.dart';
 import 'page_issues.dart';
 import 'page_merge.dart';
 
@@ -379,4 +380,350 @@ bool _pairedAt(CanvasNode o, Map<String, CanvasNode> copyById) {
   final c = copyById[o.id];
   if (c == null) return false;
   return o.toRaw() == c.toRaw() || !(o is ForeignNode && _synthetic(o));
+}
+
+// ---------------------------------------------------------------------------
+// A landed page that was overwritten right after landing (0130, 0124).
+
+/// Whether [a] and [b] are the same version of a box: both revs present and
+/// equal, or a rev missing on either side and the same content.
+bool _sameVersion(BoxRecord a, BoxRecord b) =>
+    a.rev != null && b.rev != null ? a.rev == b.rev : _sameContent(a, b);
+
+/// Whether [x] was edited from [m]'s version.
+bool _derivedFrom(BoxRecord x, BoxRecord m) => x.rev != null && m.rev != null && x.baseRev == m.rev;
+
+/// Whether the recorded [node] is [m]'s version (by the revision guards, not
+/// by raw text).
+bool _nodeIsVersion(RawJson node, BoxRecord m) {
+  if (!node.isObject) return false;
+  try {
+    final b = BoxRecord.tryRead(RawObject.parse(node.text), node);
+    return b != null && _sameVersion(b, m);
+  } on FormatException {
+    return false;
+  }
+}
+
+/// [m]'s own recorded `conflicts` that [x] lacks, to be combined into [x]
+/// without nesting: a version recorded by `node` that [x] doesn't hold and
+/// isn't [x]'s own, and a `deleted` flag when [x] has none.
+List<BoxConflict> _missingRecords(BoxRecord x, BoxRecord m) {
+  final have = x.conflicts;
+  final out = <BoxConflict>[];
+  for (final c in m.conflicts) {
+    if (c.deleted) {
+      if (!have.any((k) => k.deleted) && !out.any((k) => k.deleted)) out.add(c);
+    } else if (!have.any((k) => k.node == c.node) &&
+        !_nodeIsVersion(c.node!, x) &&
+        !out.any((k) => k.node == c.node)) {
+      out.add(c);
+    }
+  }
+  return out;
+}
+
+/// The records [b] holds that [mn] doesn't: those the user settled by hand.
+List<BoxConflict> _settledRecords(BoxRecord b, BoxRecord mn) {
+  final mine = mn.conflicts;
+  return [
+    for (final c in b.conflicts)
+      if (c.deleted ? !mine.any((k) => k.deleted) : !mine.any((k) => k.node == c.node)) c,
+  ];
+}
+
+/// [mine]'s nodes the merge kept under another id in [landed] (matched back by
+/// version, or by content for a node Noted doesn't own), keyed by that id.
+Map<String, CanvasNode> _reidentified(NotedPage mine, NotedPage landed) {
+  final mineIds = {for (final n in mine.nodes) n.id};
+  final out = <String, CanvasNode>{};
+  final claimed = <String>{};
+  for (final m in landed.nodes) {
+    if (mineIds.contains(m.id)) continue;
+    for (final k in mine.nodes) {
+      if (claimed.contains(k.id)) continue;
+      final at = landed.node(k.id);
+      final same = switch (m) {
+        BoxRecord() => k is BoxRecord && _sameVersion(k, m) && !(at is BoxRecord && _sameVersion(at, k)),
+        ForeignNode() => k is ForeignNode && _sameModuloId(k, m) && at?.toRaw() != k.toRaw(),
+      };
+      if (!same) continue;
+      claimed.add(k.id);
+      out[m.id] = k;
+      break;
+    }
+  }
+  return out;
+}
+
+/// [x] with [add] recorded after what it holds; version records go before any
+/// `deleted` record, as the page issues list shows the first one.
+BoxRecord _withRecords(BoxRecord x, List<BoxConflict> add) {
+  if (add.isEmpty) return x;
+  final all = [...x.conflicts, ...add];
+  return x.withConflicts([
+    for (final c in all)
+      if (!c.deleted) c,
+    for (final c in all)
+      if (c.deleted) c,
+  ]);
+}
+
+/// The `conflicts` [b] holds (empty when it isn't a box).
+List<BoxConflict> _heldRecords(CanvasNode? b) => b is BoxRecord ? b.conflicts : const [];
+
+/// What replay's merge [landed] (of [base], [mine] and a file) lost when
+/// another writer replaced the file right after it landed: [now] is the page
+/// read back. Returns [now] with everything put right, or [now] itself when
+/// nothing is lost, and whether a foreign node [mine] deleted is back (a
+/// deletion holds no data, so it stays, and the caller says so).
+///
+/// A box [mine] changed or added: another writer's deletion of it puts it back,
+/// flagged `deleted`; a version of its content that isn't derived from it
+/// leaves the other writer's displayed and records it in `conflicts`; one that
+/// is the same version or derived from it records nothing. A box [mine]
+/// deleted that is back is flagged `deleted`. When [structure], [mine]'s bounds
+/// and fixed height, the order of the nodes [mine] reordered, and the header
+/// fields [mine] changed are put back the way [mergePage] resolves them. An
+/// entry with no base passes `structure: false` (every box would look moved).
+/// [at] is when the recorded versions were saved (ms since the epoch). Boxes
+/// are compared and copied by their raw text and revisions only; no box data
+/// is decoded.
+({NotedPage page, bool foreignBack}) recordLostEdits(
+  NotedPage base,
+  NotedPage mine,
+  NotedPage landed,
+  NotedPage now, {
+  required int at,
+  bool structure = true,
+}) {
+  final held = _heldCopyNodes(now, landed);
+  // A node the merge kept under a new id (an entry with no base, over a file
+  // holding another node at its id) is still [mine]'s edit.
+  final reid = structure ? const <String, CanvasNode>{} : _reidentified(mine, landed);
+  final repl = <String, CanvasNode>{};
+  final removed = <String>{};
+  final beside = <String, List<CanvasNode>>{};
+  final restore = <(int, CanvasNode)>[];
+  var foreignBack = false;
+
+  for (var i = 0; i < landed.nodes.length; i++) {
+    final m = landed.nodes[i];
+    final mn = mine.node(m.id) ?? reid[m.id];
+    if (mn == null) continue;
+    final b = base.node(mn.id);
+    if (b != null && b.toRaw() == mn.toRaw()) continue; // not [mine]'s edit
+    final x = now.node(m.id);
+    switch (m) {
+      case BoxRecord():
+        if (x == null) {
+          restore.add((i, m.conflicts.any((c) => c.deleted) ? m : _withRecords(m, [BoxConflict.deleted(at: at)])));
+        } else if (x is BoxRecord) {
+          // Records [mine] removed (the user settled the conflict) that are back:
+          // a box exactly as in the base is replaced by [mine]'s; otherwise only
+          // a flag removed again, a recorded version stays.
+          final settled = b is BoxRecord && mn is BoxRecord ? _settledRecords(b, mn) : const <BoxConflict>[];
+          var xx = x;
+          // A flag counts as back only if it is the settled one itself: a newer
+          // deletion by another writer stands.
+          bool isSettled(BoxConflict c) => settled.any((s) => s.deleted ? c == s : c.node == s.node);
+          if (settled.isNotEmpty && x.conflicts.any(isSettled)) {
+            if (x.toRaw() == b!.toRaw()) {
+              repl[m.id] = m;
+              continue;
+            }
+            if (settled.any((s) => s.deleted)) {
+              xx = x.withConflicts([for (final c in x.conflicts) if (!(c.deleted && isSettled(c))) c]);
+            }
+          }
+          final add = <BoxConflict>[];
+          final contentChanged = b is! BoxRecord || mn is! BoxRecord || !_sameVersion(b, mn);
+          if (contentChanged && !_sameVersion(xx, m) && !_derivedFrom(xx, m)) {
+            final node = m.withoutConflicts().toRaw();
+            if (!xx.conflicts.any((c) => c.node == node)) {
+              add.add(BoxConflict.other(node: node, at: at, device: m.device));
+            }
+          }
+          add.addAll(_missingRecords(xx, m));
+          var r = _withRecords(xx, add);
+          if (structure && mn is BoxRecord) {
+            final bb = b is BoxRecord ? b : null;
+            if (bb == null || mn.bounds != bb.bounds) r = r.withBounds(m.bounds);
+            if (bb == null || mn.fixedHeight != bb.fixedHeight) r = r.withFixedHeight(m.fixedHeight);
+          }
+          if (!identical(r, x)) repl[m.id] = r;
+        } else if (!held.contains(m)) {
+          beside[m.id] = [m.withId(newId())]; // kept beside the foreign node
+        }
+      case ForeignNode():
+        if (x == null) {
+          restore.add((i, m));
+        } else if (x is ForeignNode) {
+          if (x.toRaw() != m.toRaw() && !held.contains(m)) beside[m.id] = [m.copyWithId(newId()) ?? m];
+        } else if (x is BoxRecord) {
+          final node = m.toRaw();
+          if (!x.conflicts.any((c) => c.node == node)) {
+            repl[m.id] = _withRecords(x, [BoxConflict.other(node: node, at: at)]);
+          }
+        }
+    }
+  }
+
+  for (final b in base.nodes) {
+    if (mine.node(b.id) != null) continue; // [mine] didn't delete it
+    final x = repl[b.id] ?? now.node(b.id);
+    if (b is BoxRecord && x is BoxRecord) {
+      if (b.conflicts.isNotEmpty && x.toRaw() == b.toRaw()) {
+        removed.add(b.id); // "Delete it" of a conflicted box, undone as it was: deleted again
+      } else if (!x.conflicts.any((c) => c.deleted)) {
+        repl[b.id] = _withRecords(x, [BoxConflict.deleted(at: at)]);
+      }
+    } else if (b is ForeignNode && x is ForeignNode && x.toRaw() == b.toRaw()) {
+      foreignBack = true;
+    }
+  }
+
+  final out = <CanvasNode>[];
+  for (final n in now.nodes) {
+    if (removed.contains(n.id)) continue;
+    out.add(repl[n.id] ?? n);
+    out.addAll(beside[n.id] ?? const []);
+  }
+  for (final (i, r) in restore) {
+    var pos = 0;
+    for (var j = i - 1; j >= 0; j--) {
+      final k = out.indexWhere((n) => n.id == landed.nodes[j].id);
+      if (k >= 0) {
+        pos = k + 1;
+        break;
+      }
+    }
+    out.insert(pos, r);
+  }
+  var changed = repl.isNotEmpty || removed.isNotEmpty || beside.isNotEmpty || restore.isNotEmpty;
+
+  var top = now.top;
+  var meta = now.meta;
+  if (structure) {
+    // Order: [landed]'s order of the nodes all four pages share, when [mine]
+    // reordered them (mergePage: theirs if only theirs reordered, else mine).
+    final inOut = {for (final n in out) n.id};
+    final inLanded = {for (final n in landed.nodes) n.id};
+    final inMine = {for (final n in mine.nodes) n.id};
+    final common = {
+      for (final n in base.nodes)
+        if (inMine.contains(n.id) && inLanded.contains(n.id) && inOut.contains(n.id)) n.id,
+    };
+    List<String> only(Iterable<CanvasNode> nodes) => [
+      for (final n in nodes)
+        if (common.contains(n.id)) n.id,
+    ];
+    final wanted = only(landed.nodes);
+    if (!sameIds(only(mine.nodes), only(base.nodes)) &&
+        only(out).length == common.length &&
+        !sameIds(only(out), wanted)) {
+      reorderLike(out, common, wanted);
+      changed = true;
+    }
+
+    // Header and other top-level fields: [mine]'s where it changed them.
+    RawObject lost(RawObject b, RawObject m, RawObject n, Set<String> skip) {
+      final merged = mergeFields(b, m, n, skip: skip);
+      var next = n;
+      for (final k in {
+        for (final (k, _) in merged.entries) k,
+        for (final (k, _) in n.entries) k,
+      }) {
+        if (skip.contains(k) || merged[k] == n[k]) continue;
+        final v = merged[k];
+        next = v == null ? next.remove(k) : next.set(k, v);
+      }
+      return next;
+    }
+
+    final nextTop = lost(base.top, mine.top, now.top, const {'nodes', 'noted'});
+    if (!identical(nextTop, now.top)) {
+      top = nextTop;
+      changed = true;
+    }
+    final nextFields = lost(base.meta.fields, mine.meta.fields, now.meta.fields, const {'pageId', 'format'});
+    if (!identical(nextFields, now.meta.fields)) {
+      final m = PageMeta.tryRead(nextFields);
+      if (m != null) {
+        meta = m;
+        changed = true;
+      }
+    }
+  }
+
+  if (!changed) return (page: now, foreignBack: foreignBack);
+  return (page: NotedPage.fromParts(top, meta, out), foreignBack: foreignBack);
+}
+
+/// The [mine] that replay merges into [theirs], with what the file learned
+/// since [base] taken as it is, so that a repeat replay over a conflicted file
+/// leaves it as it is (the other writer displayed with [mine] recorded, or
+/// [mine] displayed with theirs recorded). "Learned" is a record of
+/// `theirs`'s box that `base`'s box doesn't hold, by `node` (a `deleted` flag
+/// by kind). A record [base] already held and [mine] lacks is one the user
+/// settled offline, so it matches nothing.
+///
+/// A box of [mine] is replaced by `theirs`'s when a learned record's node is
+/// its version, or `theirs`'s box is its version and learned any record (a
+/// `deleted` flag included). A learned `deleted` flag on an unrelated version
+/// matches nothing. The replacement keeps [mine]'s recorded `conflicts` it
+/// lacks (without nesting) and [mine]'s bounds and fixed height where [mine]
+/// changed them. A box [mine] removed that `theirs` holds flagged `deleted`
+/// (learned) is put in, and a foreign node of [mine] that `theirs` already
+/// holds beside its place isn't kept a second time. Returns [mine] itself when
+/// nothing matches. Not for an entry without a base: every record would count
+/// as learned.
+NotedPage settledInFile(NotedPage base, NotedPage mine, NotedPage theirs) {
+  final held = _heldCopyNodes(theirs, mine);
+  final repl = <String, CanvasNode>{};
+  for (final m in mine.nodes) {
+    final t = theirs.node(m.id);
+    if (t == null) continue;
+    if (held.contains(m)) {
+      repl[m.id] = t;
+      continue;
+    }
+    if (m is! BoxRecord || t is! BoxRecord) continue;
+    final b = base.node(m.id);
+    final had = _heldRecords(b);
+    final learned = [
+      for (final c in t.conflicts)
+        if (!had.any((k) => c.deleted ? k.deleted : k.node == c.node)) c,
+    ];
+    if (learned.isEmpty) continue;
+    final match = _sameVersion(t, m) || learned.any((c) => !c.deleted && _nodeIsVersion(c.node!, m));
+    if (!match) continue;
+    var r = _withRecords(t, _missingRecords(t, m));
+    final bb = b is BoxRecord ? b : null;
+    if (bb == null || m.bounds != bb.bounds) r = r.withBounds(m.bounds);
+    if (bb == null || m.fixedHeight != bb.fixedHeight) r = r.withFixedHeight(m.fixedHeight);
+    repl[m.id] = r;
+  }
+
+  final out = [for (final n in mine.nodes) repl[n.id] ?? n];
+  var added = false;
+  for (final b in base.nodes) {
+    if (mine.node(b.id) != null) continue;
+    final t = theirs.node(b.id);
+    if (t is! BoxRecord || b is! BoxRecord) continue;
+    if (!t.conflicts.any((c) => c.deleted) || b.conflicts.any((c) => c.deleted)) continue;
+    final i = theirs.indexOf(t.id);
+    var pos = 0;
+    for (var j = i - 1; j >= 0; j--) {
+      final k = out.indexWhere((n) => n.id == theirs.nodes[j].id);
+      if (k >= 0) {
+        pos = k + 1;
+        break;
+      }
+    }
+    out.insert(pos, t);
+    added = true;
+  }
+  if (repl.isEmpty && !added) return mine;
+  return NotedPage.fromParts(mine.top, mine.meta, out);
 }
