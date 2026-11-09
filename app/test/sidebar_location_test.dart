@@ -178,7 +178,10 @@ void main() {
     await pumpPanel(t);
     await t.runAsync(() async {
       await t.tap(find.byKey(const ValueKey('settings-location-move')));
-      await realIoPause(300);
+      // The move runs on real IO: wait until it has landed, so it is not still
+      // running when the test ends and the notebook is disposed.
+      await realIoUntil(() => nb.folderOfPage(a) != nb.defaultFolderPath, 'the page to be moved');
+      await nb.flush();
     });
     await t.pump();
     await t.pump(const Duration(milliseconds: 50));
@@ -230,7 +233,8 @@ void main() {
     expect(find.byTooltip('Open binder…'), findsOneWidget);
     await t.runAsync(() async {
       await t.tap(find.byKey(const ValueKey('open-binder')));
-      await realIoPause(50);
+      await realIoUntil(() => picks == 1, 'the folder picker to be asked');
+      await nb.flush();
     });
     expect(picks, 1);
     await t.pumpWidget(const SizedBox());
