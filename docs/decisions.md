@@ -1746,7 +1746,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0124 — Saves, moves and recovery never overwrite or delete what they can't verify
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106; amended by 0127 and 0130; amended by 0131; mobile recovery re-keying amended by 0142)
+- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106; amended by 0127 and 0130; amended by 0131; mobile recovery re-keying amended by 0142); replay's retirement after a landed write amended by 0156
 - **Decision:**
   - **The open page's file (0051):** before every save of the open page, its file is read again, found by path. If it is unreadable, from a newer format, holds a different page, or can't be read for any reason other than not existing, nothing is written: the file stays as it is, the edits go to recovery, and the page becomes read-only with a plain reason and a way out ("Put back a readable version, or open another page"). The block is rechecked by the watcher and the folder timer; when a readable version appears it is merged three-way and the page is editable again, and the block's recovery entry is removed once the merged save reads back. A folder that comes back while the open page waits for it is handled the same way, with or without a recovery entry: a file that is there but unreadable blocks the page, and a missing file puts the page back in place so a file that lands later is merged.
   - **Conflict copies (0053):** a copy is deleted only if its bytes still equal the ones that were merged, and the original is replaced only if it still equals what the merge read. Otherwise the merge is redone, up to five times; then the copy is kept and listed under "Can't open".
@@ -2207,7 +2207,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
     - A box the other writer deleted: back, flagged deleted (0020).
     - A box the entry deleted that is back: flagged deleted.
     - Versions recorded in what landed are recorded again without nesting.
-    - A conflict the entry settled offline stays settled.
+    - A conflict the entry settled offline stays settled when the file is put back as the entry's base was. A newer deletion by another writer stands as a flag.
     - Geometry, order and header fields the entry changed are put back as the entry had them, without a record, as the three-way merge does.
   - **A file that can't be read or holds another page:** the edits are published as an `-undo-` copy beside it, and it is listed under "Can't open" naming the copy.
   - **A file that's gone:** the page is written again exclusively.
@@ -2218,6 +2218,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
     - The landed text is in memory only, so a restart, or a move of the page, between landing and settling merges again.
     - A box whose content the entry didn't change records no conflict.
     - A box another device merged before saving can show as a conflict, with nothing lost.
+    - If the other writer also changed a box the entry settled offline, a settled version shows as a conflict again and a deleted box returns flagged.
 - **Rationale:** an entry deleted while its edits were in no file lost them; a conflict keeps both versions and lets the user decide (0120).
 - **Alternatives considered:** retiring with a notice (0130; the notice was in memory only); keeping the entry and replaying again (brings back what the other writer deleted, unflagged).
 
