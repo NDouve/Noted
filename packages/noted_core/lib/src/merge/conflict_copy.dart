@@ -524,12 +524,17 @@ List<BoxConflict> _heldRecords(CanvasNode? b) => b is BoxRecord ? b.conflicts : 
           // a flag removed again, a recorded version stays.
           final settled = b is BoxRecord && mn is BoxRecord ? _settledRecords(b, mn) : const <BoxConflict>[];
           var xx = x;
-          if (settled.isNotEmpty && x.conflicts.any((c) => settled.any((s) => s.deleted ? c.deleted : c.node == s.node))) {
+          // A flag counts as back only if it is the settled one itself: a newer
+          // deletion by another writer stands.
+          bool isSettled(BoxConflict c) => settled.any((s) => s.deleted ? c == s : c.node == s.node);
+          if (settled.isNotEmpty && x.conflicts.any(isSettled)) {
             if (x.toRaw() == b!.toRaw()) {
               repl[m.id] = m;
               continue;
             }
-            if (settled.any((s) => s.deleted)) xx = x.withConflicts([for (final c in x.conflicts) if (!c.deleted) c]);
+            if (settled.any((s) => s.deleted)) {
+              xx = x.withConflicts([for (final c in x.conflicts) if (!(c.deleted && isSettled(c))) c]);
+            }
           }
           final add = <BoxConflict>[];
           final contentChanged = b is! BoxRecord || mn is! BoxRecord || !_sameVersion(b, mn);

@@ -268,14 +268,24 @@ void main() {
     test('a flag settled by hand is removed from a box the other writer changed, a recorded version stays', () {
       final mine = pageOf([a, b, c]);
       final other = edit(a, 'other');
+      final settledFlag = boxOf(baseFlag, 'a').conflicts.firstWhere((k) => k.deleted);
       final now = pageOf([
-        edit(a, 'theirs').withConflict(BoxConflict.other(node: other.toRaw(), at: 7)).withConflict(BoxConflict.deleted(at: 6)),
+        edit(a, 'theirs').withConflict(BoxConflict.other(node: other.toRaw(), at: 7)).withConflict(settledFlag),
         b,
         c,
       ]);
       final r = fix(baseFlag, mine, mine, now);
       expect(boxOf(r, 'a').conflicts.any((k) => k.deleted), isFalse);
       expect(boxOf(r, 'a').conflicts, hasLength(1));
+    });
+
+    test('a newer deletion by another writer stands after a flag settled by hand', () {
+      final mine = pageOf([a, b, c]);
+      final settledFlag = boxOf(baseFlag, 'a').conflicts.firstWhere((k) => k.deleted);
+      final newer = BoxConflict.deleted(at: settledFlag.at + 4);
+      final now = pageOf([edit(a, 'theirs').withConflict(settledFlag).withConflict(newer), b, c]);
+      final r = fix(baseFlag, mine, mine, now);
+      expect(boxOf(r, 'a').conflicts.where((k) => k.deleted), [newer]);
     });
 
     test('x\'s own version is judged by revision, not raw text', () {
