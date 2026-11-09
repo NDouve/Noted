@@ -95,6 +95,10 @@
 //     Undo should hold the page", or the page missing after a reload), and so do
 //     the two regression probes of the same name.
 //
+// 17. A delete rollback holds its pages only in memory until its restore has
+//     published (R-1, run 2026-11-09-01): the step `delete:failRollback:kill` and
+//     its regression probe fail ("a fresh notebook does not list" the page).
+//
 // Wait for watchers: none is used. The notebook runs with `watchFiles` off,
 // and the steps call `checkFile` and `checkFolders` themselves, the way the
 // watcher would, so a step is over when its calls return. Folder renames and
@@ -1604,6 +1608,9 @@ class _Run {
         : _pickPage();
     final gone = _subtree(id);
     if (_standaloneLeft(gone, to: null) < 1) return; // the app would make a new page
+    // Some failed deletes are followed by a kill in the rollback (a generator of
+    // its own, so the choices of the steps above stay the ones they were).
+    if (variant == 'failDelete' && _rrng.nextInt(2) == 0) variant = 'failRollback:kill';
     final m = model[id]!;
     trace.add('delete ${_short(id)} (${gone.length} pages) in ${m.loc}: $variant');
     _kind = 'delete:$variant';
@@ -1621,6 +1628,10 @@ class _Run {
     } else if (variant == 'failDelete') {
       // The last page of the subtree: the ones before it are already deleted.
       st.failDelete.add(gone.last);
+    }
+    if (variant == 'failRollback:kill') {
+      await _failRollbackKill(id, gone, st);
+      return;
     }
     Object? error;
     DeletedPages? deleted;
@@ -1680,6 +1691,35 @@ class _Run {
     for (final p in model.values) {
       if (p.parent != null && !model.containsKey(p.parent)) p.parent = null;
     }
+  }
+
+  /// Regression (run 2026-11-09-01, R-1): a delete whose rollback has not
+  /// published its restore yet held its pages only in memory, so a kill then
+  /// lost them. [failRollback:kill]: the delete of the last page of [gone] fails,
+  /// the rollback stalls at its restore (nothing releases it, no `failNew`), the
+  /// app is taken away without a quit, and a fresh notebook must have every page
+  /// by its id. After that the hook is released and the app restarts.
+  Future<void> _failRollbackKill(String id, List<String> gone, _Chaos st) async {
+    final gate = Completer<void>();
+    final reached = Completer<void>();
+    nb.syncHook = (point, _) async {
+      if (point != 'new-before-publish') return;
+      if (!reached.isCompleted) reached.complete();
+      await gate.future;
+    };
+    st.failDelete.add(gone.last);
+    // Not awaited: it stays in the rollback.
+    final outcome = nb.delete(id).then<Object?>((_) => null, onError: (Object e) => e);
+    await reached.future.timeout(const Duration(seconds: 20));
+    st.failDelete.clear();
+    await _verifyFresh('after killing the app in a delete rollback (seed $seed)');
+    gate.complete();
+    final error = await outcome.timeout(const Duration(seconds: 20));
+    nb.syncHook = null;
+    expect(error, isNotNull, reason: 'the delete should have failed');
+    final kind = _kind;
+    await _opRestart();
+    _kind = kind;
   }
 
   /// Regression (run 2026-11-06-01, 0141): an Undo whose write of [victim]
@@ -1887,6 +1927,7 @@ class _Run {
 
   late final Random _brng = Random(seed * 31 + 7);
   late final Random _urng = Random(seed * 17 + 3); // which Undos fail (_opDelete)
+  late final Random _rrng = Random(seed * 19 + 5); // which failed deletes are followed by a kill (_opDelete)
   int _binderStepCount = 0;
   int _binderCounter = 0;
   late String _idA;
@@ -2393,7 +2434,7 @@ const _expectedKinds = {
   'move:plain', 'move:pendingEdit', 'move:failDestination', 'move:failSourceDelete',
   'move:syncAtSource', //
   'delete:undo', 'delete:keep', 'delete:syncAtDelete', 'delete:failDelete', //
-  'delete:failUndo:retry', 'delete:failUndo:quit', //
+  'delete:failUndo:retry', 'delete:failUndo:quit', 'delete:failRollback:kill', //
   'vanish:live/plain', 'vanish:restart/plain', 'vanish:live/syncWhileAway',
   'vanish:restart/syncWhileAway', 'vanish:live/deletedWhileAway',
   'vanish:restart/deletedWhileAway', 'vanish:live/replayFails',
@@ -3103,6 +3144,17 @@ void main() {
       );
     }
 
+    // Run 2026-11-09-01, task 1 (R-1): a kill while a delete rollback is stalled
+    // before its restore publishes. Without the change the page exists only in
+    // memory then, and a fresh notebook does not have it.
+    test('regression: a kill in a delete rollback loses no page (failRollback:kill)', () async {
+      final parent = run.model.keys.first;
+      final gone = run._subtree(parent);
+      expect(gone.length, greaterThan(1), reason: 'a parent with a subpage');
+      await run._failRollbackKill(parent, gone, run.storeOf('pages'));
+      await run.verify('after the kill in the rollback', fresh: true);
+    });
+
     test('theirs reorders the nodes while mine has an unsaved addition after the first: it follows it (0132)', () async {
       final id = run.model.keys.first;
       final a = run._newBox('first'), b = run._newBox('second'), x = run._newBox('added here');
@@ -3199,10 +3251,11 @@ void main() {
       st.failDelete.clear();
       st.failNew.clear();
       expect(error, isA<NotebookException>());
-      // The waiting entry is still the only one, and still has its edit.
+      // The waiting entry is untouched and still has its edit; the rollback wrote
+      // an entry of its own beside it, holding the deleted version.
       final entries = (await run.nb.pendingRecovery()).entries;
-      expect(entries.map((e) => e.pageId), [parent]);
-      expect(entries.single.page.node(y.id), isNotNull, reason: 'the pending edit was replaced');
+      expect(entries.map((e) => e.pageId), [parent, parent]);
+      expect(entries.where((e) => e.page.node(y.id) != null), hasLength(1), reason: 'the pending edit was replaced');
       // The attachments are out of reach of the trash clean-up.
       expect(run.trashChildren(), isEmpty);
       // The user deletes another page meanwhile.

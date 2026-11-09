@@ -8,6 +8,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/recovery_lock.dart';
+import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -484,8 +486,27 @@ void main() {
       )
       .toList();
 
-  test('quit during a delete rollback that waits for the folder lock asks and keeps the page', () async {
-    await build(rec: Directory('${root.path}${sep}rec'));
+  // A notebook started from scratch on the same folders (the next launch): its
+  // own folder locks, and it replays what recovery holds when it loads.
+  Future<Notebook> launch(Directory rec) async {
+    final n = Notebook(
+      HookedStore(pages),
+      buildModules(),
+      saveDelay: const Duration(hours: 1),
+      folderLocks: FolderLocks(),
+      recoveryDirectory: rec,
+      storeFactory: (d) => HookedStore(d),
+      templatesDirectory: Directory('${root.path}${sep}templates'),
+    );
+    await n.load();
+    await pump();
+    return n;
+  }
+
+  test('quit during a delete rollback stalled at the folder lock, with recovery: nothing is asked, and the next launch has the page', () async {
+    final rec = Directory('${root.path}${sep}rec');
+    await build(rec: rec);
+    final parentText = File(pagePath(nb.currentId!)).readAsStringSync();
     final (result, gate, held, parent) = await rollbackHeld();
     expect(File(pagePath(parent)).existsSync(), isFalse);
     final asked = <UserQuestion>[];
@@ -493,11 +514,29 @@ void main() {
       asked.add(q);
       return false; // stay
     };
-    final stay = await nb.prepareToExit(
-      limit: const Duration(milliseconds: 300),
-    );
+    final stay = await nb.prepareToExit(limit: const Duration(milliseconds: 300));
+    expect(asked, isEmpty);
+    expect(stay, isTrue, reason: 'recovery holds the page, so quit goes on');
+    expect(published(pages, containing: '-undo-'), isEmpty);
+    // The app is gone without the rollback having finished.
+    nb.dispose();
+    nb = await launch(rec);
+    expect(File(pagePath(parent)).readAsStringSync(), parentText);
+    expect((await nb.pendingRecovery()).entries, isEmpty);
+  });
+
+  test('quit during a delete rollback that waits for the folder lock, without recovery: asks, names the page, and keeps it', () async {
+    final (result, gate, held, parent) = await rollbackHeld();
+    expect(File(pagePath(parent)).existsSync(), isFalse);
+    final asked = <(UserQuestion, String)>[];
+    nb.questioner = (q, title) async {
+      asked.add((q, title));
+      return false; // stay
+    };
+    final stay = await nb.prepareToExit(limit: const Duration(milliseconds: 300));
     expect(stay, isFalse);
-    expect(asked, [UserQuestion.leaveAndLose]);
+    expect(asked.map((a) => a.$1), [UserQuestion.leaveAndLose]);
+    expect(asked.single.$2, isNotEmpty);
     expect(published(pages, containing: '-undo-'), isEmpty);
     gate.complete();
     await held;
@@ -505,6 +544,117 @@ void main() {
     await pump();
     expect(File(pagePath(parent)).existsSync(), isTrue);
     expect(published(pages, containing: '-undo-'), isEmpty);
+  });
+
+  test('quit during a delete rollback stalled before its page is recorded: asks and names it, staying keeps it', () async {
+    await build(rec: Directory('${root.path}${sep}rec'));
+    final keepGate = Completer<void>();
+    var fired = false;
+    nb.syncHook = (point, path) async {
+      if (point != 'delete-rollback-keep') return;
+      fired = true;
+      await keepGate.future;
+    };
+    final (result, gate, held, parent) = await rollbackHeld();
+    expect(fired, isTrue, reason: 'the hook point was reached');
+    final asked = <UserQuestion>[];
+    nb.questioner = (q, title) async {
+      asked.add(q);
+      return false; // stay
+    };
+    final stay = await nb.prepareToExit(limit: const Duration(milliseconds: 300));
+    expect(stay, isFalse);
+    expect(asked, [UserQuestion.leaveAndLose]);
+    keepGate.complete();
+    gate.complete();
+    await held;
+    expect(await result.timeout(const Duration(seconds: 10)), isNotNull);
+    await pump();
+    expect(File(pagePath(parent)).existsSync(), isTrue);
+  });
+
+  test('a quit already waiting is not released until the page that recovery could not keep is held and copied', () async {
+    final (result, gate, held, parent) = await rollbackHeld();
+    store.failNewText = true; // the restore will fail, and there is no recovery
+    nb.questioner = (q, title) async => false;
+    var quitDone = false;
+    final quit = nb.prepareToExit(limit: const Duration(seconds: 20)).whenComplete(() => quitDone = true);
+    await pump();
+    expect(quitDone, isFalse);
+    gate.complete();
+    await held;
+    expect(await result.timeout(const Duration(seconds: 10)), isA<PagesNotRestoredException>());
+    store.failNewText = false;
+    expect(await quit.timeout(const Duration(seconds: 10)), isTrue);
+    expect(published(pages, containing: '-undo-'), hasLength(1), reason: 'the held page was written beside its place');
+    expect(File(pagePath(parent)).existsSync(), isFalse);
+  });
+
+  test('a rollback that succeeds leaves no recovery entry and no notice, and the file holds the deleted text', () async {
+    final rec = Directory('${root.path}${sep}rec');
+    await build(rec: rec);
+    final parentText = File(pagePath(nb.currentId!)).readAsStringSync();
+    final (result, gate, held, parent) = await rollbackHeld();
+    gate.complete();
+    await held;
+    final error = await result.timeout(const Duration(seconds: 10));
+    expect(error, isNotNull, reason: 'the delete failed');
+    expect(error, isNot(isA<PagesNotRestoredException>()));
+    await pump();
+    expect(File(pagePath(parent)).readAsStringSync(), parentText);
+    expect((await nb.pendingRecovery()).entries, isEmpty);
+    expect(rec.existsSync() ? rec.listSync().where((e) => e.path.endsWith('.entry')) : [], isEmpty);
+  });
+
+  test('an entry another instance wrote for the page, behind the index, is left on disk by a rollback', () async {
+    final rec = Directory('${root.path}${sep}rec');
+    // A lock that is lost and taken again at every check: the notebook then
+    // lists the recovery folder before its next merging write.
+    nb.dispose();
+    stores.clear();
+    store = HookedStore(pages);
+    stores[FolderLocks.keyOf(pages)] = store;
+    locks = FolderLocks();
+    nb = Notebook(
+      store,
+      buildModules(),
+      saveDelay: const Duration(hours: 1),
+      folderLocks: locks,
+      recoveryDirectory: rec,
+      recoveryLock: _LateLock(File('${root.path}${sep}recovery.lock')),
+      storeFactory: (d) => stores.putIfAbsent(FolderLocks.keyOf(d), () => HookedStore(d)),
+      pickFolder: () async => copiesDir.path,
+      templatesDirectory: Directory('${root.path}${sep}templates'),
+    );
+    await nb.load();
+    await pump();
+    final parent = nb.currentId!;
+    final disk = readPage(File(pagePath(parent)).readAsStringSync());
+    final theirBox = BoxRecord.create(
+      id: 'theirbox',
+      typeId: 'test.other',
+      dataVersion: 1,
+      bounds: const Bounds(0, 0, 10, 10),
+      data: RawJson.encode('x'),
+      snapshotText: 's',
+      rev: 'r1',
+    );
+    // Another instance's edit for the page: on disk, but not in the index.
+    final theirs = await RecoveryStore(rec).write(
+      folder: pages.path,
+      page: disk.insertNode(theirBox),
+      baseText: writePage(disk),
+      time: DateTime.now(),
+    );
+    final (result, gate, held, _) = await rollbackHeld();
+    gate.complete();
+    await held;
+    await result.timeout(const Duration(seconds: 10));
+    await pump();
+    expect(File(pagePath(parent)).existsSync(), isTrue);
+    expect(theirs.file.existsSync(), isTrue, reason: 'their entry is not ours to delete');
+    final entries = rec.listSync().where((e) => e.path.endsWith('.entry')).toList();
+    expect(entries, hasLength(1), reason: 'the rollback left nothing of its own');
   });
 
   test('a binder removed while a new page waits for the lock: nothing is published', () async {
@@ -596,4 +746,16 @@ void main() {
       hasLength(1),
     );
   });
+}
+
+/// A recovery lock that is never held and is always taken again: the notebook
+/// must list the recovery folder before its next merging write.
+class _LateLock extends RecoveryLock {
+  _LateLock(super.file);
+
+  @override
+  bool check() => false;
+
+  @override
+  bool ensure() => true;
 }

@@ -2627,16 +2627,80 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Not through recovery, whose replay would take the file as the newer page.
       final copied = <int, String>{};
       final direct = <int>[];
-      // Registered while the pages are only in memory (a stalled folder lock can
-      // hold the restore for long), so exit waits for it, is bounded and asks.
+      // The recovery entries this rollback wrote (a fresh slot each, no base),
+      // by page. Removed only by their exact generation, once the page is back
+      // as it was or a copy of it stands (see [settle]); else replay takes them.
+      final ours = <int, List<String>>{};
+      final durable = <int>{}; // recovery holds the page, read back
+      final safe = <int>{}; // back in its folder, or copied beside another file
+      // Registered first, with what is neither durable nor safe: exit waits for
+      // it, is bounded, and asks only about the pages still listed (0141, 0152).
       final rollbackDone = Completer<void>();
-      _undoRuns[rollbackDone.future] = DeletedPages._([for (final i in deletedNow) pages[i]], null, loc, {});
+      void refreshRisk() {
+        if (deletedNow.isEmpty) return;
+        _undoRuns[rollbackDone.future] = DeletedPages._(
+          [for (final i in deletedNow) if (!durable.contains(i) && !safe.contains(i)) pages[i]],
+          null,
+          loc,
+          {},
+        );
+      }
+
+      refreshRisk();
+      // Deletes the entries of page [i] by exact generation. Never throws.
+      Future<void> dropOurs(int i) async {
+        final rec = _recovery;
+        final gens = ours[i];
+        // A notebook that is gone writes nothing more: the next start settles it.
+        if (rec == null || gens == null || _disposed) return;
+        await _deleteGens(rec, gens, null);
+        ours.remove(i);
+      }
+
+      // The page is in its folder (restored, or there as it was, or another
+      // writer's version is on top of what landed): its entry goes only when
+      // the file reads as exactly this version, or, after our own publish, as a
+      // readable page of this id (what is on top was already on disk before the
+      // delete, so nothing new is exposed, and merging again would bring back
+      // what the other writer deleted). A read that fails leaves the entry.
+      Future<void> settle(int i, {required bool published}) async {
+        if (!ours.containsKey(i) || _disposed) return;
+        try {
+          final back = await st.readText(ids[i]);
+          var onTop = false;
+          if (back != texts[i]) {
+            final now = published ? _tryRead(back) : null;
+            if (now == null || now.id != ids[i]) return;
+            onTop = true;
+          }
+          await dropOurs(i);
+          if (onTop) await _checkFile(st.pathFor(ids[i]));
+        } on Object catch (e) {
+          debugPrint('Settling the kept copy of page ${ids[i]} failed: $e');
+        }
+      }
+
+      String? plain; // the message when recovery or copies hold everything
+      DeletedPages? held;
+      var heldCause = '';
+      var handedOff = false;
       try {
+        // Recorded in recovery before the first restore: the pages exist only
+        // in memory until then, and a quit or a kill would lose them.
+        for (final i in deletedNow) {
+          final k = await _keepRollbackCopy(st, pages[i], null);
+          if (k.gen != null) (ours[i] ??= []).add(k.gen!);
+          if (k.durable) durable.add(i);
+          refreshRisk();
+        }
         for (final i in deletedNow) {
           try {
             if (await _restoreText(loc, pages[i], texts[i])) {
               _metas[ids[i]] = pages[i].meta;
               _loc[ids[i]] = loc;
+              safe.add(i);
+              refreshRisk();
+              await settle(i, published: true);
             } else {
               // A file appeared at its path meanwhile. Unless it holds exactly
               // the deleted version, that version is not in the folder: it is
@@ -2651,9 +2715,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
                 final copy = await _publishConflictCopy(st, pages[i]);
                 if (copy != null) {
                   copied[i] = _baseName(copy);
+                  safe.add(i);
+                  refreshRisk();
+                  await dropOurs(i); // the copy holds this version
                 } else {
                   direct.add(i);
                 }
+              } else {
+                safe.add(i);
+                refreshRisk();
+                await settle(i, published: false);
               }
               try {
                 await _checkFile(st.pathFor(ids[i])); // read as any change
@@ -2663,13 +2734,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             }
           } on Object catch (e) {
             debugPrint('Putting back page ${ids[i]} after a failed delete failed: $e');
-            stuck.add(i);
+            if (!safe.contains(i)) stuck.add(i);
           }
         }
-      } finally {
-        _undoRuns.remove(rollbackDone.future);
-        rollbackDone.complete();
-      }
       for (var i = 0; i < ids.length; i++) {
         final dir = stash[ids[i]];
         if (dir == null) continue;
@@ -2696,7 +2763,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // recovery's kept files (0098): they land beside the page when it does,
       // and are out of reach of a later delete's clean-up of the trash.
       final rec = _recovery;
-      var handedOff = false;
       if (rec != null) {
         for (final id in stash.keys.toList()) {
           try {
@@ -2718,30 +2784,30 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           }
         }
       }
-      String? plain; // the message when recovery or copies hold everything
-      DeletedPages? held;
-      var heldCause = '';
       if (stuck.isNotEmpty || copied.isNotEmpty || direct.isNotEmpty) {
-        // What could not be put back is handed to recovery, which writes a page
-        // file that is not there when it replays. An entry that is already
-        // there for the page is left alone: it recreates the page and holds
-        // the newer content. What recovery does not take is held in memory and
-        // offered as an Undo, which writes it back and never over a file that
-        // is there; its set-aside attachments are in [keepTrash], so no
-        // clean-up of the trash reaches them.
+        // What could not be put back is in recovery already (written before the
+        // first restore, see above), which writes a page file that is not there
+        // when it replays and merges into one that is. A stuck page without a
+        // verified entry tries once more, so a recovery folder that came back is
+        // used. What recovery does not take is held in memory and offered as an
+        // Undo, which writes it back and never over a file that is there; its
+        // set-aside attachments are in [keepTrash], so no clean-up of the trash
+        // reaches them.
         final taken = <int>[];
         final untaken = <int>[];
         for (final i in stuck) {
-          KeepOutcome out;
-          try {
-            // Merged into the entry already there, if any (3.4.2).
-            out = await _keepForRecovery(loc, st, pages[i], base: pages[i]);
-          } on Object catch (e) {
-            debugPrint('Keeping page ${ids[i]} after a failed delete failed: $e');
-            out = KeepOutcome(KeepKind.failed, cause: e);
+          if (!durable.contains(i)) {
+            final k = await _keepRollbackCopy(st, pages[i], ours[i]?.last);
+            if (k.gen != null && !(ours[i]?.contains(k.gen) ?? false)) (ours[i] ??= []).add(k.gen!);
+            if (k.durable) durable.add(i);
           }
-          (out.safe ? taken : untaken).add(i);
+          (durable.contains(i) ? taken : untaken).add(i);
         }
+        // A different file is there and the copy failed: recovery holds the
+        // version and replay merges it into the file; without an entry the
+        // page is held, as before.
+        final directTaken = [for (final i in direct) if (durable.contains(i)) i];
+        final directHeld = [for (final i in direct) if (!durable.contains(i)) i];
         String titles(Iterable<int> at) => at.map((i) => '"${_titleOrUntitled(pages[i].meta.title)}"').join(', ');
         final total = stuck.length + copied.length + direct.length;
         final head =
@@ -2750,16 +2816,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final heldText = taken.isEmpty
             ? ''
             : ' Recovery holds the content of ${titles(taken)} and will write it back.';
+        final directTakenText = directTaken.isEmpty
+            ? ''
+            : ' Recovery holds the content of ${titles(directTaken)} and will add it to the file there.';
         final copyText = copied.isEmpty
             ? ''
             : ' A newer file was already in the place of ${titles(copied.keys)}, so the deleted '
                   '${copied.length == 1 ? 'version was' : 'versions were'} kept beside '
                   '${copied.length == 1 ? 'it' : 'them'} as ${copied.values.map((n) => '"$n"').join(', ')}; '
                   'nothing was written over the file.';
-        if (untaken.isEmpty && direct.isEmpty) {
-          plain = '$head$heldText$copyText';
+        if (untaken.isEmpty && directHeld.isEmpty) {
+          plain = '$head$heldText$directTakenText$copyText';
         } else {
-          final only = [...untaken, ...direct];
+          final only = [...untaken, ...directHeld];
           held = DeletedPages._(
             [for (final i in only) pages[i]],
             null,
@@ -2772,11 +2841,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           );
           _held.add(held);
           heldCause =
-              '$head$heldText$copyText'
+              '$head$heldText$directTakenText$copyText'
               '${untaken.isEmpty ? '' : ' Recovery could not keep ${titles(untaken)}.'}'
-              '${direct.isEmpty ? '' : ' A newer file is in the place of ${titles(direct)} and a copy could not be saved beside it.'}';
+              '${directHeld.isEmpty ? '' : ' A newer file is in the place of ${titles(directHeld)} and a copy could not be saved beside it.'}';
         }
       }
+      } finally {
+        // After the decision: until then the pages are only in memory or in
+        // an entry nobody has taken over, and exit must not pass them by.
+        _undoRuns.remove(rollbackDone.future);
+        rollbackDone.complete();
+      }
+      // An entry left (a page recovery holds, or one a read could not settle)
+      // is replayed once the delete is over.
+      if (ours.isNotEmpty) _backoff.schedule();
       // Land kept attachments as soon as the folder takes them, not only at
       // the next start; raised only now, so a stuck page's entry exists
       // before the folder check looks for the page its files go with.
@@ -6042,6 +6120,37 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  // The first step of a delete rollback (0141): [page], already deleted, is
+  // written to recovery as its own fresh slot with no base, holding exactly the
+  // deleted version, and read back. Nothing is read or merged, so an entry of
+  // the page that is already there (or that another instance wrote) is never
+  // touched. [gen] is set as soon as the write returns, whatever the read-back
+  // shows (the entry is then ours to remove); [durable] only when it read back.
+  // [known]: an entry written earlier that was not read back; it is read again,
+  // not written twice. Never throws; no recovery, a refusal or a failure is
+  // logged and not durable.
+  Future<({String? gen, bool durable})> _keepRollbackCopy(PageStore st, NotedPage page, String? known) async {
+    var gen = known;
+    try {
+      await syncHook?.call('delete-rollback-keep', st.pathFor(page.id));
+      final rec = _recovery;
+      if (rec == null || _lockProblem() != null) return (gen: gen, durable: false);
+      if (gen == null) {
+        final folder = _normalizePath(st.directory.path);
+        final written = await rec.transaction(
+          (tx) => tx.write(folder: folder, page: page, baseText: null, time: DateTime.now(), freshSlot: true),
+        );
+        gen = written.gen;
+      }
+      final entry = rec.indexEntries.where((x) => x.gen == gen).firstOrNull;
+      final ok = entry != null && await rec.transaction((tx) => tx.verify(entry));
+      return (gen: gen, durable: ok);
+    } on Object catch (e) {
+      debugPrint('Keeping page ${page.id} in recovery before putting it back failed: $e');
+      return (gen: gen, durable: false);
+    }
+  }
+
   // 3.4.1: the open page replaces only its own generations (and landed ones).
   Future<KeepOutcome> _keepAsSession(
     RecoveryStore rec,
@@ -6535,8 +6644,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           );
         }
       }
+      // An entry with no base (a deleted page kept by a rollback, or a new
+      // page) has no common base with a file that stands at its path: that is
+      // a conflict copy (0053), merged as one, in its recovery form (0120).
+      final noBase = e.baseText == null;
       final merged = theirs == null
           ? mine
+          : noBase
+          ? mergeConflictCopy(
+              theirs,
+              mine,
+              _pageCodecs(id),
+              copyTime: e.time.millisecondsSinceEpoch,
+              forRecovery: true,
+            ).page
           : mergePage(base, mine, theirs, _pageCodecs(id), theirsTime: time, markLanded: false).page;
       final out = writePage(merged);
       if (out != theirsText) {
@@ -6623,12 +6744,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
         return true;
       }
-      final why = verifyRecoveredPage(
-        base: base,
-        mine: mine,
-        theirs: theirs,
-        result: _readForReplay(back, 'the saved file of $label'),
-      );
+      final result = _readForReplay(back, 'the saved file of $label');
+      final why = theirs != null && noBase
+          ? verifyConflictCopyMerge(result, theirs, mine, forRecovery: true)
+          : verifyRecoveredPage(base: base, mine: mine, theirs: theirs, result: result);
       if (why != null) throw _ReplayFailure(_notAllKept(label), detail: why);
       await _applyClosed(readPage(back), loc, _key(path), path);
       await _deleteEntry(rec, e);
@@ -10402,7 +10521,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // An Undo that is still running owns its pages; past the time limit they
     // count as not preserved.
     if (_undoRuns.isNotEmpty) {
-      final running = _undoRuns.values.toList();
       var stalled = false;
       await Future.wait([..._undoRuns.keys]).timeout(
         left(),
@@ -10412,11 +10530,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         },
       );
       if (stalled) {
+        // Read now, not at the start: a delete rollback shrinks its list as
+        // pages become safe (recovery holds them, or they are back). It asks
+        // only when a page is still at risk.
         final title = [
-          for (final d in running)
+          for (final d in _undoRuns.values)
             for (final p in d.pages) _titleOrUntitled(p.meta.title),
         ].join(', ');
-        if (!await _ask(UserQuestion.leaveAndLose, title)) return false;
+        if (title.isNotEmpty && !await _ask(UserQuestion.leaveAndLose, title)) return false;
       }
     }
     for (final d in [..._held]) {
