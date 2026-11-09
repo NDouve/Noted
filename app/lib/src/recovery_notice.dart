@@ -50,9 +50,9 @@ Future<void> showRecoveryNoticeOnExit(
               Text(
                 pages == 1
                     ? "1 page couldn't be saved yet. "
-                          'It is kept safely and will be saved automatically.'
+                          'It is kept safely and will be saved automatically when its folder is available.'
                     : "$pages pages couldn't be saved yet. "
-                          'They are kept safely and will be saved automatically.',
+                          'They are kept safely and will be saved automatically when their folder is available.',
               ),
             if (landedLeft) ...[
               if (pages > 0) SizedBox(height: NotedMetrics.of(context).space3),

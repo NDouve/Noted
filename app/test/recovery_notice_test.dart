@@ -66,7 +66,12 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(find.byKey(const ValueKey('recovery-exit-notice')), findsOneWidget);
-    expect(find.textContaining("1 page couldn't be saved"), findsOneWidget);
+    expect(
+      find.text(
+        "1 page couldn't be saved yet. It is kept safely and will be saved automatically when its folder is available.",
+      ),
+      findsOneWidget,
+    );
     expect(done, isFalse);
     await tester.tap(find.byKey(const ValueKey('recovery-exit-ok')));
     await tester.pump();

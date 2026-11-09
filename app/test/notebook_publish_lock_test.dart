@@ -526,6 +526,7 @@ void main() {
   });
 
   test('quit during a delete rollback that waits for the folder lock, without recovery: asks, names the page, and keeps it', () async {
+    await nb.rename(nb.currentId!, 'Rollback parent');
     final (result, gate, held, parent) = await rollbackHeld();
     expect(File(pagePath(parent)).existsSync(), isFalse);
     final asked = <(UserQuestion, String)>[];
@@ -536,7 +537,7 @@ void main() {
     final stay = await nb.prepareToExit(limit: const Duration(milliseconds: 300));
     expect(stay, isFalse);
     expect(asked.map((a) => a.$1), [UserQuestion.leaveAndLose]);
-    expect(asked.single.$2, isNotEmpty);
+    expect(asked.single.$2, 'Rollback parent');
     expect(published(pages, containing: '-undo-'), isEmpty);
     gate.complete();
     await held;

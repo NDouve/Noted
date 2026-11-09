@@ -2627,6 +2627,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Not through recovery, whose replay would take the file as the newer page.
       final copied = <int, String>{};
       final direct = <int>[];
+      final inFile = <int>{}; // a different file was at the page's path
       // The recovery entries this rollback wrote (a fresh slot each, no base),
       // by page. Removed only by their exact generation, once the page is back
       // as it was or a copy of it stands (see [settle]); else replay takes them.
@@ -2712,6 +2713,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
                 there = null;
               }
               if (there != texts[i]) {
+                inFile.add(i);
                 final copy = await _publishConflictCopy(st, pages[i]);
                 if (copy != null) {
                   copied[i] = _baseName(copy);
@@ -2806,16 +2808,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // A different file is there and the copy failed: recovery holds the
         // version and replay merges it into the file; without an entry the
         // page is held, as before.
-        final directTaken = [for (final i in direct) if (durable.contains(i)) i];
+        final directTaken = [
+          for (final i in direct) if (durable.contains(i)) i,
+          for (final i in taken) if (inFile.contains(i)) i,
+        ];
         final directHeld = [for (final i in direct) if (!durable.contains(i)) i];
         String titles(Iterable<int> at) => at.map((i) => '"${_titleOrUntitled(pages[i].meta.title)}"').join(', ');
         final total = stuck.length + copied.length + direct.length;
         final head =
             '${total == 1 ? 'A page' : '$total pages'} could not be deleted '
             'completely and ${total == 1 ? 'was' : 'were'} not put back.';
-        final heldText = taken.isEmpty
+        final heldText = taken.every(inFile.contains)
             ? ''
-            : ' Recovery holds the content of ${titles(taken)} and will write it back.';
+            : ' Recovery holds the content of ${titles(taken.where((i) => !inFile.contains(i)))} and will write it back.';
         final directTakenText = directTaken.isEmpty
             ? ''
             : ' Recovery holds the content of ${titles(directTaken)} and will add it to the file there.';
@@ -10076,6 +10081,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final e in sorted) {
       final NotedPage eb;
       if (e.baseText == null) {
+        // With a file there, replay merges an entry with no base as a conflict
+        // copy (0053); the preview shows what replay would land.
+        if (page != null) {
+          merged = mergeConflictCopy(
+            merged,
+            e.page,
+            codecs,
+            copyTime: e.time.millisecondsSinceEpoch,
+            forRecovery: true,
+          ).page;
+          continue;
+        }
         eb = NotedPage.create(e.page.meta);
       } else {
         final r = _tryRead(e.baseText!);
