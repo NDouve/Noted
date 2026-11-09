@@ -80,11 +80,17 @@ final Random _nameRandom = Random.secure();
 /// it differs from the other side's at the same place both are kept as they
 /// are. [codecs] is unused for now and kept so the signature can
 /// grow a codec-level merge.
+///
+/// [forRecovery] is the replay of a kept version (0120: the recovery merge never
+/// marks): no new landed marker is set, while one already on either side is
+/// kept, and a version recorded in a box's `conflicts` has no `conflicts` of its
+/// own (those are combined separately), so a repeat merge doesn't nest.
 PageMerge mergeConflictCopy(
   NotedPage original,
   NotedPage copy,
   CodecRegistry codecs, {
   required int copyTime,
+  bool forRecovery = false,
 }) {
   final copyById = {for (final n in copy.nodes) n.id: n};
   final originalIds = {for (final n in original.nodes) n.id};
@@ -99,12 +105,14 @@ PageMerge mergeConflictCopy(
       continue;
     }
     if (o is BoxRecord && c is BoxRecord) {
-      final (node, isConflict) = _mergeBox(o, c, copyTime);
+      final (node, isConflict) = _mergeBox(o, c, copyTime, forRecovery);
       out.add(node);
       if (isConflict) conflicted.add(o.id);
     } else if (o is BoxRecord) {
       // The copy's node isn't a Noted box: keep it as a conflicting version.
-      out.add(o.withConflict(BoxConflict.other(node: c.toRaw(), at: copyTime)));
+      // Not again when an earlier merge recorded this node.
+      final other = BoxConflict.other(node: c.toRaw(), at: copyTime);
+      out.add(o.conflicts.any((x) => x.node == other.node) ? o : o.withConflict(other));
       conflicted.add(o.id);
     } else {
       // A node Noted doesn't own differs: keep both, nothing is dropped.
@@ -114,7 +122,10 @@ PageMerge mergeConflictCopy(
         out.add(switch (c) {
           // A node that isn't a JSON object can't take an id: kept as it is.
           ForeignNode() => c.copyWithId(newId()) ?? c,
-          BoxRecord() => markLandedIfOverlapping(c.withId(newId()), [o], mergeTime: copyTime),
+          BoxRecord() =>
+            forRecovery
+                ? c.withId(newId())
+                : markLandedIfOverlapping(c.withId(newId()), [o], mergeTime: copyTime),
         });
       }
     }
@@ -128,7 +139,7 @@ PageMerge mergeConflictCopy(
   for (var i = 0; i < copy.nodes.length; i++) {
     var c = copy.nodes[i];
     if (originalIds.contains(c.id)) continue;
-    if (c is BoxRecord) c = markLandedIfOverlapping(c, existing, mergeTime: copyTime);
+    if (c is BoxRecord && !forRecovery) c = markLandedIfOverlapping(c, existing, mergeTime: copyTime);
     if (c is ForeignNode && _synthetic(c)) {
       // Its id came from its position or a repeat: on read-back it could take
       // over a node with the same real id, so a JSON object gets a new id.
@@ -151,7 +162,12 @@ PageMerge mergeConflictCopy(
   return PageMerge(merged, conflicted);
 }
 
-(BoxRecord, bool) _mergeBox(BoxRecord o, BoxRecord c, int copyTime) {
+/// The form in which [c] is recorded in a box's `conflicts`: for a recovery
+/// merge without its own `conflicts`, which are combined separately.
+RawJson _recordedForm(CanvasNode c, bool forRecovery) =>
+    forRecovery && c is BoxRecord && c.conflicts.isNotEmpty ? c.withConflicts(const []).toRaw() : c.toRaw();
+
+(BoxRecord, bool) _mergeBox(BoxRecord o, BoxRecord c, int copyTime, bool forRecovery) {
   var r = o;
   var isConflict = false;
   final bothRev = o.rev != null && c.rev != null;
@@ -177,7 +193,7 @@ PageMerge mergeConflictCopy(
     if (!want.contains(x)) want.add(x);
   }
   if (isConflict) {
-    final other = BoxConflict.other(node: c.toRaw(), at: copyTime);
+    final other = BoxConflict.other(node: _recordedForm(c, forRecovery), at: copyTime);
     if (!want.any((x) => x.node == other.node)) want.add(other);
   }
   if (want.length != r.conflicts.length) r = r.withConflicts(want);
@@ -270,8 +286,15 @@ bool _sameContent(BoxRecord x, BoxRecord y) =>
 /// has (or one the original has as a foreign node) is matched by revision or
 /// content, as it may have taken a new id.
 ///
+/// [forRecovery] checks the form [mergeConflictCopy] gives with the same flag.
+///
 /// Returns null if all is well, otherwise what is missing.
-String? verifyConflictCopyMerge(NotedPage onDisk, NotedPage original, NotedPage copy) {
+String? verifyConflictCopyMerge(
+  NotedPage onDisk,
+  NotedPage original,
+  NotedPage copy, {
+  bool forRecovery = false,
+}) {
   final copyById = {for (final n in copy.nodes) n.id: n};
   final originalById = {for (final n in original.nodes) n.id: n};
   final held = _heldCopyNodes(original, copy); // need no node of their own
@@ -337,10 +360,11 @@ String? verifyConflictCopyMerge(NotedPage onDisk, NotedPage original, NotedPage 
     if (o is! BoxRecord || c is! BoxRecord) continue; // checked by id only
     final d = onDisk.node(o.id);
     if (d is! BoxRecord) return 'box ${o.id} is no longer a box';
-    bool isVersion(BoxRecord x) => x.rev != null ? d.rev == x.rev : _sameContent(d, x);
+    // A box on disk without a rev can only be matched by its content.
+    bool isVersion(BoxRecord x) => x.rev != null && d.rev != null ? d.rev == x.rev : _sameContent(d, x);
     bool covered(BoxRecord x) =>
         isVersion(x) ||
-        d.conflicts.any((k) => k.node == x.toRaw()) ||
+        d.conflicts.any((k) => k.node == _recordedForm(x, forRecovery)) ||
         (x.rev != null && d.baseRev == x.rev);
     if (!isVersion(o) && !isVersion(c)) return 'box ${o.id} holds neither version';
     if (!covered(o) || !covered(c)) return 'a version of box ${o.id} was lost';

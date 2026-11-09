@@ -348,6 +348,70 @@ void main() {
     });
   });
 
+  group('recovery mode (forRecovery)', () {
+    PageMerge recover(NotedPage original, NotedPage copy) =>
+        mergeConflictCopy(original, copy, registry(), copyTime: 777, forRecovery: true);
+
+    test('a box only the copy has, overlapping, gets no landed marker; the default does', () {
+      final original = pageOf([box('a', 'one')]);
+      final copy = pageOf([box('y', 'why')]); // same bounds as a
+      expect((merge(original, copy).page.node('y')! as BoxRecord).landed, isNotNull);
+      final r = recover(original, copy).page;
+      expect((r.node('y')! as BoxRecord).landed, isNull);
+      expect(verifyConflictCopyMerge(readPage(writePage(r)), original, copy, forRecovery: true), isNull);
+    });
+
+    test('a landed marker already on either side is kept', () {
+      final marked = box('a', 'one').withLanded(BoxLanded(at: 5));
+      final original = pageOf([box('a', 'one')]);
+      final copy = pageOf([marked]);
+      expect((recover(original, copy).page.node('a')! as BoxRecord).landed, isNotNull);
+      expect((recover(copy, original).page.node('a')! as BoxRecord).landed, isNotNull);
+    });
+
+    test('a recorded version has no conflicts of its own, and a repeat does not nest', () {
+      final x = base.replaceNode(edit(a, 'mine'));
+      final y = base.replaceNode(edit(a, 'theirs'));
+      final theirs = (y.node('a')! as BoxRecord).withConflict(BoxConflict.other(node: RawJson.encode('old'), at: 1));
+      final copy = y.replaceNode(theirs);
+      var cur = x;
+      for (var i = 0; i < 3; i++) {
+        final next = readPage(writePage(recover(cur, copy).page));
+        expect(verifyConflictCopyMerge(next, cur, copy, forRecovery: true), isNull, reason: 'round $i');
+        cur = next;
+      }
+      final m = cur.node('a')! as BoxRecord;
+      expect(dataOf(m), 'mine');
+      // The recorded version and the copy's own recorded one, once each.
+      expect(m.conflicts, hasLength(2));
+      expect(m.conflicts.where((k) => k.node == (y.node('a')! as BoxRecord).toRaw()), hasLength(1));
+    });
+
+    test('a file box without a rev and the same content is accepted', () {
+      String text(String data, {String? rev}) =>
+          '{"id":"b","x":0,"y":0,"width":50,"height":50,"text":"snap:$data",'
+          '"noted":{"type":"test.plain","v":1,${rev == null ? '' : '"rev":"$rev",'}"data":"$data"}}';
+      NotedPage file(String n) => readPage(
+        '{"nodes":[$n],"noted":{"format":1,"pageId":"p","parentId":null,"title":"T","order":0}}',
+      );
+      final original = file(text('same'));
+      final copy = file(text('same', rev: 'r9'));
+      final m = readPage(writePage(merge(original, copy).page));
+      expect(verifyConflictCopyMerge(m, original, copy), isNull);
+      expect(verifyConflictCopyMerge(original, original, copy), isNull);
+    });
+
+    test('a foreign node recorded on a box is recorded once over repeats', () {
+      const f = '{"id":"b","type":"text","x":0,"y":0,"width":5,"height":5,"text":"A"}';
+      var cur = pageOf([box('b', 'mine')]);
+      final copy = pageOf([raw(f, 'b')]);
+      for (var i = 0; i < 3; i++) {
+        cur = readPage(writePage(merge(cur, copy).page));
+      }
+      expect((cur.node('b')! as BoxRecord).conflicts, hasLength(1));
+    });
+  });
+
   group('PageStore.scan', () {
     late Directory dir;
     setUp(() async => dir = await Directory.systemTemp.createTemp('noted_copy'));

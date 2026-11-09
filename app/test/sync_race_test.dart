@@ -67,10 +67,32 @@ class CountingStore extends PageStore {
     await gate.future;
   }
 
+  // Runs once, right after a restored page's file is published; another writer
+  // landing on top of it.
+  void Function()? afterNewText;
+
+  // The next read of a page's text throws, once.
+  bool failReadOnce = false;
+
   @override
-  Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish}) {
+  Future<String> readText(String pageId) {
+    if (failReadOnce) {
+      failReadOnce = false;
+      throw const FileSystemException('read failed');
+    }
+    return super.readText(pageId);
+  }
+
+  @override
+  Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish}) async {
     if (failNew.contains(page.id)) throw const FileSystemException('destination gone');
-    return super.saveNewText(page, text, beforePublish: beforePublish);
+    final done = await super.saveNewText(page, text, beforePublish: beforePublish);
+    if (done) {
+      final f = afterNewText;
+      afterNewText = null;
+      f?.call();
+    }
+    return done;
   }
 
   @override
@@ -177,7 +199,7 @@ void main() {
   late ModuleRegistry modules;
   final sep = Platform.pathSeparator;
 
-  Future<void> start({bool withRecovery = true, PageStore Function(Directory)? factory}) async {
+  Future<void> start({bool withRecovery = true, PageStore Function(Directory)? factory, Duration? backoff}) async {
     root = await Directory.systemTemp.createTemp('noted_race');
     dir = await Directory('${root.path}${sep}pages').create();
     rec = Directory('${root.path}${sep}rec');
@@ -188,6 +210,7 @@ void main() {
       modules,
       saveDelay: const Duration(hours: 1),
       recoveryDirectory: withRecovery ? rec : null,
+      backoffFirst: backoff ?? const Duration(seconds: 2),
       folderCheckInterval: Duration.zero,
       storeFactory: factory ?? PageStore.new,
     );
@@ -1510,6 +1533,611 @@ void main() {
 
       await expectLater(nb.rename(id, 'Renamed'), throwsA(isA<NotebookException>()));
       expect(File(pathOf(id)).readAsStringSync(), last, reason: 'the other device\'s file stays');
+    });
+  });
+
+  group('a delete rollback keeps its pages from its first step (run 2026-11-09-01)', () {
+    late String parent;
+    late String child;
+    late BoxRecord mine;
+
+    List<File> copies() => dir.listSync().whereType<File>().where((f) => f.path.contains('-undo-')).toList();
+    List<File> entryFiles() =>
+        rec.existsSync() ? rec.listSync().whereType<File>().where((f) => f.path.endsWith('.entry')).toList() : [];
+
+    // A parent with a box and a subpage whose file can't be deleted.
+    Future<void> tree({Duration? backoff}) async {
+      await start(backoff: backoff);
+      parent = nb.currentId!;
+      mine = nb.current!.createBoxAt(const Bounds(10, 10, 0, 0));
+      child = await nb.createPage(parentId: parent);
+      await nb.createPage(); // the page that stays open
+      await nb.flush();
+      counting.failDelete.add(child);
+    }
+
+    // Runs [action] to its end, returning what it threw.
+    Future<Object?> attempt(Future<void> Function() action) async {
+      try {
+        await action();
+      } on Object catch (e) {
+        return e;
+      }
+      return null;
+    }
+
+    Future<Object?> startDelete() => attempt(() => nb.delete(parent));
+
+    // The next restore waits at its publish; the returned gate lets it go.
+    Completer<void> stallRestore() {
+      final hold = Completer<void>();
+      counting.holdNew = hold;
+      counting.reachedNew = Completer<void>();
+      return hold;
+    }
+
+    // A quit at its time limit: what it asked, and whether it let go.
+    Future<(List<UserQuestion>, bool)> quit() async {
+      final asked = <UserQuestion>[];
+      nb.questioner = (q, title) async {
+        asked.add(q);
+        return false; // stay
+      };
+      final go = await nb.prepareToExit(limit: const Duration(milliseconds: 300));
+      return (asked, go);
+    }
+
+    // The app is gone without a quit (the old notebook is left as it is), and
+    // the next launch replays recovery.
+    Future<void> killAndLaunch() async {
+      nb.dispose();
+      nb = Notebook(
+        PageStore(dir),
+        modules,
+        saveDelay: const Duration(hours: 1),
+        recoveryDirectory: rec,
+        folderCheckInterval: Duration.zero,
+      );
+      await nb.load();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+
+    for (final viaQuit in [false, true]) {
+      final how = viaQuit ? 'quit' : 'kill';
+
+      test('1, 4 ($how): the restore stalled, recovery on: the next launch has the page back with its text', () async {
+        await tree();
+        final text = File(pathOf(parent)).readAsStringSync();
+        final old = nb;
+        final hold = stallRestore();
+        final outcome = startDelete();
+        await counting.reachedNew!.future.timeout(const Duration(seconds: 10));
+        expect(File(pathOf(parent)).existsSync(), isFalse);
+        expect(entryFiles(), hasLength(1), reason: 'the page is in recovery before the restore');
+        if (viaQuit) {
+          final (asked, go) = await quit();
+          expect(asked, isEmpty);
+          expect(go, isTrue);
+        }
+        await killAndLaunch();
+        expect(File(pathOf(parent)).readAsStringSync(), text);
+        expect((await nb.pendingRecovery()).entries, isEmpty);
+        expect(entryFiles(), isEmpty);
+        hold.complete();
+        await outcome.timeout(const Duration(seconds: 10));
+        expect(identical(old, nb), isFalse);
+      });
+
+      // The parent has attachments, moved by copying so a hook can stall them.
+      void giveAssets(List<int> bytes) {
+        final d = Directory('${dir.path}$sep${assetsFolderName(parent)}')..createSync();
+        File('${d.path}$sep${contentHash(bytes)}.txt').writeAsBytesSync(bytes);
+      }
+
+      Completer<void> stallAt(bool Function(String target) where, Completer<void> reached) {
+        final gate = Completer<void>();
+        attachmentBeforePublishHook = (target) async {
+          if (!where(target)) return;
+          attachmentBeforePublishHook = null;
+          reached.complete();
+          await gate.future;
+        };
+        addTearDown(() => attachmentBeforePublishHook = null);
+        return gate;
+      }
+
+      test('1, 4 ($how): the page stuck and the attachment put-back stalled: the next launch has the page', () async {
+        Notebook.forceCopyMoveForTest = true;
+        addTearDown(() => Notebook.forceCopyMoveForTest = false);
+        await tree();
+        giveAssets([1, 2, 3]);
+        final text = File(pathOf(parent)).readAsStringSync();
+        counting.failNew.add(parent); // not restored, whatever the stall
+        final reached = Completer<void>();
+        final gate = stallAt((t) => t.startsWith(dir.path) && !t.contains('deleted-attachments'), reached);
+        final outcome = startDelete();
+        await reached.future.timeout(const Duration(seconds: 10));
+        expect(File(pathOf(parent)).existsSync(), isFalse);
+        if (viaQuit) {
+          final (asked, go) = await quit();
+          expect(asked, isEmpty);
+          expect(go, isTrue);
+        }
+        await killAndLaunch();
+        expect(File(pathOf(parent)).readAsStringSync(), text);
+        expect((await nb.pendingRecovery()).entries, isEmpty);
+        gate.complete();
+        await outcome.timeout(const Duration(seconds: 10));
+      });
+
+      test('1, 4 ($how): the attachments being handed to recovery: the next launch has the page', () async {
+        Notebook.forceCopyMoveForTest = true;
+        addTearDown(() => Notebook.forceCopyMoveForTest = false);
+        await tree();
+        giveAssets([1, 2, 3]);
+        final text = File(pathOf(parent)).readAsStringSync();
+        counting.failNew.add(parent);
+        // A file takes the attachments' folder's place, so they can't go back.
+        counting.onFailDelete = () => File('${dir.path}$sep${assetsFolderName(parent)}').writeAsBytesSync([9]);
+        final reached = Completer<void>();
+        final gate = stallAt((t) => t.startsWith(rec.path), reached);
+        final outcome = startDelete();
+        await reached.future.timeout(const Duration(seconds: 10));
+        if (viaQuit) {
+          final (asked, go) = await quit();
+          expect(asked, isEmpty);
+          expect(go, isTrue);
+        }
+        await killAndLaunch();
+        expect(File(pathOf(parent)).readAsStringSync(), text);
+        gate.complete();
+        await outcome.timeout(const Duration(seconds: 10));
+      });
+    }
+
+    // A page with boxes [a] (both sides change it), [d] (only the file edits
+    // it) and [m] (only the file moves it). The deleted version has its own
+    // edit of [a] and a box [onlyP] that overlaps the file's [onlyF].
+    late NotedPage fileVersion;
+    late String boxA;
+    late String boxD;
+    late String boxM;
+    late String onlyP;
+    late String onlyF;
+
+    Future<void> treeWithBoxes({bool ownRecord = true}) async {
+      await start();
+      parent = nb.currentId!;
+      boxA = nb.current!.createBoxAt(const Bounds(10, 10, 0, 0)).id;
+      boxD = nb.current!.createBoxAt(const Bounds(10, 100, 0, 0)).id;
+      boxM = nb.current!.createBoxAt(const Bounds(10, 200, 0, 0)).id;
+      child = await nb.createPage(parentId: parent);
+      await nb.createPage();
+      await nb.flush();
+      counting.failDelete.add(child);
+      final orig = onDisk(parent);
+      final codec = modules.codecs.codecFor('noted.note')!;
+      BoxRecord edited(BoxRecord b, String text) => commitBox(b, codec, codec.decode(doc(text), 1));
+      final f = noteBox('only in the file', at: const Bounds(300, 300, 100, 40));
+      onlyF = f.id;
+      fileVersion = orig
+          .replaceNode(edited(orig.node(boxA)! as BoxRecord, 'a in the file'))
+          .replaceNode(edited(orig.node(boxD)! as BoxRecord, 'd in the file'))
+          .replaceNode((orig.node(boxM)! as BoxRecord).withBounds(const Bounds(500, 200, 100, 40)))
+          .insertNode(f);
+      // The deleted version.
+      await nb.open(parent);
+      nb.current!.commit(boxA, codec.decode(doc('a in the deleted version'), 1));
+      final p = noteBox('only in the deleted version', at: const Bounds(300, 300, 100, 40));
+      onlyP = p.id;
+      nb.current!.insertBox(p);
+      await nb.flush();
+      await nb.createPage();
+      await nb.flush();
+      if (!ownRecord) return;
+      // The deleted version's box a already has a record of its own.
+      final p0 = onDisk(parent);
+      final older = BoxConflict.other(node: RawJson.encode('an older version'), at: 1);
+      File(pathOf(parent)).writeAsStringSync(writePage(p0.replaceNode((p0.node(boxA)! as BoxRecord).withConflict(older))));
+    }
+
+    // The file lands as the failing delete runs, and the copy beside it stalls.
+    Future<(Future<Object?>, Completer<void>)> landAndStallCopy() async {
+      final text = writePage(fileVersion);
+      counting.onFailDelete = () => File(pathOf(parent)).writeAsStringSync(text);
+      final gate = Completer<void>();
+      final reached = Completer<void>();
+      nb.syncHook = (point, path) async {
+        if (point == 'new-before-publish') return counting.pauseRestore();
+        if (point != 'undo-copy-before-publish') return;
+        nb.syncHook = null;
+        reached.complete();
+        await gate.future;
+      };
+      final outcome = startDelete();
+      await reached.future.timeout(const Duration(seconds: 10));
+      return (outcome, gate);
+    }
+
+    void expectMerged(NotedPage page) {
+      expect(page.node(onlyP), isNotNull, reason: 'a box only in the deleted version');
+      expect(page.node(onlyF), isNotNull, reason: 'a box only in the file');
+      final a = page.node(boxA)! as BoxRecord;
+      expect(a.data!.text, contains('a in the file'), reason: 'the file\'s box is displayed');
+      final recorded = a.conflicts.where((k) => k.node!.text.contains('a in the deleted version')).toList();
+      expect(recorded, hasLength(1), reason: 'the deleted version is recorded once');
+      expect(recorded.single.node!.text, isNot(contains('conflicts')), reason: 'without its own conflicts');
+      expect(a.conflicts.where((k) => k.node!.text.contains('an older version')), hasLength(1), reason: 'its own record is kept');
+      final d = page.node(boxD)! as BoxRecord;
+      expect(d.conflicts, isEmpty, reason: 'a descendant in the file stays, nothing recorded');
+      expect(d.data!.text, contains('d in the file'));
+      expect((page.node(boxM)! as BoxRecord).bounds, const Bounds(500, 200, 100, 40), reason: 'moved only in the file');
+      expect(
+        page.nodes.whereType<BoxRecord>().where((b) => b.landed != null),
+        isEmpty,
+        reason: 'independent boxes that overlap get no new landed marker',
+      );
+    }
+
+    for (final viaQuit in [false, true]) {
+      test('5 (${viaQuit ? 'quit' : 'kill'}): a different file landed: the conflict-copy merge keeps both, with no question', () async {
+        await treeWithBoxes();
+        final (outcome, gate) = await landAndStallCopy();
+        if (viaQuit) {
+          final (asked, go) = await quit();
+          expect(asked, isEmpty);
+          expect(go, isTrue);
+        }
+        await killAndLaunch();
+        expectMerged(readPage(File(pathOf(parent)).readAsStringSync()));
+        expect((await nb.pendingRecovery()).entries, isEmpty);
+        // A merge done again changes nothing: nothing nests.
+        final once = File(pathOf(parent)).readAsStringSync();
+        await nb.checkFolders();
+        expect(File(pathOf(parent)).readAsStringSync(), once);
+        gate.complete();
+        await outcome.timeout(const Duration(seconds: 10));
+      });
+    }
+
+    test('7: a different file, the copy published: no entry of ours, the file unchanged', () async {
+      await treeWithBoxes();
+      final text = writePage(fileVersion);
+      counting.onFailDelete = () => File(pathOf(parent)).writeAsStringSync(text);
+      final error = await startDelete();
+      expect(error, isA<NotebookException>());
+      expect(File(pathOf(parent)).readAsStringSync(), text, reason: 'the file is unchanged');
+      expect(copies(), hasLength(1));
+      expect(entryFiles(), isEmpty, reason: 'the published copy holds this version');
+    });
+
+    // The copy, a page file of the same page, is merged as a conflict copy, and
+    // the entry its delete left behind is replayed.
+    for (final own in [false, true]) {
+      test('7b: the copy published, the entry\'s delete fails, then a kill: both are replayed; '
+          '${own ? 'a box with its own record has the version twice, one nested, nothing lost' : 'one record, no nesting'}', () async {
+        await treeWithBoxes(ownRecord: own);
+        final text = writePage(fileVersion);
+        counting.onFailDelete = () => File(pathOf(parent)).writeAsStringSync(text);
+        var entryDeletes = 0;
+        nb.recoveryStoreForTest!.hook = (point) async {
+          if (point != 'delete') return;
+          entryDeletes++;
+          throw const FileSystemException('the delete of the entry failed');
+        };
+        await startDelete();
+        expect(entryDeletes, greaterThan(0), reason: 'the delete of ours was reached');
+        expect(copies(), hasLength(1));
+        expect(entryFiles(), isNotEmpty, reason: 'its delete failed');
+        await killAndLaunch();
+        await nb.checkFolders();
+        expect(entryFiles(), isEmpty, reason: 'the entry was replayed and retired');
+        expect(copies(), isEmpty, reason: 'the copy was merged and removed');
+        final merged = readPage(File(pathOf(parent)).readAsStringSync());
+        expect(merged.node(onlyP), isNotNull);
+        final a = merged.node(boxA)! as BoxRecord;
+        final records = a.conflicts.where((k) => k.node!.text.contains('a in the deleted version'));
+        final nested = a.conflicts.where((k) => k.node!.text.contains('conflicts'));
+        // The normal merge of a copy records the whole box, as it does for
+        // every conflict copy; only the recovery merge strips it.
+        expect(records, hasLength(own ? 2 : 1));
+        expect(nested, hasLength(own ? 1 : 0));
+      });
+    }
+
+    test('8: a different file and the copy fails: the entry stays, the page is not held, and replay merges it', () async {
+      await treeWithBoxes();
+      final text = writePage(fileVersion);
+      counting.onFailDelete = () => File(pathOf(parent)).writeAsStringSync(text);
+      var fired = false;
+      nb.syncHook = (point, path) async {
+        if (point == 'new-before-publish') return counting.pauseRestore();
+        if (point != 'undo-copy-before-publish') return;
+        fired = true;
+        throw const FileSystemException('no copy');
+      };
+      final error = await startDelete();
+      expect(fired, isTrue);
+      expect(error, isA<NotebookException>());
+      expect(error, isNot(isA<PagesNotRestoredException>()), reason: 'recovery holds it, nothing is held in memory');
+      expect((error! as NotebookException).message, contains('will add it to the file there'));
+      expect(entryFiles(), hasLength(1));
+      expect(copies(), isEmpty);
+      await killAndLaunch();
+      expectMerged(readPage(File(pathOf(parent)).readAsStringSync()));
+      expect(entryFiles(), isEmpty);
+    });
+
+    test('8b: the copy fails and recovery is not there: the page is held, as before', () async {
+      await start(withRecovery: false);
+      parent = nb.currentId!;
+      mine = nb.current!.createBoxAt(const Bounds(10, 10, 0, 0));
+      child = await nb.createPage(parentId: parent);
+      await nb.createPage();
+      await nb.flush();
+      counting.failDelete.add(child);
+      final theirs = writePage(
+        onDisk(parent).removeNode(mine.id).insertNode(noteBox('theirs', at: const Bounds(400, 10, 200, 40))),
+      );
+      counting.onFailDelete = () => File(pathOf(parent)).writeAsStringSync(theirs);
+      nb.syncHook = (point, path) async {
+        if (point == 'undo-copy-before-publish') throw const FileSystemException('no copy');
+      };
+      final error = await startDelete();
+      expect(error, isA<PagesNotRestoredException>());
+      expect((error! as NotebookException).message, contains('a copy could not be saved'));
+    });
+
+    test('13: the copy beside a different file threw: the version is in the file after replay', () async {
+      await treeWithBoxes();
+      final text = writePage(fileVersion);
+      counting.onFailDelete = () => File(pathOf(parent)).writeAsStringSync(text);
+      nb.syncHook = (point, path) async {
+        if (point == 'new-before-publish') return counting.pauseRestore();
+        if (point == 'undo-copy-before-publish') throw StateError('the copy threw');
+      };
+      final error = await startDelete();
+      expect(error, isA<NotebookException>());
+      expect(error, isNot(isA<PagesNotRestoredException>()));
+      expect((error! as NotebookException).message, contains('will add it to the file there'));
+      expect((error as NotebookException).message, isNot(contains('will write it back')));
+      await killAndLaunch();
+      expectMerged(readPage(File(pathOf(parent)).readAsStringSync()));
+    });
+
+    // An older entry for the page, with a box of its own, as the user was asked about.
+    Future<RecoveryEntry> olderEntry(BoxRecord box) async {
+      final text = File(pathOf(parent)).readAsStringSync();
+      final a = await RecoveryStore(rec).write(
+        folder: dir.path,
+        page: readPage(text).insertNode(box),
+        baseText: text,
+        time: DateTime.now().subtract(const Duration(minutes: 1)),
+      );
+      await nb.refreshRecoveryIndexForTest();
+      nb.questioner = (q, title) async => true; // delete them with the page
+      return a;
+    }
+
+    test('6: an older entry A and a deleted version B that differ: both survive a kill, and A is untouched meanwhile', () async {
+      await tree();
+      final aBox = noteBox('only in the older entry', at: const Bounds(400, 10, 200, 40));
+      final a = await olderEntry(aBox);
+      final aBytes = a.file.readAsBytesSync();
+      final hold = stallRestore();
+      final outcome = startDelete();
+      await counting.reachedNew!.future.timeout(const Duration(seconds: 10));
+      expect(entryFiles(), hasLength(2), reason: 'ours is beside A');
+      expect(a.file.readAsBytesSync(), aBytes, reason: 'A was untouched');
+      await killAndLaunch();
+      final page = readPage(File(pathOf(parent)).readAsStringSync());
+      expect(page.node(aBox.id), isNotNull, reason: 'a box of A');
+      expect(page.node(mine.id), isNotNull, reason: 'a box of the deleted version');
+      expect(nb.recoveryDamaged, isEmpty, reason: 'no "can\'t be read" row');
+      expect(entryFiles(), isEmpty);
+      hold.complete();
+      await outcome.timeout(const Duration(seconds: 10));
+    });
+
+    test('6b: a normal rollback leaves an older entry exactly as it was and removes its own', () async {
+      await tree();
+      final text = File(pathOf(parent)).readAsStringSync();
+      final a = await olderEntry(noteBox('only in the older entry', at: const Bounds(400, 10, 200, 40)));
+      final aBytes = a.file.readAsBytesSync();
+      final error = await startDelete();
+      expect(error, isNotNull);
+      expect(File(pathOf(parent)).readAsStringSync(), text);
+      expect(entryFiles().map((f) => f.path), [a.file.path]);
+      expect(a.file.readAsBytesSync(), aBytes);
+    });
+
+    test('6c: a verify that fails after the write: a restored page leaves no entry behind', () async {
+      await tree();
+      var verifies = 0;
+      nb.recoveryStoreForTest!.hook = (point) async {
+        if (point != 'verify') return;
+        if (++verifies == 1) throw const FileSystemException('read-back failed');
+      };
+      final error = await startDelete();
+      expect(error, isNotNull);
+      expect(verifies, greaterThan(0));
+      expect(entryFiles(), isEmpty, reason: 'written, not verified, and still removed once the page is back');
+    });
+
+    test('6d: a verify that fails once and a page that is stuck: it is read again, not written twice, and recovery holds it', () async {
+      await tree();
+      counting.failNew.add(parent);
+      var verifies = 0;
+      nb.recoveryStoreForTest!.hook = (point) async {
+        if (point != 'verify') return;
+        if (++verifies == 1) throw const FileSystemException('read-back failed');
+      };
+      final error = await startDelete();
+      expect(error, isA<NotebookException>());
+      expect(error, isNot(isA<PagesNotRestoredException>()));
+      expect(entryFiles(), hasLength(1), reason: 'one entry, read again');
+      await killAndLaunch();
+      expect(File(pathOf(parent)).existsSync(), isTrue);
+    });
+
+    test('12: another writer on top of the restored page: the entry goes and what they wrote stands', () async {
+      await treeWithBoxes();
+      // Right after the restore publishes, a sync client lands a version in
+      // which box a is deleted and box d edited.
+      final theirs = writePage(fileVersion.removeNode(boxA));
+      counting.afterNewText = () => File(pathOf(parent)).writeAsStringSync(theirs);
+      final error = await startDelete();
+      expect(error, isNotNull);
+      expect(File(pathOf(parent)).readAsStringSync(), theirs, reason: 'their file stands');
+      expect(entryFiles(), isEmpty, reason: 'the entry went: merging it again would bring box a back');
+      await killAndLaunch();
+      expect(File(pathOf(parent)).readAsStringSync(), theirs);
+    });
+
+    test('12b: the read after the restore fails: the entry stays, and a later replay merges to nothing', () async {
+      await tree();
+      final text = File(pathOf(parent)).readAsStringSync();
+      counting.afterNewText = () => counting.failReadOnce = true;
+      final error = await startDelete();
+      expect(error, isNotNull);
+      expect(entryFiles(), hasLength(1));
+      await killAndLaunch();
+      expect(File(pathOf(parent)).readAsStringSync(), text);
+      expect(entryFiles(), isEmpty, reason: 'the entry is retired at the next start');
+    });
+
+    test('11: the delete of the entry fails: marked landed for the session, retried at quit', () async {
+      await tree();
+      final text = File(pathOf(parent)).readAsStringSync();
+      final store = nb.recoveryStoreForTest!;
+      store.hook = (point) async {
+        if (point == 'delete') throw const FileSystemException('delete failed');
+      };
+      final error = await startDelete();
+      expect(error, isNotNull);
+      expect(File(pathOf(parent)).readAsStringSync(), text);
+      expect(entryFiles(), hasLength(1), reason: 'the entry could not be deleted');
+      expect((await nb.pendingRecovery()).entries, isEmpty, reason: 'it is marked landed, so nothing waits');
+      store.hook = null;
+      expect(await nb.prepareToExit(limit: const Duration(seconds: 3)), isTrue);
+      expect(entryFiles(), isEmpty, reason: 'retried at quit');
+    });
+
+    test('11b: the delete of the entry fails and the app restarts: the entry merges to nothing and retires', () async {
+      await tree();
+      final text = File(pathOf(parent)).readAsStringSync();
+      nb.recoveryStoreForTest!.hook = (point) async {
+        if (point == 'delete') throw const FileSystemException('delete failed');
+      };
+      await startDelete();
+      expect(entryFiles(), hasLength(1));
+      await killAndLaunch();
+      expect(File(pathOf(parent)).readAsStringSync(), text);
+      expect(entryFiles(), isEmpty);
+    });
+
+    Future<void> until(bool Function() done) async {
+      for (var i = 0; i < 100 && !done(); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    }
+
+    test('2: a page recovery holds is written back by the backoff, without a relaunch', () async {
+      await tree(backoff: const Duration(milliseconds: 100));
+      final text = File(pathOf(parent)).readAsStringSync();
+      counting.failNew.add(parent);
+      final error = await startDelete();
+      expect(error, isNotNull);
+      expect(File(pathOf(parent)).existsSync(), isFalse);
+      expect(entryFiles(), hasLength(1));
+      counting.failNew.clear();
+      counting.failDelete.clear();
+      await until(() => File(pathOf(parent)).existsSync() && entryFiles().isEmpty);
+      expect(File(pathOf(parent)).readAsStringSync(), text);
+      expect(entryFiles(), isEmpty);
+    });
+
+    test('12c: the read after the restore fails: the backoff settles the entry, without a relaunch', () async {
+      await tree(backoff: const Duration(milliseconds: 100));
+      final text = File(pathOf(parent)).readAsStringSync();
+      counting.afterNewText = () => counting.failReadOnce = true;
+      await startDelete();
+      counting.failDelete.clear();
+      await until(() => entryFiles().isEmpty);
+      expect(entryFiles(), isEmpty);
+      expect(File(pathOf(parent)).readAsStringSync(), text);
+    });
+
+    test('3: the app is disposed during the restore and the restore is let go: the entry is still on disk', () async {
+      await tree();
+      final hold = stallRestore();
+      final outcome = startDelete();
+      await counting.reachedNew!.future.timeout(const Duration(seconds: 10));
+      expect(entryFiles(), hasLength(1));
+      nb.dispose();
+      nb = Notebook(PageStore(dir), modules, saveDelay: const Duration(hours: 1), folderCheckInterval: Duration.zero);
+      hold.complete();
+      await outcome.timeout(const Duration(seconds: 10));
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(entryFiles(), hasLength(1), reason: 'a notebook that is gone deletes nothing; the next start settles it');
+    });
+
+    test('4: quit without recovery, the put-back stalled: asks and names the page, staying keeps it', () async {
+      Notebook.forceCopyMoveForTest = true;
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
+      await start(withRecovery: false);
+      parent = nb.currentId!;
+      await nb.rename(parent, 'Rollback parent');
+      child = await nb.createPage(parentId: parent);
+      await nb.createPage();
+      await nb.flush();
+      counting.failDelete.add(child);
+      final bytes = [1, 2, 3];
+      final d = Directory('${dir.path}$sep${assetsFolderName(parent)}')..createSync();
+      File('${d.path}$sep${contentHash(bytes)}.txt').writeAsBytesSync(bytes);
+      counting.failNew.add(parent);
+      final gate = Completer<void>();
+      final reached = Completer<void>();
+      attachmentBeforePublishHook = (target) async {
+        if (!target.startsWith(dir.path) || target.contains('deleted-attachments')) return;
+        attachmentBeforePublishHook = null;
+        reached.complete();
+        await gate.future;
+      };
+      addTearDown(() => attachmentBeforePublishHook = null);
+      final outcome = startDelete();
+      await reached.future.timeout(const Duration(seconds: 10));
+      final asked = <(UserQuestion, String)>[];
+      nb.questioner = (q, title) async {
+        asked.add((q, title));
+        return false; // stay
+      };
+      expect(await nb.prepareToExit(limit: const Duration(milliseconds: 300)), isFalse);
+      expect(asked, [(UserQuestion.leaveAndLose, 'Rollback parent')]);
+      gate.complete();
+      final error = await outcome.timeout(const Duration(seconds: 10));
+      expect(error, isA<PagesNotRestoredException>(), reason: 'the page is held, not lost');
+    });
+
+    test('7: the preview of an entry with no base over a file shows what replay would land', () async {
+      await treeWithBoxes();
+      final deleted = onDisk(parent);
+      final e = await RecoveryStore(rec).write(folder: dir.path, page: deleted, baseText: null, time: DateTime.now());
+      File(pathOf(parent)).writeAsStringSync(writePage(fileVersion));
+      await nb.refreshRecoveryIndexForTest();
+      nb.syncHook = (point, path) async {
+        if (point == 'recover-before-publish') throw const FileSystemException('replay fails');
+      };
+      await nb.open(parent);
+      expect(nb.current!.readOnly, isTrue, reason: 'a preview: the entry is still waiting');
+      final want = mergeConflictCopy(
+        fileVersion,
+        deleted,
+        modules.codecs,
+        copyTime: e.time.millisecondsSinceEpoch,
+        forRecovery: true,
+      ).page;
+      expect(writePage(nb.current!.page), writePage(want));
     });
   });
 }

@@ -168,7 +168,8 @@ class RecoveryStore {
   /// migration, so tests can inject a failure there (`tmp-written`: a new
   /// generation is complete but not yet published; `envelope-published`: an
   /// old entry is converted but its old files are still there;
-  /// `legacy-first-deleted`: the first of the old files is removed).
+  /// `legacy-first-deleted`: the first of the old files is removed; `verify`:
+  /// before an entry is read back).
   RecoveryStore(this.directory, {this.windows, this.hook});
 
   final Directory directory;
@@ -813,11 +814,15 @@ class RecoveryStore {
             await f.delete();
             continue;
           }
+          // A tmp named for a `_dupN` slot was heading for a fresh slot: it
+          // goes only into a free one, never over slot 1 or any entry there.
+          final fresh = RegExp(r'_dup\d+\.entry\.').hasMatch(file);
           // Only the slots of its own raw name: an old-form tmp never meets a
           // new-key slot here (the re-key pass moves it).
           for (var k = 1; ; k++) {
             if (tx?.abandoned ?? false) throw const RecoveryTimeout();
             final target = _slot(env.folder, env.id, k, raw: true);
+            if (fresh && _occupied(target)) continue;
             if (!_occupied(target)) {
               // Never over a file that appeared meanwhile.
               if (await _moveToFree(f, target)) {
@@ -945,10 +950,9 @@ class RecoveryStore {
         final env = _parse(await File('$base.entry').readAsString());
         final page = readPage(env.text);
         _checkIdentity(stem, _rawName(env.folder, env.id), env.id, page, env.base);
+        // A readable entry in a `_dup` slot is an entry like any other (a
+        // fresh slot is written on purpose), so it is not reported.
         entries.add(_entryOf(env, page, stem));
-        if (stem != _rawName(env.folder, env.id)) {
-          _report(problems, damaged, base, 'kept under a separate name because another entry had its name');
-        }
       } on Object catch (e) {
         _report(problems, damaged, base, _why(e));
       }
@@ -1199,6 +1203,7 @@ class RecoveryTx {
 
   /// Reads [entry]'s file again: true only if it holds exactly this generation.
   Future<bool> verify(RecoveryEntry entry) async {
+    await store.hook?.call('verify');
     final e = await store._peek(entry.file);
     return e != null && RecoveryStore._generationOf(e.folder, e.time, e.base, e.text) == entry.gen;
   }
