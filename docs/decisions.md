@@ -841,7 +841,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0070 — Recovery store for edits that can't be saved
 - **Date:** 2026-10-26
-- **Status:** Active; extended by 0077 (damaged entries in the sidebar); entry layout, identity checks and replay amended by 0124 (the two-file layout below is replaced by one entry file); failed saves of the open page, one recovery owner and kept edits shown as a preview amended by 0137
+- **Status:** Active; extended by 0077 (damaged entries in the sidebar); entry layout, identity checks and replay amended by 0124 (the two-file layout below is replaced by one entry file); failed saves of the open page, one recovery owner and kept edits shown as a preview amended by 0137; the quit notice's wording amended by 0155
 - **Decision:**
   - **Writing an entry:** when a save can't land because its folder (standalone or binder) is unavailable (0064), the page is written at once to `%APPDATA%\Noted\recovery` as two files:
     - `<name>.canvas`: exactly the text a normal save would write, so it can never hold anything a page file wouldn't (invariant 3)
@@ -1820,7 +1820,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0130 — Mobile storage, pen and touch, compact toolbar; replay, moves and attachment copies that verify before they act
 - **Date:** 2026-11-03
-- **Status:** Active (mobile work and the stylus rule decided by the maintainer for this run; storage rules from the accepted Codex data-integrity findings; the replay rule after a landed write decided by the PM and awaiting the maintainer's confirmation; amends 0033, 0124, 0128 and 0129); conflict copies, moves and attachment copies amended by 0131; the quit-time trade-off for landed entries amended by 0137; mobile stored folders amended by 0142
+- **Status:** Active (mobile work and the stylus rule decided by the maintainer for this run; storage rules from the accepted Codex data-integrity findings; the replay rule after a landed write decided by the PM and awaiting the maintainer's confirmation; amends 0033, 0124, 0128 and 0129); conflict copies, moves and attachment copies amended by 0131; the quit-time trade-off for landed entries amended by 0137; mobile stored folders amended by 0142; "Replay"'s retirement after a landed write and its notice, and the matching alternatives, superseded by 0156
 - **Decision:**
   - **Storage on mobile (0129):** pages and binders live in the app's documents folder (`Noted/`), `settings.json` and recovery in its support folder (`Noted/`), the attachment cache in its cache folder. `NOTED_PAGES_DIR` keeps the desktop layout. If the folders can't be found at launch, a plain screen names the failure. Desktop is unchanged.
   - **Off on mobile (0129):** drag and drop, the AI link server and its running lock, folder watching beyond the app's storage, and the folder picker.
@@ -1852,7 +1852,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0132 — Damaged attachments are kept; node order in merges; conflict-copy verification; deletes that fail part way; file format document
 - **Date:** 2026-11-03
-- **Status:** Active (the damaged-copy rule and its normalisations approved by the maintainer for this run; Box API 0.12 decided by the PM under delegated authority; the node-order rule decided by the PM and awaiting the maintainer's confirmation; amends 0051, 0053, 0098 and 0128); additions after the last shared node amended by 0134
+- **Status:** Active (the damaged-copy rule and its normalisations approved by the maintainer for this run; Box API 0.12 decided by the PM under delegated authority; the node-order rule decided by the PM and awaiting the maintainer's confirmation; amends 0051, 0053, 0098 and 0128); additions after the last shared node amended by 0134; a delete that fails part way amended by 0155
 - **Decision:**
   - **Attachments are checked wherever they are trusted (amends 0098):** before a file is used for display, embedding or opening, and when a file with the same name is already there as one is written, its bytes are hashed (streamed) and compared: on the notebook side with the hash in the file's name, in the box module with the hash the box stores, and the two must agree. Embedded data is compared with its hash when it is decoded. A file smaller than the box's recorded size, or still changing, is "Still syncing". At full size with the wrong hash it is **damaged**: both copies are kept. The damaged file is renamed beside it as `<name>.damaged-<first 12 hex of its actual hash>`, never over anything; the good copy is written under the hash name when its bytes are at hand (or kept as `<name>.kept-<n>` if the name can't be freed); and the user is told by the box's own file name. A missing hash-named file is first looked for among its kept copies and put back if one now holds the right hash. Damaged embedded data is kept in the page byte for byte and is never converted. The box shows that the file is damaged, not "Still syncing", while it is open. A file still syncing is checked again when the folder changes, not on every redraw. Older readers ignore the extra names: they are not hash names and not temporary files. **Box API 0.12** adds the optional `VerifyingAttachmentStore` for this; `AttachmentStore` is unchanged.
   - **Node order (amends 0051):** the three-way merge takes the other side's order of the nodes both sides kept when only the other side changed it; when this side changed it, or both did, this side's order stays. Nodes either side added are placed after their predecessor, as before.
@@ -2103,7 +2103,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0148 — OneDrive sync stage 1: one folder lock, a feed of local writes and a remote merge; closed merges run on the save queue
 - **Date:** 2026-11-06
-- **Status:** Active (design approved by the maintainer's PM chat; details decided by the build team)
+- **Status:** Active (design approved by the maintainer's PM chat; details decided by the build team); folder checks' reads amended by 0157
 - **Decision:**
   - **One folder lock.** Every page write, delete and scan in a folder runs under one shared per-folder lock (`FolderLocks`, in noted_core), which the sync engine will share. Nested jobs on the same folder queue, as before.
   - **A feed of local writes.** The notebook reports each page or binder file it publishes or deletes, with the path and the content identity of what it wrote, in the lock's order. Failed writes report nothing. Attachments, templates, files a scan puts back, kept copies and the app-support files are not reported; the sync engine must find those another way.
@@ -2148,7 +2148,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0152 — New pages, restores, template pages and copies are published under the folder lock
 - **Date:** 2026-11-08
-- **Status:** Active (option chosen by the maintainer's PM chat; details decided by the build team; makes 0148's "every page write" true for page files)
+- **Status:** Active (option chosen by the maintainer's PM chat; details decided by the build team; makes 0148's "every page write" true for page files); "Quit" amended by 0155; "A stalled folder" amended by 0157
 - **Decision:**
   - **Under the lock.** Each publish of a new page, restored text, a binder-template page, a saved copy and an Undo conflict copy runs with its change-feed event as one job on the folder's lock, and so does the delete in a binder-creation rollback. The can-write check is made again inside the job, so a location that stops being writable during the wait gets nothing.
   - **A stalled folder.** A save that hangs in a folder now also holds up new pages, Undo and moves into that folder until it ends, as it already did for renames and deletes. Other folders and quit aren't held up.
@@ -2183,6 +2183,53 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Android** declares `INTERNET` in the release manifest.
 - **Rationale:** the first step of mobile sync that shows a PC's notes on a device, without any way to overwrite them.
 - **Alternatives considered:** keeping both versions with `-remote-` copies (nothing can merge them while the folder is read-only); deleting attachments with their page (a kept page may still need them, and the engine doesn't parse pages); the design's 30 s poll (a change could take two rounds).
+
+## 0155 — A delete rollback records its pages in recovery before it restores them
+- **Date:** 2026-11-09
+- **Status:** Active (Codex finding and the recovery choice decided by the maintainer's PM chat; details decided by the build team from the reviewed note `2026-11-09-01-rollback-preserve`; amends 0070 "On quit", 0132 "A delete that fails part way" and 0152 "Quit")
+- **Decision:**
+  - **Recorded first (amends 0132).** When a delete fails part way, each page it already deleted is written to recovery, in a new entry of its own with no base, before the rollback puts anything back. An older entry of the page is left as it is. If recovery isn't available the page stays in memory only, as before.
+  - **Quit waits.** The rollback counts as a running Undo until every page it hasn't put back is in recovery or held with Undo.
+  - **Settling.** The rollback's entry is removed only once a read shows the page restored as it was, a published copy holds it, or another readable version of the page is on top of what the rollback put back. Otherwise it stays and replays.
+  - **Replay of an entry with no base** into a file that's there is the conflict-copy merge (0053), with no new landed markers and no nested records. Every box of both versions is kept. The deleted version's header isn't kept when a different file is there, and a move of a box both versions hold at the same revision isn't kept.
+  - **Quit (amends 0152).** At its time limit, quit asks only about pages that are neither in recovery nor put back; when every page is in recovery it exits without asking.
+  - **The quit notice (amends 0070):** "1 page couldn't be saved yet. It is kept safely and will be saved automatically when its folder is available." (plural: "N pages … They are kept … their folder …").
+- **Rationale:** a page a rollback held only in memory was lost by a quit after its registration ended, and by any crash or kill during a stalled rollback.
+- **Alternatives considered:** holding the page in memory until preserved (lost on a kill); writing entries before every multi-page delete (brings back pages after a crash that followed a successful delete); showing a kept state during the rollback (the outcome message covers it).
+
+## 0156 — Recovered edits overwritten right after landing become a version conflict
+- **Date:** 2026-11-09
+- **Status:** Active (decided by the maintainer; details decided by the build team from the reviewed note `2026-11-09-01-landed-conflict`; supersedes 0130 "Replay"'s sentences from "Once replay's write has landed…" to "…removes its binder or folder", except for a file that can't be read)
+- **Decision:**
+  - **Settle, don't retire.** After replay's write lands, the page is read back. A recovery entry is deleted only once a read shows every edit it holds is in the file or recorded there as a conflict, or its page is in a published copy.
+  - **What is put back.**
+    - A box the entry changed that the other writer replaced with an unrelated version: theirs stays displayed and the entry's is recorded as a version conflict.
+    - A box the other writer deleted: back, flagged deleted (0020).
+    - A box the entry deleted that is back: flagged deleted.
+    - Versions recorded in what landed are recorded again without nesting.
+    - A conflict the entry settled offline stays settled.
+    - Geometry, order and header fields the entry changed are put back as the entry had them, without a record, as the three-way merge does.
+  - **A file that can't be read or holds another page:** the edits are published as an `-undo-` copy beside it, and it is listed under "Can't open" naming the copy.
+  - **A file that's gone:** the page is written again exclusively.
+  - **Not settled yet** (the file stays locked, a write throws, it changes on every try): the entry stays, is listed as waiting rather than failed, and retries without merging again.
+  - **Notices.** The one-off notice remains only for an unreadable file and for a foreign node the entry deleted that is back; a recorded conflict is its own indication.
+  - **Limits.**
+    - A later writer's own position, order or title is replaced with no record, as in any replay merge.
+    - The landed text is in memory only, so a restart, or a move of the page, between landing and settling merges again.
+    - A box whose content the entry didn't change records no conflict.
+    - A box another device merged before saving can show as a conflict, with nothing lost.
+- **Rationale:** an entry deleted while its edits were in no file lost them; a conflict keeps both versions and lets the user decide (0120).
+- **Alternatives considered:** retiring with a notice (0130; the notice was in memory only); keeping the entry and replaying again (brings back what the other writer deleted, unflagged).
+
+## 0157 — Watcher reads take the folder lock; a stalled folder shows a note; a second New page joins the first
+- **Date:** 2026-11-09
+- **Status:** Active (the note decided by the maintainer's PM chat; details decided by the build team; amends 0148 "One folder lock" and 0152 "A stalled folder")
+- **Decision:**
+  - **Reads under the lock (amends 0148).** A folder check's read of a page file runs as a job on that folder's lock, so it never overlaps the notebook's own replace (on Windows an open file can't be renamed). It waits at most 500 ms for its turn, then reads as before; inside a job on that folder it reads directly.
+  - **The note (amends 0152).** When New page, Undo of a delete or a move has waited more than 3 seconds for a folder, "Waiting for the folder…" shows at the top of the window until the wait ends. Background work never shows it.
+  - **New page.** A New page for a place while one for the same place is pending joins it: one page is made and opened.
+- **Rationale:** a stalled folder held these actions with no feedback, and stacked clicks all published when it ended. An unlocked read failed the notebook's own save with a sharing error.
+- **Alternatives considered:** retrying the rename (hides the cause); an unbounded wait for the read (a hung folder held every check); a snackbar (it closed other notices, including Undo).
 
 ---
 
