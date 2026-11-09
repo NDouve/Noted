@@ -1739,8 +1739,9 @@ class _Run {
     final gone = _subtree(id);
     if (_standaloneLeft(gone, to: null) < 1) return; // the app would make a new page
     // Some failed deletes are followed by a kill in the rollback (a generator of
-    // its own, so the choices of the steps above stay the ones they were).
-    if (variant == 'failDelete' && _rrng.nextInt(2) == 0) variant = 'failRollback:kill';
+    // its own, so the choices of the steps above stay the ones they were). Only
+    // for a subtree of several pages: a single page never reaches the restore.
+    if (variant == 'failDelete' && _rrng.nextInt(2) == 0 && gone.length > 1) variant = 'failRollback:kill';
     final m = model[id]!;
     trace.add('delete ${_short(id)} (${gone.length} pages) in ${m.loc}: $variant');
     _kind = 'delete:$variant';

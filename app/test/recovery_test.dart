@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_store.dart';
+import 'package:noted/src/save_trouble.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -1035,25 +1036,35 @@ void main() {
         });
       }
 
-      test('a crash after the copy, before the entry is deleted: the entry replays harmlessly', () async {
+      test('a crash after the copy, before the entry is deleted: the real entry replays both ways', () async {
         final (nb, x, _) = await parkedEntry((f, cur, base) => f.writeAsStringSync('{ nope'));
+        final entryFile = File(recFiles().singleWhere((p) => p.endsWith('.entry')));
+        final entryBytes = entryFile.readAsBytesSync();
         await nb.load();
         expect(recFiles(), isEmpty);
         final copy = extra.listSync().whereType<File>().firstWhere((f) => f.path.contains('$x-undo-'));
         final copyText = copy.readAsStringSync();
-        // The entry comes back (the delete never happened).
-        await RecoveryStore(rec).write(
-          folder: extra.path,
-          page: readPage(copyText),
-          baseText: null,
-          time: DateTime.now(),
-        );
         quit(nb);
+
+        // The entry is back (the delete never happened). The original is still
+        // unreadable and the copy is not found: the entry stays, listed.
+        entryFile.writeAsBytesSync(entryBytes);
+        final hidden = File('${copy.path}.hidden');
+        copy.renameSync(hidden.path);
         final again = make();
         await again.load();
-        expect(copy.readAsStringSync(), copyText, reason: 'the copy still holds the edits');
+        expect(recFiles().where((p) => p.endsWith('.entry')), isNotEmpty);
+        expect(again.recoveryProblems, isNotEmpty);
+
+        // A scan adopts the lone copy as the page: the entry merges into it and goes.
+        quit(again);
+        hidden.renameSync(copy.path);
+        final third = make();
+        await third.load();
+        expect(recFiles().where((p) => p.endsWith('.entry')), isEmpty);
+        expect(copy.readAsStringSync(), copyText, reason: 'the copy already holds the edits');
         expect(pageFile(extra, x).readAsStringSync(), '{ nope', reason: 'the original is untouched');
-        expect(recFiles(), isEmpty, reason: 'a scan adopts the lone copy as the page; the entry merges into it');
+        expect(third.recoveryProblems, isEmpty);
       });
     });
 
@@ -1080,6 +1091,23 @@ void main() {
         expect(publishes, 1);
         expect(recFiles(), isEmpty);
         expect(extra.listSync().whereType<File>().where((f) => f.path.contains('$x-undo-')), hasLength(1));
+      });
+
+      test('a landed page waiting to be settled is not offered for discarding as unlandable', () async {
+        final toggle = _ToggleStore(extra);
+        final (nb, x, _) = await parkedEntry(
+          (f, cur, base) => f.writeAsStringSync(writePage(cur.replaceNode(base.nodes.single))),
+          mineOf: (b) => b.replaceNode(edited(first(b), 'mine')),
+          hook: (point, path) async {
+            if (point == 'recover-published') toggle.failWrite = true;
+          },
+          storeFactory: (d) => d.path == extra.path ? toggle : PageStore(d),
+        );
+        await nb.load();
+        expect(recFiles(), isNotEmpty);
+        await nb.open(x);
+        expect(nb.trouble.kind, TroubleKind.preview, reason: 'the kept changes are shown');
+        expect(nb.trouble.canDiscardKept, isFalse, reason: 'the page landed; discarding would drop nothing but is not a refusal');
       });
 
       test('the backoff timer retries an entry that could not be settled', () async {
@@ -1206,7 +1234,96 @@ void main() {
       expect(third.recoveryProblems, isEmpty);
     });
 
-    test('settling offline survives the entry\'s replay', () async {
+    // Settled by hand while the folder was away: "Keep the box", "Delete it",
+    // "Keep the other version". The entry's replay keeps it settled, and so
+    // does a sync client that puts the flagged base back right after landing.
+    for (final kind in ['keep the box', 'delete it', 'keep the other version']) {
+      for (final restored in [false, true]) {
+        test('settling offline ($kind) survives the entry\'s replay${restored ? ', and the base put back after' : ''}', () async {
+          final nb = make();
+          await nb.load();
+          final x = await nb.createPage(folderPath: extra.path);
+          await nb.flush();
+          await nb.open(x);
+          nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+          await nb.flush();
+          final p0 = readPage(pageFile(extra, x).readAsStringSync());
+          final box = first(p0);
+          final other = edited(box, 'other');
+          final record = kind == 'keep the other version'
+              ? BoxConflict.other(node: other.toRaw(), at: 5)
+              : BoxConflict.deleted(at: 5);
+          final flagged = p0.replaceNode(box.withConflict(record));
+          final baseText = writePage(flagged);
+          pageFile(extra, x).writeAsStringSync(baseText);
+          quit(nb);
+          final settled = switch (kind) {
+            'keep the box' => keepBox(flagged, box.id),
+            'delete it' => deleteBox(flagged, box.id),
+            _ => keepOther(flagged, box.id),
+          };
+          await RecoveryStore(rec).write(folder: extra.path, page: settled, baseText: baseText, time: DateTime.now());
+          final again = make();
+          if (restored) {
+            again.syncHook = (point, path) async {
+              if (point == 'recover-published') File(path).writeAsStringSync(baseText);
+            };
+          }
+          await again.load();
+          final d = disk(x);
+          if (kind == 'delete it') {
+            expect(d.nodes, isEmpty, reason: 'the box stays deleted');
+          } else {
+            expect(first(d).conflicts, isEmpty, reason: 'the settled result stays settled');
+            if (kind == 'keep the other version') expect(first(d).rev, 'r-other');
+          }
+          expect(again.hasConflict(x), isFalse);
+          expect(recFiles(), isEmpty);
+          expect(again.recoveryProblems, isEmpty);
+        });
+      }
+    }
+
+    // A node the merge kept under a new id is still the entry's edit (an
+    // entry with no base, over a file holding another node at its id).
+    test('a box kept under a new id by the merge is back after the pre-merge file is restored', () async {
+      final nb = make();
+      await nb.load();
+      final x = await nb.createPage(folderPath: extra.path);
+      await nb.flush();
+      quit(nb);
+      final p0 = readPage(pageFile(extra, x).readAsStringSync());
+      final boxA = BoxRecord.create(
+        id: 'boxaaaaaaaaaaaa1',
+        typeId: 'test.other',
+        dataVersion: 1,
+        bounds: const Bounds(50, 50, 100, 40),
+        data: RawJson.encode({'n': 1}),
+        snapshotText: 'a',
+        rev: 'r-a',
+      );
+      final f = ForeignNode.read(
+        RawJson.trusted('{"id":"${boxA.id}","type":"group","x":0,"y":0,"width":10,"height":10,"label":"f"}'),
+        fallbackId: boxA.id,
+      );
+      final preText = writePage(p0.insertNode(f));
+      pageFile(extra, x).writeAsStringSync(preText);
+      await RecoveryStore(rec).write(folder: extra.path, page: p0.insertNode(boxA), baseText: null, time: DateTime.now());
+      final again = make();
+      again.syncHook = (point, path) async {
+        if (point == 'recover-published') File(path).writeAsStringSync(preText);
+      };
+      await again.load();
+      final boxes = disk(x).nodes.whereType<BoxRecord>().toList();
+      expect(boxes.map((b) => b.rev), contains('r-a'), reason: 'the entry\'s box is in the file');
+      expect(recFiles(), isEmpty);
+      expect(again.recoveryProblems, isEmpty);
+    });
+
+    // An unrelated version with a learned deleted flag over an entry with no
+    // base keeps both: the flag stays on the displayed box, the entry's version
+    // is recorded.
+    test('an unrelated version with a deleted flag over an entry with no base keeps both', () async {
       final nb = make();
       await nb.load();
       final x = await nb.createPage(folderPath: extra.path);
@@ -1214,22 +1331,21 @@ void main() {
       await nb.open(x);
       nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
       await nb.flush();
-      final withFlag = readPage(pageFile(extra, x).readAsStringSync());
-      final flagged = withFlag.replaceNode(first(withFlag).withConflict(BoxConflict.deleted(at: 5)));
-      final baseText = writePage(flagged);
-      pageFile(extra, x).writeAsStringSync(baseText);
+      final p0 = readPage(pageFile(extra, x).readAsStringSync());
       quit(nb);
-      // The user chose "Keep the box" while the folder was away.
-      final settled = keepBox(flagged, flagged.nodes.single.id);
-      await RecoveryStore(rec).write(folder: extra.path, page: settled, baseText: baseText, time: DateTime.now());
+      final b0 = first(p0);
+      final theirs = edited(b0, 'theirs').withConflict(BoxConflict.deleted(at: 4));
+      pageFile(extra, x).writeAsStringSync(writePage(p0.replaceNode(theirs)));
+      final mine = p0.replaceNode(edited(b0, 'mine'));
+      await RecoveryStore(rec).write(folder: extra.path, page: mine, baseText: null, time: DateTime.now());
       final again = make();
       await again.load();
-      expect(first(disk(x)).conflicts, isEmpty, reason: 'the settled result stays settled');
-      expect(again.hasConflict(x), isFalse);
+      final box = diskBox(x, b0.id);
+      expect(box.rev, 'r-theirs');
+      expect(box.conflicts.any((c) => c.deleted), isTrue, reason: 'their flag stays');
+      expect(box.conflicts.any((c) => !c.deleted && c.node!.text.contains('"rev":"r-mine"')), isTrue, reason: 'mine is recorded');
       expect(recFiles(), isEmpty);
-      expect(again.recoveryProblems, isEmpty);
     });
-
     // 15
     test('a landed box with its own recorded version, then replaced: the version stays a record', () async {
       late BoxRecord alt;

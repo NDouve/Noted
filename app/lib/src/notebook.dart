@@ -100,11 +100,15 @@ class _WriteOutcome {
 
 // Why a recovery entry could not be applied; it is kept and listed.
 class _ReplayFailure implements Exception {
-  _ReplayFailure(this.why, {this.detail});
+  _ReplayFailure(this.why, {this.detail, this.transient = false});
 
   // The plain reason shown to the user, and the technical detail for the log.
   final String why;
   final String? detail;
+
+  // Not a refusal of the entry: the landed page is waiting to be settled, so the
+  // entry is listed but not offered for discarding as unlandable.
+  final bool transient;
 
   @override
   String toString() => why;
@@ -6612,7 +6616,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on _ReplayFailure catch (ex) {
       debugPrint('Recovered page ${e.pageId} not accepted: ${ex.detail ?? ex.why}');
       _replayProblems[key] = (path: path, why: ex.why);
-      _replayHardFailure.add(e.pageId);
+      if (!ex.transient) _replayHardFailure.add(e.pageId);
     } on Object catch (ex) {
       // A write failure; the reading failures are _ReplayFailures above.
       debugPrint('Recovering page ${e.pageId} failed: $ex');
@@ -6885,7 +6889,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // again (start-up replay and _replayEntry don't schedule one).
     Never wait(String why, String detail) {
       if (!_disposed) _backoff.schedule();
-      throw _ReplayFailure(why, detail: detail);
+      throw _ReplayFailure(why, detail: detail, transient: true);
     }
 
     for (var round = 0; round < 5; round++) {
