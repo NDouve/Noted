@@ -10,7 +10,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 /// Test-only tracing of file operations, to explain a Windows sharing
-/// violation (errno 32, and its relatives 5, 33 and 145).
+/// violation (errno 32, and its relatives 33 and 145).
 ///
 /// Off unless the environment variable `NOTED_IO_TRACE` is `1` (the Windows CI
 /// job sets it). Then every `File` and `Directory` the tests make is wrapped
@@ -26,9 +26,10 @@ import 'package:flutter/foundation.dart';
 bool get ioTraceEnabled => Platform.environment['NOTED_IO_TRACE'] == '1';
 
 /// Windows errors that mean "another handle has this file or folder":
-/// 5 access denied, 32 sharing violation, 33 lock violation, 145 directory
-/// not empty (something wrote into it as it was removed).
-const Set<int> _busyCodes = {5, 32, 33, 145};
+/// 32 sharing violation, 33 lock violation, 145 directory not empty (something
+/// wrote into it as it was removed). Not 5, access denied: tests that hold a
+/// lock file on purpose get it every time, and it says nothing about a holder.
+const Set<int> _busyCodes = {32, 33, 145};
 
 class _Event {
   _Event(this.id, this.op, this.path, this.to, this.startUs, this.label);
