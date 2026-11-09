@@ -79,4 +79,14 @@ void main() {
     final text = trace.describe('rename', '${dir.path}/x.canvas', 32);
     expect(text, contains('nothing else in this process touched it'));
   });
+  test('access denied is reported for a rename only', () {
+    final denied = FileSystemException('x', 'a', const OSError('denied', 5));
+    final id = trace.begin('rename', '${dir.path}/a', to: '${dir.path}/b');
+    trace.failed(id, 'rename', '${dir.path}/a', denied, to: '${dir.path}/b');
+    expect(lines, isNotEmpty);
+    lines.clear();
+    final id2 = trace.begin('read', '${dir.path}/a');
+    trace.failed(id2, 'read', '${dir.path}/a', denied);
+    expect(lines, isEmpty);
+  });
 }

@@ -91,7 +91,10 @@ class IoTrace {
     end(id, error);
     if (error is! FileSystemException) return;
     final code = error.osError?.errorCode;
-    if (code == null || !_busyCodes.contains(code)) return;
+    // Access denied (5) only for a rename: onto an open destination it is what
+    // Windows reports. Elsewhere tests that hold a lock on purpose get it always.
+    final renamed = op.startsWith('rename');
+    if (code == null || !(_busyCodes.contains(code) || (code == 5 && renamed))) return;
     report(op, path, code, to: to);
   }
 

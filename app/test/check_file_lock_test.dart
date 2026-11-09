@@ -75,4 +75,14 @@ void main() {
     expect(watch.elapsed, lessThan(const Duration(seconds: 4)));
     hung.complete();
   });
+  test('a check run inside a folder job does not wait for the folder', () async {
+    final other = await nb.createPage();
+    await nb.createPage();
+    await nb.flush();
+    final watch = Stopwatch()..start();
+    // Queued again on the folder it already holds, it would wait on itself
+    // until the read gives up waiting (500 ms).
+    await nb.folderLocks.run(dir, () => nb.checkFile(store.pathFor(other)));
+    expect(watch.elapsed, lessThan(const Duration(milliseconds: 400)));
+  });
 }

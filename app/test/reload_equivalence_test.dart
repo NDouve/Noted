@@ -900,7 +900,19 @@ class _Run {
   /// assuming nothing else is running.
   Future<void> _retryPreview(String id) async {
     await _until(() => !nb.isBusy(id), 'a background replay of the page to end');
+    // The page was free, so this Retry replays the kept changes itself (nothing
+    // can start between the check above and the call). Its work must have
+    // landed: a background replay that merely cleared the preview in the
+    // meantime does not stand in for it.
+    final retried = nb.trouble.kind == TroubleKind.preview;
     await nb.retryPreview();
+    if (retried) {
+      expect(
+        nb.recoveryStoreForTest!.indexEntries.where((e) => e.pageId == id),
+        isEmpty,
+        reason: 'Retry replayed the kept changes of the page',
+      );
+    }
     await _until(
       () => nb.current?.page.id == id && !nb.trouble.isTrouble && !nb.current!.readOnly,
       () =>
