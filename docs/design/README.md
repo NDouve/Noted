@@ -56,4 +56,4 @@ Toolbar, SidebarRow, BoxFrame, Menu, Button and PageBackground: each has guideli
 
 ### Folder wait note
 
-A small chip centred at the top of the window, over the page (nothing moves), with a spinner and "Waiting for the folder…". Shown only while New page, Undo or a move has waited more than 3 seconds for a stalled folder, and gone when the wait ends. It is not a snackbar and takes no input. Tokens: `surface` fill, `border` hairline, `radius-md`, `small` text in `text-muted`, `space-3` by `space-1` padding.
+A small note centred at the top of the window, over the page (nothing moves), with a spinner and "Waiting for the folder…". Shown only while New page, Undo or a move has waited more than 3 seconds for a stalled folder, and gone when the wait ends. It is not a snackbar, takes no input and has no live preview. Tokens: `surface` fill, `border` hairline, `radius-md`, `small` text in `text-muted`, `space-3` by `space-1` padding.

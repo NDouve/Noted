@@ -248,8 +248,13 @@ void main() {
       PageMeta.create(id: newId(), parentId: null, title: 'Theirs', order: 0),
     );
     await File('${x.path}${sep}theirs copy.canvas').writeAsString(writePage(theirs));
-    await _wait(1800);
-    expect(nb.waitingForFolder.value, isTrue, reason: 'the write and the scan wait');
+    // Both the write and the watcher's scan must be counted, or the check
+    // below would pass without the take-back.
+    for (var i = 0; i < 200 && nb.folderWaitersForTest < 2; i++) {
+      await _wait(50);
+    }
+    expect(nb.folderWaitersForTest, 2, reason: 'the write and the scan wait');
+    expect(nb.waitingForFolder.value, isTrue);
     gate2.complete();
     await held2;
     await create.timeout(const Duration(seconds: 10));

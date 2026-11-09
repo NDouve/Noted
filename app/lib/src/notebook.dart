@@ -460,6 +460,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// [folderWaitNote] for a folder's lock. Off again when the wait ends.
   ValueListenable<bool> get waitingForFolder => _waitingForFolder;
 
+  /// How many user-action waits [waitingForFolder] counts now (for tests).
+  @visibleForTesting
+  int get folderWaitersForTest => _folderWaiters;
+
   // Runs [action] as a user action: its waits for a folder lock count toward
   // [waitingForFolder] (see _lockRun).
   // The marker is live only until the action's future completes: a watcher or
