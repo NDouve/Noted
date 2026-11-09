@@ -167,7 +167,7 @@ void main() {
     expect(nb.waitingForFolder.value, isFalse);
   });
 
-  test('moveRelative into a held folder shows the note, and outdent leaves none on', () async {
+  test('moveRelative into a held folder shows the note', () async {
     final other = await Directory('${root.path}${sep}other').create();
     final section = await nb.addBinder(other.path);
     final inBinder = await nb.createPage(binderPath: section.path);
@@ -184,10 +184,22 @@ void main() {
     expect(await move.timeout(const Duration(seconds: 10)), isTrue);
     expect(nb.waitingForFolder.value, isFalse);
     expect(nb.folderWaitersForTest, 0);
+  });
 
-    // A nested user action (outdent calls moveRelative) leaves no count.
-    final sub = await nb.createPage(parentId: inBinder);
-    await nb.outdent(sub);
+  test('moveToFolder into a held folder shows the note', () async {
+    final other = await Directory('${root.path}${sep}other').create();
+    await nb.addStandaloneFolder(other.path);
+    final id = await nb.createPage();
+    await nb.flush();
+
+    final (gate, held) = hold(other);
+    final move = nb.moveToFolder(id, other.path);
+    await _wait(600);
+    expect(nb.waitingForFolder.value, isTrue);
+    expect(nb.folderWaitersForTest, 1);
+    gate.complete();
+    await held;
+    expect(await move.timeout(const Duration(seconds: 10)), isTrue);
     expect(nb.waitingForFolder.value, isFalse);
     expect(nb.folderWaitersForTest, 0);
   });

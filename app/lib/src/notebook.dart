@@ -4373,7 +4373,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// same copy, verify, delete algorithm as other moves; throws a
   /// [NotebookException] on failure with the sources left in place. A binder
   /// folder is refused. Returns false if the page is in that folder already.
-  Future<bool> moveToFolder(String id, String path) async {
+  Future<bool> moveToFolder(String id, String path) => _asUser(() => _moveToFolder(id, path));
+
+  Future<bool> _moveToFolder(String id, String path) async {
     final from = _loc[id];
     if (from == null) return false;
     final to = await addStandaloneFolder(path);
