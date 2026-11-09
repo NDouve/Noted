@@ -192,6 +192,15 @@ void main() {
       expect(got.last.deleted, isTrue);
     });
 
+    test('a version recorded after an existing deleted record still goes before it', () {
+      final x = edit(a, 'theirs').withConflict(BoxConflict.deleted(at: 4));
+      final r = fix(base, mineA, mineA, pageOf([x, b, c]));
+      final got = boxOf(r, 'a').conflicts;
+      expect(got, hasLength(2));
+      expect(got.first.deleted, isFalse);
+      expect(got.last.deleted, isTrue);
+    });
+
     test('revision guards: a box without revs is compared by content', () {
       BoxRecord strip(BoxRecord x) {
         final t = x.toRaw().text.replaceAll(RegExp(r'"rev":"[^"]*",?'), '');

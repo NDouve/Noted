@@ -99,6 +99,12 @@
 //     published (R-1, run 2026-11-09-01): the step `delete:failRollback:kill` and
 //     its regression probe fail ("a fresh notebook does not list" the page).
 //
+// 18. A replay whose landed page was overwritten right after landing retires
+//     its entry without settling it (task 4, run 2026-11-09-01: the read-back
+//     is not looked at, `recordLostEdits` is not applied): 20 of the 24
+//     sequences fail ("the box ... conflicts" in `recover:overwrittenAfterLanding`,
+//     which runs after steps from a generator of its own) and so does its probe.
+//
 // Wait for watchers: none is used. The notebook runs with `watchFiles` off,
 // and the steps call `checkFile` and `checkFolders` themselves, the way the
 // watcher would, so a step is over when its calls return. Folder renames and
@@ -641,6 +647,31 @@ class _Run {
     // Another device's binders come and go beside the step (a generator of
     // its own, so the sequences of the steps above are the ones they were).
     if (_brng.nextInt(100) < 35) await _binderStep();
+    // A replayed page is overwritten right after it lands (a generator of its
+    // own too).
+    if (_orng.nextInt(100) < 15) await _recoverStep(n);
+  }
+
+  /// The step `recover:overwrittenAfterLanding` after step [n], on pages picked
+  /// by its own generator.
+  Future<void> _recoverStep(int n) async {
+    final withBox = [
+      for (final e in model.entries)
+        if (e.value.boxes.isNotEmpty) e.key,
+    ];
+    if (withBox.isEmpty || model.length < 2) return;
+    final id = withBox[_orng.nextInt(withBox.length)];
+    final others = [
+      for (final i in model.keys)
+        if (i != id) i,
+    ];
+    final other = others[_orng.nextInt(others.length)];
+    trace.add('recover:overwrittenAfterLanding on ${_short(id)}');
+    final ran = await _recoverOverwritten(id, other);
+    trace.add('  ($ran done)');
+    await _settle();
+    await verify('step $n ($ran)');
+    if (ran != null) kinds.add(ran);
   }
 
   /// The watcher's job: look at every conflict copy (and set-aside file) left
@@ -876,6 +907,72 @@ class _Run {
   Future<void> _replayAll() async {
     await nb.recoverNowForTest();
     await _until(() => nb.recoveryStoreForTest!.indexEntries.isEmpty, 'the entries to be replayed');
+  }
+
+  // An entry edits a box of closed page [id]; another writer replaces the file
+  // with their own version of that box right after the replay's publish
+  // (0130). The edit is not lost and not silently replaced: the file shows
+  // their version with the entry's recorded as a conflict, in the live
+  // notebook and in a fresh one, and no entry or notice is left. The step then
+  // keeps the displayed version, as the user would, so the model stays free of
+  // conflicts. Null (not run) when the page has no note box.
+  Future<String?> _recoverOverwritten(String id, String other) async {
+    final m = model[id]!;
+    if (m.boxes.isEmpty) return null;
+    final target = m.boxes.keys.first;
+    await nb.open(other);
+    final codec = modules.codecs.codecFor('noted.note')!;
+    final text = File(_pathOf(id)).readAsStringSync();
+    final page = readPage(text);
+    final old = page.node(target)! as BoxRecord;
+    final mineText = _text('mine');
+    final theirsText = _text('theirs');
+    final mine = commitBox(old, codec, codec.decode(_doc(mineText), 1));
+    final theirs = commitBox(old, codec, codec.decode(_doc(theirsText), 1));
+    await RecoveryStore(rec).write(
+      folder: dirs[m.loc]!.path,
+      page: page.replaceNode(mine),
+      baseText: text,
+      time: DateTime.now(),
+    );
+    await nb.refreshRecoveryIndexForTest();
+    final prev = nb.syncHook;
+    nb.syncHook = (point, path) async {
+      await prev?.call(point, path);
+      if (point != 'recover-published' || !path.endsWith('$id.canvas')) return;
+      final f = File(path);
+      f.writeAsStringSync(writePage(readPage(f.readAsStringSync()).replaceNode(theirs)));
+    };
+    try {
+      await _replayAll();
+    } finally {
+      nb.syncHook = prev;
+    }
+    void expectBothVersions(Notebook n, String where) {
+      final box = _disk(id).node(target)! as BoxRecord;
+      expect(_textOf(box), theirsText, reason: '$where: their version stays displayed');
+      expect(box.conflicts, hasLength(1), reason: '$where: the entry\'s version is recorded');
+      expect(_textOf(BoxRecord.tryRead(RawObject.parse(box.conflicts.single.node!.text), box.conflicts.single.node!)!), mineText,
+          reason: '$where: the recorded version is the entry\'s');
+      expect(n.hasConflict(id), isTrue, reason: '$where: the page shows the conflict');
+      expect(n.recoveryProblems, isEmpty, reason: '$where: no notice, the conflict is the indication');
+    }
+
+    expectBothVersions(nb, 'live');
+    _drop();
+    nb = _make();
+    _spare.add(nb);
+    await nb.load();
+    expectBothVersions(nb, 'after a restart');
+    expect((await nb.pendingRecovery()).entries, isEmpty);
+
+    // The user keeps the displayed version.
+    await nb.open(id);
+    nb.current!.resolveKeepMine(target);
+    await nb.flush();
+    m.boxes[target] = (text: theirsText, bounds: m.boxes[target]!.bounds);
+    await nb.open(other);
+    return 'recover:overwrittenAfterLanding';
   }
 
   /// Waits until [done]; [what] is the text of what it waits for, or a function
@@ -1959,6 +2056,7 @@ class _Run {
   // never a removed one, and must create nothing.
 
   late final Random _brng = Random(seed * 31 + 7);
+  late final Random _orng = Random(seed * 37 + 11); // when another writer overwrites a replayed page (_recoverStep)
   late final Random _urng = Random(seed * 17 + 3); // which Undos fail (_opDelete)
   late final Random _rrng = Random(seed * 19 + 5); // which failed deletes are followed by a kill (_opDelete)
   int _binderStepCount = 0;
@@ -2458,7 +2556,7 @@ const _expectedKinds = {
   'move:withEntry', 'move:withEntryCrash', 'move:withEntrySourceDeleteFails', //
   'move:withEntryPartialRollback', 'move:withEntryFolderGone', 'move:withEntryRekeyFails', //
   'move:withEntrySettleFails', 'delete:withEntry', 'delete:withEntryAsk', //
-  'launch:pageInBothKeys', 'launch:pageInNeither', //
+  'launch:pageInBothKeys', 'launch:pageInNeither', 'recover:overwrittenAfterLanding', //
   'edit:plain', 'edit:syncAtPublish', 'edit:syncBeforeWrite', 'edit:externalBeforeFlush',
   'edit:failOnce', 'edit:failAlways', //
   'external', 'rename:plain', 'rename:syncAtPublish', 'rename:syncBeforeWrite',
@@ -2929,6 +3027,24 @@ void main() {
   });
 
   group('probes of the faults on their own', () {
+    test('recover:overwrittenAfterLanding: both versions are kept, live and after a restart', () async {
+      final run = _Run(912);
+      try {
+        await run.start();
+        final id = run.model.keys.first;
+        final other = run.model.keys.firstWhere((i) => i != id);
+        await run.nb.open(id);
+        run._addBox(run.model[id]!, run.nb.current!);
+        await run.nb.flush();
+        expect(await run._recoverOverwritten(id, other), 'recover:overwrittenAfterLanding');
+        await run.verify('after the step', fresh: true);
+        await run._opRestart();
+        await run.verify('after a restart', fresh: true);
+      } finally {
+        await run.stop();
+      }
+    });
+
     late _Run run;
     setUp(() async {
       run = _Run(900);

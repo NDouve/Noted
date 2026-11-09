@@ -820,6 +820,32 @@ void main() {
       expect(disk(x).node('otherbox'), isNotNull);
     });
 
+    test('a box edited further from the entry\'s version, or moved, is not a conflict', () async {
+      final (nb, x, base) = await parkedEntry(
+        (f, cur, base) {
+          final landed = first(cur);
+          final further = edited(landed, 'further').withBounds(const Bounds(400, 400, 30, 30));
+          f.writeAsStringSync(writePage(cur.replaceNode(further)));
+        },
+        mineOf: (b) => b.replaceNode(edited(first(b), 'mine')),
+      );
+      await nb.load();
+      final box = diskBox(x, base.nodes.single.id);
+      expect(box.rev, 'r-further');
+      expect(box.conflicts, isEmpty, reason: 'derived from the entry\'s version: its content is there');
+      expect(nb.hasConflict(x), isFalse);
+      await expectClean(nb);
+
+      final (nb2, x2, base2) = await parkedEntry(
+        (f, cur, base) => f.writeAsStringSync(writePage(cur.replaceNode(first(cur).withBounds(const Bounds(400, 400, 30, 30))))),
+        mineOf: (b) => b.replaceNode(edited(first(b), 'mine')),
+      );
+      await nb2.load();
+      expect(diskBox(x2, base2.nodes.single.id).rev, 'r-mine');
+      expect(nb2.hasConflict(x2), isFalse);
+      expect(nb2.recoveryProblems, isEmpty);
+    });
+
     // 8
     group('a kill after the conflict publish', () {
       Future<void> killed(
