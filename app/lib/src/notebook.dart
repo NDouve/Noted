@@ -7180,6 +7180,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<T> _underFolderLock<T>(PageStore st, Future<T> Function() job) =>
       folderLocks.run(st.directory, job);
 
+  // A single read of a page file, taking its turn with the writes and scans of
+  // [folder]. Not queued again when the caller already runs inside a job on the
+  // folder, which would wait on itself.
+  Future<T> _readUnderFolderLock<T>(Directory folder, Future<T> Function() read) =>
+      FolderLocks.isHeld(folder) ? read() : folderLocks.run(folder, read);
+
   // The conflict copies a scan of [loc] found: merged later when the place can
   // be written ([merge]); in a pull-only place they are never merged, and are
   // listed as duplicates of their page (G3).
@@ -7893,10 +7899,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // A file held by another program (a sync client downloading it) is busy,
       // not unreadable: the open page's file is reread quietly for a while
       // before the page is blocked.
-      Future<({String text, int time})> read() async {
+      //
+      // Each read is one job under the folder's lock, as a save's replace is:
+      // on Windows a file open for reading can't be renamed, so a read that
+      // overlapped this notebook's own save of the file made the save fail with
+      // a sharing violation.
+      Future<({String text, int time})> read() => _readUnderFolderLock(file.parent, () async {
         final s = await file.readAsString();
         return (text: s, time: (await file.lastModified()).millisecondsSinceEpoch);
-      }
+      });
 
       final got = isOpen ? await _whileBusy(read) : await read();
       text = got.text;
