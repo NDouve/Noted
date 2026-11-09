@@ -413,6 +413,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     this.settingsRetryFirst = const Duration(seconds: 2),
     this.settingsAbsentConfirm = const Duration(seconds: 30),
     FolderLocks? folderLocks,
+    this.folderWaitNote = const Duration(seconds: 3),
     List<String> readOnlyRoots = const [],
   }) : folderLocks = folderLocks ?? FolderLocks(),
        _readOnlyRoots = [for (final r in readOnlyRoots) _normalizePath(r)] {
@@ -446,6 +447,42 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// The per-folder lock the notebook's page-file writes and scans run under.
   /// Share one with anything else that writes page files in the same folders.
   final FolderLocks folderLocks;
+
+  /// How long a user action waits for a folder's lock before
+  /// [waitingForFolder] turns on.
+  final Duration folderWaitNote;
+
+  static const Object _userActionKey = #notedUserAction;
+  int _folderWaiters = 0; // user actions past [folderWaitNote], still queued
+  final ValueNotifier<bool> _waitingForFolder = ValueNotifier<bool>(false);
+
+  /// Whether a user action (New page, Undo, a move) has waited more than
+  /// [folderWaitNote] for a folder's lock. Off again when the wait ends.
+  ValueListenable<bool> get waitingForFolder => _waitingForFolder;
+
+  // Runs [action] as a user action: its waits for a folder lock count toward
+  // [waitingForFolder] (see _lockRun).
+  Future<T> _asUser<T>(Future<T> Function() action) =>
+      runZoned(action, zoneValues: {_userActionKey: true});
+
+  // The one wait point: every folder job goes through here. A user action's
+  // wait for its turn longer than [folderWaitNote] shows the note.
+  Future<T> _lockRun<T>(Directory folder, Future<T> Function() job) {
+    if (Zone.current[_userActionKey] != true) return folderLocks.run(folder, job);
+    var counted = false;
+    var started = false;
+    final timer = Timer(folderWaitNote, () {
+      if (started || _disposed) return;
+      counted = true;
+      if (++_folderWaiters == 1) _waitingForFolder.value = true;
+    });
+    return folderLocks.run(folder, () {
+      started = true;
+      timer.cancel();
+      if (counted && --_folderWaiters == 0 && !_disposed) _waitingForFolder.value = false;
+      return job();
+    });
+  }
 
   final StreamController<LocalChange> _changes = StreamController<LocalChange>.broadcast();
 
@@ -2416,12 +2453,39 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   ///
   /// With [focusTitle] the page's title field is asked to take the caret when
   /// the page is shown (see [requestTitleFocus]).
+  ///
+  /// While one createPage is pending for the same place, another call is not
+  /// queued: it returns the pending one's result, so stacked clicks make one
+  /// page.
   Future<String> createPage({
     String? parentId,
     String? binderPath,
     String? folderPath,
     bool focusTitle = false,
-  }) async {
+  }) {
+    final key = '$parentId|$binderPath|$folderPath';
+    final pending = _pendingCreates[key];
+    if (pending != null) return pending;
+    final run = _asUser(
+      () => _createPageNow(parentId, binderPath, folderPath, focusTitle),
+    );
+    _pendingCreates[key] = run;
+    void clear() {
+      if (identical(_pendingCreates[key], run)) _pendingCreates.remove(key);
+    }
+
+    run.then<void>((_) => clear(), onError: (Object _) => clear());
+    return run;
+  }
+
+  final Map<String, Future<String>> _pendingCreates = {};
+
+  Future<String> _createPageNow(
+    String? parentId,
+    String? binderPath,
+    String? folderPath,
+    bool focusTitle,
+  ) async {
     final loc = await _placeFor(parentId, binderPath, folderPath);
     final meta = PageMeta.create(
       id: newId(),
@@ -3121,7 +3185,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// a later delete replaced it, or if the binder is gone. An Undo that fails
   /// keeps the pages held, with Undo, until they are back or the user lets
   /// them go (0141).
-  Future<void> undoDelete(DeletedPages deleted) async {
+  Future<void> undoDelete(DeletedPages deleted) => _asUser(() => _undoDelete(deleted));
+
+  Future<void> _undoDelete(DeletedPages deleted) async {
     final running = _undoing[deleted];
     if (running != null) {
       await running; // its outcome is reported once, by the Undo that runs
@@ -3347,7 +3413,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// change. If [parentId] is in another location (a binder, or another
   /// standalone folder), the page and its subpages move there (see
   /// [moveToLocation]) and a [NotebookException] reports a failure.
-  Future<bool> move(String id, {required String? parentId, int? index}) async {
+  Future<bool> move(String id, {required String? parentId, int? index}) =>
+      _asUser(() => _move(id, parentId: parentId, index: index));
+
+  Future<bool> _move(String id, {required String? parentId, int? index}) async {
     final from = _loc[id];
     if (from == null || !_metas.containsKey(id)) return false;
     var to = from;
@@ -3396,7 +3465,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// standalone) at [index] (null: last). Moving to another location moves
   /// the page's file and its subpages' files; throws [NotebookException] if
   /// that fails, leaving everything where it was.
-  Future<bool> moveToLocation(String id, {String? binderPath, int? index}) async {
+  Future<bool> moveToLocation(String id, {String? binderPath, int? index}) =>
+      _asUser(() => _moveToLocation(id, binderPath: binderPath, index: index));
+
+  Future<bool> _moveToLocation(String id, {String? binderPath, int? index}) async {
     final from = _loc[id];
     final to = binderPath ?? _standalone;
     if (from == null) return false;
@@ -7178,7 +7250,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // is a single store call, never another locked call, so they can't wait on
   // each other.
   Future<T> _underFolderLock<T>(PageStore st, Future<T> Function() job) =>
-      folderLocks.run(st.directory, job);
+      _lockRun(st.directory, job);
 
   // How long a read of a page file waits for its folder's other jobs.
   static const Duration _readLockWait = Duration(milliseconds: 500);
@@ -10435,7 +10507,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       final target = PageStore(dir);
       final copyIdentity = _identityOf(() => writePage(copy));
-      final copied = await folderLocks.run(target.directory, () async {
+      final copied = await _lockRun(target.directory, () async {
         if (!await target.saveNew(copy)) return false;
         // Reported only if the picked folder is a joined location.
         if (_locationOf(target.pathFor(newPageId)) != null) {
