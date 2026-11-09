@@ -103,7 +103,7 @@ void main() {
       expect(again.problems, isEmpty);
     });
 
-    test('an old entry newer than the existing one of its page is kept beside it and reported', () async {
+    test('an old entry newer than the existing one of its page is kept beside it', () async {
       const rel = 'relative_notes_folder';
       final abs = File(rel).absolute.path;
       await store().write(folder: rel, page: _page('p1', 'existing'), baseText: null, time: t);
@@ -112,23 +112,23 @@ void main() {
       final s = store();
       final l = await s.list();
       expect(l.entries.map((e) => e.page.meta.title).toSet(), {'existing', 'old'});
-      expect(l.problems, hasLength(1));
-      expect(l.damaged, hasLength(1));
+      expect(l.problems, isEmpty);
+      expect(l.damaged, isEmpty);
       expect(files('.entry'), hasLength(2));
       expect(files('.canvas'), isEmpty);
       final again = await s.list();
       expect(again.entries, hasLength(2));
-      expect(again.problems, hasLength(1));
+      expect(again.problems, isEmpty);
     });
 
-    test('an old entry with the same time but other content is kept beside the existing one and reported', () async {
+    test('an old entry with the same time but other content is kept beside the existing one', () async {
       const rel = 'relative_notes_folder';
       final abs = File(rel).absolute.path;
       await store().write(folder: rel, page: _page('p1', 'existing'), baseText: null, time: t);
       legacy(abs, _page('p1', 'old'), time: t);
       final l = await store().list();
       expect(l.entries.map((e) => e.page.meta.title).toSet(), {'existing', 'old'});
-      expect(l.problems, hasLength(1));
+      expect(l.problems, isEmpty);
       expect(files('.entry'), hasLength(2));
       expect(files('.canvas'), isEmpty);
     });
@@ -329,7 +329,7 @@ void main() {
       expect(files('.tmp'), isEmpty);
     });
 
-    test('a leftover with the same time but other content is kept as a second entry and reported', () async {
+    test('a leftover with the same time but other content is kept as a second entry', () async {
       await store().write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);
       await expectLater(
         store(hook: _failAt('tmp-written')).write(folder: '/n', page: _page('p1', 'two'), baseText: null, time: t),
@@ -337,9 +337,31 @@ void main() {
       );
       final l = await store().list();
       expect(l.entries.map((e) => e.page.meta.title).toSet(), {'one', 'two'});
-      expect(l.problems, hasLength(1));
+      expect(l.problems, isEmpty);
       expect(files('.tmp'), isEmpty);
       expect(files('.entry'), hasLength(2));
+    });
+
+    test('a leftover of a fresh slot goes to a free slot, never over the entry in slot 1', () async {
+      await store().write(folder: '/n', page: _page('p1', 'one'), baseText: null, time: t);
+      final slot1 = File(files('.entry').single);
+      final before = slot1.readAsStringSync();
+      await expectLater(
+        store(hook: _failAt('tmp-written')).write(
+          folder: '/n',
+          page: _page('p1', 'two'),
+          baseText: null,
+          time: later,
+          freshSlot: true,
+        ),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(files('.tmp').single, contains('_dup2.entry.'));
+      final l = await store().list();
+      expect(l.entries.map((e) => e.page.meta.title).toSet(), {'one', 'two'});
+      expect(l.problems, isEmpty);
+      expect(slot1.readAsStringSync(), before, reason: 'the entry in slot 1 is untouched');
+      expect(files('.tmp'), isEmpty);
     });
 
     test('a leftover whose time can\'t be read is never superseded: kept and reported', () async {
@@ -595,8 +617,8 @@ void main() {
         expect(jsonDecode(File(dup.single).readAsStringSync())['time'], later.toIso8601String());
         final l = await store().list();
         expect(l.entries.single.page.meta.title, 'two');
-        // The invalid entry, and the note that the new one has another name.
-        expect(l.problems, hasLength(2));
+        // Only the invalid entry: a readable _dup slot is an entry like any other.
+        expect(l.problems, hasLength(1));
       });
     }
 
