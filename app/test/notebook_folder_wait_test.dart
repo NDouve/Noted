@@ -167,6 +167,63 @@ void main() {
     expect(nb.waitingForFolder.value, isFalse);
   });
 
+  test('moveRelative into a held folder shows the note', () async {
+    final other = await Directory('${root.path}${sep}other').create();
+    final section = await nb.addBinder(other.path);
+    final inBinder = await nb.createPage(binderPath: section.path);
+    final id = await nb.createPage();
+    await nb.flush();
+
+    final (gate, held) = hold(other);
+    final move = nb.moveRelative(id, inBinder, after: true);
+    await _wait(600);
+    expect(nb.waitingForFolder.value, isTrue, reason: 'moveRelative');
+    expect(nb.folderWaitersForTest, 1);
+    gate.complete();
+    await held;
+    expect(await move.timeout(const Duration(seconds: 10)), isTrue);
+    expect(nb.waitingForFolder.value, isFalse);
+    expect(nb.folderWaitersForTest, 0);
+  });
+
+  test('moveToFolder into a held folder shows the note', () async {
+    final other = await Directory('${root.path}${sep}other').create();
+    await nb.addStandaloneFolder(other.path);
+    final id = await nb.createPage();
+    await nb.flush();
+
+    final (gate, held) = hold(other);
+    final move = nb.moveToFolder(id, other.path);
+    await _wait(600);
+    expect(nb.waitingForFolder.value, isTrue);
+    expect(nb.folderWaitersForTest, 1);
+    gate.complete();
+    await held;
+    expect(await move.timeout(const Duration(seconds: 10)), isTrue);
+    expect(nb.waitingForFolder.value, isFalse);
+    expect(nb.folderWaitersForTest, 0);
+  });
+
+  test('createPageFromTemplate into a held folder shows the note', () async {
+    final other = await Directory('${root.path}${sep}other').create();
+    final section = await nb.addBinder(other.path);
+    final template = NotedTemplate.forPage(
+      name: 'T',
+      page: nb.current!.page,
+      id: 'aaaaaaaaaaaaaaaa',
+      created: DateTime.utc(2026, 1, 1),
+    );
+    final (gate, held) = hold(other);
+    final made = nb.createPageFromTemplate(template, binderPath: section.path);
+    await _wait(600);
+    expect(nb.waitingForFolder.value, isTrue);
+    gate.complete();
+    await held;
+    await made.timeout(const Duration(seconds: 10));
+    expect(nb.waitingForFolder.value, isFalse);
+    expect(nb.folderWaitersForTest, 0);
+  });
+
   test('two New page calls during a stall make one page', () async {
     final before = pageFiles(pages);
     final (gate, held) = hold(pages);
