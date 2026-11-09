@@ -462,26 +462,42 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Runs [action] as a user action: its waits for a folder lock count toward
   // [waitingForFolder] (see _lockRun).
-  Future<T> _asUser<T>(Future<T> Function() action) =>
-      runZoned(action, zoneValues: {_userActionKey: true});
+  // The marker is live only until the action's future completes: a watcher or
+  // timer made inside it inherits the zone, but not a live marker.
+  Future<T> _asUser<T>(Future<T> Function() action) {
+    final mark = _UserAction();
+    return runZoned(action, zoneValues: {_userActionKey: mark}).whenComplete(() => mark.active = false);
+  }
+
+  final Set<Timer> _waitTimers = {};
 
   // The one wait point: every folder job goes through here. A user action's
   // wait for its turn longer than [folderWaitNote] shows the note.
   Future<T> _lockRun<T>(Directory folder, Future<T> Function() job) {
-    if (Zone.current[_userActionKey] != true) return folderLocks.run(folder, job);
+    final mark = Zone.current[_userActionKey];
+    if (mark is! _UserAction || !mark.active || _disposed) return folderLocks.run(folder, job);
     var counted = false;
     var started = false;
-    final timer = Timer(folderWaitNote, () {
+    Timer? timer;
+    // The job starts in a later turn, so the timer exists by then. If run
+    // throws, no timer was made.
+    final result = folderLocks.run(folder, () {
+      started = true;
+      if (timer != null) {
+        _waitTimers.remove(timer);
+        timer.cancel();
+      }
+      if (counted && --_folderWaiters == 0 && !_disposed) _waitingForFolder.value = false;
+      return job();
+    });
+    timer = Timer(folderWaitNote, () {
+      _waitTimers.remove(timer);
       if (started || _disposed) return;
       counted = true;
       if (++_folderWaiters == 1) _waitingForFolder.value = true;
     });
-    return folderLocks.run(folder, () {
-      started = true;
-      timer.cancel();
-      if (counted && --_folderWaiters == 0 && !_disposed) _waitingForFolder.value = false;
-      return job();
-    });
+    _waitTimers.add(timer);
+    return result;
   }
 
   final StreamController<LocalChange> _changes = StreamController<LocalChange>.broadcast();
@@ -2465,7 +2481,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }) {
     final key = '$parentId|$binderPath|$folderPath';
     final pending = _pendingCreates[key];
-    if (pending != null) return pending;
+    if (pending != null) {
+      // The page is opened by the pending call; only the title focus is ours.
+      return focusTitle ? pending.then((id) {
+        requestTitleFocus(id);
+        return id;
+      }) : pending;
+    }
     final run = _asUser(
       () => _createPageNow(parentId, binderPath, folderPath, focusTitle),
     );
@@ -10728,6 +10750,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   @override
   void dispose() {
     _disposed = true;
+    for (final t in _waitTimers) {
+      t.cancel();
+    }
+    _waitTimers.clear();
+    _folderWaiters = 0;
+    _waitingForFolder.value = false;
+    _waitingForFolder.dispose();
     _aiMerge?.dispose();
     _saveTimer?.cancel();
     _backoff.dispose();
@@ -10808,4 +10837,9 @@ class _SettingsRead {
   final bool notFound;
   final _SettingsHold? hold;
   final Object? error;
+}
+
+// A user action in flight; cleared when it ends (see Notebook._asUser).
+class _UserAction {
+  bool active = true;
 }

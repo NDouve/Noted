@@ -16,6 +16,7 @@ import 'app_commands.dart';
 import 'app_settings.dart';
 import 'binder_cover.dart';
 import 'device_storage.dart';
+import 'folder_wait_note.dart';
 import 'notebook.dart';
 import 'notebook_search.dart';
 import 'page_title_field.dart';
@@ -98,7 +99,6 @@ class _HomeState extends State<Home> {
     _search.addListener(_searchChanged);
     _notices = notebook.attachmentNotices.listen(_showNotice);
     _kept = notebook.keptNotices.listen(_showKept);
-    notebook.waitingForFolder.addListener(_waitingChanged);
     final settings = widget.settings;
     if (settings != null) {
       unawaited(
@@ -111,35 +111,6 @@ class _HomeState extends State<Home> {
           WidgetsBinding.instance.ensureVisualUpdate();
         }),
       );
-    }
-  }
-
-  // The note while an action waits on a stalled folder; it stays until the
-  // wait ends, then goes (unless another message has taken its place).
-  ScaffoldFeatureController<SnackBar, SnackBarClosedReason>? _waitNote;
-
-  void _waitingChanged() {
-    if (!mounted) return;
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    if (notebook.waitingForFolder.value) {
-      if (_waitNote != null) return;
-      messenger?.hideCurrentSnackBar();
-      final note = messenger?.showSnackBar(
-        const SnackBar(
-          key: ValueKey('waiting-for-folder'),
-          content: Text('Waiting for the folder…'),
-          persist: true,
-        ),
-      );
-      _waitNote = note;
-      unawaited(
-        note?.closed.then((_) {
-          if (identical(_waitNote, note)) _waitNote = null;
-        }),
-      );
-    } else {
-      _waitNote?.close();
-      _waitNote = null;
     }
   }
 
@@ -306,7 +277,6 @@ class _HomeState extends State<Home> {
   void dispose() {
     _sync?.removeListener(_guardChanged);
     _search.removeListener(_searchChanged);
-    notebook.waitingForFolder.removeListener(_waitingChanged);
     _titleHighlight.dispose();
     unawaited(_notices?.cancel());
     unawaited(_kept?.cancel());
@@ -406,7 +376,13 @@ class _HomeState extends State<Home> {
                 child: _sidebar(NotedMetrics.of(context)),
               )
             : null,
-        body: _body(),
+        body: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            FolderWaitNote(notebook: notebook),
+            Expanded(child: _body()),
+          ],
+        ),
       ),
     );
   }
