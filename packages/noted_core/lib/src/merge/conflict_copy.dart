@@ -409,16 +409,48 @@ bool _nodeIsVersion(RawJson node, BoxRecord m) {
 /// without nesting: a version recorded by `node` that [x] doesn't hold and
 /// isn't [x]'s own, and a `deleted` flag when [x] has none.
 List<BoxConflict> _missingRecords(BoxRecord x, BoxRecord m) {
-  final own = {x.toRaw(), x.withoutConflicts().toRaw()};
   final have = x.conflicts;
   final out = <BoxConflict>[];
   for (final c in m.conflicts) {
     if (c.deleted) {
       if (!have.any((k) => k.deleted) && !out.any((k) => k.deleted)) out.add(c);
     } else if (!have.any((k) => k.node == c.node) &&
-        !own.contains(c.node) &&
+        !_nodeIsVersion(c.node!, x) &&
         !out.any((k) => k.node == c.node)) {
       out.add(c);
+    }
+  }
+  return out;
+}
+
+/// The records [b] holds that [mn] doesn't: those the user settled by hand.
+List<BoxConflict> _settledRecords(BoxRecord b, BoxRecord mn) {
+  final mine = mn.conflicts;
+  return [
+    for (final c in b.conflicts)
+      if (c.deleted ? !mine.any((k) => k.deleted) : !mine.any((k) => k.node == c.node)) c,
+  ];
+}
+
+/// [mine]'s nodes the merge kept under another id in [landed] (matched back by
+/// version, or by content for a node Noted doesn't own), keyed by that id.
+Map<String, CanvasNode> _reidentified(NotedPage mine, NotedPage landed) {
+  final mineIds = {for (final n in mine.nodes) n.id};
+  final out = <String, CanvasNode>{};
+  final claimed = <String>{};
+  for (final m in landed.nodes) {
+    if (mineIds.contains(m.id)) continue;
+    for (final k in mine.nodes) {
+      if (claimed.contains(k.id)) continue;
+      final at = landed.node(k.id);
+      final same = switch (m) {
+        BoxRecord() => k is BoxRecord && _sameVersion(k, m) && !(at is BoxRecord && _sameVersion(at, k)),
+        ForeignNode() => k is ForeignNode && _sameModuloId(k, m) && at?.toRaw() != k.toRaw(),
+      };
+      if (!same) continue;
+      claimed.add(k.id);
+      out[m.id] = k;
+      break;
     }
   }
   return out;
@@ -466,16 +498,20 @@ List<BoxConflict> _heldRecords(CanvasNode? b) => b is BoxRecord ? b.conflicts : 
   bool structure = true,
 }) {
   final held = _heldCopyNodes(now, landed);
+  // A node the merge kept under a new id (an entry with no base, over a file
+  // holding another node at its id) is still [mine]'s edit.
+  final reid = structure ? const <String, CanvasNode>{} : _reidentified(mine, landed);
   final repl = <String, CanvasNode>{};
+  final removed = <String>{};
   final beside = <String, List<CanvasNode>>{};
   final restore = <(int, CanvasNode)>[];
   var foreignBack = false;
 
   for (var i = 0; i < landed.nodes.length; i++) {
     final m = landed.nodes[i];
-    final mn = mine.node(m.id);
+    final mn = mine.node(m.id) ?? reid[m.id];
     if (mn == null) continue;
-    final b = base.node(m.id);
+    final b = base.node(mn.id);
     if (b != null && b.toRaw() == mn.toRaw()) continue; // not [mine]'s edit
     final x = now.node(m.id);
     switch (m) {
@@ -483,16 +519,28 @@ List<BoxConflict> _heldRecords(CanvasNode? b) => b is BoxRecord ? b.conflicts : 
         if (x == null) {
           restore.add((i, m.conflicts.any((c) => c.deleted) ? m : _withRecords(m, [BoxConflict.deleted(at: at)])));
         } else if (x is BoxRecord) {
+          // Records [mine] removed (the user settled the conflict) that are back:
+          // a box exactly as in the base is replaced by [mine]'s; otherwise only
+          // a flag removed again, a recorded version stays.
+          final settled = b is BoxRecord && mn is BoxRecord ? _settledRecords(b, mn) : const <BoxConflict>[];
+          var xx = x;
+          if (settled.isNotEmpty && x.conflicts.any((c) => settled.any((s) => s.deleted ? c.deleted : c.node == s.node))) {
+            if (x.toRaw() == b!.toRaw()) {
+              repl[m.id] = m;
+              continue;
+            }
+            if (settled.any((s) => s.deleted)) xx = x.withConflicts([for (final c in x.conflicts) if (!c.deleted) c]);
+          }
           final add = <BoxConflict>[];
           final contentChanged = b is! BoxRecord || mn is! BoxRecord || !_sameVersion(b, mn);
-          if (contentChanged && !_sameVersion(x, m) && !_derivedFrom(x, m)) {
+          if (contentChanged && !_sameVersion(xx, m) && !_derivedFrom(xx, m)) {
             final node = m.withoutConflicts().toRaw();
-            if (!x.conflicts.any((c) => c.node == node)) {
+            if (!xx.conflicts.any((c) => c.node == node)) {
               add.add(BoxConflict.other(node: node, at: at, device: m.device));
             }
           }
-          add.addAll(_missingRecords(x, m));
-          var r = _withRecords(x, add);
+          add.addAll(_missingRecords(xx, m));
+          var r = _withRecords(xx, add);
           if (structure && mn is BoxRecord) {
             final bb = b is BoxRecord ? b : null;
             if (bb == null || mn.bounds != bb.bounds) r = r.withBounds(m.bounds);
@@ -520,7 +568,11 @@ List<BoxConflict> _heldRecords(CanvasNode? b) => b is BoxRecord ? b.conflicts : 
     if (mine.node(b.id) != null) continue; // [mine] didn't delete it
     final x = repl[b.id] ?? now.node(b.id);
     if (b is BoxRecord && x is BoxRecord) {
-      if (!x.conflicts.any((c) => c.deleted)) repl[b.id] = _withRecords(x, [BoxConflict.deleted(at: at)]);
+      if (b.conflicts.isNotEmpty && x.toRaw() == b.toRaw()) {
+        removed.add(b.id); // "Delete it" of a conflicted box, undone as it was: deleted again
+      } else if (!x.conflicts.any((c) => c.deleted)) {
+        repl[b.id] = _withRecords(x, [BoxConflict.deleted(at: at)]);
+      }
     } else if (b is ForeignNode && x is ForeignNode && x.toRaw() == b.toRaw()) {
       foreignBack = true;
     }
@@ -528,6 +580,7 @@ List<BoxConflict> _heldRecords(CanvasNode? b) => b is BoxRecord ? b.conflicts : 
 
   final out = <CanvasNode>[];
   for (final n in now.nodes) {
+    if (removed.contains(n.id)) continue;
     out.add(repl[n.id] ?? n);
     out.addAll(beside[n.id] ?? const []);
   }
@@ -542,7 +595,7 @@ List<BoxConflict> _heldRecords(CanvasNode? b) => b is BoxRecord ? b.conflicts : 
     }
     out.insert(pos, r);
   }
-  var changed = repl.isNotEmpty || beside.isNotEmpty || restore.isNotEmpty;
+  var changed = repl.isNotEmpty || removed.isNotEmpty || beside.isNotEmpty || restore.isNotEmpty;
 
   var top = now.top;
   var meta = now.meta;

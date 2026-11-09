@@ -230,6 +230,80 @@ void main() {
     });
   });
 
+  group('recordLostEdits: settled by hand, and re-identified nodes', () {
+    final flagged = a.withConflict(BoxConflict.deleted(at: 5));
+    final baseFlag = pageOf([flagged, b, c]);
+
+    test('Keep the box: the flag back on the restored base is removed again', () {
+      final mine = pageOf([a, b, c]);
+      final r = fix(baseFlag, mine, mine, baseFlag);
+      expect(boxOf(r, 'a').conflicts, isEmpty);
+      expect(boxOf(r, 'a').toRaw().text, a.toRaw().text);
+      expect(identical(fix(baseFlag, mine, mine, r), r), isTrue);
+    });
+
+    test('Keep the other version: the box restored as in the base takes mine\'s version', () {
+      final other = edit(a, 'other');
+      final shown = a.withConflict(BoxConflict.other(node: other.toRaw(), at: 5));
+      final b0 = pageOf([shown, b, c]);
+      final mine = pageOf([other, b, c]);
+      final r = fix(b0, mine, mine, b0);
+      expect(boxOf(r, 'a').rev, other.rev);
+      expect(boxOf(r, 'a').conflicts, isEmpty);
+    });
+
+    test('Delete it: the box restored as in the base is deleted again', () {
+      final mine = pageOf([b, c]);
+      final r = fix(baseFlag, mine, mine, baseFlag);
+      expect(ids(r), ['b', 'c']);
+      expect(identical(fix(baseFlag, mine, mine, r), r), isTrue);
+    });
+
+    test('Delete it: a box the other writer changed since is flagged, not deleted', () {
+      final mine = pageOf([b, c]);
+      final now = pageOf([edit(a, 'theirs').withConflict(BoxConflict.deleted(at: 6)), b, c]);
+      expect(ids(fix(baseFlag, mine, mine, now)), ['a', 'b', 'c']);
+    });
+
+    test('a flag settled by hand is removed from a box the other writer changed, a recorded version stays', () {
+      final mine = pageOf([a, b, c]);
+      final other = edit(a, 'other');
+      final now = pageOf([
+        edit(a, 'theirs').withConflict(BoxConflict.other(node: other.toRaw(), at: 7)).withConflict(BoxConflict.deleted(at: 6)),
+        b,
+        c,
+      ]);
+      final r = fix(baseFlag, mine, mine, now);
+      expect(boxOf(r, 'a').conflicts.any((k) => k.deleted), isFalse);
+      expect(boxOf(r, 'a').conflicts, hasLength(1));
+    });
+
+    test('x\'s own version is judged by revision, not raw text', () {
+      final v = edit(a, 'other');
+      final m = a1.withConflict(BoxConflict.other(node: v.toRaw(), at: 3));
+      final mine = pageOf([m, b, c]);
+      final now = pageOf([v.withBounds(const Bounds(9, 9, 100, 50)), b, c]);
+      final r = fix(base, mine, mine, now);
+      expect(boxOf(r, 'a').conflicts.map((k) => k.node!.text), [a1.toRaw().text]);
+    });
+
+    test('a node the merge kept under a new id is still mine\'s edit', () {
+      ForeignNode foreign(String id) => ForeignNode.read(
+        RawJson.trusted('{"id":"$id","type":"group","x":0,"y":0,"width":10,"height":10,"label":"f"}'),
+        fallbackId: id,
+      );
+      final empty = NotedPage.create(base.meta);
+      final mine = pageOf([a1]);
+      final file = pageOf([foreign('a')]);
+      final landed = mergeConflictCopy(file, mine, CodecRegistry()..register(_plain), copyTime: 1, forRecovery: true).page;
+      expect(landed.nodes, hasLength(2));
+      final r = recordLostEdits(empty, mine, landed, file, at: 9, structure: false).page;
+      expect(r.nodes.whereType<BoxRecord>().map((x) => x.rev), contains(a1.rev), reason: 'the box is back');
+      final again = recordLostEdits(empty, mine, landed, r, at: 9, structure: false).page;
+      expect(identical(again, r), isTrue);
+    });
+  });
+
   group('recordLostEdits: position, order and header', () {
     test('mine\'s bounds and fixed height are put back, with no conflict', () {
       final moved = b.withBounds(const Bounds(40, 40, 120, 80)).withFixedHeight(true);

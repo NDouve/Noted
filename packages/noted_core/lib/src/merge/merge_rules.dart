@@ -44,15 +44,6 @@ PageMeta mergeMeta(PageMeta base, PageMeta mine, PageMeta theirs) {
 RawObject mergeTop(RawObject base, RawObject mine, RawObject theirs) =>
     mergeFields(base, mine, theirs, skip: const {'nodes', 'noted'});
 
-/// Whether [a] and [b] hold the same fields, whatever their order.
-bool sameFields(RawObject a, RawObject b) {
-  final keys = <String>{
-    for (final (k, _) in a.entries) k,
-    for (final (k, _) in b.entries) k,
-  };
-  return keys.every((k) => a[k] == b[k]);
-}
-
 bool sameIds(List<String> a, List<String> b) {
   if (a.length != b.length) return false;
   for (var i = 0; i < a.length; i++) {
