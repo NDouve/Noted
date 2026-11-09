@@ -699,6 +699,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return _landedProblems.values.any((p) => _key(p.path) == k);
   }
 
+  /// Test seam: how many generations hold landed text.
+  @visibleForTesting
+  int get landedTextCount => _landedText.length;
+
   /// Test seam: [_editsIn].
   @visibleForTesting
   static bool editsInForTest(NotedPage eb, NotedPage ep, NotedPage nb) => _editsIn(eb, ep, nb);
@@ -3176,10 +3180,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           victim = k.preexisting ? null : rec.indexEntries.where((x) => x.gen == k.freshGen).firstOrNull;
         }
         if (victim != null) {
-          // The page's file went with the entry: a landed, unsettled page is
-          // still that of the new generation.
+          // Landed text belongs to one generation. It moves only to an exact
+          // copy (a fresh slot with the same page and base); a combined
+          // generation merges again on replay (0156).
           final landed = _landedText[victim.gen];
-          if (landed != null && identical(victim, k.old)) _landedText[k.freshGen] = landed;
+          if (landed != null && identical(victim, k.old) && !k.preexisting) {
+            final copy = rec.indexEntries.where((x) => x.gen == k.freshGen).firstOrNull;
+            if (copy != null && copy.pageText == victim.pageText && copy.baseText == victim.baseText) {
+              _landedText[k.freshGen] = landed;
+            }
+          }
+          _landedText.remove(victim.gen);
           await _deleteEntry(rec, victim);
         }
       } on Object catch (e) {
@@ -6560,6 +6571,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // A failure stays listed only while its entry does.
     final live = {for (final e in listing.entries) _entryKey(e)};
     _replayProblems.removeWhere((k, _) => !live.contains(k));
+    // Landed text only for generations that are listed.
+    final liveGens = {for (final e in rec.indexEntries) e.gen};
+    _landedText.removeWhere((g, _) => !liveGens.contains(g));
     // Landed leftovers are deleted, never merged (0130).
     if (rec.landedEntries.isNotEmpty) {
       await _deleteGens(rec, [for (final e in rec.landedEntries) e.gen], null);
