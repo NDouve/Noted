@@ -11,7 +11,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_store.dart';
-import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 /// A store whose reads throw while [fail] says so.
@@ -27,7 +26,25 @@ class _FlakyReadStore extends PageStore {
   }
 }
 
+/// A store that refuses to make new page files while [refuse] says so.
+class _NoNewStore extends PageStore {
+  _NoNewStore(super.directory, this.refuse);
+
+  final bool Function() refuse;
+
+  @override
+  Future<bool> saveNewText(
+    NotedPage page,
+    String text, {
+    Future<void> Function()? beforePublish,
+  }) {
+    if (refuse()) throw const FileSystemException('injected write failure');
+    return super.saveNewText(page, text, beforePublish: beforePublish);
+  }
+}
+
 void main() {
+  var failNew = false;
   late Directory root;
   late Directory pages;
   late Directory a; // the folder the page starts in
@@ -52,11 +69,16 @@ void main() {
     if (root.existsSync()) await root.delete(recursive: true);
   });
 
+  PageStore plain(Directory d) => _NoNewStore(
+    d,
+    () => failNew && d.path.replaceAll(r'\', '/').endsWith('/B'),
+  );
+
   Notebook make({PageStore Function(Directory)? storeFactory}) {
     final nb = Notebook(
       PageStore(pages),
       buildModules(),
-      storeFactory: storeFactory ?? PageStore.new,
+      storeFactory: storeFactory ?? plain,
       saveDelay: const Duration(hours: 1),
       bindersFile: File('${root.path}/app/binders.json'),
       recoveryDirectory: rec,
@@ -67,94 +89,216 @@ void main() {
   }
 
   File pageFile(Directory d, String id) => File('${d.path}/$id.canvas');
-  List<String> entryFiles() =>
-      rec.existsSync() ? [for (final f in rec.listSync()) f.path].where((p) => p.endsWith('.entry')).toList() : const [];
-  NotedPage disk(Directory d, String id) => readPage(pageFile(d, id).readAsStringSync());
+  List<String> entryFiles() => rec.existsSync()
+      ? [for (final f in rec.listSync()) f.path]
+            .where((p) => p.endsWith('.entry'))
+            .toList()
+      : const [];
+  NotedPage disk(Directory d, String id) =>
+      readPage(pageFile(d, id).readAsStringSync());
   List<String> ids(NotedPage p) => [for (final n in p.nodes) n.id];
 
-  // Page P in A with [boxes] boxes saved (the base); returns its id, base text
-  // and a box X that is not on it. The notebook that made it is closed.
-  Future<({String id, String baseText, BoxRecord x})> makePage({int boxes = 1}) async {
+  // Page P in A with one box saved (the base); returns its id, base text and
+  // three boxes that are not on it. The notebook that made it is closed.
+  Future<({String id, String baseText, List<BoxRecord> xs})> makePage() async {
     final nb = make();
     await nb.load();
     final id = await nb.createPage(folderPath: a.path);
     final other = await nb.createPage(folderPath: a.path);
     await nb.flush();
     await nb.open(other);
-    nb.current!.createBoxAt(const Bounds(300, 300, 0, 0));
-    await nb.flush();
-    await nb.open(id);
-    for (var i = 0; i < boxes; i++) {
-      nb.current!.createBoxAt(Bounds(40.0 + 150 * i, 40, 0, 0));
+    for (var i = 0; i < 3; i++) {
+      nb.current!.createBoxAt(Bounds(300.0 + 150 * i, 300, 0, 0));
     }
     await nb.flush();
+    await nb.open(id);
+    nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+    await nb.flush();
     final text = pageFile(a, id).readAsStringSync();
-    final box = disk(a, other).nodes.whereType<BoxRecord>().single;
+    final xs = disk(a, other).nodes.whereType<BoxRecord>().toList();
     nb.dispose();
     opened.remove(nb);
-    // The helper page "other" is no longer wanted: the folder holds only P.
+    // The helper page is no longer wanted: the folder holds only P.
     pageFile(a, other).deleteSync();
-    return (id: id, baseText: text, x: box);
+    return (id: id, baseText: text, xs: xs);
   }
 
-  // The entry of P in A (a retitle and a moved first box) lands on the next
-  // load, and its settle read fails after the publish, so landed text is kept.
-  // Returns the notebook, still failing reads.
-  Future<(Notebook, void Function(bool))> landedUnsettled(String id, String baseText) async {
+  // The entries of P in A (a retitle and a moved first box; [more] adds
+  // entries that each add one box) land on the next load, and the settle read
+  // fails after the publish, so landed text is kept. Reads work again at
+  // return; the landed text stays in memory.
+  Future<Notebook> landedUnsettled(
+    String id,
+    String baseText, {
+    List<BoxRecord> more = const [],
+  }) async {
     final base = readPage(baseText);
     final box = base.nodes.first as BoxRecord;
     final m = base.replaceNode(box.withBounds(const Bounds(200, 200, 30, 30)));
     final mine = m.withMeta(m.meta.withTitle('Mine'));
-    await RecoveryStore(rec).write(folder: a.path, page: mine, baseText: baseText, time: DateTime.now());
+    final store = RecoveryStore(rec);
+    await store.write(
+      folder: a.path,
+      page: mine,
+      baseText: baseText,
+      time: DateTime.now(),
+    );
+    for (var i = 0; i < more.length; i++) {
+      await store.write(
+        folder: a.path,
+        page: base.insertNode(more[i]),
+        baseText: baseText,
+        time: DateTime.now().add(Duration(seconds: i + 1)),
+        freshSlot: true,
+      );
+    }
     var failing = false;
-    final nb = make(storeFactory: (d) => d.path == a.path ? _FlakyReadStore(d, () => failing) : PageStore(d));
+    final nb = make(
+      storeFactory: (d) =>
+          d.path == a.path ? _FlakyReadStore(d, () => failing) : plain(d),
+    );
     nb.syncHook = (point, path) async {
       if (point == 'recover-published') failing = true;
     };
     await nb.load();
-    expect(entryFiles(), isNotEmpty, reason: 'landed, not settled: the entry stays');
-    expect(nb.landedTextCount, 1);
-    return (nb, (v) => failing = v);
+    nb.syncHook = null;
+    failing = false;
+    expect(
+      entryFiles(),
+      isNotEmpty,
+      reason: 'landed, not settled: the entries stay',
+    );
+    expect(nb.landedTextCount, 1 + more.length);
+    return nb;
   }
 
   // An entry of P in B that the page was edited with while B was offline: the
-  // base text with box [x] added.
-  Future<void> targetEntry(String id, String baseText, BoxRecord x) async {
+  // base text with [x] added.
+  Future<void> targetEntry(String baseText, BoxRecord x) async {
     final withX = readPage(baseText).insertNode(x);
-    await RecoveryStore(rec).write(folder: b.path, page: withX, baseText: baseText, time: DateTime.now());
+    await RecoveryStore(rec).write(
+      folder: b.path,
+      page: withX,
+      baseText: baseText,
+      time: DateTime.now(),
+    );
   }
 
   group('R-1 landed text is not handed to a combined generation', () {
     // 1: back != out. B already holds a page, so the move changes P's order.
-    test('a move into a folder holding an entry merges again; the extra box lands', () async {
-      final p = await makePage();
-      final (nb, failing) = await landedUnsettled(p.id, p.baseText);
-      await nb.createPage(folderPath: b.path);
-      await nb.flush();
-      await targetEntry(p.id, p.baseText, p.x);
-      await nb.refreshRecoveryIndexForTest();
-      failing(false);
-      expect(await nb.moveToFolder(p.id, b.path), isTrue);
+    test(
+      'a move into a folder holding an entry merges again; the extra box lands',
+      () async {
+        final p = await makePage();
+        final nb = await landedUnsettled(p.id, p.baseText);
+        await nb.createPage(folderPath: b.path);
+        await nb.flush();
+        await targetEntry(p.baseText, p.xs[0]);
+        await nb.refreshRecoveryIndexForTest();
+        expect(await nb.moveToFolder(p.id, b.path), isTrue);
+        await nb.recoverNowForTest();
+        expect(pageFile(b, p.id).existsSync(), isTrue);
+        expect(
+          ids(disk(b, p.id)),
+          contains(p.xs[0].id),
+          reason: 'the target entry\'s box is in the file',
+        );
+        expect(
+          entryFiles(),
+          isEmpty,
+          reason: 'retired only after the file held every box',
+        );
+        expect(nb.landedTextCount, 0);
+        expect(disk(b, p.id).meta.title, 'Mine');
+      },
+    );
 
+    // 2: back == out. B is empty, so the placement bytes do not change.
+    test(
+      'the same with a top-level page whose placement does not change',
+      () async {
+        final p = await makePage();
+        final nb = await landedUnsettled(p.id, p.baseText);
+        await targetEntry(p.baseText, p.xs[0]);
+        await nb.refreshRecoveryIndexForTest();
+        expect(await nb.moveToFolder(p.id, b.path), isTrue);
+        await nb.recoverNowForTest();
+        expect(ids(disk(b, p.id)), contains(p.xs[0].id));
+        expect(entryFiles(), isEmpty);
+        expect(nb.landedTextCount, 0);
+      },
+    );
+
+    // 3: guards the exact-copy condition; passes either way.
+    test('a fresh-slot move keeps the landed text: the retry settles without merging again', () async {
+      final p = await makePage();
+      final nb = await landedUnsettled(p.id, p.baseText);
+      expect(await nb.moveToFolder(p.id, b.path), isTrue);
+      var rereads = 0;
+      nb.syncHook = (point, path) async {
+        if (point == 'recover-reread') rereads++;
+      };
       await nb.recoverNowForTest();
-      expect(pageFile(b, p.id).existsSync(), isTrue);
-      expect(ids(disk(b, p.id)), contains(p.x.id), reason: 'the target entry\'s box is in the file');
-      expect(entryFiles(), isEmpty, reason: 'retired only after the file held every box');
+      expect(
+        rereads,
+        0,
+        reason: 'settled from the landed text, not merged again',
+      );
+      expect(entryFiles(), isEmpty);
       expect(nb.landedTextCount, 0);
       expect(disk(b, p.id).meta.title, 'Mine');
     });
 
-    // 2: back == out. B is empty, so the placement bytes do not change.
-    test('the same with a top-level page whose placement does not change', () async {
+    test('two entries at the source and one at the target: every box of all three lands', () async {
       final p = await makePage();
-      final (nb, failing) = await landedUnsettled(p.id, p.baseText);
-      await targetEntry(p.id, p.baseText, p.x);
+      final nb = await landedUnsettled(p.id, p.baseText, more: [p.xs[1]]);
+      await targetEntry(p.baseText, p.xs[0]);
       await nb.refreshRecoveryIndexForTest();
-      failing(false);
       expect(await nb.moveToFolder(p.id, b.path), isTrue);
-
       await nb.recoverNowForTest();
-      expect(ids(disk(b, p.id)), contains(p.x.id));
+      final got = ids(disk(b, p.id));
+      expect(got, containsAll([p.xs[0].id, p.xs[1].id]));
+      expect(entryFiles(), isEmpty);
+      expect(nb.landedTextCount, 0);
+    });
+
+    test('a rolled-back move leaves a combined entry at the target: it is merged back into the source', () async {
+      final p = await makePage();
+      final nb = await landedUnsettled(p.id, p.baseText);
+      await targetEntry(p.baseText, p.xs[0]);
+      await nb.refreshRecoveryIndexForTest();
+      failNew = true;
+      await expectLater(
+        nb.moveToFolder(p.id, b.path),
+        throwsA(isA<NotebookException>()),
+      );
+      failNew = false;
+      await nb.recoverNowForTest();
+      expect(pageFile(b, p.id).existsSync(), isFalse);
+      expect(
+        ids(disk(a, p.id)),
+        contains(p.xs[0].id),
+        reason: 'the target entry\'s box is in the source page',
+      );
+      expect(entryFiles(), isEmpty);
+      await nb.recoverNowForTest(); // the next listing prunes
+      expect(nb.landedTextCount, 0, reason: 'the old landed text is pruned');
+    });
+
+    test('a combining keep of a landed generation merges again; the orphan landed text is pruned', () async {
+      final p = await makePage();
+      final nb = await landedUnsettled(p.id, p.baseText);
+      final base = readPage(p.baseText);
+      final out = await nb.keepClosedForTest(
+        base.insertNode(p.xs[0]),
+        base,
+        a.path,
+      );
+      expect(out.safe, isTrue);
+      await nb.recoverNowForTest();
+      final d = disk(a, p.id);
+      expect(ids(d), contains(p.xs[0].id));
+      expect(d.meta.title, 'Mine');
       expect(entryFiles(), isEmpty);
       expect(nb.landedTextCount, 0);
     });
