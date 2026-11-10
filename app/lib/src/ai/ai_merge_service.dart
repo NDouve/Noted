@@ -231,14 +231,14 @@ class AiMergeService implements PageAiMerge {
     if (box is! BoxRecord) return null;
     final typeId = box.typeId;
     if (typeId != _noteTypeId && typeId != aiBoxTypeId) return null;
-    if (_isEncrypted(box)) return null;
+    if (isEncryptedBox(box)) return null;
     final codec = host.aiMergeCodec(typeId);
     if (codec == null || box.dataVersion > codec.dataVersion) return null;
     final conflict = _conflictOf(box);
     if (conflict == null) return null;
     final other = readNode(conflict.node!, fallbackId: boxId);
     if (other is! BoxRecord || other.typeId != typeId || other.dataVersion > codec.dataVersion) return null;
-    if (_isEncrypted(other)) return null;
+    if (isEncryptedBox(other)) return null;
     final mine = _version(box, box.editedAt ?? 0, box.device);
     final theirs = _version(other, conflict.at, conflict.device ?? other.device);
     if (mine == null || theirs == null) return null;
@@ -266,9 +266,6 @@ class AiMergeService implements PageAiMerge {
     if (utf8.encode(markdown).length > aiMergeMaxVersionBytes) return null;
     return _Version(json, AiLinkMergeVersion(at: at, device: device));
   }
-
-  static bool _isEncrypted(BoxRecord box) =>
-      box.typeId.contains('encrypt') || box.noted.containsKey('encrypted') || box.noted.containsKey('cipher');
 
   // The AI's side (through the link) -----------------------------------------
 

@@ -157,3 +157,10 @@ BoxTypeAvailability _resolveBoxType(
   }
   return const BoxTypeAvailability.allowed();
 }
+
+/// Whether [box] is encrypted (binder passwords, a later phase): an encrypted
+/// box type, or a header that says so. Its data is never read.
+bool isEncryptedBox(BoxRecord box) =>
+    box.typeId.contains('encrypt') ||
+    box.noted.containsKey('encrypted') ||
+    box.noted.containsKey('cipher');

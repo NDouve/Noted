@@ -18,6 +18,7 @@ BoxRecord box(String id, {double x = 0}) => BoxRecord.create(
 final codecs = CodecRegistry();
 
 void main() {
+  orderTests();
   final empty = NotedPage.create(PageMeta.create(id: 'p', title: '', order: 0));
 
   test('undo and redo an add, a move and a remove', () {
@@ -159,4 +160,62 @@ class _SetEdit implements BoxEdit {
       ..sort();
     return (items, _SetEdit(add: remove, remove: add));
   }
+}
+
+void orderTests() {
+  final empty = NotedPage.create(PageMeta.create(id: 'p', title: '', order: 0));
+  NotedPage three() => empty.insertNode(box('a')).insertNode(box('b')).insertNode(box('c'));
+  List<String> ids(NotedPage p) => [for (final n in p.nodes) n.id];
+
+  test('an order change undoes and redoes', () {
+    final h = PageHistory();
+    var page = three();
+    // a brought to front: it was bottom-most.
+    h.record(const PageChange.order('a', index: 0));
+    page = page.moveNode('a', 2);
+    expect(ids(page), ['b', 'c', 'a']);
+    page = h.undo(page, codecs)!;
+    expect(ids(page), ['a', 'b', 'c']);
+    page = h.redo(page, codecs)!;
+    expect(ids(page), ['b', 'c', 'a']);
+    page = h.undo(page, codecs)!;
+    expect(ids(page), ['a', 'b', 'c']);
+  });
+
+  test('undo puts the node after its recorded predecessor, even when others moved', () {
+    final h = PageHistory();
+    var page = three();
+    h.record(const PageChange.order('c', after: 'b', index: 2));
+    page = page.moveNode('c', 0); // c sent to back
+    page = page.moveNode('b', 2); // then b moved away: [c, a, b]
+    page = h.undo(page, codecs)!;
+    expect(ids(page), ['a', 'b', 'c']);
+  });
+
+  test('a predecessor that is gone falls back to the clamped index', () {
+    final h = PageHistory();
+    var page = three();
+    h.record(const PageChange.order('c', after: 'gone', index: 9));
+    page = page.moveNode('c', 0);
+    page = h.undo(page, codecs)!;
+    expect(ids(page), ['a', 'b', 'c']);
+  });
+
+  test('a node that is gone is skipped', () {
+    final h = PageHistory()..record(const PageChange.order('zz', index: 0));
+    expect(h.undo(three(), codecs), isNull);
+    expect(h.canRedo, isFalse);
+  });
+
+  test('forgetAdded drops the order records of a discarded box', () {
+    final h = PageHistory()
+      ..record(const PageChange.added('a'))
+      ..record(const PageChange.order('a', index: 0))
+      ..record(const PageChange.order('b', index: 0));
+    h.forgetAdded('a');
+    var page = three().moveNode('b', 2);
+    page = h.undo(page, codecs)!;
+    expect(ids(page), ['b', 'a', 'c']);
+    expect(h.canUndo, isFalse);
+  });
 }

@@ -50,6 +50,13 @@ sealed class PageChange {
   /// marker, so content typed since is kept.
   const factory PageChange.landed(String id, BoxLanded? before) = _LandedChanged;
 
+  /// Records that node [id] was moved in the z-order. [after] is the id of the
+  /// node it sat directly above before (null: it was bottom-most) and [index]
+  /// its place in the list. Reverting puts it back after [after] if that node
+  /// is still there, otherwise at [index] (clamped).
+  const factory PageChange.order(String id, {String? after, required int index}) =
+      _Order;
+
   /// Several changes made together, undone together. [changes] are in the
   /// order they were made.
   const factory PageChange.group(List<PageChange> changes) = _Group;
@@ -62,6 +69,25 @@ sealed class PageChange {
   /// Reverts this change on [page]. Returns null if the change no longer
   /// applies, for example because its box is gone.
   (NotedPage, PageChange)? revert(NotedPage page, CodecRegistry codecs);
+}
+
+final class _Order extends PageChange {
+  const _Order(this.id, {this.after, required this.index});
+
+  final String id;
+  final String? after;
+  final int index;
+
+  @override
+  (NotedPage, PageChange)? revert(NotedPage page, CodecRegistry codecs) {
+    final i = page.indexOf(id);
+    if (i < 0) return null;
+    final inverse = PageChange.order(id, after: i == 0 ? null : page.nodes[i - 1].id, index: i);
+    final rest = [for (final n in page.nodes) if (n.id != id) n.id];
+    final p = after == null ? -1 : rest.indexOf(after!);
+    final to = after == null ? 0 : (p >= 0 ? p + 1 : index);
+    return (page.moveNode(id, to), inverse);
+  }
 }
 
 final class _BackgroundChanged extends PageChange {
@@ -221,7 +247,10 @@ final class PageHistory {
     if (i < 0) return;
     _undo.removeAt(i);
     _undo.removeWhere(
-      (c) => (c is _BoundsChanged && c.id == id) || (c is _ContentChanged && c.id == id),
+      (c) =>
+          (c is _BoundsChanged && c.id == id) ||
+          (c is _ContentChanged && c.id == id) ||
+          (c is _Order && c.id == id),
     );
   }
 
