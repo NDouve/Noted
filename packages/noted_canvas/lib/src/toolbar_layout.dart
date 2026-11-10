@@ -266,6 +266,15 @@ const ToolbarLayout _insertTools = [
   ],
 ];
 
+/// The layering commands (the selected box), for the Draw tab (OneNote keeps
+/// Arrange there) and the Contextual bar.
+const List<String> _layeringTools = [
+  'canvas.bringToFront',
+  'canvas.bringForward',
+  'canvas.sendBackward',
+  'canvas.sendToBack',
+];
+
 /// Tabs (OneNote-style): Home, Insert, Draw and View, with Undo and Redo
 /// left of the tabs and Search all pages at the right, always visible.
 const TabbedToolbarLayout tabbedToolbarLayout = TabbedToolbarLayout(
@@ -278,6 +287,7 @@ const TabbedToolbarLayout tabbedToolbarLayout = TabbedToolbarLayout(
       label: 'Draw',
       groups: [
         [..._tools, 'noted.drawing.highlighter', 'noted.drawing.lasso'],
+        _layeringTools,
         _inkColors,
         _inkWidths,
       ],
@@ -333,7 +343,7 @@ const ContextualToolbarLayout contextualToolbarLayout = ContextualToolbarLayout(
         ['noted.note.link', 'noted.note.insertTable', 'noted.note.insertEquation'],
       ],
     ),
-    ContextualSection(id: 'insert', groups: _insertTools),
+    ContextualSection(id: 'insert', groups: [..._insertTools, _layeringTools]),
   ],
   trailing: [
     ['app.search', 'canvas.fitAll', 'canvas.zoomReset', 'canvas.pageBackground'],

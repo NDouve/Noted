@@ -14,6 +14,11 @@ Host-only (not the Box API), run 2026-11-01-04: `PageChange.landed(id, before)` 
 
 Host-only (not the Box API), run 2026-11-04-02, task 3: `AttachmentConversion.failed` (default `0`) counts boxes whose conversion threw and were left as they were; `convertPageAttachments` converts the other boxes. `publishAttachment` (app) is the attachment publisher with the no-hard-link fallback. A paste or drop whose file cannot be stored makes no box and shows a notice. No version bump.
 
+## 0.15 — 2026-11-09
+- `BoxModule.linkAt(String boxId, Offset global)` (default `false`; noted_canvas): whether the live box has a link at that screen point. The canvas asks only the topmost live box under an Alt/Option click, and opens the pick list (the boxes under the point) only when it answers false, so a link keeps the plain click it has today (decision 0099). The note module answers from its light view (`lightHitTest`) or its editor (the `href` at the position). Additive: a module that does not override it is unaffected. Decided by the PM under delegated authority; run 2026-11-09-02, task 4.
+
+Host-only (not the Box API), run 2026-11-09-02, task 4: `StackMove`, `stackTarget` and `hasOwnId` (noted_core), `NotedPage.moveNode`, `PageChange.order`, `isEncryptedBox` (noted_core), `CanvasController.restack` and `canRestack` (modules hold the controller), `PageCanvas.boxTypeName`, `PageCanvasState.pickHighlightId`, `PageCanvas.pickOverlayKey`, `pickModifierHeld`, `boxHitRect`, `nodesAtPoint` and `pickRowLabel` (noted_canvas, exported for the app and tests; no module needs them), and the `CanvasCommands` ids `canvas.bringToFront`, `canvas.bringForward`, `canvas.sendBackward` and `canvas.sendToBack`.
+
 ## 0.14 — 2026-11-05
 - `BoxCodec.folderFiles(data)` (default `const []`): the file names, relative to the page's assets folder, that a box keeps in that folder; an embedded ref gives none. The image and file codecs return their folder ref. The host asks only for boxes the registry resolved (module on, known data version, readable) and allowed on the page, and uses the answer to name the attachment files a Save a copy could not bring along (so the notebook no longer decodes image or file data itself). Additive: a codec that does not override it is unaffected. Decided by the PM under delegated authority; run 2026-11-05-03, task 1 (codex area-data-integrity-2 R-1).
 

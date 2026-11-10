@@ -23,6 +23,7 @@ export 'src/box_api/box_codec.dart';
 export 'src/box_api/box_find.dart';
 export 'src/box_api/codec_registry.dart';
 export 'src/edit/page_history.dart';
+export 'src/edit/stacking.dart';
 export 'src/format/note_markdown.dart';
 export 'src/format/note_markdown_import.dart';
 export 'src/format/page_format.dart'

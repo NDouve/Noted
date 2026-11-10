@@ -25,6 +25,10 @@ abstract final class CanvasCommands {
   static const String paste = 'canvas.paste';
   static const String findNext = 'canvas.findNext';
   static const String findPrevious = 'canvas.findPrevious';
+  static const String bringToFront = 'canvas.bringToFront';
+  static const String bringForward = 'canvas.bringForward';
+  static const String sendBackward = 'canvas.sendBackward';
+  static const String sendToBack = 'canvas.sendToBack';
 
   /// The command that chooses [b]: `canvas.pageBackground.dots`.
   static String pageBackgroundOf(PageBackground b) => 'canvas.pageBackground.${b.name}';
@@ -246,6 +250,25 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
       whileReadOnly: true,
       invoke: () => t.isFindOpen ? t.stepFind(-1) : t.openFind(),
     ),
+    // Layering (0024): each acts on the selected box only. Keys are canvas
+    // only (not whileEditing); a note's editor has no bracket shortcut.
+    for (final (id, label, icon, move, key, shift) in _layering)
+      Command(
+        id: id,
+        label: label,
+        icon: icon,
+        shortcut: _key(key, ctrl: true, shift: shift),
+        alternateShortcuts: [SingleActivator(key, meta: true, shift: shift)],
+        enabled: () {
+          final sel = c.selectedId;
+          return !t.isReadOnly && sel != null && c.canRestack(sel, move);
+        },
+        listenable: c,
+        invoke: () {
+          final sel = c.selectedId;
+          if (sel != null) c.restack(sel, move);
+        },
+      ),
     Command(
       id: CanvasCommands.pageBackground,
       label: 'Page background',
@@ -270,6 +293,22 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
       ),
   ];
 }
+
+/// The layering commands: id, label, icon, move and the key (with Shift for
+/// the two that go all the way). Shift+] is `bracketRight` with shift, as the
+/// zoom shortcut Ctrl+Shift+= is.
+const List<(String, String, IconData, StackMove, LogicalKeyboardKey, bool)> _layering = [
+  (CanvasCommands.bringToFront, 'Bring to front', Icons.flip_to_front_rounded, StackMove.front, LogicalKeyboardKey.bracketRight, true),
+  (CanvasCommands.bringForward, 'Bring forward', Icons.arrow_upward_rounded, StackMove.forward, LogicalKeyboardKey.bracketRight, false),
+  (CanvasCommands.sendBackward, 'Send backward', Icons.arrow_downward_rounded, StackMove.backward, LogicalKeyboardKey.bracketLeft, false),
+  (CanvasCommands.sendToBack, 'Send to back', Icons.flip_to_back_rounded, StackMove.back, LogicalKeyboardKey.bracketLeft, true),
+];
+
+/// Whether [keyboard] holds the modifier that picks a box among overlapping
+/// boxes on a click: Alt (Option on macOS), without Ctrl or Meta (those open
+/// a link, 0099). One place, for a later customization task to replace.
+bool pickModifierHeld(HardwareKeyboard keyboard) =>
+    keyboard.isAltPressed && !keyboard.isControlPressed && !keyboard.isMetaPressed;
 
 /// The user-facing name of [b], as in `Page background: Dots`.
 String pageBackgroundLabel(PageBackground b) => switch (b) {

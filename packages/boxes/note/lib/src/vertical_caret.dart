@@ -272,3 +272,28 @@ final CommandShortcutEvent _escape = exitEditingCommand.copyWith(
     return KeyEventResult.handled;
   },
 );
+
+/// Whether the screen point [global] is over the glyphs of a link in the
+/// editor: the position under it is in a link's run and the point lies in
+/// one of the run's rectangles. Empty space right of or below a link, which
+/// maps to the offset just after it, is not on the link.
+bool linkGlyphAt(EditorState editorState, Offset global) {
+  final position = positionOnScreen(editorState, global);
+  if (position == null) return false;
+  final link = linkAt(editorState, position);
+  final selectable = editorState.document.nodeAtPath(position.path)?.selectable;
+  if (link == null || selectable == null) return false;
+  final rects = selectable.getRectsInSelection(
+    Selection(
+      start: Position(path: position.path, offset: link.start),
+      end: Position(path: position.path, offset: link.end),
+    ),
+    shiftWithBaseOffset: false,
+  );
+  for (final r in rects) {
+    final a = selectable.localToGlobal(r.topLeft);
+    final b = selectable.localToGlobal(r.bottomRight);
+    if (Rect.fromPoints(a, b).contains(global)) return true;
+  }
+  return false;
+}

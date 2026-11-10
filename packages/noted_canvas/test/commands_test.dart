@@ -328,6 +328,10 @@ void main() {
         'noted.drawing.eraser',
         'noted.drawing.highlighter',
         'noted.drawing.lasso',
+        'canvas.bringToFront',
+        'canvas.bringForward',
+        'canvas.sendBackward',
+        'canvas.sendToBack',
         for (var i = 0; i < 5; i++) 'noted.drawing.color.$i',
         'noted.drawing.width.2',
         'noted.drawing.width.4',
@@ -364,6 +368,15 @@ void main() {
       ]);
       expect(l.sections[1].groups.expand((g) => g), contains('noted.note.bold'));
       expect(l.sections[2].groups.expand((g) => g), contains('noted.ai.insert'));
+      // The layering group follows the Insert tools; it never replaces them.
+      expect(l.sections[2].groups.last, [
+        'canvas.bringToFront',
+        'canvas.bringForward',
+        'canvas.sendBackward',
+        'canvas.sendToBack',
+      ]);
+      expect(l.sections[2].groups.first, contains('noted.note.insertTable'));
+      expect(tabbedToolbarLayout.tabs[1].groups.expand((g) => g), isNot(contains('canvas.bringToFront')));
     });
 
     test('the styles name their layouts and parse from settings', () {

@@ -542,6 +542,7 @@ class _HomeState extends State<Home> {
                               readOnly: notebook.readOnlyReason != null,
                               findRequests: _findRequests,
                               issueSilence: _issueSilence,
+                              boxTypeName: boxTypeSingularName,
                               aiMerge: notebook.aiMerge,
                               extraCommands: () => [searchCommand(_search)],
                               toolbar: (widget.settings?.toolbar ?? ToolbarStyle.tabs).layout,

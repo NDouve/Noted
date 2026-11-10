@@ -349,6 +349,14 @@ void main() {
       expect(identical(fix(base, mineA, mineA, now), now), isTrue);
     });
 
+    test('a restack (a brought to front) overwritten after landing is put back (0156)', () {
+      final mine = base.moveNode('a', stackTarget(base, 'a', StackMove.front)!);
+      expect(ids(mine), ['b', 'c', 'a']);
+      final r = fix(base, mine, mine, base);
+      expect(ids(r), ['b', 'c', 'a']);
+      expect(identical(fix(base, mine, mine, r), r), isTrue);
+    });
+
     test('order is put back after a deleted box is put back', () {
       final mine = pageOf([c, a1, b]);
       final r = fix(base, mine, mine, pageOf([b, c]));

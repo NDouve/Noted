@@ -3890,6 +3890,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         );
       }
 
+      // Test seam: after every source was checked, before the first is deleted.
+      await syncHook?.call('move-before-source-delete', fromStore.directory.path);
       final removed = <int>[];
       final changedNow = <int>{}; // found changed by the compare-and-delete
       try {

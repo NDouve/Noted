@@ -441,4 +441,83 @@ void main() {
       expect((r.page.node('a')! as BoxRecord).conflicts.single.at, 9);
     });
   });
+  group('a local restack against the other side (0132, 0134)', () {
+    NotedPage ids(List<String> l, {Map<String, String> edited = const {}}) =>
+        pageOf([
+          for (final id in l)
+            edited.containsKey(id) ? edit(box(id, 'test.plain', id), edited[id]!) : box(id, 'test.plain', id),
+        ]);
+    List<String> order(NotedPage p) => [for (final n in p.nodes) n.id];
+    final b0 = ids(['a', 'b', 'c']);
+    final mineRestacked = ids(['b', 'c', 'a']);
+
+    test('mine brought a to front, theirs edited b: mine order, theirs edit', () {
+      final r = merge(b0, mineRestacked, ids(['a', 'b', 'c'], edited: {'b': 'b2'}));
+      expect(order(r.page), ['b', 'c', 'a']);
+      expect(dataOf(r.page.node('b')), 'b2');
+    });
+
+    test('theirs reordered, mine edited a: theirs order with a edited', () {
+      final r = merge(b0, ids(['a', 'b', 'c'], edited: {'a': 'a2'}), ids(['c', 'a', 'b']));
+      expect(order(r.page), ['c', 'a', 'b']);
+      expect(dataOf(r.page.node('a')), 'a2');
+    });
+
+    test('both reordered: mine order', () {
+      final r = merge(b0, mineRestacked, ids(['c', 'a', 'b']));
+      expect(order(r.page), ['b', 'c', 'a']);
+    });
+
+    test('theirs added x after b: it stays after b', () {
+      final r = merge(b0, mineRestacked, ids(['a', 'b', 'x', 'c']));
+      expect(order(r.page), ['b', 'x', 'c', 'a']);
+    });
+
+    // Pins today's limit, which goes to the maintainer: a box another device
+    // added on top ends under the box brought to front here.
+    test('theirs added x on top: x ends under a (known limit)', () {
+      final r = merge(b0, mineRestacked, ids(['a', 'b', 'c', 'x']));
+      expect(order(r.page), ['b', 'c', 'x', 'a']);
+    });
+
+    test('an unsupported box is restacked without decoding it', () {
+      final u = BoxRecord.create(
+        id: 'u',
+        typeId: 'vendor.unknown',
+        dataVersion: 99,
+        bounds: const Bounds(0, 0, 10, 10),
+        data: RawJson.trusted('{ "k":[1,  2.0] }'),
+        snapshotText: 's',
+        rev: 'r',
+      );
+      final p0 = pageOf([u, box('b', 'test.plain', 'b'), box('c', 'test.plain', 'c')]);
+      final mine = p0.moveNode('u', 2);
+      final r = merge(p0, mine, p0.replaceNode(edit(p0.node('b')! as BoxRecord, 'b2')));
+      expect(order(r.page), ['b', 'c', 'u']);
+      expect(identical(r.page.node('u'), u), isTrue);
+      expect(r.page.node('u')!.toRaw().text, u.toRaw().text);
+    });
+
+    test('two id-less foreign nodes: each comes out once, byte for byte', () {
+      const f1 = '{"type":"group","label":"one",  "x":0,"y":0,"width":9,"height":9}';
+      const f2 = '{"type":"group","label":"two","x":1,"y":1,"width":9,"height":9}';
+      String file(List<String> nodes, {String bData = 'b'}) =>
+          '{"nodes":[${nodes.join(',\n')}],"edges":[],'
+          '"noted":{"format":1,"pageId":"p","parentId":null,"title":"T","order":0}}';
+      final bx = writePage(pageOf([box('a', 'test.plain', 'a')]));
+      final aJson = (readPage(bx).nodes.single as BoxRecord).toRaw().text;
+      final aEdited = (pageOf([edit(box('a', 'test.plain', 'a'), 'a2')]).nodes.single as BoxRecord).toRaw().text;
+      final base = readPage(file([aJson, f1, f2]));
+      // Mine brought a to front and was saved; the file is read again.
+      final mineLive = base.moveNode('a', 2);
+      final mine = readPage(writePage(mineLive));
+      final theirs = readPage(file([aEdited, f1, f2]));
+      final r = merge(base, mine, theirs).page;
+      final out = [for (final n in r.nodes) n.toRaw().text];
+      expect(out.where((t) => t == f1), hasLength(1));
+      expect(out.where((t) => t == f2), hasLength(1));
+      expect(r.nodes, hasLength(3));
+    });
+  });
+
 }

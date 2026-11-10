@@ -16,6 +16,7 @@ export 'src/box_host.dart'
         boxGripHeight,
         boxHandleSize;
 export 'src/box_module.dart';
+export 'src/box_pick_list.dart' show boxHitRect, nodesAtPoint, pickRowLabel;
 export 'src/box_scroll.dart';
 export 'src/canvas_commands.dart';
 export 'src/canvas_controller.dart';

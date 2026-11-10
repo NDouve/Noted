@@ -704,6 +704,20 @@ final class NotedPage {
   NotedPage removeNode(String id) =>
       NotedPage._(top, meta, nodes.where((n) => n.id != id).toList());
 
+  /// Moves node [id] so it sits at [index] in the result (counted after it is
+  /// taken out of the list, clamped to the list). The node is kept as it is.
+  /// Returns this page if the node is missing or already there.
+  NotedPage moveNode(String id, int index) {
+    final i = indexOf(id);
+    if (i < 0) return this;
+    final next = [...nodes];
+    final node = next.removeAt(i);
+    final to = index.clamp(0, next.length);
+    if (to == i) return this;
+    next.insert(to, node);
+    return NotedPage._(top, meta, next);
+  }
+
   /// The union of all node bounds, or null for an empty page.
   Bounds? get contentBounds {
     Bounds? u;

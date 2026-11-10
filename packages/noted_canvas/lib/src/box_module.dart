@@ -127,6 +127,12 @@ abstract class BoxModule<D> {
     List<String> overLimit,
   ) async => null;
 
+  /// Whether the live box has a link at the screen point [global] (Box API
+  /// 0.15). The canvas asks the topmost box under an Alt/Option click and,
+  /// when it answers true, leaves the click to the link (decision 0099)
+  /// instead of opening the list of boxes under the point. Default: no links.
+  bool linkAt(String boxId, Offset global) => false;
+
   /// Untyped [createFromFile], for the canvas.
   Future<(Object?, Size)?> hostCreateFromFile(IncomingFile file, AttachmentStore store) async =>
       await createFromFile(file, store);

@@ -51,6 +51,14 @@ final class NoteModule extends BoxModule<NoteData> {
       _NoteEditor(box: box, editable: false);
 
   @override
+  bool linkAt(String boxId, Offset global) {
+    for (final s in (_NoteEditorState._live[boxId] ?? const <_NoteEditorState>[]).reversed) {
+      if (s.mounted) return s._hasLinkAt(global);
+    }
+    return false;
+  }
+
+  @override
   List<Command> commands(CommandHost host) => noteCommands(host);
 }
 
@@ -519,6 +527,22 @@ class _NoteEditorState extends State<_NoteEditor>
     _disposeEditor();
     _focus.dispose();
     super.dispose();
+  }
+
+  /// Whether a link is under the screen point [global]: in the light view
+  /// through its own hit test, in the editor through the delta's `href` at
+  /// the position (only inside the box).
+  bool _hasLinkAt(Offset global) {
+    if (!_editing) {
+      final root = _lightKey.currentContext?.findRenderObject();
+      return root != null && lightHitTest(root, global)?.href != null;
+    }
+    final editor = _editor;
+    final box = context.findRenderObject();
+    if (editor == null || box is! RenderBox || !box.hasSize) return false;
+    // box.size is in the box's own (unscaled) units, so test in its own space.
+    if (!(Offset.zero & box.size).contains(box.globalToLocal(global))) return false;
+    return linkGlyphAt(editor, global);
   }
 
   // The light view's clicks ----------------------------------------------
