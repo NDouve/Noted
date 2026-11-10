@@ -105,6 +105,12 @@
 //     sequences fail ("the box ... conflicts" in `recover:overwrittenAfterLanding`,
 //     which runs after steps from a generator of its own) and so does its probe.
 //
+// 19. A move hands landed text to a generation that combines entries (R-1, run
+//     2026-11-09-02, task 1: `_settleRekeys` without the exact-copy condition):
+//     20 of the 24 sequences fail ("the files and a fresh notebook equal the
+//     model": the target entry's box is lost), and so does the probe of
+//     `recover:landedMovedIntoEntry`, a step with a generator of its own.
+//
 // Wait for watchers: none is used. The notebook runs with `watchFiles` off,
 // and the steps call `checkFile` and `checkFolders` themselves, the way the
 // watcher would, so a step is over when its calls return. Folder renames and
@@ -650,6 +656,8 @@ class _Run {
     // A replayed page is overwritten right after it lands (a generator of its
     // own too).
     if (_orng.nextInt(100) < 15) await _recoverStep(n);
+    // A landed page is moved into a folder that holds an entry of it (own generator).
+    if (_lrng.nextInt(100) < 15) await _landedMovedStep(n);
   }
 
   /// The step `recover:overwrittenAfterLanding` after step [n], on pages picked
@@ -672,6 +680,83 @@ class _Run {
     await _settle();
     await verify('step $n ($ran)');
     if (ran != null) kinds.add(ran);
+  }
+
+  /// The step `recover:landedMovedIntoEntry` after step [n], on a page picked
+  /// by its own generator.
+  Future<void> _landedMovedStep(int n) async {
+    final tops = [
+      for (final e in model.entries)
+        if (e.value.parent == null && _subtree(e.key).length == 1) e.key,
+    ];
+    if (tops.isEmpty || model.length < 2) return;
+    final id = tops[_lrng.nextInt(tops.length)];
+    final tos = [
+      for (final l in _locs)
+        if (l != model[id]!.loc) l,
+    ];
+    final to = tos[_lrng.nextInt(tos.length)];
+    trace.add('recover:landedMovedIntoEntry on ${_short(id)} to $to');
+    final ran = await _recoverLandedMoved(id, to);
+    trace.add('  ($ran done)');
+    await _settle();
+    await verify('step $n ($ran)');
+    if (ran != null) kinds.add(ran);
+  }
+
+  // An entry of closed page [id] adds box y1 and lands, but its settling fails
+  // once, so the landed text is kept. Then an entry for the page is written
+  // under the target [to], adding y2, after the landing: a replay with both in
+  // place would take it for a stale key of the page and merge it into the
+  // source first. The page is moved to [to] and replayed again: the page there
+  // must hold y1 and y2, and no entry is left. The model gets both boxes (the
+  // move itself changes the page's placement).
+  Future<String?> _recoverLandedMoved(String id, String to) async {
+    final m = model[id]!;
+    if (_standaloneLeft([id], to: to) < 1) return null;
+    await nb.open(_pickPage(where: (i, p) => i != id));
+    final y1 = _newBox(_text('landed'));
+    final y2 = _newBox(_text('target'));
+    await _entryFor(id, y1);
+    final prev = nb.syncHook;
+    var failed = false;
+    nb.syncHook = (point, path) async {
+      await prev?.call(point, path);
+      if (point != 'recover-published' || !path.endsWith('$id.canvas') || failed) return;
+      failed = true;
+      throw const FileSystemException('injected failure while settling');
+    };
+    try {
+      await nb.recoverNowForTest();
+    } finally {
+      nb.syncHook = prev;
+    }
+    expect(failed, isTrue, reason: 'the entry landed and its settling failed');
+    // Written after the landing, so the replay above did not merge it into the
+    // source (the stale key goes first).
+    final text = File(_pathOf(id)).readAsStringSync();
+    await RecoveryStore(rec).write(
+      folder: dirs[to]!.path,
+      page: readPage(text).insertNode(y2),
+      baseText: text,
+      time: DateTime.now(),
+    );
+    await nb.refreshRecoveryIndexForTest();
+    m.boxes[y1.id] = _val(y1);
+    m.boxes[y2.id] = _val(y2);
+    Object? error;
+    try {
+      await _moveTo(id, to);
+    } on Object catch (e) {
+      error = e;
+    }
+    expect(error, anyOf(isNull, isA<NotebookException>()), reason: 'the move failed: $error');
+    if (error == null) {
+      m.loc = to;
+      m.parent = null;
+    }
+    await _replayAll();
+    return 'recover:landedMovedIntoEntry';
   }
 
   /// The watcher's job: look at every conflict copy (and set-aside file) left
@@ -2058,6 +2143,7 @@ class _Run {
 
   late final Random _brng = Random(seed * 31 + 7);
   late final Random _orng = Random(seed * 37 + 11); // when another writer overwrites a replayed page (_recoverStep)
+  late final Random _lrng = Random(seed * 41 + 13); // when a landed page is moved into an entry (_landedMovedStep)
   late final Random _urng = Random(seed * 17 + 3); // which Undos fail (_opDelete)
   late final Random _rrng = Random(seed * 19 + 5); // which failed deletes are followed by a kill (_opDelete)
   int _binderStepCount = 0;
@@ -2557,7 +2643,7 @@ const _expectedKinds = {
   'move:withEntry', 'move:withEntryCrash', 'move:withEntrySourceDeleteFails', //
   'move:withEntryPartialRollback', 'move:withEntryFolderGone', 'move:withEntryRekeyFails', //
   'move:withEntrySettleFails', 'delete:withEntry', 'delete:withEntryAsk', //
-  'launch:pageInBothKeys', 'launch:pageInNeither', 'recover:overwrittenAfterLanding', //
+  'launch:pageInBothKeys', 'launch:pageInNeither', 'recover:overwrittenAfterLanding', 'recover:landedMovedIntoEntry', //
   'edit:plain', 'edit:syncAtPublish', 'edit:syncBeforeWrite', 'edit:externalBeforeFlush',
   'edit:failOnce', 'edit:failAlways', //
   'external', 'rename:plain', 'rename:syncAtPublish', 'rename:syncBeforeWrite',
@@ -2796,6 +2882,7 @@ void main() {
   // reported with `filesChanged`, a folder check and a discovery pass; the live
   // notebook must then list and show what a fresh one does.
   group('a pull-only location: the live notebook and a reload agree', () {
+
     late _Run run;
     var made = false;
 
@@ -3038,6 +3125,21 @@ void main() {
         run._addBox(run.model[id]!, run.nb.current!);
         await run.nb.flush();
         expect(await run._recoverOverwritten(id, other), 'recover:overwrittenAfterLanding');
+        await run.verify('after the step', fresh: true);
+        await run._opRestart();
+        await run.verify('after a restart', fresh: true);
+      } finally {
+        await run.stop();
+      }
+    });
+
+    test('recover:landedMovedIntoEntry: every box of both entries lands, live and after a restart', () async {
+      final run = _Run(913);
+      try {
+        await run.start();
+        final id = run.model.entries.firstWhere((e) => e.value.parent == null && run._subtree(e.key).length == 1).key;
+        final to = _locs.firstWhere((l) => l != run.model[id]!.loc);
+        expect(await run._recoverLandedMoved(id, to), 'recover:landedMovedIntoEntry');
         await run.verify('after the step', fresh: true);
         await run._opRestart();
         await run.verify('after a restart', fresh: true);
