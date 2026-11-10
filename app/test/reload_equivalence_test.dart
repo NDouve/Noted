@@ -1931,6 +1931,7 @@ class _Run {
       return; // a notebook always keeps a standalone page
     }
     var mustFail = false;
+    void Function()? syncRestore;
     switch (variant) {
       case 'pendingEdit':
         // An edit not saved yet goes with the page.
@@ -1945,11 +1946,23 @@ class _Run {
       case 'syncAtSource':
         // A newer version lands on the source after the move read it.
         final y = _newBox(_text('sync'));
-        // Written before the move reads the source: see below. Armed now, it
-        // fires at the first compare-and-delete of the source.
+        // Written by the sync writer after every source was checked and before
+        // the first is deleted: from a seam of the notebook, outside the guarded
+        // delete, so breaking the guard does not remove the competing write.
         await nb.flush();
         final base = _disk(id);
-        storeOf(from).beforeDeleteOnce = () => _externalWriteSync(id, base.insertNode(y));
+        final prev = nb.syncHook;
+        var fired = false;
+        nb.syncHook = (point, path) async {
+          await prev?.call(point, path);
+          if (point != 'move-before-source-delete' || fired) return;
+          fired = true;
+          _externalWriteSync(id, base.insertNode(y));
+        };
+        syncRestore = () {
+          nb.syncHook = prev;
+          expect(fired, isTrue, reason: 'the sync writer never got its turn');
+        };
         m.boxes[y.id] = _val(y);
         mustFail = true;
     }
@@ -1962,6 +1975,7 @@ class _Run {
     }
     storeOf(to).failNew.clear();
     storeOf(from).failDelete.clear();
+    syncRestore?.call();
     if (mustFail) {
       expect(error, isNotNull, reason: 'the move should have been refused');
       return; // everything stays where it was
