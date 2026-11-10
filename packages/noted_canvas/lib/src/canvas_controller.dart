@@ -266,6 +266,26 @@ class CanvasController extends ChangeNotifier {
     _set(_page.insertNode(box));
   }
 
+  /// Whether [move] would change where node [id] sits in the z-order, and the
+  /// page isn't read-only.
+  bool canRestack(String id, StackMove move) =>
+      !_readOnly && stackTarget(_page, id, move) != null;
+
+  /// Moves node [id] in the z-order. One undo step. Every node, whatever its
+  /// type, is moved verbatim. Returns false if nothing changed (read-only,
+  /// missing, no id of its own, or already there). The selection is kept.
+  bool restack(String id, StackMove move) {
+    if (_readOnly) return false;
+    final to = stackTarget(_page, id, move);
+    if (to == null) return false;
+    final i = _page.indexOf(id);
+    _history.record(
+      PageChange.order(id, after: i == 0 ? null : _page.nodes[i - 1].id, index: i),
+    );
+    _set(_page.moveNode(id, to));
+    return true;
+  }
+
   /// Replaces box [id]'s data through its codec, optionally with new
   /// [bounds], and redraws. When [undo] is given, page undo replays it as a
   /// diff (and restores the old bounds) instead of keeping a copy of the

@@ -14,6 +14,7 @@ import 'package:flutter/services.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'box_host.dart';
+import 'box_pick_list.dart';
 import 'box_scroll.dart';
 import 'canvas_commands.dart';
 import 'canvas_controller.dart';
@@ -72,9 +73,15 @@ class PageCanvas extends StatefulWidget {
     this.disallowedTypes = const {},
     this.aiMerge,
     this.issueSilence,
+    this.boxTypeName,
   });
 
   final CanvasController controller;
+
+  /// The name of a box type for the list of boxes under a point ("Note"),
+  /// or null for a type the app has no name for (it then reads "Unsupported
+  /// box", or "Box" for a registered type).
+  final String? Function(String typeId)? boxTypeName;
 
   /// The page AI's help with conflicts; null never shows the option.
   final PageAiMerge? aiMerge;
@@ -122,6 +129,10 @@ class PageCanvas extends StatefulWidget {
   /// The clipped overlay that shows a tool session's live feedback.
   static const Key overlayKey = ValueKey('PageCanvas.toolOverlay');
 
+  /// The clipped overlay above every box that outlines the box the pick list
+  /// points at (dimming the rest) and a selected box that another covers.
+  static const Key pickOverlayKey = ValueKey('PageCanvas.pickOverlay');
+
   /// The active tool, shared across pages. If null the canvas keeps its own.
   final CanvasToolSelection? tools;
 
@@ -140,6 +151,17 @@ class PageCanvasState extends State<PageCanvas>
   final FocusNode _focus = FocusNode(debugLabel: 'PageCanvas');
   final CanvasToolSelection _ownTools = CanvasToolSelection();
   final _OverlayRepaint _overlay = _OverlayRepaint();
+
+  /// The box the open pick list points at, outlined on the top overlay.
+  final ValueNotifier<String?> _pickHighlight = ValueNotifier(null);
+  bool _pickOpen = false;
+
+  /// Counts the stylus pointers that went down and the tool sessions that
+  /// started: a touch hold during which it changed was not a plain hold.
+  int _inkSerial = 0;
+
+  /// The id of the box the open pick list points at, or null.
+  String? get pickHighlightId => _pickHighlight.value;
 
   /// Pointer events per tool session, for the debug readout.
   final ValueNotifier<_InputStats?> _stats = ValueNotifier(null);
@@ -572,6 +594,7 @@ class PageCanvasState extends State<PageCanvas>
     _focus.dispose();
     _ownTools.dispose();
     _overlay.dispose();
+    _pickHighlight.dispose();
     _stats.dispose();
     super.dispose();
   }
@@ -623,7 +646,9 @@ class PageCanvasState extends State<PageCanvas>
   /// True if a click by [e] is no click on a box: a pen going to a tool, or
   /// a resting hand.
   bool _boxIgnores(PointerEvent e) =>
-      _palmPointers.contains(e.pointer) || _inkedBy(e.kind);
+      _palmPointers.contains(e.pointer) ||
+      _inkedBy(e.kind) ||
+      (e is PointerDownEvent && _mousePicks(e));
 
   /// True if the pointer [kind] goes to a tool (and so to no box) here.
   bool _inkedBy(PointerDeviceKind kind) =>
@@ -639,6 +664,7 @@ class PageCanvasState extends State<PageCanvas>
     final session = tool.start(this, _toolPointer(e));
     if (session == null) return;
     _c.beginToolSession();
+    _inkSerial++;
     _session = session;
     _sessionPointer = e.pointer;
     _lastToolEvent = e;
@@ -919,6 +945,89 @@ class PageCanvasState extends State<PageCanvas>
     if (_touches.isEmpty) _multiTouchActive.value = false;
   }
 
+  // The pick list (0024, 0129) ---------------------------------------------
+
+  /// Whether the mouse press [e] picks among the boxes under it: a primary
+  /// click with Alt (Option) held, Select and type, a page that can be
+  /// changed, boxes under the point, and no link under it in the topmost one.
+  bool _mousePicks(PointerDownEvent e) {
+    if (e.kind != PointerDeviceKind.mouse || e.buttons != kPrimaryButton) return false;
+    if (_readOnly || _tools.active != null || !pickModifierHeld(HardwareKeyboard.instance)) {
+      return false;
+    }
+    final world = pageAtGlobal(e.position);
+    if (world == null) return false;
+    final rows = nodesAtPoint(_c.page, world);
+    return rows.isNotEmpty && !_linkAt(rows.first, e.position);
+  }
+
+  /// Whether box [id], when it is live (module on and allowed here), has a
+  /// link at the screen point [global] (Box API 0.15).
+  bool _linkAt(String id, Offset global) {
+    final node = _c.page.node(id);
+    if (node is! BoxRecord || _off.contains(node.typeId)) return false;
+    if (_c.modules.codecs.resolve(node) is! LiveBox) return false;
+    return _c.modules.moduleFor(node.typeId)?.linkAt(id, global) ?? false;
+  }
+
+  /// Whether the touch [e] may start a hold: no tool, a page that can be
+  /// changed and boxes under the finger. On a desktop platform a finger in
+  /// the box being edited is the editor's (it moves the caret at once).
+  bool _touchJoins(PointerDownEvent e) {
+    if (e.kind != PointerDeviceKind.touch || _readOnly || _tools.active != null) return false;
+    final world = pageAtGlobal(e.position);
+    if (world == null || nodesAtPoint(_c.page, world).isEmpty) return false;
+    final editing = _c.editingId;
+    if (editing != null && _desktop) {
+      final b = _c.page.node(editing)?.bounds;
+      if (b != null && b.rect.contains(world)) return false;
+    }
+    return true;
+  }
+
+  static bool get _desktop => switch (defaultTargetPlatform) {
+    TargetPlatform.windows || TargetPlatform.linux || TargetPlatform.macOS => true,
+    _ => false,
+  };
+
+  /// What the list says for [node]: its type, then its first words.
+  String _pickLabel(CanvasNode node) => pickRowLabel(
+    node,
+    typeName: (id) => widget.boxTypeName?.call(id),
+    known: node is BoxRecord && _c.modules.codecs.codecFor(node.typeId) != null,
+  );
+
+  void _openPickList(Offset global) {
+    if (!mounted || _readOnly || _pickOpen) return;
+    final world = pageAtGlobal(global);
+    final area = _areaKey.currentContext?.findRenderObject();
+    if (world == null || area is! RenderBox || !area.hasSize) return;
+    if (nodesAtPoint(_c.page, world).isEmpty) return;
+    _pickOpen = true;
+    _pickHighlight.value = null;
+    unawaited(
+      showBoxPickList(
+        context,
+        controller: _c,
+        world: world,
+        anchor: global,
+        within: area.localToGlobal(Offset.zero) & area.size,
+        highlight: _pickHighlight,
+        label: _pickLabel,
+      ).then((id) {
+        _pickOpen = false;
+        _pickHighlight.value = null;
+        if (!mounted) return;
+        if (id != null && _c.page.node(id) != null) _c.select(id);
+        // The route's own focus scope goes with the next frame.
+        SchedulerBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _focus.requestFocus();
+        });
+        SchedulerBinding.instance.scheduleFrame();
+      }),
+    );
+  }
+
   void _onBackgroundTap(TapUpDetails d) {
     final v = _view;
     // A tap with two fingers never gets here: the gesture arena (the
@@ -926,19 +1035,11 @@ class PageCanvasState extends State<PageCanvas>
     // lift" test guards that.
     if (v == null || _readOnly || _tools.active != null) return;
     if (d.kind == PointerDeviceKind.touch && _upWasPalm) return;
+    // An Alt click that picks among boxes (or finds none) makes no box.
+    if (d.kind == PointerDeviceKind.mouse && pickModifierHeld(HardwareKeyboard.instance)) return;
     final world = v.toWorld(d.localPosition);
     // A click that lands on a box's chrome or snapshot isn't a canvas click.
-    for (final n in _c.page.nodes) {
-      final b = n.bounds?.rect;
-      if (b == null) continue;
-      final hit = Rect.fromLTRB(
-        b.left - boxHandleSize,
-        b.top - boxGripHeight,
-        b.right + boxHandleSize,
-        b.bottom + boxHandleSize,
-      );
-      if (hit.contains(world)) return;
-    }
+    if (nodesAtPoint(_c.page, world).isNotEmpty) return;
     // Place the box so the caret lands near the click.
     _c.createBoxAt(Bounds(world.dx - 10, world.dy - 14, 0, 0));
   }
@@ -1101,6 +1202,10 @@ class PageCanvasState extends State<PageCanvas>
                     if (e.buttons & kMiddleMouseButton != 0) {
                       _middlePointer = e.pointer;
                     } else {
+                      if (e.kind == PointerDeviceKind.stylus ||
+                          e.kind == PointerDeviceKind.invertedStylus) {
+                        _inkSerial++;
+                      }
                       _touchDown(e);
                       if (e.kind == PointerDeviceKind.touch) {
                         // A second finger never starts a tool session.
@@ -1180,6 +1285,16 @@ class PageCanvasState extends State<PageCanvas>
                               _PenClaim.new,
                               (r) => r.inks = _inkedBy,
                             ),
+                        _PickClaim:
+                            GestureRecognizerFactoryWithHandlers<_PickClaim>(
+                              _PickClaim.new,
+                              (r) => r
+                                ..picks = _mousePicks
+                                ..joins = _touchJoins
+                                ..serial = (() => _inkSerial)
+                                ..blocked = (() => _upWasPalm || _multiTouch)
+                                ..onPick = _openPickList,
+                            ),
                       },
                       child: MouseRegion(
                       onExit: (_) => _hover = null,
@@ -1220,6 +1335,21 @@ class PageCanvasState extends State<PageCanvas>
                         ),
                       ),
                     ),
+                    ),
+                  ),
+                ),
+              ),
+              // The box the pick list points at, outlined with the rest dimmed,
+              // and a selected box that another covers (BoxFrame).
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: ClipRect(
+                    key: PageCanvas.pickOverlayKey,
+                    child: CustomPaint(
+                      painter: _PickOverlayPainter(
+                        this,
+                        Listenable.merge([_c, _pickHighlight, _overlay]),
+                      ),
                     ),
                   ),
                 ),
@@ -1308,6 +1438,106 @@ class _PenClaim extends OneSequenceGestureRecognizer {
 
   @override
   String get debugDescription => 'pen claim';
+}
+
+/// What a [_PickClaim] knows of one pointer.
+class _PickHold {
+  _PickHold(this.down, this.serial, {required this.mouse});
+
+  final Offset down;
+  final int serial;
+  final bool mouse;
+  double far = 0;
+  bool fired = false;
+  Timer? timer;
+}
+
+/// Picks among overlapping boxes (0024).
+///
+/// A mouse press that [picks] wins the arena at once, so the grip, the light
+/// view, an editor and the background tap all lose; on release without a
+/// drag it opens the list. A touch that [joins] never wins at down: it waits
+/// for the release and accepts then only if it was a hold ([kLongPressTimeout]
+/// by its own timer, no movement past [kTouchSlop], no palm, second finger or
+/// stylus meanwhile). A recognizer that won earlier (a drag, a scroll, a
+/// long-press of a box's own) has already rejected it, so a hold followed by a
+/// drag still moves, resizes or scrolls. When it accepts, every tap under the
+/// finger loses. Otherwise it rejects itself and the tap goes as before.
+class _PickClaim extends OneSequenceGestureRecognizer {
+  _PickClaim()
+    : super(
+        supportedDevices: {PointerDeviceKind.mouse, PointerDeviceKind.touch},
+      );
+
+  bool Function(PointerDownEvent e) picks = (_) => false;
+  bool Function(PointerDownEvent e) joins = (_) => false;
+  int Function() serial = () => 0;
+  bool Function() blocked = () => false;
+  void Function(Offset global) onPick = (_) {};
+
+  final Map<int, _PickHold> _holds = {};
+
+  @override
+  void addAllowedPointer(PointerDownEvent event) {
+    final mouse = event.kind == PointerDeviceKind.mouse;
+    if (mouse ? !picks(event) : !joins(event)) return;
+    final hold = _PickHold(event.position, serial(), mouse: mouse);
+    if (!mouse) hold.timer = Timer(kLongPressTimeout, () => hold.fired = true);
+    _holds[event.pointer] = hold;
+    startTrackingPointer(event.pointer, event.transform);
+    if (mouse) resolvePointer(event.pointer, GestureDisposition.accepted);
+  }
+
+  @override
+  void handleEvent(PointerEvent event) {
+    final hold = _holds[event.pointer];
+    if (hold == null) return;
+    hold.far = math.max(hold.far, (event.position - hold.down).distance);
+    if (event is PointerUpEvent) {
+      final pointer = event.pointer;
+      if (hold.mouse) {
+        _forget(pointer);
+        if (hold.far <= kTouchSlop) onPick(event.position);
+      } else {
+        final ok =
+            hold.fired && hold.far < kTouchSlop && serial() == hold.serial && !blocked();
+        _forget(pointer);
+        resolvePointer(pointer, ok ? GestureDisposition.accepted : GestureDisposition.rejected);
+        if (ok) onPick(event.position);
+      }
+    } else if (event is PointerCancelEvent) {
+      final pointer = event.pointer;
+      final mouse = hold.mouse;
+      _forget(pointer);
+      if (!mouse) resolvePointer(pointer, GestureDisposition.rejected);
+    }
+  }
+
+  void _forget(int pointer) {
+    _holds.remove(pointer)?.timer?.cancel();
+    stopTrackingPointer(pointer);
+  }
+
+  @override
+  void rejectGesture(int pointer) {
+    _forget(pointer);
+    super.rejectGesture(pointer);
+  }
+
+  @override
+  void dispose() {
+    for (final h in _holds.values) {
+      h.timer?.cancel();
+    }
+    _holds.clear();
+    super.dispose();
+  }
+
+  @override
+  void didStopTrackingLastPointer(int pointer) {}
+
+  @override
+  String get debugDescription => 'pick claim';
 }
 
 const double _issueIconSize = 34;
@@ -1416,6 +1646,76 @@ class _ToolOverlayPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_ToolOverlayPainter oldDelegate) => true;
+}
+
+/// Paints the box the pick list points at (the rest of the canvas dimmed, a
+/// 2px `accent` outline on top) and the 1px `accent` outline of a selected
+/// box that another box covers, in screen coordinates.
+class _PickOverlayPainter extends CustomPainter {
+  _PickOverlayPainter(this._canvas, Listenable repaint) : super(repaint: repaint);
+
+  final PageCanvasState _canvas;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final view = _canvas._view;
+    if (view == null) return;
+    final page = _canvas._c.page;
+    final scheme = Theme.of(_canvas.context).colorScheme;
+    final radius = Radius.circular(NotedMetrics.of(_canvas.context).radiusLg * view.scale);
+    RRect screen(Bounds b) => RRect.fromRectAndRadius(
+      Rect.fromLTWH(
+        view.offset.dx + b.x * view.scale,
+        view.offset.dy + b.y * view.scale,
+        b.width * view.scale,
+        b.height * view.scale,
+      ),
+      radius,
+    );
+
+    final lit = _canvas._pickHighlight.value;
+    final litBounds = lit == null ? null : page.node(lit)?.bounds;
+    if (litBounds != null) {
+      final path = Path()
+        ..fillType = PathFillType.evenOdd
+        ..addRect(Offset.zero & size)
+        ..addRRect(screen(litBounds));
+      canvas.drawPath(
+        path,
+        Paint()..color = scheme.surfaceContainerLowest.withValues(alpha: 0.6),
+      );
+      canvas.drawRRect(
+        screen(litBounds),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = scheme.primary,
+      );
+    }
+
+    final selected = _canvas._c.selectedId;
+    final sb = selected == null || selected == lit ? null : page.node(selected)?.bounds;
+    if (sb != null) {
+      final i = page.indexOf(selected!);
+      var covered = false;
+      for (var j = i + 1; j < page.nodes.length && !covered; j++) {
+        final o = page.nodes[j].bounds;
+        covered = o != null && boundsOverlap(sb, o);
+      }
+      if (covered) {
+        canvas.drawRRect(
+          screen(sb),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1
+            ..color = scheme.primary,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_PickOverlayPainter oldDelegate) => true;
 }
 
 /// Pointer events received during the latest tool session.
