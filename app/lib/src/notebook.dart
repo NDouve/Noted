@@ -6571,9 +6571,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // A failure stays listed only while its entry does.
     final live = {for (final e in listing.entries) _entryKey(e)};
     _replayProblems.removeWhere((k, _) => !live.contains(k));
-    // Landed text only for generations that are listed.
-    final liveGens = {for (final e in rec.indexEntries) e.gen};
-    _landedText.removeWhere((g, _) => !liveGens.contains(g));
+    // Landed text only for generations that are listed. A listing that could
+    // not read an entry leaves its generation out of the index while the entry
+    // is still there, so it prunes nothing.
+    if (listing.problems.isEmpty && listing.damaged.isEmpty) {
+      final liveGens = {for (final e in rec.indexEntries) e.gen};
+      _landedText.removeWhere((g, _) => !liveGens.contains(g));
+    }
     // Landed leftovers are deleted, never merged (0130).
     if (rec.landedEntries.isNotEmpty) {
       await _deleteGens(rec, [for (final e in rec.landedEntries) e.gen], null);
