@@ -803,4 +803,42 @@ void main() {
       expect(t.widget<IconButton>(find.byKey(const ValueKey('pick-back-b'))).tooltip, 'Send to back');
     });
   });
+  group('a list that overflows', () {
+    testWidgets('keyboard navigation keeps the highlighted row in view, and Enter selects it', (t) async {
+      final boxes = [
+        for (var i = 0; i < 16; i++) _box('b$i', 'test.text', Bounds(100.0 + i, 100.0 + i, 300, 200), 'box $i words'),
+      ];
+      await pump(t, page: _page(boxes));
+      t.view.physicalSize = const Size(1200, 400);
+      await t.pump();
+      await altClick(t, at(t, const Offset(300, 250)));
+      final scroll = find.descendant(of: list(), matching: find.byType(SingleChildScrollView));
+      expect(scroll, findsOneWidget);
+      final viewport = t.getRect(scroll);
+      // More rows than fit.
+      expect(t.getRect(find.byKey(const ValueKey('pick-row-b0'))).bottom, greaterThan(viewport.bottom));
+      bool visible(String id) {
+        final r = t.getRect(find.byKey(ValueKey('pick-row-$id')));
+        return r.top >= viewport.top - 0.5 && r.bottom <= viewport.bottom + 0.5;
+      }
+
+      await t.sendKeyEvent(LogicalKeyboardKey.end);
+      await t.pumpAndSettle();
+      expect(state(t).pickHighlightId, 'b0');
+      expect(visible('b0'), isTrue, reason: 'End scrolls to the last row');
+      await t.sendKeyEvent(LogicalKeyboardKey.home);
+      await t.pumpAndSettle();
+      expect(visible('b15'), isTrue);
+      for (var i = 0; i < 12; i++) {
+        await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await t.pumpAndSettle();
+        expect(visible(state(t).pickHighlightId!), isTrue, reason: 'Down ${i + 1}');
+      }
+      final chosen = state(t).pickHighlightId!;
+      await t.sendKeyEvent(LogicalKeyboardKey.enter);
+      await t.pumpAndSettle();
+      expect(list(), findsNothing);
+      expect(c.selectedId, chosen);
+    });
+  });
 }

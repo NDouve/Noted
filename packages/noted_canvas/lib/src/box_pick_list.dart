@@ -193,6 +193,8 @@ class _PickPanelState extends State<_PickPanel> {
   /// away): nothing here acts on the controller or the highlight any more.
   bool _gone = false;
 
+  final Map<String, GlobalKey> _rowKeys = {};
+
   CanvasController get _c => widget.controller;
   List<String> get _rows => nodesAtPoint(_c.page, widget.world);
 
@@ -207,7 +209,10 @@ class _PickPanelState extends State<_PickPanel> {
     if (!widget.closeSignal.value || _gone) return;
     _gone = true;
     // Not while the canvas is being taken down or rebuilt.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _close());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() {});
+      _close();
+    });
     SchedulerBinding.instance.scheduleFrame();
   }
 
@@ -227,7 +232,14 @@ class _PickPanelState extends State<_PickPanel> {
   void _move(List<String> rows, int Function(int? current) to) {
     if (rows.isEmpty) return;
     final at = rows.indexOf(widget.highlight.value ?? '');
-    widget.highlight.value = rows[to(at < 0 ? null : at).clamp(0, rows.length - 1)];
+    final id = rows[to(at < 0 ? null : at).clamp(0, rows.length - 1)];
+    widget.highlight.value = id;
+    // Keep the row in view in a list that scrolls.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final context = _rowKeys[id]?.currentContext;
+      if (context != null && !_gone) Scrollable.ensureVisible(context);
+    });
+    SchedulerBinding.instance.scheduleFrame();
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent e) {
@@ -340,7 +352,7 @@ class _PickPanelState extends State<_PickPanel> {
         canRequestFocus: false,
         skipTraversal: true,
         onFocusChange: (f) {
-          if (f) widget.highlight.value = id;
+          if (f && !_gone && !_closing) widget.highlight.value = id;
         },
         child: IconButton(
           key: ValueKey('pick-$key-$id'),
@@ -350,13 +362,20 @@ class _PickPanelState extends State<_PickPanel> {
           constraints: BoxConstraints.tightFor(width: m.rowSize - 8, height: m.rowSize - 8),
           padding: EdgeInsets.zero,
           icon: Icon(icon),
-          onPressed: on ? () => _c.restack(id, move) : null,
+          onPressed: on
+              ? () {
+                  if (!_gone && !_closing) _c.restack(id, move);
+                }
+              : null,
         ),
       );
     }
 
     return MouseRegion(
-      onEnter: (_) => widget.highlight.value = id,
+      key: _rowKeys.putIfAbsent(id, GlobalKey.new),
+      onEnter: (_) {
+        if (!_gone && !_closing) widget.highlight.value = id;
+      },
       child: GestureDetector(
         key: ValueKey('pick-row-$id'),
         behavior: HitTestBehavior.opaque,
