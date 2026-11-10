@@ -5,8 +5,6 @@
 // The list of boxes under a point (Alt+click, a touch hold) and the layering
 // it offers (0024, 0129, 0130).
 
-import 'dart:async';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
