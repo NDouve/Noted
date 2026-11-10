@@ -705,11 +705,12 @@ class _Run {
   }
 
   // An entry of closed page [id] adds box y1 and lands, but its settling fails
-  // once, so the landed text is kept. The target [to] holds an entry of the
-  // page too (B was offline when it was edited there), adding y2. The page is
-  // moved to [to] and replayed again: the page there must hold y1 and y2, and
-  // no entry is left. The model gets both boxes (the move itself changes the
-  // page's placement, so the file differs from the text that landed).
+  // once, so the landed text is kept. Then an entry for the page is written
+  // under the target [to], adding y2, after the landing: a replay with both in
+  // place would take it for a stale key of the page and merge it into the
+  // source first. The page is moved to [to] and replayed again: the page there
+  // must hold y1 and y2, and no entry is left. The model gets both boxes (the
+  // move itself changes the page's placement).
   Future<String?> _recoverLandedMoved(String id, String to) async {
     final m = model[id]!;
     if (_standaloneLeft([id], to: to) < 1) return null;
@@ -731,8 +732,8 @@ class _Run {
       nb.syncHook = prev;
     }
     expect(failed, isTrue, reason: 'the entry landed and its settling failed');
-    // The target's entry is written now: a replay before the move would take
-    // it for a duplicate key of the page.
+    // Written after the landing, so the replay above did not merge it into the
+    // source (the stale key goes first).
     final text = File(_pathOf(id)).readAsStringSync();
     await RecoveryStore(rec).write(
       folder: dirs[to]!.path,

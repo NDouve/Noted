@@ -5,7 +5,10 @@
 // R-1 (run-diff-5): landed text belongs to one generation. A generation that
 // combines entries never inherits it (decision 0156: a move merges again).
 
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
@@ -41,6 +44,44 @@ class _NoNewStore extends PageStore {
     if (refuse()) throw const FileSystemException('injected write failure');
     return super.saveNewText(page, text, beforePublish: beforePublish);
   }
+}
+
+/// A file whose readAsString throws once when [fail] says so; the rest is the
+/// real file.
+class _EntryReadFails implements File {
+  _EntryReadFails(this._f, this.fail);
+
+  final File _f;
+  final bool Function() fail;
+
+  @override
+  Future<String> readAsString({Encoding encoding = utf8}) {
+    if (fail()) throw const FileSystemException('injected read failure');
+    return _f.readAsString(encoding: encoding);
+  }
+
+  @override
+  String get path => _f.path;
+
+  @override
+  File get absolute => _f.absolute;
+
+  @override
+  Future<bool> exists() => _f.exists();
+
+  @override
+  Future<Uint8List> readAsBytes() => _f.readAsBytes();
+
+  @override
+  Future<FileSystemEntity> delete({bool recursive = false}) =>
+      _f.delete(recursive: recursive);
+
+  @override
+  Future<File> rename(String newPath) => _f.rename(newPath);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnimplementedError('${invocation.memberName}');
 }
 
 void main() {
@@ -100,10 +141,14 @@ void main() {
 
   // Page P in A with one box saved (the base); returns its id, base text and
   // three boxes that are not on it. The notebook that made it is closed.
-  Future<({String id, String baseText, List<BoxRecord> xs})> makePage() async {
+  Future<({String id, String baseText, List<BoxRecord> xs, String? parent})>
+  makePage({bool subpage = false}) async {
     final nb = make();
     await nb.load();
-    final id = await nb.createPage(folderPath: a.path);
+    final q = subpage ? await nb.createPage(folderPath: a.path) : null;
+    final id = subpage
+        ? await nb.createPage(parentId: q)
+        : await nb.createPage(folderPath: a.path);
     final other = await nb.createPage(folderPath: a.path);
     await nb.flush();
     await nb.open(other);
@@ -120,7 +165,7 @@ void main() {
     opened.remove(nb);
     // The helper page is no longer wanted: the folder holds only P.
     pageFile(a, other).deleteSync();
-    return (id: id, baseText: text, xs: xs);
+    return (id: id, baseText: text, xs: xs, parent: q);
   }
 
   // The entries of P in A (a retitle and a moved first box; [more] adds
@@ -172,8 +217,9 @@ void main() {
     return nb;
   }
 
-  // An entry of P in B that the page was edited with while B was offline: the
-  // base text with [x] added.
+  // An entry of P under B (written after the landing, so the replay does not
+  // take it for a stale key and merge it into A first): the base text with [x]
+  // added.
   Future<void> targetEntry(String baseText, BoxRecord x) async {
     final withX = readPage(baseText).insertNode(x);
     await RecoveryStore(rec).write(
@@ -196,6 +242,12 @@ void main() {
         await targetEntry(p.baseText, p.xs[0]);
         await nb.refreshRecoveryIndexForTest();
         expect(await nb.moveToFolder(p.id, b.path), isTrue);
+        final placed = disk(b, p.id).meta;
+        expect(
+          placed.order,
+          isNot(readPage(p.baseText).meta.order),
+          reason: 'the move changed the order',
+        );
         await nb.recoverNowForTest();
         expect(pageFile(b, p.id).existsSync(), isTrue);
         expect(
@@ -210,24 +262,65 @@ void main() {
         );
         expect(nb.landedTextCount, 0);
         expect(disk(b, p.id).meta.title, 'Mine');
+        // Neither entry changed the placement, so the move's stands.
+        expect(disk(b, p.id).meta.parentId, placed.parentId);
+        expect(disk(b, p.id).meta.order, placed.order);
       },
     );
 
-    // 2: back == out. B is empty, so the placement bytes do not change.
+    // 2: back == out. P is a subpage of Q, and Q is moved: P's own bytes do
+    // not change (same parent, same order), so the file equals the text that
+    // landed. Without step 1 the exact check fails the retry with the entry
+    // kept; test 1 shows the other failure.
     test(
-      'the same with a top-level page whose placement does not change',
+      'a subpage whose bytes do not change in the move: the extra box lands',
       () async {
-        final p = await makePage();
+        final p = await makePage(subpage: true);
         final nb = await landedUnsettled(p.id, p.baseText);
         await targetEntry(p.baseText, p.xs[0]);
         await nb.refreshRecoveryIndexForTest();
-        expect(await nb.moveToFolder(p.id, b.path), isTrue);
+        expect(await nb.moveToFolder(p.parent!, b.path), isTrue);
         await nb.recoverNowForTest();
+        expect(
+          entryFiles(),
+          isEmpty,
+          reason: 'the exact check would keep the entry (back == out)',
+        );
         expect(ids(disk(b, p.id)), contains(p.xs[0].id));
-        expect(entryFiles(), isEmpty);
         expect(nb.landedTextCount, 0);
       },
     );
+
+    // The next listing can not read the entry: its generation is out of the
+    // index while the entry is still there, so the landed text must stay.
+    test('a listing that can not read an entry keeps the landed text; the retry settles', () async {
+      final p = await makePage();
+      final nb = await landedUnsettled(p.id, p.baseText);
+      var failed = false;
+      await IOOverrides.runZoned(
+        () => nb.recoverNowForTest(),
+        createFile: (path) =>
+            _EntryReadFails(Zone.root.run(() => File(path)), () {
+              if (failed || !path.endsWith('.entry')) return false;
+              return failed = true;
+            }),
+      );
+      expect(failed, isTrue, reason: 'the listing tried to read the entry');
+      expect(entryFiles(), isNotEmpty);
+      expect(nb.landedTextCount, 1, reason: 'the entry is still there');
+      var rereads = 0;
+      nb.syncHook = (point, path) async {
+        if (point == 'recover-reread') rereads++;
+      };
+      await nb.recoverNowForTest();
+      expect(
+        rereads,
+        0,
+        reason: 'settled from the landed text, not merged again',
+      );
+      expect(entryFiles(), isEmpty);
+      expect(nb.landedTextCount, 0);
+    });
 
     // 3: guards the exact-copy condition; passes either way.
     test('a fresh-slot move keeps the landed text: the retry settles without merging again', () async {
