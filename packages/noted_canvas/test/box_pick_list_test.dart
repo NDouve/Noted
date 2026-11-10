@@ -700,4 +700,107 @@ void main() {
       expect(list(), findsNothing);
     });
   });
+  group('the list and its canvas', () {
+    Widget app(CanvasController ctl, ModuleRegistry modules, {bool readOnly = false}) => MaterialApp(
+      home: Scaffold(
+        body: PageCanvas(controller: ctl, readOnly: readOnly, boxTypeName: (id) => 'Note'),
+      ),
+    );
+
+    ModuleRegistry modulesOf() => ModuleRegistry()..register(const _Module('test.text'), isDefault: true);
+
+    testWidgets('the controller is replaced while the list is open: it closes and the old one is left alone', (t) async {
+      await pump(t);
+      await altClick(t, at(t, _point));
+      expect(list(), findsOneWidget);
+      final old = c;
+      final next = CanvasController(_page([_box('z', 'test.text', _ba, 'zulu')]), modulesOf());
+      await t.pumpWidget(app(next, modulesOf()));
+      await t.pump();
+      await t.pump();
+      expect(list(), findsNothing);
+      // The app disposes the old controller right away; nothing still listens.
+      old.dispose();
+      await t.pump();
+      expect(t.takeException(), isNull);
+      expect(state(t).pickHighlightId, isNull);
+      expect(next.selectedId, isNull);
+    });
+
+    testWidgets('the canvas is disposed while the list is open: no disposed notifier is touched', (t) async {
+      await pump(t);
+      await altClick(t, at(t, _point));
+      await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      expect(state(t).pickHighlightId, 'c');
+      await t.pumpWidget(const MaterialApp(home: Scaffold(body: SizedBox())));
+      await t.pump();
+      await t.pump();
+      expect(list(), findsNothing);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('the page turns read-only while the list is open: it closes', (t) async {
+      await pump(t);
+      await altClick(t, at(t, _point));
+      expect(list(), findsOneWidget);
+      c.readOnly = true;
+      await t.pump();
+      await t.pump();
+      expect(list(), findsNothing);
+    });
+
+    testWidgets('a canvas built again over a controller that was disposed does not listen to it', (t) async {
+      // The app disposes a page's controller as it switches pages, and the old
+      // canvas may build once more before it is replaced.
+      await pump(t);
+      final modules = modulesOf();
+      final gone = CanvasController(_page([_box('a', 'test.text', _ba, 'alpha')]), modules);
+      await t.pumpWidget(app(gone, modules));
+      await t.pump();
+      gone.dispose();
+      await t.pumpWidget(app(gone, modules));
+      await t.pump();
+      expect(t.takeException(), isNull);
+    });
+  });
+
+  group('the covered selection, Tab and tooltips', () {
+    Finder overlayPaint() => find.descendant(of: find.byKey(PageCanvas.pickOverlayKey), matching: find.byType(CustomPaint)).first;
+
+    testWidgets('a selected box that another covers keeps an outline on the top overlay', (t) async {
+      await pump(t);
+      c.select('c');
+      await t.pump();
+      expect(t.renderObject(overlayPaint()), isNot(paints..rrect()));
+      c.select('a');
+      await t.pump();
+      expect(t.renderObject(overlayPaint()), paints..rrect());
+      c.restack('a', StackMove.front);
+      await t.pump();
+      expect(t.renderObject(overlayPaint()), isNot(paints..rrect()));
+    });
+
+    testWidgets('Tab goes along the row buttons and the highlight follows', (t) async {
+      await pump(t);
+      await altClick(t, at(t, _point));
+      final lit = <String?>[];
+      for (var i = 0; i < 4; i++) {
+        await t.sendKeyEvent(LogicalKeyboardKey.tab);
+        await t.pump();
+        lit.add(state(t).pickHighlightId);
+      }
+      // c is on top (its Bring to front is off): Send to back, then b's two,
+      // then a's Bring to front.
+      expect(lit, ['c', 'b', 'b', 'a']);
+    });
+
+    testWidgets('the row buttons and the toolbar buttons carry their labels as tooltips', (t) async {
+      await pump(t);
+      await altClick(t, at(t, _point));
+      expect(find.byTooltip('Bring to front'), findsNWidgets(3));
+      expect(find.byTooltip('Send to back'), findsNWidgets(3));
+      expect(t.widget<IconButton>(find.byKey(const ValueKey('pick-front-b'))).tooltip, 'Bring to front');
+      expect(t.widget<IconButton>(find.byKey(const ValueKey('pick-back-b'))).tooltip, 'Send to back');
+    });
+  });
 }

@@ -156,6 +156,11 @@ class PageCanvasState extends State<PageCanvas>
   final ValueNotifier<String?> _pickHighlight = ValueNotifier(null);
   bool _pickOpen = false;
 
+  /// Set when the canvas goes away, turns read-only or gets another controller:
+  /// closes an open pick list (it holds this canvas's controller).
+  final ValueNotifier<bool> _pickClose = ValueNotifier(false);
+  bool _disposedWhileOpen = false;
+
   /// Counts the stylus pointers that went down and the tool sessions that
   /// started: a touch hold during which it changed was not a plain hold.
   int _inkSerial = 0;
@@ -540,6 +545,7 @@ class PageCanvasState extends State<PageCanvas>
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != widget.controller || (widget.readOnly && !oldWidget.readOnly)) {
       _issuesClose.value = true;
+      _pickClose.value = true;
     }
     if (oldWidget.controller != widget.controller) {
       _showIssuesOnOpen();
@@ -594,7 +600,15 @@ class PageCanvasState extends State<PageCanvas>
     _focus.dispose();
     _ownTools.dispose();
     _overlay.dispose();
-    _pickHighlight.dispose();
+    // The open list (if any) closes on its own and may still read the
+    // notifier until then; it is disposed when the list is gone.
+    _pickClose.value = true;
+    if (_pickOpen) {
+      _disposedWhileOpen = true;
+    } else {
+      _pickHighlight.dispose();
+    }
+    _pickClose.dispose();
     _stats.dispose();
     super.dispose();
   }
@@ -794,7 +808,10 @@ class PageCanvasState extends State<PageCanvas>
 
   void _changed() {
     // The page turned read-only under a running tool: end it.
-    if (_readOnly) _cancelSession();
+    if (_readOnly) {
+      _cancelSession();
+      _pickClose.value = true;
+    }
     // Once the page has no issues left, a later one is shown again.
     if (_silence.isSilenced(_c.page.id) && _issues.isEmpty) _silence.clear(_c.page.id);
     _find.refresh();
@@ -1004,6 +1021,7 @@ class PageCanvasState extends State<PageCanvas>
     if (world == null || area is! RenderBox || !area.hasSize) return;
     if (nodesAtPoint(_c.page, world).isEmpty) return;
     _pickOpen = true;
+    _pickClose.value = false;
     _pickHighlight.value = null;
     unawaited(
       showBoxPickList(
@@ -1013,11 +1031,15 @@ class PageCanvasState extends State<PageCanvas>
         anchor: global,
         within: area.localToGlobal(Offset.zero) & area.size,
         highlight: _pickHighlight,
+        closeSignal: _pickClose,
         label: _pickLabel,
       ).then((id) {
         _pickOpen = false;
+        if (!mounted) {
+          if (_disposedWhileOpen) _pickHighlight.dispose();
+          return;
+        }
         _pickHighlight.value = null;
-        if (!mounted) return;
         if (id != null && _c.page.node(id) != null) _c.select(id);
         // The route's own focus scope goes with the next frame.
         SchedulerBinding.instance.addPostFrameCallback((_) {

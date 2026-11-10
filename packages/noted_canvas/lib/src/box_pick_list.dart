@@ -4,8 +4,10 @@
 
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -72,6 +74,7 @@ Future<String?> showBoxPickList(
   required Offset anchor,
   required Rect within,
   required ValueNotifier<String?> highlight,
+  required ValueListenable<bool> closeSignal,
   required String Function(CanvasNode node) label,
 }) {
   return Navigator.of(context).push<String>(
@@ -81,6 +84,7 @@ Future<String?> showBoxPickList(
       anchor: anchor,
       within: within,
       highlight: highlight,
+      closeSignal: closeSignal,
       label: label,
     ),
   );
@@ -93,6 +97,7 @@ class _PickRoute extends PopupRoute<String> {
     required this.anchor,
     required this.within,
     required this.highlight,
+    required this.closeSignal,
     required this.label,
   });
 
@@ -101,6 +106,7 @@ class _PickRoute extends PopupRoute<String> {
   final Offset anchor;
   final Rect within;
   final ValueNotifier<String?> highlight;
+  final ValueListenable<bool> closeSignal;
   final String Function(CanvasNode node) label;
 
   @override
@@ -126,6 +132,7 @@ class _PickRoute extends PopupRoute<String> {
           controller: canvas,
           world: world,
           highlight: highlight,
+          closeSignal: closeSignal,
           label: label,
           maxHeight: math.max(120, within.height - 16),
         ),
@@ -162,6 +169,7 @@ class _PickPanel extends StatefulWidget {
     required this.controller,
     required this.world,
     required this.highlight,
+    required this.closeSignal,
     required this.label,
     required this.maxHeight,
   });
@@ -169,6 +177,7 @@ class _PickPanel extends StatefulWidget {
   final CanvasController controller;
   final Offset world;
   final ValueNotifier<String?> highlight;
+  final ValueListenable<bool> closeSignal;
   final String Function(CanvasNode node) label;
   final double maxHeight;
 
@@ -180,11 +189,31 @@ class _PickPanelState extends State<_PickPanel> {
   final FocusNode _focus = FocusNode(debugLabel: 'BoxPickList');
   bool _closing = false;
 
+  /// The canvas asked for the list to close (its controller or page went
+  /// away): nothing here acts on the controller or the highlight any more.
+  bool _gone = false;
+
   CanvasController get _c => widget.controller;
   List<String> get _rows => nodesAtPoint(_c.page, widget.world);
 
   @override
+  void initState() {
+    super.initState();
+    widget.closeSignal.addListener(_onSignal);
+    if (widget.closeSignal.value) _onSignal();
+  }
+
+  void _onSignal() {
+    if (!widget.closeSignal.value || _gone) return;
+    _gone = true;
+    // Not while the canvas is being taken down or rebuilt.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _close());
+    SchedulerBinding.instance.scheduleFrame();
+  }
+
+  @override
   void dispose() {
+    widget.closeSignal.removeListener(_onSignal);
     _focus.dispose();
     super.dispose();
   }
@@ -202,7 +231,7 @@ class _PickPanelState extends State<_PickPanel> {
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent e) {
-    if (e is KeyUpEvent) return KeyEventResult.ignored;
+    if (e is KeyUpEvent || _gone) return KeyEventResult.ignored;
     final rows = _rows;
     final key = e.logicalKey;
     if (key == LogicalKeyboardKey.escape) {
@@ -229,6 +258,7 @@ class _PickPanelState extends State<_PickPanel> {
   }
 
   void _tap(String id, PointerDeviceKind kind) {
+    if (_gone) return;
     // A finger first points at a row, then chooses it (there is no hover).
     if (kind != PointerDeviceKind.mouse && widget.highlight.value != id) {
       widget.highlight.value = id;
@@ -239,6 +269,7 @@ class _PickPanelState extends State<_PickPanel> {
 
   @override
   Widget build(BuildContext context) {
+    if (_gone) return const SizedBox.shrink();
     final m = NotedMetrics.of(context);
     final scheme = Theme.of(context).colorScheme;
     return Focus(
@@ -256,7 +287,7 @@ class _PickPanelState extends State<_PickPanel> {
           final lit = widget.highlight.value;
           if (lit != null && !rows.contains(lit)) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (widget.highlight.value == lit) widget.highlight.value = null;
+              if (!_gone && widget.highlight.value == lit) widget.highlight.value = null;
             });
           }
           return ConstrainedBox(
@@ -304,7 +335,7 @@ class _PickPanelState extends State<_PickPanel> {
     // A node without an id of its own cannot be restacked: no buttons.
     final buttons = hasOwnId(node);
     Widget button(StackMove move, String tooltip, IconData icon, String key) {
-      final on = _c.canRestack(id, move);
+      final on = !_gone && _c.canRestack(id, move);
       return Focus(
         canRequestFocus: false,
         skipTraversal: true,

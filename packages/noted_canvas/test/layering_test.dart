@@ -183,6 +183,8 @@ void main() {
 
     testWidgets('the keys and tooltips', (t) async {
       final s = await pump(t);
+      expect(find.byTooltip('Bring to front (Ctrl+Shift+])'), findsOneWidget);
+      expect(find.byTooltip('Send to back (Ctrl+Shift+[)'), findsOneWidget);
       expect(s.commands[front]!.tooltip, 'Bring to front (Ctrl+Shift+])');
       expect(s.commands[forward]!.tooltip, 'Bring forward (Ctrl+])');
       expect(s.commands[backward]!.tooltip, 'Send backward (Ctrl+[)');
