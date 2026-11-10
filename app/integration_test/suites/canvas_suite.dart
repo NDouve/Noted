@@ -293,6 +293,10 @@ void canvasSuite() {
         await s.pump(300);
         await hoverAt(const Offset(100, 300)); // on the sidebar
         await s.pump(100);
+        // A mouse over the window turns the touch-sized toolbar (after the taps
+        // above) back to the dense one, which gives the canvas 8 px more height:
+        // measure the viewport now, not the one cached before.
+        viewport = await settledViewport();
         final centre = Offset(viewport.width / 2, viewport.height / 2);
         world = canvasState(t).view!.toWorld(centre);
         await s.ctrl(LogicalKeyboardKey.equal);
