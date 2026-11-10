@@ -125,8 +125,18 @@
 //     sequences fail (seeds 1, 4, 7, 12; "stacking order of page" after a
 //     `layer:both` step) and so does the probe `layer:both`.
 //
-// (Rows 1-19 were counted before the layer steps existed. `layer:both` adds a
-// box, so the picks after it differ; those rows were not counted again.)
+// Rows 1-19 were counted again with the layer steps in (`layer:both` adds a
+// box, so the picks after it differ). Sequences of the 24 that fail, each row
+// made again by breaking the same behaviour (rows 4, 14 and 16 at a place that
+// the sequences reach; see below); the other failures are the same as before:
+//  1: 14   2: 5    3: 24   4: 6    5: 6    6: 17   7: 24   8: 12   9: 16
+// 10: 5   11: 9   12: 22  13: 5   14: 24  16: 2   17: 1   18: 20  19: 20
+// Row 4 now drops the early check and the check of the set-aside file in
+// `deleteFileIfMatches`; row 14 re-serialises the data of a box in `_mergeBox`'s
+// unchanged branch; row 16 stops `_hold` from holding the pages (the failing
+// write is caught one step earlier, so the old break was no longer reached).
+// Row 17 is caught by one sequence (seed 9) and by its probe; row 15 is a
+// probe only and was not run again.
 //
 // Wait for watchers: none is used. The notebook runs with `watchFiles` off,
 // and the steps call `checkFile` and `checkFolders` themselves, the way the
