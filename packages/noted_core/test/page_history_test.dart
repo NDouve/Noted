@@ -201,6 +201,13 @@ void orderTests() {
     expect(ids(page), ['a', 'b', 'c']);
   });
 
+  test('with no predecessor id recorded, undo goes by the index', () {
+    final h = PageHistory()..record(const PageChange.order('c', index: 1));
+    var page = three().moveNode('c', 0);
+    page = h.undo(page, codecs)!;
+    expect(ids(page), ['a', 'c', 'b']);
+  });
+
   test('a node that is gone is skipped', () {
     final h = PageHistory()..record(const PageChange.order('zz', index: 0));
     expect(h.undo(three(), codecs), isNull);

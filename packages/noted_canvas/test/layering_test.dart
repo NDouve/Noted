@@ -264,6 +264,31 @@ void main() {
       expect(field.controller!.selection.baseOffset, 1);
     });
 
+    testWidgets('undo is exact past nodes with no id of their own', (t) async {
+      // Their positional ids follow their place, so the move shifts them.
+      t.view.physicalSize = const Size(1200, 800);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      final page = readPage(
+        '{"nodes":['
+        '{"id":"a","type":"group","x":0,"y":0,"width":9,"height":9},'
+        '{"type":"group","x":0,"y":0,"width":9,"height":9,"label":"f1"},'
+        '{"type":"group","x":0,"y":0,"width":9,"height":9,"label":"f2"},'
+        '{"id":"b","type":"group","x":0,"y":0,"width":9,"height":9}],"edges":[],'
+        '"noted":{"format":1,"pageId":"p","parentId":null,"title":"T","order":0}}',
+      );
+      final modules = ModuleRegistry()..register(const _Module(), isDefault: true);
+      c = CanvasController(page, modules);
+      expect(c.restack('b', StackMove.back), isTrue);
+      expect(order(), ['b', 'a', '#node1', '#node2']);
+      // Saved and read again (a merge does), the id-less nodes are named by place.
+      c.applyExternal(readPage(writePage(c.page)));
+      expect(order(), ['b', 'a', '#node2', '#node3']);
+      c.undo();
+      expect(order(), ['a', '#node2', '#node3', 'b']);
+      c.dispose();
+    });
+
     testWidgets('a restack that changes nothing records nothing', (t) async {
       await pump(t);
       expect(c.restack('d', StackMove.front), isFalse);
