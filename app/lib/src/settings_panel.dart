@@ -44,6 +44,17 @@ String boxTypeName(String typeId) => switch (typeId) {
   _ => typeId,
 };
 
+/// What a box of this type is called in the list of boxes under a point
+/// ("Note"), or null for a type this build has no name for.
+String? boxTypeSingularName(String typeId) => switch (typeId) {
+  'noted.note' => 'Note',
+  'noted.drawing' => 'Drawing',
+  'noted.image' => 'Image',
+  'noted.file' => 'File',
+  aiBoxTypeId => 'AI box',
+  _ => null,
+};
+
 /// What the panel says after converting a page's attachments [to] one way:
 /// how many changed, the files kept in the folder for their size, and the
 /// boxes left as they were because they changed while it ran.
