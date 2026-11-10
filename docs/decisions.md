@@ -2245,14 +2245,14 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0159 — The folder-wait note covers every user move and template pages
 - **Date:** 2026-11-09
-- **Status:** Active (decided by the build team from an accepted Codex finding; extends 0157 "The note")
+- **Status:** Active (decided by the build team from an accepted Codex finding and the run's task list; extends 0157 "The note")
 - **Decision:** A drag before or after a page, Move to folder and a new page from a template count as user actions for 0157's note, like New page, Undo of a delete and the other moves.
 - **Rationale:** these paths waited on a stalled folder with no feedback.
 - **Alternatives considered:** none.
 
 ## 0160 — Picking a box under others; layering commands
 - **Date:** 2026-11-09
-- **Status:** Active (requested by the maintainer; shortcut defaults chosen by the maintainer's PM chat; details and Box API 0.15 decided by the build team from the reviewed note `2026-11-09-02-box-pick`)
+- **Status:** Active (requested by the maintainer; the Alt+click opener chosen by the maintainer's PM chat; key defaults, details and Box API 0.15 decided by the build team from the reviewed note `2026-11-09-02-box-pick`)
 - **Decision:**
   - **Pick list.** Alt+click (Option+click on macOS) with the Select tool, on a writable page and not on a link, lists every box under the point, topmost first. Each row shows `<Type> · <first words>` (an encrypted box: its type only), with Bring to front and Send to back for that row's box.
     - Hovering or arrowing a row dims the page outside that box and outlines it. A click or Enter selects it. Escape closes the list.
@@ -2266,8 +2266,14 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
     - They appear on the Draw tab (Tabs) and at the end of the Insert section (Contextual).
   - Z-order is node order in the page file (first is bottom-most), so there is no format change. A reorder merges as any order change (0132, 0134).
   - **A covered selected box** has its outline drawn above the boxes over it.
+  - **Not built:** a right-click box menu with these commands. The canvas has no context menu yet; it is left for the maintainer.
+  - **Limits:**
+    - A box another device adds on top, merged with a local Bring to front, ends under the box brought to front: base `[a,b,c]`, mine `[b,c,a]`, theirs `[a,b,c,x]` gives `[b,c,x,a]`.
+    - Keys that need AltGr for `[` `]` don't fire.
+    - Where the window manager takes Alt+click (some Linux desktops), the list opens only by touch.
+    - A text field's own long-press wins over the hold.
 - **Rationale:** a box wholly under another couldn't be reached or brought up.
-- **Alternatives considered:** forward and backward by one node (on a sparse page a step usually changes nothing visible); a right-click box menu (not built; the canvas has no context menu yet); a long-press recognizer on touch (it would take hold-then-drag from the grip).
+- **Alternatives considered:** forward and backward by one node (on a sparse page a step usually changes nothing visible); a long-press recognizer on touch (it would take hold-then-drag from the grip).
 
 ---
 
