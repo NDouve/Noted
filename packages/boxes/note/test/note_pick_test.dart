@@ -177,6 +177,101 @@ void main() {
     });
   });
 
+  group('links in an edited note at other zooms', () {
+    // Four paragraphs; the last has plain words and then a link at its end.
+    BoxRecord multi() {
+      Map<String, Object?> para(List<Map<String, Object?>> delta) => {
+        'type': 'paragraph',
+        'data': {'delta': delta},
+      };
+      final data = NoteData({
+        'document': {
+          'type': 'page',
+          'children': [
+            para([
+              {'insert': 'first'},
+            ]),
+            para([
+              {'insert': 'second'},
+            ]),
+            para([
+              {'insert': 'third'},
+            ]),
+            para([
+              {'insert': 'some plain words before '},
+              {
+                'insert': 'https://link.example',
+                'attributes': {'href': 'https://link.example'},
+              },
+            ]),
+          ],
+        },
+      });
+      return BoxRecord.create(
+        id: 'n',
+        typeId: NoteCodec.id,
+        dataVersion: 1,
+        bounds: const Bounds(700, 300, 420, 160),
+        data: RawJson.encode(_codec.encode(data)),
+        snapshotText: _codec.snapshotText(data),
+        rev: 'r',
+      );
+    }
+
+    // The link's rectangle on screen, from the editor's own layout.
+    Rect linkRect(WidgetTester t) {
+      final editor = t.widget<AppFlowyEditor>(find.byType(AppFlowyEditor)).editorState;
+      final selectable = editor.document.nodeAtPath([3])!.selectable!;
+      final text = editor.document.nodeAtPath([3])!.delta!.toPlainText();
+      final start = text.indexOf('https');
+      final rects = selectable.getRectsInSelection(
+        Selection(
+          start: Position(path: [3], offset: start),
+          end: Position(path: [3], offset: text.length),
+        ),
+        shiftWithBaseOffset: true,
+      );
+      final r = rects.single;
+      return Rect.fromPoints(
+        selectable.localToGlobal(r.topLeft, shiftWithBaseOffset: true),
+        selectable.localToGlobal(r.bottomRight, shiftWithBaseOffset: true),
+      );
+    }
+
+    for (final zoom in [1.0, 1.5, 2.0]) {
+      testWidgets('at ${(zoom * 100).round()}%: Alt+click on a link low and to the right is a plain click', (t) async {
+        await pump(t, [multi()]);
+        canvas(t).fitAll();
+        await t.pump();
+        canvas(t).zoomTo(zoom);
+        await t.pump();
+        await t.tapAt(at(t, const Offset(800, 316)));
+        await frames(t);
+        expect(c.editingId, 'n');
+        final r = linkRect(t);
+        await altClick(t, r.center);
+        expect(list(), findsNothing, reason: 'link at ${r.center}');
+        expect(opened, isEmpty);
+      });
+    }
+
+    for (final zoom in [1.5, 2.0]) {
+      testWidgets('at ${(zoom * 100).round()}%: Alt+click right of a line-ending link opens the list', (t) async {
+        await pump(t, [multi()]);
+        canvas(t).fitAll();
+        await t.pump();
+        canvas(t).zoomTo(zoom);
+        await t.pump();
+        await t.tapAt(at(t, const Offset(800, 316)));
+        await frames(t);
+        expect(c.editingId, 'n');
+        final r = linkRect(t);
+        await altClick(t, Offset(r.right + 24, r.center.dy));
+        expect(list(), findsOneWidget);
+      });
+    }
+  });
+
   group('touch', () {
     testWidgets('a hold on a light-view note opens the list and places no caret', (t) async {
       await pump(t, [_note('n', 'plain words here', near)]);

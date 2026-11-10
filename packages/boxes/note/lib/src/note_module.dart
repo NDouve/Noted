@@ -540,9 +540,9 @@ class _NoteEditorState extends State<_NoteEditor>
     final editor = _editor;
     final box = context.findRenderObject();
     if (editor == null || box is! RenderBox || !box.hasSize) return false;
-    if (!(box.localToGlobal(Offset.zero) & box.size).contains(global)) return false;
-    final position = positionOnScreen(editor, global);
-    return position != null && linkAt(editor, position) != null;
+    // box.size is in the box's own (unscaled) units, so test in its own space.
+    if (!(Offset.zero & box.size).contains(box.globalToLocal(global))) return false;
+    return linkGlyphAt(editor, global);
   }
 
   // The light view's clicks ----------------------------------------------
