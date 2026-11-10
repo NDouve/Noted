@@ -280,7 +280,11 @@ class CanvasController extends ChangeNotifier {
     if (to == null) return false;
     final i = _page.indexOf(id);
     _history.record(
-      PageChange.order(id, after: i == 0 ? null : _page.nodes[i - 1].id, index: i),
+      PageChange.order(
+        id,
+        after: i == 0 || !hasOwnId(_page.nodes[i - 1]) ? null : _page.nodes[i - 1].id,
+        index: i,
+      ),
     );
     _set(_page.moveNode(id, to));
     return true;
