@@ -1348,7 +1348,7 @@ class PageCanvasState extends State<PageCanvas>
                     child: CustomPaint(
                       painter: _PickOverlayPainter(
                         this,
-                        Listenable.merge([_c, _pickHighlight, _overlay]),
+                        Listenable.merge([_pickHighlight, _overlay]),
                       ),
                     ),
                   ),

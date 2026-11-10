@@ -117,7 +117,13 @@ void main() {
 
       final cases = {
         'insert': ['noted.note.insertTable', 'noted.ai.insert'],
-        'draw': ['noted.drawing.pen', 'noted.drawing.lasso', 'noted.drawing.color.0'],
+        'draw': [
+          'noted.drawing.pen',
+          'noted.drawing.lasso',
+          'canvas.bringToFront',
+          'canvas.sendToBack',
+          'noted.drawing.color.0',
+        ],
         'view': ['canvas.zoomIn', 'canvas.fitAll', 'canvas.find'],
         'home': ['noted.note.bold', 'noted.note.clearFormatting'],
       };
@@ -201,6 +207,22 @@ void main() {
       expect(x('app.search'), lessThan(x('canvas.fitAll')));
       expect(x('canvas.fitAll'), lessThan(x('canvas.zoomReset')));
       expect(x('canvas.zoomReset'), lessThan(x('canvas.pageBackground')));
+    });
+
+    testWidgets('the insert section keeps its Insert tools and ends with the layering commands', (t) async {
+      await pump(t, contextualToolbarLayout);
+      for (final id in ['noted.note.insertTable', 'noted.image.insert', 'noted.ai.insert']) {
+        expect(shown(id), isTrue, reason: id);
+      }
+      final layering = ['canvas.bringToFront', 'canvas.bringForward', 'canvas.sendBackward', 'canvas.sendToBack'];
+      double x(String id) => t.getCenter(find.byKey(ValueKey(id))).dx;
+      for (final id in layering) {
+        expect(shown(id), isTrue, reason: id);
+        expect(x(id), greaterThan(x('noted.encrypted.insert')), reason: id);
+      }
+      for (var i = 1; i < layering.length; i++) {
+        expect(x(layering[i]), greaterThan(x(layering[i - 1])));
+      }
     });
 
     testWidgets('the middle swaps: insert, text with a caret, ink with the pen', (
