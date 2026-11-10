@@ -10,6 +10,7 @@ import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_box_note/noted_box_note.dart';
@@ -270,6 +271,64 @@ void main() {
         expect(list(), findsOneWidget);
       });
     }
+    for (final zoom in [1.0, 2.0]) {
+      testWidgets('at ${(zoom * 100).round()}%: a to-do item ending with a link is hit on the glyphs the paragraph draws', (t) async {
+        final data = NoteData({
+          'document': {
+            'type': 'page',
+            'children': [
+              {
+                'type': 'todo_list',
+                'data': {
+                  'checked': false,
+                  'delta': [
+                    {'insert': 'item '},
+                    {
+                      'insert': 'https://link.example',
+                      'attributes': {'href': 'https://link.example'},
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        });
+        final todo = BoxRecord.create(
+          id: 'n',
+          typeId: NoteCodec.id,
+          dataVersion: 1,
+          bounds: const Bounds(700, 300, 420, 160),
+          data: RawJson.encode(_codec.encode(data)),
+          snapshotText: _codec.snapshotText(data),
+          rev: 'r',
+        );
+        await pump(t, [todo]);
+        canvas(t).fitAll();
+        await t.pump();
+        canvas(t).zoomTo(zoom);
+        await t.pump();
+        await t.tapAt(at(t, const Offset(900, 316)));
+        await frames(t);
+        expect(c.editingId, 'n');
+        // The link's box, from the paragraph that draws it.
+        final para = find.byWidgetPredicate(
+          (w) => w is RichText && w.text.toPlainText().contains('https://link.example'),
+        );
+        final render = t.renderObject<RenderParagraph>(para.first);
+        final boxes = render.getBoxesForSelection(const TextSelection(baseOffset: 5, extentOffset: 25));
+        expect(boxes, isNotEmpty);
+        final rect = boxes
+            .map((b) => Rect.fromPoints(render.localToGlobal(b.toRect().topLeft), render.localToGlobal(b.toRect().bottomRight)))
+            .reduce((a, b) => a.expandToInclude(b));
+        await altClick(t, Offset(rect.left + 4, rect.center.dy));
+        expect(list(), findsNothing, reason: 'on the first glyphs of the link');
+        await altClick(t, Offset(rect.right - 4, rect.center.dy));
+        expect(list(), findsNothing, reason: 'on the last glyphs of the link');
+        await altClick(t, Offset(rect.right + 12, rect.center.dy));
+        expect(list(), findsOneWidget, reason: 'beside the link');
+      });
+    }
+
   });
 
   group('touch', () {

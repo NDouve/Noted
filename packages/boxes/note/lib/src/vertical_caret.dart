@@ -288,11 +288,11 @@ bool linkGlyphAt(EditorState editorState, Offset global) {
       start: Position(path: position.path, offset: link.start),
       end: Position(path: position.path, offset: link.end),
     ),
-    shiftWithBaseOffset: true,
+    shiftWithBaseOffset: false,
   );
   for (final r in rects) {
-    final a = selectable.localToGlobal(r.topLeft, shiftWithBaseOffset: true);
-    final b = selectable.localToGlobal(r.bottomRight, shiftWithBaseOffset: true);
+    final a = selectable.localToGlobal(r.topLeft);
+    final b = selectable.localToGlobal(r.bottomRight);
     if (Rect.fromPoints(a, b).contains(global)) return true;
   }
   return false;
