@@ -504,7 +504,7 @@ void main() {
       String file(List<String> nodes, {String bData = 'b'}) =>
           '{"nodes":[${nodes.join(',\n')}],"edges":[],'
           '"noted":{"format":1,"pageId":"p","parentId":null,"title":"T","order":0}}';
-      final bx = writePage(pageOf([box("a", "test.plain", "a")]));
+      final bx = writePage(pageOf([box('a', 'test.plain', 'a')]));
       final aJson = (readPage(bx).nodes.single as BoxRecord).toRaw().text;
       final aEdited = (pageOf([edit(box('a', 'test.plain', 'a'), 'a2')]).nodes.single as BoxRecord).toRaw().text;
       final base = readPage(file([aJson, f1, f2]));
