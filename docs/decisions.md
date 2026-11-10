@@ -2199,7 +2199,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0156 — Recovered edits overwritten right after landing become a version conflict
 - **Date:** 2026-11-09
-- **Status:** Active (decided by the maintainer; details decided by the build team from the reviewed note `2026-11-09-01-landed-conflict`; supersedes 0130 "Replay"'s sentences from "Once replay's write has landed…" to "…removes its binder or folder", except for a file that can't be read)
+- **Status:** Active (decided by the maintainer; details decided by the build team from the reviewed note `2026-11-09-01-landed-conflict`; supersedes 0130 "Replay"'s sentences from "Once replay's write has landed…" to "…removes its binder or folder", except for a file that can't be read); "Limits"' landed-text sentence amended by 0158
 - **Decision:**
   - **Settle, don't retire.** After replay's write lands, the page is read back. A recovery entry is deleted only once a read shows every edit it holds is in the file or recorded there as a conflict, or its page is in a published copy.
   - **What is put back.**
@@ -2224,13 +2224,50 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0157 — Watcher reads take the folder lock; a stalled folder shows a note; a second New page joins the first
 - **Date:** 2026-11-09
-- **Status:** Active (the note decided by the maintainer's PM chat; details decided by the build team; amends 0148 "One folder lock" and 0152 "A stalled folder")
+- **Status:** Active (the note decided by the maintainer's PM chat; details decided by the build team; amends 0148 "One folder lock" and 0152 "A stalled folder"); "The note" extended by 0159
 - **Decision:**
   - **Reads under the lock (amends 0148).** A folder check's read of a page file runs as a job on that folder's lock, so it never overlaps the notebook's own replace (on Windows an open file can't be renamed). It waits at most 500 ms for its turn, then reads as before; inside a job on that folder it reads directly.
   - **The note (amends 0152).** When New page, Undo of a delete or a move has waited more than 3 seconds for a folder, "Waiting for the folder…" shows at the top of the window until the wait ends. Background work never shows it.
   - **New page.** A New page for a place while one for the same place is pending joins it: one page is made and opened.
 - **Rationale:** a stalled folder held these actions with no feedback, and stacked clicks all published when it ended. An unlocked read failed the notebook's own save with a sharing error.
 - **Alternatives considered:** retrying the rename (hides the cause); an unbounded wait for the read (a hung folder held every check); a snackbar (it closed other notices, including Undo).
+
+## 0158 — Landed text belongs to one recovery generation
+- **Date:** 2026-11-09
+- **Status:** Active (the Codex finding and its fix decided by the maintainer's PM chat; details decided by the build team from the reviewed note `2026-11-09-02-rekey-landed`; amends 0156 "Limits")
+- **Decision:**
+  - The settle-without-merging state that 0156 keeps for a landed, unsettled entry moves to another generation only when that generation holds exactly the same page and base: a re-keyed copy written to a fresh slot.
+  - A generation that combines entries starts without it and merges again: a move into a location that already holds an entry for the page, or a closed writer folding entries together.
+  - The state is pruned to the generations listed, only after a listing that read every entry.
+  - **0156's limit, amended:** a restart, a move of the page, or a re-key of its entry (on mobile, or into a combined entry) between landing and settling merges again.
+- **Rationale:** a combined entry settled against the text landed for only one of its parts could be deleted while the other part's boxes were in no file.
+- **Alternatives considered:** keeping the state when the combined generation is exactly the moved entry (the same rule, stated narrower); a listing failure pruning it too (a briefly unreadable entry would merge again).
+
+## 0159 — The folder-wait note covers every user move and template pages
+- **Date:** 2026-11-09
+- **Status:** Active (decided by the build team from an accepted Codex finding; extends 0157 "The note")
+- **Decision:** A drag before or after a page, Move to folder and a new page from a template count as user actions for 0157's note, like New page, Undo of a delete and the other moves.
+- **Rationale:** these paths waited on a stalled folder with no feedback.
+- **Alternatives considered:** none.
+
+## 0160 — Picking a box under others; layering commands
+- **Date:** 2026-11-09
+- **Status:** Active (requested by the maintainer; shortcut defaults chosen by the maintainer's PM chat; details and Box API 0.15 decided by the build team from the reviewed note `2026-11-09-02-box-pick`)
+- **Decision:**
+  - **Pick list.** Alt+click (Option+click on macOS) with the Select tool, on a writable page and not on a link, lists every box under the point, topmost first. Each row shows `<Type> · <first words>` (an encrypted box: its type only), with Bring to front and Send to back for that row's box.
+    - Hovering or arrowing a row dims the page outside that box and outlines it. A click or Enter selects it. Escape closes the list.
+    - On touch, a one-finger hold, opened on release without movement, shows it. A first tap highlights a row and a second selects it.
+    - A hold that turns into a drag stays a drag. A palm, a stylus, a pen stroke or a second finger during the hold opens nothing. A text field's or the note editor's own long-press wins.
+    - Ctrl/Cmd+click on a link opens it (0099); Alt+click on a link is a plain click. "On a link" is asked of the topmost box only, through `BoxModule.linkAt` (Box API 0.15, additive).
+  - **Layering.** Bring to front, Bring forward, Send backward and Send to back are canvas commands with Undo.
+    - Forward and backward move a box past the next box it overlaps.
+    - They act on nodes with an id of their own; a node with a positional id isn't restacked.
+    - Default keys: Ctrl+Shift+], Ctrl+], Ctrl+[, Ctrl+Shift+[ (Cmd on macOS). They are registry defaults, so they can be made customizable later.
+    - They appear on the Draw tab (Tabs) and at the end of the Insert section (Contextual).
+  - Z-order is node order in the page file (first is bottom-most), so there is no format change. A reorder merges as any order change (0132, 0134).
+  - **A covered selected box** has its outline drawn above the boxes over it.
+- **Rationale:** a box wholly under another couldn't be reached or brought up.
+- **Alternatives considered:** forward and backward by one node (on a sparse page a step usually changes nothing visible); a right-click box menu (not built; the canvas has no context menu yet); a long-press recognizer on touch (it would take hold-then-drag from the grip).
 
 ---
 
