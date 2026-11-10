@@ -658,12 +658,24 @@ void main() {
   group('palms, pens and a second finger', () {
     testWidgets('palm down, pen writes, palm lifts: no list', (t) async {
       await pump(t, withPen: true);
-      final palm = await hold(t, at(t, _point), time: const Duration(milliseconds: 100));
+      final palm = await hold(t, at(t, _point));
       final stylus = await t.startGesture(at(t, const Offset(700, 500)), kind: PointerDeviceKind.stylus, pointer: 2);
       await stylus.moveBy(const Offset(40, 0));
       await t.pump(const Duration(milliseconds: 600));
       await stylus.up();
       await palm.up();
+      await t.pumpAndSettle();
+      expect(pen.started, 1);
+      expect(list(), findsNothing);
+    });
+
+    testWidgets('a palm that lands while the pen writes and is held: no list', (t) async {
+      await pump(t, withPen: true);
+      final stylus = await t.startGesture(at(t, const Offset(700, 500)), kind: PointerDeviceKind.stylus, pointer: 2);
+      final palm = await hold(t, at(t, _point));
+      await palm.up();
+      await t.pump();
+      await stylus.up();
       await t.pumpAndSettle();
       expect(pen.started, 1);
       expect(list(), findsNothing);
