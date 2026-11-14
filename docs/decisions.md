@@ -1806,7 +1806,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0129 — iPad and Android test builds
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer; extends 0018; amended by 0130; mobile sync started by 0145). The mobile adaptations listed below are built (0130).
+- **Status:** Active (approved by the maintainer; extends 0018; amended by 0130; mobile sync started by 0145; first-load error screen and insets amended by 0162). The mobile adaptations listed below are built (0130).
 - **Decision:**
   - **Scope:** iPad and Android test builds for testing pen, touch and layout: sideloaded, notes stored on the device, no mobile sync yet.
   - **Projects:** `app/ios` and `app/android`, id `io.github.ndouve.noted`, minimum iPadOS/iOS 15 (needed by `file_selector`) and Android 8 (API 26). iPad uses all four orientations. Android paste uses pasteboard's file provider, limited to the app's cache folder. Android library plugins that compile against an older SDK than the app (for example `keyboard_height_plugin`, through `appflowy_editor`) are raised to the app's compile SDK at build time.
@@ -2290,6 +2290,19 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - Nothing here is built yet.
 - **Rationale:** the maintainer's sign-off of the baseline on 2026-11-14.
 - **Alternatives considered:** none recorded.
+
+## 0162 — A first load that fails or hangs shows an error screen; system insets on devices
+- **Date:** 2026-11-14
+- **Status:** Active (decided by the build team, run 2026-11-14-01); amends 0129
+- **Decision:**
+  - **Load error.** If the first load throws, or is still running after 30 seconds, the notebook area shows "Noted can't open your notes.", the error text and Retry, instead of a spinner.
+    - A load that ends after the 30 seconds clears the screen and opens the page.
+    - Retry while that load is still running joins it: the screen says "Still loading." and Retry is off until it ends. A load never runs twice at once.
+    - Until a load succeeds: `binders.json` and other settings are not written, AI writes are refused as busy, and OneDrive sync doesn't start. Sync starts when a load succeeds, including after a Retry.
+  - **Insets.** On iOS, iPadOS and Android the page, toolbars and sidebar drawer sit inside the system insets (status bar, notch, home indicator). Desktop is unchanged.
+  - **Limits:** a load that never ends keeps "Still loading." until the app restarts. The cause of the endless spinner on a fresh Android install was not found (no device); the screen shows its error.
+- **Rationale:** a failed launch showed a spinner forever with no way to see why, and top controls sat under the status bar.
+- **Alternatives considered:** retrying the load in the background (it would run against a half-built notebook); a second load on Retry while one hangs (two loads would write the same lists).
 
 ---
 
