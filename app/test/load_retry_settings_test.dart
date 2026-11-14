@@ -148,7 +148,10 @@ void main() {
       addTearDown(nb.dispose);
       var fail = true;
       nb.binderHook = (p, path) async {
-        if (p == point && fail) throw const FileSystemException('late failure');
+        if (p != point || !fail) return;
+        // Just before the step fails: the old code had released the hold here.
+        await attemptsWhileHeld(nb);
+        throw const FileSystemException('late failure');
       };
       await nb.loadChecked();
       expect(nb.loadError, isNotNull);
@@ -163,6 +166,33 @@ void main() {
       expect(listFile.readAsStringSync(), contains('b2'));
     });
   }
+
+  test('a binder id changed on disk during the stall is saved once the load succeeds', () async {
+    final nb = make();
+    addTearDown(nb.dispose);
+    final inside = Completer<void>();
+    final release = Completer<void>();
+    nb.binderHook = (p, path) async {
+      if (p != 'load-first-page') return;
+      inside.complete();
+      await release.future;
+    };
+    final loading = nb.loadChecked();
+    await inside.future;
+    final binderFile = File('$binderPath/$binderFileName');
+    final text = binderFile.readAsStringSync();
+    final id = RegExp(r'"binderId"\s*:\s*"([^"]+)"').firstMatch(text)!.group(1)!;
+    expect(listFile.readAsStringSync(), contains(id));
+    binderFile.writeAsStringSync(text.replaceFirst(id, 'changed-id-1'));
+    await nb.checkBinderFile(binderFile.path);
+    // Held: nothing is written yet.
+    expect(listFile.readAsStringSync(), isNot(contains('changed-id-1')));
+    release.complete();
+    await loading;
+    await nb.flush();
+    expect(nb.settingsHoldForTest, isNull);
+    expect(listFile.readAsStringSync(), contains('changed-id-1'));
+  });
 
   test('an AI write waits for the Retry reload, then goes ahead', () async {
     final nb = await failedLaunch();

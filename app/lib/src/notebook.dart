@@ -925,6 +925,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // [_settingsHeld]; what only reads the state goes by [_readHold].
   _SettingsHold? _launchHold;
   bool _listSettled = false;
+  // A settings save was skipped while the hold was pending (a binder id changed
+  // on disk, say); the load makes it when it settles the hold to null.
+  bool _saveAfterLoad = false;
+  // Note: while the hold is pending, the locked or damaged notice already shows
+  // (it reads [_readHold]) but [retrySettings] does nothing. The load ends by
+  // arming the retry timer; a failed or stalled load has its own Retry.
   _SettingsHold? get _readHold => _settingsHeld == _SettingsHold.pending && _listSettled ? _launchHold : _settingsHeld;
   // The open page is being left: it takes no edits until the leave is over, so
   // nothing typed meanwhile can fall between the save and recovery.
@@ -1404,6 +1410,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     // The load has succeeded: the list is trusted (or refused) only now.
     _settingsHeld = _launchHold;
+    final redo = _saveAfterLoad && _launchHold == null;
+    _saveAfterLoad = false;
+    if (redo) await _saveSettings();
     _listSettled = false;
     await _binderSeam('settings-loaded', settingsFile?.path ?? '');
     // Binders other devices made are looked for once the notebook is shown;
@@ -5421,6 +5430,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final f = bindersFile;
     if (f == null) return;
     if (_settingsHeld != null) {
+      // A save skipped while the start-up load is unfinished is made once it succeeds.
+      if (_settingsHeld == _SettingsHold.pending) _saveAfterLoad = true;
       debugPrint('Not saving ${f.path}: the binder list is not settled');
       return;
     }
