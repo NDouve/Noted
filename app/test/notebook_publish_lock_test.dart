@@ -63,6 +63,15 @@ class HookedStore extends PageStore {
 
 Future<void> pump() => Future<void>.delayed(const Duration(milliseconds: 50));
 
+/// Waits until [ok] holds, polling; fails the test after [limit] rather than hanging.
+Future<void> until(bool Function() ok, {Duration limit = const Duration(seconds: 10)}) async {
+  final clock = Stopwatch()..start();
+  while (!ok()) {
+    if (clock.elapsed > limit) fail('the condition did not hold within $limit');
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+}
+
 void main() {
   late Directory root;
   late Directory pages;
@@ -737,8 +746,10 @@ void main() {
     expect(published(pages, containing: '-undo-'), isEmpty);
     gate.complete();
     await held;
-    await pump();
-    await pump();
+    // The copy is written after the release (real IO); wait for it and its event.
+    bool eventSeen() => events.any((e) => e.kind == LocalChangeKind.published && e.path.contains('-undo-'));
+    await until(() => published(pages, containing: '-undo-').isNotEmpty && eventSeen());
+    await pump(); // a second copy, if there were one, would land by now
     expect(published(pages, containing: '-undo-'), hasLength(1));
     expect(
       events.where(
