@@ -885,8 +885,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// in a template's creation after its binder file was written; `settings-read`
   /// before every read of `binders.json`: throw a [FileSystemException] to make
   /// it fail as a lock; `load-open` before each listed binder is opened by load;
-  /// `settings-loaded` just after load settled the hold, before the tree is built;
-  /// `settings-adopt` before each open when a retry adopts the list;
+  /// `settings-loaded` once the load has succeeded and settled the hold, before
+  /// binders are looked for;
+  /// `load-recover` before load replays the recovery store and `load-first-page`
+  /// before it opens (or makes) the first page; `settings-adopt` before each open when a retry adopts the list;
   /// `settings-publish` before a new list is published after an absence).
   @visibleForTesting
   Future<void> Function(String point, String path)? binderHook;
@@ -918,6 +920,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // as pending and is settled by load once the listed binders and folders are
   // open.
   _SettingsHold? _settingsHeld = _SettingsHold.pending;
+  // What the running load settles the hold to once it succeeds, and whether it
+  // has read the list and opened what it lists. Writes and refusals go by
+  // [_settingsHeld]; what only reads the state goes by [_readHold].
+  _SettingsHold? _launchHold;
+  bool _listSettled = false;
+  _SettingsHold? get _readHold => _settingsHeld == _SettingsHold.pending && _listSettled ? _launchHold : _settingsHeld;
   // The open page is being left: it takes no edits until the leave is over, so
   // nothing typed meanwhile can fall between the save and recovery.
   int _leaving = 0;
@@ -1251,8 +1259,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     try {
       await _load();
     } finally {
-      // A load that stopped before the list was settled leaves it held.
-      if (_settingsHeld == _SettingsHold.pending) _settingsHeld = _SettingsHold.locked;
+      // A load that stopped before the list was read leaves it locked; one
+      // that stopped after leaves it pending, until a load succeeds.
+      if (_settingsHeld == _SettingsHold.pending && !_listSettled) _settingsHeld = _SettingsHold.locked;
+      _listSettled = false;
       if (!_loaded.isCompleted) _loaded.complete();
       _armSettingsTimer();
     }
@@ -1371,16 +1381,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // A default page folder chosen in the settings is a standalone folder in
     // use, so the pages already there are listed.
     await _openListedFolders();
-    // The list is trusted (or refused) only now: until every listed binder
-    // and folder is open, a hand change would be saved over what isn't there
-    // yet.
-    _settingsHeld = launchHold;
-    await _binderSeam('settings-loaded', settingsFile?.path ?? '');
+    // The list is read, but nothing may be written from it until the whole
+    // load has succeeded (the merges, recovery and the first page included):
+    // the hold stays pending, and what the load will settle it to is kept for
+    // what only reads it (see [_readHold]).
+    _launchHold = launchHold;
+    _listSettled = true;
     _rebuildTree();
     _syncWatchers();
     _startFolderTimer();
     await _mergePendingCopies();
+    await _binderSeam('load-recover', settingsFile?.path ?? '');
     await _recoverPending();
+    await _binderSeam('load-first-page', settingsFile?.path ?? '');
     if (_tree.roots.isEmpty) {
       await _createFallbackPage();
     } else {
@@ -1389,6 +1402,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await open(_tree.roots.first.id);
       _landedProblems.addAll(notices);
     }
+    // The load has succeeded: the list is trusted (or refused) only now.
+    _settingsHeld = _launchHold;
+    _listSettled = false;
+    await _binderSeam('settings-loaded', settingsFile?.path ?? '');
     // Binders other devices made are looked for once the notebook is shown;
     // found binders are added in their own jobs, never inside startup.
     unawaited(discoverBinders());
@@ -1767,7 +1784,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // The notice for the "Can't open" list while the list is held.
   List<UnreadablePage> get _heldNotes {
-    final held = _settingsHeld;
+    final held = _readHold;
     final f = bindersFile;
     if (held == null || held == _SettingsHold.pending || f == null) return const [];
     const locked =
@@ -2074,7 +2091,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// away or has a damaged binder file, and no page file is unreadable. What
   /// depends on the whole notebook (the access-loss note) waits for this.
   bool get everythingReadable =>
-      _settingsHeld == null &&
+      _readHold == null &&
       !_defaultGone &&
       _unreadable.isEmpty &&
       _folders.values.every((f) => f.available && f.unreadable.isEmpty) &&
@@ -7249,7 +7266,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     if (unmatched.isNotEmpty) {
       final waiting = {for (final e in (await rec.list()).entries) e.pageId};
-      final settled = _settingsHeld == null &&
+      final settled = _readHold == null &&
           !_defaultGone &&
           _folders.values.every((f) => f.available) &&
           _binders.values.every((b) => b.available);

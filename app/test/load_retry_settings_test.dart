@@ -87,6 +87,83 @@ void main() {
     expect(listFile.readAsStringSync(), contains('b1'));
   });
 
+  // R-1: the hold lasts until the whole load succeeded. A binder change, a
+  // discovery pass and a direct save, tried while a late step stalls, write
+  // nothing and are refused as held.
+  Future<void> attemptsWhileHeld(Notebook nb) async {
+    expect(nb.settingsHoldForTest, 'pending');
+    final before = listFile.readAsBytesSync();
+    final other = Directory('${dir.path}/b2')..createSync();
+    await expectLater(nb.addBinder(other.path), throwsA(isA<NotebookException>()));
+    await expectLater(nb.createBinder(), throwsA(isA<NotebookException>()));
+    await expectLater(nb.removeBinder(binderPath), throwsA(isA<NotebookException>()));
+    await nb.discoverBinders();
+    await nb.discoveryIdle;
+    await nb.saveSettingsForTest();
+    expect(listFile.readAsBytesSync(), before, reason: 'binders.json written while the load is unfinished');
+    expect(nb.settingsHoldForTest, 'pending');
+  }
+
+  for (final point in ['load-recover', 'load-first-page']) {
+    test('a stall at $point keeps the settings held until it ends', () async {
+      final nb = make();
+      addTearDown(nb.dispose);
+      final inside = Completer<void>();
+      final release = Completer<void>();
+      nb.binderHook = (p, path) async {
+        if (p != point) return;
+        inside.complete();
+        await release.future;
+      };
+      final loading = nb.loadChecked();
+      await inside.future;
+      await attemptsWhileHeld(nb);
+      release.complete();
+      await loading;
+      expect(nb.loadError, isNull);
+      expect(nb.settingsHoldForTest, isNull);
+      final b2 = Directory('${dir.path}/b2')..createSync();
+      await nb.addBinder(b2.path);
+      await nb.flush();
+      expect(listFile.readAsStringSync(), contains('b2'));
+    });
+
+    test('a timed-out load stalled at $point releases the hold when it finishes', () async {
+      final nb = make();
+      addTearDown(nb.dispose);
+      final release = Completer<void>();
+      nb.binderHook = (p, path) async {
+        if (p == point) await release.future;
+      };
+      await nb.loadChecked(timeout: const Duration(milliseconds: 50));
+      expect(nb.loadError, isNotNull);
+      await attemptsWhileHeld(nb);
+      release.complete();
+      await nb.loadSucceeded;
+      expect(nb.settingsHoldForTest, isNull);
+    });
+
+    test('a failure at $point keeps the hold; Retry succeeds and releases it', () async {
+      final nb = make();
+      addTearDown(nb.dispose);
+      var fail = true;
+      nb.binderHook = (p, path) async {
+        if (p == point && fail) throw const FileSystemException('late failure');
+      };
+      await nb.loadChecked();
+      expect(nb.loadError, isNotNull);
+      await attemptsWhileHeld(nb);
+      fail = false;
+      await nb.loadChecked();
+      expect(nb.loadError, isNull);
+      expect(nb.settingsHoldForTest, isNull);
+      final b2 = Directory('${dir.path}/b2')..createSync();
+      await nb.addBinder(b2.path);
+      await nb.flush();
+      expect(listFile.readAsStringSync(), contains('b2'));
+    });
+  }
+
   test('an AI write waits for the Retry reload, then goes ahead', () async {
     final nb = await failedLaunch();
     final inside = Completer<void>();
