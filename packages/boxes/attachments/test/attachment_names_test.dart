@@ -254,7 +254,14 @@ void main() {
       expect(find.text('File not found: red.png'), findsOneWidget);
 
       c.replaceBoxData({'img': data('$pngHash.png')});
-      await settle();
+      // The file is read, hashed and decoded in real time: a slow runner can
+      // take longer than one settle (CI, run 2026-11-09-02). Wait for the
+      // picture, within a bound.
+      final picture = find.byKey(const ValueKey('image-box-picture'));
+      for (var i = 0; i < 20 && picture.evaluate().isEmpty; i++) {
+        await settle();
+      }
+      await settle(); // and it stays
       expect(find.text('File not found: red.png'), findsNothing);
       expect(find.byKey(const ValueKey('image-box-picture')), findsOneWidget);
     });

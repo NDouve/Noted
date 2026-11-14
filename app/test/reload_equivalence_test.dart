@@ -1438,6 +1438,9 @@ class _Run {
     stA.stall!.complete();
     stA.stall = null;
     await replay;
+    // B's save on leaving may have outlasted leaveSaveLimit and still be
+    // running (by design); the restart comes after it ends.
+    await _until(() => !nb.isBusy(b), 'the save left behind to end');
     await _opRestart();
     return 'replay:hangDuringLeave';
   }
@@ -1445,7 +1448,7 @@ class _Run {
   // An entry waits for a closed page. The page opens with it (or, when the
   // listing fails, the replay waits for the next start). Edits, a failing
   // publish, leaving and a restart: all of it is in the files.
-  Future<String?> _reopenEntry(String id, String other, {required bool listFails}) async {
+  Future<String?> _reopenEntry(String id, String other, {required bool listFails, bool holdLeave = false}) async {
     final m = model[id]!;
     await nb.open(other);
     final y = _newBox(_text('kept'));
@@ -1470,7 +1473,25 @@ class _Run {
     final st = storeOf(m.loc);
     st.publishFailures = 5000;
     await nb.flush();
+    final hold = holdLeave ? Completer<void>() : null;
+    if (hold != null) {
+      st
+        ..stall = hold
+        ..stallId = id;
+    }
     await nb.open(other);
+    if (hold != null) {
+      expect(nb.isBusy(id), isTrue, reason: 'the save on leaving was left running');
+      // Released a little later, as a slow disk would end it.
+      Timer(const Duration(milliseconds: 300), () {
+        st.stall = null;
+        hold.complete();
+      });
+    }
+    // On a slow disk the save on leaving can outlast leaveSaveLimit and be
+    // left running (by design); the quit below comes after it ends, or it
+    // would still be writing its .tmp when the files are compared.
+    await _until(() => !nb.isBusy(id), 'the save left behind to end');
     st.publishFailures = 0;
     _drop();
     nb = _make();
@@ -3315,6 +3336,21 @@ void main() {
   });
 
   group('probes of the faults on their own', () {
+    // The CI flake of run 2026-11-09-02: the save on leaving is held past
+    // leaveSaveLimit, so it is left running, and the quit must come after it.
+    test('reopen:entryThenFailIo with the save on leaving left running: nothing is lost', () async {
+      final run = _Run(915);
+      try {
+        await run.start();
+        final id = run.model.keys.first;
+        final other = run.model.keys.firstWhere((i) => i != id);
+        expect(await run._reopenEntry(id, other, listFails: false, holdLeave: true), 'reopen:entryThenFailIo');
+        await run.verify('after the step', fresh: true);
+      } finally {
+        await run.stop();
+      }
+    });
+
     test('recover:overwrittenAfterLanding: both versions are kept, live and after a restart', () async {
       final run = _Run(912);
       try {
