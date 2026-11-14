@@ -257,14 +257,17 @@ Future<ReplaceResult> replaceIfUnchanged(
 /// deleted, verified or not: it may be the only durable copy of its version.
 /// A leftover whose target does not end in [extension] is not touched;
 /// [PageStore.scan] lists it (pass `extension: ''` to sweep any file, as for
-/// an attachments folder). Returns the paths now holding the recovered files. A leftover
-/// that can't be moved now is left for the next call.
+/// an attachments folder). [only], when given, is asked for each leftover's
+/// target file name and must say yes for it to be touched. Returns the paths now
+/// holding the recovered files. A leftover that can't be moved now is left for
+/// the next call.
 ///
 /// Don't run it while a [replaceIfUnchanged] on the same folder is in flight;
 /// it would take that call's aside file.
 Future<List<String>> sweepAsideFiles(
   Directory directory, {
   String extension = '.canvas',
+  bool Function(String targetName)? only,
 }) async {
   final out = <String>[];
   if (!await directory.exists()) return out;
@@ -288,6 +291,7 @@ Future<List<String>> sweepAsideFiles(
     final targetName = body.substring(0, dot);
     // Not a page file: leave it where it is; [PageStore.scan] lists it.
     if (!targetName.endsWith(extension)) continue;
+    if (only != null && !only(targetName)) continue;
     final dir = f.parent.path;
     try {
       if (await publishExclusive(f, '$dir$sep$targetName')) {
@@ -480,6 +484,12 @@ Future<DeleteResult> deleteFileIfUnchanged(
 /// pages; the caller's job for other files) puts it back, so the page reappears (a duplicate of what the caller meant
 /// to delete). Nothing is lost.
 ///
+/// [stillRedundant], when given, runs synchronously just before the set-aside
+/// file is deleted (after [beforeDelete]); when it returns false the file is put
+/// back and the result is [DeleteOutcome.changed], as for a file that differs.
+/// It lets a caller delete a copy only while something else still holds the
+/// same data.
+///
 /// Test seams: [beforeMoveAside], [afterRead] (the target is absent), the
 /// asynchronous [beforeDelete] (the verified file is still set aside) and
 /// [beforeRestore], as in [replaceIfUnchanged].
@@ -491,6 +501,7 @@ Future<DeleteResult> deleteFileIfMatches(
   void Function()? afterRead,
   Future<void> Function()? beforeDelete,
   void Function()? beforeRestore,
+  bool Function()? stillRedundant,
 }) async {
   if ((bytes == null) == (identity == null)) {
     throw ArgumentError('give exactly one of bytes and identity');
@@ -530,6 +541,12 @@ Future<DeleteResult> deleteFileIfMatches(
   }
   try {
     if (beforeDelete != null) await beforeDelete();
+    if (stillRedundant != null && !stillRedundant()) {
+      final r = await _restore(aside, target, beforeRestore, ReplaceOutcome.changed);
+      return r.keptPath == null
+          ? const DeleteResult(DeleteOutcome.changed)
+          : DeleteResult(DeleteOutcome.changedKept, r.keptPath);
+    }
     await aside.delete();
   } catch (e) {
     await _putBackOrThrow(aside, target, beforeRestore, e);

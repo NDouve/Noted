@@ -20,6 +20,45 @@ void main() {
   List<String> names() =>
       dir.listSync().map((f) => f.path.split(RegExp(r'[\\/]')).last).toList()..sort();
 
+  group('stillRedundant and only', () {
+    test('a false stillRedundant puts the file back and reports changed', () async {
+      File(p('a.bin')).writeAsBytesSync([1, 2, 3]);
+      final r = await deleteFileIfMatches(
+        p('a.bin'),
+        bytes: [1, 2, 3],
+        stillRedundant: () => false,
+      );
+      expect(r.outcome, DeleteOutcome.changed);
+      expect(File(p('a.bin')).readAsBytesSync(), [1, 2, 3]);
+      expect(names(), ['a.bin']);
+    });
+
+    test('a true stillRedundant deletes', () async {
+      File(p('a.bin')).writeAsBytesSync([1, 2, 3]);
+      var asked = 0;
+      final r = await deleteFileIfMatches(
+        p('a.bin'),
+        bytes: [1, 2, 3],
+        stillRedundant: () => ++asked > 0,
+      );
+      expect(r.deleted, isTrue);
+      expect(asked, 1);
+      expect(names(), isEmpty);
+    });
+
+    test('sweepAsideFiles(only:) touches only the names it accepts', () async {
+      File(p('keep.bin.1-a-b$asideSuffix')).writeAsBytesSync([1]);
+      File(p('noted-x.bin.1-a-b$asideSuffix')).writeAsBytesSync([2]);
+      final out = await sweepAsideFiles(
+        dir,
+        extension: '',
+        only: (n) => n.startsWith('noted-'),
+      );
+      expect(out, [p('noted-x.bin')]);
+      expect(names(), ['keep.bin.1-a-b$asideSuffix', 'noted-x.bin']);
+    });
+  });
+
   group('replaceIfUnchanged', () {
     test('equal bytes: replaced, new bytes at the target, no leftovers', () async {
       File(p('a.bin')).writeAsBytesSync([1, 2, 3]);
