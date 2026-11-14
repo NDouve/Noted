@@ -737,19 +737,25 @@ void main() {
     await pump();
     events.clear();
     final gate = Completer<void>();
+    var copyHeld = 0; // calls that reached the lock with a finished .tmp
+    nb.syncHook = (point, path) async {
+      if (point == 'undo-copy-before-publish') copyHeld++;
+    };
     final held = locks.run(pages, () => gate.future);
     nb.questioner = (q, title) async => false; // stay
     final stay = await nb.prepareToExit(
       limit: const Duration(milliseconds: 300),
     );
     expect(stay, isFalse);
+    await until(() => copyHeld >= 1); // the copy is waiting at the lock
     expect(published(pages, containing: '-undo-'), isEmpty);
     gate.complete();
     await held;
     // The copy is written after the release (real IO); wait for it and its event.
     bool eventSeen() => events.any((e) => e.kind == LocalChangeKind.published && e.path.contains('-undo-'));
     await until(() => published(pages, containing: '-undo-').isNotEmpty && eventSeen());
-    await pump(); // a second copy, if there were one, would land by now
+    expect(pages.listSync().where((e) => e.path.endsWith('.tmp')), isEmpty);
+    expect(copyHeld, 1, reason: 'one copy, made once');
     expect(published(pages, containing: '-undo-'), hasLength(1));
     expect(
       events.where(

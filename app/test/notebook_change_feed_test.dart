@@ -385,7 +385,7 @@ void main() {
         if (point == 'closed-update-read' && !reads.isCompleted) reads.complete();
       };
       Future<void> queued() async {
-        await reads.future;
+        await reads.future.timeout(const Duration(seconds: 10));
         reads = Completer<void>();
         await Future<void>.delayed(Duration.zero);
       }
