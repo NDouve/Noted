@@ -1258,6 +1258,53 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  /// How long the start-up load may run before the app shows [loadError]. A
+  /// phone reads a notebook's page list in well under this; a slower load
+  /// is still running behind the message and clears it when it ends.
+  static const Duration loadTimeout = Duration(seconds: 30);
+
+  Object? _loadError;
+  Future<void>? _loadRun;
+
+  /// Why the start-up load failed or is taking too long; null while it runs
+  /// normally or after it succeeded.
+  Object? get loadError => _loadError;
+
+  /// [load] for the app's start and its Retry: a failure, or a load still
+  /// running after [timeout], sets [loadError] (and notifies) instead of
+  /// throwing. A load still running is never started twice: Retry then waits
+  /// for it again.
+  Future<void> loadChecked({Duration timeout = loadTimeout}) async {
+    if (_loadError != null) {
+      _loadError = null;
+      _notifyLoad();
+    }
+    final run = _loadRun ??= load().whenComplete(() => _loadRun = null);
+    run.then<void>(
+      (_) {
+        if (_loadError == null) return;
+        _loadError = null;
+        _notifyLoad();
+      },
+      onError: (Object e) {
+        _loadError = e;
+        _notifyLoad();
+      },
+    );
+    try {
+      await run.timeout(timeout);
+    } on TimeoutException {
+      _loadError ??= NotebookException('Loading took more than ${timeout.inSeconds} seconds.');
+      _notifyLoad();
+    } on Object {
+      // Recorded by the handler above.
+    }
+  }
+
+  void _notifyLoad() {
+    if (!_disposed) notifyListeners();
+  }
+
   // Completes when the first load is over; AI writes wait for it.
   final Completer<void> _loaded = Completer<void>();
 
