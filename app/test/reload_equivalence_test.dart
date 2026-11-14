@@ -3502,20 +3502,44 @@ void main() {
       await run.verify('after the undo and a reload', fresh: true);
     });
 
-    test('a publish that keeps failing, then leaving the page: the edit is not lost', () async {
+    // The save on leaving may outlast leaveSaveLimit (300 ms here; a slow CI
+    // disk did, run 2026-11-09-02). Leaving then goes on, keeps the edit in
+    // recovery and leaves the save running (by design); the files are only
+    // final once that save ends. `slow` holds the save until leaving has
+    // gone on, so that path is taken every time.
+    for (final slow in [false, true]) {
+      test('a publish that keeps failing, then leaving the page: the edit is not lost'
+          '${slow ? ' (the save on leaving outlasts the limit)' : ''}', () async {
         final id = run.model.keys.first;
         final m = run.model[id]!;
+        final st = run.storeOf(m.loc);
         await run.nb.open(id);
         run._addBox(m, run.nb.current!);
-        run.storeOf(m.loc).publishFailures = 50;
+        st.publishFailures = 50;
         await run.nb.flush();
-        run.storeOf(m.loc).publishFailures = 0;
+        st.publishFailures = 0;
+        final stall = slow ? Completer<void>() : null;
+        if (stall != null) {
+          st
+            ..stall = stall
+            ..stallId = id;
+        }
         // The user goes to another page, and quits.
         await run.nb.open(run.model.keys.last);
+        if (stall != null) {
+          expect(run.nb.isBusy(id), isTrue, reason: 'the save on leaving was left running');
+          expect((await run.nb.pendingRecovery()).entries.map((e) => e.pageId), contains(id));
+          st.stall = null;
+          stall.complete();
+        }
         await run.nb.flush();
+        await run._until(() => !run.nb.isBusy(id), 'the save left behind to end');
+        await run.nb.flush();
+        await run._until(() => run.nb.recoveryStoreForTest!.indexEntries.isEmpty, 'the kept entry to be retired');
         run._drop();
         await run._verifyDisk('after leaving');
-    });
+      });
+    }
 
     // Run 2026-11-04-02, R-1 (area-data-integrity-2): Move attachments to
     // folder with the good copy unwritable keeps the embedded data, and puts
