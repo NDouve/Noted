@@ -76,6 +76,7 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 - iPad and Android test builds (sideloaded, notes stored on the device)
 - Microsoft sign-in and OneDrive sync for the iPad and Android builds, through Microsoft Graph (in progress; `runs/designs/2026-11-05-onedrive-sync.md` in the build repository)
 - storage in iCloud Drive, Google Drive and WebDAV alongside OneDrive, for the iPad, Android and browser builds
+- every in-scope cloud works fully, conflict copies included: iCloud Drive, Google Drive and WebDAV behave as OneDrive does, and a provider-specific gap is a bug (0163)
 - Google sign-in, for Google Drive only
 - import: text and markdown files, images, PDF pages as images, a spreadsheet as a table or as an image, a Word document as text or as an image, a slide as an image
 - export: per box in the formats its module lists, and several boxes together through a print-preview layout
@@ -88,7 +89,6 @@ When the maintainer says **curate**, update `docs/decisions.md` and nothing else
 - other integrations, Microsoft sign-in for anything beyond OneDrive sync, and Google sign-in for anything beyond Google Drive
 - Dropbox and other storage providers
 - full Word, PowerPoint and Excel boxes
-- conflict copies from providers other than OneDrive
 - customizable toolbars (user-arranged or scripted)
 - reMarkable
 

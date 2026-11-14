@@ -602,7 +602,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0053 — Cloud conflict-copy files (OneDrive)
 - **Date:** 2026-10-25
-- **Status:** Active; extended by 0120 (landed boxes); deletion of a copy amended by 0124; verification amended by 0132
+- **Status:** Active; extended by 0120 (landed boxes); deletion of a copy amended by 0124; verification amended by 0132; other providers amended by 0163
 - **Decision:**
   - **Detection:** a file `<stem>-<suffix>.canvas` is a conflict copy when `<stem>.canvas` exists in the same folder and both have the same page id. OneDrive appends `-<COMPUTERNAME>`, then `-<COMPUTERNAME>-<n>`. This naming is *unverified*, so a broader suffix pattern is accepted.
   - **Merge**, box by box into the original. There is no common base, so revisions decide:
@@ -2277,7 +2277,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0161 — Baseline scope, 2026-11-14
 - **Date:** 2026-11-14
-- **Status:** Active (decided by the maintainer). Amends 0078's phase lists, as kept in `CLAUDE.md`; amends 0055's exclusion of table import and 0038's note that other storage locations come in later phases.
+- **Status:** Active (decided by the maintainer). Amends 0078's phase lists, as kept in `CLAUDE.md`; amends 0055's exclusion of table import and 0038's note that other storage locations come in later phases. Its out-of-scope list is amended by 0163.
 - **Decision:**
   - **In scope, added:**
     - storage in iCloud Drive, Google Drive and WebDAV alongside OneDrive, for the iPad, Android and browser builds;
@@ -2306,12 +2306,25 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ---
 
+## 0163 — Every in-scope cloud works fully, conflict copies included
+- **Date:** 2026-11-14
+- **Status:** Active (decided by the maintainer). Amends 0161's out-of-scope list and 0053's "other providers' naming is not handled yet".
+- **Decision:**
+  - iCloud Drive, Google Drive and WebDAV get the same behaviour as OneDrive, conflict copies included. OneDrive is not a special case.
+  - A provider-specific gap is a bug, not a scope question.
+  - "Conflict copies from providers other than OneDrive" leaves the out-of-scope list.
+  - Nothing is built for it yet; each provider's conflict-copy naming is *unverified* until checked.
+- **Rationale:** with these providers in scope (0161), their conflict copies would otherwise appear as stray pages or be left unmerged.
+- **Alternatives considered:** keeping other providers' conflict copies out of scope (0161).
+
+---
+
 ## Open items
 - **Apple build path:** resolved: CI builds the macOS app and an unsigned `.ipa` on GitHub's macOS runners (0093, 0134).
 - **Equation block sourcing:** resolved (0048).
 - **File format:** whether JSON Canvas extra fields are sufficient, and how faithfully appflowy_editor round-trips Markdown.
 - **MCP:** the full tool and resource list. Linking an AI to a box: resolved (0108). Code checks and opted-in writes with Noted closed: resolved (0114–0117).
-- **Cloud conflict copies:** OneDrive copies are merged (0053); other providers name their conflict-copy files differently and are not handled yet.
+- **Cloud conflict copies:** OneDrive copies are merged (0053). Other in-scope providers must behave the same (0163); their naming is not handled yet.
 - **Per-AI overrides:** different rules for different AIs on the same page (deferred).
 - **Drawing box image snapshots:** where a drawing box's image snapshot (0035) is stored in the page format (0041).
 
