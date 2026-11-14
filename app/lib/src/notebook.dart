@@ -1305,6 +1305,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         },
         onError: (Object e) {
           _loadError = e;
+          _settingsHeld ??= _SettingsHold.pending; // no settings write until a load succeeds
           _notifyLoad();
         },
       );
@@ -1324,7 +1325,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _settingsTimer = null;
     final running = _retrying;
     if (running != null) await running;
-    if (_settingsHeld != null) _settingsHeld = _SettingsHold.pending;
+    // Unconditionally: a load that failed after the list was settled leaves no
+    // hold, and the lists are cleared again below; nothing may be written from
+    // them until a load succeeds.
+    _settingsHeld = _SettingsHold.pending;
+    _settingsDelay = null;
     await load();
   }
 
@@ -5479,8 +5484,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   @override
   Future<bool> aiWaitLoaded(Duration timeout) async {
     try {
-      await _loaded.future.timeout(timeout);
-      return _loadError == null;
+      await (() async {
+        await _loaded.future;
+        // A Retry rebuilds the lists with [_loaded] already complete.
+        final run = _loadRun;
+        if (run != null) {
+          try {
+            await run;
+          } on Object {
+            // Recorded in [loadError].
+          }
+        }
+      })().timeout(timeout);
+      return _loadError == null && _loadRun == null;
     } on TimeoutException {
       return false;
     }
