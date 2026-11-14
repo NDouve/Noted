@@ -376,10 +376,26 @@ void main() {
       await take();
       final gate = Completer<void>();
       final held = locks.run(pages, () => gate.future);
+      // A closed page's rename reads its file (real IO, in no fixed order) and
+      // only then asks for the folder lock. The hook fires after that read, and
+      // the lock is asked for in the microtasks that follow; one event-loop turn
+      // later each rename is in the queue, so the lock order is the call order.
+      var reads = Completer<void>();
+      nb.syncHook = (point, path) async {
+        if (point == 'closed-update-read' && !reads.isCompleted) reads.complete();
+      };
+      Future<void> queued() async {
+        await reads.future;
+        reads = Completer<void>();
+        await Future<void>.delayed(Duration.zero);
+      }
+
       final r1 = nb.rename(a, 'one');
+      await queued();
       final r2 = nb.rename(b, 'two');
-      await pump();
+      await queued();
       final r3 = nb.rename(a, 'three');
+      await queued();
       gate.complete();
       await held;
       await Future.wait([r1, r2, r3]);
