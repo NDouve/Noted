@@ -1655,7 +1655,7 @@ void main() {
         expect(idsOf(nb), contains(a1));
       });
 
-      test('conflict copies queued by load do not deadlock a retry started during load', () async {
+      test('a retry asked while load merges and recovers does nothing; after load it adopts the list', () async {
         await lockedSetup();
         final codec = modules.codecs.codecFor('noted.note')!;
         BoxRecord noteBox(String text, Bounds b) => commitBox(createBox(codec, b), codec, codec.decode(doc(text), 1));
@@ -1671,14 +1671,18 @@ void main() {
         final nb = make();
         nb.binderHook = hooks.call;
         final gate = Completer<void>();
-        hooks.on['settings-loaded'] = (_) => gate.future;
+        hooks.on['load-recover'] = (_) => gate.future;
         final loading = nb.load();
-        await until(() => hooks.count('settings-loaded') == 1, what: 'load to settle the hold');
+        await until(() => hooks.count('load-recover') == 1, what: 'load to reach recovery');
+        final before = settingsFile().readAsBytesSync();
         hooks.locked = false;
-        final retry = nb.retrySettings();
+        expect(await nb.retrySettings(), isFalse, reason: 'the hold is pending during load');
+        expect(hooks.count('settings-read'), 1, reason: 'no second read during load');
+        expect(settingsFile().readAsBytesSync(), before);
         gate.complete();
-        await Future.wait([loading, retry]).timeout(const Duration(seconds: 20));
+        await loading.timeout(const Duration(seconds: 20));
         expect(File(at('pages/c1-PC2.canvas')).existsSync(), isFalse, reason: 'merged by load');
+        expect(await nb.retrySettings().timeout(const Duration(seconds: 20)), isTrue);
         expect(idsOf(nb), contains(a1));
       });
     });
