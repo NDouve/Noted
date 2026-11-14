@@ -27,7 +27,8 @@ void main() {
   String? pickAnswer;
 
   Future<void> settle(WidgetTester tester) async {
-    for (var i = 0; i < 8; i++) {
+    // A write started in the test's fake zone needs a pump for each step of its file IO.
+    for (var i = 0; i < 8 || (nb.unsavedDescription != null && i < 200); i++) {
       await tester.pump(const Duration(milliseconds: 400));
       await tester.runAsync(() => realIoPause(50));
     }

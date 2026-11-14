@@ -778,7 +778,7 @@ void main() {
       final text = File('$oldPath/$binderFileName').readAsStringSync();
       await rename(oldPath, '${w.acct.path}/Work moved');
       Directory(oldPath).createSync();
-      File('$oldPath/$binderFileName.1a2b.cas-old').writeAsStringSync(text);
+      File('$oldPath/$binderFileName.4242-1a2b-3c4d.cas-old').writeAsStringSync(text);
       await nb.checkFolders();
       expect(nb.binders.single.missing, isFalse, reason: 'a replace under way is not "gone"');
       await nb.discoverBinders();

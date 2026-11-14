@@ -55,7 +55,7 @@ void main() {
     if (description != null) b = b.withDescription(description);
     if (owner != null) b = b.withOwner(owner);
     if (color != null) b = b.withColor(color);
-    await BinderStore(folder).save(b);
+    File('${folder.path}/$binderFileName').writeAsStringSync(b.write());
   }
 
   group('binder file changes', () {
@@ -117,6 +117,7 @@ void main() {
 
     test('a file from a newer format marks the binder cannot-open', () async {
       await start();
+      final binderId = section.binder!.id;
       final text = binderFile().readAsStringSync().replaceFirst('"format": 1', '"format": 99');
       final newer = text == binderFile().readAsStringSync()
           ? binderFile().readAsStringSync().replaceFirst('"format":1', '"format":99')
@@ -129,7 +130,7 @@ void main() {
       expect(binderFile().readAsStringSync(), newer);
       // Fixing the file brings the binder and its pages back.
       await binderFile().writeAsString(
-        Binder.create(title: 'Back', color: binderPalette.first).write(),
+        Binder.create(id: binderId, title: 'Back', color: binderPalette.first).write(),
       );
       final fixed = binderFile().readAsStringSync();
       expect(fixed, isNot(contains('"format":99')));
@@ -143,6 +144,7 @@ void main() {
 
     test('a deleted file makes the binder unavailable, as at startup', () async {
       await start();
+      final binderId = section.binder!.id;
       nb.showCover(section.path);
       expect(nb.coverPath, section.path);
       await binderFile().delete();
@@ -157,7 +159,7 @@ void main() {
       // It stays in the list, and comes back when the file does.
       expect(nb.binders, hasLength(1));
       await binderFile().writeAsString(
-        Binder.create(title: 'Restored', color: binderPalette.first).write(),
+        Binder.create(id: binderId, title: 'Restored', color: binderPalette.first).write(),
       );
       await nb.checkBinderFile(binderFile().path);
       expect(nb.binders.single.status, BinderStatus.available);
@@ -270,7 +272,7 @@ void main() {
       // Leaving the field saves the user's text.
       await tester.tap(find.byKey(const ValueKey('cover-owner')));
       await tester.pump();
-      for (var i = 0; i < 6; i++) {
+      for (var i = 0; i < 6 || (nb.unsavedDescription != null && i < 200); i++) {
         await tester.pump(const Duration(milliseconds: 100));
         await tester.runAsync(() => realIoPause(50));
       }
