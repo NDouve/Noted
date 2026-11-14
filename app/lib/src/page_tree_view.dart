@@ -106,8 +106,11 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       ..._nb.recoveryDamaged,
       ..._nb.discoveryNotes,
     ];
+    final copies = <(BinderSection, BinderCopyRow)>[];
     for (final b in _nb.binders) {
       rows.add(_binderHeader(context, b));
+      if (b.other != null) rows.add(_otherBinderRow(context, b));
+      copies.addAll([for (final r in _nb.binderCopyRows(b)) (b, r)]);
       // A binder whose folder is away keeps its pages listed, greyed.
       if (!b.available && !b.readOnly && !b.missing) continue;
       cantOpen.addAll(b.unreadable.where((u) => !_nb.hasLandedNotice(u.path)));
@@ -199,6 +202,13 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
                           ),
                         ),
                       ),
+                  ]),
+                ),
+              if (copies.isNotEmpty)
+                SliverList(
+                  delegate: SliverChildListDelegate([
+                    if (cantOpen.isEmpty) SidebarGroupHeader(title: "Can't open", disabled: true),
+                    for (final (b, r) in copies) _copyRow(context, b, r),
                   ]),
                 ),
               // The empty area below the list: dropping here moves a page to
@@ -384,6 +394,61 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     );
   }
 
+  // The folder holds another binder than this device recorded: its pages are
+  // listed read-only until the user chooses that binder.
+  Widget _otherBinderRow(BuildContext context, BinderSection b) {
+    return SidebarRow(
+      key: ValueKey('binder-other-${b.path}'),
+      titleLines: 2,
+      title: b.reason ?? 'This folder now holds another binder',
+      disabled: true,
+      leading: Icon(
+        Icons.block_rounded,
+        size: NotedMetrics.of(context).icon,
+        color: NotedColors.of(context).textDisabled,
+      ),
+      trailing: TextButton(
+        key: ValueKey('binder-use-other-${b.path}'),
+        onPressed: () => _guard(() => _nb.useThisBinder(b.path)),
+        child: const Text('Use this binder'),
+      ),
+    );
+  }
+
+  // A file beside the binder file that holds a copy of it or part of it (P). A
+  // complete copy can be put back while the binder file is missing; any copy can
+  // be deleted, after asking.
+  Widget _copyRow(BuildContext context, BinderSection b, BinderCopyRow r) {
+    return Tooltip(
+      message: '${r.label}. ${r.name}',
+      child: SidebarRow(
+        key: ValueKey('binder-copy-${r.path}'),
+        titleLines: 2,
+        title: r.label,
+        status: b.title,
+        disabled: true,
+        leading: Icon(
+          Icons.block_rounded,
+          size: NotedMetrics.of(context).icon,
+          color: NotedColors.of(context).textDisabled,
+        ),
+        trailing: r.canPutBack
+            ? TextButton(
+                key: ValueKey('binder-copy-put-back-${r.path}'),
+                onPressed: () => _guard(() => _nb.putBackBinderCopy(b.path, r.path)),
+                child: const Text('Put back'),
+              )
+            : TextButton(
+                key: ValueKey('binder-copy-delete-${r.path}'),
+                onPressed: () => _guard(() async {
+                  await _nb.deleteBinderCopy(b.path, r.path);
+                }),
+                child: const Text('Delete'),
+              ),
+      ),
+    );
+  }
+
   Widget _binderHeader(BuildContext context, BinderSection b) {
     final color = binderSidebarColor(context, b.color);
     if (!b.available) {
@@ -398,7 +463,9 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
           chipKey: ValueKey('binder-stripe-${b.path}'),
           title: b.title,
           disabled: true,
-          status: unreadable
+          status: b.other != null
+              ? 'Another binder in this folder'
+              : unreadable
               ? "Binder file can't be read"
               : (_nb.binderMovedTo(b.path).isNotEmpty ? 'Moved to another folder' : 'On another device'),
           trailing: SidebarMenuButton<String>(

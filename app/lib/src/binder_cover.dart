@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 import 'package:noted_core/noted_core.dart';
@@ -53,17 +55,32 @@ class _BinderCoverState extends State<BinderCover> {
     _title = TextEditingController(text: b?.title ?? '');
     _description = TextEditingController(text: b?.description ?? '');
     _owner = TextEditingController(text: b?.owner ?? '');
-    _applied = (b?.title ?? '', b?.description ?? '', b?.owner ?? '');
+    _applied = (title: b?.title ?? '', description: b?.description ?? '', owner: b?.owner ?? '');
+    _shownId = b?.id;
     widget.notebook.addListener(_takeExternalChanges);
+    widget.notebook.registerCoverTyping(widget.path, _typing);
     // A binder just created asks for the caret in its title.
     WidgetsBinding.instance.addPostFrameCallback((_) => _takeFocusIfAsked());
   }
 
-  // The values of the binder the fields were last brought in line with.
-  late (String, String, String) _applied;
+  // The comparison base B: the values the fields were last brought in line with
+  // (the notebook lays the folder's unwritten cover changes over it).
+  late CoverText _applied;
 
-  // The binder file changed on another machine: show the new values. A field
-  // whose text the user has changed and not saved yet keeps that text.
+  // The id of the binder the fields show.
+  String? _shownId;
+
+  // What is typed and not sent, with the base and the shown binder, read at once
+  // (D2).
+  CoverTyping _typing() => (
+    text: (title: _title.text, description: _description.text, owner: _owner.text),
+    applied: _applied,
+    shownId: _shownId,
+  );
+
+  // The binder or the folder's unwritten changes changed (another device, a
+  // landing, Discard): a field whose text equals the value it showed takes the
+  // new one; a field whose text differs keeps it. Focus plays no part.
   void _takeExternalChanges() {
     final b = _section?.binder;
     if (b == null) return;
@@ -73,26 +90,33 @@ class _BinderCoverState extends State<BinderCover> {
       c.text = now;
     }
 
-    take(_title, _applied.$1, b.title);
-    take(_description, _applied.$2, b.description);
-    take(_owner, _applied.$3, b.owner);
-    _applied = (b.title, b.description, b.owner);
+    take(_title, _applied.title, b.title);
+    take(_description, _applied.description, b.description);
+    take(_owner, _applied.owner, b.owner);
+    _applied = (title: b.title, description: b.description, owner: b.owner);
+    _shownId = b.id;
   }
 
   @override
   void dispose() {
     widget.notebook.removeListener(_takeExternalChanges);
     // Leaving the cover keeps what was typed. The notebook is told after the
-    // widget tree has finished updating.
+    // widget tree has finished updating. The text, the base and the shown binder
+    // are captured now; what was already taken (by a state change, quit or hide)
+    // equals the base and records nothing.
     final nb = widget.notebook;
-    final (path, title, description, owner) = (
-      widget.path,
-      _title.text,
-      _description.text,
-      _owner.text,
-    );
+    final path = widget.path;
+    final text = _typing();
+    nb.unregisterCoverTyping(path);
     Future.microtask(
-      () => nb.updateBinder(path, title: title, description: description, owner: owner),
+      () => nb.updateBinder(
+        path,
+        title: text.text.title,
+        description: text.text.description,
+        owner: text.text.owner,
+        applied: text.applied,
+        shownId: text.shownId,
+      ),
     );
     _titleFocus.dispose();
     _title.dispose();
@@ -102,11 +126,16 @@ class _BinderCoverState extends State<BinderCover> {
   }
 
   void _save() {
-    widget.notebook.updateBinder(
-      widget.path,
-      title: _title.text,
-      description: _description.text,
-      owner: _owner.text,
+    final t = _typing();
+    unawaited(
+      widget.notebook.updateBinder(
+        widget.path,
+        title: t.text.title,
+        description: t.text.description,
+        owner: t.text.owner,
+        applied: t.applied,
+        shownId: t.shownId,
+      ),
     );
   }
 
@@ -185,6 +214,24 @@ class _BinderCoverState extends State<BinderCover> {
                       style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                     ),
                     SizedBox(height: NotedMetrics.of(context).space2),
+                  ],
+                  if (widget.notebook.coverNotSaved(widget.path)) ...[
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Not saved yet',
+                            key: const ValueKey('cover-not-saved'),
+                            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
+                          ),
+                        ),
+                        TextButton(
+                          key: const ValueKey('cover-discard'),
+                          onPressed: () => unawaited(widget.notebook.discardCoverChanges(widget.path)),
+                          child: const Text('Discard'),
+                        ),
+                      ],
+                    ),
                   ],
                   SizedBox(height: NotedMetrics.of(context).space3),
                   _field('cover-title', 'Title', _title, focusNode: _titleFocus),

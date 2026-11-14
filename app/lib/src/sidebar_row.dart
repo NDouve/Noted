@@ -63,6 +63,7 @@ class SidebarRow extends StatelessWidget {
     this.chevron,
     this.leading,
     this.trailing,
+    this.titleLines,
     this.onTap,
     this.onDoubleTap,
   });
@@ -91,6 +92,9 @@ class SidebarRow extends StatelessWidget {
 
   /// The row's menu button.
   final Widget? trailing;
+
+  /// The most lines the title takes (null: one, with an ellipsis).
+  final int? titleLines;
   final VoidCallback? onTap;
   final VoidCallback? onDoubleTap;
 
@@ -134,6 +138,7 @@ class SidebarRow extends StatelessWidget {
                       children: [
                         Text(
                           title,
+                          maxLines: titleLines,
                           overflow: TextOverflow.ellipsis,
                           style: titleStyle,
                         ),

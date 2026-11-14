@@ -258,6 +258,80 @@ enum BinderStatus {
   unreadable,
 }
 
+/// A change to a binder's settings that is queued to be written (AI access, a
+/// box type or attachment storage). Until it lands the screen shows it; the
+/// AI-facing view never loosens because of it.
+final class BinderSetting {
+  BinderSetting(this.delta, this.what);
+
+  /// Replaced only to rebase [BinderField.base] when an earlier change was
+  /// refused.
+  BinderDelta delta;
+
+  /// What it changes, for a notice.
+  final String what;
+}
+
+/// The three text fields of a binder cover.
+typedef CoverText = ({String title, String description, String owner});
+
+/// What an open cover has typed and not sent, with the values its fields were
+/// last brought in line with (`applied`) and the id of the binder it showed.
+typedef CoverTyping = ({CoverText text, CoverText applied, String? shownId});
+
+/// A cover change that is not in the binder file yet (D1, D3). It lives in the
+/// notebook, outside the binder section, so it survives damage, unavailability,
+/// another binder's file and reopening.
+final class CoverChange {
+  CoverChange(this.delta, this.fields, this.shownId);
+
+  final BinderDelta delta;
+
+  /// The text of each field it sets: `title`, `description`, `owner`, `color`.
+  final Map<String, String> fields;
+
+  /// The id of the binder the cover showed when this was typed.
+  final String? shownId;
+
+  /// A try at writing it was refused or couldn't be made: the cover says "Not
+  /// saved yet" and offers Discard.
+  bool stuck = false;
+
+  /// The binder it is for: the recorded id, else the one the cover showed.
+  String? get forId => delta.binderId ?? shownId;
+
+  /// Names the fields, for a question.
+  String get what => fields.keys.join(', ');
+}
+
+/// A file beside a binder's file that holds a copy of it or part of it (P).
+final class BinderCopyRow {
+  const BinderCopyRow({
+    required this.path,
+    required this.name,
+    required this.label,
+    required this.canPutBack,
+    required this.canReadAsBinder,
+    this.bytes,
+  });
+
+  final String path;
+  final String name;
+
+  /// What it is: same as saved, an interrupted change, an older copy, or a file
+  /// this version can't read.
+  final String label;
+
+  /// The binder file is missing and this is a complete copy of it.
+  final bool canPutBack;
+
+  /// It reads as a binder file.
+  final bool canReadAsBinder;
+
+  /// What it held when it was listed.
+  final List<int>? bytes;
+}
+
 /// One binder the app knows: its folder, metadata and page tree.
 class BinderSection {
   BinderSection._(
@@ -268,12 +342,48 @@ class BinderSection {
     this.reason,
     this.unreadable = const [],
     this.missing = false,
-  }) : tree = PageTree.build(const []);
+    this.other,
+    this.copies = const [],
+    this.fileMissing = false,
+  }) : saved = binder,
+       tree = PageTree.build(const []);
 
   /// The binder's folder.
   final String path;
   BinderStatus status;
+
+  /// The binder as the screen shows it: [saved] with the queued settings and
+  /// this binder's cover changes that aren't written yet.
   Binder? binder;
+
+  /// What the binder file held when it was last read or written here.
+  Binder? saved;
+
+  /// Settings changes queued to be written, oldest first.
+  final List<BinderSetting> pending = [];
+
+  /// The file in this folder belongs to another binder (a different id from
+  /// the one this device recorded for the folder). The pages are listed
+  /// read-only; nothing is written until the user chooses to use that binder.
+  Binder? other;
+
+  /// The page that was open in this binder when its file went missing, to open
+  /// again when the same binder's file is read again.
+  String? returnTo;
+
+  /// The page [returnTo] was replaced with when the binder was disabled.
+  String? fallbackId;
+
+  /// Files beside the binder file whose name starts with `noted-binder`, as the
+  /// last look found them.
+  List<BinderCopy> copies;
+
+  /// The binder file was not there when the folder was last read. Its copies
+  /// may be put back.
+  bool fileMissing;
+
+  /// When a binder-file aside was first seen with no binder file.
+  DateTime? asideSince;
   PageStore? store;
 
   /// Why the binder is unavailable or unreadable.
@@ -396,6 +506,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     this.bindersFile,
     this.pickFolder,
     this.storeFactory = PageStore.new,
+    this.binderStoreFactory = BinderStore.new,
+    this.binderRecheckDelay = const Duration(seconds: 2),
+    this.asideRestoreAfter = const Duration(seconds: 30),
+    this.coverRetryFirst = const Duration(seconds: 2),
     this.watchFiles = false,
     this.watchDebounce = const Duration(milliseconds: 300),
     this.deviceName,
@@ -779,6 +893,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// Makes the store for a binder folder.
   final PageStore Function(Directory) storeFactory;
 
+  /// Makes the store of a binder's file (a seam for tests).
+  final BinderStore Function(Directory) binderStoreFactory;
+
+  /// How long after a missing binder file is seen under a set-aside copy (a
+  /// replace in progress) it is looked at again.
+  final Duration binderRecheckDelay;
+
+  /// How long a set-aside copy of the binder file may stand with no binder file
+  /// before it is put back.
+  final Duration asideRestoreAfter;
+
+  /// The first wait before a cover change that was refused is tried again; each
+  /// failure doubles it, up to a minute.
+  final Duration coverRetryFirst;
+
+  BinderStore _binderStore(Directory d) => binderStoreFactory(d);
+
   /// The active canvas tool, kept when switching pages.
   final CanvasToolSelection tools = CanvasToolSelection();
 
@@ -804,6 +935,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // The exact text last written or read for each binder file (by the key of
   // the binder's folder).
   final Map<String, String> _binderText = {};
+  // Cover changes that are not in a binder file yet, by the key of the binder's
+  // folder (D3). Outside the section, so they survive damage, unavailability,
+  // another binder's file and reopening.
+  final Map<String, List<CoverChange>> _coverPending = {};
+  // Temporary files of this device's binder updates that stay for the user
+  // (the change was refused or its temp couldn't be removed), by folder key.
+  final Map<String, List<BinderTemp>> _ownKeptTemps = {};
+  // What the open cover has typed and not sent, read synchronously (D2).
+  CoverTyping? Function()? _coverTyping;
+  String? _coverTypingPath;
+  // The wait before a refused cover change is tried again, and its timer.
+  final Map<String, Duration> _coverDelay = {};
+  final Map<String, Timer> _coverTimers = {};
+  // Rechecks of a missing binder file that stands under an aside.
+  final Map<String, Timer> _asideTimers = {};
   // Conflict copies found by a scan, to be merged once the folders are set up.
   final List<String> _pendingCopies = [];
   // Page files chosen by [adoptUnlistedPageFile], by page id, for this session.
@@ -1530,10 +1676,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final path in a.listed) {
       await _binderSeam(point, path);
       if (_disposed) return;
-      final section = await _openBinder(path);
+      // The id this device recorded for the folder is the one expected there (I).
+      final id = a.recorded.entries.where((e) => _key(e.key) == _key(path)).firstOrNull?.value;
+      final section = await _openBinder(path, expectId: id);
       if (_disposed) return;
       _binders[path] = section;
-      final id = a.recorded.entries.where((e) => _key(e.key) == _key(path)).firstOrNull?.value;
       if (id != null) _binderIds[_key(path)] = id;
       _recordBinderId(path, section.binder);
     }
@@ -2081,7 +2228,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// The AI access that applies to page [id], and where it comes from: the
   /// binder's (or, in no binder, the top page's) choice, tightened by each
   /// page down to this one, else the app default (Guarded).
-  EffectiveAiAccess aiAccessFor(String id) => effectiveAiAccess(_metaChain(id), binder: _binderOf(id));
+  ///
+  /// This is what AI may do: while a binder setting is queued and not written,
+  /// the stricter of the saved and the shown value counts (N4).
+  EffectiveAiAccess aiAccessFor(String id) => effectiveAiAccess(_metaChain(id), binder: _aiBinderOf(id));
+
+  /// As [aiAccessFor], but for the screen: a queued binder setting counts as
+  /// if it were saved.
+  EffectiveAiAccess shownAiAccessFor(String id) => effectiveAiAccess(_metaChain(id), binder: _binderOf(id));
 
   /// The pages whose own stored AI value is the legacy `page` (as written)
   /// and that are no longer Open because of what they inherit: they lost
@@ -2148,14 +2302,207 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
   }
 
-  // Saves the binder file of folder [path] and reports it. `BinderStore.save`
-  // is a blind write outside the folder lock (left for a later stage).
-  Future<void> _saveBinderFile(String path, Binder binder) async {
-    final store = BinderStore(Directory(path));
-    final text = binder.write();
-    final identity = _identityOf(() => text);
-    await store.save(binder);
-    _emitPublished(store.file.path, identity, () => text);
+  // Binder writes (R-2) -----------------------------------------------------------
+  //
+  // A change to a binder file is a delta, reapplied to the file as it is on disk
+  // (BinderStore.update) under the folder's lock, on the save chain (L1). The
+  // screen shows the file's last known content with the queued changes on top;
+  // what AI may do never loosens because of a change that isn't written.
+
+  // Recomputes what the screen shows for [s]: what the file held when it was
+  // last read or written, with the queued settings, then the cover changes of
+  // the binder shown here. Another binder's cover changes are never folded in.
+  void _recompute(BinderSection s) {
+    final saved = s.saved;
+    if (saved == null) return;
+    var b = saved;
+    for (final c in s.pending) {
+      b = c.delta.apply(b);
+    }
+    for (final c in _coverPending[_key(s.path)] ?? const <CoverChange>[]) {
+      if (c.forId == saved.id) b = c.delta.apply(b);
+    }
+    s.binder = b;
+  }
+
+  // The binder AI works from: the screen's, but while settings are queued each
+  // value is the stricter of what is saved and what the screen shows.
+  Binder? _aiBinderFor(BinderSection s) {
+    var b = s.binder;
+    final saved = s.saved;
+    if (b == null || saved == null || s.pending.isEmpty) return b;
+    if ((saved.aiAccess ?? defaultAiAccess).strictness > (b.aiAccess ?? defaultAiAccess).strictness) {
+      b = b.withAiAccess(saved.aiAccess);
+    }
+    for (final e in saved.boxTypeChoices.entries) {
+      if (e.value == false && b!.boxTypeChoice(e.key) != false) b = b.withBoxType(e.key, false);
+    }
+    return b;
+  }
+
+  Binder? _aiBinderOf(String id) {
+    final s = _binders[_loc[id] ?? _standalone];
+    return s == null ? null : _aiBinderFor(s);
+  }
+
+  Future<void> _queueSetting(
+    BinderSection s,
+    String what,
+    Binder Function(Binder) apply, {
+    BinderField? field,
+  }) async {
+    final delta = BinderDelta(
+      binderId: _binderIds[_key(s.path)] ?? s.saved?.id,
+      apply: apply,
+      kind: BinderDeltaKind.setting,
+      field: field,
+    );
+    final change = BinderSetting(delta, what);
+    s.pending.add(change);
+    _recompute(s);
+    notifyListeners();
+    await _afterSaves(() => _landSetting(s, change), what: 'binder $what of ${s.path}').catchError((Object e) {
+      debugPrint('Saving binder ${s.path} failed: $e');
+    });
+  }
+
+  // Reports a binder file this notebook wrote (its text is what the watcher
+  // compares with). Inside the folder's lock, right after the write.
+  void _written(BinderStore store, BinderUpdated r) {
+    _binderText[_key(store.directory.path)] = r.written;
+    if (r.wrote) _emitPublished(store.file.path, null, () => r.written);
+  }
+
+  // Removes the temps of [d] (T), keeping those that must stay in the list.
+  Future<void> _removeTemps(BinderStore store, String key, BinderDelta d) async {
+    final before = [for (final t in d.temps) t.path];
+    final stayed = await store.removeTemps(d, currentId: () => _binderIds[key]);
+    final left = {for (final t in stayed) t.path};
+    final kept = _ownKeptTemps[key];
+    if (kept != null) {
+      // A temp that was published as the binder file, or removed, is no longer kept.
+      kept.removeWhere((t) => (before.contains(t.path) && !left.contains(t.path)) || !File(t.path).existsSync());
+      if (kept.isEmpty) _ownKeptTemps.remove(key);
+    }
+    _keepTemps(key, stayed);
+  }
+
+  // Lists [temps] as kept copies of the binder file (P).
+  void _keepTemps(String key, Iterable<BinderTemp> temps) {
+    final list = _ownKeptTemps.putIfAbsent(key, () => []);
+    for (final t in temps) {
+      if (!list.any((k) => k.path == t.path)) list.add(t);
+    }
+    if (list.isEmpty) _ownKeptTemps.remove(key);
+  }
+
+  // Writes one queued setting (N2, N3). Runs on the save chain.
+  Future<void> _landSetting(BinderSection s, BinderSetting c) async {
+    final path = s.path;
+    final dir = Directory(path);
+    final key = _key(path);
+    final store = _binderStore(dir);
+    var reconcile = false;
+    await _lockRun(dir, () async {
+      String? why;
+      BinderUpdated? done;
+      var kept = const <String>[];
+      // U0: nothing in here awaits the save chain, a flush, or a state change.
+      if (_disposed || !identical(_binders[path], s) || !s.available || _isLocked(path) || !s.pending.contains(c)) {
+        why = 'The binder changed before it could be written.';
+      } else {
+        final r = await store.update(c.delta);
+        kept = r.kept;
+        switch (r) {
+          case BinderUpdated():
+            done = r;
+          case BinderRefused(:final reason):
+            why = reason.endsWith('.') ? reason : '$reason.';
+            if (r.kind != BinderRefusal.inUse && r.kind != BinderRefusal.keepsChanging) reconcile = true;
+        }
+      }
+      if (_disposed) return;
+      if (done != null) {
+        _written(store, done);
+        if (identical(_binders[path], s) && s.available) {
+          // One synchronous step: the change leaves the queue as the saved copy
+          // takes its result.
+          s.saved = done.binder;
+          s.pending.remove(c);
+          if (done.wrote) s.lastEdited = now();
+          _recompute(s);
+          notifyListeners();
+          _noteStricter(s, c.delta, done.binder);
+        } else {
+          reconcile = true;
+        }
+      } else {
+        _dropSetting(s, c);
+        _notices.add("Binder ${s.title}: the change wasn't saved. $why");
+        reconcile = true;
+      }
+      await _removeTemps(store, key, c.delta);
+      if (kept.isNotEmpty || s.copies.isNotEmpty) await _listCopiesLocked(s, store);
+    });
+    if (reconcile && !_disposed) unawaited(checkBinderFile(store.file.path, force: true));
+  }
+
+  // A queued setting leaves without being written (refused or skipped): the
+  // screen goes back to what is saved at once, and the next queued change on
+  // the same field is rebased (U3).
+  void _dropSetting(BinderSection s, BinderSetting c) {
+    final i = s.pending.indexOf(c);
+    if (i < 0) return;
+    s.pending.removeAt(i);
+    final field = c.delta.field;
+    for (var j = i; j < s.pending.length; j++) {
+      final next = s.pending[j];
+      final nf = next.delta.field;
+      BinderField? rebased;
+      if (field is BinderAiField && nf is BinderAiField && nf.base == field.request) {
+        rebased = BinderAiField(base: field.base, request: nf.request);
+      } else if (field is BinderBoxTypeField &&
+          nf is BinderBoxTypeField &&
+          nf.typeId == field.typeId &&
+          nf.base == field.request) {
+        rebased = BinderBoxTypeField(nf.typeId, base: field.base, request: nf.request);
+      }
+      if (rebased != null) {
+        next.delta = BinderDelta(
+          binderId: next.delta.binderId,
+          apply: next.delta.apply,
+          kind: next.delta.kind,
+          field: rebased,
+          temps: next.delta.temps,
+        );
+        break;
+      }
+    }
+    _recompute(s);
+    notifyListeners();
+  }
+
+  // A landed AI change whose value is not the one asked for: a stricter value
+  // was found on disk and kept.
+  void _noteStricter(BinderSection s, BinderDelta d, Binder result) {
+    switch (d.field) {
+      case BinderAiField(:final request):
+        if (result.aiAccess != request) {
+          _notices.add(
+            'Binder ${s.title}: AI access stays ${(result.aiAccess ?? defaultAiAccess).label}; '
+            'it was made stricter on another device or outside Noted.',
+          );
+        }
+      case BinderBoxTypeField(:final typeId, :final request):
+        if (result.boxTypeChoice(typeId) != request) {
+          _notices.add(
+            'Binder ${s.title}: the "$typeId" box type stays not allowed; '
+            'it was made stricter on another device or outside Noted.',
+          );
+        }
+      case null:
+        break;
+    }
   }
 
   /// The AI access binder [path] has chosen, or null (the app default).
@@ -2169,17 +2516,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (s == null || b == null || !s.available || _isLocked(path)) return;
     final next = b.withAiAccess(value);
     if (identical(next, b)) return;
-    s.binder = next;
-    notifyListeners();
-    await _afterSaves(() async {
-      final latest = s.binder;
-      if (latest != null) {
-        await _saveBinderFile(path, latest);
-        _binderText[_key(path)] = latest.write();
-      }
-    }, what: 'binder AI access of $path').catchError((Object e) {
-      debugPrint('Saving binder $path failed: $e');
-    });
+    await _queueSetting(
+      s,
+      'AI access',
+      (x) => x.withAiAccess(value),
+      field: BinderAiField(base: b.aiAccess, request: value),
+    );
   }
 
   /// The title of page [id] as the settings panel names it, or null if the
@@ -2251,17 +2593,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (s == null || b == null || !s.available || _isLocked(path)) return;
     final next = b.withBoxType(typeId, allowed);
     if (identical(next, b)) return;
-    s.binder = next;
-    notifyListeners();
-    await _afterSaves(() async {
-      final latest = s.binder;
-      if (latest != null) {
-        await _saveBinderFile(path, latest);
-        _binderText[_key(path)] = latest.write();
-      }
-    }, what: 'binder box types of $path').catchError((Object e) {
-      debugPrint('Saving binder $path failed: $e');
-    });
+    await _queueSetting(
+      s,
+      'allowed box types',
+      (x) => x.withBoxType(typeId, allowed),
+      field: BinderBoxTypeField(typeId, base: b.boxTypeChoice(typeId), request: allowed),
+    );
   }
 
   // Attachments (images and files) -----------------------------------------
@@ -2334,17 +2671,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final b = s?.binder;
     if (s == null || b == null || !s.available || _isLocked(path)) return;
     if (b.attachmentStorage == value) return;
-    s.binder = b.withAttachmentStorage(value);
-    notifyListeners();
-    await _afterSaves(() async {
-      final latest = s.binder;
-      if (latest != null) {
-        await _saveBinderFile(path, latest);
-        _binderText[_key(path)] = latest.write();
-      }
-    }, what: 'binder attachment storage of $path').catchError((Object e) {
-      debugPrint('Saving binder $path failed: $e');
-    });
+    await _queueSetting(s, 'images and files', (x) => x.withAttachmentStorage(value));
   }
 
   /// "Embed attachments" / "Move attachments to folder" on page [id]
@@ -4571,7 +4898,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Already there, or a copy of a binder listed from another folder.
     final listedHere = _binders.values.where((b) => _key(b.path) == key).firstOrNull;
     if (listedHere != null) return (section: listedHere, added: false, wasRemoved: false, refused: null);
-    final read = await BinderStore(Directory(path)).read();
+    final read = await _lockRun(Directory(path), () => _binderStore(Directory(path)).read());
     if (found && (read is! BinderFound || read.binder.id != expectId)) return none();
     if (read is BinderFound) {
       final id = read.binder.id;
@@ -4591,7 +4918,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _sweepOff++;
     }
     try {
-      final section = await _openBinder(path, create: !found, createFolder: !found, sweep: !found);
+      final section = await _openBinder(path, create: !found, createFolder: !found, sweep: !found, expectId: expectId);
       final id = section.binder?.id;
       if (found && (!section.available || id != expectId)) {
         _undoOpen(path);
@@ -4652,7 +4979,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // took out are put back; anything recorded meanwhile stays.
       if (found &&
           now != null &&
-          ((now.binder != null && now.binder!.id != expectId) || now.status == BinderStatus.unavailable)) {
+          ((now.binder != null && now.binder!.id != expectId) ||
+              now.other != null ||
+              now.status == BinderStatus.unavailable)) {
         _binders.remove(path);
         _binderIds.remove(_key(path));
         for (final id in _foundAdds[_key(path)] ?? const <String>[]) {
@@ -5091,9 +5420,30 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     var binderWritten = false;
     try {
       final binderIdentity = _identityOf(() => made.binder.write());
-      await binders.create(made.binder);
+      // C: published without replacing, under the folder's lock.
+      final created = await _lockRun(dir, () async {
+        if (!await binders.file.exists()) {
+          final sw = await binders.sweepLeftovers(restore: false);
+          if (sw.copies.any((c) => c.isTemp && c.binder != null)) return null;
+        }
+        final r = await binders.create(made.binder);
+        if (r == BinderCreated.created) {
+          _emitPublished(binders.file.path, binderIdentity, () => made.binder.write());
+        }
+        return r;
+      });
+      if (created == null) {
+        throw const NotebookException(
+          'That folder holds a copy of a binder file from an interrupted change. '
+          'Open the folder as a binder to put it back first.',
+        );
+      }
+      if (created == BinderCreated.exists) {
+        throw const NotebookException(
+          'That folder already has a binder. Choose an empty folder for the new binder.',
+        );
+      }
       binderWritten = true;
-      _emitPublished(binders.file.path, binderIdentity, () => made.binder.write());
       await _binderSeam('claimed', path);
       for (final p in made.pages) {
         // New ids in a new binder folder: a file already there is not ours.
@@ -5140,8 +5490,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       if (binderWritten) {
         try {
-          final r = await deleteFileIfUnchanged(binders.file.path, utf8.encode(made.binder.write()));
-          if (r.deleted) _emitDeleted(binders.file.path);
+          // Under the lock, with its report (C).
+          final r = await _lockRun(dir, () async {
+            final r = await deleteFileIfUnchanged(binders.file.path, utf8.encode(made.binder.write()));
+            if (r.deleted) _emitDeleted(binders.file.path);
+            return r;
+          });
           if (!r.deleted && r.outcome != DeleteOutcome.absent) {
             debugPrint('Keeping the binder file: it changed');
             // It stays in the folder, so discovery must not list it as new.
@@ -5173,6 +5527,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final section = _binders[path];
     _dropLandedIn(path);
     if (section == null) return;
+    // Cover changes that aren't written yet go with the binder: asked first,
+    // naming them (D3). What the open cover has typed counts.
+    if (_coverTypingPath == path) _takeCoverTyping();
+    final unsaved = _coverPending[_key(path)] ?? const <CoverChange>[];
+    if (unsaved.isNotEmpty) {
+      final names = unsaved.map((c) => c.what).toSet().join(', ');
+      if (!await _ask(UserQuestion.discardCoverChanges, 'the cover of binder "${section.title}" ($names)')) {
+        throw const LeaveCancelled();
+      }
+      if (_disposed || !identical(_binders[path], section)) return;
+    }
     // Before the first await, so a pass that runs meanwhile sees it. A binder
     // with no known id records nothing.
     final binderId = _binderIds.remove(_key(path));
@@ -5206,6 +5571,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     _binders.remove(path);
+    _coverPending.remove(_key(path));
+    _coverTimers.remove(_key(path))?.cancel();
+    _asideTimers.remove(_key(path))?.cancel();
     // Another remove of this binder may have put its id back after a declined
     // leave: the binder is gone now, so its id is a removed one again.
     _binderIds.remove(_key(path));
@@ -5231,34 +5599,276 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     notifyListeners();
   }
 
-  /// Changes cover fields of the binder and writes `noted-binder.json`.
-  Future<void> updateBinder(
+  /// Changes cover fields of the binder (D1). The change is recorded at once, as
+  /// a delta that is written to `noted-binder.json` as it is on disk and kept
+  /// until it lands or the user discards it. Only the fields whose text differs
+  /// from the comparison base are recorded: [applied], the values the cover's
+  /// fields were last brought in line with (or the shown binder when it is not
+  /// given), with this folder's unwritten cover changes laid over it. [shownId]
+  /// is the id of the binder the cover showed.
+  ///
+  /// Returns whether nothing is left unwritten for this change.
+  Future<bool> updateBinder(
     String path, {
     String? title,
     String? description,
     String? owner,
     String? color,
+    CoverText? applied,
+    String? shownId,
   }) async {
     final s = _binders[path];
-    var b = s?.binder;
-    if (s == null || b == null || !s.available || _isLocked(path)) return;
-    final before = b;
-    if (title != null && title != b.title) b = b.withTitle(title);
-    if (description != null && description != b.description) b = b.withDescription(description);
-    if (owner != null && owner != b.owner) b = b.withOwner(owner);
-    if (color != null && color != b.color) b = b.withColor(color);
-    if (identical(b, before)) return;
-    s.binder = b;
-    s.lastEdited = DateTime.now();
-    notifyListeners();
-    await _afterSaves(() async {
-      final latest = s.binder;
-      if (latest != null) {
-        await _saveBinderFile(path, latest);
-        _binderText[_key(path)] = latest.write();
+    if (s == null || _pullOnly(path)) return false;
+    final key = _key(path);
+    final shown = shownId ?? s.saved?.id;
+    final shownBinder = s.binder;
+    final base = applied ??
+        (shownBinder == null
+            ? null
+            : (title: shownBinder.title, description: shownBinder.description, owner: shownBinder.owner));
+    // B: the base with the unwritten cover changes of this binder laid over it.
+    final over = <String, String>{};
+    for (final c in _coverPending[key] ?? const <CoverChange>[]) {
+      if (c.forId == null || shown == null || c.forId == shown) over.addAll(c.fields);
+    }
+    final fields = <String, String>{};
+    void take(String field, String? text, String? from) {
+      if (text == null) return;
+      if ((over[field] ?? from) != text) fields[field] = text;
+    }
+
+    take('title', title, base?.title);
+    take('description', description, base?.description);
+    take('owner', owner, base?.owner);
+    take('color', color, shownBinder?.color);
+    if (fields.isEmpty) return !(_coverPending[key]?.isNotEmpty ?? false);
+    Binder apply(Binder x) {
+      var y = x;
+      for (final e in fields.entries) {
+        y = switch (e.key) {
+          'title' => y.withTitle(e.value),
+          'description' => y.withDescription(e.value),
+          'owner' => y.withOwner(e.value),
+          _ => y.withColor(e.value),
+        };
       }
-    }, what: 'binder cover edit of $path').catchError((Object e) {
-      debugPrint('Saving binder $path failed: $e');
+      return y;
+    }
+
+    final change = CoverChange(
+      BinderDelta(binderId: _binderIds[key] ?? shown, apply: apply, kind: BinderDeltaKind.cover),
+      fields,
+      shown,
+    );
+    // Before the first await: no `_save` sees the change gone before it lands.
+    (_coverPending[key] ??= []).add(change);
+    if (s.saved != null) {
+      s.lastEdited = now();
+      _recompute(s);
+    }
+    notifyListeners();
+    await _tryCovers(s.path);
+    return !(_coverPending[key]?.contains(change) ?? false);
+  }
+
+  /// The cover changes of binder [path] that are not written yet, for the
+  /// binder shown there.
+  List<CoverChange> coverPendingFor(String path) {
+    final shown = _binders[path]?.saved?.id;
+    return [
+      for (final c in _coverPending[_key(path)] ?? const <CoverChange>[])
+        if (shown == null || c.forId == null || c.forId == shown) c,
+    ];
+  }
+
+  /// Whether the cover of [path] has a change that is refused or waiting, and
+  /// can be discarded.
+  bool coverNotSaved(String path) => coverPendingFor(path).any((c) => c.stuck);
+
+  /// Gives up the unwritten cover changes of binder [path] (Discard). The temps
+  /// they wrote are removed only while the binder's file is there and readable;
+  /// any other stays listed with the copies of the binder file.
+  Future<void> discardCoverChanges(String path) async {
+    final key = _key(path);
+    final drop = coverPendingFor(path);
+    if (drop.isEmpty) return;
+    final list = _coverPending[key];
+    list?.removeWhere(drop.contains);
+    if (list != null && list.isEmpty) _coverPending.remove(key);
+    _coverTimers.remove(key)?.cancel();
+    _coverDelay.remove(key);
+    final s = _binders[path];
+    if (s != null) _recompute(s);
+    notifyListeners();
+    final store = _binderStore(Directory(path));
+    await _lockRun(Directory(path), () async {
+      for (final c in drop) {
+        await _removeTemps(store, key, c.delta);
+      }
+      if (s != null) await _listCopiesLocked(s, store);
+    });
+    if (!_disposed) notifyListeners();
+  }
+
+  // Takes the typing of the open cover into the pending changes (D2): D1 against
+  // the comparison base, so what is already taken records nothing. Reads the
+  // cover synchronously; never closes it.
+  void _takeCoverTyping() {
+    final read = _coverTyping;
+    final path = _coverTypingPath;
+    if (read == null || path == null) return;
+    final t = read();
+    if (t == null) return;
+    unawaited(
+      updateBinder(
+        path,
+        title: t.text.title,
+        description: t.text.description,
+        owner: t.text.owner,
+        applied: t.applied,
+        shownId: t.shownId,
+      ),
+    );
+  }
+
+  /// Tells the notebook what the open cover [path] has typed and not sent. The
+  /// cover calls it with a function that reads its fields at once, and removes
+  /// it with [unregisterCoverTyping].
+  void registerCoverTyping(String path, CoverTyping? Function() read) {
+    _coverTypingPath = path;
+    _coverTyping = read;
+  }
+
+  void unregisterCoverTyping(String path) {
+    if (_coverTypingPath != path) return;
+    _coverTypingPath = null;
+    _coverTyping = null;
+  }
+
+  /// The app is being hidden (on a phone, the last chance): takes what the open
+  /// cover has typed, tries each pending cover change once, then writes
+  /// unsaved edits as [flush] does.
+  Future<void> coverHidden() async {
+    _takeCoverTyping();
+    _queueCoverTries();
+    await flush();
+  }
+
+  // Queues one more try of each folder's pending cover changes.
+  void _queueCoverTries() {
+    for (final key in _coverPending.keys.toList()) {
+      final s = _binders.values.where((b) => _key(b.path) == key).firstOrNull;
+      if (s != null) unawaited(_tryCovers(s.path).then((_) {}, onError: (_) {}));
+    }
+  }
+
+  /// Tries the pending cover changes again, as a folder event, the folder check
+  /// or the app coming back to the front does.
+  void retryCovers() {
+    if (_disposed) return;
+    _queueCoverTries();
+  }
+
+  // Tries the cover changes of folder [path] once, on the save chain (L1).
+  Future<bool> _tryCovers(String path) =>
+      _afterSaves(() => _landCovers(path), what: 'binder cover edit of $path').catchError((Object e) {
+        debugPrint('Saving the cover of $path failed: $e');
+        return false;
+      });
+
+  // Writes the pending cover changes of folder [path], oldest first, while D3's
+  // condition holds: the folder's binder is available and has the change's id.
+  // A refusal keeps the change and stops. True when none is left.
+  Future<bool> _landCovers(String path) async {
+    final key = _key(path);
+    var reconcile = false;
+    var refused = false;
+    for (final c in List<CoverChange>.of(_coverPending[key] ?? const [])) {
+      if (_disposed) return false;
+      final s = _binders[path];
+      if (s == null || !s.available || _isLocked(path) || s.saved == null) {
+        c.stuck = true;
+        break;
+      }
+      final id = c.delta.binderId ?? _binderIds[key] ?? c.delta.temps.firstOrNull?.binderId;
+      if (id == null || s.saved!.id != id) {
+        c.stuck = true;
+        continue;
+      }
+      c.delta.binderId ??= id;
+      final store = _binderStore(Directory(path));
+      var stop = false;
+      await _lockRun(Directory(path), () async {
+        final list = _coverPending[key];
+        // U0: the same section, available, and still holding this change.
+        if (_disposed ||
+            !identical(_binders[path], s) ||
+            !s.available ||
+            _isLocked(path) ||
+            list == null ||
+            !list.contains(c) ||
+            s.saved?.id != id) {
+          c.stuck = true;
+          stop = true;
+          return;
+        }
+        final r = await store.update(c.delta);
+        if (_disposed) return;
+        switch (r) {
+          case BinderUpdated():
+            _written(store, r);
+            // One synchronous step: the change leaves the pending list as the
+            // saved copy takes its result.
+            list.remove(c);
+            if (list.isEmpty) _coverPending.remove(key);
+            if (s.available) {
+              s.saved = r.binder;
+              _recompute(s);
+            } else {
+              reconcile = true; // the file changed under a state that can't take the result
+            }
+            _coverDelay.remove(key);
+            notifyListeners();
+            await _removeTemps(store, key, c.delta);
+          case BinderRefused():
+            c.stuck = true;
+            stop = true;
+            refused = true;
+            _keepTemps(key, c.delta.temps);
+            if (r.kind != BinderRefusal.inUse &&
+                r.kind != BinderRefusal.keepsChanging &&
+                r.kind != BinderRefusal.readOnly &&
+                r.kind != BinderRefusal.cantWrite) {
+              reconcile = true;
+            }
+        }
+        if (r is BinderRefused || r.kept.isNotEmpty || s.copies.isNotEmpty) await _listCopiesLocked(s, store);
+      });
+      if (stop) break;
+    }
+    if (!_disposed) {
+      notifyListeners();
+      if (reconcile) {
+        unawaited(checkBinderFile(_binderStore(Directory(path)).file.path, force: true));
+      } else if (refused) {
+        _scheduleCoverRetry(path);
+      }
+    }
+    return !(_coverPending[key]?.isNotEmpty ?? false);
+  }
+
+  // Tries the pending cover changes of [path] again after 2 s, doubling to a
+  // minute while they keep being refused.
+  void _scheduleCoverRetry(String path) {
+    final key = _key(path);
+    if (_coverTimers[key]?.isActive ?? false) return;
+    final wait = _coverDelay[key] ?? coverRetryFirst;
+    final doubled = wait * 2;
+    _coverDelay[key] = doubled > const Duration(seconds: 60) ? const Duration(seconds: 60) : doubled;
+    _coverTimers[key] = Timer(wait, () {
+      _coverTimers.remove(key);
+      if (_disposed || (_coverPending[key]?.isEmpty ?? true)) return;
+      unawaited(_tryCovers(path));
     });
   }
 
@@ -5296,39 +5906,84 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  // What a folder holds as its binder, read in one locked job (S, the read, the
+  // id check and C).
   Future<BinderSection> _openBinder(
     String path, {
     bool create = false,
     bool createFolder = true,
     bool sweep = true,
+    String? expectId,
   }) async {
-    BinderSection unavailable(String why, {bool missing = false}) =>
-        BinderSection._(path, BinderStatus.unavailable, reason: why, missing: missing);
+    BinderSection unavailable(String why, {bool missing = false, List<BinderCopy> copies = const [], bool fileMissing = false}) =>
+        BinderSection._(
+          path,
+          BinderStatus.unavailable,
+          reason: why,
+          missing: missing,
+          copies: copies,
+          fileMissing: fileMissing,
+        );
     final dir = Directory(path);
     try {
       if (!await dir.exists()) {
         return unavailable('Folder not found. It may be on another device.', missing: true);
       }
-      final binders = BinderStore(dir);
-      // One read of the binder file: what is parsed is exactly what is cached
-      // for the later "did it change" check.
-      final once = await _readBinderFile(binders);
-      var read = once.read;
-      String? text = once.text;
-      if (read is BinderMissing) {
-        if (!create || _pullOnly(path)) return unavailable('No $binderFileName in this folder.');
-        final made = await binders.create(
-          Binder.create(
+      final binders = _binderStore(dir);
+      final want = expectId ?? _binderIds[_key(path)];
+      // One locked job. Folder locks aren't re-entrant, so the scan of the pages
+      // runs afterwards as a job of its own.
+      final got = await _lockRun(dir, () async {
+        // S: an aside of a replace that was killed is put back (never in a pull-only
+        // place, and not while a found add runs); everything else is listed.
+        final sw = await binders.sweepLeftovers(restore: sweep && _sweepOff == 0 && !_pullOnly(path));
+        var once = await _readBinderFile(binders);
+        var made = false;
+        if (once.read is BinderMissing && create && !_pullOnly(path)) {
+          // A complete copy of a binder file is never papered over by a new binder:
+          // the user puts it back or deletes it first.
+          if (sw.copies.any((c) => c.isTemp && c.binder != null)) {
+            return (read: once.read, text: once.text, sweep: sw, refused: true);
+          }
+          final fresh = Binder.create(
             title: _folderName(path),
             color: binderPalette[_binders.length % binderPalette.length],
-          ),
+          );
+          if (await binders.create(fresh) == BinderCreated.created) {
+            made = true;
+            once = (read: BinderFound(fresh), text: fresh.write());
+            _emitPublished(binders.file.path, null, () => fresh.write());
+          } else {
+            // Another binder file arrived first: that one is read, never replaced.
+            once = await _readBinderFile(binders);
+          }
+        }
+        return (read: once.read, text: once.text, sweep: made ? await binders.sweepLeftovers(restore: false) : sw, refused: false);
+      });
+      final read = got.read;
+      final text = got.text;
+      if (got.refused) {
+        return unavailable(
+          'No $binderFileName in this folder.',
+          copies: got.sweep.copies,
+          fileMissing: true,
         );
-        read = BinderFound(made);
-        text = made.write(); // what `create` wrote
-        _emitPublished(binders.file.path, null, () => text!);
       }
-      // A binder whose file can't be read still lists its pages, read-only.
-      final binder = read is BinderFound ? read.binder : null;
+      if (read is BinderMissing) {
+        if (!create || _pullOnly(path)) {
+          return unavailable('No $binderFileName in this folder.', copies: got.sweep.copies, fileMissing: true);
+        }
+        return unavailable('No $binderFileName in this folder.');
+      }
+      // A binder whose file can't be read still lists its pages, read-only. So does
+      // one whose folder holds another binder than this device recorded: it is
+      // never used or written until the user chooses it (I).
+      Binder? binder = read is BinderFound ? read.binder : null;
+      Binder? other;
+      if (binder != null && want != null && binder.id != want) {
+        other = binder;
+        binder = null;
+      }
       await _binderSeam('parsed', path);
       if (text != null) {
         _binderText[_key(path)] = text;
@@ -5346,8 +6001,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         binder != null ? BinderStatus.available : BinderStatus.unreadable,
         binder: binder,
         store: pages,
-        reason: read is BinderUnreadable ? read.reason : null,
+        reason: other != null
+            ? 'This folder now holds another binder ("${other.title.trim().isEmpty ? _folderName(path) : other.title.trim()}")'
+            : read is BinderUnreadable
+            ? read.reason
+            : null,
         unreadable: bad,
+        other: other,
+        copies: got.sweep.copies,
       );
       for (final e in entries.whereType<ReadablePage>()) {
         if ((_metas.containsKey(e.meta.id) && _loc[e.meta.id] != path) ||
@@ -5367,6 +6028,240 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on FileSystemException catch (e) {
       return unavailable('${e.message}${e.path == null ? '' : ': ${e.path}'}');
     }
+  }
+
+  // Lists the files beside the binder file whose names start with
+  // `noted-binder`, under the folder's lock held by the caller. Never deletes.
+  Future<void> _listCopiesLocked(BinderSection s, BinderStore store) async {
+    final sw = await store.sweepLeftovers(restore: false);
+    if (_disposed) return;
+    s.copies = sw.copies;
+    notifyListeners();
+  }
+
+  /// The files beside binder [path]'s file that hold a copy of it or part of
+  /// it: temporary files of interrupted changes, conflict and sync-client copies,
+  /// and asides, each with what it is (P). Never deleted on their own.
+  List<BinderCopyRow> binderCopyRows(BinderSection s) {
+    final key = _key(s.path);
+    final saved = s.saved ?? s.binder;
+    final savedBytes = saved == null ? null : utf8.encode(saved.write());
+    final rows = <BinderCopyRow>[];
+    final seen = <String>{};
+    String when(DateTime? t) {
+      if (t == null) return '';
+      final l = t.toLocal();
+      String two(int n) => n.toString().padLeft(2, '0');
+      return '${l.year}-${two(l.month)}-${two(l.day)} ${two(l.hour)}:${two(l.minute)}';
+    }
+
+    void add(String path, List<int>? bytes, Binder? binder, DateTime? modified, bool isTemp) {
+      if (!seen.add(_key(path))) return;
+      final String label;
+      if (binder == null) {
+        label = "can't be read by this version";
+      } else if (savedBytes != null && bytes != null && _sameBytes(bytes, savedBytes)) {
+        label = 'same as saved';
+      } else if (isTemp) {
+        label = 'an interrupted change';
+      } else {
+        final ai = (binder.aiAccess ?? defaultAiAccess).label;
+        label = 'an older copy (${[when(modified), 'AI access $ai'].where((x) => x.isNotEmpty).join(', ')})';
+      }
+      rows.add(
+        BinderCopyRow(
+          path: path,
+          name: path.split(RegExp(r'[\\/]')).last,
+          label: label,
+          canPutBack: s.fileMissing && !s.missing && binder != null,
+          canReadAsBinder: binder != null,
+          bytes: bytes,
+        ),
+      );
+    }
+
+    for (final c in s.copies) {
+      add(c.path, c.bytes, c.binder, c.modified, c.isTemp);
+    }
+    for (final t in _ownKeptTemps[key] ?? const <BinderTemp>[]) {
+      if (!File(t.path).existsSync()) continue;
+      Binder? parsed;
+      try {
+        parsed = Binder.parse(utf8.decode(t.bytes));
+      } on Object {
+        parsed = null;
+      }
+      add(t.path, t.bytes, parsed, null, true);
+    }
+    return rows;
+  }
+
+  static bool _sameBytes(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  /// Puts the copy [copyPath] back as binder [path]'s file (P). Only while the
+  /// file is missing, only a complete copy of this folder's binder, and never
+  /// over anything.
+  Future<void> putBackBinderCopy(String path, String copyPath) async {
+    _refuseWhileHeld();
+    final s = _binders[path];
+    if (s == null) return;
+    final row = binderCopyRows(s).where((r) => r.path == copyPath).firstOrNull;
+    final bytes = row?.bytes;
+    if (row == null || bytes == null) throw const NotebookException('That copy is not there any more.');
+    final key = _key(path);
+    final store = _binderStore(Directory(path));
+    Binder copy;
+    try {
+      copy = Binder.parse(utf8.decode(bytes));
+    } on Object {
+      throw const NotebookException("That copy can't be read, so it can't be put back.");
+    }
+    final recorded = _binderIds[key];
+    if (recorded != null && copy.id != recorded) {
+      throw const NotebookException('That copy belongs to another binder.');
+    }
+    if (recorded == null && _binderIds.entries.any((e) => e.key != key && e.value == copy.id)) {
+      throw const NotebookException('That copy belongs to a binder listed from another folder.');
+    }
+    await _lockRun(Directory(path), () async {
+      if (await store.file.exists()) {
+        throw const NotebookException('The binder file is there now, so nothing was put back.');
+      }
+      final f = File(copyPath);
+      if (!await f.exists() || !_sameBytes(await f.readAsBytes(), bytes)) {
+        throw const NotebookException('That copy changed, so it was left as it is.');
+      }
+      final ok = await publishExclusive(f, store.file.path);
+      if (!ok) throw const NotebookException('A binder file appeared first, so nothing was put back.');
+      final text = utf8.decode(bytes);
+      _binderText[key] = text;
+      _emitPublished(store.file.path, null, () => text);
+      final kept = _ownKeptTemps[key];
+      kept?.removeWhere((t) => t.path == copyPath);
+      if (kept != null && kept.isEmpty) _ownKeptTemps.remove(key);
+      s.copies = [for (final c in s.copies) if (c.path != copyPath) c];
+    });
+    if (!_disposed) {
+      notifyListeners();
+      unawaited(checkBinderFile(store.file.path, force: true));
+    }
+  }
+
+  /// Deletes the copy [copyPath] beside binder [path]'s file, after asking, and
+  /// only while it still holds what was listed. Returns false if the user
+  /// chose to keep it.
+  Future<bool> deleteBinderCopy(String path, String copyPath) async {
+    final s = _binders[path];
+    if (s == null) return false;
+    final row = binderCopyRows(s).where((r) => r.path == copyPath).firstOrNull;
+    final bytes = row?.bytes;
+    if (row == null || bytes == null) throw const NotebookException('That copy is not there any more.');
+    final key = _key(path);
+    final store = _binderStore(Directory(path));
+    final onlyReadable = row.canReadAsBinder && !_binderFileReadable(store);
+    if (!await _ask(onlyReadable ? UserQuestion.deleteOnlyBinderCopy : UserQuestion.deleteBinderCopy, row.name)) {
+      return false;
+    }
+    await _lockRun(Directory(path), () async {
+      final r = await deleteFileIfMatches(copyPath, bytes: bytes);
+      if (!r.deleted && r.outcome != DeleteOutcome.absent) {
+        throw const NotebookException('That copy changed, so it was kept.');
+      }
+      final kept = _ownKeptTemps[key];
+      kept?.removeWhere((t) => t.path == copyPath);
+      if (kept != null && kept.isEmpty) _ownKeptTemps.remove(key);
+      await _listCopiesLocked(s, store);
+    });
+    return true;
+  }
+
+  // Whether the binder file is there and reads as a binder.
+  bool _binderFileReadable(BinderStore store) {
+    try {
+      Binder.parse(utf8.decode(store.file.readAsBytesSync()));
+      return true;
+    } on Object {
+      return false;
+    }
+  }
+
+  /// The folder of [path] holds another binder than the one this device recorded
+  /// for it. Its pages stay listed, read-only, and nothing is written until the
+  /// user chooses that binder (I).
+  Future<void> _otherBinder(BinderSection section, Binder other) async {
+    final path = section.path;
+    if (section.other != null && section.other!.id == other.id) {
+      section.other = other;
+      return;
+    }
+    await flush(); // pending edits of the open page land while writing is allowed
+    if (_disposed || _binders[path] != section) return;
+    // The typing of an open cover is taken before anything changes (D2).
+    if (_coverTypingPath == path) _takeCoverTyping();
+    final dropped = section.pending.length;
+    section
+      ..status = BinderStatus.unreadable
+      ..reason = 'This folder now holds another binder ("${other.title.trim().isEmpty ? _folderName(path) : other.title.trim()}")'
+      ..binder = null
+      ..saved = null
+      ..other = other;
+    for (final c in List<BinderSetting>.of(section.pending)) {
+      _dropSetting(section, c);
+    }
+    if (dropped > 0) {
+      _notices.add("Binder ${section.title}: the change wasn't saved. The folder now holds another binder.");
+    }
+    if (_coverPath == path) _coverPath = null;
+    final key = _key(path);
+    _pendingCopies.removeWhere((p) => _key(File(p).parent.path) == key);
+    final last = _lastDeleted;
+    if (last != null && last._location == path) _lastDeleted = null;
+    _syncReadOnly();
+    notifyListeners();
+  }
+
+  /// The folder of [path] holds another binder; use it from now on (I). Refused
+  /// for an id that is listed at another folder (0140) and while the binder list
+  /// is held (0146). Cover changes of the old binder that aren't written are
+  /// discarded, after asking.
+  Future<void> useThisBinder(String path) async {
+    _refuseWhileHeld();
+    final s = _binders[path];
+    final other = s?.other;
+    if (s == null || other == null) return;
+    final key = _key(path);
+    if (_binderIds.entries.any((e) => e.key != key && e.value == other.id)) {
+      throw const NotebookException('That binder is listed from another folder, so it was not added again.');
+    }
+    final old = _binderIds[key];
+    final stale = [
+      for (final c in _coverPending[key] ?? const <CoverChange>[])
+        if (c.forId != other.id) c,
+    ];
+    if (stale.isNotEmpty) {
+      final names = stale.map((c) => c.what).toSet().join(', ');
+      if (!await _ask(UserQuestion.discardCoverChanges, 'the cover of the old binder ($names)')) return;
+      final list = _coverPending[key];
+      list?.removeWhere(stale.contains);
+      if (list != null && list.isEmpty) _coverPending.remove(key);
+      final store = _binderStore(Directory(path));
+      await _lockRun(Directory(path), () async {
+        for (final c in stale) {
+          await _removeTemps(store, key, c.delta);
+        }
+      });
+    }
+    if (_disposed || !identical(_binders[path], s)) return;
+    if (old != null) _binderIds.remove(key);
+    _recordBinderId(path, other);
+    await _saveSettings();
+    await _reopenBinder(path);
   }
 
   void _touch(String loc) {
@@ -5411,13 +6306,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // Notes that the listed folder [path] holds [binder] (null: unreadable, the
-  // recorded id stays). A recorded id that differs is replaced (today's
-  // adoption of whatever binder file is at a listed path), and an id a listed
-  // binder has is no longer a removed one. True if anything changed.
+  // recorded id stays). An id is recorded only where none is: another binder's
+  // file at the path is never adopted (I; only [useThisBinder] changes it), and
+  // an id a listed binder has is no longer a removed one. True if anything
+  // changed.
   bool _recordBinderId(String path, Binder? binder) {
     if (binder == null) return false;
     final key = _key(path);
-    final changed = _binderIds[key] != binder.id;
+    final recorded = _binderIds[key];
+    if (recorded != null && recorded != binder.id) return false;
+    final changed = recorded != binder.id;
     _binderIds[key] = binder.id;
     final cleared = _removedBinders.remove(binder.id);
     // A found add being made at [path] remembers what it took out of the
@@ -5752,7 +6650,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (r is! LiveBox) return AiLinkCode.notWritable;
     // A type this page doesn't allow behaves as switched off here.
     final chain = [page.meta, ..._metaChain(page.id).skip(1)];
-    if (!effectiveBoxTypeAllowed(box.typeId, chain, binder: _binderOf(page.id)).allowed) {
+    if (!effectiveBoxTypeAllowed(box.typeId, chain, binder: _aiBinderOf(page.id)).allowed) {
       return AiLinkCode.notWritable;
     }
     if (box.isConflicted) return AiLinkCode.conflict;
@@ -7588,7 +8486,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // the read goes ahead without the lock, as it did before reads took turns.
   // Not queued at all when the caller already runs inside a job on the folder,
   // which would wait on itself.
-  Future<T> _readUnderFolderLock<T>(Directory folder, Future<T> Function() read) async {
+  Future<T> _readUnderFolderLock<T>(
+    Directory folder,
+    Future<T> Function() read, {
+    void Function()? onAbandoned,
+  }) async {
     if (FolderLocks.isHeld(folder)) return read();
     final started = Completer<void>();
     var abandoned = false;
@@ -7607,6 +8509,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!abandoned) return (await job) as T;
     // Its turn, when it comes, does nothing.
     unawaited(job.then<void>((_) {}, onError: (_) {}));
+    onAbandoned?.call();
     return read();
   }
 
@@ -8113,18 +9016,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<bool> checkFileInChainForTest(String path) => _afterSaves(() => _checkFile(path), what: 'check of $path');
 
   /// Looks at a binder's `noted-binder.json` ([path]) after it may have been
-  /// changed by someone else.
+  /// changed by someone else. The file is read under the folder's lock, so this
+  /// notebook's own replace of it is never seen half way.
   ///
   /// Does nothing if the file still holds exactly what this app last wrote or
-  /// read. A changed cover is taken over (the sidebar and the cover update). A
-  /// file that is damaged or from a newer app marks the binder unreadable, and
-  /// a deleted one marks it unavailable, as at startup; the file is never
-  /// written in either case. A binder that was unusable and has a good file
-  /// again is opened afresh.
-  Future<void> checkBinderFile(String path) {
+  /// read (unless [force] is true). A changed cover is taken over (the sidebar
+  /// and the cover update). A file that is damaged or from a newer app marks the
+  /// binder unreadable. A deleted one makes the binder unavailable at once,
+  /// unless a set-aside copy of it stands in the folder (a replace is under
+  /// way): then it is looked at again soon. The file is never written in either
+  /// case. The same binder's file readable again opens the binder afresh and
+  /// brings back the page that was open. A file of another binder than the one
+  /// this device recorded for the folder lists the binder read-only.
+  Future<void> checkBinderFile(String path, {bool force = false}) {
     final job = _checking.then((_) async {
       await _chain.idle;
-      if (!_disposed) await _checkBinderFile(path);
+      if (!_disposed) await _checkBinderFile(path, force: force);
     }).catchError((Object e) {
       debugPrint('Checking $path failed: $e');
     });
@@ -8132,13 +9039,30 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return job;
   }
 
-  Future<void> _checkBinderFile(String path) async {
+  // Looks again at the binder file of folder [path] in a moment.
+  void _recheckLater(String path) {
+    final key = _key(path);
+    _asideTimers.remove(key)?.cancel();
+    _asideTimers[key] = Timer(binderRecheckDelay, () {
+      _asideTimers.remove(key);
+      if (_disposed) return;
+      unawaited(checkBinderFile(_binderStore(Directory(path)).file.path));
+    });
+  }
+
+  Future<void> _checkBinderFile(String path, {bool force = false}) async {
     if (!_isBinderFile(path)) return;
     final dirKey = _key(File(path).parent.path);
     final section = _binders.values.where((b) => _key(b.path) == dirKey).firstOrNull;
     if (section == null) return;
     if (section.missing) return; // checkFolders brings a returned folder back
-    final got = await _readBinderText(File(path));
+    final dir = Directory(section.path);
+    var abandoned = false;
+    final got = await _readUnderFolderLock(
+      dir,
+      () => _readBinderText(File(path)),
+      onAbandoned: () => abandoned = true,
+    );
     final text = got.text;
     String? unreadable = got.damaged;
     if (got.failure != null) {
@@ -8147,14 +9071,55 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (!_disposed && !await Directory(section.path).exists()) await _binderGone(section);
       return;
     }
-    if (_disposed) return;
-    if (text == null && unreadable == null && !await Directory(section.path).exists()) {
-      // The folder is gone, not just the file.
+    if (_disposed || !identical(_binders[section.path], section)) return;
+    if (text == null && unreadable == null) {
+      // The file is not there (W).
+      if (!await dir.exists()) {
+        // The folder is gone, not just the file.
+        if (_disposed) return;
+        await _binderGone(section);
+        return;
+      }
       if (_disposed) return;
-      await _binderGone(section);
+      // A read that ran after its lock wait was given up may have caught our own
+      // replace half done: it decides nothing.
+      if (abandoned) {
+        _recheckLater(section.path);
+        return;
+      }
+      if (section.status == BinderStatus.unavailable) return;
+      if (await _holdsBinderAside(section.path)) {
+        // A replace is under way (or was killed): look again soon, and put the
+        // aside back once it has stood for [asideRestoreAfter] with no file.
+        if (_pullOnly(section.path)) return;
+        section.asideSince ??= now();
+        if (now().difference(section.asideSince!) >= asideRestoreAfter) {
+          section.asideSince = null;
+          await _restoreAside(section);
+        }
+        _recheckLater(section.path);
+        return;
+      }
+      section.asideSince = null;
+      _binderText.remove(dirKey);
+      if (_pullOnly(section.path)) {
+        // Its pages stay listed and its open page stays open (G6).
+        await _binderGone(section);
+        return;
+      }
+      await _disableBinder(
+        section,
+        BinderStatus.unavailable,
+        'No $binderFileName in this folder.',
+        fileMissing: true,
+      );
       return;
     }
-    if (text != null && _binderText[dirKey] == text) return;
+    section.asideSince = null;
+    if (!force && text != null && _binderText[dirKey] == text) {
+      if (section.available && _coverPending.containsKey(dirKey)) retryCovers();
+      return;
+    }
     Binder? binder;
     if (text != null) {
       _binderText[dirKey] = text;
@@ -8168,12 +9133,29 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
 
     if (binder != null) {
+      final want = _binderIds[dirKey];
+      if (want != null && binder.id != want) {
+        // Another binder's file (I): listed read-only, never written, never used
+        // by AI, until the user chooses it.
+        if (section.available) {
+          await _otherBinder(section, binder);
+        } else if (section.other?.id != binder.id) {
+          // Its pages are listed again, read-only.
+          await _reopenBinder(section.path);
+        }
+        return;
+      }
       if (section.available) {
-        section.binder = binder;
-        section.lastEdited = DateTime.now();
+        // Another binder taking the place of the one shown (no id was recorded to
+        // tell them apart): what the open cover has typed is taken first (D2).
+        if (section.saved != null && section.saved!.id != binder.id && _coverTypingPath == section.path) {
+          _takeCoverTyping();
+        }
+        section.saved = binder;
+        _recompute(section);
+        section.lastEdited = now();
         notifyListeners();
-        // Whatever binder file is at a listed path is adopted: its id is the
-        // one recorded now.
+        // The id is recorded only where none is (I).
         // A found add of this folder saves (or undoes) it itself: a save here could
         // list the folder with another id before the add looks at it.
         if (_recordBinderId(section.path, binder) && !_foundAdds.containsKey(_key(section.path))) {
@@ -8183,30 +9165,31 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       } else {
         await _reopenBinder(section.path);
       }
+      if (!_disposed && _coverPending.containsKey(dirKey)) retryCovers();
       return;
     }
-    if (text == null && unreadable == null) {
-      if (section.status == BinderStatus.unavailable) return;
-      if (_pullOnly(section.path)) {
-        // Its pages stay listed and its open page stays open (G6); an aside of
-        // the binder file means a replace is under way, so nothing is decided.
-        if (!await _holdsBinderFile(section.path)) await _binderGone(section);
-        return;
-      }
-      await _disableBinder(
-        section,
-        BinderStatus.unavailable,
-        'No $binderFileName in this folder.',
-      );
-    } else if (section.available) {
+    if (section.available) {
       await _damageBinder(section, unreadable ?? 'unreadable');
     } else if (section.status == BinderStatus.unavailable) {
       // The folder was unusable and now holds a damaged file: list its pages.
       await _reopenBinder(section.path);
-    } else if (section.reason != unreadable) {
-      section.reason = unreadable;
+    } else if (section.reason != unreadable || section.other != null) {
+      section
+        ..reason = unreadable
+        ..other = null
+        ..fileMissing = false;
       notifyListeners();
     }
+  }
+
+  // Puts back the asides of a replace that stalled (S, under the lock), then
+  // lists what is there.
+  Future<void> _restoreAside(BinderSection section) async {
+    final store = _binderStore(Directory(section.path));
+    await _lockRun(Directory(section.path), () async {
+      await store.sweepLeftovers(restore: true);
+      await _listCopiesLocked(section, store);
+    });
   }
 
   /// The binder file of an available binder can't be read any more. The binder
@@ -8217,10 +9200,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final path = section.path;
     await flush(); // pending edits of the open page land while writing is allowed
     if (_disposed || _binders[path] != section) return;
+    // What the open cover has typed is taken before anything changes (D2).
+    if (_coverTypingPath == path) _takeCoverTyping();
     section
       ..status = BinderStatus.unreadable
       ..reason = reason
-      ..binder = null;
+      ..binder = null
+      ..saved = null
+      ..other = null
+      ..fileMissing = false;
     if (_coverPath == path) _coverPath = null;
     final last = _lastDeleted;
     if (last != null && last._location == path) _lastDeleted = null;
@@ -8229,12 +9217,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   /// Takes the pages of the binder out of the notebook and marks it unusable.
-  /// Its files, binder file included, are not touched.
-  Future<void> _disableBinder(BinderSection section, BinderStatus status, String reason) async {
+  /// Its files, binder file included, are not touched. The page that was open
+  /// is remembered, to open again when the same binder's file is read again.
+  Future<void> _disableBinder(
+    BinderSection section,
+    BinderStatus status,
+    String reason, {
+    bool fileMissing = false,
+  }) async {
     section.missing = false;
     final path = section.path;
+    // What the open cover has typed is taken before anything changes (D2).
+    if (_coverTypingPath == path) _takeCoverTyping();
     final ids = [for (final e in _loc.entries) if (e.value == path) e.key];
     final openHere = ids.contains(currentId);
+    if (openHere) section.returnTo = currentId;
     // Saves while the store still works. A page whose edits are safe nowhere
     // stays open, read-only, under the warning (3.5).
     var left = true;
@@ -8253,10 +9250,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     final last = _lastDeleted;
     if (last != null && last._location == path) _lastDeleted = null;
+    if (_coverTypingPath == path) _takeCoverTyping();
     section
       ..status = status
       ..reason = reason
       ..binder = null
+      ..saved = null
+      ..other = null
+      ..fileMissing = fileMissing
       ..store = null
       ..unreadable = const []
       ..tree = PageTree.build(const []);
@@ -8265,14 +9266,45 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _syncWatchers();
     if (openHere && left) {
       await _openFallback(_standalone);
+      section.fallbackId = currentId;
     } else if (openHere) {
       _orphanLoc = path;
       _syncReadOnly();
     }
+    if (fileMissing && !_disposed) {
+      // The copies of the binder file there are listed at once.
+      final store = _binderStore(Directory(path));
+      await _lockRun(Directory(path), () => _listCopiesLocked(section, store));
+    }
   }
+
+  /// Reads binder [path] afresh, as when its file is readable again.
+  @visibleForTesting
+  Future<void> reopenForTest(String path) => _reopenBinder(path);
+
+  /// Marks binder [path] unreadable at once, without waiting for the save
+  /// chain, as a state change that overtakes a queued write would.
+  @visibleForTesting
+  void markDamagedForTest(String path) {
+    _binders[path]
+      ?..status = BinderStatus.unreadable
+      ..binder = null
+      ..saved = null;
+  }
+
+  /// How many cover changes are not written yet in folder [path], whichever
+  /// binder they are for.
+  @visibleForTesting
+  int coverPendingCountForTest(String path) => _coverPending[_key(path)]?.length ?? 0;
+
+  /// Forgets the binder id recorded for [path], as a list written before ids
+  /// were recorded has none.
+  @visibleForTesting
+  void forgetBinderIdForTest(String path) => _binderIds.remove(_key(path));
 
   /// A binder whose file is readable again: reads the folder afresh.
   Future<void> _reopenBinder(String path) async {
+    final old = _binders[path];
     // Pages left over from a binder that was listed read-only are read again;
     // the open one stays, so its view isn't torn down.
     for (final e in _loc.entries.where((e) => e.value == path && e.key != currentId).toList()) {
@@ -8280,6 +9312,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     final fresh = await _openBinder(path);
     if (_disposed) return;
+    fresh
+      ..returnTo = old?.returnTo
+      ..fallbackId = old?.fallbackId;
     _binders[path] = fresh;
     final changed = _recordBinderId(path, fresh.binder);
     _syncReadOnly();
@@ -8288,6 +9323,30 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (changed) await _saveSettings();
     await _promoteReleased();
     await _mergePendingCopies(inQueue: true);
+    if (fresh.available) await _returnToPage(fresh);
+  }
+
+  // The same binder's file is back: the page that was open when it went away
+  // opens again, unless the user has chosen another page since.
+  Future<void> _returnToPage(BinderSection section) async {
+    final id = section.returnTo;
+    if (id == null) return;
+    final path = section.path;
+    final fallback = section.fallbackId;
+    section
+      ..returnTo = null
+      ..fallbackId = null;
+    if (_loc[id] != path) return; // the page is not in the binder any more
+    try {
+      if (_orphanLoc == path && currentId == id) {
+        // The read-only view it left still shows it: resumed in place.
+        await _afterResume(await _resumeOpenPage(path, force: true));
+      } else if (fallback != null && currentId == fallback && fallback != id) {
+        await open(id);
+      }
+    } on Object catch (e) {
+      debugPrint('Opening page $id again failed: $e');
+    }
   }
 
   // Drops what the notebook knows of page [id] (not its file).
@@ -9441,7 +10500,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_readOnlyRootOf(from) != _readOnlyRootOf(to)) return;
     // Checked again now, on disk (an aside of the binder file counts).
     if (await _holdsBinderFile(from)) return;
-    final read = await BinderStore(Directory(to)).read();
+    final read = await _lockRun(Directory(to), () => _binderStore(Directory(to)).read());
     if (read is! BinderFound || read.binder.id != id || _disposed) return;
     if (!identical(_binders[from], old)) return;
     final ids = [for (final e in _loc.entries) if (e.value == from) e.key];
@@ -9479,7 +10538,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     final BinderSection fresh;
     try {
-      fresh = await _openBinder(to, createFolder: false, sweep: false);
+      fresh = await _openBinder(to, createFolder: false, sweep: false, expectId: id);
     } on Object {
       putBack();
       _adoptedFiles.addAll(keptAdopted);
@@ -9797,6 +10856,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     _syncWatchers(); // restarts a watcher that ended
+    // Cover changes that were refused are tried again with each folder check.
+    if (!_disposed && _coverPending.isNotEmpty) retryCovers();
     // Kept files that failed to land are tried again, also for the open page.
     final rec = _recovery;
     if (_keptRetry && rec != null && !_disposed) {
@@ -9811,13 +10872,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     try {
       if (!await Directory(dir).exists()) return false;
       if (await File('$dir${Platform.pathSeparator}$binderFileName').exists()) return true;
+    } on FileSystemException {
+      return true; // can't tell: not gone
+    }
+    return _holdsBinderAside(dir);
+  }
+
+  // Whether the folder [dir] holds a set-aside copy of the binder file (named
+  // exactly as a replace names it, [isBinderFileAsideName]): a replace is under
+  // way, or was killed. The asides of temporary files and conflict copies don't
+  // count.
+  Future<bool> _holdsBinderAside(String dir) async {
+    try {
+      if (!await Directory(dir).exists()) return false;
       await for (final f in Directory(dir).list(followLinks: false)) {
-        if (f is! File) continue;
-        final name = f.path.split(RegExp(r'[\\/]')).last;
-        if (name.startsWith('$binderFileName.') &&
-            (name.endsWith(asideSuffix) || name.endsWith(verifiedSuffix))) {
-          return true;
-        }
+        if (f is File && isBinderFileAsideName(f.path.split(RegExp(r'[\\/]')).last)) return true;
       }
     } on FileSystemException {
       return true; // can't tell: not gone
@@ -9867,6 +10936,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // A pull-only binder is also "gone" when only its binder file is (G6).
     final fileOnly = _pullOnly(path) && await Directory(path).exists();
     if (_disposed || _binders[path] != section || section.missing) return;
+    // What the open cover has typed is taken before anything changes (D2).
+    if (_coverTypingPath == path) _takeCoverTyping();
     section
       ..missing = true
       ..status = BinderStatus.unavailable
@@ -9898,7 +10969,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // never taken apart (G6).
       if (_pullOnly(path)) return;
       // No binder file (or unusable): as at startup.
-      await _disableBinder(old, BinderStatus.unavailable, fresh.reason ?? '');
+      await _disableBinder(old, BinderStatus.unavailable, fresh.reason ?? '', fileMissing: fresh.fileMissing);
       return;
     }
     _binders[path] = fresh;
@@ -9911,6 +10982,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _mergePendingCopies(inQueue: true);
     await _afterResume(await _resumeOpenPage(path, force: true));
     await _recoverPending(onlyLoc: path);
+    if (!_disposed && _coverPending.containsKey(_key(path))) retryCovers();
   }
 
   Future<void> _folderBack(String loc) async {
@@ -10940,6 +12012,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// the user chose to stay (the question "Your changes will be lost").
   Future<bool> prepareToExit({Duration? limit}) async {
     final bound = limit ?? leaveSaveLimit;
+    // Before anything else: what the open cover has typed and not sent is taken
+    // (the cover sends only on focus loss, Enter or when it closes). After a
+    // Cancel the cover stays open and its later typing is recorded as usual.
+    _takeCoverTyping();
     try {
       await _leaveOpenPage();
     } on LeaveCancelled {
@@ -10950,10 +12026,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final clock = Stopwatch()..start();
     Duration left() => clock.elapsed >= bound ? Duration.zero : bound - clock.elapsed;
     if (!await _saveHeldAtExit(left)) return false;
+    // One more try of each cover change that is not written yet.
+    _queueCoverTries();
     // Other queued writes get the same time; what hangs is left behind.
     var stuck = false;
     await _chain.idle.timeout(bound, onTimeout: () => stuck = true);
     if (stuck) _chain.detach();
+    // A cover change still not written would be lost: asked, never silently.
+    for (final key in _coverPending.keys.toList()) {
+      final s = _binders.values.where((b) => _key(b.path) == key).firstOrNull;
+      for (final c in List<CoverChange>.of(_coverPending[key] ?? const [])) {
+        final title = s?.title ?? _folderName(key);
+        if (!await _ask(UserQuestion.leaveAndLose, 'the cover of binder "$title" (${c.what})')) return false;
+      }
+    }
     final rec = _recovery;
     if (rec != null && rec.landedEntries.isNotEmpty) {
       await _deleteGens(rec, [for (final e in rec.landedEntries) e.gen], null).timeout(
@@ -11067,6 +12153,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     unawaited(_keptNotices.close());
     _folderTimer?.cancel();
     _settingsTimer?.cancel();
+    for (final t in [..._coverTimers.values, ..._asideTimers.values]) {
+      t.cancel();
+    }
+    _coverTimers.clear();
+    _asideTimers.clear();
     for (final t in _debounce.values) {
       t.cancel();
     }

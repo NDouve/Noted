@@ -392,9 +392,12 @@ class _NotedAppState extends State<NotedApp> {
         widget.runningLock?.release();
         return AppExitResponse.exit;
       },
-      onHide: widget.notebook.flush,
+      onHide: widget.notebook.coverHidden,
       // A binder list that could not be read is read again.
-      onResume: () => unawaited(widget.notebook.retrySettings()),
+      onResume: () {
+        unawaited(widget.notebook.retrySettings());
+        widget.notebook.retryCovers();
+      },
     );
   }
 
