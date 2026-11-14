@@ -105,6 +105,10 @@ final class LibrarySources {
   /// Every listed binder's file: whether it could be used (present, readable
   /// and parsing as a binder).
   final Map<String, bool> binderUsable = {};
+
+  /// The binder id `binders.json` records for each listed binder, by the binder
+  /// file path, when it records one.
+  final Map<String, String> recordedIds = {};
 }
 
 /// Every saved page this device can reach, read from the page files only
@@ -184,6 +188,18 @@ final class NotedLibrary {
       for (final p in _strings(binders['standaloneFolders'])) p,
     ]);
     final binderPaths = await distinct(_strings(binders['binders']));
+    // The binder id each listed folder held when the app last wrote the list
+    // (`binderIds`, keyed by the folder path as written in `binders`), by the
+    // folder's normal form. The app writes desktop paths absolute, so the keys
+    // resolve as the `binders` strings do.
+    final recorded = <String, String>{};
+    if (binders['binderIds'] case final Map<Object?, Object?> ids) {
+      for (final e in ids.entries) {
+        if (e.key case final String k when e.value is String && (e.value as String).isNotEmpty) {
+          recorded[await normalizedPath(k)] = e.value as String;
+        }
+      }
+    }
 
     // Every listed folder is listed and counted first, whatever its binder
     // file says; a file is counted once however it is reached.
@@ -233,7 +249,12 @@ final class NotedLibrary {
     final alsoStandalone = <String, int>{};
     final unusableShared = <String>{};
     for (final path in binderPaths) {
-      final binder = await _readBinder(identity, Directory(path), kept);
+      final binder = await _readBinder(
+        identity,
+        Directory(path),
+        kept,
+        recorded[await normalizedPath(path)],
+      );
       // A binder that is missing, can't be read or doesn't parse is left out
       // whole. A locked one is kept, marked: page AI never sees its pages, but
       // its AI boxes stay reachable by their codes.
@@ -408,11 +429,29 @@ final class NotedLibrary {
     }
   }
 
-  static Future<Binder?> _readBinder(LockIdentity identity, Directory dir, LibrarySources? kept) async {
+  static Future<Binder?> _readBinder(
+    LockIdentity identity,
+    Directory dir,
+    LibrarySources? kept,
+    String? recordedId,
+  ) async {
     final bytes = await identity.readBytes(binderFilePath(dir.path));
     kept?.files[binderFilePath(dir.path)] = bytes;
-    final binder = binderOf(bytes);
+    final binder = usableBinder(bytes, recordedId);
     kept?.binderUsable[binderFilePath(dir.path)] = binder != null;
+    if (recordedId != null) kept?.recordedIds[binderFilePath(dir.path)] = recordedId;
+    return binder;
+  }
+
+  /// The binder [bytes] read as, or null if it can't be used: the bytes don't
+  /// parse (as [binderOf]), or [recordedId] is given and the binder's id is
+  /// another. A folder that holds another binder than `binders.json` records
+  /// is unusable here as a damaged one is: its rules are unknown. Used at load
+  /// and again at a closed write's hold-time recheck.
+  static Binder? usableBinder(List<int>? bytes, String? recordedId) {
+    final binder = binderOf(bytes);
+    if (binder == null) return null;
+    if (recordedId != null && binder.id != recordedId) return null;
     return binder;
   }
 

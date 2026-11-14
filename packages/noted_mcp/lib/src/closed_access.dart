@@ -613,7 +613,7 @@ final class ClosedAccess {
       if (!_sameBytes(now, e.value)) return false;
     }
     for (final e in s.binderUsable.entries.toList()) {
-      final now = NotedLibrary.binderOf(await identity.readBytes(e.key)) != null;
+      final now = NotedLibrary.usableBinder(await identity.readBytes(e.key), s.recordedIds[e.key]) != null;
       if (expired()) return null;
       if (now != e.value) return false;
     }
