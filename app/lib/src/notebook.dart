@@ -1270,27 +1270,45 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// normally or after it succeeded.
   Object? get loadError => _loadError;
 
+  /// Whether a [loadChecked] run is under way (a timed-out one still is).
+  bool get loadRunning => _loadRun != null;
+
+  final Completer<void> _loadSucceeded = Completer<void>();
+
+  /// Completes when a [loadChecked] run succeeds, however late (after a
+  /// timeout, or a Retry). Never completes with an error.
+  Future<void> get loadSucceeded => _loadSucceeded.future;
+
   /// [load] for the app's start and its Retry: a failure, or a load still
   /// running after [timeout], sets [loadError] (and notifies) instead of
-  /// throwing. A load still running is never started twice: Retry then waits
-  /// for it again.
+  /// throwing. A load still running is never started twice: a call then waits
+  /// for it again and leaves [loadError] as it is.
+  ///
+  /// While [loadError] is set or a run is under way, the retry of a held
+  /// binder list does nothing (see [retrySettings]): it would run beside the
+  /// load, or open a page behind the error screen. A new run first stops that
+  /// retry and starts from a list not yet read, as the first load did.
   Future<void> loadChecked({Duration timeout = loadTimeout}) async {
-    if (_loadError != null) {
-      _loadError = null;
-      _notifyLoad();
-    }
-    final run = _loadRun ??= load().whenComplete(() => _loadRun = null);
-    run.then<void>(
-      (_) {
-        if (_loadError == null) return;
+    var run = _loadRun;
+    if (run == null) {
+      if (_loadError != null) {
         _loadError = null;
         _notifyLoad();
-      },
-      onError: (Object e) {
-        _loadError = e;
-        _notifyLoad();
-      },
-    );
+      }
+      run = _loadRun = _startLoad().whenComplete(() => _loadRun = null);
+      run.then<void>(
+        (_) {
+          if (!_loadSucceeded.isCompleted) _loadSucceeded.complete();
+          if (_loadError == null) return;
+          _loadError = null;
+          _notifyLoad();
+        },
+        onError: (Object e) {
+          _loadError = e;
+          _notifyLoad();
+        },
+      );
+    }
     try {
       await run.timeout(timeout);
     } on TimeoutException {
@@ -1299,6 +1317,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on Object {
       // Recorded by the handler above.
     }
+  }
+
+  Future<void> _startLoad() async {
+    _settingsTimer?.cancel();
+    _settingsTimer = null;
+    final running = _retrying;
+    if (running != null) await running;
+    if (_settingsHeld != null) _settingsHeld = _SettingsHold.pending;
+    await load();
   }
 
   void _notifyLoad() {
@@ -1516,7 +1543,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Outside the queue: during load the queue is busy with the merges of
       // conflict copies, which a job waiting for load would deadlock.
       await loaded;
-      if (_disposed || _settingsHeld == null) return false;
+      if (_disposed || _settingsHeld == null || _loadError != null || _loadRun != null) return false;
       return await _queued<bool>(_retryJob) ?? false;
     } on Object catch (e, s) {
       debugPrint('Reading the binder list again failed: $e\n$s');
@@ -5453,7 +5480,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<bool> aiWaitLoaded(Duration timeout) async {
     try {
       await _loaded.future.timeout(timeout);
-      return true;
+      return _loadError == null;
     } on TimeoutException {
       return false;
     }

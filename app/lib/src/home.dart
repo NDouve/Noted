@@ -510,7 +510,11 @@ class _HomeState extends State<Home> {
                       m,
                       notebook.loadError == null
                           ? const Center(child: CircularProgressIndicator())
-                          : LoadErrorView(error: notebook.loadError!, onRetry: () => unawaited(notebook.loadChecked())),
+                          : LoadErrorView(
+                              error: notebook.loadError!,
+                              stillLoading: notebook.loadRunning,
+                              onRetry: () => unawaited(notebook.loadChecked()),
+                            ),
                     )
                   : Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,

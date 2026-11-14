@@ -13,6 +13,9 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_lock.dart';
 import 'package:noted/src/recovery_store.dart';
 
+// Regression guards: a fresh mobile install loads and shows a page. They pass on
+// the code before the error screen too, so they do not reproduce the device
+// failure (see Notebook.loadChecked).
 void main() {
   late Directory root;
 

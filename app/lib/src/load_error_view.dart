@@ -8,9 +8,12 @@ import 'package:noted_canvas/noted_canvas.dart';
 /// Shown in place of the page when the notebook's first load failed or is
 /// taking too long (see `Notebook.loadChecked`): what went wrong, and Retry.
 class LoadErrorView extends StatelessWidget {
-  const LoadErrorView({super.key, required this.error, required this.onRetry});
+  const LoadErrorView({super.key, required this.error, required this.onRetry, this.stillLoading = false});
 
   final Object error;
+
+  /// The load is still running behind the message: Retry waits until it ends.
+  final bool stillLoading;
   final VoidCallback onRetry;
 
   @override
@@ -34,11 +37,12 @@ class LoadErrorView extends StatelessWidget {
                 key: const ValueKey('load-error-text'),
                 style: type.body.copyWith(color: scheme.error),
               ),
+              if (stillLoading) Text('Still loading.', key: const ValueKey('load-error-still'), style: type.body),
               SizedBox(height: m.space4),
               FilledButton(
                 key: const ValueKey('load-error-retry'),
                 autofocus: true,
-                onPressed: onRetry,
+                onPressed: stillLoading ? null : onRetry,
                 child: const Text('Retry'),
               ),
             ],
