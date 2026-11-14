@@ -374,19 +374,27 @@ class _HomeState extends State<Home> {
             ? Drawer(
                 width: NotedMetrics.of(context).sidebarWidth,
                 shape: const RoundedRectangleBorder(),
-                child: _sidebar(NotedMetrics.of(context)),
+                backgroundColor: NotedColors.of(context).bgSidebar,
+                child: _insetsOnDevice(_sidebar(NotedMetrics.of(context))),
               )
             : null,
-        body: Stack(
-          fit: StackFit.expand,
-          children: [
-            _body(),
-            FolderWaitNote(notebook: notebook),
-          ],
+        body: _insetsOnDevice(
+          Stack(
+            fit: StackFit.expand,
+            children: [
+              _body(),
+              FolderWaitNote(notebook: notebook),
+            ],
+          ),
         ),
       ),
     );
   }
+
+  // On a phone or tablet the system bars (status bar, notch, home indicator)
+  // are not ours: keep the controls out of them. Desktop has no such insets
+  // and is left as it was.
+  Widget _insetsOnDevice(Widget child) => isMobilePlatform ? SafeArea(child: child) : child;
 
   // The page tree with search and settings; inline, or in the drawer on a
   // narrow window.
