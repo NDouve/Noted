@@ -55,6 +55,23 @@ class _LogNotebook extends SpyNotebook {
   }
 }
 
+
+// A notebook whose first load fails, as a device folder can.
+class _FailOnceNotebook extends _LogNotebook {
+  _FailOnceNotebook(super.order, super.store, super.modules);
+
+  bool failed = false;
+
+  @override
+  Future<void> load() async {
+    if (!failed) {
+      failed = true;
+      order.add('load-failed');
+      throw const FileSystemException('first load failed');
+    }
+    await super.load();
+  }
+}
 void main() {
   late Directory top;
   late Directory documents;
@@ -157,6 +174,25 @@ void main() {
     addTearDown(nb2.dispose);
     await openWhenOwned(nb2, top, show: (_) {});
     expect(order, ['load', 'loaded']);
+  });
+
+  test('the pull starts when a Retry succeeds after a failed first load, not before', () async {
+    await asDevice();
+    final order = <String>[];
+    final account = await signedInAccount();
+    addTearDown(account.dispose);
+    final nb = _FailOnceNotebook(order, PageStore(Directory('${top.path}/pages')..createSync()), buildModules());
+    addTearDown(nb.dispose);
+    final sync = _LogSync(order, nb, account);
+    addTearDown(sync.dispose);
+    await openWhenOwned(nb, top, show: (_) {}, sync: sync);
+    expect(nb.loadError, isNotNull);
+    expect(order, ['load-failed'], reason: 'no pull against a failed load');
+
+    await nb.loadChecked();
+    await Future<void>.delayed(Duration.zero);
+    expect(nb.loadError, isNull);
+    expect(order, ['load-failed', 'load', 'loaded', 'sync.start']);
   });
 
   test('the release Android manifest declares INTERNET', () {

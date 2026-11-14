@@ -285,9 +285,17 @@ Future<({AiRunningLock? lock, AiLinkServer? link})> openWhenOwned(
   onOwned?.call();
   final link = lock != null && startLink ? await startAiLink(notebook, dataFolder) : null;
   show(NotedApp(notebook: notebook, settings: settings, aiLink: link, runningLock: lock, openFiles: openFiles, microsoft: microsoft, sync: sync));
-  await notebook.load();
-  // Only now: it adds its folder to the loaded notebook and starts polling.
-  if (sync != null) unawaited(sync.start());
+  // A load that fails or hangs shows its error screen, with Retry.
+  await notebook.loadChecked();
+  // Only once a load has succeeded (this one, or a later Retry): it adds its
+  // folder to the loaded notebook and starts polling. start() is idempotent.
+  if (sync != null) {
+    if (notebook.loadError == null) {
+      unawaited(sync.start());
+    } else {
+      unawaited(notebook.loadSucceeded.then((_) => sync.start()));
+    }
+  }
   // Files named on the command line, then those a second launch hands over.
   if (!isMobilePlatform) unawaited(openFiles?.start(args));
   return (lock: lock, link: link);

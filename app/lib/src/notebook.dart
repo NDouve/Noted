@@ -1258,6 +1258,88 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  /// How long the start-up load may run before the app shows [loadError]. A
+  /// phone reads a notebook's page list in well under this; a slower load
+  /// is still running behind the message and clears it when it ends.
+  static const Duration loadTimeout = Duration(seconds: 30);
+
+  Object? _loadError;
+  Future<void>? _loadRun;
+
+  /// Why the start-up load failed or is taking too long; null while it runs
+  /// normally or after it succeeded.
+  Object? get loadError => _loadError;
+
+  /// Whether a [loadChecked] run is under way (a timed-out one still is).
+  bool get loadRunning => _loadRun != null;
+
+  final Completer<void> _loadSucceeded = Completer<void>();
+
+  /// Completes when a [loadChecked] run succeeds, however late (after a
+  /// timeout, or a Retry). Never completes with an error.
+  Future<void> get loadSucceeded => _loadSucceeded.future;
+
+  /// [load] for the app's start and its Retry: a failure, or a load still
+  /// running after [timeout], sets [loadError] (and notifies) instead of
+  /// throwing. A load still running is never started twice: a call then waits
+  /// for it again and leaves [loadError] as it is.
+  ///
+  /// While [loadError] is set or a run is under way, the retry of a held
+  /// binder list does nothing (see [retrySettings]): it would run beside the
+  /// load, or open a page behind the error screen. A new run first stops that
+  /// retry and starts from a list not yet read, as the first load did.
+  Future<void> loadChecked({Duration timeout = loadTimeout}) async {
+    var run = _loadRun;
+    if (run == null) {
+      if (_loadError != null) {
+        _loadError = null;
+        _notifyLoad();
+      }
+      run = _loadRun = _startLoad().whenComplete(() => _loadRun = null);
+      run.then<void>(
+        (_) {
+          if (!_loadSucceeded.isCompleted) _loadSucceeded.complete();
+          if (_loadError == null) return;
+          _loadError = null;
+          _notifyLoad();
+        },
+        onError: (Object e) {
+          _loadError = e;
+          _settingsHeld ??= _SettingsHold.pending; // no settings write until a load succeeds
+          _notifyLoad();
+        },
+      );
+    }
+    try {
+      await run.timeout(timeout);
+    } on TimeoutException {
+      _loadError ??= NotebookException('Loading took more than ${timeout.inSeconds} seconds.');
+      _notifyLoad();
+    } on Object {
+      // Recorded by the handler above.
+    }
+  }
+
+  Future<void> _startLoad() async {
+    _settingsTimer?.cancel();
+    _settingsTimer = null;
+    final running = _retrying;
+    if (running != null) await running;
+    // Unconditionally: a load that failed after the list was settled leaves no
+    // hold, and the lists are cleared again below; nothing may be written from
+    // them until a load succeeds.
+    _settingsHeld = _SettingsHold.pending;
+    _settingsDelay = null;
+    // Held, so no new found-add pass starts; one under way ends before the lists
+    // are cleared.
+    await discoveryIdle;
+    await load();
+  }
+
+  void _notifyLoad() {
+    if (!_disposed) notifyListeners();
+  }
+
   // Completes when the first load is over; AI writes wait for it.
   final Completer<void> _loaded = Completer<void>();
 
@@ -1469,7 +1551,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Outside the queue: during load the queue is busy with the merges of
       // conflict copies, which a job waiting for load would deadlock.
       await loaded;
-      if (_disposed || _settingsHeld == null) return false;
+      if (_disposed || _settingsHeld == null || _loadError != null || _loadRun != null) return false;
       return await _queued<bool>(_retryJob) ?? false;
     } on Object catch (e, s) {
       debugPrint('Reading the binder list again failed: $e\n$s');
@@ -5405,8 +5487,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   @override
   Future<bool> aiWaitLoaded(Duration timeout) async {
     try {
-      await _loaded.future.timeout(timeout);
-      return true;
+      await (() async {
+        await _loaded.future;
+        // A Retry rebuilds the lists with [_loaded] already complete.
+        final run = _loadRun;
+        if (run != null) {
+          try {
+            await run;
+          } on Object {
+            // Recorded in [loadError].
+          }
+        }
+      })().timeout(timeout);
+      return _loadError == null && _loadRun == null;
     } on TimeoutException {
       return false;
     }
