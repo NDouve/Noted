@@ -386,7 +386,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0038 — Page storage location for Prototype 1
 - **Date:** 2026-10-24
-- **Status:** Active; the default page folder became a setting in 0084
+- **Status:** Active; the default page folder became a setting in 0084; amended by 0161
 - **Decision:**
   - Prototype 1 stores pages as `<pageId>.canvas` files in one local folder: `%APPDATA%\Noted\pages` on Windows, `~/.noted/pages` on other platforms.
   - `--dart-define=NOTED_PAGES_DIR=<path>` overrides the folder.
@@ -624,7 +624,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0055 — Formulas and equations in table cells
 - **Date:** 2026-10-25
-- **Status:** Active; copy behavior extended by 0061
+- **Status:** Active; copy behavior extended by 0061; amended by 0161
 - **Decision:**
   - **Equations:** block and inline equations work inside table cells, with the same dialog and rendering as in notes (0048). A block equation replaces the cell's paragraph; emptying or cancelling it reverts the cell to text.
   - **Formulas:** a cell whose text starts with `=` is a formula. It shows its result while the caret is elsewhere and its formula while the caret is in it. Errors show in red.
@@ -967,7 +967,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0078 — Scope of the current phase
 - **Date:** 2026-10-26
-- **Status:** Active
+- **Status:** Active; amended by 0161
 - **Decision:**
   - **In scope:**
     - the canvas: zoom, bounded pan, Fit all and page backgrounds
@@ -2274,6 +2274,22 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
     - A text field's own long-press wins over the hold.
 - **Rationale:** a box wholly under another couldn't be reached or brought up.
 - **Alternatives considered:** forward and backward by one node (on a sparse page a step usually changes nothing visible); a long-press recognizer on touch (it would take hold-then-drag from the grip).
+
+## 0161 — Baseline scope, 2026-11-14
+- **Date:** 2026-11-14
+- **Status:** Active (decided by the maintainer). Amends 0078's phase lists, as kept in `CLAUDE.md`; amends 0055's exclusion of table import and 0038's note that other storage locations come in later phases.
+- **Decision:**
+  - **In scope, added:**
+    - storage in iCloud Drive, Google Drive and WebDAV alongside OneDrive, for the iPad, Android and browser builds;
+    - Google sign-in, for Google Drive only;
+    - import: text and markdown files, images, PDF pages as images, a spreadsheet as a table or as an image, a Word document as text or as an image, a slide as an image;
+    - export: per box in the formats its module lists, and several boxes together through a print-preview layout;
+    - sharing and opening a binder as a plain `.zip` of its folder;
+    - the browser version: a static web build, with no server.
+  - **Out of scope:** binder passwords and encryption; per-AI rules, tiers and lanes; other integrations, Microsoft sign-in beyond OneDrive sync and Google sign-in beyond Google Drive; Dropbox and other storage providers; conflict copies from providers other than OneDrive; full Word, PowerPoint and Excel boxes; customizable toolbars; reMarkable.
+  - Nothing here is built yet.
+- **Rationale:** the maintainer's sign-off of the baseline on 2026-11-14.
+- **Alternatives considered:** none recorded.
 
 ---
 
