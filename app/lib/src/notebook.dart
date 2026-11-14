@@ -1330,6 +1330,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // them until a load succeeds.
     _settingsHeld = _SettingsHold.pending;
     _settingsDelay = null;
+    // Held, so no new found-add pass starts; one under way ends before the lists
+    // are cleared.
+    await discoveryIdle;
     await load();
   }
 

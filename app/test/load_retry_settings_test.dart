@@ -13,13 +13,26 @@ import 'package:noted_core/noted_core.dart';
 // A Retry of a load that failed after the binder list was settled: the lists
 // are rebuilt, so nothing may be written from them and no AI write may run
 // until that load succeeds.
+// A store whose new-page writes fail while [failWrite] is set.
+class _ReadStore extends PageStore {
+  _ReadStore(super.directory);
+
+  bool failWrite = false;
+
+  @override
+  Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish}) async {
+    if (failWrite) throw const FileSystemException('late failure');
+    return super.saveNewText(page, text, beforePublish: beforePublish);
+  }
+}
+
 void main() {
   late Directory dir;
   late File listFile;
   late String binderPath;
 
-  Notebook make() => Notebook(
-    PageStore(Directory('${dir.path}/pages')..createSync()),
+  Notebook make([PageStore? store]) => Notebook(
+    store ?? PageStore(Directory('${dir.path}/pages')..createSync()),
     buildModules(),
     saveDelay: Duration.zero,
     bindersFile: listFile,
@@ -40,19 +53,20 @@ void main() {
 
   tearDown(() => dir.delete(recursive: true));
 
-  // A second launch whose first load fails once the list is settled.
+  // A second launch whose first load fails when it makes the first page of an empty
+  // notebook: after the list is settled and the folder timer has started.
   Future<Notebook> failedLaunch() async {
-    final nb = make();
+    for (final e in Directory('${dir.path}/pages').listSync()) {
+      if (e is File) e.deleteSync();
+    }
+    final store = _ReadStore(Directory('${dir.path}/pages'))..failWrite = true;
+    final nb = make(store);
     addTearDown(nb.dispose);
-    var fail = true;
-    nb.binderHook = (point, path) async {
-      if (point == 'settings-loaded' && fail) {
-        fail = false;
-        throw const FileSystemException('late failure');
-      }
-    };
     await nb.loadChecked();
     expect(nb.loadError, isNotNull);
+    // Held until a load succeeds, though the list had been settled.
+    expect(nb.settingsHoldForTest, 'pending');
+    store.failWrite = false;
     return nb;
   }
 
