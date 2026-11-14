@@ -16,6 +16,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
+import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/binder_cover.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/save_trouble.dart';
@@ -556,6 +557,18 @@ void main() {
       await stop();
     });
 
+    test('an unlisted folder (no id recorded) uses the temp\'s own id', () async {
+      final row = await goneWithTemp();
+      nb.forgetBinderIdForTest(section.path);
+      await nb.reopenForTest(section.path);
+      final rows = nb.binderCopyRows(nb.binders.single);
+      expect(rows.single.canPutBack, isTrue);
+      await nb.putBackBinderCopy(section.path, rows.single.path);
+      expect(binderFile().existsSync(), isTrue);
+      expect(Binder.parse(fileText()).id, Binder.parse(utf8.decode(row.bytes!)).id);
+      await stop();
+    });
+
     test('Delete asks, and Cancel keeps; the only readable copy is named', () async {
       final row = await goneWithTemp();
       answer = false;
@@ -834,14 +847,14 @@ void main() {
       await end(t);
     });
 
-    testWidgets('typed while the binder is unavailable is recorded; only the title is typed, the other description survives', (t) async {
+    testWidgets('typed in the cover, the binder goes away, another device changes the description: the title lands and the description survives', (t) async {
       await begin(t);
       final original = await t.runAsync(() async => fileText());
+      await t.enterText(find.byKey(const ValueKey('cover-title')), 'Typed while away');
+      await t.pump();
       await t.runAsync(() async => binderFile().deleteSync());
       await run(t, () => nb.checkBinderFile(binderFile().path));
       expect(nb.binders.single.status, BinderStatus.unavailable);
-      // The cover closed with the binder; type into a new one for the record.
-      await run(t, () => nb.updateBinder(section.path, title: 'Typed while away'));
       expect(nb.coverPendingFor(section.path), hasLength(1));
       // Another device changed the description meanwhile.
       final theirs = Binder.parse(original!).withDescription('Their description').write();
@@ -864,7 +877,21 @@ void main() {
       await drain(t);
       expect(fileText(), other, reason: 'nothing lands on the other binder');
       expect(nb.coverPendingCountForTest(section.path), 1);
-      expect(nb.binders.single.title, isNot('Typed title'), reason: 'the sidebar does not show A\'s text');
+      final x = nb.binders.single;
+      expect(x.title, isNot('Typed title'), reason: 'the sidebar does not show A\'s text');
+      expect(x.title, 'Other');
+      expect(nb.coverPendingFor(section.path), isEmpty, reason: 'A\'s change is not shown as X\'s');
+      // X\'s cover shows X\'s values, not A\'s text.
+      nb.showCover(section.path);
+      await t.pumpWidget(MaterialApp(home: Scaffold(body: BinderCover(notebook: nb, path: section.path))));
+      await t.pump();
+      expect((t.widget(find.byKey(const ValueKey('cover-title'))) as TextField).controller!.text, 'Other');
+      // Leaving X\'s cover records nothing.
+      await t.pumpWidget(const SizedBox());
+      await t.pump();
+      await drain(t);
+      expect(nb.coverPendingCountForTest(section.path), 1);
+      expect(fileText(), other);
       await end(t);
     });
 
@@ -961,7 +988,7 @@ void main() {
       expect(nb.coverNotSaved(section.path), isTrue);
       answer = false;
       expect(await run(t, () => nb.prepareToExit()), isFalse);
-      expect(asked.single.$1, UserQuestion.leaveAndLose);
+      expect(asked.single.$1, UserQuestion.leaveCoverUnsaved);
       expect(asked.single.$2, contains('title'));
       expect(nb.coverPendingFor(section.path), hasLength(1));
       answer = true;
@@ -991,16 +1018,37 @@ void main() {
       await t.pump();
       answer = false;
       expect(await run(t, () => nb.prepareToExit()), isFalse);
-      expect(asked.single.$1, UserQuestion.leaveAndLose);
+      expect(asked.single.$1, UserQuestion.leaveCoverUnsaved);
       seams.failMoves = 0;
       await end(t);
     });
 
-    testWidgets('hide takes the typing and lands it (coverHidden)', (t) async {
-      await begin(t);
+    // The real lifecycle: NotedApp's AppLifecycleListener reaches coverHidden
+    // (main.dart onHide), not only a direct call.
+    Future<void> beginApp(WidgetTester t) async {
+      t.view.physicalSize = const Size(1200, 800);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      await t.runAsync(start);
+      nb.showCover(section.path);
+      await t.pumpWidget(NotedApp(notebook: nb, settings: AppSettings(null)));
+      await t.pump();
+    }
+
+    void hide(WidgetTester t) {
+      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    }
+
+    testWidgets('hide (the app lifecycle) takes the typing and lands it', (t) async {
+      await beginApp(t);
+      seams.failMoves = 10000;
       await t.enterText(find.byKey(const ValueKey('cover-title')), 'Typed at hide');
       await t.pump();
-      await run(t, () => nb.coverHidden());
+      hide(t);
+      await run(t, () async {});
+      expect(nb.coverPendingFor(section.path).map((c) => c.fields['title']), ['Typed at hide']);
+      seams.failMoves = 0;
       await run(t, () => until(() => textOrEmpty().contains('Typed at hide'), 'the hide write'));
       await end(t);
     });
@@ -1028,18 +1076,25 @@ void main() {
       await end(t);
     });
 
-    testWidgets('hide, more typing, leave the cover: lifecycle reaches coverHidden', (t) async {
-      await begin(t);
+    testWidgets('hide (the app lifecycle), more typing, leave the cover: the dispose microtask carries it', (t) async {
+      await beginApp(t);
       seams.failMoves = 10000;
       await t.enterText(find.byKey(const ValueKey('cover-title')), 'First');
       await t.pump();
-      await run(t, () => nb.coverHidden());
+      hide(t);
+      await run(t, () async {});
       expect(nb.coverPendingFor(section.path).map((c) => c.fields['title']), ['First']);
+      // Frames are off while hidden: the app comes back, and the cover is still open.
+      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await t.pump();
+      await t.tap(find.byKey(const ValueKey('cover-owner')));
       await t.enterText(find.byKey(const ValueKey('cover-owner')), 'Later');
       await t.pump();
+      // Leaving the cover with the field still focused.
       await t.pumpWidget(const SizedBox());
+      await run(t, () => until(() => nb.coverPendingFor(section.path).any((c) => c.fields['owner'] == 'Later'), 'the dispose call to record it'));
       await t.pump();
-      await run(t, () async {});
       expect(nb.coverPendingFor(section.path).any((c) => c.fields['owner'] == 'Later'), isTrue);
       seams.failMoves = 0;
       await end(t);

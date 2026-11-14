@@ -452,12 +452,11 @@ class BinderStore {
   Future<List<BinderTemp>> removeTemps(BinderDelta d, {String? Function()? currentId}) async {
     final stayed = <BinderTemp>[];
     for (final t in List<BinderTemp>.of(d.temps)) {
-      final want = d.binderId ?? currentId?.call() ?? t.binderId;
       try {
         final r = await deleteFileIfMatches(
           t.path,
           bytes: t.bytes,
-          stillRedundant: () => fileHoldsBinderSync(want),
+          stillRedundant: () => fileHoldsBinderSync(d.binderId ?? currentId?.call() ?? t.binderId),
         );
         if (r.outcome == DeleteOutcome.deleted || r.outcome == DeleteOutcome.absent) {
           d.temps.remove(t);

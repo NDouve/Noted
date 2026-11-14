@@ -2593,6 +2593,8 @@ class _Run {
         expect(_sectionA.available, isTrue, reason: 'seed $seed: available, its pages listed');
       case 'write/missingThenBack':
         if (!_canWrite) return;
+        final pageInA = model.entries.where((e) => e.value.loc == 'a').firstOrNull?.key;
+        if (pageInA != null) await nb.open(pageInA);
         await nb.flush();
         final bytes = _aFile.readAsBytesSync();
         _aFile.deleteSync();
@@ -2604,6 +2606,7 @@ class _Run {
         _aFile.writeAsBytesSync(bytes);
         await nb.checkBinderFile(_aFile.path);
         await realIoUntil(() => nb.coverPendingCountForTest(pathA) == 0, 'the waiting change to land');
+        if (pageInA != null) expect(nb.currentId, pageInA, reason: 'seed $seed: the page that was open is open again');
         _aTitle = t;
       case 'write/foreignAfterMissing':
         if (!_canWrite) return;

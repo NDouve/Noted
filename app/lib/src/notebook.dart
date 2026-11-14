@@ -948,6 +948,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // The wait before a refused cover change is tried again, and its timer.
   final Map<String, Duration> _coverDelay = {};
   final Map<String, Timer> _coverTimers = {};
+  // Folders whose cover changes stopped being tried by themselves (keeps changing).
+  final Set<String> _coverHalted = {};
   // Rechecks of a missing binder file that stands under an aside.
   final Map<String, Timer> _asideTimers = {};
   // Conflict copies found by a scan, to be merged once the folders are set up.
@@ -1292,6 +1294,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_pullOnly(loc)) return _pullOnlyMessage;
     final s = _binders[loc];
     if (s != null && s.readOnly) {
+      if (s.other != null) return 'This folder now holds another binder, so its pages are read-only.';
       return "This binder's file can't be read, so its pages are read-only.";
     }
     if (s != null) return 'That binder is not available.';
@@ -2418,7 +2421,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             done = r;
           case BinderRefused(:final reason):
             why = reason.endsWith('.') ? reason : '$reason.';
-            if (r.kind != BinderRefusal.inUse && r.kind != BinderRefusal.keepsChanging) reconcile = true;
+            reconcile = true;
         }
       }
       if (_disposed) return;
@@ -2910,7 +2913,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         why = _pullOnlyMessage;
       } else if (_isLocked(loc)) {
         why = _binders[loc]?.readOnly ?? false
-            ? "This binder's file can't be read, so this page is read-only."
+            ? (_binders[loc]?.other != null
+                  ? 'This folder now holds another binder, so this page is read-only.'
+                  : "This binder's file can't be read, so this page is read-only.")
             : "This page's folder isn't available, so it is read-only.";
       }
       if (why == null && _diskBlockId == c.page.id) why = _diskBlockReason;
@@ -5530,10 +5535,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Cover changes that aren't written yet go with the binder: asked first,
     // naming them (D3). What the open cover has typed counts.
     if (_coverTypingPath == path) _takeCoverTyping();
-    final unsaved = _coverPending[_key(path)] ?? const <CoverChange>[];
-    if (unsaved.isNotEmpty) {
-      final names = unsaved.map((c) => c.what).toSet().join(', ');
-      if (!await _ask(UserQuestion.discardCoverChanges, 'the cover of binder "${section.title}" ($names)')) {
+    // One bounded try first: only what is still pending is asked about.
+    if (_coverPending[_key(path)]?.isNotEmpty ?? false) {
+      await _tryCovers(path).timeout(const Duration(seconds: 3), onTimeout: () => false);
+      if (_disposed || !identical(_binders[path], section)) return;
+    }
+    final unsaved = List<CoverChange>.of(_coverPending[_key(path)] ?? const <CoverChange>[]);
+    for (final c in unsaved) {
+      if (!await _ask(UserQuestion.discardCoverChanges, _coverLabel(section, c))) {
         throw const LeaveCancelled();
       }
       if (_disposed || !identical(_binders[path], section)) return;
@@ -5683,14 +5692,24 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   /// Whether the cover of [path] has a change that is refused or waiting, and
   /// can be discarded.
-  bool coverNotSaved(String path) => coverPendingFor(path).any((c) => c.stuck);
+  bool coverNotSaved(String path) => (_coverPending[_key(path)] ?? const <CoverChange>[]).any((c) => c.stuck);
+
+  /// Names a cover change for a question: the binder it is for (the section's
+  /// when it is that one) and the fields.
+  String _coverLabel(BinderSection? s, CoverChange c) {
+    final own = s != null && s.saved?.id == c.forId;
+    final who = own ? 'binder "${s.title}"' : 'a binder that was in this folder';
+    return '$who (${c.what})';
+  }
 
   /// Gives up the unwritten cover changes of binder [path] (Discard). The temps
   /// they wrote are removed only while the binder's file is there and readable;
   /// any other stays listed with the copies of the binder file.
   Future<void> discardCoverChanges(String path) async {
     final key = _key(path);
-    final drop = coverPendingFor(path);
+    // Every unwritten change of the folder goes, also those typed for a binder
+    // that was here before: the row that offers Discard says so.
+    final drop = List<CoverChange>.of(_coverPending[key] ?? const <CoverChange>[]);
     if (drop.isEmpty) return;
     final list = _coverPending[key];
     list?.removeWhere(drop.contains);
@@ -5750,13 +5769,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// unsaved edits as [flush] does.
   Future<void> coverHidden() async {
     _takeCoverTyping();
-    _queueCoverTries();
+    _queueCoverTries(force: true);
     await flush();
   }
 
-  // Queues one more try of each folder's pending cover changes.
-  void _queueCoverTries() {
+  // Queues one more try of each folder's pending cover changes. A folder whose
+  // last try ended "keeps changing" waits for a folder event or the app coming
+  // back, unless [force] (quit, hide), so the temps it leaves stay few (L8).
+  void _queueCoverTries({required bool force}) {
     for (final key in _coverPending.keys.toList()) {
+      if (_coverHalted.contains(key)) {
+        if (!force) continue;
+        _coverHalted.remove(key);
+      }
       final s = _binders.values.where((b) => _key(b.path) == key).firstOrNull;
       if (s != null) unawaited(_tryCovers(s.path).then((_) {}, onError: (_) {}));
     }
@@ -5766,7 +5791,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// or the app coming back to the front does.
   void retryCovers() {
     if (_disposed) return;
-    _queueCoverTries();
+    _queueCoverTries(force: true);
   }
 
   // Tries the cover changes of folder [path] once, on the save chain (L1).
@@ -5783,6 +5808,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final key = _key(path);
     var reconcile = false;
     var refused = false;
+    var halted = false;
     for (final c in List<CoverChange>.of(_coverPending[key] ?? const [])) {
       if (_disposed) return false;
       final s = _binders[path];
@@ -5828,6 +5854,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               reconcile = true; // the file changed under a state that can't take the result
             }
             _coverDelay.remove(key);
+            _coverHalted.remove(key);
             notifyListeners();
             await _removeTemps(store, key, c.delta);
           case BinderRefused():
@@ -5835,6 +5862,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             stop = true;
             refused = true;
             _keepTemps(key, c.delta.temps);
+            if (r.kind == BinderRefusal.keepsChanging) halted = true;
             if (r.kind != BinderRefusal.inUse &&
                 r.kind != BinderRefusal.keepsChanging &&
                 r.kind != BinderRefusal.readOnly &&
@@ -5850,6 +5878,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       notifyListeners();
       if (reconcile) {
         unawaited(checkBinderFile(_binderStore(Directory(path)).file.path, force: true));
+      } else if (halted) {
+        _coverHalted.add(key);
       } else if (refused) {
         _scheduleCoverRetry(path);
       }
@@ -5867,7 +5897,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _coverDelay[key] = doubled > const Duration(seconds: 60) ? const Duration(seconds: 60) : doubled;
     _coverTimers[key] = Timer(wait, () {
       _coverTimers.remove(key);
-      if (_disposed || (_coverPending[key]?.isEmpty ?? true)) return;
+      if (_disposed || _coverHalted.contains(key) || (_coverPending[key]?.isEmpty ?? true)) return;
       unawaited(_tryCovers(path));
     });
   }
@@ -6245,8 +6275,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (c.forId != other.id) c,
     ];
     if (stale.isNotEmpty) {
-      final names = stale.map((c) => c.what).toSet().join(', ');
-      if (!await _ask(UserQuestion.discardCoverChanges, 'the cover of the old binder ($names)')) return;
+      for (final c in stale) {
+        if (!await _ask(UserQuestion.discardCoverChanges, _coverLabel(null, c))) return;
+      }
       final list = _coverPending[key];
       list?.removeWhere(stale.contains);
       if (list != null && list.isEmpty) _coverPending.remove(key);
@@ -6547,7 +6578,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   @override
-  bool aiMergeTypeAllowed(String pageId, String typeId) => boxTypeAvailabilityFor(pageId, typeId).allowed;
+  bool aiMergeTypeAllowed(String pageId, String typeId) =>
+      effectiveBoxTypeAllowed(typeId, _metaChain(pageId), binder: _aiBinderOf(pageId)).allowed;
 
   @override
   BoxCodec<Object?>? aiMergeCodec(String typeId) => modules.codecs.codecFor(typeId);
@@ -10857,7 +10889,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     _syncWatchers(); // restarts a watcher that ended
     // Cover changes that were refused are tried again with each folder check.
-    if (!_disposed && _coverPending.isNotEmpty) retryCovers();
+    if (!_disposed && _coverPending.isNotEmpty) _queueCoverTries(force: false);
     // Kept files that failed to land are tried again, also for the open page.
     final rec = _recovery;
     if (_keptRetry && rec != null && !_disposed) {
@@ -12027,7 +12059,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     Duration left() => clock.elapsed >= bound ? Duration.zero : bound - clock.elapsed;
     if (!await _saveHeldAtExit(left)) return false;
     // One more try of each cover change that is not written yet.
-    _queueCoverTries();
+    _queueCoverTries(force: true);
     // Other queued writes get the same time; what hangs is left behind.
     var stuck = false;
     await _chain.idle.timeout(bound, onTimeout: () => stuck = true);
@@ -12036,8 +12068,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final key in _coverPending.keys.toList()) {
       final s = _binders.values.where((b) => _key(b.path) == key).firstOrNull;
       for (final c in List<CoverChange>.of(_coverPending[key] ?? const [])) {
-        final title = s?.title ?? _folderName(key);
-        if (!await _ask(UserQuestion.leaveAndLose, 'the cover of binder "$title" (${c.what})')) return false;
+        if (!await _ask(UserQuestion.leaveCoverUnsaved, _coverLabel(s, c))) return false;
       }
     }
     final rec = _recovery;

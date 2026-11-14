@@ -397,20 +397,28 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
   // The folder holds another binder than this device recorded: its pages are
   // listed read-only until the user chooses that binder.
   Widget _otherBinderRow(BuildContext context, BinderSection b) {
-    return SidebarRow(
-      key: ValueKey('binder-other-${b.path}'),
-      titleLines: 2,
-      title: b.reason ?? 'This folder now holds another binder',
-      disabled: true,
-      leading: Icon(
-        Icons.block_rounded,
-        size: NotedMetrics.of(context).icon,
-        color: NotedColors.of(context).textDisabled,
-      ),
-      trailing: TextButton(
-        key: ValueKey('binder-use-other-${b.path}'),
-        onPressed: () => _guard(() => _nb.useThisBinder(b.path)),
-        child: const Text('Use this binder'),
+    final text = b.reason ?? 'This folder now holds another binder';
+    final m = NotedMetrics.of(context);
+    // The full text first, the button below it, so the title is never cut off.
+    return Tooltip(
+      message: text,
+      child: Padding(
+        key: ValueKey('binder-other-${b.path}'),
+        padding: EdgeInsets.symmetric(horizontal: m.space3, vertical: m.space1),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(text, style: Theme.of(context).textTheme.bodySmall),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                key: ValueKey('binder-use-other-${b.path}'),
+                onPressed: () => _guard(() => _nb.useThisBinder(b.path)),
+                child: const Text('Use this binder'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -424,7 +432,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       child: SidebarRow(
         key: ValueKey('binder-copy-${r.path}'),
         titleLines: 2,
-        title: r.label,
+        title: 'Copy of the binder file: ${r.label}',
         status: b.title,
         disabled: true,
         leading: Icon(
@@ -467,7 +475,11 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
               ? 'Another binder in this folder'
               : unreadable
               ? "Binder file can't be read"
-              : (_nb.binderMovedTo(b.path).isNotEmpty ? 'Moved to another folder' : 'On another device'),
+              : (_nb.binderMovedTo(b.path).isNotEmpty
+                    ? 'Moved to another folder'
+                    : b.fileMissing && !b.missing
+                    ? 'Binder file is missing'
+                    : 'On another device'),
           trailing: SidebarMenuButton<String>(
             key: ValueKey('binder-menu-${b.path}'),
             tooltip: 'Binder options',

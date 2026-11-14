@@ -293,8 +293,12 @@ never overwritten. Files beside the binder file whose names start with
 `noted-binder` (temporary files, set-aside files, conflict copies and
 `noted-binder.json.tmp` from older builds) are never deleted by sweeps: a
 set-aside copy of the binder file is put back when the binder file is missing,
-and the others are listed for the user. A temporary file is removed only after
-its change landed, and only while the same binder's file is present.
+and the others are listed for the user. A temporary file is removed only by its own change (after it landed,
+after a refused or skipped setting, or after the user discards a cover change)
+and only while the same binder's file is present and readable, checked at the
+moment of the delete. The exceptions are the temporary file that creating a
+binder wrote and never published, and a part-written temporary file left by a
+write that failed; each is deleted only if it still holds the bytes written.
 
 The file is not valid, and is never written to, when the JSON is invalid,
 `binderId` is missing or empty, `format` is missing or not an integer, or

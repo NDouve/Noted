@@ -348,6 +348,9 @@ enum UserQuestion {
   /// removing the binder). True: discard.
   discardCoverChanges,
 
+  /// Leaving with a cover change that could not be written. True: leave.
+  leaveCoverUnsaved,
+
   /// Deleting a copy of a binder file. True: delete.
   deleteBinderCopy,
 

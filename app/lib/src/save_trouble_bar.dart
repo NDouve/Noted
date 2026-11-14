@@ -235,8 +235,13 @@ Future<bool> showTroubleQuestion(
     ),
     UserQuestion.discardCoverChanges => (
       'Discard changes that were not saved?',
-      'These changes to $title were typed but not written to the binder file. Discarding them can\'t be undone.',
+      'The cover of $title has changes that were not written to the binder file. Discarding them can\'t be undone.',
       'Discard the changes',
+    ),
+    UserQuestion.leaveCoverUnsaved => (
+      'Leave without saving the cover?',
+      'The cover of $title couldn\'t be saved. Leaving loses these changes.',
+      'Leave and lose the changes',
     ),
     UserQuestion.deleteBinderCopy => (
       'Delete this copy?',
