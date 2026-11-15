@@ -98,12 +98,18 @@ class AppSettings extends ChangeNotifier {
   ContextMenuStyle get contextMenu => _contextMenu;
 
   set contextMenu(ContextMenuStyle value) {
-    if (value == _contextMenu && _raw['contextMenu'] == value.name) return;
+    if (value == _contextMenu && _raw['contextMenu'] == _contextMenuValue(value)) return;
     _contextMenu = value;
-    _raw = {..._raw, 'contextMenu': value.name};
+    _raw = {..._raw, 'contextMenu': _contextMenuValue(value)};
     notifyListeners();
     _write();
   }
+
+  // How the style is written in `settings.json`, whatever the enum's names.
+  static String _contextMenuValue(ContextMenuStyle s) => switch (s) {
+    ContextMenuStyle.list => 'list',
+    ContextMenuStyle.radial => 'radial',
+  };
 
   /// The folder new top-level pages are created in, as chosen on this device
   /// (`"defaultPageFolder"`), or null for the built-in default.
@@ -210,7 +216,10 @@ class AppSettings extends ChangeNotifier {
       _raw = Map<String, Object?>.of(json);
       _theme = ThemeSetting.parse(json['theme']) ?? ThemeSetting.system;
       _toolbar = ToolbarStyle.parse(json['toolbar']) ?? ToolbarStyle.tabs;
-      _contextMenu = ContextMenuStyle.values.asNameMap()[json['contextMenu']] ?? ContextMenuStyle.list;
+      _contextMenu = switch (json['contextMenu']) {
+        'radial' => ContextMenuStyle.radial,
+        _ => ContextMenuStyle.list,
+      };
     } on Object {
       // Damaged: use the defaults; the file stays as it is.
       _readFailed = true;

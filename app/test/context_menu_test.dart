@@ -90,6 +90,21 @@ void main() {
       expect(written, contains('"contextMenu":"list"'));
     });
 
+    test('reading a saved value leaves the file bytes unchanged', () {
+      file.parent.createSync(recursive: true);
+      const body = '{"format":1,"contextMenu":"radial"}';
+      file.writeAsStringSync(body);
+      expect(AppSettings(file).contextMenu, ContextMenuStyle.radial);
+      expect(file.readAsStringSync(), body);
+    });
+
+    test('after a damaged read, choosing a style writes the file with it set', () {
+      file.parent.createSync(recursive: true);
+      file.writeAsStringSync('{ nope');
+      AppSettings(file).contextMenu = ContextMenuStyle.radial;
+      expect(file.readAsStringSync(), contains('"contextMenu":"radial"'));
+    });
+
     test('settings without a file hold the choice for the session', () {
       final s = AppSettings(null)..contextMenu = ContextMenuStyle.radial;
       expect(s.contextMenu, ContextMenuStyle.radial);
