@@ -1084,6 +1084,11 @@ class PageCanvasState extends State<PageCanvas>
 
   @override
   Widget build(BuildContext context) {
+    assert(
+      setEquals(_off, _c.disallowedTypes),
+      'The owner of the controller sets controller.disallowedTypes to the '
+      'same set it gives PageCanvas.disallowedTypes.',
+    );
     final scheme = Theme.of(context).colorScheme;
     _brightness = Theme.of(context).brightness;
     _colors = NotedColors.of(context);

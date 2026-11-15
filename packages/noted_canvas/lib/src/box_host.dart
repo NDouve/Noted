@@ -103,6 +103,7 @@ class _BoxHostState extends State<BoxHost> {
   // Decoded data, cached by the identity of the raw data it came from. After
   // a commit the module's own object is cached, so it gets it back unchanged.
   RawJson? _decodedFrom;
+  bool _decodedOff = false;
   BoxResolution? _resolution;
 
   Offset? _gestureStart;
@@ -138,9 +139,15 @@ class _BoxHostState extends State<BoxHost> {
 
   BoxResolution _resolve(BoxRecord box) {
     final raw = box.data;
-    if (_resolution == null || !identical(raw, _decodedFrom)) {
-      _resolution = widget.controller.modules.codecs.resolve(box);
+    // A type the page disallows is never decoded: it shows from its snapshot
+    // and resizes freely, as a switched-off module's box does (0111).
+    final off = widget.disallowedTypes.contains(box.typeId);
+    if (_resolution == null || !identical(raw, _decodedFrom) || off != _decodedOff) {
+      _resolution = off
+          ? const UnsupportedBox(UnsupportedReason.disabled)
+          : widget.controller.modules.codecs.resolve(box);
       _decodedFrom = raw;
+      _decodedOff = off;
     }
     return _resolution!;
   }

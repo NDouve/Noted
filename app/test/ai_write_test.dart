@@ -33,8 +33,18 @@ class _Codec extends BoxCodec<Map<String, Object?>> {
   BoxSizing get sizing => BoxSizing.fixed;
   @override
   Map<String, Object?> create() => {'by': null, 'text': ''};
+
+  /// How often any [_Codec] decoded, for the tests that say a box of a type the
+  /// page disallows is never decoded.
+  static int decodes = 0;
+
   @override
-  Map<String, Object?> decode(Object? json, int storedVersion) => Map<String, Object?>.from(json! as Map);
+  Map<String, Object?> decode(Object? json, int storedVersion) => _decode(json);
+
+  static Map<String, Object?> _decode(Object? json) {
+    decodes++;
+    return Map<String, Object?>.from(json! as Map);
+  }
   @override
   Object? encode(Map<String, Object?> data) => data;
   @override
@@ -1190,6 +1200,39 @@ void main() {
         final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
         expect((r as AiLinkError).code, AiLinkCode.notWritable);
         expect(file.readAsStringSync(), theirs);
+      });
+
+      // Run 2026-11-14-02, task 3: a box of a type the page disallows is never
+      // decoded, so the gate checks the type before it resolves the box.
+      test('the type disallowed and the box appended to by the other writer at the reread: refused, never decoded', () async {
+        late String theirs;
+        inject('closed-reread', (_) {
+          final d = disk();
+          final b = d.node('ba')! as BoxRecord;
+          final next = b.withContent(
+            data: RawJson.encode({'by': null, 'text': 'old theirs'}),
+            dataVersion: 1,
+            snapshotText: 'old theirs',
+            newRev: 'r-theirs',
+          );
+          theirs = writePage(d.replaceNode(next).withMeta(d.meta.withBoxType('test.ai', false)));
+          file.writeAsStringSync(theirs);
+          _Codec.decodes = 0;
+        });
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect((r as AiLinkError).code, AiLinkCode.notWritable);
+        expect(file.readAsStringSync(), theirs);
+        expect(_Codec.decodes, 0, reason: 'the merge and the gate leave the box alone');
+      });
+
+      test('a page that already disallows the type when read: refused with no decode at all', () async {
+        await t.nb.setBoxType(t.a, 'test.ai', false);
+        final before = file.readAsStringSync();
+        _Codec.decodes = 0;
+        final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+        expect((r as AiLinkError).code, AiLinkCode.notWritable);
+        expect(file.readAsStringSync(), before);
+        expect(_Codec.decodes, 0);
       });
 
       test('a file holding another page id: refused, the file is untouched', () async {

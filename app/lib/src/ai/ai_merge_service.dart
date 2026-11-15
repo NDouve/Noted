@@ -23,6 +23,7 @@ const int aiMergeMaxVersionBytes = 100000;
 
 /// The plain note box's type (the other mergeable type is the AI box).
 const String _noteTypeId = 'noted.note';
+const String _notAllowed = "This box type isn't allowed on this page.";
 
 /// A merge request that failed or ended without a proposal; [message] is fit
 /// to show the user.
@@ -49,8 +50,10 @@ abstract interface class AiMergeHost {
   /// is looking at), or null.
   BoxRecord? aiOpenBox(String pageId, String boxId);
 
-  /// Whether box type [typeId] is allowed on page [pageId] (0111).
-  bool aiMergeTypeAllowed(String pageId, String typeId);
+  /// Whether box type [typeId] is allowed on page [pageId] (0111). With
+  /// [page] (the page as saved), that page's own header stands in for the
+  /// one the notebook holds.
+  bool aiMergeTypeAllowed(String pageId, String typeId, {NotedPage? page});
 
   /// The codec of [typeId] if its module is on.
   BoxCodec<Object?>? aiMergeCodec(String typeId);
@@ -203,6 +206,12 @@ class AiMergeService implements PageAiMerge {
     }
     // Cancelled, closed or expired while the file was read: that stands.
     if (!identical(_asks[key], a) || a.done.isCompleted) return a.done.future;
+    // The type may have been disallowed while the file was read (0111).
+    final saved = page?.node(boxId);
+    if (page != null && saved is BoxRecord && !(host.aiMergeTypeAllowed(pageId, saved.typeId) && host.aiMergeTypeAllowed(pageId, saved.typeId, page: page))) {
+      _end(a, const AiMergeException(_notAllowed));
+      return a.done.future;
+    }
     final request = page == null ? null : _build(page, pageId, boxId);
     if (request == null) {
       _end(a, const AiMergeException("The page AI can't be asked about this box."));
@@ -231,6 +240,9 @@ class AiMergeService implements PageAiMerge {
     if (box is! BoxRecord) return null;
     final typeId = box.typeId;
     if (typeId != _noteTypeId && typeId != aiBoxTypeId) return null;
+    // Before the box's JSON is parsed: a type the saved page's header
+    // disallows is not read (invariant 2).
+    if (!host.aiMergeTypeAllowed(pageId, typeId) || !host.aiMergeTypeAllowed(pageId, typeId, page: page)) return null;
     if (isEncryptedBox(box)) return null;
     final codec = host.aiMergeCodec(typeId);
     if (codec == null || box.dataVersion > codec.dataVersion) return null;
@@ -315,6 +327,12 @@ class AiMergeService implements PageAiMerge {
     final text = _stripMarkers(markdown);
     if (text.trim().isEmpty) {
       return AiLinkResponse.error(AiLinkCode.badRequest, 'The merge is empty. Send the whole merged box as markdown.');
+    }
+    // Disallowed since the request was sent: the answer is not decoded and
+    // the ask is over (0111).
+    if (!host.aiMergeTypeAllowed(r.pageId, r.typeId)) {
+      _end(ask, const AiMergeException(_notAllowed));
+      return AiLinkResponse.error(AiLinkCode.noRequest);
     }
     final AiMergeProposal proposal;
     try {

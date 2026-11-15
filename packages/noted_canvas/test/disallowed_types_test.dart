@@ -96,6 +96,7 @@ void main() {
     final key = withKey ?? GlobalKey<PageCanvasState>();
     t.view.physicalSize = const Size(1000, 700);
     t.view.devicePixelRatio = 1;
+    c.disallowedTypes = {for (final id in disallowed) if (c.modules.isSwitchable(id)) id};
     addTearDown(t.view.reset);
     await t.pumpWidget(
       MaterialApp(
@@ -149,6 +150,7 @@ void main() {
     final key = GlobalKey<PageCanvasState>();
     t.view.physicalSize = const Size(1000, 700);
     t.view.devicePixelRatio = 1;
+    c.disallowedTypes = const {'test.other'};
     addTearDown(t.view.reset);
     await t.pumpWidget(
       MaterialApp(

@@ -64,6 +64,21 @@ class CanvasController extends ChangeNotifier {
 
   NotedPage get page => _page;
 
+  Set<String> _disallowed = const {};
+
+  /// The box types the open page disallows (module availability per page,
+  /// 0111). A box of such a type is never decoded or re-encoded here: edits,
+  /// tools and focus-loss cleanup skip it, and undo and redo stop at a step
+  /// that would change its content. The notebook, which owns the open page's
+  /// controller, is the one that sets this. Setting a different set notifies
+  /// the listeners.
+  Set<String> get disallowedTypes => _disallowed;
+  set disallowedTypes(Set<String> value) {
+    if (_disposed || setEquals(_disallowed, value)) return;
+    _disallowed = Set.unmodifiable(value);
+    _notify();
+  }
+
   /// A read-only controller shows its page but never changes it: every
   /// mutation (creating, editing, moving, resizing, deleting, undo, conflict
   /// resolution, renaming) is ignored and [onChanged] is never called, so the
@@ -93,8 +108,8 @@ class CanvasController extends ChangeNotifier {
   /// gesture ends (0016).
   bool get isInteracting => _gestureId != null || _toolSessions > 0;
 
-  bool get canUndo => _history.canUndo;
-  bool get canRedo => _history.canRedo;
+  bool get canUndo => _history.canUndoOn(_page, blockedTypes: _disallowed);
+  bool get canRedo => _history.canRedoOn(_page, blockedTypes: _disallowed);
 
   /// Returns true once for a box that was just created, so its editor takes
   /// focus.
@@ -159,7 +174,7 @@ class CanvasController extends ChangeNotifier {
   BoxRecord? commit(String id, Object? data) {
     if (_readOnly) return null;
     final box = _page.node(id);
-    if (box is! BoxRecord) return null;
+    if (box is! BoxRecord || _disallowed.contains(box.typeId)) return null;
     final codec = modules.codecs.codecFor(box.typeId);
     if (codec == null) return null;
     final next = commitBox(box, codec, data, device: deviceName, at: _stampTime);
@@ -257,7 +272,7 @@ class CanvasController extends ChangeNotifier {
   /// With [autofocus] the box is selected and its editor takes the keyboard
   /// focus, as a new note does.
   void insertBox(BoxRecord box, {bool autofocus = false}) {
-    if (_readOnly) return;
+    if (_readOnly || _disallowed.contains(box.typeId)) return;
     _history.record(PageChange.added(box.id));
     if (autofocus) {
       _selectedId = box.id;
@@ -297,7 +312,7 @@ class CanvasController extends ChangeNotifier {
   BoxRecord? editBox(String id, Object? data, {Bounds? bounds, BoxEdit? undo}) {
     if (_readOnly) return null;
     final box = _page.node(id);
-    if (box is! BoxRecord) return null;
+    if (box is! BoxRecord || _disallowed.contains(box.typeId)) return null;
     final codec = modules.codecs.codecFor(box.typeId);
     if (codec == null) return null;
     var next = commitBox(box, codec, data, device: deviceName, at: _stampTime);
@@ -324,7 +339,7 @@ class CanvasController extends ChangeNotifier {
     final before = <PageChange>[];
     dataById.forEach((id, data) {
       final box = page.node(id);
-      if (box is! BoxRecord) return;
+      if (box is! BoxRecord || _disallowed.contains(box.typeId)) return;
       final codec = modules.codecs.codecFor(box.typeId);
       if (codec == null) return;
       before.add(PageChange.replaced(box));
@@ -373,13 +388,13 @@ class CanvasController extends ChangeNotifier {
 
   void undo() {
     if (_readOnly) return;
-    final next = _history.undo(_page, modules.codecs);
+    final next = _history.undo(_page, modules.codecs, blockedTypes: _disallowed);
     if (next != null) _set(next);
   }
 
   void redo() {
     if (_readOnly) return;
-    final next = _history.redo(_page, modules.codecs);
+    final next = _history.redo(_page, modules.codecs, blockedTypes: _disallowed);
     if (next != null) _set(next);
   }
 
@@ -489,6 +504,7 @@ class CanvasController extends ChangeNotifier {
   bool resolveWithData(String id, Object? data, {BoxConflict? conflict}) {
     final box = _boxFor(id);
     if (_readOnly || box == null || !box.isConflicted) return false;
+    if (_disallowed.contains(box.typeId)) return false;
     final codec = modules.codecs.codecFor(box.typeId);
     if (codec == null) return false;
     final next = acceptMerged(
@@ -528,7 +544,7 @@ class CanvasController extends ChangeNotifier {
 
   bool _isEmpty(String id) {
     final box = _page.node(id);
-    if (box is! BoxRecord) return false;
+    if (box is! BoxRecord || _disallowed.contains(box.typeId)) return false;
     final r = modules.codecs.resolve(box);
     return r is LiveBox && r.codec.isEmpty(r.data);
   }

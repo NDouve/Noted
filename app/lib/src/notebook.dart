@@ -2899,9 +2899,28 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  // The notebook is the one that sets the open controller's disallowed box
+  // types, so no change site (the page's header, a parent's, the binder file, a
+  // move to another binder, a module switched on or off) can be missed, and the
+  // set is current with no canvas mounted. Run at every notify and whenever a
+  // controller is created.
+  void _syncDisallowed() {
+    final c = _current;
+    if (c == null) return;
+    final off = disallowedBoxTypesFor(c.page.id);
+    if (!setEquals(c.disallowedTypes, off)) c.disallowedTypes = off;
+  }
+
+  @override
+  void notifyListeners() {
+    _syncDisallowed();
+    super.notifyListeners();
+  }
+
   // Makes the open page read-only if its location can't be written, and
   // writable again when it can.
   void _syncReadOnly() {
+    _syncDisallowed();
     final c = _current;
     if (_diskBlockId != null && c?.page.id != _diskBlockId) {
       _diskBlockId = null; // another page is open now; the block was this page's
@@ -6676,8 +6695,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   @override
-  bool aiMergeTypeAllowed(String pageId, String typeId) =>
-      effectiveBoxTypeAllowed(typeId, _metaChain(pageId), binder: _aiBinderOf(pageId)).allowed;
+  bool aiMergeTypeAllowed(String pageId, String typeId, {NotedPage? page}) => effectiveBoxTypeAllowed(
+    typeId,
+    page == null ? _metaChain(pageId) : [page.meta, ..._metaChain(pageId).skip(1)],
+    binder: _aiBinderOf(pageId),
+  ).allowed;
 
   @override
   BoxCodec<Object?>? aiMergeCodec(String typeId) => modules.codecs.codecFor(typeId);
@@ -6776,13 +6798,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!permission.allows(req.mode)) return AiLinkCode.notPermitted;
     final box = page.node(req.box);
     if (box is! BoxRecord) return AiLinkCode.noBox;
-    final r = modules.codecs.resolve(box);
-    if (r is! LiveBox) return AiLinkCode.notWritable;
-    // A type this page doesn't allow behaves as switched off here.
+    // A type this page doesn't allow behaves as switched off here, and its
+    // box is not decoded to find that out (invariant 2).
     final chain = [page.meta, ..._metaChain(page.id).skip(1)];
     if (!effectiveBoxTypeAllowed(box.typeId, chain, binder: _aiBinderOf(page.id)).allowed) {
       return AiLinkCode.notWritable;
     }
+    final r = modules.codecs.resolve(box);
+    if (r is! LiveBox) return AiLinkCode.notWritable;
     if (box.isConflicted) return AiLinkCode.conflict;
     if (readOnly || _isLocked(loc)) return AiLinkCode.locked;
     return null;
@@ -6986,7 +7009,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       var recoveryBase = base;
       final theirs = seen.page;
       if (theirs != null && writePage(theirs) != baseText) {
-        toSave = mergePage(base, mine, theirs, modules.codecs, theirsTime: seen.time).page;
+        toSave = mergePage(base, mine, theirs, _mergeCodecs(id, [base, mine, theirs]), theirsTime: seen.time).page;
         recoveryBase = theirs;
       }
       await syncHook?.call('closed-before-write', path);
@@ -7354,10 +7377,25 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return l == null || l.held ? null : l.problem;
   }
 
-  // The codecs for page [id]: those of its disallowed box types are off, so a
-  // merge treats such a box opaquely, as a switched-off module would (0111).
-  CodecRegistry _pageCodecs(String id) {
+  // The codecs for a merge of page [id]'s [versions]: a type is off if the page
+  // disallows it as this device knows it now, or under the header of any
+  // version the merge reads (strictest wins), so a merge treats such a box
+  // opaquely, as a switched-off module would (0111). The merged header is
+  // picked per field, so a codec merge decided under one side's allow-list
+  // could land under a header that disallows the type.
+  CodecRegistry _mergeCodecs(String id, Iterable<NotedPage?> versions) {
+    final vs = versions.whereType<NotedPage>().toList();
+    assert(vs.isNotEmpty, 'a merge reads at least one version');
     final off = disallowedBoxTypesFor(id);
+    for (final v in vs) {
+      final p = v.meta.parentId;
+      final known = p != null && (p == currentId || _metas.containsKey(p));
+      final parent = known ? p : _treeOf(_loc[id] ?? _standalone).parentIdOf(id);
+      final chain = [v.meta, if (parent != null) ..._metaChain(parent)];
+      for (final t in switchableBoxTypes) {
+        if (!effectiveBoxTypeAllowed(t, chain, binder: _binderOf(id)).allowed) off.add(t);
+      }
+    }
     final r = CodecRegistry();
     for (final c in modules.codecs.codecs) {
       r.register(c, enabled: modules.codecs.isEnabled(c.typeId) && !off.contains(c.typeId));
@@ -7533,7 +7571,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     NotedPage? basePage,
     List<RecoveryEntry> entries,
   ) async {
-    final codecs = _pageCodecs(page.id);
     final nb = basePage ?? (baseText == null ? null : _tryRead(baseText));
     var np = page;
     final sorted = [...entries]..sort((a, b) => a.time.compareTo(b.time));
@@ -7558,7 +7595,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         eb,
         e.page,
         np,
-        codecs,
+        _mergeCodecs(page.id, [eb, e.page, np]),
         theirsTime: DateTime.now().millisecondsSinceEpoch,
         markLanded: false,
       ).page;
@@ -7983,21 +8020,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Otherwise what the file learned since the base (a recorded conflict)
       // is taken as it is, so a repeat replay over it changes nothing.
       final noBase = e.baseText == null;
+      final settled = theirs == null || noBase ? null : settledInFile(base, mine, theirs);
       final merged = theirs == null
           ? mine
           : noBase
           ? mergeConflictCopy(
               theirs,
               mine,
-              _pageCodecs(id),
+              _mergeCodecs(id, [theirs, mine]),
               copyTime: e.time.millisecondsSinceEpoch,
               forRecovery: true,
             ).page
           : mergePage(
               base,
-              settledInFile(base, mine, theirs),
+              settled!,
               theirs,
-              _pageCodecs(id),
+              _mergeCodecs(id, [base, settled, theirs]),
               theirsTime: time,
               markLanded: false,
             ).page;
@@ -8885,7 +8923,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         return const RemoteMergeResult.refused('the page file can not be read');
       }
       if (mine.id != id) return const RemoteMergeResult.refused('the page file holds another page');
-      final merged = mergePage(basePage, mine, remotePage, _pageCodecs(id), theirsTime: time).page;
+      final merged = mergePage(basePage, mine, remotePage, _mergeCodecs(id, [basePage, mine, remotePage]), theirsTime: time).page;
       if (writePage(merged) == text) {
         // Nothing to write, but the file may have been replaced since the
         // watcher last looked: the live state takes it in as after a landing.
@@ -8938,9 +8976,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     if (_busy.containsKey(id)) return const RemoteMergeResult.changed();
     final knownBefore = _known[key]; // the file as last seen, before the merge
-    final merged = mergePage(basePage, c.page, remotePage, _pageCodecs(id), theirsTime: time).page;
+    final merged = mergePage(basePage, c.page, remotePage, _mergeCodecs(id, [basePage, c.page, remotePage]), theirsTime: time).page;
     final changed = writePage(merged) != writePage(c.page);
-    if (changed) c.applyExternal(merged); // not an undo step
+    if (changed) {
+      c.applyExternal(merged); // not an undo step
+      _syncDisallowed(); // the merged header may disallow a type
+    }
     // The save of the merged page (or of the page as it is when nothing
     // changed), which reports how it ended.
     _saveTimer?.cancel();
@@ -9988,8 +10029,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // The page on screen: merge into it, keeping unsaved edits, and save it.
     Future<String?> openBranch(CanvasController c) async {
       final original = c.page;
-      final merged = mergeConflictCopy(original, copy, modules.codecs, copyTime: time).page;
-      if (writePage(merged) != writePage(original)) c.applyExternal(merged);
+      final merged = mergeConflictCopy(original, copy, _mergeCodecs(id, [original, copy]), copyTime: time).page;
+      if (writePage(merged) != writePage(original)) {
+        c.applyExternal(merged);
+        _syncDisallowed();
+      }
       await flush();
       return verifyConflictCopyMerge(readPage(await st.readText(id)), original, copy);
     }
@@ -10002,7 +10046,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (openHere()) return (open: true, failure: null);
       final text = await File(originalPath).readAsString();
       final original = readPage(text);
-      final merged = mergeConflictCopy(original, copy, modules.codecs, copyTime: time).page;
+      final merged = mergeConflictCopy(original, copy, _mergeCodecs(id, [original, copy]), copyTime: time).page;
       final out = writePage(merged);
       if (out == text) return (open: false, failure: verifyConflictCopyMerge(readPage(text), original, copy));
       // Make the store write to the file the original was read from.
@@ -10317,7 +10361,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final base = _base;
     _base = theirs;
     if (base == null) return;
-    final result = mergePage(base, c.page, theirs, modules.codecs, theirsTime: time);
+    final result = mergePage(base, c.page, theirs, _mergeCodecs(c.page.id, [base, c.page, theirs]), theirsTime: time);
     final merged = result.page;
     final save = writePage(merged) != text || _pendingSave?.id == merged.id;
     _metas[merged.id] = merged.meta;
@@ -11744,7 +11788,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _metas[id] = shown.meta;
     var merged = shown;
     String? unlandable = unreadable;
-    final codecs = _pageCodecs(id);
     final sorted = [...entries]..sort((a, b) => a.time.compareTo(b.time));
     for (final e in sorted) {
       final NotedPage eb;
@@ -11755,7 +11798,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           merged = mergeConflictCopy(
             merged,
             e.page,
-            codecs,
+            _mergeCodecs(id, [merged, e.page]),
             copyTime: e.time.millisecondsSinceEpoch,
             forRecovery: true,
           ).page;
@@ -11774,7 +11817,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         eb,
         e.page,
         merged,
-        codecs,
+        _mergeCodecs(id, [eb, e.page, merged]),
         theirsTime: DateTime.now().millisecondsSinceEpoch,
         markLanded: false,
       ).page;
