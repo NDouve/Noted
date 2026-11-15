@@ -73,7 +73,7 @@ class _AiAccessNote extends StatelessWidget {
                       children: [
                         Expanded(
                           child: Text(
-                            '${notebook.pageTitleOf(id) ?? 'Untitled page'} · ${notebook.aiAccessFor(id).value.label}',
+                            '${notebook.pageTitleOf(id) ?? 'Untitled page'} · ${notebook.shownAiAccessFor(id).value.label}',
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),

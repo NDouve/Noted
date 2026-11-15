@@ -233,6 +233,26 @@ Future<bool> showTroubleQuestion(
       'The changes kept for "$title" can\'t be saved to the page. Discarding them can\'t be undone.',
       'Discard kept changes',
     ),
+    UserQuestion.discardCoverChanges => (
+      'Discard changes that were not saved?',
+      'The cover of $title has changes that were not written to the binder file. Discarding them can\'t be undone.',
+      'Discard the changes',
+    ),
+    UserQuestion.leaveCoverUnsaved => (
+      'Leave without saving the cover?',
+      'The cover of $title couldn\'t be saved. Leaving loses these changes.',
+      'Leave and lose the changes',
+    ),
+    UserQuestion.deleteBinderCopy => (
+      'Delete this copy?',
+      '"$title" is a copy of the binder file. Deleting it can\'t be undone.',
+      'Delete the copy',
+    ),
+    UserQuestion.deleteOnlyBinderCopy => (
+      'Delete the only readable copy?',
+      '"$title" is the only readable copy of the binder file, which is missing or damaged. Deleting it can\'t be undone.',
+      'Delete the only readable copy',
+    ),
   };
   final answer = await showDialog<bool>(
     context: context,

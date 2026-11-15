@@ -173,6 +173,9 @@ import 'package:noted_box_attachments/noted_box_attachments.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'support/binder_seams.dart';
+import 'support/real_io.dart' show realIoUntil;
+
 // ---------------------------------------------------------------------------
 // Settings
 
@@ -532,6 +535,7 @@ class _Run {
     final sa = await nb.addBinder(dirs['a']!.path);
     pathA = sa.path;
     _idA = sa.binder!.id;
+    _aTitle = sa.binder!.title;
     final sb = await nb.addBinder(dirs['b']!.path);
     pathB = sb.path;
     _idB = sb.binder!.id;
@@ -584,6 +588,10 @@ class _Run {
     folderCheckInterval: Duration.zero,
     leaveSaveLimit: const Duration(milliseconds: 300),
     storeFactory: (d) => _stores.putIfAbsent(_norm(d.path), () => _Chaos(d)),
+    binderStoreFactory: (d) => SeamStore(d, _seams),
+    binderRecheckDelay: const Duration(milliseconds: 100),
+    asideRestoreAfter: const Duration(milliseconds: 400),
+    coverRetryFirst: const Duration(milliseconds: 100),
     readOnlyRoots: pullOnly ? [root.path] : const [],
   );
 
@@ -2364,6 +2372,17 @@ class _Run {
   late String _idA;
   late String _idB;
 
+  // What binder A's file holds, as the write steps leave it (run 2026-11-14-02,
+  // task 2): its title, AI access and whether the image box type is allowed. A
+  // field another device added ("x-future") must survive the writes.
+  late String _aTitle;
+  AiAccess? _aAi;
+  bool? _aImg;
+  bool _aForeign = false;
+  // While another binder's file stands in A's folder, its file is not the model's.
+  bool _aOther = false;
+  final Seams _seams = Seams();
+
   /// Folders another device made (absolute, normalised) and the binder id in each.
   final Map<String, String> _devFolders = {};
 
@@ -2393,6 +2412,22 @@ class _Run {
   /// The listed path of the section at [folder] (normalised), as the notebook has it.
   String _listedPath(String folder) => nb.binders.firstWhere((b) => _norm(b.path) == folder).path;
 
+  File get _aFile => File('${dirs['a']!.path}$sep$binderFileName');
+
+  BinderSection get _sectionA => nb.binders.firstWhere((b) => _norm(b.path) == _norm(pathA));
+
+  AiAccess _pickAi() => AiAccess.values[_brng.nextInt(AiAccess.values.length)];
+
+  // A write step needs binder A listed, available and writable, and the id
+  // list closed (no 0140 upgrade is open: `binderIds` is not written then).
+  bool get _canWrite {
+    if (pullOnly) return false;
+    final s = nb.binders.where((b) => _norm(b.path) == _norm(pathA)).firstOrNull;
+    if (s == null || !s.available) return false;
+    final lists = jsonDecode(settings.readAsStringSync()) as Map<String, Object?>;
+    return lists.containsKey('binderIds');
+  }
+
   Future<void> _binderStep({String? force}) async {
     const order = [
       'found/live',
@@ -2403,6 +2438,14 @@ class _Run {
       'openCopy',
       'upgrade',
       'lockedList',
+      'write/unseenReplace',
+      'write/refuseOnce',
+      'write/coverRefusedThenLands',
+      'write/goneAtPublish',
+      'write/tightenedBehindOtherDelta',
+      'write/crashAside',
+      'write/missingThenBack',
+      'write/foreignAfterMissing',
     ];
     final kind = force ?? order[(seed + _binderStepCount++) % order.length];
     trace.add('binder step: $kind');
@@ -2471,6 +2514,121 @@ class _Run {
           }
           expect(refused, isNotNull, reason: 'seed $seed: a copy of a listed binder is refused ($f)');
         }
+      case 'write/unseenReplace':
+        if (!_canWrite) return;
+        final v = _pickAi();
+        final b = Binder.parse(_aFile.readAsStringSync()).withOwner('Them $seed');
+        _aFile.writeAsStringSync(b.write().replaceFirst('{', '{"x-future":{"k":1},'));
+        _aForeign = true;
+        await nb.setBinderAiAccess(pathA, v);
+        _aAi = v;
+      case 'write/refuseOnce':
+        if (!_canWrite) return;
+        final want = _aImg == false ? null : false;
+        _seams.failMoves = 5;
+        await nb.setBinderBoxType(pathA, 'image', want);
+        await nb.checkBinderFile(_aFile.path);
+        expect(_sectionA.binder?.boxTypeChoice('image'), _aImg, reason: 'seed $seed: the saved value is shown again');
+        _seams.failMoves = 0;
+        await nb.setBinderBoxType(pathA, 'image', want);
+        _aImg = want;
+      case 'write/coverRefusedThenLands':
+        if (!_canWrite) return;
+        final t = 'Title $seed.${++_titleCounter}';
+        _seams.failMoves = 5;
+        expect(await nb.updateBinder(pathA, title: t), isFalse, reason: 'seed $seed: refused');
+        expect(nb.coverNotSaved(pathA), isTrue);
+        _seams.failMoves = 0;
+        await realIoUntil(() => nb.coverPendingCountForTest(pathA) == 0, 'the cover change to land');
+        _aTitle = t;
+      case 'write/goneAtPublish':
+        if (!_canWrite) return;
+        final v = _pickAi();
+        _seams.beforeMoveAside = () {
+          _seams.beforeMoveAside = null;
+          _aFile.deleteSync();
+        };
+        await nb.setBinderAiAccess(pathA, v);
+        await nb.checkBinderFile(_aFile.path);
+        expect(_sectionA.status, BinderStatus.unavailable, reason: 'seed $seed: the file is gone');
+        final rows = nb.binderCopyRows(_sectionA);
+        expect(rows, hasLength(1), reason: 'seed $seed: the temp is listed (${rows.map((r) => "${r.name} ${r.label}").join(", ")})');
+        await nb.putBackBinderCopy(pathA, rows.single.path);
+        await nb.checkBinderFile(_aFile.path);
+        // The copy held the change.
+        _aAi = Binder.parse(_aFile.readAsStringSync()).aiAccess;
+        expect(_aAi, v == AiAccess.guarded ? anyOf(v, isNull) : v);
+      case 'write/tightenedBehindOtherDelta':
+        if (!_canWrite) return;
+        if ((_aAi ?? AiAccess.guarded) == AiAccess.guarded) {
+          await nb.setBinderAiAccess(pathA, AiAccess.open);
+          _aAi = AiAccess.open;
+        }
+        final tighter = _aAi == AiAccess.open ? AiAccess.privileged : AiAccess.guarded;
+        final t = 'Title $seed.${++_titleCounter}';
+        final gate = _seams.holdNext();
+        final first = nb.updateBinder(pathA, title: t);
+        final second = nb.setBinderAiAccess(pathA, tighter);
+        final inA = model.entries.firstWhere((e) => e.value.loc == 'a').key;
+        expect(
+          nb.aiAccessFor(inA).value.strictness,
+          greaterThanOrEqualTo(tighter.strictness),
+          reason: 'seed $seed: the tightening counts at once',
+        );
+        gate.complete();
+        await Future.wait([first, second]);
+        _aTitle = t;
+        _aAi = tighter;
+      case 'write/crashAside':
+        if (!_canWrite) return;
+        await nb.flush();
+        await nb.discoveryIdle;
+        final bytes = _aFile.readAsBytesSync();
+        File('${dirs['a']!.path}$sep$binderFileName.4242-${seed.toRadixString(16)}-ab12.cas-old')
+            .writeAsBytesSync(bytes);
+        _aFile.deleteSync();
+        await _opRestart();
+        await nb.discoveryIdle;
+        expect(_aFile.readAsBytesSync(), bytes, reason: 'seed $seed: the aside was put back');
+        expect(_sectionA.available, isTrue, reason: 'seed $seed: available, its pages listed');
+      case 'write/missingThenBack':
+        if (!_canWrite) return;
+        final pageInA = model.entries.where((e) => e.value.loc == 'a').firstOrNull?.key;
+        if (pageInA != null) await nb.open(pageInA);
+        await nb.flush();
+        final bytes = _aFile.readAsBytesSync();
+        _aFile.deleteSync();
+        await nb.checkBinderFile(_aFile.path);
+        expect(_sectionA.status, BinderStatus.unavailable, reason: 'seed $seed: unavailable at once');
+        final t = 'Title $seed.${++_titleCounter}';
+        await nb.updateBinder(pathA, title: t);
+        expect(nb.coverPendingCountForTest(pathA), 1, reason: 'seed $seed: the change waits');
+        _aFile.writeAsBytesSync(bytes);
+        await nb.checkBinderFile(_aFile.path);
+        await realIoUntil(() => nb.coverPendingCountForTest(pathA) == 0, 'the waiting change to land');
+        if (pageInA != null) expect(nb.currentId, pageInA, reason: 'seed $seed: the page that was open is open again');
+        _aTitle = t;
+      case 'write/foreignAfterMissing':
+        if (!_canWrite) return;
+        await nb.flush();
+        _aFile.deleteSync();
+        await nb.checkBinderFile(_aFile.path);
+        final other = Binder.create(id: _newBinderId(), title: 'Foreign $seed', color: binderPalette[2]);
+        _aFile.writeAsStringSync(other.write());
+        await nb.checkBinderFile(_aFile.path);
+        expect(_sectionA.other?.id, other.id, reason: 'seed $seed: another binder is listed read-only');
+        expect(_sectionA.binder, isNull);
+        _aOther = true;
+        // The live notebook and a fresh one agree, and the file is untouched.
+        await verify('another binder in the folder', fresh: true);
+        expect(_aFile.readAsStringSync(), other.write());
+        await nb.useThisBinder(pathA);
+        _aOther = false;
+        _idA = other.id;
+        _aTitle = other.title;
+        _aAi = null;
+        _aImg = null;
+        _aForeign = false;
       case 'lockedList':
         await _lockedList(damaged: _brng.nextBool());
       case 'lockedList/locked':
@@ -2586,6 +2744,27 @@ class _Run {
     expect(ids, {_norm(pathA): _idA, _norm(pathB): _idB, ..._foundListed}, reason: '$where: binderIds in binders.json');
     final removed = {...((file['removedBinders'] as List?) ?? const []).cast<String>()};
     expect(removed, _removedIds, reason: '$where: removedBinders in binders.json');
+    // Binder A's file holds what the write steps made of it, on disk and as the
+    // notebook shows it, and no temporary or set-aside copy is left (the file
+    // lists of `_verifyDisk` also cover every `noted-binder*` name).
+    final fileA = File('${dirs['a']!.path}$sep$binderFileName');
+    if (!_aOther && fileA.existsSync()) {
+      final onDisk = Binder.parse(fileA.readAsStringSync());
+      expect(
+        [onDisk.id, onDisk.title, onDisk.aiAccess, onDisk.boxTypeChoice('image')],
+        [_idA, _aTitle, _aAi, _aImg],
+        reason: '$where: binder A on disk',
+      );
+      if (_aForeign) expect(fileA.readAsStringSync(), contains('"x-future":{"k":1}'), reason: '$where: a field of another device');
+      final shown = n.binders.where((b) => _norm(b.path) == _norm(pathA)).firstOrNull;
+      if (shown != null && shown.available) {
+        expect(
+          [shown.binder!.title, shown.binder!.aiAccess, shown.binder!.boxTypeChoice('image')],
+          [_aTitle, _aAi, _aImg],
+          reason: '$where: binder A as shown',
+        );
+      }
+    }
     if (mobile) return; // the checks below know the desktop layout
     // Discovery creates nothing: no directory and no binder file beyond what
     // the model made.
@@ -2880,6 +3059,9 @@ const _expectedKinds = {
   'vanish:restart/replayFails', 'restart', //
   'binder:found/live', 'binder:found/restart', 'binder:removeRestart', 'binder:movedElsewhere', //
   'binder:duplicate/twoRoots', 'binder:openCopy', 'binder:upgrade', 'binder:lockedList', //
+  'binder:write/unseenReplace', 'binder:write/refuseOnce', 'binder:write/coverRefusedThenLands', //
+  'binder:write/goneAtPublish', 'binder:write/tightenedBehindOtherDelta', 'binder:write/crashAside', //
+  'binder:write/missingThenBack', 'binder:write/foreignAfterMissing', //
 };
 
 final Set<String> _seen = {};

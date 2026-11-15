@@ -167,7 +167,7 @@ void main() {
     });
   }
 
-  test('a binder id changed on disk during the stall is saved once the load succeeds', () async {
+  test('a binder id changed on disk during the stall is not adopted: the id stays and the folder is read-only', () async {
     final nb = make();
     addTearDown(nb.dispose);
     final inside = Completer<void>();
@@ -191,7 +191,10 @@ void main() {
     await loading;
     await nb.flush();
     expect(nb.settingsHoldForTest, isNull);
-    expect(listFile.readAsStringSync(), contains('changed-id-1'));
+    // Another binder's file is never adopted (I): the recorded id stays.
+    expect(listFile.readAsStringSync(), isNot(contains('changed-id-1')));
+    expect(listFile.readAsStringSync(), contains(id));
+    expect(nb.binders.single.other?.id, 'changed-id-1');
   });
 
   test('an AI write waits for the Retry reload, then goes ahead', () async {

@@ -19,9 +19,12 @@ void main() {
 
   test('creates, reads and edits a binder file', () async {
     expect(await store.read(), isA<BinderMissing>());
-    final made = await store.create(
-      Binder.create(title: 'Work', color: binderPalette[1], created: DateTime.utc(2026, 1, 2)),
+    final made = Binder.create(
+      title: 'Work',
+      color: binderPalette[1],
+      created: DateTime.utc(2026, 1, 2),
     );
+    expect(await store.create(made), BinderCreated.created);
     expect(made.id, hasLength(16));
     final read = (await store.read() as BinderFound).binder;
     expect(read.title, 'Work');
@@ -29,7 +32,14 @@ void main() {
     expect(read.color, binderPalette[1]);
     expect(read.created, DateTime.utc(2026, 1, 2).millisecondsSinceEpoch);
 
-    await store.save(read.withTitle('Home').withOwner('me').withDescription('d'));
+    final r = await store.update(
+      BinderDelta(
+        binderId: read.id,
+        kind: BinderDeltaKind.cover,
+        apply: (b) => b.withTitle('Home').withOwner('me').withDescription('d'),
+      ),
+    );
+    expect(r, isA<BinderUpdated>());
     final again = (await store.read() as BinderFound).binder;
     expect([again.title, again.owner, again.description], ['Home', 'me', 'd']);
     expect(again.id, read.id);
@@ -41,8 +51,9 @@ void main() {
       '{"format":1,"binderId":"abc","x-future":{"a": [1, 2,  3],"b":"\\u00e9"},'
       '"title":"T","description":"","owner":"","color":"#FF3F51B5","created":5,"z":1.50}',
     );
-    final b = (await store.read() as BinderFound).binder;
-    await store.save(b.withTitle('New'));
+    await store.update(
+      BinderDelta(binderId: 'abc', kind: BinderDeltaKind.cover, apply: (x) => x.withTitle('New')),
+    );
     final text = File('${dir.path}/$binderFileName').readAsStringSync();
     expect(text, contains('"x-future":{"a": [1, 2,  3],"b":"\\u00e9"}'));
     expect(text, contains('"z":1.50'));
@@ -69,8 +80,8 @@ void main() {
     f.writeAsStringSync('{"format":1}');
     expect(await store.read(), isA<BinderUnreadable>());
     expect(
-      () => store.create(Binder.create(title: 'x', color: binderPalette.first)),
-      throwsA(isA<FileSystemException>()),
+      await store.create(Binder.create(title: 'x', color: binderPalette.first)),
+      BinderCreated.exists,
     );
     expect(f.readAsStringSync(), '{"format":1}');
   });

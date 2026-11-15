@@ -282,9 +282,28 @@ Other fields are kept in order and written back unchanged. A binder with
 {"format":1,"binderId":"c04e91b7a25d3f68","title":"Project Atlas","description":"Planning notes","owner":"","color":"#FF2563EB","created":1793600000000,"attachments":"folder"}
 ```
 
-The file is written to `noted-binder.json.tmp` and then renamed over the old
-file. Creating a binder file first checks that none exists, and does not
-write if one does; the check and the write are separate steps.
+A change to the file reads it, applies the change to those bytes, writes the
+result to `noted-binder.json.<microseconds>-<n>.tmp`, and replaces the file
+only if it still holds the bytes that were read (the file is set aside to
+`noted-binder.json.<pid>-<hex>-<hex>.cas-old`, compared, and the new file
+published without replacing; section 8). Nothing is written when the file is
+missing, invalid, from a newer format, or holds another `binderId`. A binder
+is created by publishing the new file without replacing, so an existing file is
+never overwritten. Files beside the binder file whose names start with
+`noted-binder` (temporary files, set-aside files, conflict copies and
+`noted-binder.json.tmp` from older builds) are never deleted by sweeps: a
+set-aside copy of the binder file is put back when the binder file is missing,
+and the others are listed for the user. A temporary file is removed only by its own change (after it landed,
+after a refused or skipped setting, or after the user discards a cover change)
+and only while the same binder's file is present and readable, checked at the
+moment of the delete. The exceptions are the temporary file that creating a
+binder wrote and never published, and a part-written temporary file left by a
+write that failed. The first is deleted only if it still holds the bytes
+written; the second only if it holds a prefix of the bytes that write sent (or
+nothing), and any other content is kept as a copy. Putting a copy back
+publishes a private temporary file with the copy's verified bytes, never the
+copy itself, and then removes the restored copy only if it is unchanged and the
+binder file holds that binder.
 
 The file is not valid, and is never written to, when the JSON is invalid,
 `binderId` is missing or empty, `format` is missing or not an integer, or

@@ -343,6 +343,19 @@ enum UserQuestion {
 
   /// Discarding the changes kept for a page that can't be saved. True: discard.
   discardKept,
+
+  /// Discarding cover changes of a binder that aren't saved (Use this binder,
+  /// removing the binder). True: discard.
+  discardCoverChanges,
+
+  /// Leaving with a cover change that could not be written. True: leave.
+  leaveCoverUnsaved,
+
+  /// Deleting a copy of a binder file. True: delete.
+  deleteBinderCopy,
+
+  /// Deleting the only readable copy of a binder file. True: delete.
+  deleteOnlyBinderCopy,
 }
 
 /// A page whose edits were put in recovery on leaving it: the window shows a

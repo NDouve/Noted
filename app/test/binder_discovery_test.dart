@@ -560,7 +560,8 @@ void main() {
               final status = switch (variant) {
                 'damaged' => BinderStatus.unreadable,
                 'deleted' => BinderStatus.unavailable,
-                _ => BinderStatus.available, // a hand add keeps today's adoption
+                // Another binder's file is listed read-only, never adopted (I).
+                _ => BinderStatus.unreadable,
               };
               expect(live.status, status);
               final liveTree = treeOf(live);
@@ -741,15 +742,18 @@ void main() {
       await nb.addBinder(p);
       expect((saved()['binderIds'] as Map)[nb.binders.single.path], a1);
       expect(saved()['future'], [1, 2]);
-      // Adoption: another binder file at the listed path replaces the id, and
-      // an id that was removed is no longer.
+      // Another binder file at the listed path is not adopted: the id stays until
+      // the user chooses that binder, and then an id that was removed is no longer.
       writeSettings({
         ...saved(),
         'removedBinders': [a2],
       });
       final again = await restart(nb);
-      await BinderStore(Directory(p)).save(mkBinder(title: 'Other', id: a2));
+      File('$p/$binderFileName').writeAsStringSync(mkBinder(title: 'Other', id: a2).write());
       await again.checkBinderFile('$p/$binderFileName');
+      expect(again.binders.single.other?.id, a2);
+      expect((saved()['binderIds'] as Map).values, [a1]);
+      await again.useThisBinder(again.binders.single.path);
       expect((saved()['binderIds'] as Map).values, [a2]);
       expect(saved()['removedBinders'] ?? const [], isEmpty);
       // Removing prunes the key and remembers the id.
@@ -961,12 +965,14 @@ void main() {
           if (point == 'opened') {
             File(at('binders/Q/$binderFileName')).writeAsStringSync(mkBinder(title: 'Other', id: a3).write());
           }
-          if (point == 'adopted') seen.add(settingsFile().readAsStringSync());
+          // Another binder's file is never adopted now, so the pass never reaches 'adopted': every
+          // point of the pass is looked at instead.
+          if (settingsFile().existsSync()) seen.add(settingsFile().readAsStringSync());
         };
         await nb.load();
         await nb.discoveryIdle;
         nb.binderHook = null;
-        expect(seen, isNotEmpty, reason: 'the adoption happened');
+        expect(seen, isNotEmpty, reason: 'the pass ran');
         for (final text in seen) {
           expect(text, isNot(contains(a3)));
         }
