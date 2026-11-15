@@ -2385,9 +2385,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // Removes the temps of [d] (T), keeping those that must stay in the list.
-  Future<void> _removeTemps(BinderStore store, String key, BinderDelta d) async {
+  // Returns the paths a delete kept a copy under (a newer file took the temp's
+  // path); the caller lists the folder's copies again when there are any.
+  Future<List<String>> _removeTemps(BinderStore store, String key, BinderDelta d) async {
     final before = [for (final t in d.temps) t.path];
-    final stayed = await store.removeTemps(d, currentId: () => _binderIds[key]);
+    final keptPaths = <String>[];
+    final stayed = await store.removeTemps(d, currentId: () => _binderIds[key], kept: keptPaths);
     final left = {for (final t in stayed) t.path};
     final kept = _ownKeptTemps[key];
     if (kept != null) {
@@ -2396,6 +2399,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (kept.isEmpty) _ownKeptTemps.remove(key);
     }
     _keepTemps(key, stayed);
+    return keptPaths;
   }
 
   // Lists [temps] as kept copies of the binder file (P).
@@ -2452,7 +2456,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _notices.add("Binder ${s.title}: the change wasn't saved. $why");
         reconcile = true;
       }
-      await _removeTemps(store, key, c.delta);
+      kept = [...kept, ...await _removeTemps(store, key, c.delta)];
       if (kept.isNotEmpty || s.copies.isNotEmpty) await _listCopiesLocked(s, store);
     });
     if (reconcile && !_disposed) unawaited(checkBinderFile(store.file.path, force: true));
@@ -5871,6 +5875,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final store = _binderStore(Directory(path));
       var stop = false;
       await _lockRun(Directory(path), () async {
+        var extraKept = const <String>[];
         final list = _coverPending[key];
         // U0: the same section, available, and still holding this change.
         if (_disposed ||
@@ -5902,7 +5907,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             _coverDelay.remove(key);
             _coverHalted.remove(key);
             notifyListeners();
-            await _removeTemps(store, key, c.delta);
+            extraKept = await _removeTemps(store, key, c.delta);
           case BinderRefused():
             c.stuck = true;
             stop = true;
@@ -5916,7 +5921,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               reconcile = true;
             }
         }
-        if (r is BinderRefused || r.kept.isNotEmpty || s.copies.isNotEmpty) await _listCopiesLocked(s, store);
+        if (r is BinderRefused || r.kept.isNotEmpty || extraKept.isNotEmpty || s.copies.isNotEmpty) await _listCopiesLocked(s, store);
       });
       if (stop) break;
     }
@@ -6419,9 +6424,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (list != null && list.isEmpty) _coverPending.remove(key);
       final store = _binderStore(Directory(path));
       await _lockRun(Directory(path), () async {
+        var any = false;
         for (final c in stale) {
-          await _removeTemps(store, key, c.delta);
+          if ((await _removeTemps(store, key, c.delta)).isNotEmpty) any = true;
         }
+        final sec = _binders[path];
+        if (any && sec != null) await _listCopiesLocked(sec, store);
       });
     }
     if (_disposed || !identical(_binders[path], s)) return;

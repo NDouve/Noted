@@ -41,6 +41,10 @@ class Seams {
   void Function()? beforePublish;
   void Function()? afterRead;
 
+  /// Runs in the final re-check of a delete of a temp or of the binder file's
+  /// aside (given the drop path).
+  Future<void> Function(String path)? beforeFinalCheck;
+
   /// Runs after each `sweepLeftovers`.
   void Function()? afterSweep;
 
@@ -60,7 +64,9 @@ class Seams {
 
 /// A [BinderStore] with the seams of [Seams].
 class SeamStore extends BinderStore {
-  SeamStore(super.directory, this.seams) : super(retryDelay: Duration.zero);
+  SeamStore(super.directory, this.seams) : super(retryDelay: Duration.zero) {
+    beforeFinalCheck = (path) async => seams.beforeFinalCheck?.call(path);
+  }
 
   final Seams seams;
 

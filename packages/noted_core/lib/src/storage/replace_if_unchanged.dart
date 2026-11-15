@@ -237,8 +237,6 @@ Future<_Drop> _dropAside(
   return _Drop(_DropKind.deleted, late: lateFile);
 }
 
-/// A fresh name for a verified file about to be dropped. It ends in
-/// [verifiedSuffix], so a leftover is swept like any other verified aside.
 /// Runs [op], trying again a few times with short delays when it throws a
 /// [FileSystemException].
 Future<T> _retryIo<T>(Future<T> Function() op) async {
@@ -252,6 +250,8 @@ Future<T> _retryIo<T>(Future<T> Function() op) async {
   }
 }
 
+/// A fresh name for a verified file about to be dropped. It ends in
+/// [verifiedSuffix], so a leftover is swept like any other verified aside.
 String _dropName(String target) =>
     '$target.$pid-${_random.nextInt(1 << 32).toRadixString(16)}-'
     '${_random.nextInt(1 << 32).toRadixString(16)}$verifiedSuffix';
@@ -557,6 +557,15 @@ Future<String?> _putBack(File aside, String target, void Function()? hook) async
   }
 }
 
+/// A [FileSystemException] from a delete that kept files it could not put back
+/// where they were: [keptPaths] say where each one is (a conflict copy or the
+/// file under its set-aside name).
+class KeptFileSystemException extends FileSystemException {
+  const KeptFileSystemException(super.message, super.path, this.keptPaths);
+
+  final List<String> keptPaths;
+}
+
 /// What [deleteFileIfUnchanged] did.
 enum DeleteOutcome {
   /// The target held exactly the expected bytes and is gone.
@@ -762,9 +771,17 @@ Future<DeleteResult> deleteFileIfMatches(
   );
   if (drop.kind == _DropKind.failed) {
     // A file that arrived at the old name is newer data: it goes back first.
-    if (drop.late != null) await _keepForDelete(File(drop.late!), target, beforeRestore);
-    await _putBackOrThrow(drop.file!, target, beforeRestore, drop.error!);
-    throw drop.error!;
+    final lateKept = drop.late == null
+        ? null
+        : (await _keepForDelete(File(drop.late!), target, beforeRestore)).kept;
+    final stuck = await _putBack(drop.file!, target, beforeRestore);
+    final paths = [?stuck, ?lateKept];
+    if (paths.isEmpty) throw drop.error!;
+    throw KeptFileSystemException(
+      'Could not put the original back; it is kept as ${paths.join(', ')} (${drop.error})',
+      target,
+      paths,
+    );
   }
   var restored = false;
   final kept = <String>[];

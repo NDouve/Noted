@@ -509,6 +509,43 @@ void main() {
           ? false
           : 'needs a delete that fails (open handle, Windows)',
     );
+
+    test(
+      'delete: the delete fails with a late file and the target taken: the error carries both kept paths',
+      () async {
+        seed();
+        late String old;
+        late String dropPath;
+        RandomAccessFile? hold;
+        Object? error;
+        try {
+          await deleteFileIfMatches(
+            p('a.bin'),
+            bytes: [1, 2, 3],
+            beforeAsideDelete: (path) async => old = path,
+            beforeFinalCheck: (drop) async {
+              dropPath = drop;
+              hold = File(drop).openSync();
+              File(old).writeAsBytesSync([5, 5]);
+              File(p('a.bin')).writeAsBytesSync([4]);
+            },
+          );
+        } on Object catch (e) {
+          error = e;
+        }
+        hold!.closeSync();
+        expect(error, isA<KeptFileSystemException>());
+        final kept = (error as KeptFileSystemException).keptPaths;
+        expect(kept, contains(dropPath));
+        final recovered = kept.singleWhere((k) => k.contains('-recovered-'));
+        expect(File(recovered).readAsBytesSync(), [5, 5]);
+        expect(File(p('a.bin')).readAsBytesSync(), [4]);
+        expect(error.message, contains(recovered));
+      },
+      skip: windows
+          ? false
+          : 'needs a delete that fails (open handle, Windows)',
+    );
   });
 
   group('V2 retries a brief I/O error before keeping the file', () {

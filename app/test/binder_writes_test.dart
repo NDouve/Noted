@@ -143,6 +143,29 @@ void main() {
       });
     }
 
+    test('a temp swapped while it is removed after a landed change, its path taken: the kept copy is listed', () async {
+      await start();
+      var once = true;
+      seams.beforeMoveAside = () {
+        if (!once) return;
+        once = false;
+        externalReplace();
+      };
+      seams.beforeFinalCheck = (path) async {
+        if (!path.contains('.tmp.')) return;
+        seams.beforeFinalCheck = null;
+        File(path).writeAsStringSync('swapped in the temp\'s aside');
+        File(path.substring(0, path.indexOf('.tmp.') + 4)).writeAsStringSync('a newer file');
+      };
+      await nb.updateBinder(section.path, description: 'mine');
+      await nb.flush();
+      seams.beforeMoveAside = null;
+      final recovered = folder.listSync().whereType<File>().where((f) => f.path.contains('-recovered-')).toList();
+      expect(recovered, hasLength(1), reason: 'the kept copy of the swapped temp');
+      expect(nb.binderCopyRows(nb.binders.single).map((r) => r.path), contains(recovered.single.path));
+      await stop();
+    });
+
     test('queued changes each apply only their own delta', () async {
       await start();
       externalReplace();
