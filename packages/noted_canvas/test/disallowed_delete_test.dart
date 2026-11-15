@@ -226,7 +226,9 @@ void main() {
     testWidgets('the pick list offers no Bring to front or Send to back for it; the bottom edge double-click changes nothing', (t) async {
       final over = _box('test.note', 'a000000000000003', 'over', const Bounds(100, 60, 200, 60));
       var p = NotedPage.create(PageMeta.create(id: 'p', title: 'T', order: 0));
-      p = p.insertNode(other.withFixedHeight(true)).insertNode(over);
+      final under = _box('test.note', 'a000000000000004', 'under', const Bounds(90, 55, 200, 60));
+      // The disallowed box sits in the middle, so only the guard stops its buttons.
+      p = p.insertNode(under).insertNode(other.withFixedHeight(true)).insertNode(over);
       final c = CanvasController(p, modules)..disallowedTypes = _offSet;
       final k = await pump(t, c);
       k.currentState!.zoomTo(1);
@@ -247,7 +249,8 @@ void main() {
       await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await t.pump();
 
-      // Double-click on its bottom edge: no auto-height.
+      // Double-click on its bottom edge: no auto-height. (It has no handles; the
+      // setAutoHeight guard itself is covered by the controller test.)
       final edge = origin + k.currentState!.view!.toScreen(const Offset(60, 110));
       await t.tapAt(edge);
       await t.pump(const Duration(milliseconds: 50));
