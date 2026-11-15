@@ -5715,30 +5715,33 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// places that drop them. False if the user chose to keep them.
   Future<bool> confirmDiscardCoverChanges(String path) async {
     final s = _binders[path];
-    for (final c in List<CoverChange>.of(_coverPending[_key(path)] ?? const <CoverChange>[])) {
+    // The list the user is asked about is the list that goes: a change added
+    // while the question is open is kept.
+    final asked = List<CoverChange>.of(_coverPending[_key(path)] ?? const <CoverChange>[]);
+    for (final c in asked) {
       if (!await _ask(UserQuestion.discardCoverChanges, _coverLabel(s, c))) return false;
     }
-    await discardCoverChanges(path);
+    await discardCoverChanges(path, only: asked);
     return true;
   }
 
   /// Gives up the unwritten cover changes of binder [path] (Discard). The temps
   /// they wrote are removed only while the binder's file is there and readable;
   /// any other stays listed with the copies of the binder file.
-  Future<void> discardCoverChanges(String path) async {
+  Future<void> discardCoverChanges(String path, {List<CoverChange>? only}) async {
     final key = _key(path);
-    // Every unwritten change of the folder goes, also those typed for a binder
-    // that was here before: the row that offers Discard says so.
-    final drop = List<CoverChange>.of(_coverPending[key] ?? const <CoverChange>[]);
+    // Every unwritten change of the folder goes (or just [only]), also those
+    // typed for a binder that was here before: the row that offers Discard says so.
+    final drop = List<CoverChange>.of(only ?? _coverPending[key] ?? const <CoverChange>[]);
     if (drop.isEmpty) return;
     final list = _coverPending[key];
     list?.removeWhere(drop.contains);
     if (list != null && list.isEmpty) {
       _coverPending.remove(key);
       _coverHalted.remove(key);
+      _coverTimers.remove(key)?.cancel();
+      _coverDelay.remove(key);
     }
-    _coverTimers.remove(key)?.cancel();
-    _coverDelay.remove(key);
     final s = _binders[path];
     if (s != null) _recompute(s);
     notifyListeners();
@@ -5797,8 +5800,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // Queues one more try of each folder's pending cover changes. A folder whose
-  // last try ended "keeps changing" waits for a folder event or the app coming
-  // back, unless [force] (quit, hide), so the temps it leaves stay few (L8).
+  // last try ended "keeps changing" waits for the app coming back, the binder
+  // coming back, quit or hide ([force]); folder events and the folder check don't
+  // lift the halt, so the temps it leaves stay few (L8).
   void _queueCoverTries({required bool force}) {
     for (final key in _coverPending.keys.toList()) {
       if (_coverHalted.contains(key)) {
@@ -5810,8 +5814,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  /// Tries the pending cover changes again, as a folder event, the folder check
-  /// or the app coming back to the front does.
+  /// Tries the pending cover changes again, as the app coming back to the front
+  /// does; it lifts a halt after "keeps changing".
   void retryCovers() {
     if (_disposed) return;
     _queueCoverTries(force: true);

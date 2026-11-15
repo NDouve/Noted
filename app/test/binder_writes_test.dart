@@ -593,6 +593,9 @@ void main() {
       expect(find.byKey(ValueKey('binder-copy-delete-$valid')), findsOneWidget);
       expect(find.byKey(ValueKey('binder-copy-put-back-$foreignCopy')), findsNothing);
       expect(find.byKey(ValueKey('binder-copy-delete-$foreignCopy')), findsOneWidget);
+      expect(find.textContaining("Copy of another binder's file"), findsOneWidget);
+      final rows = {for (final r in nb.binderCopyRows(nb.binders.single)) r.path: r.forOtherBinder};
+      expect(rows, {valid: false, foreignCopy: true});
       await t.pumpWidget(const SizedBox());
       await t.runAsync(stop);
     });
@@ -633,9 +636,75 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 300));
       await idle();
       expect(seams.updates, before, reason: 'the halt holds until resume, hide or quit');
+      // A check with no force, on the unchanged file, does not lift it either.
+      await nb.checkBinderFile(binderFile().path);
+      await idle();
+      expect(seams.updates, before, reason: 'a plain check does not retry');
       expect(nb.coverNotSaved(section.path), isTrue);
       nb.retryCovers();
       await until(() => !nb.coverNotSaved(section.path), 'the retry after resume');
+      await stop();
+    });
+
+    test('round 4: Put back with a failed temp write: a NotebookException, the temp gone, a foreign file kept', () async {
+      final row = await goneWithTemp();
+      Set<String> tmps() => {
+        for (final f in folder.listSync().whereType<File>())
+          if (f.path.endsWith('.tmp')) f.path,
+      };
+      final before = tmps();
+      seams.partialTempWrite = true;
+      await expectLater(nb.putBackBinderCopy(section.path, row.path), throwsA(isA<NotebookException>()));
+      expect(tmps(), before, reason: 'the part-written temp is gone');
+      expect(binderFile().existsSync(), isFalse);
+      // Someone else's file at the temp path is kept.
+      seams.partialTempWrite = true;
+      seams.afterPartialTemp = (t) {
+        seams.afterPartialTemp = null;
+        t.writeAsStringSync('someone else wrote this');
+      };
+      await expectLater(nb.putBackBinderCopy(section.path, row.path), throwsA(isA<NotebookException>()));
+      final extra = tmps().difference(before);
+      expect(extra, hasLength(1));
+      expect(File(extra.single).readAsStringSync(), 'someone else wrote this');
+      await stop();
+    });
+
+    test('round 4: Discard removes only the changes the user was asked about', () async {
+      await start();
+      seams.failMoves = 100;
+      await nb.updateBinder(section.path, title: 'First');
+      expect(nb.coverNotSaved(section.path), isTrue);
+      nb.questioner = (q, title) async {
+        // A change typed while the question is open.
+        unawaited(nb.updateBinder(section.path, description: 'Added while asking'));
+        return true;
+      };
+      expect(await nb.confirmDiscardCoverChanges(section.path), isTrue);
+      final left = nb.coverPendingFor(section.path);
+      expect(left.map((c) => c.fields), [
+        {'description': 'Added while asking'},
+      ]);
+      seams.failMoves = 0;
+      await until(() => textOrEmpty().contains('Added while asking'), 'the kept change to land');
+      expect(fileText(), isNot(contains('First')));
+      await stop();
+    });
+
+    test('round 4: removing the binder lifts the halt, so a change after re-adding it is retried', () async {
+      await start();
+      var n = 0;
+      seams.beforeMoveAside = () => externalReplace(owner: 'Them ${n++}');
+      expect(await nb.updateBinder(section.path, title: 'Draft'), isFalse);
+      seams.beforeMoveAside = null;
+      await idle();
+      answer = true;
+      await nb.removeBinder(section.path);
+      final again = await nb.addBinder(folder.path);
+      seams.failMoves = 5;
+      expect(await nb.updateBinder(again.path, title: 'New'), isFalse);
+      seams.failMoves = 0;
+      await until(() => textOrEmpty().contains('"title":"New"'), 'the retry after re-adding');
       await stop();
     });
 

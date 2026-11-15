@@ -30,6 +30,11 @@ class Seams {
   /// The next this-many temporary-file writes throw.
   int failTempWrites = 0;
 
+  /// The next temporary-file write writes only the first half of its bytes,
+  /// runs [afterPartialTemp] (to let someone else replace the file), and throws.
+  bool partialTempWrite = false;
+  void Function(File temp)? afterPartialTemp;
+
   /// Runs on every try of an update, before the file is moved aside / before the
   /// new file is published / after the aside's bytes were read.
   void Function()? beforeMoveAside;
@@ -72,12 +77,18 @@ class SeamStore extends BinderStore {
   }
 
   @override
-  Future<void> writeTemp(File temp, List<int> bytes) {
+  Future<void> writeTemp(File temp, List<int> bytes) async {
+    if (seams.partialTempWrite) {
+      seams.partialTempWrite = false;
+      await temp.writeAsBytes(bytes.sublist(0, (bytes.length / 2).floor()), flush: true);
+      seams.afterPartialTemp?.call(temp);
+      throw FileSystemException('simulated partial write', temp.path);
+    }
     if (seams.failTempWrites > 0) {
       seams.failTempWrites--;
       throw FileSystemException('simulated write failure', temp.path);
     }
-    return super.writeTemp(temp, bytes);
+    return await super.writeTemp(temp, bytes);
   }
 
   @override
