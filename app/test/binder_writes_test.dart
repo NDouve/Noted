@@ -623,6 +623,22 @@ void main() {
       await stop();
     });
 
+    test('the binder file replaced by another version of the same binder before the copy\'s removal: the copy survives '
+        '(Codex run-diff-9 R-1)', () async {
+      final row = await goneWithTemp();
+      nb.putBackBeforeDeleteHook = () async {
+        final json = jsonDecode(binderFile().readAsStringSync()) as Map<String, dynamic>;
+        json['title'] = 'Changed on another device';
+        binderFile().writeAsStringSync(jsonEncode(json));
+      };
+      await nb.putBackBinderCopy(section.path, row.path);
+      nb.putBackBeforeDeleteHook = null;
+      expect(File(row.path).existsSync(), isTrue, reason: 'the restored fields are kept only in the copy');
+      expect(File(row.path).readAsBytesSync(), row.bytes);
+      await nb.checkBinderFile(binderFile().path);
+      await stop();
+    });
+
     test('round 3: a check after a keepsChanging halt does not retry the cover change', () async {
       await start();
       var n = 0;

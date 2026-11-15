@@ -6274,12 +6274,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await putBackBeforeDeleteHook?.call();
       var removed = false;
       try {
-        // Only while the binder file still holds this binder: the copy may be the
-        // only one if sync removed or replaced the file meanwhile.
+        // Only while the binder file still holds exactly the restored bytes: the
+        // copy may be the only one if sync removed or replaced the file meanwhile,
+        // also with another version of the same binder (Codex run-diff-9 R-1).
         final r = await deleteFileIfMatches(
           copyPath,
           bytes: bytes,
-          stillRedundant: () => store.fileHoldsBinderSync(copy.id),
+          stillRedundant: () {
+            try {
+              return listEquals(store.file.readAsBytesSync(), bytes);
+            } on FileSystemException {
+              return false;
+            }
+          },
         );
         removed = r.deleted || r.outcome == DeleteOutcome.absent;
       } on FileSystemException {
