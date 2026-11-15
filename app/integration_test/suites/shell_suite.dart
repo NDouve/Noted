@@ -53,7 +53,7 @@ void shellSuite() {
         expect(_brightness(t), Brightness.light, reason: 'a fresh profile starts in Light');
         for (final (id, brightness) in [('dark', Brightness.dark), ('light', Brightness.light)]) {
           await _top(s, 'View');
-          await s.tapKey('menu-sub-Theme', settle: 400);
+          await s.tapKey('menu-sub-Appearance', settle: 400);
           await s.tapKey('menu-app.theme.$id', settle: 800);
           expect(_brightness(t), brightness);
         }

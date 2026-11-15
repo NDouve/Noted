@@ -21,8 +21,8 @@ import 'notebook.dart';
 import 'notebook_search.dart';
 import 'shortcuts_dialog.dart';
 
-/// The height of the menu bar row (`row`).
-const double menuBarHeight = 32;
+/// The height of the menu bar row (`menu-bar-height`, its bottom rule included).
+const double menuBarHeight = DesignMetrics.menuBarHeight;
 
 /// Below this window width only the brand mark shows, without "Noted".
 const double wordmarkMinWidth = 600;
@@ -206,7 +206,7 @@ class AppMenuBar extends StatefulWidget {
   /// The open page canvas's registry, or null with no canvas.
   final ValueListenable<CommandRegistry?> canvas;
 
-  /// Whether the contextual panel is shown, and how Contextual panel toggles it.
+  /// Whether Details is shown, and how Details toggles it.
   final ValueListenable<bool> panelShown;
   final VoidCallback onTogglePanel;
 
@@ -291,7 +291,7 @@ class AppMenuBarState extends State<AppMenuBar> {
       ..register(
         Command(
           id: AppCommands.viewPanel,
-          label: 'Contextual panel',
+          label: 'Details',
           icon: Icons.view_sidebar_rounded,
           checked: () => widget.panelShown.value,
           listenable: widget.panelShown,
@@ -696,7 +696,10 @@ class AppMenuBarState extends State<AppMenuBar> {
     final ok = widget.notebook.firstLoadSucceeded;
     final header = _headerRegistry();
     final items = <_Entry>[
-      for (final c in header.commands) _fromCommand(_Kind.header, c, enabled: ok),
+      for (final c in header.commands) ...[
+        if (c.id == AppCommands.newBinder) const _Divider(),
+        _fromCommand(_Kind.header, c, enabled: ok),
+      ],
     ];
     header.dispose();
     final id = nb.currentId;
@@ -759,7 +762,7 @@ class AppMenuBarState extends State<AppMenuBar> {
   String _labelOf(String id) => switch (id) {
     CanvasCommands.undo => 'Undo',
     CanvasCommands.redo => 'Redo',
-    CanvasCommands.paste => 'Paste image or file',
+    CanvasCommands.paste => 'Paste',
     CanvasCommands.delete => 'Delete selected box',
     CanvasCommands.bringToFront => 'Bring to front',
     CanvasCommands.bringForward => 'Bring forward',
@@ -783,9 +786,16 @@ class AppMenuBarState extends State<AppMenuBar> {
   }
 
   List<_Entry> _edit() => [
-    ..._canvas([CanvasCommands.undo, CanvasCommands.redo]),
+    ..._canvas([
+      CanvasCommands.undo,
+      CanvasCommands.redo,
+      CanvasCommands.paste,
+      CanvasCommands.delete,
+    ]),
     const _Divider(),
-    ..._canvas([CanvasCommands.paste, CanvasCommands.delete]),
+    ..._canvas([CanvasCommands.find, CanvasCommands.findNext, CanvasCommands.findPrevious]),
+    _appItem(AppCommands.search),
+    // Not in the spec's list, kept after it.
     const _Divider(),
     ..._canvas([
       CanvasCommands.bringToFront,
@@ -793,9 +803,6 @@ class AppMenuBarState extends State<AppMenuBar> {
       CanvasCommands.sendBackward,
       CanvasCommands.sendToBack,
     ]),
-    const _Divider(),
-    ..._canvas([CanvasCommands.find, CanvasCommands.findNext, CanvasCommands.findPrevious]),
-    _appItem(AppCommands.search),
   ];
 
   List<_Entry> _view() => [
@@ -805,6 +812,12 @@ class AppMenuBarState extends State<AppMenuBar> {
       CanvasCommands.zoomReset,
       CanvasCommands.fitAll,
     ]),
+    if (widget.settings != null) ...[
+      const _Divider(),
+      _Sub('Toolbar', [for (final s in ToolbarStyle.values) _appItem(AppCommands.toolbarId(s))]),
+      _Sub('Appearance', [for (final s in ThemeSetting.values) _appItem(AppCommands.themeId(s))]),
+    ],
+    // Not in the spec's list, kept after it.
     const _Divider(),
     _Sub('Page background', [
       // Inside Page background the choices are named for the background alone.
@@ -812,15 +825,11 @@ class AppMenuBarState extends State<AppMenuBar> {
         _canvasItem(CanvasCommands.pageBackgroundOf(b), label: pageBackgroundLabel(b)),
     ]),
     ..._canvas(['canvas.showIssues']),
-    const _Divider(),
-    if (widget.settings != null) ...[
-      _Sub('Theme', [for (final s in ThemeSetting.values) _appItem(AppCommands.themeId(s))]),
-      _Sub('Toolbar', [for (final s in ToolbarStyle.values) _appItem(AppCommands.toolbarId(s))]),
+    _appItem(AppCommands.viewPanel),
+    if (widget.settings != null)
       _Sub('Context menu', [
         for (final s in ContextMenuStyle.values) _appItem(AppCommands.contextMenuId(s)),
       ]),
-    ],
-    _appItem(AppCommands.viewPanel),
   ];
 
   List<_Entry> _help() => [
@@ -924,7 +933,7 @@ class AppMenuBarState extends State<AppMenuBar> {
     final m = NotedMetrics.of(context);
     final type = NotedTypography.of(context);
     return ButtonStyle(
-      minimumSize: WidgetStatePropertyAll(Size(0, bar ? menuBarHeight - 4 : m.rowSize)),
+      minimumSize: WidgetStatePropertyAll(Size(0, bar ? menuBarHeight - 8 : m.rowSize)),
       maximumSize: const WidgetStatePropertyAll(Size.infinite),
       padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: bar ? m.space2 : 10)),
       shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: m.borderMd)),

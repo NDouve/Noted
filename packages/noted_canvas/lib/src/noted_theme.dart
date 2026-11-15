@@ -33,6 +33,14 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
     this.handle = DesignMetrics.handle,
     this.paperPitch = DesignMetrics.paperPitch,
     this.sidebarWidth = DesignMetrics.sidebarWidth,
+    this.titleBarHeight = DesignMetrics.titleBarHeight,
+    this.menuBarHeight = DesignMetrics.menuBarHeight,
+    this.detailsWidth = DesignMetrics.detailsWidth,
+    this.detailsHeaderHeight = DesignMetrics.detailsHeaderHeight,
+    this.detailsBreakpoint = DesignMetrics.detailsBreakpoint,
+    this.contextRingRadius = DesignMetrics.contextRingRadius,
+    this.compactTreeWidth = DesignMetrics.compactTreeWidth,
+    this.statusHeight = DesignMetrics.statusHeight,
     this.shadowSelected = DesignShadows.shadowSelectedLight,
     this.shadowPopover = DesignShadows.shadowPopoverLight,
     this.touch = false,
@@ -80,6 +88,14 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
   final double handle;
   final double paperPitch;
   final double sidebarWidth;
+  final double titleBarHeight;
+  final double menuBarHeight;
+  final double detailsWidth;
+  final double detailsHeaderHeight;
+  final double detailsBreakpoint;
+  final double contextRingRadius;
+  final double compactTreeWidth;
+  final double statusHeight;
 
   /// Ring outside a selected box (with an accent border).
   final List<BoxShadow> shadowSelected;
@@ -128,6 +144,14 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
     double? handle,
     double? paperPitch,
     double? sidebarWidth,
+    double? titleBarHeight,
+    double? menuBarHeight,
+    double? detailsWidth,
+    double? detailsHeaderHeight,
+    double? detailsBreakpoint,
+    double? contextRingRadius,
+    double? compactTreeWidth,
+    double? statusHeight,
     List<BoxShadow>? shadowSelected,
     List<BoxShadow>? shadowPopover,
     bool? touch,
@@ -151,6 +175,14 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
     handle: handle ?? this.handle,
     paperPitch: paperPitch ?? this.paperPitch,
     sidebarWidth: sidebarWidth ?? this.sidebarWidth,
+    titleBarHeight: titleBarHeight ?? this.titleBarHeight,
+    menuBarHeight: menuBarHeight ?? this.menuBarHeight,
+    detailsWidth: detailsWidth ?? this.detailsWidth,
+    detailsHeaderHeight: detailsHeaderHeight ?? this.detailsHeaderHeight,
+    detailsBreakpoint: detailsBreakpoint ?? this.detailsBreakpoint,
+    contextRingRadius: contextRingRadius ?? this.contextRingRadius,
+    compactTreeWidth: compactTreeWidth ?? this.compactTreeWidth,
+    statusHeight: statusHeight ?? this.statusHeight,
     shadowSelected: shadowSelected ?? this.shadowSelected,
     shadowPopover: shadowPopover ?? this.shadowPopover,
   );
@@ -179,6 +211,14 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
       handle: l(handle, other.handle),
       paperPitch: l(paperPitch, other.paperPitch),
       sidebarWidth: l(sidebarWidth, other.sidebarWidth),
+      titleBarHeight: l(titleBarHeight, other.titleBarHeight),
+      menuBarHeight: l(menuBarHeight, other.menuBarHeight),
+      detailsWidth: l(detailsWidth, other.detailsWidth),
+      detailsHeaderHeight: l(detailsHeaderHeight, other.detailsHeaderHeight),
+      detailsBreakpoint: l(detailsBreakpoint, other.detailsBreakpoint),
+      contextRingRadius: l(contextRingRadius, other.contextRingRadius),
+      compactTreeWidth: l(compactTreeWidth, other.compactTreeWidth),
+      statusHeight: l(statusHeight, other.statusHeight),
       shadowSelected: BoxShadow.lerpList(
         shadowSelected,
         other.shadowSelected,

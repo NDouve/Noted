@@ -676,7 +676,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0058 — Dark mode
 - **Date:** 2026-10-25
-- **Status:** Active; color roles and the border contrast rule superseded by 0071; default theme for new profiles amended by 0167
+- **Status:** Active; color roles and the border contrast rule superseded by 0071; default theme for new profiles amended by 0167; new-profile default also depends on page and binder data (0170)
 - **Decision:**
   - **Theme setting:** Light, Dark or Follow system, saved per device in `settings.json` in the app settings folder (next to `binders.json`, 0050): `{"format":1,"theme":"system"|"light"|"dark"}`.
     - The default is Follow system, which tracks the OS theme while the app runs.
@@ -857,7 +857,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0071 — Design system and theme from tokens
 - **Date:** 2026-10-26
-- **Status:** Active (supersedes the color roles and the border contrast rule in 0058); ink display in dark mode superseded by 0081; idle box frames in Precision amended by 0167
+- **Status:** Active (supersedes the color roles and the border contrast rule in 0058); ink display in dark mode superseded by 0081; idle box frames in Precision amended by 0167; idle frames and the selected outline amended by 0170
 - **Decision:**
   - **Source:** the Noted design system in `docs/design/` (direction A, "Quiet Utility") defines the look. `docs/design/tokens.json` is the single source of colors, type, spacing, radii, shadows and sizes. The HTML previews there are visual references, not code.
   - **Generated code:** `app/scripts/generate_tokens.dart` writes `packages/noted_canvas/lib/src/design_tokens.g.dart` from `tokens.json`. A test fails if the generated file is out of date.
@@ -872,7 +872,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Contrast:**
     - Text pairs meet WCAG AA (4.5:1) in both themes, and tests check the pairs the README lists.
     - Selection borders, handles and focus rings use `accent` and meet 3:1.
-    - Idle hairlines (`border`, `border-box`) are decorative and quieter by design.
+    - Idle hairlines (`border`, `border-box`) are decorative and quieter by design. *(Amended by 0170: the idle box frame is `border-box` in both themes and the `box-frame` token is retired; a selected Note has a 2 px `accent` border plus the 3 px halo, and a selected Drawing a 2 px dashed `accent` outline, dash 6 and gap 4.)*
     - Picked ink colors are exempt, as user content.
 - **Rationale:** One token file keeps the app, the design references and both themes in step. Generating the Dart code avoids copying values by hand.
 - **Alternatives considered:** hand-written theme constants (they drift from the design); 3:1 contrast for every hairline (louder than the design intends).
@@ -1806,7 +1806,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0129 — iPad and Android test builds
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer; extends 0018; amended by 0130; mobile sync started by 0145; first-load error screen and insets amended by 0162). The mobile adaptations listed below are built (0130).
+- **Status:** Active (approved by the maintainer; extends 0018; amended by 0130; mobile sync started by 0145; first-load error screen and insets amended by 0162; its touch line amended by 0170). The mobile adaptations listed below are built (0130).
 - **Decision:**
   - **Scope:** iPad and Android test builds for testing pen, touch and layout: sideloaded, notes stored on the device, no mobile sync yet.
   - **Projects:** `app/ios` and `app/android`, id `io.github.ndouve.noted`, minimum iPadOS/iOS 15 (needed by `file_selector`) and Android 8 (API 26). iPad uses all four orientations. Android paste uses pasteboard's file provider, limited to the app's cache folder. Android library plugins that compile against an older SDK than the app (for example `keyboard_height_plugin`, through `appflowy_editor`) are raised to the app's compile SDK at build time.
@@ -1814,7 +1814,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Builds:** CI builds them on pushes to `main` and on manual runs, kept 14 days: an unsigned `.ipa` (the archived app zipped into `Payload/`) from both Mac jobs, as `Noted-unsigned-ipa` (Apple Silicon) and `Noted-unsigned-ipa-intel-runner` (Intel, not blocking), and a debug-signed release `.apk` from Linux as `Noted-android-apk`.
   - **Off on mobile (to build):** drag and drop onto the canvas; the AI link server and anything that expects `noted_mcp` (AI boxes still show their content); the single-instance guard; folder watching beyond the app's own storage. Paste stays on.
   - **Storage on mobile (to build):** pages, binders, settings and recovery live in the app's documents and support folders on the device, and the default folders point there.
-  - **Touch and pen (to build):** the tool-based input rules (0033) apply; two-finger pan and pinch zoom on the canvas; long-press opens the menus that right-click opens on desktop. Narrow windows show the sidebar as a drawer and the toolbar's More menu; an iPad in landscape keeps the desktop layout.
+  - **Touch and pen (to build):** the tool-based input rules (0033) apply; two-finger pan and pinch zoom on the canvas; long-press opens the menus that right-click opens on desktop. Narrow windows show the sidebar as a drawer and the toolbar's More menu; an iPad in landscape keeps the desktop layout. *(Amended by 0170: a touch hold on empty canvas opens no menu; box menus stay reachable through the pick list's More.)*
 - **Rationale:** Pen, touch and small-screen behaviour can only be judged on the devices. Sideloading needs no store account, and keeping notes on the device avoids a mobile sync design for now.
 - **Alternatives considered:** store or TestFlight distribution (needs a paid account); waiting for mobile sync (delays device testing); a signed `.ipa` (needs a team and certificate in CI).
 
@@ -2253,11 +2253,11 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0160 — Picking a box under others; layering commands
 - **Date:** 2026-11-09
-- **Status:** Active (requested by the maintainer; the Alt+click opener chosen by the maintainer's PM chat; key defaults, details and Box API 0.15 decided by the build team from the reviewed note `2026-11-09-02-box-pick`); a touch hold on empty canvas amended by 0168
+- **Status:** Active (requested by the maintainer; the Alt+click opener chosen by the maintainer's PM chat; key defaults, details and Box API 0.15 decided by the build team from the reviewed note `2026-11-09-02-box-pick`); a touch hold on empty canvas amended by 0168, that amendment withdrawn by 0170
 - **Decision:**
   - **Pick list.** Alt+click (Option+click on macOS) with the Select tool, on a writable page and not on a link, lists every box under the point, topmost first. Each row shows `<Type> · <first words>` (an encrypted box: its type only), with Bring to front and Send to back for that row's box.
     - Hovering or arrowing a row dims the page outside that box and outlines it. A click or Enter selects it. Escape closes the list.
-    - On touch, a one-finger hold, opened on release without movement, shows it. A first tap highlights a row and a second selects it.
+    - On touch, a one-finger hold, opened on release without movement, shows it. A first tap highlights a row and a second selects it. *(Amended by 0170: a hold on empty canvas creates a note, as before 0168; 0168's amendment is withdrawn.)*
     - A hold that turns into a drag stays a drag. A palm, a stylus, a pen stroke or a second finger during the hold opens nothing. A text field's or the note editor's own long-press wins.
     - Ctrl/Cmd+click on a link opens it (0099); Alt+click on a link is a plain click. "On a link" is asked of the topmost box only, through `BoxModule.linkAt` (Box API 0.15, additive).
   - **Layering.** Bring to front, Bring forward, Send backward and Send to back are canvas commands with Undo.
@@ -2361,29 +2361,29 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0167 — Desktop shell: Light for new profiles, Precision, the menu bar and the contextual panel
 - **Date:** 2026-11-15
-- **Status:** Active (the maintainer's brief of 2026-11-15; the details decided by the build team (PM), run 2026-11-15-01); amends 0058's default theme and 0071's idle box frames in Precision
+- **Status:** Active (the maintainer's brief of 2026-11-15; the details decided by the build team (PM), run 2026-11-15-01); amends 0058's default theme and 0071's idle box frames in Precision; amended by 0170
 - **Decision:**
-  - **Default theme:** a new profile, one with neither `settings.json` nor `binders.json`, starts in Light and saves `{"format":1,"theme":"light"}` once. An existing `settings.json` is never written at launch; saved choices, Follow system included, are kept. A profile with `binders.json` but no `settings.json` uses Follow system, as before. A damaged settings file still reads as the defaults of 0058.
-  - **Precision:** the dark theme is named Precision. It covers the window, menus, canvas and panel. Its stored value stays `dark`, so saved settings and pages are unchanged. Idle box frames use the new `box-frame` token: 3:1 in Precision; in Light it equals `border-box`, as before (0071).
-  - **Branding:** a compact blue N from the checked-in icon, snapped to device pixels, with a Noted wordmark that is hidden below 600 px. The app icon is unchanged.
-  - **Menu bar:** File, Edit, View and Help, built from the command registry with its live enabled state and current shortcuts. Only commands with handlers appear. Help holds Keyboard shortcuts, and About in builds that have it. On Windows and Linux, F10, a lone Alt and Alt+letter enter the bar; on macOS it is pointer-only for now. A chosen item revalidates its target (the page, the cover, the command) before it runs. While the bar or one of its menus has focus, a note being edited keeps its editor and selection.
-  - **Contextual panel:** right of the canvas, inline from 1200 px wide and a dismissible overlay below that; its open state is per session. It shows page controls with no box selected and a box's properties and actions with one. The canvas selects one box at a time, so there is no several-box state.
+  - **Default theme:** a new profile, one with neither `settings.json` nor `binders.json`, starts in Light and saves `{"format":1,"theme":"light"}` once. An existing `settings.json` is never written at launch; saved choices, Follow system included, are kept. A profile with `binders.json` but no `settings.json` uses Follow system, as before. A damaged settings file still reads as the defaults of 0058. *(Amended by 0170: a profile with page or binder data in the default pages folder or the built-in binders folder also uses Follow system, and nothing is written; a link there counts as data, as does a folder that can't be listed.)*
+  - **Precision:** the dark theme is named Precision. It covers the window, menus, canvas and panel. Its stored value stays `dark`, so saved settings and pages are unchanged. Idle box frames use the new `box-frame` token: 3:1 in Precision; in Light it equals `border-box`, as before (0071). *(Amended by 0170: idle box frames use `border-box` in both themes; the `box-frame` token is retired.)*
+  - **Branding:** a compact blue N from the checked-in icon, snapped to device pixels, with a Noted wordmark that is hidden below 600 px. The app icon is unchanged. *(Amended by 0170: the N is the compact path, `M110 330 V74 L270 298 V50` with stroke 56, filled with the master gradient from the `brand-blue-start` and `brand-blue-end` tokens, with no lightness lift.)*
+  - **Menu bar:** File, Edit, View and Help, built from the command registry with its live enabled state and current shortcuts. Only commands with handlers appear. Help holds Keyboard shortcuts, and About in builds that have it. On Windows and Linux, F10, a lone Alt and Alt+letter enter the bar; on macOS it is pointer-only for now. A chosen item revalidates its target (the page, the cover, the command) before it runs. While the bar or one of its menus has focus, a note being edited keeps its editor and selection. *(Amended by 0170: 36 px high including its bottom rule; items in the maintainer's spec order, with the items the spec doesn't list after them; View › Theme is Appearance, after Toolbar; Paste is labelled `Paste`.)*
+  - **Contextual panel:** right of the canvas, inline from 1200 px wide and a dismissible overlay below that; its open state is per session. It shows page controls with no box selected and a box's properties and actions with one. The canvas selects one box at a time, so there is no several-box state. *(Amended by 0170: the panel is named Details, 288 px wide, inline from 1120 px, with a 16% scrim (`overlay-scrim`) when it overlays.)*
   - Undo and Redo also take Cmd+Z, Cmd+Shift+Z and Cmd+Y on macOS.
 - **Rationale:** the maintainer's desktop UI brief. Writing the theme only for a new profile keeps every existing device as it was.
 - **Alternatives considered:** Flutter's `MenuBar` widget (it can't take keyboard focus with no menu open, so F10 couldn't focus File); saving the panel's state in `settings.json` (a settings format addition the brief didn't ask for).
 
 ## 0168 — Canvas context menus; a touch hold on empty canvas opens the canvas menu
 - **Date:** 2026-11-15
-- **Status:** Active (the menus are the maintainer's, from the UI brief of 2026-11-15; the details, the radial setting lasting for the session and the touch rule decided by the build team (PM), run 2026-11-15-01, from the reviewed note `2026-11-15-01-context-menus`); amends 0160's touch behaviour on empty canvas; the radial choice's duration superseded by 0169
+- **Status:** Active (the menus are the maintainer's, from the UI brief of 2026-11-15; the details, the radial setting lasting for the session and the touch rule decided by the build team (PM), run 2026-11-15-01, from the reviewed note `2026-11-15-01-context-menus`); amends 0160's touch behaviour on empty canvas; the radial choice's duration superseded by 0169; amended by 0170 (the touch rule, "Boxes here…", the radial control)
 - **Decision:**
   - **Targets.** A right-click, the Menu key or Shift+F10 opens a menu for what is under the point: the topmost box, or empty canvas. The target is recorded when the menu opens and checked again before the chosen entry runs; if the page, the controller, the box or its type changed, nothing runs, and a registry entry runs only while that box is still selected. A change in whether the page can be edited closes an open menu.
-    - **A box:** Bring to front, Bring forward, Send backward, Send to back, Boxes here… (the pick list of 0160) and Delete box. On a writable page the box is selected first. A box type the page disallows gets Delete as its only change, under the heading "Not allowed on this page" (0166); Boxes here… stays, since it only selects. For an unsupported or foreign node, Delete is off.
-    - **Empty canvas:** New note here, Paste image or file at the point, and the module inserts (image, file, AI box) where their module is on. Placeholder commands are left out.
+    - **A box:** Bring to front, Bring forward, Send backward, Send to back, Boxes here… (the pick list of 0160) and Delete box. On a writable page the box is selected first. A box type the page disallows gets Delete as its only change, under the heading "Not allowed on this page" (0166); Boxes here… stays, since it only selects. For an unsupported or foreign node, Delete is off. *(Amended by 0170: "Boxes here…" is labelled "Pick overlapping box…".)*
+    - **Empty canvas:** New note here, Paste image or file at the point, and the module inserts (image, file, AI box) where their module is on. Placeholder commands are left out. *(Amended by 0170: Paste is labelled `Paste`.)*
     - On a read-only page the same entries show, the edit entries off.
   - Every entry is a command from the registry (0067) or made for that menu, with its live enabled state and current shortcut. Keys inside an open menu reach no canvas or app command. Choosing an entry closes the menu, puts focus back where it was, and runs the command after the frame. A note being edited keeps its editor and selection while a menu is open (0167).
   - **Paste at a point** keeps its page: each file is stored in the page's own attachments folder, and the paste stops before the next box (or before the first, if this happens while the clipboard is read) if the page, its store or its writability changed, or its type became disallowed, and says "The paste stopped; nothing was added to another page." Files already stored for boxes not inserted stay, unreferenced, in that folder.
-  - **Radial presentation:** an opt-in ring of the same commands (six slots, a More route to the list), chosen under View › Context menu or the gear menu. The choice lasts for the session only; it is not saved in `settings.json` until the maintainer decides it should be. *(Superseded by 0169: the choice is saved.)*
-  - **Touch.** A one-finger hold on empty canvas, by 0160's rules for a hold, opens the canvas menu instead of creating a note; a tap still creates one. A hold on a box opens the pick list as before, and each of its rows has a More button that opens that box's menu. This meets 0129's touch requirement for these menus.
+  - **Radial presentation:** an opt-in ring of the same commands (six slots, a More route to the list), chosen under View › Context menu or the gear menu. The choice lasts for the session only; it is not saved in `settings.json` until the maintainer decides it should be. *(Superseded by 0169: the choice is saved. Amended by 0170: the gear menu has one checkable item, Radial context menu; View › Context menu stays.)*
+  - **Touch.** A one-finger hold on empty canvas, by 0160's rules for a hold, opens the canvas menu instead of creating a note; a tap still creates one. A hold on a box opens the pick list as before, and each of its rows has a More button that opens that box's menu. This meets 0129's touch requirement for these menus. *(Amended by 0170: a hold on empty canvas opens no menu and creates a note, as before; box menus stay reachable through the pick list's More.)*
   - Code: `CanvasTargetGuard`, `CanvasController.canDelete`, `PageCanvas.contextMenuStyle`, `PageCanvasState.contextMenuOpen` and `pasteFilesAt` (host-only, additive). No format or module-facing change.
 - **Rationale:** the maintainer's desktop UI brief asked for distinct box and canvas menus, revalidated before any change, with an opt-in radial view. Checking the target again closes the window in which a menu could act on another page or box.
 - **Alternatives considered:** a hold on empty canvas creating a note as before (no touch route to the canvas menu); saving the radial choice (a settings addition the maintainer hasn't decided); placing module inserts at the point (would change what `viewCentre` means to modules, a module-facing change).
@@ -2394,6 +2394,20 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Decision:** the choice between the list and the radial context menu is saved per device as an optional `"contextMenu"` key in `settings.json` (0058): `"list"` or `"radial"`, written as these explicit strings. A missing, unknown or non-string value reads as the list and is kept as it is; reading never writes. Choosing a style under View › Context menu or the gear menu writes it at once through the existing settings path, and a restart restores it.
 - **Rationale:** the maintainer asked for the choice to survive restarts. `settings.json` already keeps unknown keys, so older builds keep the key and ignore it.
 - **Alternatives considered:** keeping it for the session only (0168); a separate settings file.
+
+## 0170 — UI spec follow-up, step 1: tokens, sizes, menu order, box outlines, touch hold, profile check
+- **Date:** 2026-11-15
+- **Status:** Active (the maintainer's UI spec and answers (a), (b) and (c) of 2026-11-15; the details by the build team (PM), run 2026-11-15-02, from the reviewed note `2026-11-15-02-ui-followup`); amends 0058, 0071, 0129, 0160, 0167 and 0168
+- **Decision:**
+  - **Tokens:** `outline-control` (`#717B89` light, `#85909E` Precision; 3:1 on surface, `bg-app` and `bg-canvas`), `overlay-scrim` (`#00000029`), `brand-blue-start` (`#2F86C8`), `brand-blue-end` (`#0D4A78`) and `menu-shadow-color`. The `box-frame` token is retired: idle box frames use `border-box` in both themes. The generator reads an 8-digit hex colour as CSS `#rrggbbaa`.
+  - **Sizes** (tokens, in `DesignMetrics` and `NotedMetrics`): `title-bar-height` 40, `menu-bar-height` 36 (its bottom rule included), `details-width` 288, `details-header-height` 48, `details-breakpoint` 1120, `context-ring-radius` 118, `compact-tree-width` 220, `status-height` 34. The contextual panel is named Details: 288 px wide, inline from 1120 px, and a 16% scrim over the canvas when it overlays.
+  - **Brand:** the compact N, `M110 330 V74 L270 298 V50` with stroke 56 on a 380 px view box, filled with the master gradient from the two brand tokens, with no lightness lift.
+  - **Selection:** a selected Note has a 2 px `accent` border plus the 3 px halo; a selected Drawing has a 2 px dashed `accent` outline, dash 6 and gap 4.
+  - **Menus:** menu-bar items follow the spec's order and separators; the items the spec doesn't list stay after them (File › Page and Binder, Edit's arrange items, View › Page background, Show page issues, Details, Context menu, Help). View › Theme is Appearance, after Toolbar. `canvas.paste` is labelled Paste. "Boxes here…" is "Pick overlapping box…". The gear menu has one checkable item, Radial context menu, in place of the List and Radial pair; the choice stays saved as `contextMenu`.
+  - **Touch:** a one-finger hold on empty canvas opens no menu and creates a note as before 0168. A box's menu is reached through the pick list's More.
+  - **New-profile theme:** a profile with neither `settings.json` nor `binders.json` starts in Light only if the default pages folder and the built-in binders folder hold no page or binder data. Each folder is listed once, one level, without following links. A page file (pages folder), a link, or a direct subfolder holding `noted-binder.json` counts as data. A missing folder is no evidence; a folder that can't be listed counts as data. With data, the theme is Follow system and nothing is written.
+- **Rationale:** the maintainer's UI spec governs the desktop UI. Reading the profile's data before choosing a default avoids changing the look for someone who already has notes.
+- **Alternatives considered:** keeping `box-frame` for Precision (the maintainer chose `border-box`); keeping the touch hold menu (the maintainer chose the earlier behaviour); checking only `settings.json` and `binders.json` for an existing profile.
 
 ## 0171 — Conflict-copy names for every in-scope cloud
 - **Date:** 2026-11-15

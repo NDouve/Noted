@@ -1265,15 +1265,6 @@ class PageCanvasState extends State<PageCanvas>
       !HardwareKeyboard.instance.isAltPressed &&
       !HardwareKeyboard.instance.isMetaPressed;
 
-  /// Whether the touch [e] may start a hold that opens the canvas menu: no
-  /// tool, the page area, and no box under the finger (those holds are the
-  /// pick list's).
-  bool _touchOpens(PointerDownEvent e) {
-    if (e.kind != PointerDeviceKind.touch || _tools.active != null) return false;
-    final world = pageAtGlobal(e.position);
-    return world != null && nodesAtPoint(_c.page, world).isEmpty;
-  }
-
   bool _targetChanged(_ContextTarget t) {
     final id = t.boxId;
     if (id == null) return false;
@@ -1340,7 +1331,7 @@ class PageCanvasState extends State<PageCanvas>
 
     final boxesHere = Command(
       id: contextPointId('boxesHere'),
-      label: 'Boxes here…',
+      label: 'Pick overlapping box…',
       icon: Icons.layers_rounded,
       listenable: c,
       enabled: () => !_readOnly && nodesAtPoint(c.page, world).length >= 2,
@@ -1361,7 +1352,7 @@ class PageCanvasState extends State<PageCanvas>
     );
     final paste = Command(
       id: contextPointId('paste'),
-      label: 'Paste image or file',
+      label: 'Paste',
       icon: Icons.content_paste_rounded,
       listenable: c,
       enabled: () => !_readOnly && widget.attachments != null,
@@ -1822,10 +1813,7 @@ class PageCanvasState extends State<PageCanvas>
                               _ContextClaim.new,
                               (r) => r
                                 ..opensMouse = _mouseOpens
-                                ..opensTouch = _touchOpens
                                 ..ctrlPrimary = _ctrlPrimary
-                                ..serial = (() => _inkSerial)
-                                ..blocked = (() => _upWasPalm || _multiTouch)
                                 ..onOpen = ((global, {required mouse}) =>
                                     _openContextAt(global, mouse: mouse)),
                             ),
@@ -2145,19 +2133,16 @@ class _ContextSession {
 
 /// What a [_ContextClaim] knows of one pointer.
 class _ContextHold {
-  _ContextHold(this.down, this.serial, {required this.mouse});
+  _ContextHold(this.down);
 
   final Offset down;
-  final int serial;
-  final bool mouse;
   double far = 0;
-  bool fired = false;
   bool up = false;
   bool accepted = false;
-  Timer? timer;
 }
 
-/// Opens a context menu.
+/// Opens a context menu with the mouse (a touch hold on empty canvas opens
+/// none: it behaves as before 0168).
 ///
 /// A mouse press with the secondary button never resolves itself as accepted:
 /// it joins the arena, rejects itself on movement past [kTouchSlop], and
@@ -2167,37 +2152,25 @@ class _ContextHold {
 /// those keep their behaviour. On macOS a primary press with Ctrl is the
 /// system's secondary click: it accepts at once (so no box sees a click) and
 /// opens on the release.
-///
-/// A touch that [opensTouch] (no box under it) waits for the release and, like
-/// the pick list's hold, accepts only if it was a hold: [kLongPressTimeout] by
-/// its own timer, no movement past [kTouchSlop], no palm, second finger or
-/// stylus meanwhile. When it accepts, the background tap loses, so no note is
-/// made. A pan or pinch that won earlier has already rejected it.
 class _ContextClaim extends OneSequenceGestureRecognizer {
   _ContextClaim()
     : super(
-        supportedDevices: {PointerDeviceKind.mouse, PointerDeviceKind.touch},
+        supportedDevices: {PointerDeviceKind.mouse},
         allowedButtonsFilter: (_) => true,
       );
 
   bool Function(PointerDownEvent e) opensMouse = (_) => false;
-  bool Function(PointerDownEvent e) opensTouch = (_) => false;
   bool Function(PointerDownEvent e) ctrlPrimary = (_) => false;
-  int Function() serial = () => 0;
-  bool Function() blocked = () => false;
   void Function(Offset global, {required bool mouse}) onOpen = (_, {required mouse}) {};
 
   final Map<int, _ContextHold> _holds = {};
 
   @override
   void addAllowedPointer(PointerDownEvent event) {
-    final mouse = event.kind == PointerDeviceKind.mouse;
-    if (mouse ? !opensMouse(event) : !opensTouch(event)) return;
-    final hold = _ContextHold(event.position, serial(), mouse: mouse);
-    if (!mouse) hold.timer = Timer(kLongPressTimeout, () => hold.fired = true);
-    _holds[event.pointer] = hold;
+    if (!opensMouse(event)) return;
+    _holds[event.pointer] = _ContextHold(event.position);
     startTrackingPointer(event.pointer, event.transform);
-    if (mouse && ctrlPrimary(event)) resolvePointer(event.pointer, GestureDisposition.accepted);
+    if (ctrlPrimary(event)) resolvePointer(event.pointer, GestureDisposition.accepted);
   }
 
   @override
@@ -2208,30 +2181,22 @@ class _ContextClaim extends OneSequenceGestureRecognizer {
     final pointer = event.pointer;
     if (event is PointerUpEvent) {
       stopTrackingPointer(pointer);
-      hold.timer?.cancel();
-      if (hold.mouse) {
-        hold.up = true;
-        if (hold.far > kTouchSlop) {
-          _holds.remove(pointer);
-          resolvePointer(pointer, GestureDisposition.rejected);
-        } else if (hold.accepted) {
-          _holds.remove(pointer);
-          onOpen(event.position, mouse: true);
-        } else {
-          _upAt[pointer] = event.position;
-        }
-      } else {
-        final ok = hold.fired && hold.far < kTouchSlop && serial() == hold.serial && !blocked();
+      hold.up = true;
+      if (hold.far > kTouchSlop) {
         _holds.remove(pointer);
-        resolvePointer(pointer, ok ? GestureDisposition.accepted : GestureDisposition.rejected);
-        if (ok) onOpen(event.position, mouse: false);
+        resolvePointer(pointer, GestureDisposition.rejected);
+      } else if (hold.accepted) {
+        _holds.remove(pointer);
+        onOpen(event.position, mouse: true);
+      } else {
+        _upAt[pointer] = event.position;
       }
     } else if (event is PointerCancelEvent) {
       stopTrackingPointer(pointer);
-      _holds.remove(pointer)?.timer?.cancel();
+      _holds.remove(pointer);
       _upAt.remove(pointer);
       resolvePointer(pointer, GestureDisposition.rejected);
-    } else if (hold.mouse && hold.far > kTouchSlop && !hold.accepted) {
+    } else if (hold.far > kTouchSlop && !hold.accepted) {
       // Dragging is no click.
       stopTrackingPointer(pointer);
       _holds.remove(pointer);
@@ -2245,7 +2210,7 @@ class _ContextClaim extends OneSequenceGestureRecognizer {
   @override
   void acceptGesture(int pointer) {
     final hold = _holds[pointer];
-    if (hold != null && hold.mouse) {
+    if (hold != null) {
       hold.accepted = true;
       if (hold.up) {
         _holds.remove(pointer);
@@ -2258,7 +2223,7 @@ class _ContextClaim extends OneSequenceGestureRecognizer {
 
   @override
   void rejectGesture(int pointer) {
-    _holds.remove(pointer)?.timer?.cancel();
+    _holds.remove(pointer);
     _upAt.remove(pointer);
     stopTrackingPointer(pointer);
     super.rejectGesture(pointer);
@@ -2266,9 +2231,6 @@ class _ContextClaim extends OneSequenceGestureRecognizer {
 
   @override
   void dispose() {
-    for (final h in _holds.values) {
-      h.timer?.cancel();
-    }
     _holds.clear();
     _upAt.clear();
     super.dispose();

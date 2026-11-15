@@ -66,7 +66,7 @@ void main() {
     });
   }
 
-  testWidgets('View > Contextual panel is checked while the panel shows, and follows the toggle', (t) async {
+  testWidgets('View > Details is checked while the panel shows, and follows the toggle', (t) async {
     final w = await ShellWorld.open(t);
     bool checked() => t
         .widget<MenuCheckMark>(
@@ -194,7 +194,7 @@ void main() {
 
   for (final (_, rights, sub, first) in [
     ('File', 0, 'Page', 'app.page.newSubpage'),
-    ('View', 2, 'Theme', 'app.theme.system'),
+    ('View', 2, 'Appearance', 'app.theme.system'),
   ]) {
     testWidgets('keyboard: F10, Down to $sub, Right opens it with its first item focused; Escape closes one level', (t) async {
       final w = await ShellWorld.open(t);

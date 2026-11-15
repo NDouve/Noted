@@ -246,7 +246,7 @@ void main() {
     ) async {
       final w = await ShellWorld.open(t, size: const Size(1400, 800));
       final panel = t.getRect(_panel);
-      expect(panel.width, 264);
+      expect(panel.width, 288);
       expect(panel.right, 1400);
       expect(
         t.getRect(find.byType(CommandToolbar)).right,
@@ -257,12 +257,29 @@ void main() {
       await w.close(t);
     });
 
-    testWidgets('View > Contextual panel hides and shows the inline panel', (t) async {
+    testWidgets('View > Details hides and shows the inline panel', (t) async {
       final w = await ShellWorld.open(t, size: const Size(1400, 800));
       await _menu(t, 'View', 'app.view.panel');
       expect(_panel, findsNothing);
       await _menu(t, 'View', 'app.view.panel');
       expect(_panel, findsOneWidget);
+      await w.close(t);
+    });
+
+    testWidgets('the overlay is 288 px wide over a 16% scrim, and 1120 px docks it', (t) async {
+      var w = await ShellWorld.open(t, size: const Size(1100, 800));
+      await _menu(t, 'View', 'app.view.panel');
+      expect(t.getSize(_panel).width, 288);
+      final scrim = t.widget<ColoredBox>(
+        find.descendant(
+          of: find.byKey(const ValueKey('context-panel-scrim')),
+          matching: find.byType(ColoredBox),
+        ),
+      );
+      expect(scrim.color, const Color(0x29000000));
+      await w.close(t);
+      w = await ShellWorld.open(t, size: const Size(1120, 800));
+      expect(_panel, findsOneWidget, reason: 'docked from the breakpoint');
       await w.close(t);
     });
 

@@ -100,6 +100,6 @@ void main() {
   test('Paste is labelled as what it pastes', () {
     final r = registry();
     addTearDown(r.dispose);
-    expect(r['canvas.paste']!.label, 'Paste image or file');
+    expect(r['canvas.paste']!.label, 'Paste');
   });
 }

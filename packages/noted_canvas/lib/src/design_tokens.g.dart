@@ -20,7 +20,11 @@ class DesignColors {
     required this.surfaceHover,
     required this.border,
     required this.borderBox,
-    required this.boxFrame,
+    required this.outlineControl,
+    required this.overlayScrim,
+    required this.brandBlueStart,
+    required this.brandBlueEnd,
+    required this.menuShadowColor,
     required this.text,
     required this.textMuted,
     required this.textDisabled,
@@ -54,7 +58,11 @@ class DesignColors {
     surfaceHover: Color(0xFFEEF0F3),
     border: Color(0xFFDCDFE4),
     borderBox: Color(0xFFE3E6EA),
-    boxFrame: Color(0xFFE3E6EA),
+    outlineControl: Color(0xFF717B89),
+    overlayScrim: Color(0x29000000),
+    brandBlueStart: Color(0xFF2F86C8),
+    brandBlueEnd: Color(0xFF0D4A78),
+    menuShadowColor: Color(0x1F101828),
     text: Color(0xFF1B1F24),
     textMuted: Color(0xFF5B6470),
     textDisabled: Color(0xFF9AA1AB),
@@ -88,7 +96,11 @@ class DesignColors {
     surfaceHover: Color(0xFF2C3138),
     border: Color(0xFF353A42),
     borderBox: Color(0xFF3C424B),
-    boxFrame: Color(0xFF6B717A),
+    outlineControl: Color(0xFF85909E),
+    overlayScrim: Color(0x29000000),
+    brandBlueStart: Color(0xFF2F86C8),
+    brandBlueEnd: Color(0xFF0D4A78),
+    menuShadowColor: Color(0x80000000),
     text: Color(0xFFE6E8EB),
     textMuted: Color(0xFFA0A8B3),
     textDisabled: Color(0xFF6B727C),
@@ -135,8 +147,20 @@ class DesignColors {
   /// Quiet outline for the find bar, panels and dialogs. Quieter than border so content leads.
   final Color borderBox;
 
-  /// Idle box frame on the canvas. Dark is 3:1 on surface so box edges stay legible.
-  final Color boxFrame;
+  /// Boundary of a control that identifies it: the search field, the Details toggle, panel actions, radial slots. 3:1 on surface, bg-app and bg-canvas.
+  final Color outlineControl;
+
+  /// Scrim over the canvas behind the Details overlay (16% black).
+  final Color overlayScrim;
+
+  /// Start of the brand gradient (the N mark). Decorative: no contrast role.
+  final Color brandBlueStart;
+
+  /// End of the brand gradient (the N mark). Decorative: no contrast role.
+  final Color brandBlueEnd;
+
+  /// Colour of the popover shadow (x0 y4 blur16), for menus drawn outside the Material shadow.
+  final Color menuShadowColor;
 
   /// Primary text on surface, bg-canvas and bg-app.
   final Color text;
@@ -266,6 +290,22 @@ abstract final class DesignMetrics {
   static const double paperPitch = 20;
   /// Default sidebar width (resizable 220–360px).
   static const double sidebarWidth = 264;
+  /// Custom title bar (Windows).
+  static const double titleBarHeight = 40;
+  /// Menu bar, including its bottom rule.
+  static const double menuBarHeight = 36;
+  /// Details panel, docked or overlaid.
+  static const double detailsWidth = 288;
+  /// Details panel header.
+  static const double detailsHeaderHeight = 48;
+  /// Window width from which Details docks; below it Details overlays (from 720px).
+  static const double detailsBreakpoint = 1120;
+  /// Radius to the slot centres of the radial context menu.
+  static const double contextRingRadius = 118;
+  /// Page tree width from 720px to the dock breakpoint.
+  static const double compactTreeWidth = 220;
+  /// Status strip under the canvas.
+  static const double statusHeight = 34;
 }
 
 /// The font family and the type styles (without color).

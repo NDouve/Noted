@@ -73,9 +73,9 @@ class _ContextPanelState extends State<ContextPanel> {
     final theme = Theme.of(context);
     final m = NotedMetrics.of(context);
     // The canvas shows its controller for a frame after the notebook let it go.
-    if (widget.controller.isDisposed) return SizedBox(width: m.sidebarWidth);
+    if (widget.controller.isDisposed) return SizedBox(width: m.detailsWidth);
     return SizedBox(
-      width: m.sidebarWidth,
+      width: m.detailsWidth,
       child: DecoratedBox(
         key: const ValueKey('context-panel'),
         decoration: BoxDecoration(
@@ -348,7 +348,7 @@ class _ContextPanelOverlayState extends State<ContextPanelOverlay> {
               key: const ValueKey('context-panel-scrim'),
               behavior: HitTestBehavior.opaque,
               onTap: widget.onClose,
-              child: const ColoredBox(color: Color(0x52000000)),
+              child: ColoredBox(color: NotedColors.of(context).overlayScrim),
             ),
           ),
           Positioned(

@@ -139,11 +139,11 @@ void main() {
     await w.close(t);
   });
 
-  testWidgets('the gear menu has Context menu: List and Radial', (t) async {
+  testWidgets('the gear menu has one Radial context menu item', (t) async {
     final w = await ShellWorld.open(t);
     await t.tap(find.byKey(const ValueKey('settings-menu')));
     await t.pumpAndSettle();
-    expect(find.text('Context menu'), findsOneWidget);
+    expect(find.text('Radial context menu'), findsOneWidget);
     await t.tap(find.byKey(const ValueKey('context-menu-radial')));
     await t.pumpAndSettle();
     expect(w.settings.contextMenu, ContextMenuStyle.radial);
@@ -240,9 +240,9 @@ void main() {
   });
 
   for (final size in [const Size(1280, 800), const Size(900, 700)]) {
-    testWidgets('clicking View > Context menu opens its submenu, like Theme, at ${size.width.round()} px', (t) async {
+    testWidgets('clicking View > Context menu opens its submenu, like Appearance, at ${size.width.round()} px', (t) async {
       final w = await ShellWorld.open(t, size: size);
-      for (final sub in ['Theme', 'Context menu', 'Toolbar', 'Context menu']) {
+      for (final sub in ['Appearance', 'Context menu', 'Toolbar', 'Context menu']) {
         await t.tap(find.byKey(const ValueKey('menu-top-View')));
         await t.pumpAndSettle();
         await t.tap(find.byKey(ValueKey('menu-sub-$sub')));
@@ -250,7 +250,7 @@ void main() {
         // The submenu is open and the View menu is still there.
         expect(find.byKey(const ValueKey('menu-canvas.zoomIn')), findsOneWidget, reason: sub);
         final first = switch (sub) {
-          'Theme' => 'menu-app.theme.system',
+          'Appearance' => 'menu-app.theme.system',
           'Toolbar' => 'menu-app.toolbar.tabs',
           _ => 'menu-app.contextMenu.list',
         };
@@ -262,12 +262,12 @@ void main() {
     });
   }
 
-  testWidgets('with a real mouse, hovering then clicking View > Context menu leaves its submenu open, like Theme', (t) async {
+  testWidgets('with a real mouse, hovering then clicking View > Context menu leaves its submenu open, like Appearance', (t) async {
     final w = await ShellWorld.open(t);
     final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
     await mouse.addPointer(location: Offset.zero);
     addTearDown(mouse.removePointer);
-    for (final sub in ['Theme', 'Context menu']) {
+    for (final sub in ['Appearance', 'Context menu']) {
       await mouse.moveTo(t.getCenter(find.byKey(const ValueKey('menu-top-View'))));
       await mouse.down(t.getCenter(find.byKey(const ValueKey('menu-top-View'))));
       await mouse.up();
@@ -278,7 +278,7 @@ void main() {
       await mouse.down(target);
       await mouse.up();
       await t.pumpAndSettle();
-      final first = sub == 'Theme' ? 'menu-app.theme.system' : 'menu-app.contextMenu.list';
+      final first = sub == 'Appearance' ? 'menu-app.theme.system' : 'menu-app.contextMenu.list';
       expect(find.byKey(ValueKey(first)), findsOneWidget, reason: sub);
       await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await t.pumpAndSettle();

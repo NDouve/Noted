@@ -110,6 +110,20 @@ class _SearchFieldState extends State<SearchField> {
           onChanged: widget.search.setText,
           decoration: InputDecoration(
             isDense: true,
+            // 36 high and outlined with outline-control, so the field reads as
+            // a field (the spec's mockups).
+            constraints: BoxConstraints(minHeight: m.controlSize),
+            contentPadding: EdgeInsets.symmetric(horizontal: m.space3, vertical: m.space2),
+            prefixIconConstraints: BoxConstraints.tightFor(width: m.controlSize, height: m.controlSize),
+            suffixIconConstraints: BoxConstraints.tightFor(width: m.controlSize, height: m.controlSize),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: m.borderLg,
+              borderSide: BorderSide(color: NotedColors.of(context).outlineControl),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: m.borderLg,
+              borderSide: BorderSide(color: scheme.primary, width: 2),
+            ),
             hintText: 'Search all pages',
             prefixIcon: Icon(Icons.search_rounded, size: m.icon),
             suffixIcon: hasText

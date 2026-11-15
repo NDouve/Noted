@@ -42,10 +42,10 @@ void main() {
       w.settings.theme = ThemeSetting.dark;
       await t.pumpAndSettle();
       expect(shown(), Brightness.dark);
-      // The dark canvas draws the box frame token.
+      // The dark canvas draws the outline-control token.
       expect(
-        NotedColors.of(t.element(find.byType(Scaffold).first)).boxFrame,
-        DesignColors.dark.boxFrame,
+        NotedColors.of(t.element(find.byType(Scaffold).first)).outlineControl,
+        DesignColors.dark.outlineControl,
       );
       await t.runAsync(() => w.nb.flush());
       final after = await t.runAsync(() async => _snapshot(w.dir));

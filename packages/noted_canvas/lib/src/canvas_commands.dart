@@ -226,7 +226,7 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
     // box's editor the editor pastes; a note pastes an image beside itself.
     Command(
       id: CanvasCommands.paste,
-      label: 'Paste image or file',
+      label: 'Paste',
       icon: Icons.content_paste_rounded,
       shortcut: _key(LogicalKeyboardKey.keyV, ctrl: true),
       alternateShortcuts: const [SingleActivator(LogicalKeyboardKey.keyV, meta: true)],

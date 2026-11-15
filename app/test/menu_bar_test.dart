@@ -35,6 +35,36 @@ List<String> _shown(WidgetTester t) {
   return out;
 }
 
+/// Like [_shown] with a '|' where a separator is drawn, top to bottom.
+List<String> _layout(WidgetTester t) {
+  final found = find.byWidgetPredicate((w) {
+    final k = w.key;
+    return w is Divider ||
+        ((w is MenuItemButton || w is SubmenuButton) &&
+            k is ValueKey<String> &&
+            !k.value.startsWith('menu-top-'));
+  });
+  final rows = <(Offset, String)>[];
+  for (final e in found.evaluate()) {
+    final w = e.widget;
+    final at = (e.renderObject! as RenderBox).localToGlobal(Offset.zero);
+    rows.add((
+      at,
+      w is Divider
+          ? '|'
+          : (w.key! as ValueKey<String>).value
+                .replaceFirst('menu-sub-', 'sub:')
+                .replaceFirst('menu-', ''),
+    ));
+  }
+  // The menu's own dividers start where its items do; others in the window
+  // (the toolbar's) don't.
+  final left = rows.firstWhere((r) => r.$2 != '|').$1.dx;
+  rows.removeWhere((r) => r.$2 == '|' && r.$1.dx != left);
+  rows.sort((a, b) => a.$1.dy.compareTo(b.$1.dy));
+  return [for (final r in rows) r.$2];
+}
+
 Future<void> _open(WidgetTester t, String top) async {
   await t.tap(find.byKey(ValueKey('menu-top-$top')));
   await t.pumpAndSettle();
@@ -73,6 +103,17 @@ void main() {
       'app.binder.newInFolder',
       'app.binder.open',
       'app.binder.newFromTemplate',
+      'sub:Page',
+    ]);
+    expect(_layout(t), [
+      'app.page.new',
+      'app.page.newFromTemplate',
+      '|',
+      'app.binder.new',
+      'app.binder.newInFolder',
+      'app.binder.open',
+      'app.binder.newFromTemplate',
+      '|',
       'sub:Page',
     ]);
     expect(find.text('New page'), findsOneWidget, reason: 'File has one New page');
@@ -119,21 +160,23 @@ void main() {
   testWidgets('Edit and View list their items in order with shortcut text', (t) async {
     final w = await ShellWorld.open(t);
     await _open(t, 'Edit');
-    expect(_shown(t), [
+    expect(_layout(t), [
       'canvas.undo',
       'canvas.redo',
       'canvas.paste',
       'canvas.delete',
-      'canvas.bringToFront',
-      'canvas.bringForward',
-      'canvas.sendBackward',
-      'canvas.sendToBack',
+      '|',
       'canvas.find',
       'canvas.findNext',
       'canvas.findPrevious',
       'app.search',
+      '|',
+      'canvas.bringToFront',
+      'canvas.bringForward',
+      'canvas.sendBackward',
+      'canvas.sendToBack',
     ]);
-    expect(find.text('Paste image or file'), findsOneWidget);
+    expect(find.text('Paste'), findsOneWidget);
     for (final (id, keys) in [
       ('canvas.undo', 'Ctrl+Z'),
       ('canvas.redo', 'Ctrl+Y'),
@@ -153,23 +196,26 @@ void main() {
     await t.sendKeyEvent(LogicalKeyboardKey.escape);
     await t.pumpAndSettle();
     await _open(t, 'View');
-    expect(_shown(t), [
+    expect(_layout(t), [
       'canvas.zoomIn',
       'canvas.zoomOut',
       'canvas.zoomReset',
       'canvas.fitAll',
+      '|',
+      'sub:Toolbar',
+      'sub:Appearance',
+      '|',
       'sub:Page background',
       'canvas.showIssues',
-      'sub:Theme',
-      'sub:Toolbar',
-      'sub:Context menu',
       'app.view.panel',
+      'sub:Context menu',
     ]);
+    expect(find.text('Details'), findsOneWidget);
     expect(_shortcut(t, 'canvas.zoomIn'), 'Ctrl+=');
     expect(_shortcut(t, 'canvas.zoomOut'), 'Ctrl+-');
     expect(_shortcut(t, 'canvas.zoomReset'), 'Ctrl+0');
     expect(_shortcut(t, 'canvas.showIssues'), 'F8');
-    await t.tap(find.byKey(const ValueKey('menu-sub-Theme')));
+    await t.tap(find.byKey(const ValueKey('menu-sub-Appearance')));
     await t.pumpAndSettle();
     expect(find.text('Follow system'), findsOneWidget);
     expect(find.text('Light'), findsOneWidget);
@@ -241,7 +287,7 @@ void main() {
     final w = await ShellWorld.open(t);
     expect(w.settings.theme, ThemeSetting.light);
     await _open(t, 'View');
-    await t.tap(find.byKey(const ValueKey('menu-sub-Theme')));
+    await t.tap(find.byKey(const ValueKey('menu-sub-Appearance')));
     await t.pumpAndSettle();
     await _choose(t, 'app.theme.dark');
     expect(w.settings.theme, ThemeSetting.dark);
@@ -312,7 +358,7 @@ void main() {
       await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await t.pumpAndSettle();
       await _open(t, 'View');
-      await t.tap(find.byKey(const ValueKey('menu-sub-Theme')));
+      await t.tap(find.byKey(const ValueKey('menu-sub-Appearance')));
       await t.pumpAndSettle();
       expect(_on(t, 'app.theme.light'), isTrue);
       await w.close(t);

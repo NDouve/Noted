@@ -7,17 +7,16 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 
-import 'binder_colors.dart' show binderDisplayColor;
-
-/// The N of the app icon (`docs/design/icon/noted-icon.svg`, the master): the
-/// path `M100 420 V140 L300 420 V140`, round caps and joins, 72 units wide,
-/// with the master's two-stop gradient. The superscript d is left out, as in
-/// the icon's 16 and 20 px sizes. The brand blue is the icon's, not `accent`.
-const double _pathHeight = 280; // 140 to 420
-const double _pathWidth = 200; // 100 to 300
-const double _strokeUnits = 72;
-const Color _gradientFrom = Color(0xFF2F86C8);
-const Color _gradientTo = Color(0xFF0D4A78);
+/// The compact N of the app icon (`docs/design/icon`, 380 x 380 view box): the
+/// path `M110 330 V74 L270 298 V50`, stroke 56, round caps and joins, with the
+/// master's two-stop gradient (`brand-blue-start` to `brand-blue-end`). The
+/// superscript d is left out, as in the icon's 16 and 20 px sizes. The brand
+/// blue is the icon's, not `accent`, and is decorative: no contrast role.
+const double _pathHeight = 280; // 50 to 330 (centre line)
+const double _pathWidth = 160; // 110 to 270
+const double _strokeUnits = 56;
+const double _leftTop = 74 - 50; // left stem's top, below the right stem's
+const double _rightBottom = 298 - 50; // right stem's bottom, above the left's
 
 /// How tall the mark is, in logical pixels.
 const double brandMarkHeight = 16;
@@ -32,7 +31,7 @@ class BrandMarkGeometry {
   factory BrandMarkGeometry.at(double devicePixelRatio) {
     final h = (brandMarkHeight * devicePixelRatio).round();
     final stroke = (h * _strokeUnits / (_pathHeight + _strokeUnits)).round().clamp(1, h);
-    // The stems' centre lines are this far apart (the path's 200 units against
+    // The stems' centre lines are this far apart (the path's 160 units against
     // its 280, scaled to the height the caps leave).
     final gap = ((h - stroke) * _pathWidth / _pathHeight).round();
     return BrandMarkGeometry._(h, stroke, gap);
@@ -54,12 +53,11 @@ class BrandMarkGeometry {
   (int, int) get stemLefts => (0, stemGap);
 }
 
-/// The two gradient stops of the mark on [background] (`bg-app`): the master's
-/// stops, each lifted in HSL lightness until it has 3:1 against the
-/// background if it has less (the dark stop is 1.9:1 on Precision's `bg-app`).
-(Color, Color) brandMarkColors(Color background, Brightness brightness) => (
-  binderDisplayColor(_gradientFrom, background, brightness),
-  binderDisplayColor(_gradientTo, background, brightness),
+/// The two gradient stops of the mark: the brand tokens, with no lightness
+/// lift (the brand roles come straight from the master gradient).
+(Color, Color) brandMarkColors(NotedColors colors) => (
+  colors.brandBlueStart,
+  colors.brandBlueEnd,
 );
 
 /// The mark and, when [showWordmark], "Noted" beside it. One semantics node
@@ -74,7 +72,7 @@ class BrandMark extends StatelessWidget {
     final theme = Theme.of(context);
     final m = NotedMetrics.of(context);
     final dpr = MediaQuery.devicePixelRatioOf(context);
-    final (from, to) = brandMarkColors(theme.colorScheme.surfaceContainerLow, theme.brightness);
+    final (from, to) = brandMarkColors(NotedColors.of(context));
     final geometry = BrandMarkGeometry.at(dpr);
     return Semantics(
       label: 'Noted',
@@ -129,10 +127,12 @@ class BrandMarkPainter extends CustomPainter {
     final (left, right) = g.stemLefts;
     final x0 = left + half;
     final x1 = right + half;
+    // The path's own steps: the left stem is lower than the right.
+    final scale = (g.height - g.stroke) / _pathHeight;
     return Path()
       ..moveTo(x0, g.height - half)
-      ..lineTo(x0, half)
-      ..lineTo(x1, g.height - half)
+      ..lineTo(x0, half + _leftTop * scale)
+      ..lineTo(x1, half + _rightBottom * scale)
       ..lineTo(x1, half);
   }
 

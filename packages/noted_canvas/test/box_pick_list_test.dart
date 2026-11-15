@@ -584,14 +584,13 @@ void main() {
       expect(c.page.node('a')!.bounds!.x, closeTo(100, 1));
     });
 
-    testWidgets('a hold on empty canvas opens the canvas menu and creates no note', (t) async {
+    testWidgets('a hold on empty canvas creates a note as today', (t) async {
       await pump(t);
       final g = await hold(t, at(t, const Offset(800, 600)));
       await g.up();
       await t.pumpAndSettle();
       expect(list(), findsNothing);
-      expect(find.byKey(const ValueKey('context-menu')), findsOneWidget);
-      expect(c.page.nodes, hasLength(3));
+      expect(c.page.nodes, hasLength(4));
     });
 
     testWidgets('a box with a long-press of its own keeps it and opens no list', (t) async {

@@ -35,7 +35,9 @@ String _camel(String name) {
 String _color(String hex) {
   final h = hex.replaceFirst('#', '').toUpperCase();
   if (h.length != 6 && h.length != 8) throw FormatException('Bad color $hex');
-  return 'Color(0x${h.length == 6 ? 'FF$h' : h})';
+  // Eight digits are CSS `#rrggbbaa`; Flutter wants AARRGGBB.
+  final argb = h.length == 6 ? 'FF$h' : '${h.substring(6)}${h.substring(0, 6)}';
+  return 'Color(0x$argb)';
 }
 
 String _px(String value) {
