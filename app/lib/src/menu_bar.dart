@@ -185,6 +185,7 @@ class AppMenuBar extends StatefulWidget {
     required this.panelShown,
     required this.onTogglePanel,
     required this.focusCanvas,
+    this.contextMenuOpen,
     this.settings,
     this.microsoft,
   });
@@ -211,6 +212,11 @@ class AppMenuBar extends StatefulWidget {
 
   /// Puts the focus on the open page's canvas, if there is one.
   final VoidCallback focusCanvas;
+
+  /// True while a canvas context menu is open: the bar's keyboard entry (F10, a
+  /// lone Alt, Alt+letter) then does nothing, so the bar never takes a second
+  /// editor focus hold.
+  final ValueListenable<bool>? contextMenuOpen;
 
   @override
   State<AppMenuBar> createState() => AppMenuBarState();
@@ -277,7 +283,8 @@ class AppMenuBarState extends State<AppMenuBar> {
     if (s != null) {
       _appRegistries
         ..add(themeCommands(s))
-        ..add(toolbarCommands(s));
+        ..add(toolbarCommands(s))
+        ..add(contextMenuCommands(s));
     }
     final r = CommandRegistry()
       ..register(searchCommand(widget.search))
@@ -432,6 +439,10 @@ class AppMenuBarState extends State<AppMenuBar> {
   // pointer (focus unchanged), Escape, Up and Down and the keys that close it.
   KeyEventResult _onKeyEarly(KeyEvent e) {
     if (!mounted || e.synthesized) return KeyEventResult.ignored;
+    if (widget.contextMenuOpen?.value ?? false) {
+      _altArmed = false;
+      return KeyEventResult.ignored;
+    }
     // A dialog (or any modal route) covers the window: its keys are its own.
     if (!(ModalRoute.of(context)?.isCurrent ?? true)) {
       _altArmed = false;
@@ -805,6 +816,9 @@ class AppMenuBarState extends State<AppMenuBar> {
     if (widget.settings != null) ...[
       _Sub('Theme', [for (final s in ThemeSetting.values) _appItem(AppCommands.themeId(s))]),
       _Sub('Toolbar', [for (final s in ToolbarStyle.values) _appItem(AppCommands.toolbarId(s))]),
+      _Sub('Context menu', [
+        for (final s in ContextMenuStyle.values) _appItem(AppCommands.contextMenuId(s)),
+      ]),
     ],
     _appItem(AppCommands.viewPanel),
   ];

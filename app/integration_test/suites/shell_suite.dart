@@ -4,13 +4,15 @@
 
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:noted/main.dart' show buildModules;
 import 'package:noted/src/notebook.dart';
-import 'package:noted_canvas/noted_canvas.dart' show PageCanvas;
+import 'package:noted_canvas/noted_canvas.dart'
+    show CanvasCommands, CanvasController, ContextMenuStyle, PageCanvas;
 import 'package:noted_core/noted_core.dart';
 
 import '../support/harness.dart';
@@ -152,5 +154,74 @@ void shellSuite() {
 
       });
     });
+
+    testWidgets('C1: right-click a note, Bring to front, then Undo', (t) async {
+      await withSession(t, 'contextfront', (s) async {
+        final a = await putNote(s, 'first', x: 100, y: 100);
+        final b = await putNote(s, 'second', x: 100, y: 124);
+        final c = s.nb.current!;
+        c.select(null);
+        await s.pump(200);
+        expect(_order(c), [a, b]);
+        // Above the second note's grip, over the first note alone.
+        await _rightClick(s, toScreen(t, const Offset(300, 103)));
+        expect(find.byKey(const ValueKey('context-menu')), findsOneWidget);
+        expect(c.selectedId, a);
+        await s.tapKey('context-${CanvasCommands.bringToFront}', settle: 600);
+        expect(_order(c), [b, a]);
+        await _top(s, 'Edit');
+        await s.tapKey('menu-canvas.undo', settle: 600);
+        expect(_order(c), [a, b]);
+      });
+    });
+
+    testWidgets('C2: right-click empty canvas, New note here, type', (t) async {
+      await withSession(t, 'contextnew', (s) async {
+        final c = s.nb.current!;
+        final before = c.page.nodes.length;
+        await _rightClick(s, toScreen(t, const Offset(600, 300)));
+        await s.tapKey('context-canvas.context.newNote', settle: 600);
+        expect(c.page.nodes.length, before + 1);
+        final id = c.page.nodes.last.id;
+        await s.until(() => c.editingId == id, what: 'the new note takes focus');
+        final editor = editorState(t);
+        final node = editor.getNodeAtPath(editor.selection.end.path);
+        await insertTextAt(editor, node, 0, 'typed');
+        await s.pump(500);
+        expect(snapshotOf(s, id), contains('typed'));
+      });
+    });
+
+    testWidgets('C3: Radial on, the same through the ring; the page is there after a restart', (t) async {
+      await withSession(t, 'contextradial', (s) async {
+        s.settings.contextMenu = ContextMenuStyle.radial;
+        await s.pump(300);
+        final c = s.nb.current!;
+        final before = c.page.nodes.length;
+        await _rightClick(s, toScreen(t, const Offset(600, 300)));
+        expect(find.byKey(const ValueKey('radial-menu')), findsOneWidget);
+        await s.tapKey('radial-canvas.context.newNote', settle: 600);
+        expect(c.page.nodes.length, before + 1);
+        final id = c.page.nodes.last.id;
+        await s.until(() => c.editingId == id, what: 'the new note takes focus');
+        final editor = editorState(t);
+        final node = editor.getNodeAtPath(editor.selection.end.path);
+        await insertTextAt(editor, node, 0, 'ringed');
+        await s.pump(500);
+        await s.flush();
+        await s.restart();
+        expect(snapshotOf(s, id), contains('ringed'));
+      });
+    });
   });
 }
+
+/// A right click (the secondary mouse button) at the screen point [at].
+Future<void> _rightClick(Session s, Offset at) async {
+  final g = await s.tester.startGesture(at, kind: PointerDeviceKind.mouse, buttons: kSecondaryMouseButton);
+  await g.up();
+  await g.removePointer();
+  await s.pump(300);
+}
+
+List<String> _order(CanvasController c) => [for (final n in c.page.nodes) n.id];

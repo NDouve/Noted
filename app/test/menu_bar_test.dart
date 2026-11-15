@@ -162,6 +162,7 @@ void main() {
       'canvas.showIssues',
       'sub:Theme',
       'sub:Toolbar',
+      'sub:Context menu',
       'app.view.panel',
     ]);
     expect(_shortcut(t, 'canvas.zoomIn'), 'Ctrl+=');

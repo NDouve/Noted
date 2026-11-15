@@ -1,0 +1,197 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+// The canvas context menus in the app: the session-only Radial setting, its
+// items in View and the gear menu, and the keys of the menu bar and the home
+// while a context menu is open.
+
+import 'dart:io';
+
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:noted/src/app_settings.dart';
+import 'package:noted_canvas/noted_canvas.dart';
+import 'package:noted_core/noted_core.dart' show Bounds;
+
+import 'support/shell_world.dart';
+
+Future<void> _frames(WidgetTester t, [int n = 4]) async {
+  for (var i = 0; i < n; i++) {
+    await t.pump(const Duration(milliseconds: 50));
+  }
+}
+
+Future<void> _rightClick(WidgetTester t, Offset p) async {
+  final g = await t.startGesture(p, kind: PointerDeviceKind.mouse, buttons: kSecondaryMouseButton);
+  await g.up();
+  await g.removePointer();
+  await _frames(t);
+}
+
+void main() {
+  group('setting', () {
+    late Directory dir;
+    late File file;
+
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync('noted_context_setting');
+      file = File('${dir.path}/sub/settings.json');
+    });
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    test('the default is List and nothing is written', () {
+      expect(AppSettings(file).contextMenu, ContextMenuStyle.list);
+      expect(AppSettings(null).contextMenu, ContextMenuStyle.list);
+      expect(file.existsSync(), isFalse);
+    });
+
+    test('Radial is held for the session: it notifies and writes nothing', () {
+      final s = AppSettings(file);
+      var told = 0;
+      s.addListener(() => told++);
+      s.contextMenu = ContextMenuStyle.radial;
+      expect(s.contextMenu, ContextMenuStyle.radial);
+      expect(told, 1);
+      s.contextMenu = ContextMenuStyle.radial;
+      expect(told, 1);
+      expect(file.existsSync(), isFalse);
+      // A new launch starts with the list.
+      expect(AppSettings(file).contextMenu, ContextMenuStyle.list);
+    });
+
+    test('a missing, unknown or damaged file value gives List and the file is left alone', () {
+      file.parent.createSync(recursive: true);
+      const bodies = [
+        '{"format":1,"theme":"light"}',
+        '{"format":1,"contextMenu":"ring","future":true}',
+        '{"format":1,"contextMenu":"radial"}',
+        '{ nope',
+      ];
+      for (final body in bodies) {
+        file.writeAsStringSync(body);
+        final s = AppSettings(file);
+        expect(s.contextMenu, ContextMenuStyle.list, reason: body);
+        s.contextMenu = ContextMenuStyle.radial;
+        expect(file.readAsStringSync(), body, reason: 'nothing written: $body');
+      }
+    });
+
+    test('changing another setting keeps the unknown keys and writes no contextMenu', () {
+      file.parent.createSync(recursive: true);
+      file.writeAsStringSync('{"format":1,"future":true}');
+      final s = AppSettings(file)..contextMenu = ContextMenuStyle.radial;
+      s.toolbar = ToolbarStyle.contextual;
+      final written = file.readAsStringSync();
+      expect(written, contains('"future":true'));
+      expect(written, isNot(contains('contextMenu')));
+    });
+  });
+
+  testWidgets('View > Context menu lists List and Radial, checked; Radial opens the ring', (t) async {
+    final w = await ShellWorld.open(t);
+    await w.addNote(t, 'n', 'hello', at: const Bounds(100, 100, 300, 40));
+    await t.tap(find.byKey(const ValueKey('menu-top-View')));
+    await t.pumpAndSettle();
+    await t.tap(find.byKey(const ValueKey('menu-sub-Context menu')));
+    await t.pumpAndSettle();
+    final list = find.byKey(const ValueKey('menu-app.contextMenu.list'));
+    final radial = find.byKey(const ValueKey('menu-app.contextMenu.radial'));
+    expect(find.descendant(of: list, matching: find.byIcon(Icons.check_rounded)), findsOneWidget);
+    expect(find.descendant(of: radial, matching: find.byIcon(Icons.check_rounded)), findsNothing);
+    await t.tap(radial);
+    await t.pump();
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 50));
+    expect(w.settings.contextMenu, ContextMenuStyle.radial);
+    expect(File('${w.dir.path}/settings.json').readAsStringSync(), isNot(contains('contextMenu')));
+
+    final origin = w.canvasOrigin(t);
+    await _rightClick(t, origin + w.canvas(t).view!.toScreen(const Offset(150, 110)));
+    await t.pump(const Duration(milliseconds: 200));
+    expect(find.byKey(const ValueKey('radial-menu')), findsOneWidget);
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await _frames(t);
+    await w.close(t);
+  });
+
+  testWidgets('the gear menu has Context menu: List and Radial', (t) async {
+    final w = await ShellWorld.open(t);
+    await t.tap(find.byKey(const ValueKey('settings-menu')));
+    await t.pumpAndSettle();
+    expect(find.text('Context menu'), findsOneWidget);
+    await t.tap(find.byKey(const ValueKey('context-menu-radial')));
+    await t.pumpAndSettle();
+    expect(w.settings.contextMenu, ContextMenuStyle.radial);
+    await t.tap(find.byKey(const ValueKey('settings-menu')));
+    await t.pumpAndSettle();
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('context-menu-radial')),
+        matching: find.byIcon(Icons.check_rounded),
+      ),
+      findsOneWidget,
+    );
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await t.pumpAndSettle();
+    await w.close(t);
+  });
+
+  testWidgets('Shift+F10 opens the canvas menu and never focuses the menu bar', (t) async {
+    final w = await ShellWorld.open(t);
+    await w.addNote(t, 'n', 'hello');
+    w.nb.current!.select('n');
+    await t.pump();
+    await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await t.sendKeyEvent(LogicalKeyboardKey.f10);
+    await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await _frames(t);
+    expect(find.byKey(const ValueKey('context-menu')), findsOneWidget);
+    expect(w.bar(t).holding, isFalse);
+    expect(w.bar(t).hasFocus, isFalse);
+    // Keys of the app do nothing under the open menu.
+    final open = w.nb.currentId;
+    await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await t.sendKeyEvent(LogicalKeyboardKey.keyN);
+    await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await _frames(t);
+    expect(w.nb.currentId, open);
+    expect(find.byKey(const ValueKey('context-menu')), findsOneWidget);
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await _frames(t);
+    await w.close(t);
+  });
+
+  testWidgets('a note being edited: Shift+F10 opens its menu under the hold; F10 and Alt leave the bar alone; Escape restores', (t) async {
+    final w = await ShellWorld.open(t);
+    await w.addNote(t, 'n', 'hello brave new world');
+    await w.editNote(t, 'n');
+    final c = w.nb.current!;
+    expect(c.editingId, 'n');
+    final before = noteSelection(t);
+    expect(before, isNotNull);
+    await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await t.sendKeyEvent(LogicalKeyboardKey.f10);
+    await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await _frames(t);
+    expect(find.byKey(const ValueKey('context-menu')), findsOneWidget);
+    expect(c.editorFocusHold.count, 1);
+    // F10 and a lone Alt give the bar no focus and no second hold.
+    await t.sendKeyEvent(LogicalKeyboardKey.f10);
+    await t.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+    await t.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+    await _frames(t);
+    expect(w.bar(t).holding, isFalse);
+    expect(c.editorFocusHold.count, 1);
+    expect(find.byKey(const ValueKey('context-menu')), findsOneWidget);
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await _frames(t, 6);
+    expect(find.byKey(const ValueKey('context-menu')), findsNothing);
+    expect(c.editorFocusHold.count, 0);
+    expect(c.editingId, 'n');
+    expect(noteSelection(t), before);
+    await w.close(t);
+  });
+}

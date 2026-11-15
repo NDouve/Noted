@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/services.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_sync/noted_sync.dart' show GuardQuestion;
@@ -73,6 +74,22 @@ class _HomeState extends State<Home> {
   /// The open page canvas's command registry (for the menu bar); null with no
   /// canvas.
   final ValueNotifier<CommandRegistry?> _registry = ValueNotifier<CommandRegistry?>(null);
+
+  /// Whether the open canvas has a context menu open (the menu bar and the
+  /// app's keys leave their keys alone then).
+  final ValueNotifier<bool> _contextOpen = ValueNotifier<bool>(false);
+  ValueListenable<bool>? _canvasContextOpen;
+
+  void _followContextMenu() {
+    final next = _canvasKey?.currentState?.contextMenuOpen;
+    if (identical(next, _canvasContextOpen)) return;
+    _canvasContextOpen?.removeListener(_syncContextOpen);
+    _canvasContextOpen = next;
+    next?.addListener(_syncContextOpen);
+    _syncContextOpen();
+  }
+
+  void _syncContextOpen() => _contextOpen.value = _canvasContextOpen?.value ?? false;
 
   // The contextual panel, for this session only (it is not saved). Inline from
   // [_panelInlineWidth] wide, shown unless hidden; narrower it is an overlay
@@ -299,6 +316,8 @@ class _HomeState extends State<Home> {
     _searchCommands.dispose();
     _findRequests.dispose();
     _registry.dispose();
+    _canvasContextOpen?.removeListener(_syncContextOpen);
+    _contextOpen.dispose();
     _panelShown.dispose();
     if (widget.search == null) _search.dispose();
     super.dispose();
@@ -343,6 +362,8 @@ class _HomeState extends State<Home> {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
     // A menu has the focus: only its own keys act.
     if (_menu.currentState?.hasFocus ?? false) return KeyEventResult.ignored;
+    // So does an open canvas context menu: Ctrl+N and Ctrl+Shift+F do nothing.
+    if (_contextOpen.value) return KeyEventResult.ignored;
     final k = HardwareKeyboard.instance;
     if (!k.isControlPressed && !k.isMetaPressed) return KeyEventResult.ignored;
     final actions = _tree.currentState;
@@ -433,6 +454,7 @@ class _HomeState extends State<Home> {
       }
     },
     canvas: _registry,
+    contextMenuOpen: _contextOpen,
     panelShown: _panelShown,
     onTogglePanel: _togglePanel,
     focusCanvas: () => _canvasKey?.currentState?.focusCanvas(),
@@ -457,6 +479,7 @@ class _HomeState extends State<Home> {
   void _canvasCommandsChanged(CommandRegistry? r) {
     if (!mounted) return;
     _registry.value = r ?? _canvasKey?.currentState?.commands;
+    _followContextMenu();
   }
 
   // Keeps the menu's Contextual panel check in step with what is on screen.
@@ -648,6 +671,7 @@ class _HomeState extends State<Home> {
                               aiMerge: notebook.aiMerge,
                               extraCommands: () => [searchCommand(_search)],
                               toolbar: (widget.settings?.toolbar ?? ToolbarStyle.tabs).layout,
+                              contextMenuStyle: widget.settings?.contextMenu ?? ContextMenuStyle.list,
                               onCommandsChanged: isMobilePlatform ? null : _canvasCommandsChanged,
                               overlayPanel: overlay
                                   ? (context, registry) => ContextPanelOverlay(
