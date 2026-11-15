@@ -76,6 +76,7 @@ class PageCanvas extends StatefulWidget {
     this.boxTypeName,
     this.onCommandsChanged,
     this.sidePanel,
+    this.overlayPanel,
   });
 
   final CanvasController controller;
@@ -90,6 +91,11 @@ class PageCanvas extends StatefulWidget {
   /// Host only. A panel built with this canvas's live registry, shown right of
   /// the canvas and below the toolbar; null shows none.
   final Widget Function(BuildContext context, CommandRegistry registry)? sidePanel;
+
+  /// Host only. A panel drawn over the canvas area (below the toolbar, so the
+  /// toolbar stays uncovered), built with the canvas's live registry; null shows
+  /// none. It fills the area: it brings its own scrim and position.
+  final Widget Function(BuildContext context, CommandRegistry registry)? overlayPanel;
 
   /// The name of a box type for the list of boxes under a point ("Note"),
   /// or null for a type the app has no name for (it then reads "Unsupported
@@ -1151,16 +1157,24 @@ class PageCanvasState extends State<PageCanvas>
             readOnly: _readOnly,
           ),
           Expanded(
-            child: widget.sidePanel == null
-                ? _canvasArea(scheme)
-                : Row(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (widget.sidePanel == null)
+                  _canvasArea(scheme)
+                else
+                  Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Expanded(child: _canvasArea(scheme)),
                       widget.sidePanel!(context, _commands),
                     ],
                   ),
+                if (widget.overlayPanel != null) widget.overlayPanel!(context, _commands),
+              ],
+            ),
           ),
+
 
         ],
       ),

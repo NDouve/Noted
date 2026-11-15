@@ -9,6 +9,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/context_panel.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
@@ -94,7 +95,7 @@ void main() {
 
   testWidgets('the panel overlay moves its hold when the controller changes (A released, B held)', (t) async {
     final w = await ShellWorld.open(t);
-    final registry = ValueNotifier<CommandRegistry?>(null);
+    final registry = CommandRegistry();
     CanvasController make(String id) => CanvasController(
       NotedPage.create(PageMeta.create(id: id, title: '', order: 0)),
       w.nb.current!.modules,
@@ -127,6 +128,49 @@ void main() {
     expect(b.editorFocusHold.count, 0, reason: 'the controller it held is released');
     expect(a.editorFocusHold.count, 0);
     await t.pumpWidget(const SizedBox());
+    await w.close(t);
+  });
+
+  testWidgets('the focus ring is a 2px accent border in Precision too', (t) async {
+    final w = await ShellWorld.open(t);
+    w.settings.theme = ThemeSetting.dark;
+    await _frames(t);
+    final accent = DesignColors.dark.accent;
+    await t.sendKeyEvent(LogicalKeyboardKey.f10);
+    await _frames(t);
+    final ring = t.widget<DecoratedBox>(find.byKey(const ValueKey('focus-ring')));
+    final border = (ring.decoration as BoxDecoration).border! as Border;
+    expect(border.top.width, 2);
+    expect(border.top.color, accent);
+    expect(border.top.color.a, 1.0);
+    expect(contrastRatio(accent, DesignColors.dark.bgApp), greaterThanOrEqualTo(3));
+    await w.close(t);
+  });
+
+  testWidgets('the overlay panel and its scrim start below the toolbar', (t) async {
+    final w = await ShellWorld.open(t, size: const Size(1100, 800));
+    await t.tap(find.byKey(const ValueKey('menu-top-View')));
+    await _frames(t);
+    await t.tap(find.byKey(const ValueKey('menu-app.view.panel')));
+    await _frames(t, 6);
+    final toolbarBottom = t.getRect(find.byType(CommandToolbar)).bottom;
+    expect(t.getRect(find.byKey(const ValueKey('context-panel-overlay'))).top, greaterThanOrEqualTo(toolbarBottom));
+    expect(t.getRect(find.byKey(const ValueKey('context-panel-scrim'))).top, greaterThanOrEqualTo(toolbarBottom));
+    await w.close(t);
+  });
+
+  testWidgets('items of a menu with a checkable item share the leading column, checked or not', (t) async {
+    final w = await ShellWorld.open(t);
+    await t.tap(find.byKey(const ValueKey('menu-top-View')));
+    await _frames(t);
+    double left(String id) => t.getTopLeft(find.descendant(of: find.byKey(ValueKey('menu-$id')), matching: find.byType(Text)).first).dx;
+    final plain = left('canvas.zoomIn');
+    expect(left('app.view.panel'), plain, reason: 'the label of a checkable item lines up with the others');
+    await t.tap(find.byKey(const ValueKey('menu-app.view.panel')));
+    await _frames(t, 6);
+    await t.tap(find.byKey(const ValueKey('menu-top-View')));
+    await _frames(t);
+    expect(left('app.view.panel'), plain, reason: 'and stays there unchecked');
     await w.close(t);
   });
 }

@@ -543,11 +543,18 @@ void main() {
   ) async {
     final w = await ShellWorld.open(t);
     final accent = Theme.of(t.element(find.byType(Scaffold).first)).colorScheme.primary;
-    bool outlined(Finder f) =>
-        t.widgetList<Material>(find.descendant(of: f, matching: find.byType(Material))).any((m) {
-          final s = m.shape;
-          return s is OutlinedBorder && s.side.color == accent && s.side.width == 2;
+    // The ring is a foreground decoration around the button: a solid, opaque 2px
+    // accent border, inside the bounds.
+    bool outlined(Finder f) => t
+        .widgetList<DecoratedBox>(
+          find.ancestor(of: f, matching: find.byKey(const ValueKey('focus-ring'))),
+        )
+        .any((d) {
+          final b = (d.decoration as BoxDecoration).border;
+          if (b is! Border || d.position != DecorationPosition.foreground) return false;
+          return b.top.width == 2 && b.top.color == accent && accent.a == 1.0;
         });
+
     await t.sendKeyEvent(LogicalKeyboardKey.f10);
     await t.pump();
     await t.pump();

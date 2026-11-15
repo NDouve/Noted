@@ -649,7 +649,17 @@ class _HomeState extends State<Home> {
                               extraCommands: () => [searchCommand(_search)],
                               toolbar: (widget.settings?.toolbar ?? ToolbarStyle.tabs).layout,
                               onCommandsChanged: isMobilePlatform ? null : _canvasCommandsChanged,
+                              overlayPanel: overlay
+                                  ? (context, registry) => ContextPanelOverlay(
+                                      notebook: notebook,
+                                      controller: _canvasKey?.currentState?.controller ?? current,
+                                      registry: registry,
+                                      onClose: _togglePanel,
+                                      focusCanvas: () => _canvasKey?.currentState?.focusCanvas(),
+                                    )
+                                  : null,
                               sidePanel: inline
+
                                   ? (context, registry) => ContextPanel(
                                       key: const ValueKey('context-panel-inline'),
                                       notebook: notebook,
@@ -662,16 +672,6 @@ class _HomeState extends State<Home> {
                             ),
                           ),
                               ),
-                              if (overlay)
-                                Positioned.fill(
-                                  child: ContextPanelOverlay(
-                                    notebook: notebook,
-                                    controller: current,
-                                    registry: _registry,
-                                    onClose: _togglePanel,
-                                    focusCanvas: () => _canvasKey?.currentState?.focusCanvas(),
-                                  ),
-                                ),
                             ],
                           ),
                         ),

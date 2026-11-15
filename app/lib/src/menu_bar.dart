@@ -915,11 +915,8 @@ class AppMenuBarState extends State<AppMenuBar> {
         }
         return null;
       }),
-      // Keyboard focus: a 2px accent outline.
-      side: WidgetStateProperty.resolveWith((s) {
-        if (s.contains(WidgetState.focused)) return BorderSide(color: scheme.primary, width: 2);
-        return BorderSide.none;
-      }),
+      // Keyboard focus is drawn by [_FocusRing] (a solid 2px accent outline inside
+      // the bounds), not by the button's own border, which the ink can lose.
     );
   }
 
@@ -942,7 +939,8 @@ class AppMenuBarState extends State<AppMenuBar> {
     );
   }
 
-  Widget _buildEntry(BuildContext context, _Entry e, {FocusNode? focusNode}) {
+  // [reserve]: the menu has a checkable item, so every item keeps the check column.
+  Widget _buildEntry(BuildContext context, _Entry e, {FocusNode? focusNode, bool reserve = false}) {
     final m = NotedMetrics.of(context);
     final scheme = Theme.of(context).colorScheme;
     final type = NotedTypography.of(context);
@@ -953,24 +951,33 @@ class AppMenuBarState extends State<AppMenuBar> {
           child: Divider(height: 1, thickness: 1, color: scheme.outline),
         );
       case _Sub():
-        return SubmenuButton(
-          key: ValueKey('menu-sub-${e.label}'),
+        final inner = _reserveCheck(e.children);
+        return _FocusRing(
           focusNode: focusNode,
-          style: _itemStyle(context),
-          menuStyle: _panelStyle(context),
-          menuChildren: [for (final c in e.children) _buildEntry(context, c)],
-          child: Text(e.label),
+          builder: (node) => SubmenuButton(
+            key: ValueKey('menu-sub-${e.label}'),
+            focusNode: node,
+            style: _itemStyle(context),
+            menuStyle: _panelStyle(context),
+            leadingIcon: reserve ? const MenuCheckMark(checked: false) : null,
+            menuChildren: [for (final c in e.children) _buildEntry(context, c, reserve: inner)],
+            child: Text(e.label),
+          ),
         );
       case _Item():
         return TapRegion(
           groupId: _group,
-          child: MenuItemButton(
-            key: ValueKey('menu-${e.id}'),
+          child: _FocusRing(
             focusNode: focusNode,
+            builder: (node) => MenuItemButton(
+            key: ValueKey('menu-${e.id}'),
+            focusNode: node,
             requestFocusOnHover: false,
             style: _itemStyle(context, destructive: e.destructive),
             onPressed: e.enabled ? () => _choose(e) : null,
-            leadingIcon: e.checked == null ? null : MenuCheckMark(checked: e.checked!),
+            leadingIcon: e.checked != null
+                ? MenuCheckMark(checked: e.checked!)
+                : (reserve ? const MenuCheckMark(checked: false) : null),
             trailingIcon: e.shortcut == null
                 ? null
                 : Padding(
@@ -986,10 +993,13 @@ class AppMenuBarState extends State<AppMenuBar> {
                     ),
                   ),
             child: Text(e.label),
+            ),
           ),
         );
     }
   }
+
+  bool _reserveCheck(List<_Entry> entries) => entries.any((e) => e is _Item && e.checked != null);
 
   // The first entry a keyboard can focus: an enabled item or a submenu.
   int _firstFocusable(List<_Entry> entries) =>
@@ -1007,22 +1017,32 @@ class AppMenuBarState extends State<AppMenuBar> {
         onClose: () => _isOpen[i] = false,
         menuChildren: [
           for (final (k, e) in entries.indexed)
-            _buildEntry(context, e, focusNode: k == first ? _firstNode[i] : null),
+            _buildEntry(
+              context,
+              e,
+              focusNode: k == first ? _firstNode[i] : null,
+              reserve: _reserveCheck(entries),
+            ),
         ],
-        builder: (context, controller, child) => TextButton(
-          key: ValueKey('menu-top-${_titles[i]}'),
+        builder: (context, controller, child) => _FocusRing(
           focusNode: _top[i],
-          style: _itemStyle(context, bar: true),
-          // With a menu open, pointing at another menu opens that one.
-          onHover: (hovered) {
-            if (hovered && !_isOpen[i] && _isOpen.contains(true)) {
-              _closeMenus();
-              controller.open();
-            }
-          },
-          onPressed: () => controller.isOpen ? controller.close() : controller.open(),
-          child: Text(_titles[i]),
+          builder: (node) => TextButton(
+            key: ValueKey('menu-top-${_titles[i]}'),
+            focusNode: node,
+
+            style: _itemStyle(context, bar: true),
+            // With a menu open, pointing at another menu opens that one.
+            onHover: (hovered) {
+              if (hovered && !_isOpen[i] && _isOpen.contains(true)) {
+                _closeMenus();
+                controller.open();
+              }
+            },
+            onPressed: () => controller.isOpen ? controller.close() : controller.open(),
+            child: Text(_titles[i]),
+          ),
         ),
+
       ),
     );
   }
@@ -1059,6 +1079,69 @@ class AppMenuBarState extends State<AppMenuBar> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// A solid 2px `accent` outline, inside the bounds, around the button built by
+/// [builder] while that button's own node has keyboard focus. Drawn here rather
+/// than as the button's border, which came out as a 1px pale line at run time
+/// (N7 needs 3:1). [focusNode] is used when given, else one is made.
+class _FocusRing extends StatefulWidget {
+  const _FocusRing({this.focusNode, required this.builder});
+
+  final FocusNode? focusNode;
+  final Widget Function(FocusNode node) builder;
+
+  @override
+  State<_FocusRing> createState() => _FocusRingState();
+}
+
+class _FocusRingState extends State<_FocusRing> {
+  FocusNode? _own;
+
+  FocusNode get _node => widget.focusNode ?? (_own ??= FocusNode(debugLabel: 'menu item'));
+
+  @override
+  void initState() {
+    super.initState();
+    _node.addListener(_changed);
+  }
+
+  @override
+  void didUpdateWidget(_FocusRing old) {
+    super.didUpdateWidget(old);
+    if (old.focusNode != widget.focusNode) {
+      (old.focusNode ?? _own)?.removeListener(_changed);
+      _node.addListener(_changed);
+    }
+  }
+
+  @override
+  void dispose() {
+    _node.removeListener(_changed);
+    _own?.dispose();
+    super.dispose();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ringed =
+        _node.hasPrimaryFocus && FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
+    return DecoratedBox(
+      key: ringed ? const ValueKey('focus-ring') : null,
+      position: DecorationPosition.foreground,
+      decoration: BoxDecoration(
+        border: ringed
+            ? Border.fromBorderSide(BorderSide(color: Theme.of(context).colorScheme.primary, width: 2))
+            : null,
+        borderRadius: NotedMetrics.of(context).borderMd,
+      ),
+      child: widget.builder(_node),
     );
   }
 }

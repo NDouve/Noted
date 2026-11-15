@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:noted_canvas/noted_canvas.dart';
@@ -251,7 +250,7 @@ class ContextPanelOverlay extends StatefulWidget {
 
   final Notebook notebook;
   final CanvasController controller;
-  final ValueListenable<CommandRegistry?> registry;
+  final CommandRegistry registry;
   final VoidCallback onClose;
   final VoidCallback focusCanvas;
 
@@ -344,18 +343,14 @@ class _ContextPanelOverlayState extends State<ContextPanelOverlay> {
             top: 0,
             right: 0,
             bottom: 0,
-            child: ValueListenableBuilder<CommandRegistry?>(
-              valueListenable: widget.registry,
-              builder: (context, registry, _) => registry == null
-                  ? const SizedBox.shrink()
-                  : ContextPanel(
-                      key: const ValueKey('context-panel-overlay'),
-                      notebook: widget.notebook,
-                      controller: widget.controller,
-                      registry: registry,
-                      onClose: widget.onClose,
-                    ),
+            child: ContextPanel(
+              key: const ValueKey('context-panel-overlay'),
+              notebook: widget.notebook,
+              controller: widget.controller,
+              registry: widget.registry,
+              onClose: widget.onClose,
             ),
+
           ),
         ],
       ),
