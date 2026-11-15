@@ -439,4 +439,94 @@ void main() {
       expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
     });
   });
+
+  group('provider names (design 2026-11-15-01 section 5)', () {
+    String named(String id, String suffix) => '${dir.path}$sep$id$suffix.canvas';
+
+    test('Drive, Finder and Nextcloud names are merged into the original and deleted', () async {
+      await start();
+      final (id, _) = await closedPageWithBox();
+      for (final suffix in [' (1)', ' 2', ' (conflicted copy 2018-04-10 093612)']) {
+        final added = noteBox('from $suffix');
+        final path = named(id, suffix);
+        await writeCopy(path, (await other.load(id)).insertNode(added));
+        await nb.checkFile(path);
+        expect(File(path).existsSync(), isFalse, reason: suffix);
+        expect(onDisk(id).node(added.id), isNotNull, reason: suffix);
+      }
+      expect(nb.unreadable, isEmpty);
+    });
+
+    test('a chain with a missing middle file is merged into the original', () async {
+      await start();
+      final (id, box) = await closedPageWithBox();
+      final added = noteBox('chain');
+      final path = named(id, '-DESKTOP-4QK2N8L (1)'); // no <id>-DESKTOP-4QK2N8L.canvas
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      await nb.checkFile(path);
+      expect(File(path).existsSync(), isFalse);
+      expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
+    });
+
+    test('opening <id> 2.canvas from a file association merges it as a copy', () async {
+      await start();
+      final (id, box) = await closedPageWithBox();
+      final added = noteBox('opened as a file');
+      final path = named(id, ' 2');
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      await nb.adoptUnlistedPageFile(path, id);
+      await nb.checkFile(path);
+      expect(File(path).existsSync(), isFalse);
+      expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
+      expect(nb.unreadable, isEmpty);
+    });
+
+    // A chosen <id> 2.canvas (id has no <id>.canvas when it is chosen), then
+    // <id>.canvas comes back: <id> 2 (1).canvas is a copy of the chosen file.
+    Future<(String, BoxRecord, String)> withChosenSecond() async {
+      final (id, box) = await closedPageWithBox();
+      final text = File(pathOf(id)).readAsStringSync();
+      final chosen = named(id, ' 2');
+      final dupe = '${dir.path}${sep}dupe.canvas';
+      File(pathOf(id)).renameSync(dupe);
+      await nb.checkFile(pathOf(id));
+      await nb.checkFile(dupe);
+      await busyRetry(() => File(chosen).writeAsString(text));
+      await nb.checkFile(chosen);
+      await nb.adoptUnlistedPageFile(chosen, id);
+      await busyRetry(() => File(pathOf(id)).writeAsString(text));
+      await nb.checkFile(pathOf(id));
+      return (id, box, chosen);
+    }
+
+    test('a copy of a chosen <id> 2.canvas merges into it, not into <id>.canvas', () async {
+      await start();
+      final (id, box, chosen) = await withChosenSecond();
+      final plain = File(pathOf(id)).readAsStringSync();
+      final added = noteBox('into the chosen file');
+      final path = named(id, ' 2 (1)');
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      await nb.checkFile(path);
+      expect(File(path).existsSync(), isFalse);
+      expect(readPage(File(chosen).readAsStringSync()).nodes.map((n) => n.id).toSet(), {box.id, added.id});
+      expect(File(pathOf(id)).readAsStringSync(), plain);
+    });
+
+    test('the watcher merges it into the chosen file too', () async {
+      await start(watch: true);
+      final (id, box, chosen) = await withChosenSecond();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final plain = File(pathOf(id)).readAsStringSync();
+      final added = noteBox('via watcher');
+      final path = named(id, ' 2 (1)');
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      final end = DateTime.now().add(const Duration(seconds: 20));
+      while (File(path).existsSync()) {
+        if (DateTime.now().isAfter(end)) fail('the copy was not merged in time');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      expect(readPage(File(chosen).readAsStringSync()).nodes.map((n) => n.id).toSet(), {box.id, added.id});
+      expect(File(pathOf(id)).readAsStringSync(), plain);
+    }, timeout: const Timeout(Duration(seconds: 60)));
+  });
 }
