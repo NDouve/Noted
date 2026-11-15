@@ -188,20 +188,30 @@ Future<_Drop> _dropAside(
   } catch (e) {
     return _Drop(_DropKind.failed, file: aside, error: e);
   }
-  // V2 (re-check), V3 (redundancy again) and V4 (delete).
+  // V5's look at the old name: a by-name write after V1 landed there. Taken on
+  // every way out after V1, so a late file is never left unreported.
+  String? lateOf() =>
+      late &&
+          FileSystemEntity.typeSync(aside.path, followLinks: false) !=
+              FileSystemEntityType.notFound
+      ? aside.path
+      : null;
+  // V2 (re-check), V3 (redundancy again) and V4 (delete). The reads and stats
+  // are tried again a few times on an I/O error (a sync client may hold the
+  // file for a moment) before the file is kept.
   var keep = false;
   try {
     if (beforeFinalCheck != null) await beforeFinalCheck(drop.path);
-    final first = await drop.stat();
+    final first = await _retryIo(drop.stat);
     if (first.type == FileSystemEntityType.notFound) {
-      return const _Drop(_DropKind.vanished);
+      return _Drop(_DropKind.vanished, late: lateOf());
     }
     if (first.type != FileSystemEntityType.file) {
       keep = true;
     } else {
-      final equal = await _matches(drop, bytes, identity);
+      final equal = await _retryIo(() => _matches(drop, bytes, identity));
       if (afterFinalRead != null) await afterFinalRead(drop.path);
-      final second = await drop.stat();
+      final second = await _retryIo(drop.stat);
       keep = !equal ||
           second.type != FileSystemEntityType.file ||
           second.size != first.size ||
@@ -219,12 +229,7 @@ Future<_Drop> _dropAside(
       failure = e;
     }
   }
-  // V5. A by-name write after V1 landed at the old name.
-  final lateFile = late &&
-          FileSystemEntity.typeSync(aside.path, followLinks: false) !=
-              FileSystemEntityType.notFound
-      ? aside.path
-      : null;
+  final lateFile = lateOf();
   if (failure != null) {
     return _Drop(_DropKind.failed, file: drop, late: lateFile, error: failure);
   }
@@ -234,6 +239,19 @@ Future<_Drop> _dropAside(
 
 /// A fresh name for a verified file about to be dropped. It ends in
 /// [verifiedSuffix], so a leftover is swept like any other verified aside.
+/// Runs [op], trying again a few times with short delays when it throws a
+/// [FileSystemException].
+Future<T> _retryIo<T>(Future<T> Function() op) async {
+  for (var attempt = 1;; attempt++) {
+    try {
+      return await op();
+    } on FileSystemException {
+      if (attempt >= 4) rethrow;
+      await Future<void>.delayed(Duration(milliseconds: 25 * attempt));
+    }
+  }
+}
+
 String _dropName(String target) =>
     '$target.$pid-${_random.nextInt(1 << 32).toRadixString(16)}-'
     '${_random.nextInt(1 << 32).toRadixString(16)}$verifiedSuffix';
@@ -743,6 +761,8 @@ Future<DeleteResult> deleteFileIfMatches(
     afterFinalRead: afterFinalRead,
   );
   if (drop.kind == _DropKind.failed) {
+    // A file that arrived at the old name is newer data: it goes back first.
+    if (drop.late != null) await _keepForDelete(File(drop.late!), target, beforeRestore);
     await _putBackOrThrow(drop.file!, target, beforeRestore, drop.error!);
     throw drop.error!;
   }

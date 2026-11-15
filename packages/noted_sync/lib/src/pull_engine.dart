@@ -1418,7 +1418,10 @@ class PullEngine {
         _step('journalSaved');
         // A file the final check kept (a version written into the set-aside copy):
         // it is a conflict copy of this page, reported like the one below.
+        // Only a real kept copy: a plain .cas-verified leftover (a delete that failed)
+        // is the sweep's, not a copy of a version.
         for (final kept in [if (res.keptPath != null) res.keptPath!, ...res.alsoKept]) {
+          if (!kept.contains('-recovered-')) continue;
           _issue(_relOf(kept), 'Kept as a copy of a version replaced meanwhile');
         }
       } else {

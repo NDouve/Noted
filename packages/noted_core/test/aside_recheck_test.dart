@@ -6,10 +6,56 @@
 // V5 of the 2026-11-15 design): a fake sync swaps the verified aside, in the
 // seams, between the verify and the delete.
 
+import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+
+/// A file whose next [stat] throws when [fail] says so (a sync client holding
+/// it for a moment); everything the library calls is forwarded.
+class _StatFile implements File {
+  _StatFile(this._f, this.fail);
+
+  final File _f;
+  final bool Function() fail;
+
+  @override
+  String get path => _f.path;
+
+  @override
+  File get absolute => _f.absolute;
+
+  @override
+  Future<FileStat> stat() {
+    if (fail()) throw const FileSystemException('injected hold');
+    return _f.stat();
+  }
+
+  @override
+  Future<Uint8List> readAsBytes() => _f.readAsBytes();
+
+  @override
+  Future<int> length() => _f.length();
+
+  @override
+  Stream<List<int>> openRead([int? start, int? end]) => _f.openRead(start, end);
+
+  @override
+  Future<File> rename(String newPath) => _f.rename(newPath);
+
+  @override
+  void deleteSync({bool recursive = false}) =>
+      _f.deleteSync(recursive: recursive);
+
+  @override
+  Future<bool> exists() => _f.exists();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnimplementedError('${invocation.memberName}');
+}
 
 void main() {
   late Directory dir;
@@ -359,6 +405,150 @@ void main() {
       expect(r.deleted, isFalse);
       expect(File(p('a.bin')).readAsBytesSync(), [1, 2, 3]);
     });
+  });
+
+  group('a late file with the drop file vanished or stuck (V5 on every way out)', () {
+    test(
+      'replace: the drop file vanished at the re-check: the late file is kept',
+      () async {
+        seed();
+        late String old;
+        final r = await replaceIfUnchanged(
+          tmpFile(),
+          p('a.bin'),
+          [1, 2, 3],
+          beforeAsideDelete: (path) async => old = path,
+          beforeFinalCheck: (drop) async {
+            File(drop).deleteSync();
+            File(old).writeAsBytesSync([5, 5]);
+          },
+        );
+        expect(r.outcome, ReplaceOutcome.replaced);
+        expect(r.keptPath, contains('-recovered-'));
+        expect(File(r.keptPath!).readAsBytesSync(), [5, 5]);
+        expect(File(old).existsSync(), isFalse);
+        expect(names(), hasLength(2));
+      },
+    );
+
+    test('delete: the drop file vanished at the re-check: the late file goes back to the target', () async {
+      seed();
+      late String old;
+      final r = await deleteFileIfMatches(
+        p('a.bin'),
+        bytes: [1, 2, 3],
+        beforeAsideDelete: (path) async => old = path,
+        beforeFinalCheck: (drop) async {
+          File(drop).deleteSync();
+          File(old).writeAsBytesSync([5, 5]);
+        },
+      );
+      expect(r.outcome, DeleteOutcome.changed);
+      expect(File(p('a.bin')).readAsBytesSync(), [5, 5]);
+      expect(names(), ['a.bin']);
+    });
+
+    // An open handle stops the unlink on Windows only.
+    final windows = Platform.isWindows;
+
+    test(
+      'replace: the delete fails with a late file: both are kept',
+      () async {
+        seed();
+        late String old;
+        RandomAccessFile? hold;
+        final r = await replaceIfUnchanged(
+          tmpFile(),
+          p('a.bin'),
+          [1, 2, 3],
+          beforeAsideDelete: (path) async => old = path,
+          beforeFinalCheck: (drop) async {
+            hold = File(drop).openSync();
+            File(old).writeAsBytesSync([5, 5]);
+          },
+        );
+        hold!.closeSync();
+        expect(r.outcome, ReplaceOutcome.replaced);
+        expect(File(r.keptPath!).readAsBytesSync(), [
+          1,
+          2,
+          3,
+        ], reason: 'the stuck verified file');
+        expect(r.alsoKept, hasLength(1));
+        expect(r.alsoKept.single, contains('-recovered-'));
+        expect(File(r.alsoKept.single).readAsBytesSync(), [5, 5]);
+      },
+      skip: windows
+          ? false
+          : 'needs a delete that fails (open handle, Windows)',
+    );
+
+    test(
+      'delete: the delete fails with a late file: the late file is back at the target, the error names the other',
+      () async {
+        seed();
+        late String old;
+        RandomAccessFile? hold;
+        await expectLater(
+          deleteFileIfMatches(
+            p('a.bin'),
+            bytes: [1, 2, 3],
+            beforeAsideDelete: (path) async => old = path,
+            beforeFinalCheck: (drop) async {
+              hold = File(drop).openSync();
+              File(old).writeAsBytesSync([5, 5]);
+            },
+          ),
+          throwsA(isA<FileSystemException>()),
+        );
+        hold!.closeSync();
+        expect(File(p('a.bin')).readAsBytesSync(), [5, 5]);
+        expect(File(old).existsSync(), isFalse);
+      },
+      skip: windows
+          ? false
+          : 'needs a delete that fails (open handle, Windows)',
+    );
+  });
+
+  group('V2 retries a brief I/O error before keeping the file', () {
+    test(
+      'a stat that fails once, then succeeds: replace deletes normally',
+      () async {
+        seed();
+        final tmp = tmpFile();
+        var failed = false;
+        final r = await IOOverrides.runZoned(
+          () => replaceIfUnchanged(tmp, p('a.bin'), [1, 2, 3]),
+          createFile: (path) => _StatFile(Zone.root.run(() => File(path)), () {
+            if (failed || !path.endsWith(verifiedSuffix)) return false;
+            return failed = true;
+          }),
+        );
+        expect(failed, isTrue);
+        expect(r.outcome, ReplaceOutcome.replaced);
+        expect(r.keptPath, isNull);
+        expect(names(), ['a.bin']);
+      },
+    );
+
+    test(
+      'a stat that fails once, then succeeds: delete deletes normally',
+      () async {
+        seed();
+        var failed = false;
+        final r = await IOOverrides.runZoned(
+          () => deleteFileIfMatches(p('a.bin'), bytes: [1, 2, 3]),
+          createFile: (path) => _StatFile(Zone.root.run(() => File(path)), () {
+            if (failed || !path.endsWith(verifiedSuffix)) return false;
+            return failed = true;
+          }),
+        );
+        expect(failed, isTrue);
+        expect(r.deleted, isTrue);
+        expect(names(), isEmpty);
+      },
+    );
   });
 
   group('PageStore', () {
