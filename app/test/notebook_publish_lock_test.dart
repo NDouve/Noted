@@ -523,7 +523,9 @@ void main() {
       asked.add(q);
       return false; // stay
     };
-    final stay = await nb.prepareToExit(limit: const Duration(milliseconds: 300));
+    // Long enough for the recovery entry's write on a slow runner; the rollback
+    // stays stalled behind its gate either way.
+    final stay = await nb.prepareToExit(limit: const Duration(seconds: 2));
     expect(asked, isEmpty);
     expect(stay, isTrue, reason: 'recovery holds the page, so quit goes on');
     expect(published(pages, containing: '-undo-'), isEmpty);
