@@ -158,7 +158,8 @@ class _TreeProxy implements PageTreeActions {
   Future<void> binderNewPageFromTemplate(BinderSection binder) =>
       _go((a) => a.binderNewPageFromTemplate(binder));
   @override
-  Future<void> binderSaveAsTemplate(BinderSection binder) => _go((a) => a.binderSaveAsTemplate(binder));
+  Future<void> binderSaveAsTemplate(BinderSection binder) =>
+      _go((a) => a.binderSaveAsTemplate(binder));
   @override
   Future<void> binderRemove(BinderSection binder) => _go((a) => a.binderRemove(binder));
   @override
@@ -381,7 +382,9 @@ class AppMenuBarState extends State<AppMenuBar> {
 
   void _notebookChanged() {
     // A page change or the cover ends a hold of the page that was open.
-    if (_holding && !identical(widget.notebook.current, _holdController)) _exit(restoreFocus: false);
+    if (_holding && !identical(widget.notebook.current, _holdController)) {
+      _exit(restoreFocus: false);
+    }
     _rebuild();
   }
 
@@ -433,12 +436,19 @@ class AppMenuBarState extends State<AppMenuBar> {
       return KeyEventResult.ignored;
     }
     if (_altKeys && isAlt) {
-      _altArmed = e is KeyDownEvent && !k.isControlPressed && !k.isMetaPressed && !k.isShiftPressed;
+      // A held Alt repeats: that is the same press.
+      if (e is KeyDownEvent) {
+        _altArmed = !k.isControlPressed && !k.isMetaPressed && !k.isShiftPressed;
+      }
       return KeyEventResult.ignored;
     }
+
     _altArmed = false;
     if (_altKeys && e is KeyDownEvent) {
-      if (key == LogicalKeyboardKey.f10 && !k.isControlPressed && !k.isAltPressed && !k.isShiftPressed) {
+      if (key == LogicalKeyboardKey.f10 &&
+          !k.isControlPressed &&
+          !k.isAltPressed &&
+          !k.isShiftPressed) {
         _toggle();
         return KeyEventResult.handled;
       }
@@ -515,7 +525,9 @@ class AppMenuBarState extends State<AppMenuBar> {
   void _openAt(int index) {
     if (!_isOpen[index]) _controllers[index].open();
     SchedulerBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _holding && _firstNode[index].context != null) _firstNode[index].requestFocus();
+      if (mounted && _holding && _firstNode[index].context != null) {
+        _firstNode[index].requestFocus();
+      }
     });
     SchedulerBinding.instance.scheduleFrame();
   }
@@ -533,7 +545,8 @@ class AppMenuBarState extends State<AppMenuBar> {
     }
     if (i < 0) return false;
     if (key == LogicalKeyboardKey.arrowRight || key == LogicalKeyboardKey.arrowLeft) {
-      final j = (i + (key == LogicalKeyboardKey.arrowRight ? 1 : _titles.length - 1)) % _titles.length;
+      final j =
+          (i + (key == LogicalKeyboardKey.arrowRight ? 1 : _titles.length - 1)) % _titles.length;
       final wasOpen = _isOpen[i];
       if (wasOpen) _controllers[i].close();
       _top[j].requestFocus();
@@ -672,7 +685,8 @@ class AppMenuBarState extends State<AppMenuBar> {
       final hidden = {AppCommands.binderNewPage, AppCommands.binderNewPageFromTemplate};
       final children = <_Entry>[
         for (final c in r.commands)
-          if (!hidden.contains(c.id)) _fromCommand(_Kind.binder, c, enabled: ok, binderPath: binder.path),
+          if (!hidden.contains(c.id))
+            _fromCommand(_Kind.binder, c, enabled: ok, binderPath: binder.path),
       ];
       r.dispose();
       items.add(_Sub('Binder', children));
@@ -832,7 +846,6 @@ class AppMenuBarState extends State<AppMenuBar> {
       }
     });
     SchedulerBinding.instance.scheduleFrame();
-
   }
 
   // The command an item stands for, made again now: page and binder commands
@@ -963,7 +976,9 @@ class AppMenuBarState extends State<AppMenuBar> {
                       e.shortcut!,
                       key: const ValueKey('menu-shortcut'),
                       style: type.small.copyWith(
-                        color: e.enabled ? scheme.onSurfaceVariant : NotedColors.of(context).textDisabled,
+                        color: e.enabled
+                            ? scheme.onSurfaceVariant
+                            : NotedColors.of(context).textDisabled,
                       ),
                     ),
                   ),
@@ -988,7 +1003,8 @@ class AppMenuBarState extends State<AppMenuBar> {
         onOpen: () => _isOpen[i] = true,
         onClose: () => _isOpen[i] = false,
         menuChildren: [
-          for (final (k, e) in entries.indexed) _buildEntry(context, e, focusNode: k == first ? _firstNode[i] : null),
+          for (final (k, e) in entries.indexed)
+            _buildEntry(context, e, focusNode: k == first ? _firstNode[i] : null),
         ],
         builder: (context, controller, child) => TextButton(
           key: ValueKey('menu-top-${_titles[i]}'),
@@ -1027,16 +1043,16 @@ class AppMenuBarState extends State<AppMenuBar> {
           child: FocusScope(
             node: _bar,
             child: ExcludeFocus(
-                excluding: _excluding,
-                child: Row(
-                  children: [
-                    SizedBox(width: m.space3),
-                    BrandMark(showWordmark: wide),
-                    SizedBox(width: m.space3),
-                    for (var i = 0; i < 4; i++) _topMenu(context, i, menus[i]),
-                  ],
-                ),
+              excluding: _excluding,
+              child: Row(
+                children: [
+                  SizedBox(width: m.space3),
+                  BrandMark(showWordmark: wide),
+                  SizedBox(width: m.space3),
+                  for (var i = 0; i < 4; i++) _topMenu(context, i, menus[i]),
+                ],
               ),
+            ),
           ),
         ),
       ),

@@ -78,7 +78,6 @@ class _ContextPanelState extends State<ContextPanel> {
     return SizedBox(
       width: m.sidebarWidth,
       child: DecoratedBox(
-
         key: const ValueKey('context-panel'),
         decoration: BoxDecoration(
           color: theme.colorScheme.surface,
@@ -94,22 +93,21 @@ class _ContextPanelState extends State<ContextPanel> {
             builder: (context, _) => SingleChildScrollView(
               padding: EdgeInsets.all(m.space4),
               child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (widget.onClose != null)
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton(
-                      key: const ValueKey('context-panel-close'),
-                      onPressed: widget.onClose,
-                      child: const Text('Close'),
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (widget.onClose != null)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        key: const ValueKey('context-panel-close'),
+                        onPressed: widget.onClose,
+                        child: const Text('Close'),
+                      ),
                     ),
-                  ),
-                ..._content(context),
-              ],
+                  ..._content(context),
+                ],
+              ),
             ),
-            ),
-
           ),
         ),
       ),
@@ -161,10 +159,8 @@ class _ContextPanelState extends State<ContextPanel> {
       padding: EdgeInsets.only(bottom: m.space1),
       // A press on a Material button takes no focus; Tab still reaches it.
       child: wide ? SizedBox(width: double.infinity, child: button) : button,
-
     );
   }
-
 
   List<Widget> _page(BuildContext context) {
     final r = widget.registry;
@@ -305,7 +301,6 @@ class _ContextPanelOverlayState extends State<ContextPanelOverlay> {
       WidgetsBinding.instance.scheduleFrame();
     });
     super.dispose();
-
   }
 
   @override

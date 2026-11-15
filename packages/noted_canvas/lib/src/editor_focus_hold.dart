@@ -40,7 +40,5 @@ class EditorFocusHold {
     _count = 0;
     _held.value = false;
     _held.dispose();
-
-
   }
 }

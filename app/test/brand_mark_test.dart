@@ -11,30 +11,37 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/brand_mark.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 
-Widget _app(Widget child, {Brightness brightness = Brightness.light, Size size = const Size(1000, 200), double dpr = 1}) =>
-    MediaQuery(
-      data: MediaQueryData(size: size, devicePixelRatio: dpr),
-      child: MaterialApp(
-        theme: notedThemeData(brightness),
-        home: Scaffold(body: Center(child: child)),
-      ),
-    );
+Widget _app(
+  Widget child, {
+  Brightness brightness = Brightness.light,
+  Size size = const Size(1000, 200),
+  double dpr = 1,
+}) => MediaQuery(
+  data: MediaQueryData(size: size, devicePixelRatio: dpr),
+  child: MaterialApp(
+    theme: notedThemeData(brightness),
+    home: Scaffold(body: Center(child: child)),
+  ),
+);
 
 void main() {
-  test('the painted height is 16 / 20 / 24 device px at 100 / 125 / 150%, the stroke 3 / 4 / 5', () {
-    for (final (dpr, height, stroke) in [(1.0, 16, 3), (1.25, 20, 4), (1.5, 24, 5)]) {
-      final g = BrandMarkGeometry.at(dpr);
-      expect(g.height, height, reason: 'dpr $dpr');
-      expect(g.stroke, stroke, reason: 'dpr $dpr');
-      // Whole pixel columns: every edge is an integer.
-      final (left, right) = g.stemLefts;
-      expect(left, 0);
-      expect(right, isA<int>());
-      expect(g.width, right + g.stroke);
-      // The proportions are the master's: about 0.77 wide to 1 high.
-      expect(g.width / g.height, closeTo(0.77, 0.12), reason: 'dpr $dpr');
-    }
-  });
+  test(
+    'the painted height is 16 / 20 / 24 device px at 100 / 125 / 150%, the stroke 3 / 4 / 5',
+    () {
+      for (final (dpr, height, stroke) in [(1.0, 16, 3), (1.25, 20, 4), (1.5, 24, 5)]) {
+        final g = BrandMarkGeometry.at(dpr);
+        expect(g.height, height, reason: 'dpr $dpr');
+        expect(g.stroke, stroke, reason: 'dpr $dpr');
+        // Whole pixel columns: every edge is an integer.
+        final (left, right) = g.stemLefts;
+        expect(left, 0);
+        expect(right, isA<int>());
+        expect(g.width, right + g.stroke);
+        // The proportions are the master's: about 0.77 wide to 1 high.
+        expect(g.width / g.height, closeTo(0.77, 0.12), reason: 'dpr $dpr');
+      }
+    },
+  );
 
   for (final dpr in [1.0, 1.25, 1.5]) {
     testWidgets('at DPR $dpr the stems are whole opaque columns', (t) async {
@@ -69,7 +76,9 @@ void main() {
     });
   }
 
-  testWidgets('the wordmark shows from 600 px and hides below; one Noted semantics node', (t) async {
+  testWidgets('the wordmark shows from 600 px and hides below; one Noted semantics node', (
+    t,
+  ) async {
     await t.pumpWidget(_app(const BrandMark(), size: const Size(800, 200)));
     expect(find.byKey(const ValueKey('brand-wordmark')), findsOneWidget);
     expect(find.bySemanticsLabel('Noted'), findsOneWidget);

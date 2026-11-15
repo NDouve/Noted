@@ -41,61 +41,66 @@ Future<ShellWorld> _editing(WidgetTester t, {Future<void> Function(ShellWorld w)
 }
 
 void main() {
-  testWidgets('a pointer press on Edit and hovering every item keep the editor focused and the caret', (t) async {
-    final w = await _editing(t);
-    final c = w.nb.current!;
-    final seen = <String?>[];
-    c.addListener(() => seen.add(c.editingId));
-    final before = noteSelection(t);
-    await t.tap(find.byKey(const ValueKey('menu-top-Edit')));
-    await _frames(t);
-    expect(find.byKey(const ValueKey('menu-canvas.undo')), findsOneWidget);
-    expect(w.bar(t).holding, isFalse, reason: 'a pointer opening holds nothing');
-    expect(w.bar(t).excludingFocus, isTrue);
-    final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
-    await mouse.addPointer(location: Offset.zero);
-    addTearDown(mouse.removePointer);
-    for (final item in find.byType(MenuItemButton).evaluate().toList()) {
-      await mouse.moveTo(t.getCenter(find.byWidget(item.widget)));
+  testWidgets(
+    'a pointer press on Edit and hovering every item keep the editor focused and the caret',
+    (t) async {
+      final w = await _editing(t);
+      final c = w.nb.current!;
+      final seen = <String?>[];
+      c.addListener(() => seen.add(c.editingId));
+      final before = noteSelection(t);
+      await t.tap(find.byKey(const ValueKey('menu-top-Edit')));
+      await _frames(t);
+      expect(find.byKey(const ValueKey('menu-canvas.undo')), findsOneWidget);
+      expect(w.bar(t).holding, isFalse, reason: 'a pointer opening holds nothing');
+      expect(w.bar(t).excludingFocus, isTrue);
+      final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: Offset.zero);
+      addTearDown(mouse.removePointer);
+      for (final item in find.byType(MenuItemButton).evaluate().toList()) {
+        await mouse.moveTo(t.getCenter(find.byWidget(item.widget)));
+        await _frames(t, 1);
+      }
+      expect(c.editingId, 'n');
+      expect(seen, isNot(contains(null)));
+      expect(noteEditorFinder, findsOneWidget);
+      expect(noteSelection(t), before, reason: 'the caret is where it was');
+      await w.close(t);
+    },
+  );
+
+  testWidgets(
+    'F10, arrows through the menus, then Escape: the caret returns, editing never ended',
+    (t) async {
+      final w = await _editing(t);
+      final c = w.nb.current!;
+      final seen = <String?>[];
+      c.addListener(() => seen.add(c.editingId));
+      final before = noteSelection(t);
+      await t.sendKeyEvent(LogicalKeyboardKey.f10);
+      await _frames(t);
+      expect(w.bar(t).holding, isTrue);
+      expect(c.editorFocusHeld.value, isTrue);
+      expect(noteSelection(t), isNull, reason: 'appflowy clears it while the bar has the focus');
+      await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
       await _frames(t, 1);
-    }
-    expect(c.editingId, 'n');
-    expect(seen, isNot(contains(null)));
-    expect(noteEditorFinder, findsOneWidget);
-    expect(noteSelection(t), before, reason: 'the caret is where it was');
-    await w.close(t);
-  });
-
-  testWidgets('F10, arrows through the menus, then Escape: the caret returns, editing never ended', (t) async {
-    final w = await _editing(t);
-    final c = w.nb.current!;
-    final seen = <String?>[];
-    c.addListener(() => seen.add(c.editingId));
-    final before = noteSelection(t);
-    await t.sendKeyEvent(LogicalKeyboardKey.f10);
-    await _frames(t);
-    expect(w.bar(t).holding, isTrue);
-    expect(c.editorFocusHeld.value, isTrue);
-    expect(noteSelection(t), isNull, reason: 'appflowy clears it while the bar has the focus');
-    await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-    await _frames(t, 1);
-    await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-    await _frames(t, 1);
-    await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-    await _frames(t);
-    await t.sendKeyEvent(LogicalKeyboardKey.escape);
-    await _frames(t);
-    await t.sendKeyEvent(LogicalKeyboardKey.escape);
-    await _frames(t);
-    expect(w.bar(t).holding, isFalse);
-    expect(c.editorFocusHold.count, 0);
-    expect(c.editingId, 'n');
-    expect(seen, isNot(contains(null)), reason: 'no demote');
-    expect(noteEditorFinder, findsOneWidget);
-    expect(noteSelection(t), before, reason: 'the caret came back where it was');
-    await w.close(t);
-  });
-
+      await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await _frames(t, 1);
+      await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await _frames(t);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t);
+      expect(w.bar(t).holding, isFalse);
+      expect(c.editorFocusHold.count, 0);
+      expect(c.editingId, 'n');
+      expect(seen, isNot(contains(null)), reason: 'no demote');
+      expect(noteEditorFinder, findsOneWidget);
+      expect(noteSelection(t), before, reason: 'the caret came back where it was');
+      await w.close(t);
+    },
+  );
 
   testWidgets('Edit > Undo from the keyboard while editing acts as the toolbar Undo', (t) async {
     final w = await _editing(t);
@@ -215,7 +220,12 @@ void main() {
       final w = await _editing(t);
       final c = w.nb.current!;
       await enter(t, w);
-      unawaited(showDialog<void>(context: t.element(find.byType(Scaffold).first), builder: (_) => const AlertDialog(content: Text('hi'))));
+      unawaited(
+        showDialog<void>(
+          context: t.element(find.byType(Scaffold).first),
+          builder: (_) => const AlertDialog(content: Text('hi')),
+        ),
+      );
       await _frames(t);
       released(t, w, c);
       await t.tapAt(const Offset(5, 5));
@@ -254,33 +264,35 @@ void main() {
       expect(c.editorFocusHold.count, 0);
       await settleSaves(t, w.nb);
       await t.runAsync(() async {
-
         w.nb.dispose();
         await w.dir.delete(recursive: true);
       });
     });
   });
 
-  testWidgets('deleting the edited box from the bar: released, the canvas has the focus, Undo brings it back', (t) async {
-    final w = await _editing(t);
-    final c = w.nb.current!;
-    await t.sendKeyEvent(LogicalKeyboardKey.f10);
-    await _frames(t);
-    await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-    await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-    await _frames(t);
-    await t.tap(find.byKey(const ValueKey('menu-canvas.delete')));
-    await _frames(t, 8);
-    expect(c.page.node('n'), isNull);
-    expect(c.editorFocusHold.count, 0);
-    expect(c.editorFocusHeld.value, isFalse);
-    expect(FocusManager.instance.primaryFocus?.debugLabel, 'PageCanvas');
-    c.undo();
-    await _frames(t);
-    expect(c.page.node('n'), isNotNull);
-    expect(c.editorFocusHold.count, 0);
-    await w.close(t);
-  });
+  testWidgets(
+    'deleting the edited box from the bar: released, the canvas has the focus, Undo brings it back',
+    (t) async {
+      final w = await _editing(t);
+      final c = w.nb.current!;
+      await t.sendKeyEvent(LogicalKeyboardKey.f10);
+      await _frames(t);
+      await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await _frames(t);
+      await t.tap(find.byKey(const ValueKey('menu-canvas.delete')));
+      await _frames(t, 8);
+      expect(c.page.node('n'), isNull);
+      expect(c.editorFocusHold.count, 0);
+      expect(c.editorFocusHeld.value, isFalse);
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'PageCanvas');
+      c.undo();
+      await _frames(t);
+      expect(c.page.node('n'), isNotNull);
+      expect(c.editorFocusHold.count, 0);
+      await w.close(t);
+    },
+  );
 
   testWidgets('exclusion is per entry: pointer, then F10, then pointer again', (t) async {
     final w = await _editing(t);

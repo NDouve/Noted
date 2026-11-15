@@ -11,7 +11,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
-
 /// A minimal module: a text field whose box grows by 20 px per line.
 class _TextCodec extends BoxCodec<String> {
   const _TextCodec();
@@ -42,11 +41,9 @@ class _TextModule extends BoxModule<String> {
   @override
   BoxCodec<String> get codec => const _TextCodec();
   @override
-  Widget buildEditor(BuildContext context, BoxContext<String> box) =>
-      _Editor(box: box);
+  Widget buildEditor(BuildContext context, BoxContext<String> box) => _Editor(box: box);
   @override
-  Widget buildView(BuildContext context, BoxContext<String> box) =>
-      Text(box.data);
+  Widget buildView(BuildContext context, BoxContext<String> box) => Text(box.data);
 }
 
 class _Editor extends StatefulWidget {
@@ -57,9 +54,7 @@ class _Editor extends StatefulWidget {
 }
 
 class _EditorState extends State<_Editor> {
-  late final TextEditingController _text = TextEditingController(
-    text: widget.box.data,
-  );
+  late final TextEditingController _text = TextEditingController(text: widget.box.data);
   final FocusNode _focus = FocusNode();
 
   @override
@@ -67,9 +62,7 @@ class _EditorState extends State<_Editor> {
     super.initState();
     // `autofocus:` is ignored while the canvas holds focus; ask explicitly.
     if (widget.box.autofocus) {
-      WidgetsBinding.instance.addPostFrameCallback(
-        (_) => _focus.requestFocus(),
-      );
+      WidgetsBinding.instance.addPostFrameCallback((_) => _focus.requestFocus());
     }
   }
 
@@ -90,9 +83,7 @@ class _EditorState extends State<_Editor> {
       if (!widget.box.autoHeight) return;
       final b = widget.box.bounds;
       final lines = '\n'.allMatches(s).length + 1;
-      widget.box.requestBounds(
-        Rect.fromLTWH(b.left, b.top, b.width, 20.0 * lines + 20),
-      );
+      widget.box.requestBounds(Rect.fromLTWH(b.left, b.top, b.width, 20.0 * lines + 20));
     },
   );
 }
@@ -101,8 +92,7 @@ void main() {
   late ModuleRegistry modules;
 
   setUp(() {
-    modules = ModuleRegistry()
-      ..register(const _TextModule(), alwaysOn: true, isDefault: true);
+    modules = ModuleRegistry()..register(const _TextModule(), alwaysOn: true, isDefault: true);
   });
 
   NotedPage emptyPage() => NotedPage.create(PageMeta.create(id: 'p', title: '', order: 0));
@@ -182,7 +172,9 @@ void main() {
     expect(c.editorFocusHeld.value, isFalse);
   });
 
-  testWidgets('release with the focus elsewhere ends editing as it would without the hold', (t) async {
+  testWidgets('release with the focus elsewhere ends editing as it would without the hold', (
+    t,
+  ) async {
     final (c, menu) = await pumpEditing(t);
     final id = c.editingId!;
     c.editorFocusHold.hold();
@@ -202,7 +194,11 @@ void main() {
   });
 
   group('onCommandsChanged', () {
-    Future<List<CommandRegistry?>> pumpCanvas(WidgetTester t, CanvasController c, {bool readOnly = false}) async {
+    Future<List<CommandRegistry?>> pumpCanvas(
+      WidgetTester t,
+      CanvasController c, {
+      bool readOnly = false,
+    }) async {
       final seen = <CommandRegistry?>[];
       await t.pumpWidget(
         MaterialApp(
@@ -223,26 +219,32 @@ void main() {
       expect(seen.single!['canvas.undo'], isNotNull);
     });
 
-    testWidgets('reports a new registry when the page changes, and disposes the old one a frame later', (t) async {
-      final a = CanvasController(emptyPage(), modules);
-      final b = CanvasController(NotedPage.create(PageMeta.create(id: 'q', title: '', order: 0)), modules);
-      final seen = await pumpCanvas(t, a);
-      final first = seen.single!;
-      await t.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: PageCanvas(controller: b, onCommandsChanged: seen.add),
+    testWidgets(
+      'reports a new registry when the page changes, and disposes the old one a frame later',
+      (t) async {
+        final a = CanvasController(emptyPage(), modules);
+        final b = CanvasController(
+          NotedPage.create(PageMeta.create(id: 'q', title: '', order: 0)),
+          modules,
+        );
+        final seen = await pumpCanvas(t, a);
+        final first = seen.single!;
+        await t.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: PageCanvas(controller: b, onCommandsChanged: seen.add),
+            ),
           ),
-        ),
-      );
-      expect(seen, hasLength(2));
-      expect(seen.last, isNot(same(first)));
+        );
+        expect(seen, hasLength(2));
+        expect(seen.last, isNot(same(first)));
 
-      // The old registry is still readable in the frame it was replaced.
-      expect(first['canvas.undo'], isNotNull);
-      await t.pump();
-      expect(first['canvas.undo'], isNull, reason: 'disposed one frame later');
-    });
+        // The old registry is still readable in the frame it was replaced.
+        expect(first['canvas.undo'], isNotNull);
+        await t.pump();
+        expect(first['canvas.undo'], isNull, reason: 'disposed one frame later');
+      },
+    );
 
     testWidgets('reports null in the frame after the canvas is disposed', (t) async {
       final c = CanvasController(emptyPage(), modules);
@@ -283,7 +285,9 @@ void main() {
   });
 
   group('sidePanel', () {
-    testWidgets('is built with the live registry, right of the canvas and below the toolbar', (t) async {
+    testWidgets('is built with the live registry, right of the canvas and below the toolbar', (
+      t,
+    ) async {
       t.view.physicalSize = const Size(1200, 800);
       t.view.devicePixelRatio = 1;
       addTearDown(t.view.reset);
@@ -307,8 +311,11 @@ void main() {
       final panel = t.getRect(find.byKey(const ValueKey('panel')));
       expect(panel.right, 1200);
       expect(panel.top, CommandToolbar.height);
-      expect(t.getSize(find.byType(CommandToolbar)).width, 1200, reason: 'the toolbar keeps its full width');
+      expect(
+        t.getSize(find.byType(CommandToolbar)).width,
+        1200,
+        reason: 'the toolbar keeps its full width',
+      );
     });
-
   });
 }

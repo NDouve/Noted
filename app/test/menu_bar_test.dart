@@ -21,10 +21,16 @@ List<String> _shown(WidgetTester t) {
   final out = <String>[];
   final found = find.byWidgetPredicate((w) {
     final k = w.key;
-    return (w is MenuItemButton || w is SubmenuButton) && k is ValueKey<String> && !k.value.startsWith('menu-top-');
+    return (w is MenuItemButton || w is SubmenuButton) &&
+        k is ValueKey<String> &&
+        !k.value.startsWith('menu-top-');
   });
   for (final w in t.widgetList(found)) {
-    out.add((w.key! as ValueKey<String>).value.replaceFirst('menu-sub-', 'sub:').replaceFirst('menu-', ''));
+    out.add(
+      (w.key! as ValueKey<String>).value
+          .replaceFirst('menu-sub-', 'sub:')
+          .replaceFirst('menu-', ''),
+    );
   }
   return out;
 }
@@ -34,12 +40,19 @@ Future<void> _open(WidgetTester t, String top) async {
   await t.pumpAndSettle();
 }
 
-MenuItemButton _item(WidgetTester t, String id) => t.widget<MenuItemButton>(find.byKey(ValueKey('menu-$id')));
+MenuItemButton _item(WidgetTester t, String id) =>
+    t.widget<MenuItemButton>(find.byKey(ValueKey('menu-$id')));
 
 bool _on(WidgetTester t, String id) => _item(t, id).onPressed != null;
 
-String _shortcut(WidgetTester t, String id) =>
-    t.widget<Text>(find.descendant(of: find.byKey(ValueKey('menu-$id')), matching: find.byKey(const ValueKey('menu-shortcut')))).data!;
+String _shortcut(WidgetTester t, String id) => t
+    .widget<Text>(
+      find.descendant(
+        of: find.byKey(ValueKey('menu-$id')),
+        matching: find.byKey(const ValueKey('menu-shortcut')),
+      ),
+    )
+    .data!;
 
 Future<void> _choose(WidgetTester t, String id) async {
   await t.tap(find.byKey(ValueKey('menu-$id')));
@@ -164,7 +177,9 @@ void main() {
     await w.close(t);
   });
 
-  testWidgets('Help lists Keyboard shortcuts, and About only with a Microsoft client id', (t) async {
+  testWidgets('Help lists Keyboard shortcuts, and About only with a Microsoft client id', (
+    t,
+  ) async {
     final w = await ShellWorld.open(t);
     await _open(t, 'Help');
     expect(_shown(t), ['app.help.shortcuts']);
@@ -190,14 +205,19 @@ void main() {
     await t.pumpAndSettle();
     await _open(t, 'View');
     expect(
-      find.descendant(of: find.byKey(const ValueKey('menu-canvas.zoomIn')), matching: find.byKey(const ValueKey('menu-shortcut'))),
+      find.descendant(
+        of: find.byKey(const ValueKey('menu-canvas.zoomIn')),
+        matching: find.byKey(const ValueKey('menu-shortcut')),
+      ),
       findsNothing,
     );
     await w.close(t);
     debugDefaultTargetPlatformOverride = null;
   });
 
-  testWidgets('choosing an item runs its command once; a key with the menu shut runs it once', (t) async {
+  testWidgets('choosing an item runs its command once; a key with the menu shut runs it once', (
+    t,
+  ) async {
     final w = await ShellWorld.open(t);
     final canvas = w.canvas(t);
     final base = canvas.scale;
@@ -208,7 +228,11 @@ void main() {
     await t.sendKeyEvent(LogicalKeyboardKey.equal);
     await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
     await t.pump();
-    expect(canvas.scale, closeTo(base * 1.25 * 1.25, 1e-6), reason: 'the key resolved once, the menu binds nothing');
+    expect(
+      canvas.scale,
+      closeTo(base * 1.25 * 1.25, 1e-6),
+      reason: 'the key resolved once, the menu binds nothing',
+    );
     await w.close(t);
   });
 
@@ -224,50 +248,60 @@ void main() {
   });
 
   group('enablement', () {
-    testWidgets('Undo goes on after an edit while Edit is open; layering and Delete follow the selection', (t) async {
-      final w = await ShellWorld.open(t);
-      await _open(t, 'Edit');
-      final c = w.nb.current!;
-      expect(_on(t, 'canvas.undo'), isFalse);
-      expect(_on(t, 'canvas.delete'), isFalse);
-      // An edit while the menu is open: the box is added and selected.
-      c.insertBox(shellNote('n', 'hello'));
-      c.select('n');
-      await t.pump();
-      await t.pump();
-      expect(_on(t, 'canvas.undo'), isTrue, reason: 'the menu follows the undo stack while open');
-      expect(_on(t, 'canvas.delete'), isTrue);
-      expect(_on(t, 'canvas.bringToFront'), isFalse, reason: 'a lone box has nothing to go in front of');
-      c.select(null);
-      await t.pump();
-      expect(_on(t, 'canvas.delete'), isFalse);
-      expect(_on(t, 'canvas.bringToFront'), isFalse);
-      await w.close(t);
-    });
+    testWidgets(
+      'Undo goes on after an edit while Edit is open; layering and Delete follow the selection',
+      (t) async {
+        final w = await ShellWorld.open(t);
+        await _open(t, 'Edit');
+        final c = w.nb.current!;
+        expect(_on(t, 'canvas.undo'), isFalse);
+        expect(_on(t, 'canvas.delete'), isFalse);
+        // An edit while the menu is open: the box is added and selected.
+        c.insertBox(shellNote('n', 'hello'));
+        c.select('n');
+        await t.pump();
+        await t.pump();
+        expect(_on(t, 'canvas.undo'), isTrue, reason: 'the menu follows the undo stack while open');
+        expect(_on(t, 'canvas.delete'), isTrue);
+        expect(
+          _on(t, 'canvas.bringToFront'),
+          isFalse,
+          reason: 'a lone box has nothing to go in front of',
+        );
+        c.select(null);
+        await t.pump();
+        expect(_on(t, 'canvas.delete'), isFalse);
+        expect(_on(t, 'canvas.bringToFront'), isFalse);
+        await w.close(t);
+      },
+    );
 
-    testWidgets('a read-only page keeps zoom, find and File on, and turns edits off in the same frame', (t) async {
-      final w = await ShellWorld.open(t);
-      await w.addNote(t, 'n', 'hello');
-      w.nb.current!.select('n');
-      await t.pump();
-      await _open(t, 'Edit');
-      expect(_on(t, 'canvas.delete'), isTrue);
-      w.nb.current!.readOnly = true;
-      await t.pump();
-      expect(_on(t, 'canvas.delete'), isFalse);
-      expect(_on(t, 'canvas.undo'), isFalse);
-      expect(_on(t, 'canvas.paste'), isFalse);
-      expect(_on(t, 'canvas.find'), isTrue);
-      await t.sendKeyEvent(LogicalKeyboardKey.escape);
-      await t.pumpAndSettle();
-      await _open(t, 'View');
-      expect(_on(t, 'canvas.zoomIn'), isTrue);
-      await t.sendKeyEvent(LogicalKeyboardKey.escape);
-      await t.pumpAndSettle();
-      await _open(t, 'File');
-      expect(_on(t, 'app.page.new'), isTrue);
-      await w.close(t);
-    });
+    testWidgets(
+      'a read-only page keeps zoom, find and File on, and turns edits off in the same frame',
+      (t) async {
+        final w = await ShellWorld.open(t);
+        await w.addNote(t, 'n', 'hello');
+        w.nb.current!.select('n');
+        await t.pump();
+        await _open(t, 'Edit');
+        expect(_on(t, 'canvas.delete'), isTrue);
+        w.nb.current!.readOnly = true;
+        await t.pump();
+        expect(_on(t, 'canvas.delete'), isFalse);
+        expect(_on(t, 'canvas.undo'), isFalse);
+        expect(_on(t, 'canvas.paste'), isFalse);
+        expect(_on(t, 'canvas.find'), isTrue);
+        await t.sendKeyEvent(LogicalKeyboardKey.escape);
+        await t.pumpAndSettle();
+        await _open(t, 'View');
+        expect(_on(t, 'canvas.zoomIn'), isTrue);
+        await t.sendKeyEvent(LogicalKeyboardKey.escape);
+        await t.pumpAndSettle();
+        await _open(t, 'File');
+        expect(_on(t, 'app.page.new'), isTrue);
+        await w.close(t);
+      },
+    );
 
     testWidgets('before the first load succeeded File is off and Theme works', (t) async {
       final w = await ShellWorld.open(t, checked: false);
@@ -293,24 +327,27 @@ void main() {
   });
 
   group('the cover', () {
-    testWidgets('with Edit open on a page, opening the cover turns the canvas items off and runs nothing', (t) async {
-      final w = await ShellWorld.open(t);
-      final b = await w.addBinderWithPage(t, 'Work');
-      final before = w.nb.current!.page.nodes.length;
-      await _open(t, 'Edit');
-      expect(_on(t, 'canvas.find'), isTrue);
-      w.nb.showCover(b.path);
-      await t.pump();
-      await t.pump();
-      expect(_on(t, 'canvas.find'), isFalse);
-      expect(_on(t, 'canvas.undo'), isFalse);
-      expect(t.takeException(), isNull);
-      await t.sendKeyEvent(LogicalKeyboardKey.escape);
-      await t.pumpAndSettle();
-      expect(w.nb.coverPath, b.path);
-      expect(before, isNonNegative);
-      await w.close(t);
-    });
+    testWidgets(
+      'with Edit open on a page, opening the cover turns the canvas items off and runs nothing',
+      (t) async {
+        final w = await ShellWorld.open(t);
+        final b = await w.addBinderWithPage(t, 'Work');
+        final before = w.nb.current!.page.nodes.length;
+        await _open(t, 'Edit');
+        expect(_on(t, 'canvas.find'), isTrue);
+        w.nb.showCover(b.path);
+        await t.pump();
+        await t.pump();
+        expect(_on(t, 'canvas.find'), isFalse);
+        expect(_on(t, 'canvas.undo'), isFalse);
+        expect(t.takeException(), isNull);
+        await t.sendKeyEvent(LogicalKeyboardKey.escape);
+        await t.pumpAndSettle();
+        expect(w.nb.coverPath, b.path);
+        expect(before, isNonNegative);
+        await w.close(t);
+      },
+    );
   });
 
   group('the keyboard', () {
@@ -352,40 +389,48 @@ void main() {
       await w.close(t);
     });
 
-    testWidgets('Alt with a pointer press, Ctrl+Alt (AltGr), or another key between does not enter the bar', (t) async {
-      final w = await ShellWorld.open(t);
-      // Alt down, a press, Alt up.
-      await t.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
-      final g = await t.startGesture(const Offset(600, 500), kind: PointerDeviceKind.mouse);
-      await g.up();
-      await t.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
-      await t.pump();
-      expect(w.bar(t).holding, isFalse);
-      // AltGr: Ctrl and Alt together.
-      await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-      await t.sendKeyDownEvent(LogicalKeyboardKey.altRight);
-      await t.sendKeyUpEvent(LogicalKeyboardKey.altRight);
-      await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-      await t.pump();
-      expect(w.bar(t).holding, isFalse);
-      await w.close(t);
-    });
+    testWidgets(
+      'Alt with a pointer press, Ctrl+Alt (AltGr), or another key between does not enter the bar',
+      (t) async {
+        final w = await ShellWorld.open(t);
+        // Alt down, a press, Alt up.
+        await t.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+        final g = await t.startGesture(const Offset(600, 500), kind: PointerDeviceKind.mouse);
+        await g.up();
+        await t.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+        await t.pump();
+        expect(w.bar(t).holding, isFalse);
+        // AltGr: Ctrl and Alt together.
+        await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await t.sendKeyDownEvent(LogicalKeyboardKey.altRight);
+        await t.sendKeyUpEvent(LogicalKeyboardKey.altRight);
+        await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await t.pump();
+        expect(w.bar(t).holding, isFalse);
+        await w.close(t);
+      },
+    );
 
-    testWidgets('Alt, then the window loses focus, then a synthesized Alt key-up: the bar does not take focus', (t) async {
-      final w = await ShellWorld.open(t);
-      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await t.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
-      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    testWidgets(
+      'Alt, then the window loses focus, then a synthesized Alt key-up: the bar does not take focus',
+      (t) async {
+        final w = await ShellWorld.open(t);
+        t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await t.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+        t.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
 
-      await t.pump();
-      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await t.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
-      await t.pump();
-      expect(w.bar(t).holding, isFalse);
-      await w.close(t);
-    });
+        await t.pump();
+        t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await t.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+        await t.pump();
+        expect(w.bar(t).holding, isFalse);
+        await w.close(t);
+      },
+    );
 
-    testWidgets('a synthesized Alt key-up (sent on focus regain) does not enter the bar', (t) async {
+    testWidgets('a synthesized Alt key-up (sent on focus regain) does not enter the bar', (
+      t,
+    ) async {
       final w = await ShellWorld.open(t);
       await t.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
       // ignore: deprecated_member_use
@@ -404,7 +449,6 @@ void main() {
       await t.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
       await w.close(t);
     });
-
 
     testWidgets('Escape closes level by level and returns the focus', (t) async {
       final w = await ShellWorld.open(t);
@@ -428,69 +472,82 @@ void main() {
   });
 
   group('shortcuts with a menu open', () {
-    testWidgets('File opened by keyboard: Ctrl+N, Ctrl+Z and Ctrl+Shift+F do nothing and the menu stays', (t) async {
-      final w = await ShellWorld.open(t);
-      final pages = w.nb.currentId;
-      await t.sendKeyEvent(LogicalKeyboardKey.f10);
-      await t.pump();
-      await t.pump();
-      await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-      await t.pumpAndSettle();
-      for (final (key, shift) in [
-        (LogicalKeyboardKey.keyN, false),
-        (LogicalKeyboardKey.keyZ, false),
-        (LogicalKeyboardKey.keyF, true),
-      ]) {
+    testWidgets(
+      'File opened by keyboard: Ctrl+N, Ctrl+Z and Ctrl+Shift+F do nothing and the menu stays',
+      (t) async {
+        final w = await ShellWorld.open(t);
+        final pages = w.nb.currentId;
+        await t.sendKeyEvent(LogicalKeyboardKey.f10);
+        await t.pump();
+        await t.pump();
+        await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await t.pumpAndSettle();
+        for (final (key, shift) in [
+          (LogicalKeyboardKey.keyN, false),
+          (LogicalKeyboardKey.keyZ, false),
+          (LogicalKeyboardKey.keyF, true),
+        ]) {
+          await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+          if (shift) await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+          await t.sendKeyEvent(key);
+          if (shift) await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+          await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+          await t.pumpAndSettle();
+        }
+        expect(w.nb.currentId, pages, reason: 'Ctrl+N made no page');
+        expect(
+          find.byKey(const ValueKey('menu-app.page.new')),
+          findsOneWidget,
+          reason: 'the menu stayed',
+        );
+        await w.close(t);
+      },
+    );
+
+    testWidgets(
+      'File opened by pointer: Escape closes it and is consumed, Down enters it, Ctrl+Z closes it and undoes once',
+      (t) async {
+        final w = await ShellWorld.open(t);
+        await w.addNote(t, 'n', 'hello');
+        final c = w.nb.current!;
+        await _open(t, 'File');
+        await t.sendKeyEvent(LogicalKeyboardKey.escape);
+        await t.pumpAndSettle();
+        expect(find.byKey(const ValueKey('menu-app.page.new')), findsNothing);
+        expect(c.page.node('n'), isNotNull, reason: 'Escape did not reach the canvas');
+        await _open(t, 'File');
+        await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await t.pumpAndSettle();
+        expect(w.bar(t).holding, isTrue);
+        expect(find.byKey(const ValueKey('menu-app.page.new')), findsOneWidget);
+        await t.sendKeyEvent(LogicalKeyboardKey.escape);
+        await t.sendKeyEvent(LogicalKeyboardKey.escape);
+        await t.pumpAndSettle();
+        // A pointer-opened menu, then Ctrl+Z.
+        await _open(t, 'File');
+        expect(c.canUndo, isTrue);
         await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-        if (shift) await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-        await t.sendKeyEvent(key);
-        if (shift) await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await t.sendKeyEvent(LogicalKeyboardKey.keyZ);
         await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
         await t.pumpAndSettle();
-      }
-      expect(w.nb.currentId, pages, reason: 'Ctrl+N made no page');
-      expect(find.byKey(const ValueKey('menu-app.page.new')), findsOneWidget, reason: 'the menu stayed');
-      await w.close(t);
-    });
-
-    testWidgets('File opened by pointer: Escape closes it and is consumed, Down enters it, Ctrl+Z closes it and undoes once', (t) async {
-      final w = await ShellWorld.open(t);
-      await w.addNote(t, 'n', 'hello');
-      final c = w.nb.current!;
-      await _open(t, 'File');
-      await t.sendKeyEvent(LogicalKeyboardKey.escape);
-      await t.pumpAndSettle();
-      expect(find.byKey(const ValueKey('menu-app.page.new')), findsNothing);
-      expect(c.page.node('n'), isNotNull, reason: 'Escape did not reach the canvas');
-      await _open(t, 'File');
-      await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-      await t.pumpAndSettle();
-      expect(w.bar(t).holding, isTrue);
-      expect(find.byKey(const ValueKey('menu-app.page.new')), findsOneWidget);
-      await t.sendKeyEvent(LogicalKeyboardKey.escape);
-      await t.sendKeyEvent(LogicalKeyboardKey.escape);
-      await t.pumpAndSettle();
-      // A pointer-opened menu, then Ctrl+Z.
-      await _open(t, 'File');
-      expect(c.canUndo, isTrue);
-      await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-      await t.sendKeyEvent(LogicalKeyboardKey.keyZ);
-      await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-      await t.pumpAndSettle();
-      expect(find.byKey(const ValueKey('menu-app.page.new')), findsNothing);
-      expect(c.page.node('n'), isNull, reason: 'the canvas undid the note, once');
-      expect(c.canUndo, isFalse);
-      await w.close(t);
-    });
+        expect(find.byKey(const ValueKey('menu-app.page.new')), findsNothing);
+        expect(c.page.node('n'), isNull, reason: 'the canvas undid the note, once');
+        expect(c.canUndo, isFalse);
+        await w.close(t);
+      },
+    );
   });
 
-  testWidgets('a focused menu button, item and panel control paint a 2px accent outline', (t) async {
+  testWidgets('a focused menu button, item and panel control paint a 2px accent outline', (
+    t,
+  ) async {
     final w = await ShellWorld.open(t);
     final accent = Theme.of(t.element(find.byType(Scaffold).first)).colorScheme.primary;
-    bool outlined(Finder f) => t.widgetList<Material>(find.descendant(of: f, matching: find.byType(Material))).any((m) {
-      final s = m.shape;
-      return s is OutlinedBorder && s.side.color == accent && s.side.width == 2;
-    });
+    bool outlined(Finder f) =>
+        t.widgetList<Material>(find.descendant(of: f, matching: find.byType(Material))).any((m) {
+          final s = m.shape;
+          return s is OutlinedBorder && s.side.color == accent && s.side.width == 2;
+        });
     await t.sendKeyEvent(LogicalKeyboardKey.f10);
     await t.pump();
     await t.pump();

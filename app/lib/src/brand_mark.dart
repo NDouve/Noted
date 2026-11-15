@@ -86,14 +86,20 @@ class BrandMark extends StatelessWidget {
           CustomPaint(
             key: const ValueKey('brand-mark'),
             size: Size(geometry.width / dpr, geometry.height / dpr),
-            painter: BrandMarkPainter(geometry: geometry, devicePixelRatio: dpr, from: from, to: to),
+            painter: BrandMarkPainter(
+              geometry: geometry,
+              devicePixelRatio: dpr,
+              from: from,
+              to: to,
+            ),
           ),
           if (showWordmark) ...[
             SizedBox(width: m.space2),
             Text(
               'Noted',
               key: const ValueKey('brand-wordmark'),
-              style: NotedTypography.of(context).bodyStrong.copyWith(color: theme.colorScheme.onSurface),
+              style: NotedTypography.of(context).bodyStrong
+                  .copyWith(color: theme.colorScheme.onSurface),
             ),
           ],
         ],
@@ -141,16 +147,18 @@ class BrandMarkPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
       ..isAntiAlias = true
-      ..shader = ui.Gradient.linear(
-        Offset.zero,
-        Offset(g.width.toDouble(), g.height.toDouble()),
-        [from, to],
-      );
+      ..shader = ui.Gradient.linear(Offset.zero, Offset(g.width.toDouble(), g.height.toDouble()), [
+        from,
+        to,
+      ]);
     canvas.drawPath(path(), paint);
     canvas.restore();
   }
 
   @override
   bool shouldRepaint(BrandMarkPainter old) =>
-      old.geometry != geometry || old.devicePixelRatio != devicePixelRatio || old.from != from || old.to != to;
+      old.geometry != geometry ||
+      old.devicePixelRatio != devicePixelRatio ||
+      old.from != from ||
+      old.to != to;
 }

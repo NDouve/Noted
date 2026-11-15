@@ -34,9 +34,8 @@ void main() {
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
     final c = CanvasController(
-      NotedPage.create(PageMeta.create(id: 'p', title: '', order: 0)).insertNode(
-        noteBox('n', ['hello brave new world', 'second line']),
-      ),
+      NotedPage.create(PageMeta.create(id: 'p', title: '', order: 0))
+          .insertNode(noteBox('n', ['hello brave new world', 'second line'])),
       modules,
     );
     final menu = FocusNode(debugLabel: 'menu');
@@ -57,16 +56,24 @@ void main() {
     await t.pumpAndSettle();
     final canvas = t.state<PageCanvasState>(find.byType(PageCanvas));
     final b = c.page.node('n')!.bounds!;
-    await t.tapAt(canvas.view!.toScreen(Offset(b.x + 40, b.y + 12)) + const Offset(0, 20 + CommandToolbar.height));
+    await t.tapAt(
+      canvas.view!.toScreen(Offset(b.x + 40, b.y + 12)) +
+          const Offset(0, 20 + CommandToolbar.height),
+    );
     await frames(t);
     expect(c.editingId, 'n');
     final editor = t.widget<AppFlowyEditor>(find.byType(AppFlowyEditor)).editorState;
     return (c, menu, editor);
   }
 
-  testWidgets('the selection comes back after focus goes to the menu and back under the hold', (t) async {
+  testWidgets('the selection comes back after focus goes to the menu and back under the hold', (
+    t,
+  ) async {
     final (c, menu, editor) = await pumpEditing(t);
-    final selection = Selection(start: Position(path: [0], offset: 5), end: Position(path: [0], offset: 9));
+    final selection = Selection(
+      start: Position(path: [0], offset: 5),
+      end: Position(path: [0], offset: 9),
+    );
     editor.updateSelectionWithReason(selection, reason: SelectionUpdateReason.uiEvent);
     await frames(t);
     expect(editor.selection, selection);
@@ -104,19 +111,28 @@ void main() {
     expect(editor.selection, caret);
   });
 
-  testWidgets('a note that lost focus under the hold goes back to the light view after the release', (t) async {
-    final (c, menu, _) = await pumpEditing(t);
-    c.editorFocusHold.hold();
-    menu.requestFocus();
-    await frames(t);
-    expect(find.byType(AppFlowyEditor), findsOneWidget);
-    c.editorFocusHold.release();
-    await frames(t);
-    expect(c.editingId, isNull);
-    expect(find.byType(AppFlowyEditor), findsNothing, reason: 'it demotes as it would without the menu');
-  });
+  testWidgets(
+    'a note that lost focus under the hold goes back to the light view after the release',
+    (t) async {
+      final (c, menu, _) = await pumpEditing(t);
+      c.editorFocusHold.hold();
+      menu.requestFocus();
+      await frames(t);
+      expect(find.byType(AppFlowyEditor), findsOneWidget);
+      c.editorFocusHold.release();
+      await frames(t);
+      expect(c.editingId, isNull);
+      expect(
+        find.byType(AppFlowyEditor),
+        findsNothing,
+        reason: 'it demotes as it would without the menu',
+      );
+    },
+  );
 
-  testWidgets('without a hold, focus going away demotes the note and clears the selection', (t) async {
+  testWidgets('without a hold, focus going away demotes the note and clears the selection', (
+    t,
+  ) async {
     final (c, menu, _) = await pumpEditing(t);
     menu.requestFocus();
     await frames(t);

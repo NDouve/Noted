@@ -62,8 +62,10 @@ class ShellWorld {
       await nb.rename(second, 'Beta');
       await nb.open(first);
     });
-    final settings = AppSettings(File('${dir.path}/settings.json'), profileMarker: File('${dir.path}/binders.json'))
-      ..toolbar = toolbar;
+    final settings = AppSettings(
+      File('${dir.path}/settings.json'),
+      profileMarker: File('${dir.path}/binders.json'),
+    )..toolbar = toolbar;
     final world = ShellWorld._(dir, nb, settings, first, second);
     await t.pumpWidget(NotedApp(notebook: nb, settings: settings));
     await world.settle(t);
@@ -130,7 +132,12 @@ extension ShellWorldActions on ShellWorld {
   Offset canvasOrigin(WidgetTester t) => t.getTopLeft(find.byKey(PageCanvas.overlayKey));
 
   /// Puts a note box with [text] on the open page.
-  Future<void> addNote(WidgetTester t, String id, String text, {Bounds at = const Bounds(100, 100, 300, 40)}) async {
+  Future<void> addNote(
+    WidgetTester t,
+    String id,
+    String text, {
+    Bounds at = const Bounds(100, 100, 300, 40),
+  }) async {
     nb.current!.insertBox(shellNote(id, text, at: at));
     await t.pump();
   }
@@ -167,10 +174,13 @@ extension ShellWorldOpen on ShellWorld {
     var done = false;
     Object? error;
     unawaited(
-      action().then<void>((_) => done = true, onError: (Object e) {
-        error = e;
-        done = true;
-      }),
+      action().then<void>(
+        (_) => done = true,
+        onError: (Object e) {
+          error = e;
+          done = true;
+        },
+      ),
     );
     for (var i = 0; i < 100 && !done; i++) {
       await t.pump(const Duration(milliseconds: 50));
@@ -183,12 +193,13 @@ extension ShellWorldOpen on ShellWorld {
 
   /// Opens page [id] like a click in the tree.
   Future<void> openPage(WidgetTester t, String id) => run(t, () => nb.open(id));
-
 }
 
 /// The note editor (appflowy's `AppFlowyEditor`), found by its name: the app
 /// does not depend on appflowy_editor.
-final Finder noteEditorFinder = find.byWidgetPredicate((w) => w.runtimeType.toString() == 'AppFlowyEditor');
+final Finder noteEditorFinder = find.byWidgetPredicate(
+  (w) => w.runtimeType.toString() == 'AppFlowyEditor',
+);
 
 /// The editor's selection as text (null: none), to compare before and after.
 String? noteSelection(WidgetTester t) {

@@ -82,7 +82,12 @@ void main() {
     String? at(String id) => menuShortcutFor(r[id]!);
     expect(at('canvas.undo'), 'Cmd+Z');
     expect(at('canvas.redo'), 'Cmd+Shift+Z');
-    expect(r['canvas.redo']!.alternateShortcuts.any((a) => a.meta && a.trigger == LogicalKeyboardKey.keyY), isTrue);
+    expect(
+      r['canvas.redo']!.alternateShortcuts.any(
+        (a) => a.meta && a.trigger == LogicalKeyboardKey.keyY,
+      ),
+      isTrue,
+    );
     expect(at('canvas.paste'), 'Cmd+V');
     expect(at('canvas.find'), 'Cmd+F');
     expect(at('canvas.bringForward'), 'Cmd+]');
