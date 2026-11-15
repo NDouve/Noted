@@ -298,7 +298,7 @@ class PageCanvasState extends State<PageCanvas>
   _PasteTarget? _pasteTarget(Offset? at) {
     final store = widget.attachments;
     if (store == null || _readOnly) return null;
-    return _PasteTarget(_c, _c.page.id, store, at ?? viewCentre ?? Offset.zero);
+    return _PasteTarget(_c, _c.page.id, store, at ?? viewCentre ?? Offset.zero, _off);
   }
 
   bool _pasteHolds(_PasteTarget t) =>
@@ -323,8 +323,14 @@ class PageCanvasState extends State<PageCanvas>
         stopped = true;
         break;
       }
-      final module = target.controller.modules.moduleForFile(f, exclude: _off);
+      // The module is chosen under the types allowed when the paste started; if
+      // it was disallowed since, the paste stops (no other module takes the file).
+      final module = target.controller.modules.moduleForFile(f, exclude: target.off);
       if (module == null) continue;
+      if (_off.contains(module.codec.typeId)) {
+        stopped = true;
+        break;
+      }
       (Object?, Size)? made;
       try {
         made = await module.hostCreateFromFile(f, store);
@@ -2071,12 +2077,15 @@ class _PickClaim extends OneSequenceGestureRecognizer {
 /// What a paste or drop keeps from its start: the controller object, its
 /// page, the store and the point (the context menus' paste target).
 class _PasteTarget {
-  _PasteTarget(this.controller, this.pageId, this.store, this.point);
+  _PasteTarget(this.controller, this.pageId, this.store, this.point, this.off);
 
   final CanvasController controller;
   final String pageId;
   final AttachmentStore store;
   final Offset point;
+
+  /// The box types the page disallowed when the paste started.
+  final Set<String> off;
 }
 
 /// What the open context menu was made for: the canvas objects, the page, the
