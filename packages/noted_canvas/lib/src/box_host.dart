@@ -178,8 +178,13 @@ class _BoxHostState extends State<BoxHost> {
     final liveBox = live;
     // A box of a type the page disallows (not a switched-off module's box) can
     // be selected, for Delete only (0166): no grip, no handles, no editor.
+    // A module that is also switched off app-wide has no codec: delete would
+    // do nothing, so it isn't selectable.
     final deletable =
-        node is BoxRecord && widget.disallowedTypes.contains(node.typeId) && !readOnly;
+        node is BoxRecord &&
+        widget.disallowedTypes.contains(node.typeId) &&
+        c.modules.codecs.codecFor(node.typeId) != null &&
+        !readOnly;
     final selected = c.selectedId == node.id;
     final editing = c.editingId == node.id;
     const m = boxHandleSize / 2;

@@ -6,6 +6,7 @@
 // never moved, resized, restacked or opened. Delete removes it and Undo puts
 // back the same saved bytes.
 
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -120,13 +121,15 @@ void main() {
   group('canvas', () {
     Future<GlobalKey<PageCanvasState>> pump(WidgetTester t, CanvasController c) async {
       final key = GlobalKey<PageCanvasState>();
+      final selection = CanvasToolSelection();
+      addTearDown(selection.dispose);
       t.view.physicalSize = const Size(1000, 700);
       t.view.devicePixelRatio = 1;
       addTearDown(t.view.reset);
       await t.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: PageCanvas(key: key, controller: c, disallowedTypes: _offSet),
+            body: PageCanvas(key: key, controller: c, disallowedTypes: _offSet, tools: selection),
           ),
         ),
       );
@@ -200,6 +203,58 @@ void main() {
         expect(c.page.node(note.id), isNotNull);
         c.dispose();
       }
+    });
+
+    testWidgets('a type that is also switched off is not selectable and Delete is not offered', (t) async {
+      final m = ModuleRegistry()
+        ..register(const _Module('test.note'), alwaysOn: true, isDefault: true)
+        ..register(const _Module(_off))
+        ..setEnabled(_off, false);
+      var p = NotedPage.create(PageMeta.create(id: 'p', title: 'T', order: 0));
+      p = p.insertNode(other);
+      final c = CanvasController(p, m)..disallowedTypes = _offSet;
+      final k = await pump(t, c);
+      final before = bytes(c);
+      await clickBox(t);
+      expect(c.selectedId, isNull);
+      expect(k.currentState!.commands[CanvasCommands.delete]!.enabled, isFalse);
+      await key(t, LogicalKeyboardKey.delete);
+      expect(bytes(c), before);
+      c.dispose();
+    });
+
+    testWidgets('the pick list offers no Bring to front or Send to back for it; the bottom edge double-click changes nothing', (t) async {
+      final over = _box('test.note', 'a000000000000003', 'over', const Bounds(100, 60, 200, 60));
+      var p = NotedPage.create(PageMeta.create(id: 'p', title: 'T', order: 0));
+      p = p.insertNode(other.withFixedHeight(true)).insertNode(over);
+      final c = CanvasController(p, modules)..disallowedTypes = _offSet;
+      final k = await pump(t, c);
+      k.currentState!.zoomTo(1);
+      await t.pump();
+      final before = bytes(c);
+      final origin = t.getTopLeft(find.byType(PageCanvas)) + const Offset(0, CommandToolbar.height);
+      final at = origin + k.currentState!.view!.toScreen(const Offset(120, 70));
+      await t.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      final g = await t.startGesture(at, kind: PointerDeviceKind.mouse);
+      await g.up();
+      await g.removePointer();
+      await t.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+      await t.pump();
+      IconButton btn(String key) => t.widget<IconButton>(find.byKey(ValueKey(key)));
+      expect(btn('pick-front-${other.id}').onPressed, isNull);
+      expect(btn('pick-back-${other.id}').onPressed, isNull);
+      expect(btn('pick-back-${over.id}').onPressed, isNotNull, reason: 'the allowed box still restacks');
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await t.pump();
+
+      // Double-click on its bottom edge: no auto-height.
+      final edge = origin + k.currentState!.view!.toScreen(const Offset(60, 110));
+      await t.tapAt(edge);
+      await t.pump(const Duration(milliseconds: 50));
+      await t.tapAt(edge);
+      await t.pump(const Duration(milliseconds: 500));
+      expect(bytes(c), before);
+      c.dispose();
     });
 
     testWidgets('the multi-selection rule: the canvas holds one selection, so a disallowed box is never part of a move', (t) async {
