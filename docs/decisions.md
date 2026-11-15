@@ -540,7 +540,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0049 — Optional binders, without passwords
 - **Date:** 2026-10-25
-- **Status:** Active (implements 0026 except passwords, locking and encryption); "New binder asks for a folder" superseded by 0084; failed-move rollback amended by 0124
+- **Status:** Active (implements 0026 except passwords, locking and encryption); "New binder asks for a folder" superseded by 0084; failed-move rollback amended by 0124; a binder that comes back reopens its page, amended by 0165
 - **Decision:**
   - **Creating a binder:** "New binder" asks for a folder. A folder that already has a binder file is opened, never overwritten. Otherwise a binder file is created, and any page files already in the folder become its pages.
   - **Cover page:** title, description and owner are editable. It also shows last edited (the latest change to the binder's files), the storage folder, and a color chosen from an 8-color palette. The color is applied to the binder's sidebar entries.
@@ -556,7 +556,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0050 — Binder file and binders.json
 - **Date:** 2026-10-25
-- **Status:** Active; the damaged-binder display is superseded by 0060; the corrupt-list rename is superseded by 0146
+- **Status:** Active; the damaged-binder display is superseded by 0060; the corrupt-list rename is superseded by 0146; binder-file writes and a missing or foreign binder file amended by 0165
 - **Decision:**
   - **The binder file:** `noted-binder.json` in the binder folder: `{"format":1,"binderId":"<16 hex>","title":"…","description":"…","owner":"…","color":"#AARRGGBB","created":<ms since the epoch>}`.
     - It is read and written so unknown fields round-trip byte for byte.
@@ -703,7 +703,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0060 — Damaged binder file display
 - **Date:** 2026-10-25
-- **Status:** Active (supersedes the damaged-binder display in 0050)
+- **Status:** Active (supersedes the damaged-binder display in 0050); "returns to normal" read by 0165 as the binder's own file
 - **Decision:**
   - When a binder's `noted-binder.json` can't be read (invalid JSON, a newer format, or no id), at startup or when the watcher sees it change, the binder stays in the sidebar labelled "Binder file can't be read".
   - Its pages are listed greyed and read-only. A page opens in a read-only view with a banner: no editing, box creation, tools, moving, renaming, deleting or saving.
@@ -1585,7 +1585,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0111 — Box types allowed per page and binder
 - **Date:** 2026-11-01
-- **Status:** Active (approved by the maintainer; extends 0035)
+- **Status:** Active (approved by the maintainer; extends 0035); merges and undo amended by 0166
 - **Decision:**
   - **Setting:** `"boxTypes":{"<type id>": true|false}` in the page header's `noted` object and in the binder file; `false` means not allowed here. An absent type inherits. Unknown keys and non-boolean values are kept as written; a non-boolean value is read as absent.
   - **Inheritance:** like AI access (0109): a binder, or a top-level page outside any binder, may allow or disallow; every other page can only disallow. A type is allowed on a page unless the page or a level above disallows it. The always-on note type can't be disallowed.
@@ -1710,7 +1710,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0121 — Additions on both sides merge automatically
 - **Date:** 2026-11-01
-- **Status:** Active (approved by the maintainer; refines 0020 and 0051)
+- **Status:** Active (approved by the maintainer; refines 0020 and 0051); disallowed box types amended by 0166
 - **Decision:**
   - When both sides changed a box's content, the box type's `merge` (Box API, unchanged) decides; only when it can't is the box conflicted.
   - **Note and AI boxes:** merged when each side is the base's blocks unchanged and in order with blocks only inserted, or with text only appended to the base's last block or prepended to its first (as new runs; base runs and attributes unchanged). Additions at the same place keep mine first; identical additions on both sides are kept once. Anything else is a conflict: any edit, deletion, reorder, attribute or data change of a base block, a sub-item added under a base block, both sides extending the same end of a block with different text, or a base that is only an empty line typed into on both sides. Runs are joined only where an addition meets base text and both are plain. Other top-level keys merge three-way. AI marks stay with the blocks the AI wrote.
@@ -1839,7 +1839,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0131 — One safe write path; collisions keep a conflict copy; the MCP server's replacement
 - **Date:** 2026-11-03
-- **Status:** Active (approved by the maintainer through the Codex data-integrity and run-diff reviews of 2026-11-03; the MCP amendment to invariant 4 approved by the maintainer; supersedes the compare-and-swap leftover rule of 0128, the "app doesn't use it yet" note of 0128 and 0130's "Conflict copies" bullet; amends 0117 "How it writes", 0124 and 0130 "Moves" and "Attachment copies")
+- **Status:** Active (approved by the maintainer through the Codex data-integrity and run-diff reviews of 2026-11-03; the MCP amendment to invariant 4 approved by the maintainer; supersedes the compare-and-swap leftover rule of 0128, the "app doesn't use it yet" note of 0128 and 0130's "Conflict copies" bullet; amends 0117 "How it writes", 0124 and 0130 "Moves" and "Attachment copies"); binder files brought under it by 0165
 - **Decision:**
   - **Two primitives (noted_core), used by every writer.** *Publish if unchanged:* the target is moved aside under a unique name, the aside is compared with the expected bytes, and the new file is published exclusively. If the aside differs it is put back (never over anything) and the result is "changed". *Delete if unchanged:* a file is deleted only if it still holds the bytes, or the content identity (length and SHA-256), that this operation published or verified; otherwise it is kept and reported.
   - **A collision keeps a conflict copy.** If another writer has put a file at the target by the time of publishing, the verified aside is never deleted: it is published as `<id>-conflict-<8 hex>.canvas` beside the page, which the per-box conflict-copy merge (0053) picks up. The startup sweep does the same with a verified leftover whose target is occupied, and turns an unverified one into `<id>-recovered-<8 hex>.canvas`. Trade-off: after a crash between publishing and removing the aside, the older version comes back as a conflict copy, so a box deleted in that save can reappear; that is preferred to losing the only copy.
@@ -2158,7 +2158,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0153 — An unusable binder file of a folder listed both ways makes its pages Guarded and locked; the MCP server's stricter rules reach every entry of a page
 - **Date:** 2026-11-08
-- **Status:** Active (finding accepted by the maintainer's PM chat; details decided by the build team; extends 0150)
+- **Status:** Active (finding accepted by the maintainer's PM chat; details decided by the build team; extends 0150); extended to another binder's file by 0165
 - **Decision:**
   - **Box types.** A closed-app write takes the box-type rules of every ancestor in a folder listed both ways, also when the page itself is in another folder, and rechecks those binder files by bytes under its hold.
   - **An unusable binder file.** A binder file that is missing, unreadable, damaged or of a newer format, in a folder also listed as a page folder, makes that folder's pages and everything under them Guarded and locked. A closed-app write to one is refused: "This box's page is in a binder whose file can't be read, so it can't be written until the file is fixed." (log result `binder_unusable`).
@@ -2293,7 +2293,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0162 — A first load that fails or hangs shows an error screen; system insets on devices
 - **Date:** 2026-11-14
-- **Status:** Active (decided by the build team, run 2026-11-14-01); amends 0129
+- **Status:** Active (decided by the build team, run 2026-11-14-01); amends 0129; the settings hold clarified by 0164
 - **Decision:**
   - **Load error.** If the first load throws, or is still running after 30 seconds, the notebook area shows "Noted can't open your notes.", the error text and Retry, instead of a spinner.
     - A load that ends after the 30 seconds clears the screen and opens the page.
@@ -2316,6 +2316,46 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - Nothing is built for it yet; each provider's conflict-copy naming is *unverified* until checked.
 - **Rationale:** with these providers in scope (0161), their conflict copies would otherwise appear as stray pages or be left unmerged.
 - **Alternatives considered:** keeping other providers' conflict copies out of scope (0161).
+
+## 0164 — The start-up settings hold lasts until the load succeeds
+- **Date:** 2026-11-14
+- **Status:** Active (decided by the build team, run 2026-11-14-02); clarifies 0162
+- **Decision:**
+  - The hold on `binders.json` and other settings (0162) stays on until the whole first load has succeeded, including recovery replay and opening the first page, not only until the binder list is read.
+  - A settings change made while the hold is on is saved once the load succeeds.
+  - **Limits:** app-wide settings (`AppSettings`) are not held: they are written during a pending load as before.
+- **Rationale:** the hold was lifted after the list was read, so a load that failed later could still write lists built from a half-loaded notebook (Codex run-diff, 2026-11-14, R-1).
+- **Alternatives considered:** dropping a change made during the hold (the user's change would be lost without notice).
+
+## 0165 — Binder files are written from the file on disk; another binder's file is never adopted
+- **Date:** 2026-11-14
+- **Status:** Active (decided by the build team, run 2026-11-14-02; the MCP server rule approved by the maintainer as an extension of 0153; "stricter" and the reading of 0050 and 0060 settled by the maintainer's PM chat). Brings binder files under 0131; amends 0049 and 0050; extends 0153.
+- **Decision:**
+  - **Writes.** A cover or setting change is recorded as a change to fields, and is applied to the binder file as it is on disk at write time, under the folder lock, through the compare-and-replace primitives (0131). A field the user didn't touch is never written, so another device's change to it is kept.
+    - A change to AI access or a box type never loosens what the file on disk holds: if the file is stricter than the value this device changed from, the file's value is kept and a notice says so.
+    - A setting the file refuses (gone, unreadable, read-only, another binder) is dropped with a notice. Cover text is kept as "Not saved yet · Discard" and retried until it lands or the user discards it; quit and Remove binder ask before losing it.
+    - Temporary files are removed only after their change landed or was dropped, and only while the same binder's file is present and readable at the moment of the delete. Anything else is kept and listed.
+  - **Missing file.** A binder file that is missing (with no aside of it being replaced) makes the binder unavailable at once. When the same binder's file comes back, the binder reopens and the page that was open is opened again.
+  - **Copies of the binder file.** Every other `noted-binder*` file in the folder (temporaries, asides, conflict copies, sync-client copies) is listed, never deleted automatically, and kept up to date as files arrive or go. Each row offers Delete; while the binder file is missing, a copy of this binder also offers Put back. Neither is offered in a pull-only folder (0154). Put back publishes a private copy of the verified bytes and then removes the restored copy only if it is unchanged and the binder file holds the binder.
+  - **Another binder's file.** A folder whose binder file has another id than `binders.json` records is listed read-only and locked for AI, with "This folder now holds another binder" and **Use this binder**. Nothing is written there until the user chooses it. A folder with no recorded id adopts what it holds, as before.
+  - **MCP server.** A binder file of another binder than `binders.json` records is unusable, as a missing or damaged one is under 0153, at load and at the recheck before a write.
+  - **Limits:** a cover change still pending is lost if the app is killed (there is no recovery entry for binder files). Older builds write binder files from their cache and are not detected. A binder file that keeps changing can leave up to five temporary files, listed until the change lands or is discarded.
+- **Rationale:** binder files were written from a cached copy, so another device's change was overwritten; a refused write left the screen showing a value that wasn't saved; and another binder's file at the same path was adopted, taking its AI access (Codex data-integrity review, 2026-11-04, R-2).
+- **Alternatives considered:** keeping a copy of an unsaved cover change in the recovery store (a new file kind); adopting another binder's file at once (it would change AI access without the user).
+
+## 0166 — Box types a page disallows are never decoded in merges, edits or undo
+- **Date:** 2026-11-14
+- **Status:** Active (decided by the build team, run 2026-11-14-02); amends 0111 and 0121
+- **Decision:**
+  - A box type disallowed on the page, as this device knows it or in the header of any version a merge reads, is merged as a switched-off module's box (0035): it is never decoded. When both sides changed the box, this device's version is kept and the other is recorded in its conflicts. This holds for sync merges, conflict copies, recovery replay and its preview, and AI merge requests.
+  - The canvas never decodes such a box: it shows its saved read-only display, and edits, the pen and the eraser leave it unchanged.
+  - Undo and Redo stop at a step that would change the content of such a box, and stay unavailable until the type is allowed again; the step is kept.
+  - Deleting such a box, and undoing an add, a delete or a replacement of it, moves its record unchanged and stays available.
+  - An AI merge request about such a box is refused, also when the type is disallowed while the request is being built or answered.
+  - Code: `CanvasController.disallowedTypes`, pushed by the notebook only.
+  - **Limits:** the canvas doesn't select a disallowed box, so Delete isn't reachable from the UI yet. A disallowed drawing box shows an empty frame, since drawing boxes have no image snapshot yet (open item).
+- **Rationale:** merges, the AI gate and undo decoded a disallowed box through its live module, which could rewrite its data (Codex invariants review, 2026-11-04, R-2; invariant 2).
+- **Alternatives considered:** dropping a blocked undo step (Undo would skip to older steps); blocking every undo step on such a box (Undo of a Delete would be lost).
 
 ---
 
