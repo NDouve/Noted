@@ -662,7 +662,7 @@ void main() {
       nb.putBackBeforeDeleteHook = null;
       await nb.checkBinderFile(binderFile().path, force: true);
       nb.retryCovers();
-      await until(() => textOrEmpty().contains('Draft'), 'the cover change lands');
+      await until(() => nb.coverPendingFor(section.path).isEmpty, 'the cover change lands');
       await idle();
       expect(File(temp.path).existsSync(), isTrue, reason: 'only its row\'s Delete removes a copy that was put back');
       expect(File(temp.path).readAsBytesSync(), kept);
