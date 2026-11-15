@@ -71,6 +71,11 @@ sealed class PageChange {
   /// Reverts this change on [page]. Returns null if the change no longer
   /// applies, for example because its box is gone.
   (NotedPage, PageChange)? revert(NotedPage page, CodecRegistry codecs);
+
+  /// Whether reverting this change on [page] would go through the codec of a
+  /// box whose type is in [off]. Steps that move a record as it is (add,
+  /// remove, replace) and the core-owned ones never are.
+  bool _blockedBy(NotedPage page, Set<String> off) => false;
 }
 
 final class _Order extends PageChange {
@@ -141,6 +146,11 @@ final class _Group extends PageChange {
 
   final List<PageChange> changes;
 
+  // A group is reverted whole or not at all.
+  @override
+  bool _blockedBy(NotedPage page, Set<String> off) =>
+      changes.any((c) => c._blockedBy(page, off));
+
   @override
   (NotedPage, PageChange)? revert(NotedPage page, CodecRegistry codecs) {
     var p = page;
@@ -208,6 +218,12 @@ final class _ContentChanged extends PageChange {
   final Bounds? boundsBefore;
 
   @override
+  bool _blockedBy(NotedPage page, Set<String> off) {
+    final n = page.node(id);
+    return n is BoxRecord && off.contains(n.typeId);
+  }
+
+  @override
   (NotedPage, PageChange)? revert(NotedPage page, CodecRegistry codecs) {
     final n = page.node(id);
     if (n is! BoxRecord) return null;
@@ -260,21 +276,39 @@ final class PageHistory {
     );
   }
 
-  /// Undoes the latest change that still applies. Returns null if none does.
-  /// Content changes are replayed through [codecs].
-  NotedPage? undo(NotedPage page, CodecRegistry codecs) =>
-      _step(page, codecs, _undo, _redo);
+  /// Whether undo (redo) has a step that isn't blocked: the stack is
+  /// non-empty and its top doesn't revert through a codec of a type in
+  /// [blockedTypes] (a type the page disallows).
+  bool canUndoOn(NotedPage page, {Set<String> blockedTypes = const {}}) =>
+      _undo.isNotEmpty && !_undo.last._blockedBy(page, blockedTypes);
 
-  NotedPage? redo(NotedPage page, CodecRegistry codecs) =>
-      _step(page, codecs, _redo, _undo);
+  bool canRedoOn(NotedPage page, {Set<String> blockedTypes = const {}}) =>
+      _redo.isNotEmpty && !_redo.last._blockedBy(page, blockedTypes);
+
+  /// Undoes the latest change that still applies. Returns null if none does.
+  /// Content changes are replayed through [codecs]. A top step blocked by
+  /// [blockedTypes] stays where it is and nothing is undone.
+  NotedPage? undo(
+    NotedPage page,
+    CodecRegistry codecs, {
+    Set<String> blockedTypes = const {},
+  }) => _step(page, codecs, _undo, _redo, blockedTypes);
+
+  NotedPage? redo(
+    NotedPage page,
+    CodecRegistry codecs, {
+    Set<String> blockedTypes = const {},
+  }) => _step(page, codecs, _redo, _undo, blockedTypes);
 
   NotedPage? _step(
     NotedPage page,
     CodecRegistry codecs,
     List<PageChange> from,
     List<PageChange> to,
+    Set<String> blockedTypes,
   ) {
     while (from.isNotEmpty) {
+      if (from.last._blockedBy(page, blockedTypes)) return null;
       final result = from.removeLast().revert(page, codecs);
       if (result == null) continue;
       to.add(result.$2);

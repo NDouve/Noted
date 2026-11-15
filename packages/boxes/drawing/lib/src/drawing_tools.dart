@@ -60,6 +60,7 @@ Iterable<_Drawing> _drawings(DrawingModule module, CanvasController c) sync* {
   for (var i = nodes.length - 1; i >= 0; i--) {
     final n = nodes[i];
     if (n is! BoxRecord || n.typeId != DrawingCodec.id) continue;
+    if (c.disallowedTypes.contains(n.typeId)) continue; // never decoded (0111)
     final r = c.modules.codecs.resolve(n);
     if (r is! LiveBox) continue;
     final data = r.data! as DrawingData;
@@ -163,6 +164,9 @@ class _PenSession extends ToolSession {
   @override
   void end() {
     final c = context.controller;
+    // The type was disallowed during the stroke: it goes nowhere, neither into
+    // its box nor into a new one (0111).
+    if (c.disallowedTypes.contains(DrawingCodec.id)) return;
     var minX = double.infinity, minY = double.infinity;
     var maxX = -double.infinity, maxY = -double.infinity;
     for (var i = 0; i < _points.length; i += 4) {
@@ -329,7 +333,11 @@ class _EraserSession extends ToolSession {
     for (final MapEntry(key: id, value: strokes) in _erased.entries) {
       final box = c.page.node(id);
       if (box is! BoxRecord) continue;
-      final r = c.modules.codecs.resolve(box);
+      // Disallowed during the drag: the box is kept and not decoded; the step
+      // for what was already erased is recorded, and blocked until the type
+      // is allowed again.
+      final off = c.disallowedTypes.contains(box.typeId);
+      final r = off ? null : c.modules.codecs.resolve(box);
       if (r is LiveBox && r.codec.isEmpty(r.data)) {
         // Emptied: delete it, and let one undo bring it back with its ink.
         c.delete(id, undoTo: _before[id]);

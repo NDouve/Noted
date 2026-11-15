@@ -125,6 +125,7 @@ void main() {
       ),
     );
     c = CanvasController(page, modules);
+    c.disallowedTypes = {for (final t in disallowed) if (modules.isSwitchable(t)) t};
     selection = CanvasToolSelection();
     addTearDown(selection.dispose);
     await t.pumpWidget(
