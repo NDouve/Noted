@@ -28,10 +28,14 @@ class SpyCalls {
 }
 
 class SpyCodec<D> extends BoxCodec<D> {
-  const SpyCodec(this.typeId, this.inner);
+  const SpyCodec(this.typeId, this.inner, {this.emptyWithoutText = false});
   @override
   final String typeId;
   final BoxCodec<D> inner;
+
+  /// Whether a box with no snapshot text counts as empty (the real AI codec
+  /// never does), so focus-loss cleanup would remove it.
+  final bool emptyWithoutText;
   @override
   int get dataVersion => inner.dataVersion;
   @override
@@ -51,7 +55,7 @@ class SpyCodec<D> extends BoxCodec<D> {
   @override
   String snapshotText(D data) => inner.snapshotText(data);
   @override
-  bool isEmpty(D data) => inner.isEmpty(data);
+  bool isEmpty(D data) => emptyWithoutText ? inner.snapshotText(data).trim().isEmpty : inner.isEmpty(data);
   @override
   AiExposure aiExposure(D data) => inner.aiExposure(data);
   @override
@@ -64,12 +68,11 @@ class SpyCodec<D> extends BoxCodec<D> {
 }
 
 class SpyModule<D> extends BoxModule<D> {
-  SpyModule(String typeId, this.inner) : codec = SpyCodec<D>(typeId, inner.codec);
+  SpyModule(String typeId, this.inner, {bool emptyWithoutText = false})
+    : codec = SpyCodec<D>(typeId, inner.codec, emptyWithoutText: emptyWithoutText);
   final BoxModule<D> inner;
   @override
   final BoxCodec<D> codec;
-  @override
-  List<CanvasTool> get tools => inner.tools;
   @override
   BoxFrameStyle get frameStyle => inner.frameStyle;
   @override
@@ -81,7 +84,7 @@ class SpyModule<D> extends BoxModule<D> {
 /// The app's modules plus the two spy modules.
 ModuleRegistry spyModules() => buildModules()
   ..register(SpyModule<DrawingData>(spyDrawing, DrawingModule()))
-  ..register(SpyModule<AiBoxData>(spyAi, AiModule()));
+  ..register(SpyModule<AiBoxData>(spyAi, AiModule(), emptyWithoutText: true));
 
 /// A horizontal stroke at [y], with an id and a start time of its own.
 Stroke spyStroke(String id, double y, {int t0 = 0}) =>

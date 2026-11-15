@@ -361,6 +361,16 @@ class _MPage {
   bool hashFile = false; // and a hash-named file beside it (_goodName)
   final Map<String, _BoxVal> boxes = {};
 
+  /// The box types the page's own header disallows, as the model knows them.
+  /// The header on disk, in the live page and after a reload must say the same
+  /// (a merged header that lost the disallow fails).
+  final Set<String> boxTypes = {};
+
+  /// Boxes a merge left conflicted on purpose (a type the page disallows): the
+  /// box id to the text of the other version, which the box's one conflict
+  /// record must hold. The box's own text is the model's, this device's.
+  final Map<String, String> conflicts = {};
+
   /// The ids of boxes in their expected relative order (bottom first), set by
   /// a layer step. Empty until one runs. A box that is gone is skipped and a
   /// box that isn't listed (one added since) has no expected place.
@@ -426,12 +436,19 @@ BoxRecord _opaqueBox() => BoxRecord.create(
 /// The note boxes of [page] as id to text and bounds. Fails on anything that
 /// is not a note box, on a conflicted box, and unless the page holds exactly
 /// one unregistered box with its data and bounds as they were made.
-Map<String, _BoxVal> _boxesOf(NotedPage page, String where) {
+Map<String, _BoxVal> _boxesOf(NotedPage page, String where, {Map<String, String> conflicts = const {}}) {
   final out = <String, _BoxVal>{};
   var opaque = 0;
   for (final n in page.nodes) {
     if (n is! BoxRecord) fail('$where: a node that is not a box: ${n.id}');
-    if (n.isConflicted) fail('$where: box ${n.id} is conflicted (${_textOf(n)})');
+    if (n.isConflicted) {
+      final want = conflicts[n.id];
+      if (want == null) fail('$where: box ${n.id} is conflicted (${_textOf(n)})');
+      expect(n.conflicts, hasLength(1), reason: '$where: exactly one record in ${n.id}');
+      final node = n.conflicts.single.node;
+      final other = node == null ? null : BoxRecord.tryRead(RawObject.parse(node.text), node);
+      expect(other == null ? null : _textOf(other), want, reason: '$where: the recorded version in ${n.id}');
+    }
     if (n.typeId == _opaqueType) {
       opaque++;
       expect(n.id, _opaqueId, reason: '$where: the unregistered box');
@@ -444,6 +461,16 @@ Map<String, _BoxVal> _boxesOf(NotedPage page, String where) {
   expect(opaque, 1, reason: '$where: the unregistered box is missing or repeated');
   return out;
 }
+
+/// The page header's own box type choices must be the model's.
+void _expectBoxTypes(NotedPage page, _MPage m, String where) => expect(
+  {
+    for (final t in [aiBoxTypeId])
+      if (page.meta.boxTypeChoice(t) == false) t,
+  },
+  m.boxTypes,
+  reason: '$where: the box types the page header disallows',
+);
 
 const _locs = ['pages', 'x', 'a', 'b'];
 
@@ -2952,13 +2979,14 @@ class _Run {
         );
       }
       expect(
-        _boxesOf(page, '$where: ${_short(id)} on disk'),
+        _boxesOf(page, '$where: ${_short(id)} on disk', conflicts: m.conflicts),
         m.boxes,
         reason: '$where: boxes of page ${_short(id)} in ${m.loc}',
       );
       expect(m.orderIn(page), m.wantOrder, reason: '$where: stacking order of page ${_short(id)} on disk');
       expect(page.meta.title, m.title, reason: '$where: title of ${_short(id)}');
       expect(page.meta.parentId, m.parent, reason: '$where: parent of ${_short(id)}');
+      _expectBoxTypes(page, m, '$where: ${_short(id)} on disk');
     }
   }
 
@@ -2975,7 +3003,8 @@ class _Run {
     final c = nb.current;
     if (c != null && model.containsKey(c.page.id)) {
       final m = model[c.page.id]!;
-      expect(_boxesOf(c.page, '$where: the open page'), m.boxes, reason: '$where: the open page');
+      expect(_boxesOf(c.page, '$where: the open page', conflicts: m.conflicts), m.boxes, reason: '$where: the open page');
+      _expectBoxTypes(c.page, m, '$where: the open page');
       expect(m.orderIn(c.page), m.wantOrder, reason: '$where: stacking order of the open page');
     }
     for (final e in model.entries) {
@@ -3009,11 +3038,12 @@ class _Run {
         expect(other.binderOfPage(e.key), want, reason: '$where: fresh binder of ${_short(e.key)}');
         await other.open(e.key);
         expect(
-          _boxesOf(other.current!.page, '$where: fresh ${_short(e.key)}'),
+          _boxesOf(other.current!.page, '$where: fresh ${_short(e.key)}', conflicts: e.value.conflicts),
           e.value.boxes,
           reason: '$where: a fresh notebook shows page ${_short(e.key)} differently',
         );
         expect(other.current!.page.meta.title, e.value.title);
+        _expectBoxTypes(other.current!.page, e.value, '$where: fresh ${_short(e.key)}');
         expect(
           e.value.orderIn(other.current!.page),
           e.value.wantOrder,
@@ -3215,6 +3245,113 @@ void main() {
         }
       }, timeout: const Timeout(Duration(minutes: 3)));
     }
+  });
+
+  // Run 2026-11-14-02, task 3: both sides appended to an AI box of a type the
+  // page disallows (in the remote version's header only, or through the binder).
+  // Without the rule the paragraphs are merged through the codec; with it the
+  // box stays conflicted: this device's text shown, the other recorded, and the
+  // header, the files and a reload agree.
+  group('an AI box both sides appended to, the type disallowed: the model equals the files, live and after a restart', () {
+    const codec = AiCodec();
+    const boxId = '0000000000000a01';
+
+    Map<String, Object?> docOf(List<String> paragraphs) => {
+      'document': {
+        'type': 'page',
+        'children': [
+          for (final p in paragraphs)
+            {
+              'type': 'paragraph',
+              'data': {
+                'delta': [
+                  {'insert': p},
+                ],
+              },
+            },
+        ],
+      },
+    };
+
+    BoxRecord aiBox(List<String> paragraphs) =>
+        commitBox(createBox(codec, const Bounds(40, 40, 300, 80)).withId(boxId), codec, codec.decode(docOf(paragraphs), 1));
+
+    BoxRecord withText(BoxRecord b, List<String> paragraphs) => commitBox(b, codec, codec.decode(docOf(paragraphs), 1));
+
+    List<int> bytes(NotedPage p) => utf8.encode(writePage(p));
+
+    /// The page [id] saved with the AI box holding 'base'; the model knows it.
+    Future<NotedPage> baseWith(_Run run, String id, {required bool open}) async {
+      final box = aiBox(['base']);
+      if (open) {
+        run.nb.current!.insertBox(box);
+        await run.nb.flush();
+      } else {
+        await run._externalWrite(id, run._disk(id).insertNode(box));
+        await run.nb.checkFile(run._pathOf(id));
+      }
+      run.model[id]!.boxes[boxId] = (text: 'base', bounds: box.bounds);
+      return run._disk(id);
+    }
+
+    void modelMerged(_Run run, String id, {required bool headerDisallows}) {
+      final m = run.model[id]!;
+      m.boxes[boxId] = (text: 'baselocal', bounds: m.boxes[boxId]!.bounds);
+      m.conflicts[boxId] = 'baseremote';
+      if (headerDisallows) m.boxTypes.add(aiBoxTypeId);
+    }
+
+    Future<void> verifyAll(_Run run) async {
+      await run.verify('after the merge', fresh: true);
+      await run._opRestart();
+      await run.verify('after a restart', fresh: true);
+    }
+
+    for (final open in [false, true]) {
+      test('mergeRemote on ${open ? 'the open' : 'a closed'} page, the disallow only in the remote header', () async {
+        final run = _Run(open ? 942 : 941);
+        try {
+          await run.start();
+          await run.nb.flush();
+          final id = open ? run.nb.currentId! : run.model.keys.firstWhere((i) => i != run.nb.currentId);
+          final base = await baseWith(run, id, open: open);
+          final mine = withText(base.node(boxId)! as BoxRecord, ['base', 'local']);
+          if (open) {
+            run.nb.current!.editBox(boxId, codec.decode(docOf(['base', 'local']), 1)); // unsaved
+          } else {
+            await run._externalWrite(id, base.replaceNode(mine));
+          }
+          final theirs = base.replaceNode(withText(base.node(boxId)! as BoxRecord, ['base', 'remote']));
+          final disallowing = theirs.withMeta(theirs.meta.withBoxType(aiBoxTypeId, false));
+          final r = await run.nb.mergeRemote(run._pathOf(id), bytes(base), bytes(disallowing));
+          expect(r.outcome, RemoteMergeOutcome.merged, reason: '$r');
+          modelMerged(run, id, headerDisallows: true);
+          await verifyAll(run);
+        } finally {
+          await run.stop();
+        }
+      }, timeout: const Timeout(Duration(minutes: 3)));
+    }
+
+    test('the watcher on the open page: an unsaved append, binder a disallows the type, an external append', () async {
+      final run = _Run(943);
+      try {
+        await run.start();
+        await run.nb.flush();
+        final id = run.model.entries.firstWhere((e) => e.value.loc == 'a').key;
+        await run.nb.open(id);
+        final base = await baseWith(run, id, open: true);
+        run.nb.current!.editBox(boxId, codec.decode(docOf(['base', 'local']), 1)); // unsaved
+        await run.nb.setBinderBoxType(run.pathA, aiBoxTypeId, false);
+        await realIoUntil(() => !run.nb.boxTypeAvailabilityFor(id, aiBoxTypeId).allowed, 'binder a disallowing the type');
+        await run._externalWrite(id, base.replaceNode(withText(base.node(boxId)! as BoxRecord, ['base', 'remote'])));
+        await run.nb.checkFile(run._pathOf(id));
+        modelMerged(run, id, headerDisallows: false);
+        await verifyAll(run);
+      } finally {
+        await run.stop();
+      }
+    }, timeout: const Timeout(Duration(minutes: 3)));
   });
 
   test('a no-op mergeRemote after an unobserved disk change: live metas equal the files and a fresh notebook', () async {
