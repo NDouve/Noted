@@ -4,10 +4,86 @@
 
 #include "flutter_window.h"
 
+#include <commctrl.h>
+
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
 #include "utils.h"
+
+namespace {
+
+using flutter::EncodableList;
+using flutter::EncodableMap;
+using flutter::EncodableValue;
+
+constexpr UINT_PTR kViewSubclassId = 1;
+
+// The Flutter view is a child covering the client area, so it would answer
+// every hit test itself. Where the frame (the parent) answers anything but
+// HTCLIENT (caption, caption buttons, top resize band) it is transparent, so
+// the parent's answer applies. Does nothing while the custom frame is off.
+LRESULT CALLBACK ViewSubclassProc(HWND hwnd, UINT message, WPARAM wparam,
+                                  LPARAM lparam, UINT_PTR, DWORD_PTR ref) {
+  auto* window = reinterpret_cast<Win32Window*>(ref);
+  if (message == WM_NCHITTEST && window != nullptr &&
+      window->custom_frame()) {
+    HWND parent = GetParent(hwnd);
+    if (parent != nullptr) {
+      LRESULT hit = SendMessage(parent, WM_NCHITTEST, 0, lparam);
+      if (hit != HTCLIENT) {
+        return HTTRANSPARENT;
+      }
+    }
+  }
+  return DefSubclassProc(hwnd, message, wparam, lparam);
+}
+
+bool ToDouble(const EncodableValue& v, double* out) {
+  if (const auto* d = std::get_if<double>(&v)) {
+    *out = *d;
+    return true;
+  }
+  if (const auto* i = std::get_if<int32_t>(&v)) {
+    *out = *i;
+    return true;
+  }
+  if (const auto* l = std::get_if<int64_t>(&v)) {
+    *out = static_cast<double>(*l);
+    return true;
+  }
+  return false;
+}
+
+// [left, top, right, bottom] in logical pixels.
+bool ToRect(const EncodableValue& v, Win32Window::DipRect* out) {
+  const auto* list = std::get_if<EncodableList>(&v);
+  if (list == nullptr || list->size() != 4) {
+    return false;
+  }
+  double n[4];
+  for (int i = 0; i < 4; ++i) {
+    if (!ToDouble((*list)[i], &n[i])) {
+      return false;
+    }
+  }
+  *out = {n[0], n[1], n[2], n[3]};
+  return true;
+}
+
+const char* ButtonName(int button) {
+  switch (button) {
+    case Win32Window::kMinimize:
+      return "minimize";
+    case Win32Window::kMaximize:
+      return "maximize";
+    case Win32Window::kClose:
+      return "close";
+  }
+  return "none";
+}
+
+}  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -51,7 +127,18 @@ bool FlutterWindow::OnCreate() {
           result->NotImplemented();
         }
       });
+  window_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "noted/window",
+          &flutter::StandardMethodCodec::GetInstance());
+  window_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) { HandleWindowCall(call, std::move(result)); });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+  view_hwnd_ = flutter_controller_->view()->GetNativeWindow();
+  SetWindowSubclass(view_hwnd_, ViewSubclassProc, kViewSubclassId,
+                   reinterpret_cast<DWORD_PTR>(this));
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
@@ -65,7 +152,115 @@ bool FlutterWindow::OnCreate() {
   return true;
 }
 
+void FlutterWindow::HandleWindowCall(
+    const flutter::MethodCall<flutter::EncodableValue>& call,
+    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  const std::string& method = call.method_name();
+  HWND hwnd = GetHandle();
+  if (hwnd == nullptr) {
+    result->Error("no_window", "The window is gone.");
+    return;
+  }
+  if (method == "enable") {
+    // {enabled: bool}, default true. Off is a normal captioned window.
+    bool enabled = true;
+    if (const auto* args = std::get_if<EncodableMap>(call.arguments())) {
+      auto it = args->find(EncodableValue("enabled"));
+      if (it != args->end()) {
+        if (const auto* b = std::get_if<bool>(&it->second)) enabled = *b;
+      }
+    }
+    SetCustomFrame(enabled);
+    result->Success();
+  } else if (method == "setCaptionRects") {
+    // {buttons: {minimize, maximize, close: [l, t, r, b]},
+    //  interactive: [[l, t, r, b], ...]}, logical px in the client area.
+    const auto* args = std::get_if<EncodableMap>(call.arguments());
+    if (args == nullptr) {
+      result->Error("bad_args", "Expected a map.");
+      return;
+    }
+    DipRect buttons[4];
+    auto bit = args->find(EncodableValue("buttons"));
+    if (bit != args->end()) {
+      if (const auto* map = std::get_if<EncodableMap>(&bit->second)) {
+        for (int b = kMinimize; b <= kClose; ++b) {
+          auto rit = map->find(EncodableValue(ButtonName(b)));
+          if (rit != map->end() && !ToRect(rit->second, &buttons[b])) {
+            result->Error("bad_args", "A button rect is not [l, t, r, b].");
+            return;
+          }
+        }
+      }
+    }
+    std::vector<DipRect> interactive;
+    auto iit = args->find(EncodableValue("interactive"));
+    if (iit != args->end()) {
+      if (const auto* list = std::get_if<EncodableList>(&iit->second)) {
+        for (const auto& v : *list) {
+          DipRect r;
+          if (!ToRect(v, &r)) {
+            result->Error("bad_args", "A rect is not [l, t, r, b].");
+            return;
+          }
+          interactive.push_back(r);
+        }
+      }
+    }
+    SetCaptionRects(buttons, std::move(interactive));
+    result->Success();
+  } else if (method == "minimize") {
+    PostMessage(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+    result->Success();
+  } else if (method == "toggleMaximize") {
+    PostMessage(hwnd, WM_SYSCOMMAND, IsZoomed(hwnd) ? SC_RESTORE : SC_MAXIMIZE,
+                0);
+    result->Success();
+  } else if (method == "close") {
+    // WM_CLOSE, so the exit checks run as for Alt+F4.
+    PostMessage(hwnd, WM_CLOSE, 0, 0);
+    result->Success();
+  } else if (method == "getState") {
+    FrameState s = GetFrameState();
+    EncodableMap map;
+    map[EncodableValue("maximized")] = EncodableValue(s.maximized);
+    map[EncodableValue("active")] = EncodableValue(s.active);
+    map[EncodableValue("hovered")] = EncodableValue(ButtonName(s.hovered));
+    map[EncodableValue("pressed")] = EncodableValue(ButtonName(s.pressed));
+    map[EncodableValue("dpi")] = EncodableValue(static_cast<int32_t>(s.dpi));
+    result->Success(EncodableValue(map));
+  } else {
+    result->NotImplemented();
+  }
+}
+
+void FlutterWindow::OnFrameStateChanged() {
+  if (!window_channel_ || !custom_frame()) {
+    return;
+  }
+  FrameState s = GetFrameState();
+  EncodableMap map;
+  map[EncodableValue("maximized")] = EncodableValue(s.maximized);
+  map[EncodableValue("active")] = EncodableValue(s.active);
+  map[EncodableValue("hovered")] = EncodableValue(ButtonName(s.hovered));
+  map[EncodableValue("pressed")] = EncodableValue(ButtonName(s.pressed));
+  map[EncodableValue("dpi")] = EncodableValue(static_cast<int32_t>(s.dpi));
+  window_channel_->InvokeMethod(
+      "state", std::make_unique<EncodableValue>(std::move(map)));
+}
+
+void FlutterWindow::OnNcPointerDown() {
+  if (window_channel_) {
+    window_channel_->InvokeMethod("ncPointerDown", nullptr);
+  }
+}
+
 void FlutterWindow::OnDestroy() {
+  if (view_hwnd_ != nullptr) {
+    RemoveWindowSubclass(view_hwnd_, ViewSubclassProc, kViewSubclassId);
+    view_hwnd_ = nullptr;
+  }
+  window_channel_ = nullptr;
   open_channel_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;

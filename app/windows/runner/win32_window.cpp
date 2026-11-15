@@ -6,6 +6,10 @@
 
 #include <dwmapi.h>
 #include <flutter_windows.h>
+#include <shellapi.h>
+#include <windowsx.h>
+
+#include <algorithm>
 
 #include "resource.h"
 
@@ -182,6 +186,14 @@ Win32Window::MessageHandler(HWND hwnd,
                             UINT const message,
                             WPARAM const wparam,
                             LPARAM const lparam) noexcept {
+  if (custom_frame_) {
+    bool handled = false;
+    LRESULT result = HandleCustomFrame(hwnd, message, wparam, lparam, &handled);
+    if (handled) {
+      return result;
+    }
+  }
+
   switch (message) {
     case WM_DESTROY:
       window_handle_ = nullptr;
@@ -289,4 +301,353 @@ void Win32Window::UpdateTheme(HWND const window) {
     DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
                           &enable_dark_mode, sizeof(enable_dark_mode));
   }
+}
+
+void Win32Window::OnFrameStateChanged() {
+  // No-op; provided for subclasses.
+}
+
+void Win32Window::OnNcPointerDown() {
+  // No-op; provided for subclasses.
+}
+
+// ---------------------------------------------------------------------------
+// Custom title-bar frame. Off unless Dart calls SetCustomFrame(true).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The title bar's height in logical pixels (the design's title-bar-height).
+constexpr double kCaptionHeightDip = 40.0;
+
+int ButtonHitCode(int button) {
+  switch (button) {
+    case Win32Window::kMinimize:
+      return HTMINBUTTON;
+    case Win32Window::kMaximize:
+      return HTMAXBUTTON;
+    case Win32Window::kClose:
+      return HTCLOSE;
+  }
+  return HTNOWHERE;
+}
+
+int ButtonFromHitCode(WPARAM hit) {
+  switch (hit) {
+    case HTMINBUTTON:
+      return Win32Window::kMinimize;
+    case HTMAXBUTTON:
+      return Win32Window::kMaximize;
+    case HTCLOSE:
+      return Win32Window::kClose;
+  }
+  return Win32Window::kNoButton;
+}
+
+bool DipRectContains(const Win32Window::DipRect& r, double x, double y) {
+  return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+}
+
+// GetDpiForWindow and GetSystemMetricsForDpi need Windows 10 1607; load them
+// as the template does EnableNonClientDpiScaling, and fall back to 96 dpi.
+UINT WindowDpi(HWND hwnd) {
+  using Fn = UINT WINAPI(HWND);
+  static auto fn = reinterpret_cast<Fn*>(
+      GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+  UINT dpi = fn != nullptr ? fn(hwnd) : 96;
+  return dpi != 0 ? dpi : 96;
+}
+
+int MetricForDpi(int index, UINT dpi) {
+  using Fn = int WINAPI(int, UINT);
+  static auto fn = reinterpret_cast<Fn*>(GetProcAddress(
+      GetModuleHandleW(L"user32.dll"), "GetSystemMetricsForDpi"));
+  return fn != nullptr ? fn(index, dpi) : GetSystemMetrics(index);
+}
+
+// The width of the sizing frame at the top, in physical pixels.
+int TopFrameThickness(UINT dpi) {
+  return MetricForDpi(SM_CYSIZEFRAME, dpi) +
+         MetricForDpi(SM_CXPADDEDBORDER, dpi);
+}
+
+// The hit code for a point (client coordinates) that DefWindowProc called
+// HTCLIENT. Pure: only the top kCaptionHeightDip changes. |buttons| is indexed
+// by CaptionButton (1..3).
+int HitTestCaptionArea(POINT p, int client_width, UINT dpi, bool maximized,
+                       int band, const Win32Window::DipRect buttons[4],
+                       const std::vector<Win32Window::DipRect>& interactive) {
+  double scale = dpi / 96.0;
+  double x = p.x / scale, y = p.y / scale;
+  if (y < 0 || y >= kCaptionHeightDip) {
+    return HTCLIENT;
+  }
+  if (!maximized && p.y < band) {
+    if (p.x < band) return HTTOPLEFT;
+    if (p.x >= client_width - band) return HTTOPRIGHT;
+    return HTTOP;
+  }
+  for (int b = Win32Window::kMinimize; b <= Win32Window::kClose; ++b) {
+    if (DipRectContains(buttons[b], x, y)) {
+      return ButtonHitCode(b);
+    }
+  }
+  for (const Win32Window::DipRect& r : interactive) {
+    if (DipRectContains(r, x, y)) {
+      return HTCLIENT;
+    }
+  }
+  return HTCAPTION;
+}
+
+}  // namespace
+
+void Win32Window::SetCustomFrame(bool enabled) {
+  if (custom_frame_ == enabled || !window_handle_) {
+    return;
+  }
+  if (pressed_ != kNoButton) {
+    ReleaseCapture();
+  }
+  custom_frame_ = enabled;
+  hovered_ = pressed_ = kNoButton;
+  tracking_nc_leave_ = false;
+  active_ = GetActiveWindow() == window_handle_;
+  MARGINS margins = {0, 0, enabled ? 1 : 0, 0};  // left, right, top, bottom
+  DwmExtendFrameIntoClientArea(window_handle_, &margins);
+  // Apply the new non-client size now, before the next paint.
+  SetWindowPos(window_handle_, nullptr, 0, 0, 0, 0,
+               SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                   SWP_NOACTIVATE);
+  OnFrameStateChanged();
+}
+
+void Win32Window::SetCaptionRects(const DipRect buttons[4],
+                                  std::vector<DipRect> interactive) {
+  for (int i = 0; i < 4; ++i) {
+    buttons_[i] = buttons[i];
+  }
+  interactive_ = std::move(interactive);
+}
+
+Win32Window::FrameState Win32Window::GetFrameState() {
+  FrameState state;
+  state.maximized = window_handle_ && IsZoomed(window_handle_);
+  state.active = active_;
+  state.hovered = hovered_;
+  state.pressed = pressed_;
+  state.dpi = window_handle_ ? WindowDpi(window_handle_) : 96;
+  return state;
+}
+
+int Win32Window::ButtonAt(POINT p) {
+  double scale = WindowDpi(window_handle_) / 96.0;
+  double x = p.x / scale, y = p.y / scale;
+  for (int b = kMinimize; b <= kClose; ++b) {
+    if (DipRectContains(buttons_[b], x, y)) {
+      return b;
+    }
+  }
+  return kNoButton;
+}
+
+int Win32Window::HitTestClient(POINT p, int client_width) {
+  UINT dpi = WindowDpi(window_handle_);
+  return HitTestCaptionArea(p, client_width, dpi, IsZoomed(window_handle_),
+                            TopFrameThickness(dpi), buttons_, interactive_);
+}
+
+void Win32Window::SetHoverPressed(int hovered, int pressed) {
+  if (hovered == hovered_ && pressed == pressed_) {
+    return;
+  }
+  hovered_ = hovered;
+  pressed_ = pressed;
+  OnFrameStateChanged();
+}
+
+void Win32Window::RunCaptionButton(int button) {
+  WPARAM command = 0;
+  switch (button) {
+    case kMinimize:
+      command = SC_MINIMIZE;
+      break;
+    case kMaximize:
+      command = IsZoomed(window_handle_) ? SC_RESTORE : SC_MAXIMIZE;
+      break;
+    case kClose:
+      command = SC_CLOSE;
+      break;
+    default:
+      return;
+  }
+  PostMessage(window_handle_, WM_SYSCOMMAND, command, 0);
+}
+
+LRESULT Win32Window::HandleCustomFrame(HWND hwnd, UINT message, WPARAM wparam,
+                                       LPARAM lparam, bool* handled) noexcept {
+  *handled = true;
+  switch (message) {
+    case WM_NCCALCSIZE: {
+      if (!wparam) {
+        break;
+      }
+      auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam);
+      LONG proposed_top = params->rgrc[0].top;
+      // The default result keeps the left, right and bottom borders.
+      LRESULT result = DefWindowProc(hwnd, message, wparam, lparam);
+      if (result != 0) {
+        return result;
+      }
+      // The caption goes: the top is the proposed top again.
+      RECT& rc = params->rgrc[0];
+      rc.top = proposed_top;
+      if (IsZoomed(hwnd)) {
+        rc.top += TopFrameThickness(WindowDpi(hwnd));
+        // An auto-hide taskbar needs a 1 px edge left to reveal it.
+        HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO info = {sizeof(info)};
+        if (GetMonitorInfo(monitor, &info)) {
+          const UINT edges[] = {ABE_LEFT, ABE_TOP, ABE_RIGHT, ABE_BOTTOM};
+          for (UINT edge : edges) {
+            APPBARDATA bar = {sizeof(bar)};
+            bar.rc = info.rcMonitor;
+            bar.uEdge = edge;
+            if (!SHAppBarMessage(ABM_GETAUTOHIDEBAREX, &bar)) {
+              continue;
+            }
+            switch (edge) {
+              case ABE_LEFT:
+                rc.left = std::max<LONG>(rc.left, info.rcMonitor.left + 1);
+                break;
+              case ABE_TOP:
+                rc.top = std::max<LONG>(rc.top, info.rcMonitor.top + 1);
+                break;
+              case ABE_RIGHT:
+                rc.right = std::min<LONG>(rc.right, info.rcMonitor.right - 1);
+                break;
+              case ABE_BOTTOM:
+                rc.bottom =
+                    std::min<LONG>(rc.bottom, info.rcMonitor.bottom - 1);
+                break;
+            }
+          }
+        }
+      }
+      return 0;
+    }
+
+    case WM_NCHITTEST: {
+      LRESULT hit = DefWindowProc(hwnd, message, wparam, lparam);
+      if (hit != HTCLIENT) {
+        return hit;
+      }
+      POINT p = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      ScreenToClient(hwnd, &p);
+      RECT client = GetClientArea();
+      return HitTestClient(p, client.right - client.left);
+    }
+
+    case WM_NCACTIVATE:
+      active_ = wparam != FALSE;
+      OnFrameStateChanged();
+      // lParam -1: no repaint of a native caption on activation changes.
+      return DefWindowProc(hwnd, message, wparam, -1);
+
+    case WM_NCLBUTTONDOWN:
+    case WM_NCRBUTTONDOWN: {
+      OnNcPointerDown();
+      int button = message == WM_NCLBUTTONDOWN ? ButtonFromHitCode(wparam)
+                                               : kNoButton;
+      if (button != kNoButton) {
+        // Tracked here, not by DefWindowProc, which would draw its own button.
+        SetCapture(hwnd);
+        SetHoverPressed(button, button);
+        return 0;
+      }
+      break;
+    }
+
+    case WM_NCLBUTTONDBLCLK:
+      if (ButtonFromHitCode(wparam) != kNoButton) {
+        return 0;
+      }
+      break;
+
+    case WM_NCLBUTTONUP: {
+      int button = ButtonFromHitCode(wparam);
+      if (button != kNoButton) {
+        // Released without our capture (a snap-layouts flyout click).
+        bool same = pressed_ == button;
+        SetHoverPressed(button == kMaximize ? button : kNoButton, kNoButton);
+        if (same) {
+          RunCaptionButton(button);
+        }
+        return 0;
+      }
+      break;
+    }
+
+    case WM_MOUSEMOVE:
+      if (pressed_ != kNoButton) {  // captured by a pressed button
+        POINT p = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        SetHoverPressed(ButtonAt(p), pressed_);
+        return 0;
+      }
+      break;
+
+    case WM_LBUTTONUP:
+      if (pressed_ != kNoButton) {
+        POINT p = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        int pressed = pressed_;
+        int under = ButtonAt(p);
+        ReleaseCapture();
+        // The window moves away from under minimise and close.
+        SetHoverPressed(pressed == kMaximize ? under : kNoButton, kNoButton);
+        if (under == pressed) {
+          RunCaptionButton(pressed);
+        }
+        return 0;
+      }
+      break;
+
+    case WM_CAPTURECHANGED:
+      tracking_nc_leave_ = false;
+      if (pressed_ != kNoButton) {
+        SetHoverPressed(kNoButton, kNoButton);
+      }
+      break;
+
+    case WM_NCMOUSEMOVE:
+      if (!tracking_nc_leave_) {
+        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE | TME_NONCLIENT,
+                                 hwnd, 0};
+        tracking_nc_leave_ = TrackMouseEvent(&track) != FALSE;
+      }
+      if (pressed_ == kNoButton) {
+        SetHoverPressed(ButtonFromHitCode(wparam), kNoButton);
+      }
+      break;
+
+    case WM_NCMOUSELEAVE:
+      tracking_nc_leave_ = false;
+      if (pressed_ == kNoButton) {
+        SetHoverPressed(kNoButton, kNoButton);
+      }
+      break;
+
+    case WM_SIZE:
+      if (wparam == SIZE_MINIMIZED) {
+        hovered_ = pressed_ = kNoButton;
+        tracking_nc_leave_ = false;
+      }
+      OnFrameStateChanged();
+      break;
+
+    case WM_DPICHANGED:
+      OnFrameStateChanged();
+      break;
+  }
+  *handled = false;
+  return 0;
 }
