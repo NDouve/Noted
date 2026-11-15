@@ -348,10 +348,56 @@ bool DipRectContains(const Win32Window::DipRect& r, double x, double y) {
   return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
 }
 
+// GetDpiForWindow and GetSystemMetricsForDpi need Windows 10 1607; load them
+// as the template does EnableNonClientDpiScaling, and fall back to 96 dpi.
+UINT WindowDpi(HWND hwnd) {
+  using Fn = UINT WINAPI(HWND);
+  static auto fn = reinterpret_cast<Fn*>(
+      GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+  UINT dpi = fn != nullptr ? fn(hwnd) : 96;
+  return dpi != 0 ? dpi : 96;
+}
+
+int MetricForDpi(int index, UINT dpi) {
+  using Fn = int WINAPI(int, UINT);
+  static auto fn = reinterpret_cast<Fn*>(GetProcAddress(
+      GetModuleHandleW(L"user32.dll"), "GetSystemMetricsForDpi"));
+  return fn != nullptr ? fn(index, dpi) : GetSystemMetrics(index);
+}
+
 // The width of the sizing frame at the top, in physical pixels.
 int TopFrameThickness(UINT dpi) {
-  return GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) +
-         GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+  return MetricForDpi(SM_CYSIZEFRAME, dpi) +
+         MetricForDpi(SM_CXPADDEDBORDER, dpi);
+}
+
+// The hit code for a point (client coordinates) that DefWindowProc called
+// HTCLIENT. Pure: only the top kCaptionHeightDip changes. |buttons| is indexed
+// by CaptionButton (1..3).
+int HitTestCaptionArea(POINT p, int client_width, UINT dpi, bool maximized,
+                       int band, const Win32Window::DipRect buttons[4],
+                       const std::vector<Win32Window::DipRect>& interactive) {
+  double scale = dpi / 96.0;
+  double x = p.x / scale, y = p.y / scale;
+  if (y < 0 || y >= kCaptionHeightDip) {
+    return HTCLIENT;
+  }
+  if (!maximized && p.y < band) {
+    if (p.x < band) return HTTOPLEFT;
+    if (p.x >= client_width - band) return HTTOPRIGHT;
+    return HTTOP;
+  }
+  for (int b = Win32Window::kMinimize; b <= Win32Window::kClose; ++b) {
+    if (DipRectContains(buttons[b], x, y)) {
+      return ButtonHitCode(b);
+    }
+  }
+  for (const Win32Window::DipRect& r : interactive) {
+    if (DipRectContains(r, x, y)) {
+      return HTCLIENT;
+    }
+  }
+  return HTCAPTION;
 }
 
 }  // namespace
@@ -360,8 +406,13 @@ void Win32Window::SetCustomFrame(bool enabled) {
   if (custom_frame_ == enabled || !window_handle_) {
     return;
   }
+  if (pressed_ != kNoButton) {
+    ReleaseCapture();
+  }
   custom_frame_ = enabled;
   hovered_ = pressed_ = kNoButton;
+  tracking_nc_leave_ = false;
+  active_ = GetActiveWindow() == window_handle_;
   MARGINS margins = {0, 0, enabled ? 1 : 0, 0};  // left, right, top, bottom
   DwmExtendFrameIntoClientArea(window_handle_, &margins);
   // Apply the new non-client size now, before the next paint.
@@ -385,12 +436,12 @@ Win32Window::FrameState Win32Window::GetFrameState() {
   state.active = active_;
   state.hovered = hovered_;
   state.pressed = pressed_;
-  state.dpi = window_handle_ ? GetDpiForWindow(window_handle_) : 96;
+  state.dpi = window_handle_ ? WindowDpi(window_handle_) : 96;
   return state;
 }
 
 int Win32Window::ButtonAt(POINT p) {
-  double scale = GetDpiForWindow(window_handle_) / 96.0;
+  double scale = WindowDpi(window_handle_) / 96.0;
   double x = p.x / scale, y = p.y / scale;
   for (int b = kMinimize; b <= kClose; ++b) {
     if (DipRectContains(buttons_[b], x, y)) {
@@ -400,33 +451,10 @@ int Win32Window::ButtonAt(POINT p) {
   return kNoButton;
 }
 
-// The hit code for a point (client coordinates) that DefWindowProc called
-// HTCLIENT. Only the top kCaptionHeightDip changes.
 int Win32Window::HitTestClient(POINT p, int client_width) {
-  UINT dpi = GetDpiForWindow(window_handle_);
-  double scale = dpi / 96.0;
-  double x = p.x / scale, y = p.y / scale;
-  if (y < 0 || y >= kCaptionHeightDip) {
-    return HTCLIENT;
-  }
-  if (!IsZoomed(window_handle_)) {
-    int band = TopFrameThickness(dpi);
-    if (p.y < band) {
-      if (p.x < band) return HTTOPLEFT;
-      if (p.x >= client_width - band) return HTTOPRIGHT;
-      return HTTOP;
-    }
-  }
-  int button = ButtonAt(p);
-  if (button != kNoButton) {
-    return ButtonHitCode(button);
-  }
-  for (const DipRect& r : interactive_) {
-    if (DipRectContains(r, x, y)) {
-      return HTCLIENT;
-    }
-  }
-  return HTCAPTION;
+  UINT dpi = WindowDpi(window_handle_);
+  return HitTestCaptionArea(p, client_width, dpi, IsZoomed(window_handle_),
+                            TopFrameThickness(dpi), buttons_, interactive_);
 }
 
 void Win32Window::SetHoverPressed(int hovered, int pressed) {
@@ -475,7 +503,7 @@ LRESULT Win32Window::HandleCustomFrame(HWND hwnd, UINT message, WPARAM wparam,
       RECT& rc = params->rgrc[0];
       rc.top = proposed_top;
       if (IsZoomed(hwnd)) {
-        rc.top += TopFrameThickness(GetDpiForWindow(hwnd));
+        rc.top += TopFrameThickness(WindowDpi(hwnd));
         // An auto-hide taskbar needs a 1 px edge left to reveal it.
         HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         MONITORINFO info = {sizeof(info)};
@@ -551,7 +579,7 @@ LRESULT Win32Window::HandleCustomFrame(HWND hwnd, UINT message, WPARAM wparam,
       if (button != kNoButton) {
         // Released without our capture (a snap-layouts flyout click).
         bool same = pressed_ == button;
-        SetHoverPressed(button, kNoButton);
+        SetHoverPressed(button == kMaximize ? button : kNoButton, kNoButton);
         if (same) {
           RunCaptionButton(button);
         }
@@ -574,7 +602,8 @@ LRESULT Win32Window::HandleCustomFrame(HWND hwnd, UINT message, WPARAM wparam,
         int pressed = pressed_;
         int under = ButtonAt(p);
         ReleaseCapture();
-        SetHoverPressed(under, kNoButton);
+        // The window moves away from under minimise and close.
+        SetHoverPressed(pressed == kMaximize ? under : kNoButton, kNoButton);
         if (under == pressed) {
           RunCaptionButton(pressed);
         }
@@ -583,6 +612,7 @@ LRESULT Win32Window::HandleCustomFrame(HWND hwnd, UINT message, WPARAM wparam,
       break;
 
     case WM_CAPTURECHANGED:
+      tracking_nc_leave_ = false;
       if (pressed_ != kNoButton) {
         SetHoverPressed(kNoButton, kNoButton);
       }
@@ -607,6 +637,13 @@ LRESULT Win32Window::HandleCustomFrame(HWND hwnd, UINT message, WPARAM wparam,
       break;
 
     case WM_SIZE:
+      if (wparam == SIZE_MINIMIZED) {
+        hovered_ = pressed_ = kNoButton;
+        tracking_nc_leave_ = false;
+      }
+      OnFrameStateChanged();
+      break;
+
     case WM_DPICHANGED:
       OnFrameStateChanged();
       break;

@@ -22,11 +22,12 @@ constexpr UINT_PTR kViewSubclassId = 1;
 // The Flutter view is a child covering the client area, so it would answer
 // every hit test itself. Where the frame (the parent) answers anything but
 // HTCLIENT (caption, caption buttons, top resize band) it is transparent, so
-// the parent's answer applies. Harmless while the custom frame is off: the
-// parent then answers HTCLIENT.
+// the parent's answer applies. Does nothing while the custom frame is off.
 LRESULT CALLBACK ViewSubclassProc(HWND hwnd, UINT message, WPARAM wparam,
-                                  LPARAM lparam, UINT_PTR, DWORD_PTR) {
-  if (message == WM_NCHITTEST) {
+                                  LPARAM lparam, UINT_PTR, DWORD_PTR ref) {
+  auto* window = reinterpret_cast<Win32Window*>(ref);
+  if (message == WM_NCHITTEST && window != nullptr &&
+      window->custom_frame()) {
     HWND parent = GetParent(hwnd);
     if (parent != nullptr) {
       LRESULT hit = SendMessage(parent, WM_NCHITTEST, 0, lparam);
@@ -136,7 +137,8 @@ bool FlutterWindow::OnCreate() {
                  result) { HandleWindowCall(call, std::move(result)); });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
   view_hwnd_ = flutter_controller_->view()->GetNativeWindow();
-  SetWindowSubclass(view_hwnd_, ViewSubclassProc, kViewSubclassId, 0);
+  SetWindowSubclass(view_hwnd_, ViewSubclassProc, kViewSubclassId,
+                   reinterpret_cast<DWORD_PTR>(this));
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
