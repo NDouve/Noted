@@ -61,6 +61,12 @@ abstract final class AppCommands {
   static const String toolbarContextual = 'app.toolbar.contextual';
 
   static String toolbarId(ToolbarStyle s) => 'app.toolbar.${s.value}';
+
+  // The menu bar and the contextual panel.
+  static const String viewPanel = 'app.view.panel';
+  static const String helpShortcuts = 'app.help.shortcuts';
+  static const String helpAbout = 'app.help.about';
+
 }
 
 /// What the page tree can do that needs the screen (dialogs, asking for a

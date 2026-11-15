@@ -9,6 +9,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
+import 'package:noted/src/app_commands.dart';
 import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/app_theme.dart';
 import 'package:noted/src/binder_colors.dart';
@@ -374,12 +375,70 @@ void main() {
     });
     tearDown(() => dir.deleteSync(recursive: true));
 
-    test('default is Follow system and nothing is written', () {
-      final s = AppSettings(file);
-      expect(s.theme, ThemeSetting.system);
-      expect(s.themeMode, ThemeMode.system);
-      expect(file.existsSync(), isFalse);
+    test('unsaved settings are Light', () {
+      final s = AppSettings(null);
+      expect(s.theme, ThemeSetting.light);
+      expect(s.themeMode, ThemeMode.light);
     });
+
+    test('Dark is labelled Precision and keeps its stored value and id', () {
+      expect(ThemeSetting.dark.label, 'Precision');
+      expect(ThemeSetting.dark.value, 'dark');
+      expect(AppCommands.themeId(ThemeSetting.dark), 'app.theme.dark');
+      expect(themeCommands(AppSettings(null))['app.theme.dark']!.label, 'Precision');
+    });
+
+    group('a new profile', () {
+      late File binders;
+      setUp(() => binders = File('${dir.path}/sub/binders.json'));
+
+      test('neither file exists: Light, and {"format":1,"theme":"light"} is written once', () {
+        final s = AppSettings(file, profileMarker: binders);
+        expect(s.theme, ThemeSetting.light);
+        expect(s.themeMode, ThemeMode.light);
+        expect(jsonDecode(file.readAsStringSync()), {'format': 1, 'theme': 'light'});
+        // The next launch finds binders.json and still reads Light.
+        binders.createSync(recursive: true);
+        expect(AppSettings(file, profileMarker: binders).theme, ThemeSetting.light);
+      });
+
+      test('only binders.json exists: Follow system and nothing is written', () {
+        binders.createSync(recursive: true);
+        final s = AppSettings(file, profileMarker: binders);
+        expect(s.theme, ThemeSetting.system);
+        expect(file.existsSync(), isFalse);
+      });
+
+      test('without a marker no profile counts as new: Follow system, nothing written', () {
+        final s = AppSettings(file);
+        expect(s.theme, ThemeSetting.system);
+        expect(file.existsSync(), isFalse);
+      });
+
+      for (final withBinders in [false, true]) {
+        for (final (content, expected) in [
+          ('{"format":1,"theme":"system"}', ThemeSetting.system),
+          ('{"format":1,"theme":"light"}', ThemeSetting.light),
+          ('{"format":1,"theme":"dark"}', ThemeSetting.dark),
+          ('{"format":1}', ThemeSetting.system),
+          ('{"format":1,"theme":"sepia"}', ThemeSetting.system),
+          ('{not json', ThemeSetting.system),
+        ]) {
+          test('settings.json $content${withBinders ? ' with' : ' without'} binders.json: $expected, never written at launch', () {
+            file.parent.createSync(recursive: true);
+            file.writeAsStringSync(content);
+            file.setLastModifiedSync(DateTime(2020, 1, 1));
+            if (withBinders) binders.createSync(recursive: true);
+            final bytes = file.readAsBytesSync();
+            final mtime = file.lastModifiedSync();
+            expect(AppSettings(file, profileMarker: binders).theme, expected);
+            expect(file.readAsBytesSync(), bytes);
+            expect(file.lastModifiedSync(), mtime);
+          });
+        }
+      }
+    });
+
 
     test('Dark and Light persist and survive a new instance', () {
       final s = AppSettings(file);

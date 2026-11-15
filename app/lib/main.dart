@@ -99,7 +99,7 @@ Future<void> main(List<String> args) async {
   }
   // --- end -------------------------------------------------------------------
   installLinkLog();
-  final settings = AppSettings(defaultSettingsFile());
+  final settings = AppSettings(defaultSettingsFile(), profileMarker: defaultBindersFile());
   final notebook = buildAppNotebook(settings: settings, recoveryLock: recoveryLock);
   FileClipboard.read = readClipboardFiles;
   final openFiles = OpenFileService(notebook);
