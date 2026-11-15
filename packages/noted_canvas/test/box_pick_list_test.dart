@@ -584,13 +584,14 @@ void main() {
       expect(c.page.node('a')!.bounds!.x, closeTo(100, 1));
     });
 
-    testWidgets('a hold on empty canvas creates a note as today', (t) async {
+    testWidgets('a hold on empty canvas opens the canvas menu and creates no note', (t) async {
       await pump(t);
       final g = await hold(t, at(t, const Offset(800, 600)));
       await g.up();
       await t.pumpAndSettle();
       expect(list(), findsNothing);
-      expect(c.page.nodes, hasLength(4));
+      expect(find.byKey(const ValueKey('context-menu')), findsOneWidget);
+      expect(c.page.nodes, hasLength(3));
     });
 
     testWidgets('a box with a long-press of its own keeps it and opens no list', (t) async {
@@ -789,9 +790,9 @@ void main() {
         await t.pump();
         lit.add(state(t).pickHighlightId);
       }
-      // c is on top (its Bring to front is off): Send to back, then b's two,
-      // then a's Bring to front.
-      expect(lit, ['c', 'b', 'b', 'a']);
+      // c is on top (its Bring to front is off): Send to back and More, then b's
+      // Bring to front and Send to back.
+      expect(lit, ['c', 'c', 'b', 'b']);
     });
 
     testWidgets('the row buttons and the toolbar buttons carry their labels as tooltips', (t) async {

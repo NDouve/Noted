@@ -62,6 +62,12 @@ abstract final class AppCommands {
 
   static String toolbarId(ToolbarStyle s) => 'app.toolbar.${s.value}';
 
+  // Context menu (the settings menu and View).
+  static const String contextMenuList = 'app.contextMenu.list';
+  static const String contextMenuRadial = 'app.contextMenu.radial';
+
+  static String contextMenuId(ContextMenuStyle s) => 'app.contextMenu.${s.name}';
+
   // The menu bar and the contextual panel.
   static const String viewPanel = 'app.view.panel';
   static const String helpShortcuts = 'app.help.shortcuts';
@@ -363,5 +369,26 @@ CommandRegistry themeCommands(AppSettings settings) => CommandRegistry()
         checked: () => settings.theme == s,
         listenable: settings,
         invoke: () => settings.theme = s,
+      ),
+  ]);
+
+/// The context menu commands: List, Radial. The one in use is checked. Radial
+/// is held for this session only (see [AppSettings.contextMenu]).
+CommandRegistry contextMenuCommands(AppSettings settings) => CommandRegistry()
+  ..registerAll([
+    for (final s in ContextMenuStyle.values)
+      Command(
+        id: AppCommands.contextMenuId(s),
+        label: switch (s) {
+          ContextMenuStyle.list => 'List',
+          ContextMenuStyle.radial => 'Radial',
+        },
+        icon: switch (s) {
+          ContextMenuStyle.list => Icons.menu_rounded,
+          ContextMenuStyle.radial => Icons.radio_button_unchecked_rounded,
+        },
+        checked: () => settings.contextMenu == s,
+        listenable: settings,
+        invoke: () => settings.contextMenu = s,
       ),
   ]);

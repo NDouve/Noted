@@ -62,12 +62,21 @@ String pickRowLabel(
   return words.isEmpty ? type : '$type · $words';
 }
 
+/// What the pick list returns: the box chosen, and with [more] that its
+/// actions were asked for (the row's More button) rather than just the box.
+class PickChoice {
+  const PickChoice(this.id, {this.more = false});
+
+  final String id;
+  final bool more;
+}
+
 /// Opens the list of the boxes under the page point [world], topmost first,
 /// anchored at the screen point [anchor] and kept inside [within] (both
 /// global). [highlight] holds the id of the row being pointed at, for the
-/// canvas to outline. Completes with the id of the box chosen, or null if
-/// the list was closed.
-Future<String?> showBoxPickList(
+/// canvas to outline. Completes with the box chosen, or null if the list was
+/// closed.
+Future<PickChoice?> showBoxPickList(
   BuildContext context, {
   required CanvasController controller,
   required Offset world,
@@ -77,7 +86,7 @@ Future<String?> showBoxPickList(
   required ValueListenable<bool> closeSignal,
   required String Function(CanvasNode node) label,
 }) {
-  return Navigator.of(context).push<String>(
+  return Navigator.of(context).push<PickChoice>(
     _PickRoute(
       canvas: controller,
       world: world,
@@ -90,7 +99,7 @@ Future<String?> showBoxPickList(
   );
 }
 
-class _PickRoute extends PopupRoute<String> {
+class _PickRoute extends PopupRoute<PickChoice> {
   _PickRoute({
     required this.canvas,
     required this.world,
@@ -223,10 +232,10 @@ class _PickPanelState extends State<_PickPanel> {
     super.dispose();
   }
 
-  void _close([String? id]) {
+  void _close([String? id, bool more = false]) {
     if (_closing || !mounted) return;
     _closing = true;
-    Navigator.of(context).pop<String>(id);
+    Navigator.of(context).pop<PickChoice>(id == null ? null : PickChoice(id, more: more));
   }
 
   void _move(List<String> rows, int Function(int? current) to) {
@@ -403,6 +412,29 @@ class _PickPanelState extends State<_PickPanel> {
                     SizedBox(width: m.space2),
                     button(StackMove.front, 'Bring to front', Icons.flip_to_front_rounded, 'front'),
                     button(StackMove.back, 'Send to back', Icons.flip_to_back_rounded, 'back'),
+                  ],
+                  if (node is BoxRecord || node is ForeignNode) ...[
+                    // The box's own menu: reachable by touch, where there is
+                    // no right click.
+                    Focus(
+                      canRequestFocus: false,
+                      skipTraversal: true,
+                      onFocusChange: (f) {
+                        if (f && !_gone && !_closing) widget.highlight.value = id;
+                      },
+                      child: IconButton(
+                        key: ValueKey('pick-more-$id'),
+                        tooltip: 'Actions for this box',
+                        visualDensity: VisualDensity.compact,
+                        iconSize: m.icon,
+                        constraints: BoxConstraints.tightFor(width: m.rowSize - 8, height: m.rowSize - 8),
+                        padding: EdgeInsets.zero,
+                        icon: const Icon(Icons.more_horiz_rounded),
+                        onPressed: () {
+                          if (!_gone && !_closing) _close(id, true);
+                        },
+                      ),
+                    ),
                   ],
                 ],
               ),

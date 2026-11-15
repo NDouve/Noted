@@ -6,7 +6,14 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart'
-    show Command, NotedMenuDivider, NotedMenuHeading, NotedMenuItem, NotedMetrics, ToolbarStyle;
+    show
+        Command,
+        ContextMenuStyle,
+        NotedMenuDivider,
+        NotedMenuHeading,
+        NotedMenuItem,
+        NotedMetrics,
+        ToolbarStyle;
 
 import 'about_dialog.dart';
 import 'app_commands.dart';
@@ -49,8 +56,11 @@ class SettingsMenu extends StatelessWidget {
             }
             final theme = themeCommands(settings);
             final toolbar = toolbarCommands(settings);
+            final contextMenu = contextMenuCommands(settings);
             if (theme[id] != null) {
               theme.invoke(id);
+            } else if (contextMenu[id] != null) {
+              contextMenu.invoke(id);
             } else if (toolbar[id] != null) {
               toolbar.invoke(id);
             } else if (nb != null) {
@@ -60,6 +70,7 @@ class SettingsMenu extends StatelessWidget {
           itemBuilder: (context) {
             final theme = themeCommands(settings);
             final toolbar = toolbarCommands(settings);
+            final contextMenu = contextMenuCommands(settings);
             Widget check(Command c) => SizedBox(
               width: NotedMetrics.of(context).icon,
               child: (c.checked ?? false)
@@ -85,6 +96,14 @@ class SettingsMenu extends StatelessWidget {
                   value: AppCommands.toolbarId(s),
                   label: toolbar[AppCommands.toolbarId(s)]!.label,
                   leading: check(toolbar[AppCommands.toolbarId(s)]!),
+                ),
+              const NotedMenuHeading('Context menu'),
+              for (final s in ContextMenuStyle.values)
+                NotedMenuItem<String>(
+                  key: ValueKey('context-menu-${s.name}'),
+                  value: AppCommands.contextMenuId(s),
+                  label: contextMenu[AppCommands.contextMenuId(s)]!.label,
+                  leading: check(contextMenu[AppCommands.contextMenuId(s)]!),
                 ),
               if (canPick) ...[
                 const NotedMenuHeading('Default page folder'),

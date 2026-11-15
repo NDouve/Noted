@@ -6,7 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:noted_canvas/noted_canvas.dart' show ToolbarStyle;
+import 'package:noted_canvas/noted_canvas.dart' show ContextMenuStyle, ToolbarStyle;
 
 import 'device_storage.dart';
 import 'notebook.dart' show defaultPagesDirectory;
@@ -71,6 +71,7 @@ class AppSettings extends ChangeNotifier {
   // Follow system (see [_read]).
   ThemeSetting _theme = ThemeSetting.light;
   ToolbarStyle _toolbar = ToolbarStyle.tabs;
+  ContextMenuStyle _contextMenu = ContextMenuStyle.list;
 
   /// Everything that was in the file, so unknown fields survive a rewrite.
   Map<String, Object?> _raw = {};
@@ -89,6 +90,19 @@ class AppSettings extends ChangeNotifier {
     _raw = {..._raw, 'toolbar': value.value};
     notifyListeners();
     _write();
+  }
+
+  /// How the canvas's context menus are drawn: the list unless Radial was
+  /// chosen. Held for this session only: it is not written to `settings.json`,
+  /// so each launch starts with the list (a saved `"contextMenu"` key waits for
+  /// the maintainer's answer on whether an added optional key is a format
+  /// change). Nothing is read from the file either.
+  ContextMenuStyle get contextMenu => _contextMenu;
+
+  set contextMenu(ContextMenuStyle value) {
+    if (value == _contextMenu) return;
+    _contextMenu = value;
+    notifyListeners();
   }
 
   /// The folder new top-level pages are created in, as chosen on this device

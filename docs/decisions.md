@@ -2252,7 +2252,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0160 — Picking a box under others; layering commands
 - **Date:** 2026-11-09
-- **Status:** Active (requested by the maintainer; the Alt+click opener chosen by the maintainer's PM chat; key defaults, details and Box API 0.15 decided by the build team from the reviewed note `2026-11-09-02-box-pick`)
+- **Status:** Active (requested by the maintainer; the Alt+click opener chosen by the maintainer's PM chat; key defaults, details and Box API 0.15 decided by the build team from the reviewed note `2026-11-09-02-box-pick`); a touch hold on empty canvas amended by 0168
 - **Decision:**
   - **Pick list.** Alt+click (Option+click on macOS) with the Select tool, on a writable page and not on a link, lists every box under the point, topmost first. Each row shows `<Type> · <first words>` (an encrypted box: its type only), with Bring to front and Send to back for that row's box.
     - Hovering or arrowing a row dims the page outside that box and outlines it. A click or Enter selects it. Escape closes the list.
@@ -2369,6 +2369,22 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - Undo and Redo also take Cmd+Z, Cmd+Shift+Z and Cmd+Y on macOS.
 - **Rationale:** the maintainer's desktop UI brief. Writing the theme only for a new profile keeps every existing device as it was.
 - **Alternatives considered:** Flutter's `MenuBar` widget (it can't take keyboard focus with no menu open, so F10 couldn't focus File); saving the panel's state in `settings.json` (a settings format addition the brief didn't ask for).
+
+## 0168 — Canvas context menus; a touch hold on empty canvas opens the canvas menu
+- **Date:** 2026-11-15
+- **Status:** Active (the menus are the maintainer's, from the UI brief of 2026-11-15; the details, the radial setting lasting for the session and the touch rule decided by the build team (PM), run 2026-11-15-01, from the reviewed note `2026-11-15-01-context-menus`); amends 0160's touch behaviour on empty canvas
+- **Decision:**
+  - **Targets.** A right-click, the Menu key or Shift+F10 opens a menu for what is under the point: the topmost box, or empty canvas. The target is recorded when the menu opens and checked again before the chosen entry runs; if the page, the controller, the box or its type changed, nothing runs, and a registry entry runs only while that box is still selected. A change in whether the page can be edited closes an open menu.
+    - **A box:** Bring to front, Bring forward, Send backward, Send to back, Boxes here… (the pick list of 0160) and Delete box. On a writable page the box is selected first. A box type the page disallows gets Delete only, under the heading "Not allowed on this page" (0166). For an unsupported or foreign node, Delete is off.
+    - **Empty canvas:** New note here, Paste image or file at the point, and the module inserts (image, file, AI box) where their module is on. Placeholder commands are left out.
+    - On a read-only page the same entries show, the edit entries off.
+  - Every entry is a command from the registry (0067) or made for that menu, with its live enabled state and current shortcut. Keys inside an open menu reach no canvas or app command. Choosing an entry closes the menu, puts focus back where it was, and runs the command after the frame. A note being edited keeps its editor and selection while a menu is open (0167).
+  - **Paste at a point** keeps its page: each file is stored in the page's own attachments folder, and the paste stops before the next box (or before the first, if this happens while the clipboard is read) if the page, its store or its writability changed, or its type became disallowed, and says "The paste stopped; nothing was added to another page." Files already stored for boxes not inserted stay, unreferenced, in that folder.
+  - **Radial presentation:** an opt-in ring of the same commands (six slots, a More route to the list), chosen under View › Context menu or the gear menu. The choice lasts for the session only; it is not saved in `settings.json` until the maintainer decides it should be.
+  - **Touch.** A one-finger hold on empty canvas, by 0160's rules for a hold, opens the canvas menu instead of creating a note; a tap still creates one. A hold on a box opens the pick list as before, and each of its rows has a More button that opens that box's menu. This meets 0129's touch requirement for these menus.
+  - Code: `CanvasTargetGuard`, `CanvasController.canDelete`, `PageCanvas.contextMenuStyle`, `PageCanvasState.contextMenuOpen` and `pasteFilesAt` (host-only, additive). No format or module-facing change.
+- **Rationale:** the maintainer's desktop UI brief asked for distinct box and canvas menus, revalidated before any change, with an opt-in radial view. Checking the target again closes the window in which a menu could act on another page or box.
+- **Alternatives considered:** a hold on empty canvas creating a note as before (no touch route to the canvas menu); saving the radial choice (a settings addition the maintainer hasn't decided); placing module inserts at the point (would change what `viewCentre` means to modules, a module-facing change).
 
 ---
 

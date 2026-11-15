@@ -19,6 +19,8 @@ export 'src/box_module.dart';
 export 'src/box_pick_list.dart' show boxHitRect, nodesAtPoint, pickRowLabel;
 export 'src/box_scroll.dart';
 export 'src/canvas_commands.dart';
+export 'src/canvas_context_menu.dart' show ContextMenuStyle;
+export 'src/canvas_target_guard.dart';
 export 'src/canvas_controller.dart';
 export 'src/canvas_tool.dart';
 export 'src/canvas_view.dart';
