@@ -36,6 +36,11 @@ class EditorFocusHold {
 
   void dispose() {
     _disposed = true;
+    // Nothing is held by a controller that is gone.
+    _count = 0;
+    _held.value = false;
     _held.dispose();
+
+
   }
 }

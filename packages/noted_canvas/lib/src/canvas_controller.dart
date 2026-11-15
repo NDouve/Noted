@@ -587,10 +587,15 @@ class CanvasController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
+  /// Whether [dispose] has been called (host only: a view that outlives its
+  /// controller for a frame must not listen to it).
+  bool get isDisposed => _disposed;
+
   @override
   void dispose() {
     _disposed = true;
     editorFocusHold.dispose();
+
     super.dispose();
   }
 }
