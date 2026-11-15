@@ -55,14 +55,15 @@ File defaultSettingsFile() {
 /// until a setting is changed.
 ///
 /// A new profile (no `settings.json`, no [profileMarker] file and no page or
-/// binder data in the [profileData] folder) starts in
+/// binder data in the [profileData] or [profileBinders] folder) starts in
 /// Light, and that is saved once. Any other missing theme is Follow system.
 class AppSettings extends ChangeNotifier {
   /// Reads [file] (null: settings that aren't saved anywhere). [profileMarker]
   /// is the file whose absence, beside a missing [file], says this is a new
   /// profile (`binders.json`); without it no profile counts as new.
-  AppSettings(this.file, {File? profileMarker, Directory? profileData}) {
+  AppSettings(this.file, {File? profileMarker, Directory? profileData, Directory? profileBinders}) {
     _profileData = profileData;
+    _profileBinders = profileBinders;
     _profileMarker = profileMarker;
     _read();
   }
@@ -70,6 +71,7 @@ class AppSettings extends ChangeNotifier {
   final File? file;
   File? _profileMarker;
   Directory? _profileData;
+  Directory? _profileBinders;
 
   // Light for settings that aren't saved anywhere; a file's own default is
   // Follow system (see [_read]).
@@ -192,19 +194,24 @@ class AppSettings extends ChangeNotifier {
     _write();
   }
 
-  /// Whether the default pages folder already holds page or binder data: a
-  /// page file, or a direct subfolder with a binder file (a binder is a folder
-  /// of any name). Looked at once, one level, and only for a profile with
-  /// neither file. A missing folder is no evidence; a folder that exists but
-  /// can't be listed (or any error) counts as data, so nothing is chosen for
-  /// someone who already has some.
-  bool _profileHasData() {
-    final dir = _profileData;
+  /// Whether the default pages folder or the built-in binders folder already
+  /// holds page or binder data: a page file, a link, or a direct subfolder
+  /// with a binder file (a binder is a folder of any name). Each folder is
+  /// listed once, one level, and only for a profile with neither file. A
+  /// missing folder is no evidence; a folder that exists but can't be listed
+  /// (or any error) counts as data, so nothing is chosen for someone who
+  /// already has some.
+  bool _profileHasData() =>
+      _folderHasData(_profileData, pages: true) || _folderHasData(_profileBinders, pages: false);
+
+  bool _folderHasData(Directory? dir, {required bool pages}) {
     if (dir == null) return false;
     try {
       if (!dir.existsSync()) return false;
       for (final e in dir.listSync(followLinks: false)) {
-        if (e is File && e.path.endsWith(PageStore.extension)) return true;
+        // A link is not followed: what it points at is unknown, so it counts.
+        if (e is Link) return true;
+        if (pages && e is File && e.path.endsWith(PageStore.extension)) return true;
         if (e is Directory &&
             File('${e.path}${Platform.pathSeparator}$binderFileName').existsSync()) {
           return true;

@@ -103,6 +103,7 @@ Future<void> main(List<String> args) async {
     defaultSettingsFile(),
     profileMarker: defaultBindersFile(),
     profileData: defaultPagesDirectory(),
+    profileBinders: defaultBindersDirectory(),
   );
   final notebook = buildAppNotebook(settings: settings, recoveryLock: recoveryLock);
   FileClipboard.read = readClipboardFiles;

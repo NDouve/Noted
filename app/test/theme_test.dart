@@ -445,6 +445,36 @@ void main() {
           expect(AppSettings(file, profileMarker: binders, profileData: pages).theme, ThemeSetting.light);
         });
 
+        test('a binder in the built-in binders folder: Follow system and nothing is written', () {
+          final builtin = Directory('${dir.path}/builtin');
+          Directory('${builtin.path}/Work').createSync(recursive: true);
+          File('${builtin.path}/Work/$binderFileName').writeAsStringSync('{}');
+          pages.createSync(recursive: true);
+          expectFollowSystemUntouched(
+            AppSettings(file, profileMarker: binders, profileData: pages, profileBinders: builtin),
+          );
+        });
+
+        test('an empty built-in binders folder is no evidence', () {
+          final builtin = Directory('${dir.path}/builtin')..createSync(recursive: true);
+          expect(
+            AppSettings(file, profileMarker: binders, profileData: pages, profileBinders: builtin).theme,
+            ThemeSetting.light,
+          );
+        });
+
+        test('a link entry counts as data (it is not followed)', () {
+          pages.createSync(recursive: true);
+          final target = Directory('${dir.path}/elsewhere')..createSync();
+          try {
+            Link('${pages.path}/shortcut').createSync(target.path);
+          } on FileSystemException {
+            markTestSkipped('links need a privilege on this machine');
+            return;
+          }
+          expectFollowSystemUntouched(AppSettings(file, profileMarker: binders, profileData: pages));
+        });
+
         test('a folder that cannot be listed counts as data: Follow system, nothing written', () {
           expectFollowSystemUntouched(AppSettings(file, profileMarker: binders, profileData: _UnlistableDirectory()));
         });

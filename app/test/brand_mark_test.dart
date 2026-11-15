@@ -103,6 +103,31 @@ void main() {
       expect(b.top, half, reason: 'right stem top, dpr $dpr');
       expect(b.bottom, g.height - half, reason: 'left stem bottom, dpr $dpr');
       expect(b.width, g.stemGap.toDouble());
+      // The steps of M110 330 V74 L270 298 V50 (centre line 50 to 330): the left
+      // stem tops out 24 units below the right stem's top, and the right stem
+      // ends 248 units below it.
+      final scale = (g.height - g.stroke) / 280;
+      final verts = [
+        Offset(half, g.height - half),
+        Offset(half, half + 24 * scale),
+        Offset(half + g.stemGap, half + 248 * scale),
+        Offset(half + g.stemGap, half),
+      ];
+      final m = p.computeMetrics().single;
+      final dists = [
+        0.0,
+        (verts[1] - verts[0]).distance,
+        (verts[1] - verts[0]).distance + (verts[2] - verts[1]).distance,
+      ];
+      for (var i = 0; i < 3; i++) {
+        final at = m.getTangentForOffset(dists[i])!.position;
+        expect((at - verts[i]).distance, lessThan(0.01), reason: 'vertex $i, dpr $dpr');
+      }
+      expect(
+        (m.getTangentForOffset(m.length)!.position - verts[3]).distance,
+        lessThan(0.01),
+        reason: 'end, dpr $dpr',
+      );
       // 56 of 336 units is the stroke.
       expect(g.stroke / g.height, closeTo(56 / 336, 0.06), reason: 'dpr $dpr');
     }
