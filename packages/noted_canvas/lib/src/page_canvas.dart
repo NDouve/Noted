@@ -330,7 +330,12 @@ class PageCanvasState extends State<PageCanvas>
         made = await module.hostCreateFromFile(f, store);
       } on FileSystemException {
         // No copy could be stored: no box, so none points at a missing file.
-        // The other files still go in.
+        // The other files still go in. A page closed meanwhile refuses the
+        // file: that is the stop, not a folder problem.
+        if (!_pasteHolds(target)) {
+          stopped = true;
+          break;
+        }
         store.notify('"${f.name}" could not be added: the page\'s folder could not be written.');
         continue;
       }
@@ -389,7 +394,11 @@ class PageCanvasState extends State<PageCanvas>
     final target = _pasteTarget(at);
     if (target == null) return false;
     final files = await FileClipboard.read();
-    if (files.isEmpty || !_pasteHolds(target)) return false;
+    if (files.isEmpty) return false;
+    if (!_pasteHolds(target)) {
+      target.store.notify('The paste stopped; nothing was added to another page.');
+      return false;
+    }
     await _insertFilesInto(target, files);
     return true;
   }

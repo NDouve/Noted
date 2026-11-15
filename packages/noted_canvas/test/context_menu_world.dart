@@ -6,6 +6,7 @@
 // for the context menu tests.
 
 import 'dart:async';
+import 'dart:io' show FileSystemException;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -173,9 +174,11 @@ class TDrawModule extends BoxModule<String> {
 class TStore implements AttachmentStore {
   final List<String> notices = [];
   final List<String> stored = [];
+  bool failPut = false;
 
   @override
   Future<StoredAttachment> put(Uint8List bytes, {required String extension, AttachmentStorage? storage}) async {
+    if (failPut) throw const FileSystemException('The page is closed');
     final name = 'f${stored.length}.$extension';
     stored.add(name);
     return StoredAttachment(hash: contentHash(bytes), fileName: name);

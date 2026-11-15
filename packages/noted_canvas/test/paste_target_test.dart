@@ -69,6 +69,19 @@ void main() {
     expect(w.store!.notices, [_stopNotice]);
   });
 
+  testWidgets('a store that refuses the file because the page closed gives only the stop notice', (t) async {
+    await setUp(t, [file('a.txt')]);
+    final done = w.state.pasteFilesAt(const Offset(900, 600));
+    await t.pump();
+    await w.rebuild(controller: other);
+    w.store!.failPut = true;
+    fileGate.waiting.single.complete();
+    await done;
+    await t.pump();
+    expect(w.store!.notices, [_stopNotice]);
+    expect(boxes(w.c), 0);
+  });
+
   testWidgets('the page turned read-only mid-paste stops the same way', (t) async {
     await setUp(t, [file('a.txt'), file('bb.txt')]);
     final done = w.state.pasteFilesAt(const Offset(900, 600));

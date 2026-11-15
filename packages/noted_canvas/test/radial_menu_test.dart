@@ -273,6 +273,22 @@ void main() {
     expect(w.enabled(CanvasCommands.sendToBack), isFalse);
   });
 
+  testWidgets('at text scale 2 near the top edge the ring and its heading stay inside the 8 px margin', (t) async {
+    await setUpWorld(t, nodes: [tbox('x', 'test.off', ba, 'saved')], disallowed: {'test.off'}, textScale: 2);
+    await w.rightClick(w.at(const Offset(200, 100 - boxGripHeight / 2)));
+    final area = Rect.fromLTWH(0, CommandToolbar.height, 1200, 800 - CommandToolbar.height);
+    if (w.ring.evaluate().isEmpty) {
+      expect(w.menu, findsOneWidget);
+      return;
+    }
+    final heading = find.byKey(const ValueKey('context-heading'));
+    expect(heading, findsOneWidget);
+    expect(t.getRect(heading).top, greaterThanOrEqualTo(area.top + 8 - 0.01));
+    for (final id in boxSlots) {
+      expect(t.getRect(w.slot(id)).top, greaterThanOrEqualTo(area.top + 8 - 0.01));
+    }
+  });
+
   testWidgets('semantics: a menu container labelled Context menu, each slot a button with its label', (t) async {
     final handle = t.ensureSemantics();
     await setUpWorld(t);

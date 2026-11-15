@@ -25,7 +25,7 @@ const double radialHeadingRoom = 40;
 /// Where the ring's pills sit: [radius] from [centre], one rect per slot (null
 /// for an empty slot), all in the coordinates of the anchor.
 class RadialLayout {
-  const RadialLayout(this.centre, this.radius, this.pills, {this.headingAbove = false});
+  const RadialLayout(this.centre, this.radius, this.pills, {this.headingAbove = false, this.headingHeight = 0});
 
   final Offset centre;
   final double radius;
@@ -34,6 +34,7 @@ class RadialLayout {
   /// The heading doesn't fit in the middle: it sits above the ring, and the
   /// ring's box (kept inside the viewport) includes it.
   final bool headingAbove;
+  final double headingHeight;
 
   /// The smallest rect holding every pill.
   Rect get bounds => pills.whereType<Rect>().reduce((a, b) => a.expandToInclude(b));
@@ -54,7 +55,7 @@ RadialLayout? layoutRadial(
   List<Size?> sizes,
   Offset anchor,
   Rect within, {
-  bool heading = false,
+  double Function(double width)? headingHeight,
 }) {
   var r = radialMinRadius;
   List<Rect?> at(Offset c, double r) => [
@@ -76,14 +77,15 @@ RadialLayout? layoutRadial(
   }
   var box = at(Offset.zero, r).whereType<Rect>().reduce((a, b) => a.expandToInclude(b));
   final inner = at(Offset.zero, r).whereType<Rect>().map(_distanceToRect).reduce(math.min);
-  final above = heading && inner < radialHeadingRoom;
-  if (above) box = box.expandToInclude(Rect.fromLTWH(box.left, box.top - 28, box.width, 28));
+  final above = headingHeight != null && inner < radialHeadingRoom;
+  final hh = above ? headingHeight(box.width) + 4 : 0.0;
+  if (above) box = box.expandToInclude(Rect.fromLTWH(box.left, box.top - hh, box.width, hh));
   final room = within.deflate(radialGap);
   if (box.width > room.width || box.height > room.height) return null;
   final cx = anchor.dx.clamp(room.left - box.left, room.right - box.right).toDouble();
   final cy = anchor.dy.clamp(room.top - box.top, room.bottom - box.bottom).toDouble();
   final centre = Offset(cx, cy);
-  return RadialLayout(centre, r, at(centre, r), headingAbove: above);
+  return RadialLayout(centre, r, at(centre, r), headingAbove: above, headingHeight: hh);
 }
 
 /// The ring: a pill for each slot, a dot at the point pressed, and, for a
@@ -136,7 +138,23 @@ class RadialMenuView extends StatelessWidget {
                 return s;
               }(),
     ];
-    final layout = layoutRadial(sizes, anchor, within, heading: heading != null);
+    double headingHeight(double width) {
+      final p = TextPainter(
+        text: TextSpan(text: heading, style: NotedTypography.of(context).small),
+        textDirection: TextDirection.ltr,
+        textScaler: scaler,
+      )..layout(maxWidth: width);
+      final h = p.height;
+      p.dispose();
+      return h;
+    }
+
+    final layout = layoutRadial(
+      sizes,
+      anchor,
+      within,
+      headingHeight: heading == null ? null : headingHeight,
+    );
     if (layout == null) return null;
     return RadialMenuView._(
       layout: layout,
@@ -194,7 +212,7 @@ class RadialMenuView extends StatelessWidget {
             Positioned.fromRect(
               rect: fits
                   ? Rect.fromCenter(center: layout.centre, width: inner * 1.7, height: inner * 1.4)
-                  : Rect.fromLTWH(layout.bounds.left, layout.bounds.top - 28, layout.bounds.width, 24),
+                  : Rect.fromLTWH(layout.bounds.left, layout.bounds.top - layout.headingHeight, layout.bounds.width, layout.headingHeight - 4),
               child: Center(child: _heading(context, type, scheme)),
             ),
           for (final (i, e) in slots.indexed)

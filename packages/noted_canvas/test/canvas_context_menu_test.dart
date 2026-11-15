@@ -726,6 +726,7 @@ void main() {
       expect(w.c.page.nodes, hasLength(3));
       expect(other.page.nodes, hasLength(3));
       expect(w.store!.stored, isEmpty);
+      expect(w.store!.notices, ['The paste stopped; nothing was added to another page.']);
     });
   });
 
