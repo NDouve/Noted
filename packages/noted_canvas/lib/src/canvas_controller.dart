@@ -204,7 +204,9 @@ class CanvasController extends ChangeNotifier {
   void beginGesture(String id) {
     if (_readOnly) return;
     final box = _page.node(id);
-    if (box is! BoxRecord) return;
+    // A disallowed box can be selected for Delete only (0166): never moved
+    // or resized.
+    if (box is! BoxRecord || _disallowed.contains(box.typeId)) return;
     _gestureId = id;
     _gestureStart = box.bounds;
     _gestureStartFixed = box.fixedHeight;
@@ -263,7 +265,9 @@ class CanvasController extends ChangeNotifier {
   void setAutoHeight(String id) {
     if (_readOnly) return;
     final box = _page.node(id);
-    if (box is! BoxRecord || !box.fixedHeight) return;
+    if (box is! BoxRecord || !box.fixedHeight || _disallowed.contains(box.typeId)) {
+      return;
+    }
     _history.record(PageChange.bounds(id, box.bounds, fixedHeightBefore: true));
     _set(_page.replaceNode(box.withFixedHeight(false)));
   }
@@ -284,13 +288,19 @@ class CanvasController extends ChangeNotifier {
   /// Whether [move] would change where node [id] sits in the z-order, and the
   /// page isn't read-only.
   bool canRestack(String id, StackMove move) =>
-      !_readOnly && stackTarget(_page, id, move) != null;
+      !_readOnly && !_isDisallowedNode(id) && stackTarget(_page, id, move) != null;
+
+  // A disallowed box is selected for Delete only (0166): it isn't restacked.
+  bool _isDisallowedNode(String id) {
+    final n = _page.node(id);
+    return n is BoxRecord && _disallowed.contains(n.typeId);
+  }
 
   /// Moves node [id] in the z-order. One undo step. Every node, whatever its
   /// type, is moved verbatim. Returns false if nothing changed (read-only,
   /// missing, no id of its own, or already there). The selection is kept.
   bool restack(String id, StackMove move) {
-    if (_readOnly) return false;
+    if (_readOnly || _isDisallowedNode(id)) return false;
     final to = stackTarget(_page, id, move);
     if (to == null) return false;
     final i = _page.indexOf(id);

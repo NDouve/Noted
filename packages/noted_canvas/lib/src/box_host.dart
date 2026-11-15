@@ -140,7 +140,7 @@ class _BoxHostState extends State<BoxHost> {
   BoxResolution _resolve(BoxRecord box) {
     final raw = box.data;
     // A type the page disallows is never decoded: it shows from its snapshot
-    // and resizes freely, as a switched-off module's box does (0111).
+    // and can be selected for Delete only (0111, 0166).
     final off = widget.disallowedTypes.contains(box.typeId);
     if (_resolution == null || !identical(raw, _decodedFrom) || off != _decodedOff) {
       _resolution = off
@@ -176,6 +176,10 @@ class _BoxHostState extends State<BoxHost> {
     final readOnly = widget.readOnly || c.readOnly;
     final editable = module != null && live != null && !readOnly;
     final liveBox = live;
+    // A box of a type the page disallows (not a switched-off module's box) can
+    // be selected, for Delete only (0166): no grip, no handles, no editor.
+    final deletable =
+        node is BoxRecord && widget.disallowedTypes.contains(node.typeId) && !readOnly;
     final selected = c.selectedId == node.id;
     final editing = c.editingId == node.id;
     const m = boxHandleSize / 2;
@@ -227,6 +231,13 @@ class _BoxHostState extends State<BoxHost> {
                   : 'Editable on other devices')
             : 'Not a Noted box (${(node as ForeignNode).nodeType ?? 'unknown'})',
       );
+      if (deletable) {
+        content = Listener(
+          onPointerDown: _contentDown,
+          onPointerUp: (e) => _contentUp(e, node.id),
+          child: content,
+        );
+      }
     }
 
     final scheme = Theme.of(context).colorScheme;
