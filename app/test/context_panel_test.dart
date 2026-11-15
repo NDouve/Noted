@@ -454,6 +454,21 @@ void main() {
       await w.close(t);
     });
 
+    testWidgets('the docked panel has a Close x that closes it and returns the focus', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(1400, 800));
+      await w.addNote(t, 'a', 'hello');
+      await w.editNote(t, 'a');
+      final focused = FocusManager.instance.primaryFocus;
+      expect(focused, isNotNull);
+      await t.tap(find.byKey(const ValueKey('context-panel-close')));
+      await _frames(t, 4);
+      expect(_panel, findsNothing);
+      expect(FocusManager.instance.primaryFocus, same(focused), reason: 'focus returned to the editor');
+      await _menu(t, 'View', 'app.view.panel');
+      expect(_panel, findsOneWidget, reason: 'it opens again');
+      await w.close(t);
+    });
+
     testWidgets('View > Details hides and shows the inline panel', (t) async {
       final w = await ShellWorld.open(t, size: const Size(1400, 800));
       await _menu(t, 'View', 'app.view.panel');
