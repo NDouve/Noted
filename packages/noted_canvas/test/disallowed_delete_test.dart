@@ -99,6 +99,21 @@ void main() {
       expect(bytes(c), isNot(before));
     });
 
+    test('setAutoHeight leaves a fixed-height disallowed box alone; allowed, it works', () {
+      var p = NotedPage.create(PageMeta.create(id: 'p', title: 'T', order: 0));
+      p = p.insertNode(other.withFixedHeight(true));
+      final c = CanvasController(p, modules)..disallowedTypes = _offSet;
+      final before = bytes(c);
+      c.setAutoHeight(other.id);
+      expect(bytes(c), before);
+      expect(c.canUndo, isFalse);
+      expect((c.page.node(other.id)! as BoxRecord).fixedHeight, isTrue);
+      c.disallowedTypes = const {};
+      c.setAutoHeight(other.id);
+      expect((c.page.node(other.id)! as BoxRecord).fixedHeight, isFalse);
+      expect(c.canUndo, isTrue);
+    });
+
     test('Delete removes it; Undo restores the same bytes; Redo deletes again', () {
       final c = controller();
       final before = bytes(c);
