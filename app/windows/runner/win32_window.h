@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 // A class abstraction for a high DPI-aware Win32 Window. Intended to be
 // inherited from by classes that wish to specialize with custom
@@ -59,6 +60,36 @@ class Win32Window {
   // Return a RECT representing the bounds of the current client area.
   RECT GetClientArea();
 
+  // A rectangle in logical pixels, relative to the client area.
+  struct DipRect {
+    double left = 0, top = 0, right = 0, bottom = 0;
+  };
+
+  // The caption buttons (0 is none).
+  enum CaptionButton { kNoButton = 0, kMinimize = 1, kMaximize = 2, kClose = 3 };
+
+  struct FrameState {
+    bool maximized = false;
+    bool active = true;
+    int hovered = kNoButton;
+    int pressed = kNoButton;
+    unsigned int dpi = 96;
+  };
+
+  // Turns the custom title-bar frame on or off. Off (the default) is a normal
+  // captioned window. On, the caption is removed from the client area and Dart
+  // draws it (see SetCaptionRects).
+  void SetCustomFrame(bool enabled);
+  bool custom_frame() const { return custom_frame_; }
+
+  // The caption-button rects (index by CaptionButton, 1..3; index 0 unused)
+  // and the rects of interactive title-bar controls, in logical pixels.
+  // Anything else in the top 40 logical pixels is the draggable caption.
+  void SetCaptionRects(const DipRect buttons[4],
+                       std::vector<DipRect> interactive);
+
+  FrameState GetFrameState();
+
  protected:
   // Processes and route salient window messages for mouse handling,
   // size change and DPI. Delegates handling of these to member overloads that
@@ -74,6 +105,14 @@ class Win32Window {
 
   // Called when Destroy is called.
   virtual void OnDestroy();
+
+  // Custom frame only: the maximised, active, hover, pressed or dpi state
+  // changed.
+  virtual void OnFrameStateChanged();
+
+  // Custom frame only: a non-client mouse button went down (caption, caption
+  // buttons or window menu), before it is handled.
+  virtual void OnNcPointerDown();
 
  private:
   friend class WindowClassRegistrar;
@@ -95,6 +134,23 @@ class Win32Window {
   static void UpdateTheme(HWND const window);
 
   bool quit_on_close_ = false;
+
+  // Custom-frame helpers (win32_window.cpp). |handled| is set when the result
+  // is to be returned.
+  LRESULT HandleCustomFrame(HWND hwnd, UINT message, WPARAM wparam,
+                            LPARAM lparam, bool* handled) noexcept;
+  int HitTestClient(POINT client_point, int client_width);
+  int ButtonAt(POINT client_point);
+  void SetHoverPressed(int hovered, int pressed);
+  void RunCaptionButton(int button);
+
+  bool custom_frame_ = false;
+  bool active_ = true;
+  bool tracking_nc_leave_ = false;
+  int hovered_ = kNoButton;
+  int pressed_ = kNoButton;
+  DipRect buttons_[4];
+  std::vector<DipRect> interactive_;
 
   // window handle for top level window.
   HWND window_handle_ = nullptr;

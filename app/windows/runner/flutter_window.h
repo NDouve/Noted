@@ -30,6 +30,8 @@ class FlutterWindow : public Win32Window {
   // Win32Window:
   bool OnCreate() override;
   void OnDestroy() override;
+  void OnFrameStateChanged() override;
+  void OnNcPointerDown() override;
   LRESULT MessageHandler(HWND window, UINT const message, WPARAM const wparam,
                          LPARAM const lparam) noexcept override;
 
@@ -46,6 +48,16 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> open_channel_;
   std::vector<std::string> pending_paths_;
   bool dart_ready_ = false;
+
+  // The "noted/window" channel: the custom title bar (see win32_window.h).
+  // Dart enables the frame and reports the caption rects; native reports the
+  // window state and non-client pointer-downs.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      window_channel_;
+  void HandleWindowCall(
+      const flutter::MethodCall<flutter::EncodableValue>& call,
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+  HWND view_hwnd_ = nullptr;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_
