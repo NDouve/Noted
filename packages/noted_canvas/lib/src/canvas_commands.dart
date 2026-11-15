@@ -143,7 +143,10 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
       icon: Icons.delete_outline_rounded,
       shortcut: _key(LogicalKeyboardKey.delete),
       alternateShortcuts: [_key(LogicalKeyboardKey.backspace)],
-      enabled: () => !t.isReadOnly && c.selectedId != null,
+      enabled: () {
+        final sel = c.selectedId;
+        return !t.isReadOnly && sel != null && c.canDelete(sel);
+      },
       listenable: c,
       invoke: () {
         final id = c.selectedId;

@@ -88,9 +88,12 @@ class _Target {
   final String? binderPath;
 
   bool holds(Notebook nb, CommandRegistry? registryNow, {required bool canvas}) {
-    if (!identical(nb.current, controller) || nb.currentId != pageId) return false;
+    // The canvas half (controller, page, registry) is the shared guard.
+    final guard = CanvasTargetGuard(controller: controller, pageId: pageId, registry: registry);
+    if (!guard.holds(nb.current, nb.currentId, registry: registryNow, checkRegistry: canvas)) {
+      return false;
+    }
     if (nb.coverPath != coverPath || !identical(nb.cover, cover)) return false;
-    if (canvas && (registry == null || !identical(registry, registryNow))) return false;
     final b = binderPath;
     if (b != null) {
       final id = nb.currentId;

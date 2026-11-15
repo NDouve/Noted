@@ -389,6 +389,16 @@ class CanvasController extends ChangeNotifier {
     _notify();
   }
 
+  /// Whether [delete] would remove node [id]: the page can be changed, the
+  /// node is a box and a codec for its type is registered. Host only: the
+  /// Delete command and the context menu read it, so Delete is never offered
+  /// for a node [delete] refuses.
+  bool canDelete(String id) {
+    if (_readOnly) return false;
+    final box = _page.node(id);
+    return box is BoxRecord && modules.codecs.codecFor(box.typeId) != null;
+  }
+
   /// Deletes box [id]. Only boxes this device can run can be deleted;
   /// unsupported and foreign nodes are left alone (0035).
   ///
@@ -396,11 +406,8 @@ class CanvasController extends ChangeNotifier {
   /// that emptied a box before deleting it passes the box as it was before,
   /// so one undo restores it whole.
   void delete(String id, {BoxRecord? undoTo}) {
-    if (_readOnly) return;
-    final box = _page.node(id);
-    if (box is! BoxRecord || modules.codecs.codecFor(box.typeId) == null) {
-      return;
-    }
+    if (!canDelete(id)) return;
+    final box = _page.node(id)! as BoxRecord;
     _history.record(PageChange.removed(undoTo ?? box, _page.indexOf(id)));
     if (_selectedId == id) _selectedId = null;
     if (_editingId == id) _editingId = null;
