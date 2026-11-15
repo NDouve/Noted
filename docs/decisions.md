@@ -2354,7 +2354,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - Deleting such a box, and undoing an add, a delete or a replacement of it, moves its record unchanged and stays available.
   - An AI merge request about such a box is refused, also when the type is disallowed while the request is being built or answered.
   - Code: `CanvasController.disallowedTypes`, pushed by the notebook only.
-  - A disallowed box can be selected for Delete only (run 2026-11-15-01): it can't be edited, moved, resized or restacked, and Undo of the Delete restores its record unchanged. Its menu offers Delete only (0168).
+  - A disallowed box can be selected for Delete only (run 2026-11-15-01): it can't be edited, moved, resized or restacked, and Undo of the Delete restores its record unchanged. Its menu offers Delete as its only change, plus Boxes here…, which only selects (0168).
   - **Limits:** a disallowed drawing box shows an empty frame, since drawing boxes have no image snapshot yet (open item).
 - **Rationale:** merges, the AI gate and undo decoded a disallowed box through its live module, which could rewrite its data (Codex invariants review, 2026-11-04, R-2; invariant 2).
 - **Alternatives considered:** dropping a blocked undo step (Undo would skip to older steps); blocking every undo step on such a box (Undo of a Delete would be lost).
@@ -2377,7 +2377,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Status:** Active (the menus are the maintainer's, from the UI brief of 2026-11-15; the details, the radial setting lasting for the session and the touch rule decided by the build team (PM), run 2026-11-15-01, from the reviewed note `2026-11-15-01-context-menus`); amends 0160's touch behaviour on empty canvas
 - **Decision:**
   - **Targets.** A right-click, the Menu key or Shift+F10 opens a menu for what is under the point: the topmost box, or empty canvas. The target is recorded when the menu opens and checked again before the chosen entry runs; if the page, the controller, the box or its type changed, nothing runs, and a registry entry runs only while that box is still selected. A change in whether the page can be edited closes an open menu.
-    - **A box:** Bring to front, Bring forward, Send backward, Send to back, Boxes here… (the pick list of 0160) and Delete box. On a writable page the box is selected first. A box type the page disallows gets Delete only, under the heading "Not allowed on this page" (0166). For an unsupported or foreign node, Delete is off.
+    - **A box:** Bring to front, Bring forward, Send backward, Send to back, Boxes here… (the pick list of 0160) and Delete box. On a writable page the box is selected first. A box type the page disallows gets Delete as its only change, under the heading "Not allowed on this page" (0166); Boxes here… stays, since it only selects. For an unsupported or foreign node, Delete is off.
     - **Empty canvas:** New note here, Paste image or file at the point, and the module inserts (image, file, AI box) where their module is on. Placeholder commands are left out.
     - On a read-only page the same entries show, the edit entries off.
   - Every entry is a command from the registry (0067) or made for that menu, with its live enabled state and current shortcut. Keys inside an open menu reach no canvas or app command. Choosing an entry closes the menu, puts focus back where it was, and runs the command after the frame. A note being edited keeps its editor and selection while a menu is open (0167).
