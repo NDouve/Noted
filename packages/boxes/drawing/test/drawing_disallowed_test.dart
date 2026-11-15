@@ -78,11 +78,8 @@ ToolPointer _at(double x, double y) =>
     ToolPointer(position: Offset(x, y), kind: PointerDeviceKind.mouse, time: Duration.zero);
 
 /// A horizontal stroke at [y] from x 10 to 190 (content coordinates).
-Stroke _line(String id, double y, int t0) => Stroke(
-  id: id,
-  points: Float64List.fromList([10, y, 0.5, 0, 190, y, 0.5, 10]),
-  t0: t0,
-);
+Stroke _line(String id, double y, int t0) =>
+    Stroke(id: id, points: Float64List.fromList([10, y, 0.5, 0, 190, y, 0.5, 10]), t0: t0);
 
 void main() {
   late DrawingModule drawing;
@@ -98,10 +95,7 @@ void main() {
     final modules = ModuleRegistry()..register(_CountingModule(drawing));
     var box = createBox(codec, const Bounds(100, 100, 200, 200)).withId(boxId);
     box = commitBox(box, codec, DrawingData(strokes: [for (var i = 0; i < ys.length; i++) _line('s$i', ys[i], i)]));
-    c = CanvasController(
-      NotedPage.create(PageMeta.create(id: 'p', title: '', order: 0)).insertNode(box),
-      modules,
-    );
+    c = CanvasController(NotedPage.create(PageMeta.create(id: 'p', title: '', order: 0)).insertNode(box), modules);
     ctx = _Ctx(c);
     _decodes = 0;
   }

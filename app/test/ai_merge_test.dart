@@ -698,6 +698,52 @@ void main() {
       s.cancel(pageId, 'n1');
     });
   });
+
+  // Run 2026-11-14-02, task 3 (0111, 0122): a type the page disallows is never
+  // decoded for a merge proposal. The spy counts the AI codec's decodes.
+  group('a type disallowed while the page AI is asked', () {
+    const notAllowed = "This box type isn't allowed on this page.";
+
+    test('while the saved page is read: the ask ends, no request reaches the link', () async {
+      await conflicted('a1', type: aiBoxTypeId);
+      final spy = _Spy(nb, () {})..gate = Completer<void>();
+      final s = AiMergeService(access: service, host: spy);
+      final pending = s.ask(pageId, 'a1');
+      final failed = expectLater(
+        pending,
+        throwsA(isA<AiMergeException>().having((e) => e.message, 'message', notAllowed)),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await nb.setBoxType(pageId, aiBoxTypeId, false);
+      expect(nb.boxTypeAvailabilityFor(pageId, aiBoxTypeId).allowed, isFalse, reason: 'the disallow took effect');
+      spy.gate!.complete();
+      await failed;
+      expect(s.pendingFor(service.store.codes().single), isEmpty, reason: 'no request for the link');
+      expect(spy.decodes, 0);
+    });
+
+    test('after the request was sent: the answer is not decoded, no proposal is offered, propose says no_request', () async {
+      await conflicted('a1', type: aiBoxTypeId);
+      final spy = _Spy(nb, () {});
+      final s = AiMergeService(access: service, host: spy);
+      final pending = s.ask(pageId, 'a1');
+      final done = expectLater(
+        pending,
+        throwsA(isA<AiMergeException>().having((e) => e.message, 'message', notAllowed)),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final code = service.store.codes().single;
+      final item = s.pendingFor(code).single;
+      await nb.setBoxType(pageId, aiBoxTypeId, false);
+      expect(nb.boxTypeAvailabilityFor(pageId, aiBoxTypeId).allowed, isFalse, reason: 'the disallow took effect');
+      spy.decodes = 0;
+      final r = s.propose(code, item.id, 'Shared line\n\nA merged line');
+      expect((r as AiLinkError).code, AiLinkCode.noRequest);
+      await done;
+      expect(spy.decodes, 0, reason: 'the answer was not decoded');
+      expect(s.pendingFor(code), isEmpty);
+    });
+  });
 }
 
 String jsonOfItem(AiLinkMergeItem i) => i.toJson().toString();
@@ -726,8 +772,46 @@ class _Spy implements AiMergeHost {
   BoxRecord? aiOpenBox(String pageId, String boxId) => inner.aiOpenBox(pageId, boxId);
 
   @override
-  bool aiMergeTypeAllowed(String pageId, String typeId) => inner.aiMergeTypeAllowed(pageId, typeId);
+  bool aiMergeTypeAllowed(String pageId, String typeId, {NotedPage? page}) =>
+      inner.aiMergeTypeAllowed(pageId, typeId, page: page);
+
+  /// How often a codec this host handed out decoded.
+  int decodes = 0;
 
   @override
-  BoxCodec<Object?>? aiMergeCodec(String typeId) => inner.aiMergeCodec(typeId);
+  BoxCodec<Object?>? aiMergeCodec(String typeId) {
+    final c = inner.aiMergeCodec(typeId);
+    return c == null ? null : _CountingCodec(c, () => decodes++);
+  }
+}
+
+/// A codec that counts its decodes and otherwise is [inner].
+class _CountingCodec extends BoxCodec<Object?> {
+  _CountingCodec(this.inner, this.onDecode);
+
+  final BoxCodec<Object?> inner;
+  final void Function() onDecode;
+
+  @override
+  String get typeId => inner.typeId;
+  @override
+  int get dataVersion => inner.dataVersion;
+  @override
+  BoxApiVersion get apiVersion => inner.apiVersion;
+  @override
+  BoxSizing get sizing => inner.sizing;
+  @override
+  Object? create() => inner.create();
+  @override
+  Object? decode(Object? json, int storedVersion) {
+    onDecode();
+    return inner.decode(json, storedVersion);
+  }
+
+  @override
+  Object? encode(Object? data) => inner.encode(data);
+  @override
+  String snapshotText(Object? data) => inner.snapshotText(data);
+  @override
+  AiExposure aiExposure(Object? data) => inner.aiExposure(data);
 }

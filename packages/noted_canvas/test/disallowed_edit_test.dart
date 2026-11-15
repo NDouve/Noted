@@ -77,11 +77,8 @@ class _SetText implements BoxEdit {
   (Object?, BoxEdit) apply(Object? data) => (before, _SetText(data! as String));
 }
 
-BoxRecord _box(String type, String id, String text, {Bounds? at}) => commitBox(
-  createBox(_Codec(type), at ?? const Bounds(50, 50, 200, 60)).withId(id),
-  _Codec(type),
-  text,
-);
+BoxRecord _box(String type, String id, String text, {Bounds? at}) =>
+    commitBox(createBox(_Codec(type), at ?? const Bounds(50, 50, 200, 60)).withId(id), _Codec(type), text);
 
 void main() {
   late ModuleRegistry modules;
