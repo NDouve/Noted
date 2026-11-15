@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:math' as math;
+import 'dart:ui' show SemanticsRole;
 
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
@@ -124,11 +125,15 @@ ContextMenuSpec canvasContextSpec({
   required CommandRegistry registry,
   required Command newNote,
   required Command paste,
+  Set<String> hidden = const {},
+  Set<String> notAllowed = const {},
 }) {
   ContextEntry? reg(String id, {String? label}) {
     final c = registry[id];
-    if (c == null || c.label.endsWith('(coming later)')) return null;
-    return ContextEntry(c, label: label != null && !c.label.contains('not allowed') ? label : null);
+    // A placeholder is never shown; a command made unavailable for a disallowed
+    // type keeps the text that says so.
+    if (c == null || hidden.contains(id)) return null;
+    return ContextEntry(c, label: label != null && !notAllowed.contains(id) ? label : null);
   }
 
   final image = reg('noted.image.insert', label: 'Insert image');
@@ -255,6 +260,7 @@ class _ContextPanel extends StatefulWidget {
 
 class _ContextPanelState extends State<_ContextPanel> {
   final FocusNode _focus = FocusNode(debugLabel: 'ContextMenu');
+  final Map<int, GlobalKey> _rowKeys = {};
   bool _closing = false;
 
   /// The canvas asked for the menu to close: its commands may be gone, so
@@ -338,6 +344,17 @@ class _ContextPanelState extends State<_ContextPanel> {
       _at = next;
       _keyboard = true;
     });
+    _reveal();
+  }
+
+  // Keeps the row the keyboard is on in view in a list that scrolls.
+  void _reveal() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final at = _at;
+      final ctx = at == null ? null : _rowKeys[at]?.currentContext;
+      if (mounted && !_gone && ctx != null) Scrollable.ensureVisible(ctx);
+    });
+    SchedulerBinding.instance.scheduleFrame();
   }
 
   void _jump(int i) {
@@ -346,6 +363,7 @@ class _ContextPanelState extends State<_ContextPanel> {
       _at = i;
       _keyboard = true;
     });
+    _reveal();
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent e) {
@@ -433,6 +451,7 @@ class _ContextPanelState extends State<_ContextPanel> {
             delegate: _ListLayout(widget.anchor),
             child: _ListView(
               spec: widget.spec,
+              rowKeys: _rowKeys,
               at: _at,
               keyboard: _keyboard,
               onRun: _run,
@@ -499,6 +518,7 @@ class _ListView extends StatelessWidget {
     required this.keyboard,
     required this.onRun,
     required this.onHover,
+    required this.rowKeys,
   });
 
   final ContextMenuSpec spec;
@@ -506,6 +526,7 @@ class _ListView extends StatelessWidget {
   final bool keyboard;
   final void Function(ContextEntry e) onRun;
   final void Function(int index) onHover;
+  final Map<int, GlobalKey> rowKeys;
 
   @override
   Widget build(BuildContext context) {
@@ -539,35 +560,71 @@ class _ListView extends StatelessWidget {
       for (final e in group) {
         final i = index++;
         children.add(
-          _Row(
-            entry: e,
-            lit: at == i,
-            outlined: at == i && keyboard,
-            onRun: () => onRun(e),
-            onHover: () => onHover(i),
+          KeyedSubtree(
+            key: rowKeys.putIfAbsent(i, GlobalKey.new),
+            child: _Row(
+              entry: e,
+              lit: at == i,
+              outlined: at == i && keyboard,
+              onRun: () => onRun(e),
+              onHover: () => onHover(i),
+            ),
           ),
         );
       }
     }
-    return ConstrainedBox(
-      constraints: const BoxConstraints(minWidth: notedMenuMinWidth),
-      child: IntrinsicWidth(
-        child: DecoratedBox(
-          key: const ValueKey('context-menu'),
-          decoration: BoxDecoration(
-            color: scheme.surface,
-            border: Border.all(color: scheme.outline),
-            borderRadius: m.borderLg,
-            boxShadow: m.shadowPopover,
-          ),
+    // The width the widest row needs (the list scrolls, so it can't be
+    // measured by the layout).
+    final scaler = MediaQuery.textScalerOf(context);
+    double text(String s, TextStyle st) {
+      final p = TextPainter(
+        text: TextSpan(text: s, style: st),
+        textDirection: TextDirection.ltr,
+        textScaler: scaler,
+        maxLines: 1,
+      )..layout();
+      final w = p.width;
+      p.dispose();
+      return w;
+    }
+
+    var need = notedMenuMinWidth;
+    for (final e in spec.entries) {
+      final sc = e.point ? null : menuShortcutFor(e.command);
+      need = math.max(
+        need,
+        2 * m.space1 + 20 + m.icon + m.space3 + text(e.text, type.body) +
+            (sc == null ? 0 : m.space4 + text(sc, type.small)) + 2,
+      );
+    }
+    if (spec.heading != null) {
+      need = math.max(need, 2 * m.space1 + 20 + text(spec.heading!, type.small) + 2);
+    }
+    return SizedBox(
+      width: math.min(need, MediaQuery.sizeOf(context).width - 16),
+      child: DecoratedBox(
+        key: const ValueKey('context-menu'),
+        decoration: BoxDecoration(
+          color: scheme.surface,
+          border: Border.all(color: scheme.outline),
+          borderRadius: m.borderLg,
+          boxShadow: m.shadowPopover,
+        ),
+        child: Semantics(
+          role: SemanticsRole.menu,
+          label: 'Context menu',
+          container: true,
           child: Material(
             type: MaterialType.transparency,
             child: Padding(
               padding: EdgeInsets.all(m.space1),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                mainAxisSize: MainAxisSize.min,
-                children: children,
+              // Scrolls when the window is too short for every row.
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: children,
+                ),
               ),
             ),
           ),
@@ -607,6 +664,8 @@ class _Row extends StatelessWidget {
     final shortcut = entry.point ? null : menuShortcutFor(entry.command);
     return Semantics(
       button: true,
+      role: SemanticsRole.menuItem,
+      selected: lit,
       enabled: on,
       label: entry.text,
       excludeSemantics: true,

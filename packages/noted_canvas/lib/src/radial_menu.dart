@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:math' as math;
+import 'dart:ui' show SemanticsRole;
 
 import 'package:flutter/material.dart';
 
@@ -18,14 +19,21 @@ const int radialSlots = 6;
 const double radialMinRadius = 88;
 const double radialGap = 8;
 
+/// The room the middle of the ring needs for a heading.
+const double radialHeadingRoom = 40;
+
 /// Where the ring's pills sit: [radius] from [centre], one rect per slot (null
 /// for an empty slot), all in the coordinates of the anchor.
 class RadialLayout {
-  const RadialLayout(this.centre, this.radius, this.pills);
+  const RadialLayout(this.centre, this.radius, this.pills, {this.headingAbove = false});
 
   final Offset centre;
   final double radius;
   final List<Rect?> pills;
+
+  /// The heading doesn't fit in the middle: it sits above the ring, and the
+  /// ring's box (kept inside the viewport) includes it.
+  final bool headingAbove;
 
   /// The smallest rect holding every pill.
   Rect get bounds => pills.whereType<Rect>().reduce((a, b) => a.expandToInclude(b));
@@ -42,7 +50,12 @@ Offset radialSlotCentre(Offset centre, double radius, int i) {
 /// pointed at [anchor] and kept inside [within] with 8 px margins; null if the
 /// ring's box is larger than [within] (the caller then shows the list). The
 /// radius is at least 88 and grows until no two pills are within 8 px.
-RadialLayout? layoutRadial(List<Size?> sizes, Offset anchor, Rect within) {
+RadialLayout? layoutRadial(
+  List<Size?> sizes,
+  Offset anchor,
+  Rect within, {
+  bool heading = false,
+}) {
   var r = radialMinRadius;
   List<Rect?> at(Offset c, double r) => [
     for (final (i, s) in sizes.indexed)
@@ -61,13 +74,16 @@ RadialLayout? layoutRadial(List<Size?> sizes, Offset anchor, Rect within) {
   while (!clear(at(Offset.zero, r)) && r < 600) {
     r += 2;
   }
-  final box = at(Offset.zero, r).whereType<Rect>().reduce((a, b) => a.expandToInclude(b));
+  var box = at(Offset.zero, r).whereType<Rect>().reduce((a, b) => a.expandToInclude(b));
+  final inner = at(Offset.zero, r).whereType<Rect>().map(_distanceToRect).reduce(math.min);
+  final above = heading && inner < radialHeadingRoom;
+  if (above) box = box.expandToInclude(Rect.fromLTWH(box.left, box.top - 28, box.width, 28));
   final room = within.deflate(radialGap);
   if (box.width > room.width || box.height > room.height) return null;
   final cx = anchor.dx.clamp(room.left - box.left, room.right - box.right).toDouble();
   final cy = anchor.dy.clamp(room.top - box.top, room.bottom - box.bottom).toDouble();
   final centre = Offset(cx, cy);
-  return RadialLayout(centre, r, at(centre, r));
+  return RadialLayout(centre, r, at(centre, r), headingAbove: above);
 }
 
 /// The ring: a pill for each slot, a dot at the point pressed, and, for a
@@ -120,7 +136,7 @@ class RadialMenuView extends StatelessWidget {
                 return s;
               }(),
     ];
-    final layout = layoutRadial(sizes, anchor, within);
+    final layout = layoutRadial(sizes, anchor, within, heading: heading != null);
     if (layout == null) return null;
     return RadialMenuView._(
       layout: layout,
@@ -154,9 +170,10 @@ class RadialMenuView extends StatelessWidget {
         .whereType<Rect>()
         .map((r) => _distance(layout.centre, r))
         .reduce(math.min);
-    final fits = inner >= 40;
+    final fits = !layout.headingAbove;
     return Semantics(
       container: true,
+      role: SemanticsRole.menu,
       label: 'Context menu',
       child: Stack(
         key: const ValueKey('radial-menu'),
@@ -243,6 +260,8 @@ class _Pill extends StatelessWidget {
     final on = entry.enabled;
     return Semantics(
       button: true,
+      role: SemanticsRole.menuItem,
+      selected: lit,
       enabled: on,
       label: entry.text,
       excludeSemantics: true,
@@ -285,4 +304,10 @@ class _Pill extends StatelessWidget {
       ),
     );
   }
+}
+
+double _distanceToRect(Rect r) {
+  final dx = math.max(math.max(r.left, 0.0), -r.right);
+  final dy = math.max(math.max(r.top, 0.0), -r.bottom);
+  return math.sqrt(dx * dx + dy * dy);
 }

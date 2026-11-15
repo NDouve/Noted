@@ -357,7 +357,7 @@ class PageCanvasState extends State<PageCanvas>
     }
     if (stopped) {
       store.notify(
-        'The paste stopped because the page changed; nothing was added to the other page.',
+        'The paste stopped; nothing was added to another page.',
       );
     }
     if (last != null && _pasteHolds(target)) _c.select(last);
@@ -471,7 +471,13 @@ class PageCanvasState extends State<PageCanvas>
   /// Made again when the page or the tool selection changes.
   CommandRegistry get commands => _commands;
 
+  // The ids of the "coming later" placeholders and of the commands made
+  // unavailable for a disallowed type, in the registry made last.
+  Set<String> _placeholderIds = const {};
+  final Set<String> _notAllowedIds = {};
+
   void _buildCommands() {
+    _notAllowedIds.clear();
     // A registry made again: an open context menu holds the old one.
     if (_contextSession != null) _contextClose.value = true;
     final old = _commands;
@@ -491,7 +497,9 @@ class PageCanvasState extends State<PageCanvas>
       ..registerAll(_moduleCommands())
       ..registerAll(widget.extraCommands?.call() ?? const []);
     // Last, so a real command with a placeholder's id wins.
-    _commands.registerAll(placeholderCommands(_commands));
+    final placeholders = placeholderCommands(_commands);
+    _placeholderIds = {for (final p in placeholders) p.id};
+    _commands.registerAll(placeholders);
     if (old.commands.isEmpty) {
       old.dispose();
       _announceCommands();
@@ -546,6 +554,7 @@ class PageCanvasState extends State<PageCanvas>
   }
 
   Command _notAllowed(Command c) {
+    _notAllowedIds.add(c.id);
     final disabled = Command(
       id: c.id,
       label: '${c.label} (not allowed on this page)',
@@ -682,7 +691,10 @@ class PageCanvasState extends State<PageCanvas>
     }
     // A page that turns read-only (or editable) under an open menu: the edit
     // commands read it, so they are re-read now.
-    if (oldWidget.readOnly != widget.readOnly) _commands.refresh();
+    if (oldWidget.readOnly != widget.readOnly) {
+      _commands.refresh();
+      _checkContextTarget();
+    }
     if (oldWidget.onCommandsChanged != widget.onCommandsChanged) _announceCommands();
     if (oldWidget.findRequests != widget.findRequests) {
       oldWidget.findRequests?.removeListener(_takeFindRequest);
@@ -1260,7 +1272,10 @@ class PageCanvasState extends State<PageCanvas>
   // goes, or changes kind, type or disallowed state.
   void _checkContextTarget() {
     final s = _contextSession;
-    if (s != null && _targetChanged(s.target)) _contextClose.value = true;
+    if (s == null) return;
+    // A change of writability closes the menu: what it offered (and what is
+    // selected) was for the other state.
+    if (_targetChanged(s.target) || _readOnly != s.target.readOnly) _contextClose.value = true;
   }
 
   /// Opens the context menu at the screen point [global]: for the box at the
@@ -1305,6 +1320,7 @@ class PageCanvasState extends State<PageCanvas>
       typeId: node is BoxRecord ? node.typeId : null,
       off: node is BoxRecord && _off.contains(node.typeId),
       selects: selects,
+      readOnly: _readOnly,
     );
 
     final boxesHere = Command(
@@ -1337,7 +1353,13 @@ class PageCanvasState extends State<PageCanvas>
       invoke: () => pasteFilesAt(world),
     );
     final spec = node == null
-        ? canvasContextSpec(registry: _commands, newNote: newNote, paste: paste)
+        ? canvasContextSpec(
+            registry: _commands,
+            newNote: newNote,
+            paste: paste,
+            hidden: _placeholderIds,
+            notAllowed: _notAllowedIds,
+          )
         : boxContextSpec(registry: _commands, boxesHere: boxesHere, disallowed: target.off);
     // The point commands the spec didn't take are not needed.
     for (final p in [boxesHere, newNote, paste]) {
@@ -1370,16 +1392,20 @@ class PageCanvasState extends State<PageCanvas>
     // after the frame that applied the focus.
     binding.addPostFrameCallback((_) {
       if (mounted) _focusOrigin(s.origin);
-      final run = entry == null ? Future<void>.value() : _runContextEntry(s, entry);
-      binding.addPostFrameCallback((_) => s.releaseHold());
+      // The chosen entry runs in the frame after the focus restore (task 6 order),
+      // and the hold ends with it.
+      binding.addPostFrameCallback((_) {
+        s.releaseHold();
+        final run = entry == null ? Future<void>.value() : _runContextEntry(s, entry);
+        unawaited(
+          run.whenComplete(() {
+            for (final p in s.spec.points) {
+              p.dispose();
+            }
+          }),
+        );
+      });
       binding.scheduleFrame();
-      unawaited(
-        run.whenComplete(() {
-          for (final p in s.spec.points) {
-            p.dispose();
-          }
-        }),
-      );
     });
     binding.scheduleFrame();
   }
@@ -1412,7 +1438,7 @@ class PageCanvasState extends State<PageCanvas>
     if (t.boxId != null) {
       if (_targetChanged(t)) return;
       // A registry command acts on the selection: it must still be the box.
-      if (!entry.point && t.selects && _c.selectedId != t.boxId) return;
+      if (!entry.point && _c.selectedId != t.boxId) return;
     }
     await entry.command.run();
   }
@@ -2051,6 +2077,7 @@ class _ContextTarget {
     required this.typeId,
     required this.off,
     required this.selects,
+    required this.readOnly,
   });
 
   final CanvasController controller;
@@ -2064,6 +2091,9 @@ class _ContextTarget {
 
   /// The box was selected for the menu (a writable page).
   final bool selects;
+
+  /// Whether the page could not be changed when the menu opened.
+  final bool readOnly;
 }
 
 /// One open context menu: its target, entries, the focus to give back, and

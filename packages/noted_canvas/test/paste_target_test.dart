@@ -13,9 +13,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'context_menu_world.dart';
 
-const _stopNotice =
-    'The paste stopped because the page changed; nothing was added to the other page.';
-
+const _stopNotice = 'The paste stopped; nothing was added to another page.';
 void main() {
   late World w;
   late CanvasController other;

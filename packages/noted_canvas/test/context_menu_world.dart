@@ -380,6 +380,7 @@ class World {
     await t.pump();
     await t.pump();
     await t.pump();
+    await t.pump();
   }
 
   /// The ids of the entries shown (rows of the list, or slots of the ring).

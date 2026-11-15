@@ -6,6 +6,7 @@
 // revalidation before any change, keys, notes being edited, touch.
 
 import 'dart:async';
+import 'dart:ui' show SemanticsRole, Tristate;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -247,15 +248,36 @@ void main() {
       expect(tt.takeException(), isNull);
     });
 
-    testWidgets('a read-only flip leaves the menu open with the edit entries off in that frame', (t) async {
+    testWidgets('a writability flip closes the menu in the next frame, and nothing is deleted', (t) async {
       await setUpWorld(t);
       await w.rightClick(w.at(overlapPoint));
       expect(w.enabled(CanvasCommands.sendToBack), isTrue);
       await w.rebuild(readOnly: true);
       await t.pump();
+      await t.pump();
+      expect(w.open, isFalse);
+      expect(w.order, ['a', 'b', 'c']);
+    });
+
+    testWidgets('a menu opened read-only for another box never deletes the selected box when writing returns', (t) async {
+      await setUpWorld(t, nodes: [
+        tbox('a', 'test.text', ba, 'alpha'),
+        tbox('z', 'test.text', const Bounds(700, 100, 100, 50), 'z'),
+      ]);
+      w.c.select('a');
+      await t.pump();
+      await w.rebuild(readOnly: true);
+      await w.rightClick(w.at(const Offset(720, 120)));
       expect(w.menu, findsOneWidget);
-      expect(w.enabled(CanvasCommands.sendToBack), isFalse);
+      // The selection stays on a; the entries are off.
+      expect(w.c.selectedId, 'a');
       expect(w.enabled(CanvasCommands.delete), isFalse);
+      await w.rebuild(readOnly: false);
+      await t.pump();
+      await t.pump();
+      expect(w.open, isFalse);
+      expect(w.c.page.node('a'), isNotNull);
+      expect(w.c.page.node('z'), isNotNull);
     });
 
     testWidgets('another page opening before the deferred run: the command runs on neither', (t) async {
@@ -407,6 +429,53 @@ void main() {
       final rect = t.getRect(find.byKey(const ValueKey('context-menu')));
       // Not at the covered corner (112, 112) but at the box's centre (250, 200).
       expect(rect.left, greaterThan(w.at(const Offset(200, 190)).dx));
+    });
+  });
+
+  group('a short window', () {
+    testWidgets('a six-entry box menu in a 200 px window scrolls: no overflow, the last entry is reachable by pointer and keyboard', (t) async {
+      await setUpWorld(t, nodes: [tbox('a', 'test.text', ba, 'alpha'), tbox('b', 'test.text', bb, 'bravo')], size: const Size(900, 200));
+      await w.rightClick(w.at(const Offset(120, 120)));
+      expect(w.menu, findsOneWidget);
+      expect(tt.takeException(), isNull);
+      final r = t.getRect(w.menu);
+      expect(r.top, greaterThanOrEqualTo(7.99));
+      expect(r.bottom, lessThanOrEqualTo(200 - 8 + 0.01));
+      // By keyboard: End moves to Delete box and brings it into view.
+      await t.sendKeyEvent(LogicalKeyboardKey.end);
+      await t.pump();
+      await t.pump();
+      expect(w.focused(), 'Delete box');
+      final del = t.getRect(w.item(CanvasCommands.delete));
+      expect(del.bottom, lessThanOrEqualTo(r.bottom + 0.5));
+      expect(del.top, greaterThanOrEqualTo(r.top - 0.5));
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await t.pump();
+      await t.pump();
+      // By pointer: scroll the list, then tap the last entry.
+      await w.rightClick(w.at(const Offset(120, 120)));
+      await t.drag(w.menu, const Offset(0, -200));
+      await t.pump();
+      await w.choose(CanvasCommands.delete);
+      expect(w.c.page.node('a'), isNull);
+      expect(tt.takeException(), isNull);
+    });
+
+    testWidgets('the menu has the menu role and rows the menu item role, the highlighted one selected', (t) async {
+      final handle = t.ensureSemantics();
+      await setUpWorld(t, nodes: [tbox('a', 'test.text', ba, 'alpha'), tbox('b', 'test.text', bb, 'bravo')]);
+      await w.rightClick(w.at(const Offset(120, 120)));
+      final row = t.getSemantics(w.item(CanvasCommands.delete));
+      expect(row.role, SemanticsRole.menuItem);
+      expect(row.label, 'Delete box');
+      final first = t.getSemantics(w.item(CanvasCommands.bringToFront));
+      expect(first.flagsCollection.isSelected, Tristate.isTrue);
+      expect(row.flagsCollection.isSelected, Tristate.isFalse);
+      expect(
+        t.widgetList<Semantics>(find.descendant(of: w.menu, matching: find.byType(Semantics))).any((s) => s.properties.role == SemanticsRole.menu),
+        isTrue,
+      );
+      handle.dispose();
     });
   });
 

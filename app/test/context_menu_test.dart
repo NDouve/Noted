@@ -194,4 +194,26 @@ void main() {
     expect(noteSelection(t), before);
     await w.close(t);
   });
+
+  testWidgets('a right click on empty canvas while a note is edited: Escape keeps the selection and editing never ends', (t) async {
+    final w = await ShellWorld.open(t);
+    await w.addNote(t, 'n', 'hello brave new world');
+    await w.editNote(t, 'n');
+    final c = w.nb.current!;
+    final before = noteSelection(t);
+    expect(before, isNotNull);
+    final seen = <String?>[];
+    c.addListener(() => seen.add(c.editingId));
+    await _rightClick(t, w.canvasOrigin(t) + w.canvas(t).view!.toScreen(const Offset(700, 400)));
+    expect(find.byKey(const ValueKey('context-menu')), findsOneWidget);
+    expect(c.editorFocusHold.count, 1);
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await _frames(t, 6);
+    expect(find.byKey(const ValueKey('context-menu')), findsNothing);
+    expect(c.editorFocusHold.count, 0);
+    expect(c.editingId, 'n');
+    expect(seen, everyElement(isNotNull));
+    expect(noteSelection(t), before);
+    await w.close(t);
+  });
 }
