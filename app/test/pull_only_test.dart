@@ -771,6 +771,22 @@ void main() {
       expect(nb.binders.single.path.endsWith('Work moved'), isTrue);
     });
 
+
+    test('R-1: Put back and Delete of a binder-file copy are refused in a pull-only folder', () async {
+      final nb = w.pull();
+      await nb.load();
+      final path = nb.binders.single.path;
+      final text = File('$path/$binderFileName').readAsStringSync();
+      final copy = File('$path/$binderFileName.1-2.tmp')..writeAsStringSync(text);
+      await nb.refreshBinderCopies(path);
+      final row = nb.binderCopyRows(nb.binders.single).single;
+      expect(row.canDelete, isFalse);
+      expect(row.canPutBack, isFalse);
+      await expectLater(nb.deleteBinderCopy(path, row.path), throwsA(isA<NotebookException>()));
+      await expectLater(nb.putBackBinderCopy(path, row.path), throwsA(isA<NotebookException>()));
+      expect(copy.existsSync(), isTrue);
+    });
+
     test('an aside of the binder file counts as the binder file', () async {
       final nb = w.pull();
       await nb.load();

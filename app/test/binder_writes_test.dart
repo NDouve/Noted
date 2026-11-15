@@ -18,6 +18,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/binder_cover.dart';
+import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted_core/noted_core.dart';
@@ -555,6 +556,45 @@ void main() {
       await until(() => nb.binders.single.available, 'the binder back');
       expect(nb.binderCopyRows(nb.binders.single), isEmpty);
       await stop();
+    });
+
+
+    test('R-3: a copy that arrives or goes while the app runs is listed or dropped through the change event', () async {
+      await start();
+      expect(nb.binderCopyRows(section), isEmpty);
+      final copy = File('${folder.path}${Platform.pathSeparator}$binderFileName.1-2.tmp')..writeAsStringSync(fileText());
+      await nb.filesChanged([copy.path]);
+      expect(nb.binderCopyRows(nb.binders.single).map((r) => r.path), [copy.path]);
+      copy.deleteSync();
+      await nb.filesChanged([copy.path]);
+      expect(nb.binderCopyRows(nb.binders.single), isEmpty);
+      await stop();
+    });
+
+    testWidgets('R-2: a foreign copy offers only Delete; a valid copy offers Put back and Delete', (t) async {
+      t.view.physicalSize = const Size(1200, 800);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      late String valid;
+      late String foreignCopy;
+      await t.runAsync(() async {
+        await start();
+        valid = '${folder.path}${Platform.pathSeparator}$binderFileName.1-2.tmp';
+        foreignCopy = '${folder.path}${Platform.pathSeparator}noted-binder-conflict-ab.json';
+        File(valid).writeAsStringSync(fileText());
+        File(foreignCopy).writeAsStringSync(foreign().write());
+        binderFile().deleteSync();
+        await nb.checkBinderFile(binderFile().path);
+        await nb.refreshBinderCopies(folder.path);
+      });
+      await t.pumpWidget(MaterialApp(home: Home(notebook: nb)));
+      await t.pump();
+      expect(find.byKey(ValueKey('binder-copy-put-back-$valid')), findsOneWidget);
+      expect(find.byKey(ValueKey('binder-copy-delete-$valid')), findsOneWidget);
+      expect(find.byKey(ValueKey('binder-copy-put-back-$foreignCopy')), findsNothing);
+      expect(find.byKey(ValueKey('binder-copy-delete-$foreignCopy')), findsOneWidget);
+      await t.pumpWidget(const SizedBox());
+      await t.runAsync(stop);
     });
 
     test('an unlisted folder (no id recorded) uses the temp\'s own id', () async {

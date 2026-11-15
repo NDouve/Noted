@@ -429,30 +429,45 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
   Widget _copyRow(BuildContext context, BinderSection b, BinderCopyRow r) {
     return Tooltip(
       message: '${r.label}. ${r.name}',
-      child: SidebarRow(
-        key: ValueKey('binder-copy-${r.path}'),
-        titleLines: 2,
-        title: 'Copy of the binder file: ${r.label}',
-        status: b.title,
-        disabled: true,
-        leading: Icon(
-          Icons.block_rounded,
-          size: NotedMetrics.of(context).icon,
-          color: NotedColors.of(context).textDisabled,
-        ),
-        trailing: r.canPutBack
-            ? TextButton(
-                key: ValueKey('binder-copy-put-back-${r.path}'),
-                onPressed: () => _guard(() => _nb.putBackBinderCopy(b.path, r.path)),
-                child: const Text('Put back'),
-              )
-            : TextButton(
-                key: ValueKey('binder-copy-delete-${r.path}'),
-                onPressed: () => _guard(() async {
-                  await _nb.deleteBinderCopy(b.path, r.path);
-                }),
-                child: const Text('Delete'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SidebarRow(
+            key: ValueKey('binder-copy-${r.path}'),
+            titleLines: 2,
+            title: 'Copy of the binder file: ${r.label}',
+            status: b.title,
+            disabled: true,
+            leading: Icon(
+              Icons.block_rounded,
+              size: NotedMetrics.of(context).icon,
+              color: NotedColors.of(context).textDisabled,
+            ),
+          ),
+          // The actions sit below the text, so two of them fit a narrow sidebar.
+          if (r.canPutBack || r.canDelete)
+            Align(
+              alignment: Alignment.centerRight,
+              child: Wrap(
+                children: [
+                  if (r.canPutBack)
+                    TextButton(
+                      key: ValueKey('binder-copy-put-back-${r.path}'),
+                      onPressed: () => _guard(() => _nb.putBackBinderCopy(b.path, r.path)),
+                      child: const Text('Put back'),
+                    ),
+                  if (r.canDelete)
+                    TextButton(
+                      key: ValueKey('binder-copy-delete-${r.path}'),
+                      onPressed: () => _guard(() async {
+                        await _nb.deleteBinderCopy(b.path, r.path);
+                      }),
+                      child: const Text('Delete'),
+                    ),
+                ],
               ),
+            ),
+        ],
       ),
     );
   }

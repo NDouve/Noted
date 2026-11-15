@@ -312,6 +312,7 @@ final class BinderCopyRow {
     required this.label,
     required this.canPutBack,
     required this.canReadAsBinder,
+    this.canDelete = true,
     this.bytes,
   });
 
@@ -324,6 +325,9 @@ final class BinderCopyRow {
 
   /// The binder file is missing and this is a complete copy of it.
   final bool canPutBack;
+
+  /// Delete is offered (not in a pull-only folder).
+  final bool canDelete;
 
   /// It reads as a binder file.
   final bool canReadAsBinder;
@@ -6103,7 +6107,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           path: path,
           name: path.split(RegExp(r'[\\/]')).last,
           label: label,
-          canPutBack: s.fileMissing && !s.missing && binder != null,
+          canPutBack: s.fileMissing && !s.missing && !_pullOnly(s.path) && _copyIsThisBinders(s, binder),
+          canDelete: !_pullOnly(s.path),
           canReadAsBinder: binder != null,
           bytes: bytes,
         ),
@@ -6134,11 +6139,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return true;
   }
 
+  // Whether [copy] passes the identity check Put back makes: it is a readable
+  // binder with the id recorded for this folder (or, with none recorded, one
+  // that is not listed at another folder).
+  bool _copyIsThisBinders(BinderSection s, Binder? copy) {
+    if (copy == null) return false;
+    final key = _key(s.path);
+    final recorded = _binderIds[key];
+    if (recorded != null) return copy.id == recorded;
+    return !_binderIds.entries.any((e) => e.key != key && e.value == copy.id);
+  }
+
   /// Puts the copy [copyPath] back as binder [path]'s file (P). Only while the
   /// file is missing, only a complete copy of this folder's binder, and never
   /// over anything.
   Future<void> putBackBinderCopy(String path, String copyPath) async {
     _refuseWhileHeld();
+    if (_pullOnly(path)) throw const NotebookException(_pullOnlyMessage);
     final s = _binders[path];
     if (s == null) return;
     final row = binderCopyRows(s).where((r) => r.path == copyPath).firstOrNull;
@@ -6187,6 +6204,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// only while it still holds what was listed. Returns false if the user
   /// chose to keep it.
   Future<bool> deleteBinderCopy(String path, String copyPath) async {
+    if (_pullOnly(path)) throw const NotebookException(_pullOnlyMessage);
     final s = _binders[path];
     if (s == null) return false;
     final row = binderCopyRows(s).where((r) => r.path == copyPath).firstOrNull;
@@ -8954,6 +8972,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Only `.canvas` files and binder files matter; the temporary files of our
   // own atomic writes end in `.tmp` and are ignored here.
   void _schedule(String path) {
+    if (_isBinderCopyFile(path)) {
+      final dir = File(path).parent.path;
+      final k = 'copies:${_key(dir)}';
+      _debounce[k]?.cancel();
+      _debounce[k] = Timer(watchDebounce, () {
+        _debounce.remove(k);
+        unawaited(refreshBinderCopies(dir));
+      });
+      return;
+    }
     final binderFile = _isBinderFile(path);
     if (!binderFile && !path.endsWith(PageStore.extension)) return;
     final key = _key(path);
@@ -8966,6 +8994,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   bool _isBinderFile(String path) =>
       path.split(RegExp(r'[\\/]')).last == binderFileName;
+
+  // A temporary file, conflict copy or aside beside a binder file.
+  bool _isBinderCopyFile(String path) {
+    final name = path.split(RegExp(r'[\\/]')).last;
+    return name.startsWith('noted-binder') && name != binderFileName;
+  }
+
+  /// Lists the copies beside the binder file of the folder [dir] again, as when
+  /// a copy arrives or goes while the app runs; rows of removed copies go.
+  Future<void> refreshBinderCopies(String dir) async {
+    if (_disposed) return;
+    final key = _key(dir);
+    final s = _binders.values.where((b) => _key(b.path) == key).firstOrNull;
+    if (s == null) return;
+    final store = _binderStore(Directory(s.path));
+    await _lockRun(Directory(s.path), () => _listCopiesLocked(s, store));
+  }
 
   /// Looks at the page file [path] after it may have been changed by someone
   /// else, and brings the tree and the open page up to date (0020).
@@ -9014,6 +9059,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<void> _fileChanged(String path) async {
+    if (_isBinderCopyFile(path)) {
+      await refreshBinderCopies(File(path).parent.path);
+      return;
+    }
     if (_isBinderFile(path)) {
       await checkBinderFile(path);
       return;
