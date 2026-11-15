@@ -857,7 +857,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0071 — Design system and theme from tokens
 - **Date:** 2026-10-26
-- **Status:** Active (supersedes the color roles and the border contrast rule in 0058); ink display in dark mode superseded by 0081
+- **Status:** Active (supersedes the color roles and the border contrast rule in 0058); ink display in dark mode superseded by 0081; idle box frames in Precision amended by 0167
 - **Decision:**
   - **Source:** the Noted design system in `docs/design/` (direction A, "Quiet Utility") defines the look. `docs/design/tokens.json` is the single source of colors, type, spacing, radii, shadows and sizes. The HTML previews there are visual references, not code.
   - **Generated code:** `app/scripts/generate_tokens.dart` writes `packages/noted_canvas/lib/src/design_tokens.g.dart` from `tokens.json`. A test fails if the generated file is out of date.
@@ -2359,13 +2359,13 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0167 — Desktop shell: Light for new profiles, Precision, the menu bar and the contextual panel
 - **Date:** 2026-11-15
-- **Status:** Active (the maintainer's, from the UI brief of 2026-11-15; built in run 2026-11-15-01); amends 0058's default theme
+- **Status:** Active (the maintainer's brief of 2026-11-15; the details decided by the build team (PM), run 2026-11-15-01); amends 0058's default theme and 0071's idle box frames in Precision
 - **Decision:**
   - **Default theme:** a new profile, one with neither `settings.json` nor `binders.json`, starts in Light and saves `{"format":1,"theme":"light"}` once. An existing `settings.json` is never written at launch; saved choices, Follow system included, are kept. A profile with `binders.json` but no `settings.json` uses Follow system, as before. A damaged settings file still reads as the defaults of 0058.
-  - **Precision:** the dark theme is named Precision. It covers the window, menus, canvas and panel. Its stored value stays `dark`, so saved settings and pages are unchanged. Idle box frames use the new `box-frame` token, at 3:1 in both themes (0071).
+  - **Precision:** the dark theme is named Precision. It covers the window, menus, canvas and panel. Its stored value stays `dark`, so saved settings and pages are unchanged. Idle box frames use the new `box-frame` token: 3:1 in Precision; in Light it equals `border-box`, as before (0071).
   - **Branding:** a compact blue N from the checked-in icon, snapped to device pixels, with a Noted wordmark that is hidden below 600 px. The app icon is unchanged.
-  - **Menu bar:** File, Edit, View and Help, built from the command registry with its live enabled state and current shortcuts. Only commands with handlers appear. Help holds Keyboard shortcuts and About. On Windows and Linux, F10, a lone Alt and Alt+letter enter the bar; on macOS it is pointer-only for now. A chosen item revalidates its target (the page, the cover, the command) before it runs. While the bar or one of its menus has focus, a note being edited keeps its editor and selection.
-  - **Contextual panel:** right of the canvas, inline from 1200 px wide and a dismissible overlay below that; its open state is per session. It shows page controls with no box selected, a box's properties and actions with one, and shared actions or a count with several.
+  - **Menu bar:** File, Edit, View and Help, built from the command registry with its live enabled state and current shortcuts. Only commands with handlers appear. Help holds Keyboard shortcuts, and About in builds that have it. On Windows and Linux, F10, a lone Alt and Alt+letter enter the bar; on macOS it is pointer-only for now. A chosen item revalidates its target (the page, the cover, the command) before it runs. While the bar or one of its menus has focus, a note being edited keeps its editor and selection.
+  - **Contextual panel:** right of the canvas, inline from 1200 px wide and a dismissible overlay below that; its open state is per session. It shows page controls with no box selected and a box's properties and actions with one. The canvas selects one box at a time, so there is no several-box state.
   - Undo and Redo also take Cmd+Z, Cmd+Shift+Z and Cmd+Y on macOS.
 - **Rationale:** the maintainer's desktop UI brief. Writing the theme only for a new profile keeps every existing device as it was.
 - **Alternatives considered:** Flutter's `MenuBar` widget (it can't take keyboard focus with no menu open, so F10 couldn't focus File); saving the panel's state in `settings.json` (a settings format addition the brief didn't ask for).
