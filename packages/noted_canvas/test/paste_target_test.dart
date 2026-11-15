@@ -6,6 +6,8 @@
 // start and checks it before every file it stores and every box it adds: a page
 // opened meanwhile gets nothing.
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_canvas/noted_canvas.dart';
@@ -80,6 +82,41 @@ void main() {
     await t.pump();
     expect(w.store!.notices, [_stopNotice]);
     expect(boxes(w.c), 0);
+  });
+
+  int count(CanvasController c, String type) =>
+      c.page.nodes.whereType<BoxRecord>().where((b) => b.typeId == type).length;
+
+  testWidgets('an image whose type is disallowed during the clipboard read becomes no file box: stopped, told', (t) async {
+    await setUp(t, const []);
+    fileGate.wait = false;
+    final read = Completer<List<IncomingFile>>();
+    FileClipboard.read = () => read.future;
+    final done = w.state.pasteFilesAt(const Offset(900, 600));
+    await t.pump();
+    await w.rebuild(disallowed: {'test.image'});
+    read.complete([file('p.png')]);
+    await done;
+    await t.pump();
+    expect(count(w.c, 'test.file'), 0);
+    expect(count(w.c, 'test.image'), 0);
+    expect(w.store!.stored, isEmpty);
+    expect(w.store!.notices, [_stopNotice]);
+  });
+
+  testWidgets('a type disallowed during attachment creation adds no box and no fallback', (t) async {
+    await setUp(t, [file('p.png'), file('q.png')]);
+    final done = w.state.pasteFilesAt(const Offset(900, 600));
+    await t.pump();
+    expect(fileGate.waiting, hasLength(1));
+    await w.rebuild(disallowed: {'test.image'});
+    fileGate.waiting.single.complete();
+    await done;
+    await t.pump();
+    expect(count(w.c, 'test.file'), 0);
+    expect(count(w.c, 'test.image'), 0);
+    expect(fileGate.waiting, hasLength(1), reason: 'the second file was never started');
+    expect(w.store!.notices, [_stopNotice]);
   });
 
   testWidgets('the page turned read-only mid-paste stops the same way', (t) async {

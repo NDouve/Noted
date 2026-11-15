@@ -139,12 +139,15 @@ void main() {
     testWidgets('a disallowed box: heading, and Delete is the only enabled box entry; Undo restores it verbatim', (t) async {
       await setUpWorld(
         t,
-        nodes: [tbox('x', 'test.off', ba, 'saved'), tbox('y', 'test.text', const Bounds(700, 100, 100, 50), 'y')],
+        nodes: [tbox('y', 'test.text', bb, 'y'), tbox('x', 'test.off', ba, 'saved')],
         disallowed: {'test.off'},
       );
       final before = w.c.page.node('x')! as BoxRecord;
       await w.rightClick(w.at(const Offset(200, 200)));
       expect(find.byKey(const ValueKey('context-heading')), findsOneWidget);
+      // Boxes here stays: it only selects (pinned).
+      expect(find.byKey(const ValueKey('context-canvas.context.boxesHere')), findsOneWidget);
+      expect(w.enabled('canvas.context.boxesHere'), isTrue);
       for (final id in [
         CanvasCommands.bringToFront,
         CanvasCommands.bringForward,
@@ -711,7 +714,7 @@ void main() {
 
     testWidgets('Paste image or file places the box at the point', (t) async {
       await setUpWorld(t, withStore: true);
-      FileClipboard.read = () async => [IncomingFile('p.png', Uint8List.fromList([1, 2, 3]))];
+      FileClipboard.read = () async => [IncomingFile('p.dat', Uint8List.fromList([1, 2, 3]))];
       addTearDown(() => FileClipboard.read = () async => const []);
       await w.rightClick(w.at(const Offset(900, 600)));
       await w.choose('canvas.context.paste');
@@ -732,7 +735,7 @@ void main() {
       await w.rightClick(w.at(const Offset(900, 600)));
       await w.choose('canvas.context.paste');
       await w.rebuild(controller: other);
-      release.complete([IncomingFile('p.png', Uint8List.fromList([1]))]);
+      release.complete([IncomingFile('p.dat', Uint8List.fromList([1]))]);
       await t.pump();
       await t.pump();
       expect(w.c.page.nodes, hasLength(3));
@@ -848,6 +851,7 @@ void main() {
       expect(find.byKey(const ValueKey('context-heading')), findsOneWidget);
       expect(w.enabled(CanvasCommands.delete), isTrue);
       expect(w.enabled(CanvasCommands.sendToBack), isFalse);
+// Boxes here stays enabled: it only selects.      expect(w.enabled('canvas.context.boxesHere'), isTrue);
     });
   });
 

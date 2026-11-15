@@ -86,14 +86,15 @@ class TModule extends BoxModule<String> {
       : const [];
 
   @override
-  int fileAffinity(IncomingFile file) => kind == 'file' ? 1 : 0;
+  int fileAffinity(IncomingFile file) =>
+      kind == 'file' ? 1 : (kind == 'image' && file.name.endsWith('.png') ? 2 : 0);
 
   @override
   bool linkAt(String boxId, Offset global) => kind == 'link';
 
   @override
   Future<(String, Size)?> createFromFile(IncomingFile file, AttachmentStore store) async {
-    if (kind != 'file') return null;
+    if (kind != 'file' && kind != 'image') return null;
     final gate = fileGate;
     if (gate.wait) {
       final c = Completer<void>();
@@ -279,6 +280,7 @@ class World {
       ..register(const TModule('test.off'))
       ..register(const TModule('test.insert', 'insert'))
       ..register(const TModule('test.file', 'file'))
+      ..register(const TModule('test.image', 'image'))
       ..register(TDrawModule(pen ? [this.pen, eraser] : const []));
     c = CanvasController(
       tpage(nodes ?? threeBoxes()),
