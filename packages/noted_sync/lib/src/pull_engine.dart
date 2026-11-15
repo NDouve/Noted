@@ -8,9 +8,8 @@ import 'dart:io';
 import 'package:noted_core/noted_core.dart';
 
 import 'clock.dart';
-import 'graph_client.dart';
 import 'journal.dart';
-import 'remote_item.dart';
+import 'remote_driver.dart';
 import 'remote_tree.dart';
 import 'types.dart';
 
@@ -18,15 +17,6 @@ import 'types.dart';
 class _PauseRound implements Exception {
   _PauseRound(this.reason);
   final String reason;
-}
-
-class _Fetched {
-  _Fetched(this.map, this.deltaLink, this.endpoint, this.seq, this.resync);
-  final Map<String, RemoteEntry> map;
-  final String deltaLink;
-  final String endpoint;
-  final int seq;
-  final GraphGone? resync;
 }
 
 class _Download {
@@ -37,10 +27,11 @@ class _Download {
 
 enum _Local { absent, aside, same, differs, notFile }
 
-/// The read-only pull of one OneDrive folder into a working copy (stage 3).
+/// The read-only pull of one remote folder into a working copy (stage 3),
+/// through a [RemoteDriver].
 ///
-/// A round lists the remote changes up to a delta link, folds them into the
-/// journal's map, derives paths from the tree and applies the difference to
+/// A round has the driver list the remote changes up to a cursor, folds them
+/// into the journal's map, derives paths from the tree and applies the difference to
 /// the working copy: a state-based reconcile, run on every poll, so a failed
 /// step is simply retried. It never reads page content: it moves bytes and
 /// compares lengths and hashes. Nothing local is overwritten or deleted unless
@@ -51,9 +42,7 @@ class PullEngine {
     required this.workingCopy,
     required this.stateDir,
     required this.locks,
-    required this.graph,
-    required this.driveId,
-    required this.rootItemId,
+    required this.driver,
     Clock? clock,
     this.onStep,
   }) : _clock = clock ?? const SystemClock(),
@@ -66,9 +55,17 @@ class PullEngine {
   final Directory workingCopy;
   final Directory stateDir;
   final FolderLocks locks;
-  final GraphClient graph;
-  final String driveId;
-  final String rootItemId;
+  final RemoteDriver driver;
+
+  String get rootItemId => driver.rootId;
+  String get _name => driver.displayName;
+
+  /// B1's compare results, by (item id, ETag, local identity); in memory only.
+  final Map<String, bool> _compared = {};
+
+  /// How many rounds in a row an item's version moved while it was read, by
+  /// case-folded path; in memory only, so the journal doesn't change.
+  final Map<String, int> _changedMeanwhile = {};
 
   /// A seam for tests: called at each named step of a round, and free to
   /// throw to stand for a kill there (or to edit a file, as the Files app
@@ -197,7 +194,7 @@ class PullEngine {
   }
 
   SyncStatus _statusFor(Object e) {
-    if (e is SignedOutException || e is GraphUnauthorized) {
+    if (e is SignedOutException || e is RemoteUnauthorized) {
       return const SyncStatus(SyncState.signedOut);
     }
     if (e is JournalUnreadable) {
@@ -205,7 +202,7 @@ class PullEngine {
     }
     if (e is _PauseRound) return SyncStatus(SyncState.paused, e.reason);
     // Never `'$e'` of an unknown type: it can carry an address with a token.
-    if (e is GraphException) return SyncStatus(SyncState.paused, e.message);
+    if (e is RemoteException) return SyncStatus(SyncState.paused, e.message);
     if (e is FileSystemException) {
       return SyncStatus(SyncState.paused, e.message);
     }
@@ -232,31 +229,42 @@ class PullEngine {
   Future<void> _round() async {
     _roundIssues = [];
     if (!await workingCopy.exists()) {
-      throw _PauseRound('The OneDrive folder is missing on this device');
+      throw _PauseRound('The $_name folder is missing on this device');
     }
     await _start();
     final j = _journal!;
-    _Fetched? fetched;
+    final rootGone = SyncStatus(
+      SyncState.rootGone,
+      'The $_name folder is gone',
+    );
+    RemoteFetch? fetched;
     try {
-      fetched = await _fetchRemote();
-    } on GraphNotFound {
-      // The delta call itself may be what is missing: is the root gone?
+      fetched = await driver.fetch(
+        j.map,
+        j.deltaLink,
+        j.endpoint,
+        j.seq,
+      );
+    } on RemoteNotFound {
+      // The listing call itself may be what is missing: is the root gone?
       var gone = false;
       try {
-        final root = await graph.getItem(driveId, rootItemId);
+        final root = await driver.root();
         gone = root.deleted || !root.isFolder;
-      } on GraphNotFound {
+      } on RemoteNotFound {
         gone = true;
       }
       if (!gone) rethrow;
-      _setStatus(
-        const SyncStatus(SyncState.rootGone, 'The OneDrive folder is gone'),
-      );
+      _setStatus(rootGone);
       return;
     }
-    if (fetched == null) return;
+    if (fetched == null) {
+      _setStatus(rootGone);
+      return;
+    }
+    _step('deltaFetched');
     j.map = fetched.map;
-    j.deltaLink = fetched.deltaLink;
+    j.deltaLink = fetched.cursor;
     j.endpoint = fetched.endpoint;
     j.seq = fetched.seq;
     final view = buildView(j.map, rootItemId);
@@ -285,9 +293,9 @@ class PullEngine {
       _setStatus(const SyncStatus(SyncState.guardWaiting));
     } else if (mismatching) {
       _setStatus(
-        const SyncStatus(
+        SyncStatus(
           SyncState.paused,
-          'Downloads keep failing the checksum from OneDrive',
+          'Downloads keep failing the checksum from $_name',
         ),
       );
     } else {
@@ -454,188 +462,6 @@ class PullEngine {
 
   File _newTmp(String ext) =>
       File('${_tmpDir.path}${Platform.pathSeparator}${++_tmpCounter}.$ext');
-
-  // --- Fetching the remote -------------------------------------------------
-
-  Future<_Fetched?> _fetchRemote() async {
-    final j = _journal!;
-    var fresh = j.deltaLink == null;
-    var working = fresh ? <String, RemoteEntry>{} : Map.of(j.map);
-    var seq = j.seq;
-    var endpoint = j.endpoint;
-    Uri? link = fresh ? null : Uri.parse(j.deltaLink!);
-    GraphGone? resync;
-    var resyncs = 0;
-    var rootDeleted = false;
-
-    Future<bool> seed() async {
-      try {
-        final root = await graph.getItem(driveId, rootItemId);
-        if (root.deleted || !root.isFolder) return false;
-      } on GraphNotFound {
-        return false;
-      }
-      working[rootItemId] = RemoteEntry(
-        id: rootItemId,
-        parent: null,
-        name: '',
-        folder: true,
-      );
-      return true;
-    }
-
-    if (fresh && !await seed()) {
-      _setStatus(
-        const SyncStatus(SyncState.rootGone, 'The OneDrive folder is gone'),
-      );
-      return null;
-    }
-
-    late String deltaLink;
-    while (true) {
-      try {
-        DeltaPage page;
-        if (link != null) {
-          page = await graph.deltaAt(link);
-        } else if (endpoint == 'drive') {
-          page = await graph.deltaStart(driveId, null);
-        } else {
-          try {
-            page = await graph.deltaStart(driveId, rootItemId);
-            endpoint = 'folder';
-          } on GraphNotSupported {
-            page = await graph.deltaStart(driveId, null);
-            endpoint = 'drive';
-          } on GraphNotFound {
-            // Either the folder form of delta isn't there, or the root went
-            // since it was read: look again before choosing.
-            RemoteItem? again;
-            try {
-              again = await graph.getItem(driveId, rootItemId);
-            } on GraphNotFound {
-              again = null;
-            }
-            if (again == null || again.deleted || !again.isFolder) {
-              _setStatus(
-                const SyncStatus(
-                  SyncState.rootGone,
-                  'The OneDrive folder is gone',
-                ),
-              );
-              return null;
-            }
-            page = await graph.deltaStart(driveId, null);
-            endpoint = 'drive';
-          }
-        }
-        while (true) {
-          for (final it in page.items) {
-            seq++;
-            if (it.id == rootItemId) {
-              if (it.deleted) rootDeleted = true;
-              continue;
-            }
-            if (it.deleted) {
-              working.remove(it.id);
-              continue;
-            }
-            // The drive's own root is never ours.
-            if (it.isRoot) continue;
-            var parent = it.parentId;
-            if (parent == null) {
-              // A live item without a parent: a known one keeps its parent,
-              // an unknown one can't be placed, so the round fails.
-              final known = working[it.id];
-              if (known == null) {
-                throw GraphException('A listed item had no parent');
-              }
-              parent = known.parent;
-            }
-            working[it.id] = RemoteEntry(
-              id: it.id,
-              parent: parent,
-              name: it.name ?? '',
-              folder: it.isFolder && !it.isSpecial,
-              special: it.isSpecial,
-              cTag: it.cTag,
-              hash: it.quickXorHash,
-              size: it.size,
-              seq: seq,
-            );
-          }
-          final next = page.nextLink;
-          if (next != null) {
-            page = await graph.deltaAt(next);
-            continue;
-          }
-          final done = page.deltaLink;
-          if (done == null) {
-            throw GraphException('A delta page had no link to follow');
-          }
-          deltaLink = done.toString();
-          break;
-        }
-        break;
-      } on GraphGone catch (g) {
-        if (++resyncs > 3) rethrow;
-        resync = g;
-        fresh = true;
-        working = <String, RemoteEntry>{};
-        rootDeleted = false;
-        link = g.location;
-        if (!await seed()) {
-          _setStatus(
-            const SyncStatus(SyncState.rootGone, 'The OneDrive folder is gone'),
-          );
-          return null;
-        }
-      }
-    }
-    _step('deltaFetched');
-    if (rootDeleted) {
-      _setStatus(
-        const SyncStatus(SyncState.rootGone, 'The OneDrive folder is gone'),
-      );
-      return null;
-    }
-    final pruned = pruneToSubtree(working, rootItemId);
-
-    // Folders new to an existing map may not come with their children.
-    if (!fresh) {
-      final queue = [
-        for (final e in pruned.values)
-          if (e.folder && e.id != rootItemId && !j.map.containsKey(e.id)) e.id,
-      ];
-      final listed = <String>{...queue};
-      for (var i = 0; i < queue.length; i++) {
-        final List<RemoteItem> kids;
-        try {
-          kids = await graph.children(driveId, queue[i]);
-        } on GraphNotFound {
-          continue;
-        }
-        for (final k in kids) {
-          if (k.deleted || k.id == rootItemId) continue;
-          if (!pruned.containsKey(k.id)) {
-            seq++;
-            pruned[k.id] = RemoteEntry(
-              id: k.id,
-              parent: k.parentId ?? queue[i],
-              name: k.name ?? '',
-              folder: k.isFolder && !k.isSpecial,
-              special: k.isSpecial,
-              cTag: k.cTag,
-              hash: k.quickXorHash,
-              size: k.size,
-              seq: seq,
-            );
-          }
-          if (k.isFolder && listed.add(k.id)) queue.add(k.id);
-        }
-      }
-    }
-    return _Fetched(pruned, deltaLink, endpoint ?? 'folder', seq, resync);
-  }
 
   // --- The re-path journal step --------------------------------------------
 
@@ -827,7 +653,7 @@ class PullEngine {
       if (occupied && moving(rec.itemId)) {
         _issue(
           d.path,
-          'Moved on OneDrive, but something is in the way here; waiting',
+          'Moved on $_name, but something is in the way here; waiting',
         );
         held.add(src);
         heldKeys
@@ -909,7 +735,7 @@ class PullEngine {
         continue;
       }
       if (j.kept.contains(key)) {
-        _issue(rec.path, 'Removed on OneDrive; kept here');
+        _issue(rec.path, 'Removed on $_name; kept here');
         continue;
       }
       if (!_exists(abs) && !_asidePresent(abs)) {
@@ -932,7 +758,7 @@ class PullEngine {
       if (now - first >= deleteDelay.inMilliseconds) {
         lasting.add(k);
       } else {
-        _issue(j.files[k]!.path, 'Removed on OneDrive; waiting to be sure');
+        _issue(j.files[k]!.path, 'Removed on $_name; waiting to be sure');
       }
     }
 
@@ -1002,7 +828,7 @@ class PullEngine {
       final to = desiredIds[id];
       if (to == null || to == e.key || j.files[to]?.itemId == id) continue;
       if (_roundIssues.any((i) => i.path == rec.path)) continue;
-      _issue(rec.path, 'Moved on OneDrive; not moved here yet, will retry');
+      _issue(rec.path, 'Moved on $_name; not moved here yet, will retry');
     }
 
     // --- Files that are new or changed.
@@ -1064,7 +890,10 @@ class PullEngine {
     return false;
   }
 
-  bool _hasHash(RemoteEntry e) => e.hash != null || e.size == 0;
+  /// The entry has a server hash (or is empty), or the driver verifies by
+  /// version, so the engine can still tell what it holds.
+  bool _hasHash(RemoteEntry e) =>
+      !driver.caps.serverHash || e.hash != null || e.size == 0;
 
   bool _pageLike(DesiredFile d) {
     if (d.isAttachment) return false;
@@ -1099,14 +928,56 @@ class PullEngine {
     return (_Local.differs, ident);
   }
 
-  Future<bool> _equalsRemote(
+  /// Whether the local file at [abs] (identity [ident]) is the remote [d].
+  /// With a server hash, by quickXor. Without one (B1), by a version-checked
+  /// download to `tmp/` and a [ContentIdentity] compare, remembered in memory
+  /// by (item id, ETag, local identity). Null when the answer isn't known this
+  /// round: the version moved during the download, or the item was refused.
+  Future<bool?> _equalsRemote(
     String abs,
     ContentIdentity ident,
-    RemoteEntry e,
+    DesiredFile d,
+    String rel,
   ) async {
+    final e = d.item;
     if (ident.length != e.size) return false;
-    if (e.hash == null) return e.size == 0;
-    return await _quick(abs) == e.hash;
+    if (driver.caps.serverHash) {
+      if (e.hash == null) return e.size == 0;
+      return await _quick(abs) == e.hash;
+    }
+    if (e.size == 0) return true;
+    final key = '${e.id}\u0000${e.cTag}\u0000${ident.length}\u0000${ident.sha256}';
+    final known = _compared[key];
+    if (known != null) return known;
+    final tmp = _newTmp('cmp');
+    try {
+      await driver.download(e, tmp);
+      final remote = await ContentIdentity.ofFile(tmp.path);
+      return _compared[key] = remote == ident;
+    } on RemoteChanged {
+      _changedMeanwhileIssue(d, rel);
+      return null;
+    } on RemoteException catch (x) {
+      if (!_itemLevel(x)) rethrow;
+      _issue(rel, '$_name refused this file (${x.statusCode}); left alone');
+      return null;
+    } finally {
+      try {
+        if (tmp.existsSync()) tmp.deleteSync();
+      } on FileSystemException {
+        // Swept at the next start.
+      }
+    }
+  }
+
+  /// The version moved while [d] was read: nothing applied, retried next
+  /// round, and listed once it has happened 3 rounds in a row.
+  void _changedMeanwhileIssue(DesiredFile d, String rel) {
+    final n = (_changedMeanwhile[d.key] ?? 0) + 1;
+    _changedMeanwhile[d.key] = n;
+    if (n >= 3) {
+      _issue(rel, '$_name keeps changing this file; not applied');
+    }
   }
 
   Future<void> _adopt(
@@ -1134,6 +1005,7 @@ class PullEngine {
     j.files[d.key] = rec;
     j.firstSeen.remove(d.key);
     j.mismatches.remove(d.key);
+    _changedMeanwhile.remove(d.key);
     await _save();
   }
 
@@ -1155,12 +1027,14 @@ class PullEngine {
       return;
     }
     if (!_hasHash(d.item)) {
-      _issue(rel, 'OneDrive sent no checksum; left alone');
+      _issue(rel, '$_name sent no checksum; left alone');
       return;
     }
     try {
       final ident = await ContentIdentity.ofFile(abs);
-      if (await _equalsRemote(abs, ident, d.item)) {
+      final same = await _equalsRemote(abs, ident, d, rel);
+      if (same == null) return;
+      if (same) {
         await _adopt(d, rel, ident, existing: retained);
       } else {
         _issue(rel, 'A different file is already here; left alone');
@@ -1173,7 +1047,7 @@ class PullEngine {
 
   /// An error about this one item (a 4xx other than 401 and 429), not about
   /// the connection or the sign-in: the round goes on without the item.
-  bool _itemLevel(GraphException e) {
+  bool _itemLevel(RemoteException e) {
     final c = e.statusCode;
     return c != null && c >= 400 && c < 500 && c != 401 && c != 429;
   }
@@ -1183,20 +1057,24 @@ class PullEngine {
   Future<_Download?> _download(DesiredFile d, String rel) async {
     final j = _journal!;
     if (!_hasHash(d.item)) {
-      _issue(rel, 'OneDrive sent no checksum; not applied');
+      _issue(rel, '$_name sent no checksum; not applied');
       return null;
     }
     final tmp = _newTmp('dl');
     try {
-      await graph.download(driveId, d.item.id, tmp);
+      await driver.download(d.item, tmp);
     } catch (e) {
       try {
         if (tmp.existsSync()) tmp.deleteSync();
       } on FileSystemException {
         // Swept at the next start.
       }
-      if (e is GraphException && _itemLevel(e)) {
-        _issue(rel, 'OneDrive refused this file (${e.statusCode}); left alone');
+      if (e is RemoteChanged) {
+        _changedMeanwhileIssue(d, rel);
+        return null;
+      }
+      if (e is RemoteException && _itemLevel(e)) {
+        _issue(rel, '$_name refused this file (${e.statusCode}); left alone');
         return null;
       }
       rethrow;
@@ -1217,11 +1095,12 @@ class PullEngine {
       _issue(
         rel,
         n >= 3
-            ? 'The download keeps failing OneDrive\'s checksum; not applied'
-            : 'The download failed OneDrive\'s checksum; trying again next time',
+            ? 'The download keeps failing $_name\'s checksum; not applied'
+            : 'The download failed $_name\'s checksum; trying again next time',
       );
       return null;
     }
+    _changedMeanwhile.remove(d.key);
     final ident = await ContentIdentity.ofFile(tmp.path);
     if (_pageLike(d)) {
       await _blobs.put(tmp, ident.sha256);
@@ -1360,21 +1239,21 @@ class PullEngine {
         _issue(rel, 'Being replaced on this device; waiting');
         return;
       case _Local.absent:
-        _issue(rel, 'Missing on this device; OneDrive\'s version not applied');
+        _issue(rel, 'Missing on this device; $_name\'s version not applied');
         return;
       case _Local.notFile:
-        _issue(rel, 'Changed on this device; OneDrive\'s version not applied');
+        _issue(rel, 'Changed on this device; $_name\'s version not applied');
         return;
       case _Local.differs:
         final abs = _abs(rel);
         if (ident != null &&
             _hasHash(d.item) &&
-            await _equalsRemote(abs, ident, d.item)) {
+            await _equalsRemote(abs, ident, d, rel) == true) {
           await _adopt(d, rel, ident, existing: rec);
         } else {
           _issue(
             rel,
-            'Changed on this device; OneDrive\'s version not applied',
+            'Changed on this device; $_name\'s version not applied',
           );
         }
         return;
@@ -1384,7 +1263,7 @@ class PullEngine {
     if (d.isAttachment) {
       // The local file equals its base, which differs from the remote's: a
       // changed attachment is never replaced.
-      _issue(rel, 'Differs from OneDrive\'s file; left alone');
+      _issue(rel, 'Differs from $_name\'s file; left alone');
       return;
     }
     final dl = await _download(d, rel);
@@ -1425,7 +1304,7 @@ class PullEngine {
           _issue(_relOf(kept), 'Kept as a copy of a version replaced meanwhile');
         }
       } else {
-        _issue(rel, 'Changed on this device; OneDrive\'s version not applied');
+        _issue(rel, 'Changed on this device; $_name\'s version not applied');
         if (res.keptPath != null) {
           _issue(
             _relOf(res.keptPath!),
@@ -1448,7 +1327,7 @@ class PullEngine {
     if (base == null) {
       _issue(
         rel,
-        'Removed on OneDrive; not removed here (no earlier version known)',
+        'Removed on $_name; not removed here (no earlier version known)',
       );
       return;
     }
@@ -1483,7 +1362,7 @@ class PullEngine {
       case DeleteOutcome.changedKept:
         _issue(
           rel,
-          'Removed on OneDrive; changed on this device, so not removed',
+          'Removed on $_name; changed on this device, so not removed',
         );
         return;
     }
@@ -1687,7 +1566,7 @@ class PullEngine {
           if (!(n.endsWith('.canvas') || stray.hasMatch(n))) continue;
           if (known.contains(foldKey(rel))) continue;
           if (view.desired.containsKey(foldKey(rel))) continue;
-          _issue(rel, 'Not on OneDrive; left alone');
+          _issue(rel, 'Not on $_name; left alone');
         }
       } on FileSystemException {
         // Next round.

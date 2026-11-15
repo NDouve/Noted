@@ -9,28 +9,21 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 
 import 'clock.dart';
+import 'remote_driver.dart';
 import 'remote_item.dart';
 import 'types.dart';
+
+export 'remote_driver.dart' show SignedOutException;
 
 /// Gives the access token; [forceRefresh] asks for a fresh one after a 401.
 /// Throws [SignedOutException] when the user has to sign in again.
 typedef TokenCallback = Future<String> Function({bool forceRefresh});
 
-/// The token callback has no usable token: the user must sign in again.
-class SignedOutException implements Exception {
-  const SignedOutException([this.message = 'Signed out']);
-  final String message;
-  @override
-  String toString() => 'SignedOutException: $message';
-}
+/// Graph's errors are [RemoteException]s; [code] is Graph's error code, when
+/// the body had one.
+class GraphException extends RemoteException {
+  GraphException(super.message, {super.statusCode, super.code});
 
-class GraphException implements Exception {
-  GraphException(this.message, {this.statusCode, this.code});
-  final String message;
-  final int? statusCode;
-
-  /// Graph's error code, when the body had one.
-  final String? code;
   @override
   String toString() =>
       'GraphException($statusCode${code == null ? '' : ' $code'}): $message';
@@ -38,23 +31,25 @@ class GraphException implements Exception {
 
 /// The call didn't get an answer (connection, timeout, bad reply). The message
 /// never carries an address: links can hold a pre-authorised token.
-class GraphTransportException extends GraphException {
+class GraphTransportException extends GraphException
+    implements RemoteTransport {
   GraphTransportException(Object cause)
     : super('Network problem (${cause.runtimeType})');
 }
 
-class GraphNotFound extends GraphException {
+class GraphNotFound extends GraphException implements RemoteNotFound {
   GraphNotFound(super.message) : super(statusCode: 404);
 }
 
 /// A link (next page, delta link, redirect target) that is not on the Graph
 /// origin, or a redirect that isn't allowed. The token is never sent there.
-class GraphRefusedLink extends GraphException {
+class GraphRefusedLink extends GraphException implements RemoteRefused {
   GraphRefusedLink(super.message);
 }
 
 /// The call is not supported on this kind of item or account.
-class GraphNotSupported extends GraphException {
+class GraphNotSupported extends GraphException
+    implements RemoteNotSupported {
   GraphNotSupported(super.message, {super.statusCode, super.code});
 }
 
@@ -69,11 +64,12 @@ class GraphGone extends GraphException {
   final bool uploadDifferences;
 }
 
-class GraphUnauthorized extends GraphException {
+class GraphUnauthorized extends GraphException
+    implements RemoteUnauthorized {
   GraphUnauthorized(super.message) : super(statusCode: 401);
 }
 
-class GraphThrottled extends GraphException {
+class GraphThrottled extends GraphException implements RemoteThrottled {
   GraphThrottled(super.message) : super(statusCode: 429);
 }
 

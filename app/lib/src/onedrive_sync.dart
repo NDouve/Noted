@@ -173,9 +173,7 @@ class OneDriveSync extends ChangeNotifier with WidgetsBindingObserver {
           stateDir: stateDir,
           // The notebook's lock, so a pull and the notebook never write one folder together.
           locks: notebook.folderLocks,
-          graph: graph,
-          driveId: driveId,
-          rootItemId: rootItemId,
+          driver: GraphDriver(graph: graph, driveId: driveId, rootItemId: rootItemId),
           clock: clock,
         ),
       ),

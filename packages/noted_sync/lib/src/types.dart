@@ -132,17 +132,19 @@ String safePathPart(String value) {
   return ok ? value : contentHash(utf8.encode(value));
 }
 
-/// The folder for an account's sync state: `support/onedrive/account/root`
-/// (the account key and the root item id), holding `journal.json`, `tmp/` and `base/`. Both
-/// ids are made safe with [safePathPart].
+/// The folder for an account's sync state: `support/<provider>/account/root`
+/// (the account key and the root item id), holding `journal.json`, `tmp/` and
+/// `base/`. [provider] is the driver's (`onedrive` by default). Both ids are
+/// made safe with [safePathPart].
 Directory syncStateDir(
   Directory support,
   String accountKey,
-  String rootItemId,
-) => Directory(
+  String rootItemId, {
+  String provider = 'onedrive',
+}) => Directory(
   [
     support.path,
-    'onedrive',
+    safePathPart(provider),
     safePathPart(accountKey),
     safePathPart(rootItemId),
   ].join(Platform.pathSeparator),

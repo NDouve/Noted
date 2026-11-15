@@ -50,14 +50,22 @@ class Harness {
     token: ({bool forceRefresh = false}) async => fake.expectedToken,
   );
 
-  PullEngine newEngine({void Function(String step)? onStep, String? root}) =>
+  PullEngine newEngine({
+    void Function(String step)? onStep,
+    String? root,
+    RemoteDriver? driver,
+  }) =>
       PullEngine(
         workingCopy: work,
         stateDir: state,
         locks: locks,
-        graph: newGraph(),
-        driveId: FakeGraph.driveId,
-        rootItemId: root ?? rootId,
+        driver:
+            driver ??
+            GraphDriver(
+              graph: newGraph(),
+              driveId: FakeGraph.driveId,
+              rootItemId: root ?? rootId,
+            ),
         clock: clock,
         onStep: onStep,
       );
