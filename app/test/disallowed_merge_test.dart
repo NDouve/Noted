@@ -195,7 +195,7 @@ void main() {
       expectMergedHeader(readFile(pathIn(dir, id)));
     });
 
-    test('through mergeRemote, on the open page', () async {
+    test('through mergeRemote, on the open page (guard: a notify syncs the set too)', () async {
       await prepare(open: true);
       nb.current!.editBox(boxId, DrawingData(strokes: [s0, s1]));
       final mine = boxOf(nb.current!.page);

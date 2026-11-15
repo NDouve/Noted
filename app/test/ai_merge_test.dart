@@ -728,7 +728,7 @@ void main() {
       spy.stale = await nb.aiSavedPage(pageId); // the file as it is before the disallow
       final s = AiMergeService(access: service, host: spy);
       final pending = s.ask(pageId, 'a1');
-      final failed = expectLater(pending, throwsA(isA<AiMergeException>()));
+      final failed = expectLater(pending, throwsA(isA<AiMergeException>().having((e) => e.message, 'message', notAllowed)));
       await Future<void>.delayed(const Duration(milliseconds: 20));
       await nb.setBoxType(pageId, aiBoxTypeId, false);
       expect(spy.stale!.meta.boxTypeChoice(aiBoxTypeId), isNull, reason: 'the saved header still allows it');
