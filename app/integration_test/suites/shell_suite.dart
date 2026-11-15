@@ -72,7 +72,7 @@ void shellSuite() {
         expect(find.byKey(const ValueKey('panel-page-title')), findsOneWidget);
         c.select(id);
         await s.pump(200);
-        expect(find.byKey(const ValueKey('panel-box-type')), findsOneWidget);
+        expect(find.byKey(const ValueKey('panel-canvas.bringToFront')), findsOneWidget);
         c.select(null);
         await s.pump(200);
         expect(find.byKey(const ValueKey('panel-page-title')), findsOneWidget);
