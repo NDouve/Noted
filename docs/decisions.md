@@ -2413,7 +2413,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Equation block sourcing:** resolved (0048).
 - **File format:** whether JSON Canvas extra fields are sufficient, and how faithfully appflowy_editor round-trips Markdown.
 - **MCP:** the full tool and resource list. Linking an AI to a box: resolved (0108). Code checks and opted-in writes with Noted closed: resolved (0114–0117).
-- **Cloud conflict copies:** OneDrive copies are merged (0053). Other in-scope providers must behave the same (0163); their naming is not handled yet.
+- **Cloud conflict copies:** OneDrive copies are merged (0053). Other in-scope providers must behave the same (0163); their naming is handled by 0171, except in template folders, which are not yet. *(Amended by 0171.)*
 - **Per-AI overrides:** different rules for different AIs on the same page (deferred).
 - **Drawing box image snapshots:** where a drawing box's image snapshot (0035) is stored in the page format (0041).
 
