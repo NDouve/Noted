@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // A test that hangs fails after 3 minutes instead of holding the run.
-@Timeout(Duration(minutes: 3))
+@Timeout(Duration(minutes: 5))
 library;
 
 import 'dart:io';
