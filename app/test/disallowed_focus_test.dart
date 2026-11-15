@@ -13,7 +13,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_box_ai/noted_box_ai.dart';
-import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/real_io.dart';
