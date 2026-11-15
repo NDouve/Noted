@@ -156,7 +156,10 @@ class RadialMenuView extends StatelessWidget {
     final m = NotedMetrics.of(context);
     // The Material the ring sits in gives the base style the text merges with.
     final base = Theme.of(context).textTheme.bodyMedium ?? const TextStyle();
-    final style = base.merge(NotedTypography.of(context).label);
+    final bold = MediaQuery.boldTextOf(context);
+    final style = base
+        .merge(NotedTypography.of(context).label)
+        .merge(bold ? const TextStyle(fontWeight: FontWeight.bold) : null);
     final scaler = MediaQuery.textScalerOf(context);
     final sizes = <Size?>[
       for (final e in slots)
@@ -182,7 +185,8 @@ class RadialMenuView extends StatelessWidget {
         text: TextSpan(
           text: heading,
           style: (Theme.of(context).textTheme.bodyMedium ?? const TextStyle())
-              .merge(NotedTypography.of(context).small),
+              .merge(NotedTypography.of(context).small)
+              .merge(MediaQuery.boldTextOf(context) ? const TextStyle(fontWeight: FontWeight.bold) : null),
         ),
         textDirection: TextDirection.ltr,
         textScaler: scaler,
