@@ -373,7 +373,7 @@ CommandRegistry themeCommands(AppSettings settings) => CommandRegistry()
   ]);
 
 /// The context menu commands: List, Radial. The one in use is checked. Radial
-/// is held for this session only (see [AppSettings.contextMenu]).
+/// is saved in `settings.json` (see [AppSettings.contextMenu]).
 CommandRegistry contextMenuCommands(AppSettings settings) => CommandRegistry()
   ..registerAll([
     for (final s in ContextMenuStyle.values)

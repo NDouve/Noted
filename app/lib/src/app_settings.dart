@@ -47,7 +47,7 @@ File defaultSettingsFile() {
 
 /// Settings that belong to this device, not to the notebook: kept in
 /// `settings.json` as `{"format":1,"theme":"system"|"light"|"dark",
-/// "toolbar":"tabs"|"contextual"}`.
+/// "toolbar":"tabs"|"contextual","contextMenu":"list"|"radial"}`.
 ///
 /// Fields this build doesn't know are kept when the file is rewritten. A
 /// missing, damaged or unreadable file gives the defaults and is left alone
@@ -93,17 +93,23 @@ class AppSettings extends ChangeNotifier {
   }
 
   /// How the canvas's context menus are drawn: the list unless Radial was
-  /// chosen. Held for this session only: it is not written to `settings.json`,
-  /// so each launch starts with the list (a saved `"contextMenu"` key waits for
-  /// the maintainer's answer on whether an added optional key is a format
-  /// change). Nothing is read from the file either.
+  /// chosen. Saved as the optional `"contextMenu"` key (`"list"` | `"radial"`);
+  /// a missing or unknown value reads as the list.
   ContextMenuStyle get contextMenu => _contextMenu;
 
   set contextMenu(ContextMenuStyle value) {
-    if (value == _contextMenu) return;
+    if (value == _contextMenu && _raw['contextMenu'] == _contextMenuValue(value)) return;
     _contextMenu = value;
+    _raw = {..._raw, 'contextMenu': _contextMenuValue(value)};
     notifyListeners();
+    _write();
   }
+
+  // How the style is written in `settings.json`, whatever the enum's names.
+  static String _contextMenuValue(ContextMenuStyle s) => switch (s) {
+    ContextMenuStyle.list => 'list',
+    ContextMenuStyle.radial => 'radial',
+  };
 
   /// The folder new top-level pages are created in, as chosen on this device
   /// (`"defaultPageFolder"`), or null for the built-in default.
@@ -210,12 +216,17 @@ class AppSettings extends ChangeNotifier {
       _raw = Map<String, Object?>.of(json);
       _theme = ThemeSetting.parse(json['theme']) ?? ThemeSetting.system;
       _toolbar = ToolbarStyle.parse(json['toolbar']) ?? ToolbarStyle.tabs;
+      _contextMenu = switch (json['contextMenu']) {
+        'radial' => ContextMenuStyle.radial,
+        _ => ContextMenuStyle.list,
+      };
     } on Object {
       // Damaged: use the defaults; the file stays as it is.
       _readFailed = true;
       _raw = {};
       _theme = ThemeSetting.system;
       _toolbar = ToolbarStyle.tabs;
+      _contextMenu = ContextMenuStyle.list;
     }
   }
 
