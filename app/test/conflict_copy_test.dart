@@ -528,5 +528,54 @@ void main() {
       expect(readPage(File(chosen).readAsStringSync()).nodes.map((n) => n.id).toSet(), {box.id, added.id});
       expect(File(pathOf(id)).readAsStringSync(), plain);
     }, timeout: const Timeout(Duration(seconds: 60)));
+
+    test('older ownCloud names are merged into the original and deleted', () async {
+      await start();
+      final (id, _) = await closedPageWithBox();
+      final added = noteBox('owncloud');
+      final path = named(id, '_conflict-20180410-093612');
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      await nb.checkFile(path);
+      expect(File(path).existsSync(), isFalse);
+      expect(onDisk(id).node(added.id), isNotNull);
+    });
+
+    test('saving a chosen <id> 2.canvas while <id>.canvas exists neither merges nor lists it', () async {
+      await start();
+      final (id, _, chosen) = await withChosenSecond();
+      final plain = File(pathOf(id)).readAsStringSync();
+      await nb.open(id);
+      final c = nb.current!;
+      final mine = c.createBoxAt(const Bounds(10, 10, 0, 0));
+      c.commit(mine.id, modules.codecs.codecFor('noted.note')!.decode(doc('edit of the chosen page'), 1));
+      await nb.flush();
+      await nb.checkFile(chosen);
+      expect(File(chosen).existsSync(), isTrue);
+      expect(readPage(File(chosen).readAsStringSync()).node(mine.id), isNotNull);
+      expect(File(pathOf(id)).readAsStringSync(), plain);
+      expect(nb.unreadable.where((u) => u.path == chosen), isEmpty);
+      expect(nb.tree[id], isNotNull);
+    });
+
+    test('a copy-shaped duplicate with no original is promoted when the chosen file goes', () async {
+      await start();
+      final (id, _) = await closedPageWithBox();
+      final text = File(pathOf(id)).readAsStringSync();
+      final second = named(id, ' (1)'); // no <id>.canvas next to it
+      final chosen = named(id, ' 2');
+      File(pathOf(id)).renameSync(second);
+      await nb.checkFile(pathOf(id));
+      await nb.checkFile(second);
+      await busyRetry(() => File(chosen).writeAsString(text));
+      await nb.checkFile(chosen);
+      await nb.adoptUnlistedPageFile(chosen, id);
+      expect(nb.unreadable.map((u) => u.path), contains(second));
+      File(chosen).deleteSync();
+      await nb.checkFile(chosen);
+      await nb.checkFolders();
+      expect(nb.tree[id], isNotNull);
+      expect(File(second).existsSync(), isTrue);
+      expect(nb.unreadable.where((u) => u.path == second), isEmpty);
+    });
   });
 }

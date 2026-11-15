@@ -594,6 +594,16 @@ void main() {
       await stop();
     });
 
+    test('a Drive-style copy of the binder file is listed, not merged', () async {
+      await start();
+      final before = binderFile().readAsStringSync();
+      final copy = File('${folder.path}${Platform.pathSeparator}noted-binder (1).json')..writeAsStringSync(fileText());
+      await nb.filesChanged([copy.path]);
+      expect(nb.binderCopyRows(nb.binders.single).map((r) => r.path), [copy.path]);
+      expect(copy.existsSync(), isTrue);
+      expect(binderFile().readAsStringSync(), before);
+      await stop();
+    });
     testWidgets('R-2: a foreign copy offers only Delete; a valid copy offers Put back and Delete', (t) async {
       t.view.physicalSize = const Size(1200, 800);
       t.view.devicePixelRatio = 1;

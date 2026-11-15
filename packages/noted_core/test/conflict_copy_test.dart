@@ -87,7 +87,7 @@ void main() {
       expect(o('abc (1).canvas'), ['abc.canvas']); // Drive for desktop
       expect(o('abc 2.canvas'), ['abc.canvas']); // Finder-style
       expect(o('abc (conflicted copy 2018-04-10 093612).canvas'), ['abc.canvas']);
-      expect(o('abc (conflicted copy Ann Lee 2018-04-10 093612).canvas'), ['abc.canvas']);
+      expect(o('abc (conflicted copy user 2018-04-10 093612).canvas'), ['abc.canvas']);
       expect(o('abc_conflict-20180410-093612.canvas'), contains('abc.canvas'));
       expect(o('abc (conflicted copy 2018-04-10).canvas'), isEmpty);
       expect(o('abc (x).canvas'), isEmpty);

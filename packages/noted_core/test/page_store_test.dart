@@ -229,5 +229,51 @@ void main() {
       final c = put('p1 (1).canvas', 'p1');
       expect(await PageStore.findConflictOriginal(c.path, readPage(c.readAsStringSync())), isNull);
     });
+
+    test('a file named like a copy with no original is a plain page', () async {
+      put('p1 2.canvas', 'p1');
+      put('p1 (1).canvas', 'p1');
+      final entries = await PageStore(dir).scan();
+      // Neither is a copy of an existing file; the second is a duplicate.
+      expect(entries.whereType<ConflictCopyPage>(), isEmpty);
+      expect(entries.whereType<ReadablePage>(), hasLength(1));
+    });
+
+    test('a lone copy-shaped file is a readable page', () async {
+      put('p1 2.canvas', 'p1');
+      final entries = await PageStore(dir).scan();
+      expect(entries.single, isA<ReadablePage>());
+    });
+
+    test('older ownCloud names are copies', () async {
+      put('p1.canvas', 'p1');
+      put('p1_conflict-20180410-093612.canvas', 'p1');
+      final entries = await PageStore(dir).scan();
+      expect(entries.whereType<ConflictCopyPage>().single.originalPath, endsWith('p1.canvas'));
+      final c = File('${dir.path}/p1_conflict-20180410-093612.canvas');
+      expect(await PageStore.findConflictOriginal(c.path, readPage(c.readAsStringSync())), endsWith('p1.canvas'));
+    });
+
+    test('findConflictOriginal compares the preferred path as an absolute path with either separator', () async {
+      final b = put('p1 2.canvas', 'p1');
+      put('p1.canvas', 'p1');
+      final c = put('p1 2 (1).canvas', 'p1');
+      final page = readPage(c.readAsStringSync());
+      final swapped = Platform.isWindows ? b.path.replaceAll(r'\', '/') : b.path;
+      final mixed = Platform.isWindows ? b.path.toUpperCase() : b.path;
+      for (final pref in [swapped, mixed]) {
+        expect(await PageStore.findConflictOriginal(c.path, page, preferred: pref), endsWith('p1 2.canvas'));
+        expect(await PageStore.findConflictOriginal(b.path, page, preferred: pref), isNull);
+      }
+      final before = Directory.current;
+      Directory.current = dir;
+      try {
+        expect(await PageStore.findConflictOriginal(c.path, page, preferred: 'p1 2.canvas'), endsWith('p1 2.canvas'));
+        expect(await PageStore.findConflictOriginal('p1 2.canvas', page, preferred: b.path), isNull);
+        expect(await PageStore.findConflictOriginal('./p1 2 (1).canvas', page, preferred: './p1 2.canvas'), endsWith('p1 2.canvas'));
+      } finally {
+        Directory.current = before;
+      }
+    });
   });
 }

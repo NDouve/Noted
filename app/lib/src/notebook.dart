@@ -10268,8 +10268,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final u in list) {
         if (u.reason != 'duplicate page id $id') continue;
         final name = u.path.split(RegExp(r'[\\/]')).last;
-        // A name shaped like a sync client's conflict copy is merged, not chosen.
-        if (conflictCopyOriginalNames(name).isNotEmpty) continue;
+        // A file that is a sync client's conflict copy of a file that exists
+        // is merged, not chosen; a copy-shaped name without its original is a
+        // page file like any other.
+        if (conflictCopyOriginalNames(name).isNotEmpty) {
+          NotedPage? page;
+          try {
+            page = readPage(await File(u.path).readAsString());
+          } on Object {
+            page = null;
+          }
+          if (page != null && page.id == id && await PageStore.findConflictOriginal(u.path, page) != null) continue;
+        }
         candidates.add((loc, u));
       }
     }

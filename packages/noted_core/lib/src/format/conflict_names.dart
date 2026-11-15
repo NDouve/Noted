@@ -13,11 +13,13 @@
 /// - ` (conflicted copy [<words> ]<yyyy-mm-dd> <hhmmss>)`: Nextcloud (the
 ///   documented example is `mydata (conflicted copy 2018-04-10 093612).txt`).
 /// - `_conflict-<yyyymmdd>-<hhmmss>`: older ownCloud.
-/// - ` <n>`: Finder-style, as written by macOS and iCloud for Windows.
+/// - ` <n>`: Finder-style (unverified, I2). iCloud for Windows' own naming is
+///   unverified (I3) and has no rule of its own; a name of these shapes is
+///   covered.
 /// - `-<alnum[_-]*>`: OneDrive's `-<HOST>[-<n>]` and Noted's own
 ///   `-conflict-`, `-recovered-`, `-undo-`, `-remote-`, `-NOTED-MCP-`,
-///   `-icloud-` and `-gdrive-` names; also iCloud for Windows' `-<n>`. Every
-///   hyphen may start it, since page ids and computer names hold hyphens.
+///   `-icloud-` and `-gdrive-` names. Every hyphen may start it, since page
+///   ids and computer names hold hyphens.
 final List<RegExp> _spaceSuffixes = [
   RegExp(r' \(\d+\)$'),
   RegExp(r' \(conflicted copy (?:[^()]+ )?\d{4}-\d{2}-\d{2} \d{6}\)$'),

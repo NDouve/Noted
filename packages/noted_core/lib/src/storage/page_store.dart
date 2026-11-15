@@ -178,20 +178,20 @@ class PageStore {
   }
 
   /// The file that [copyPath] (holding [copy]) is a conflict copy of: a file
-  /// in the same folder whose name [copyPath]'s name extends by a hyphen and
-  /// a suffix, and that holds the same page id. Null if there is none, so the
-  /// file is not a conflict copy.
+  /// in the same folder whose name is [copyPath]'s name without one or more
+  /// provider suffixes (see [conflictCopyOriginalNames]), and that holds the
+  /// same page id. Null if there is none, so the file is not a conflict copy.
   ///
   /// [preferred] is the file chosen for the page (see [adopt]), if any. It is
   /// never a copy (null if it is [copyPath]), and when it is among the
-  /// candidates it is the original, ahead of a shorter stem.
+  /// candidates it is the original, ahead of a shorter stem. Paths are
+  /// compared as absolute paths with either separator (and without case on
+  /// Windows).
   static Future<String?> findConflictOriginal(String copyPath, NotedPage copy, {String? preferred}) async {
     final file = File(copyPath);
     final dir = file.parent.path;
-    bool same(String a, String b) => Platform.isWindows ? a.toLowerCase() == b.toLowerCase() : a == b;
-    final pref = preferred == null ? null : _name(preferred);
-    if (pref != null && same(pref, _name(copyPath)) && same(File(preferred!).parent.path, dir)) return null;
-    final prefHere = pref != null && same(File(preferred!).parent.path, dir);
+    final prefKey = preferred == null ? null : _pathKey(preferred);
+    if (prefKey != null && prefKey == _pathKey(copyPath)) return null;
     String? firstOk;
     for (final cand in conflictCopyOriginalNames(_name(copyPath))) {
       final other = File('$dir${Platform.pathSeparator}$cand');
@@ -203,9 +203,9 @@ class PageStore {
       } on FileSystemException {
         continue;
       }
-      if (prefHere && same(cand, pref)) return other.path;
+      if (prefKey != null && prefKey == _pathKey(other.path)) return other.path;
       firstOk ??= other.path;
-      if (!prefHere) break;
+      if (prefKey == null) break;
     }
     if (firstOk == null) return null;
     // Prefer the end of a chain of copies.
@@ -213,6 +213,13 @@ class PageStore {
   }
 
   static String _name(String path) => path.split(RegExp(r'[\\/]')).last;
+
+  // An absolute path with one separator, and lower case on Windows, so two
+  // spellings of one file compare equal.
+  static String _pathKey(String path) {
+    final p = File(path).absolute.path.replaceAll(r'\', '/');
+    return Platform.isWindows ? p.toLowerCase() : p;
+  }
 
   /// Reads the page's file. Throws [PageFormatException] if the file holds a
   /// different page, so one page's content is never served under another id.
