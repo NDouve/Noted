@@ -25,6 +25,9 @@ class NoHashDriver implements RemoteDriver {
   /// Makes every download fail with this status.
   int? refuseWith;
 
+  /// Makes a download leave no file, so reading it fails.
+  bool writeNothing = false;
+
   @override
   String get provider => 'nohash';
   @override
@@ -83,6 +86,7 @@ class NoHashDriver implements RemoteDriver {
     if (status != null) {
       throw RemoteException('Refused', statusCode: status);
     }
+    if (writeNothing) return Future<void>.value();
     return inner.download(entry, dest);
   }
 }
@@ -215,5 +219,67 @@ void main() {
     final r = await h.round();
     expect(r.error, isA<RemoteException>());
     expect(h.engine.status.state, SyncState.signedOut);
+  });
+
+  group('the compare of an existing same-size local file', () {
+    setUp(() {
+      h.fake.addFile('Noted/a.canvas', Harness.b('AAA'));
+      h.write('a.canvas', 'BBB');
+    });
+
+    test('RemoteChanged: nothing adopted, no second issue, no temp', () async {
+      driver.changeDuringDownload = true;
+      final r = await h.round();
+      expect(r.error, isNull);
+      expect(h.read('a.canvas'), 'BBB');
+      expect(h.engine.issues, isEmpty);
+      expect(h.stateFiles('tmp'), isEmpty);
+      expect(h.engine.status.state, SyncState.idle);
+    });
+
+    test('a 403: listed once, no temp, the round goes on', () async {
+      driver.refuseWith = 403;
+      final r = await h.round();
+      expect(r.error, isNull);
+      expect(h.issueText(), hasLength(1));
+      expect(h.issueText().single, contains('403'));
+      expect(h.stateFiles('tmp'), isEmpty);
+      expect(h.engine.status.state, SyncState.idle);
+    });
+
+    test('a 401: signed out, no temp', () async {
+      driver.refuseWith = 401;
+      final r = await h.round();
+      expect(r.error, isA<RemoteUnauthorized>());
+      expect(h.stateFiles('tmp'), isEmpty);
+      expect(h.engine.status.state, SyncState.signedOut);
+      expect(h.read('a.canvas'), 'BBB');
+    });
+
+    test('a failure reading the temp is listed and leaves no temp', () async {
+      driver.writeNothing = true;
+      final r = await h.round();
+      expect(r.error, isNull);
+      expect(h.engine.issues, hasIssue('a.canvas'));
+      expect(h.issueText().single, contains('read the file'));
+      expect(h.stateFiles('tmp'), isEmpty);
+      expect(h.read('a.canvas'), 'BBB');
+    });
+
+    test('3 in a row: a round that does not meet RemoteChanged starts over', () async {
+      driver.changeDuringDownload = true;
+      await h.round();
+      await h.round();
+      driver.changeDuringDownload = false;
+      await h.round();
+      expect(h.issueText().single, contains('different file'));
+      driver.changeDuringDownload = true;
+      h.fake.replaceFile('Noted/a.canvas', Harness.b('CCC'));
+      await h.round();
+      await h.round();
+      expect(h.engine.issues, isEmpty);
+      await h.round();
+      expect(h.issueText().single, contains('keeps changing'));
+    });
   });
 }

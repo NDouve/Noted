@@ -66,6 +66,7 @@ class PullEngine {
   /// How many rounds in a row an item's version moved while it was read, by
   /// case-folded path; in memory only, so the journal doesn't change.
   final Map<String, int> _changedMeanwhile = {};
+  bool _changedThisRow = false;
 
   /// A seam for tests: called at each named step of a round, and free to
   /// throw to stand for a kill there (or to edit a file, as the Files app
@@ -838,11 +839,14 @@ class PullEngine {
       if (heldPrefixes.contains(first) && d.segs.length >= 2) continue;
       if (heldKeys.contains(k)) continue;
       final rec = j.files[k];
+      // "3 in a row": a row that doesn't meet RemoteChanged starts over.
+      _changedThisRow = false;
       if (rec == null || rec.retained) {
         await _rowNew(d, rec);
       } else {
         await _rowKnown(d, rec);
       }
+      if (!_changedThisRow) _changedMeanwhile.remove(d.key);
     }
 
     // --- Lasting deletes.
@@ -947,13 +951,27 @@ class PullEngine {
     }
     if (e.size == 0) return true;
     final key = '${e.id}\u0000${e.cTag}\u0000${ident.length}\u0000${ident.sha256}';
-    final known = _compared[key];
-    if (known != null) return known;
+    // Without an ETag there is nothing to key a result by.
+    final cacheable = e.cTag != null;
+    if (cacheable) {
+      final known = _compared[key];
+      if (known != null) return known;
+    }
     final tmp = _newTmp('cmp');
     try {
       await driver.download(e, tmp);
       final remote = await ContentIdentity.ofFile(tmp.path);
-      return _compared[key] = remote == ident;
+      final same = remote == ident;
+      if (cacheable) {
+        // An older ETag of this item is stale now.
+        final prefix = '${e.id}\u0000';
+        final current = '$prefix${e.cTag}\u0000';
+        _compared.removeWhere(
+          (k, _) => k.startsWith(prefix) && !k.startsWith(current),
+        );
+        _compared[key] = same;
+      }
+      return same;
     } on RemoteChanged {
       _changedMeanwhileIssue(d, rel);
       return null;
@@ -973,6 +991,7 @@ class PullEngine {
   /// The version moved while [d] was read: nothing applied, retried next
   /// round, and listed once it has happened 3 rounds in a row.
   void _changedMeanwhileIssue(DesiredFile d, String rel) {
+    _changedThisRow = true;
     final n = (_changedMeanwhile[d.key] ?? 0) + 1;
     _changedMeanwhile[d.key] = n;
     if (n >= 3) {
@@ -1246,9 +1265,12 @@ class PullEngine {
         return;
       case _Local.differs:
         final abs = _abs(rel);
-        if (ident != null &&
-            _hasHash(d.item) &&
-            await _equalsRemote(abs, ident, d, rel) == true) {
+        final same = ident != null && _hasHash(d.item)
+            ? await _equalsRemote(abs, ident, d, rel)
+            : false;
+        if (same == null) {
+          // Not known this round; the compare listed why.
+        } else if (same) {
           await _adopt(d, rel, ident, existing: rec);
         } else {
           _issue(
