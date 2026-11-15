@@ -88,12 +88,15 @@ void main() {
       await _frames(t, 1);
       await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await _frames(t);
-      // One Escape per level: a submenu the keyboard opened, the menu, the bar.
-      for (var i = 0; i < 4 && w.bar(t).holding; i++) {
+      // View's first item is Zoom in, so there are two levels here: the first
+      // Escape closes the menu, the second the bar. (The submenu level, three
+      // Escapes in all: menu_review_test.)
+      for (final holding in [true, false]) {
         await t.sendKeyEvent(LogicalKeyboardKey.escape);
         await _frames(t);
+        expect(w.bar(t).holding, holding);
       }
-      expect(w.bar(t).holding, isFalse);
+
       expect(c.editorFocusHold.count, 0);
 
       expect(c.editingId, 'n');

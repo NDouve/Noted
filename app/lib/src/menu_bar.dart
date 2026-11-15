@@ -235,7 +235,7 @@ class AppMenuBarState extends State<AppMenuBar> {
   // and the ones open now, innermost last, so Escape closes one level.
   final Map<String, MenuController> _subControllers = {};
   final Map<String, FocusNode> _subNodes = {};
-  final Set<FocusNode> _ownSubNodes = {};
+  final Map<String, FocusNode> _subUsed = {};
 
   final List<String> _openSubs = [];
   late final _TreeProxy _proxy = _TreeProxy(() => widget.treeActions(), widget.openDrawer);
@@ -361,7 +361,7 @@ class AppMenuBarState extends State<AppMenuBar> {
     _lifecycle.dispose();
     _bar.removeListener(_barChanged);
     _bar.dispose();
-    for (final n in [..._top, ..._firstNode, ..._ownSubNodes]) {
+    for (final n in [..._top, ..._firstNode, ..._subNodes.values]) {
       n.dispose();
     }
     for (final r in _appRegistries) {
@@ -505,6 +505,8 @@ class AppMenuBarState extends State<AppMenuBar> {
     for (final c in _controllers) {
       c.close();
     }
+    _openSubs.clear();
+
   }
 
   // Keyboard entry: record the origin and the controller, hold, and only then
@@ -546,10 +548,12 @@ class AppMenuBarState extends State<AppMenuBar> {
   // Returns whether the key was used.
   bool _barKey(LogicalKeyboardKey key) {
     // Escape closes one level: the innermost open submenu, focus back on its button.
+    // A submenu that went while open (the page changed under it) is not a level.
+    _openSubs.removeWhere((l) => !(_subControllers[l]?.isOpen ?? false));
     if (key == LogicalKeyboardKey.escape && _openSubs.isNotEmpty) {
       final label = _openSubs.last;
       _subControllers[label]?.close();
-      _subNodes[label]?.requestFocus();
+      _subUsed[label]?.requestFocus();
       return true;
     }
     final focus = FocusManager.instance.primaryFocus;
@@ -967,15 +971,12 @@ class AppMenuBarState extends State<AppMenuBar> {
       case _Sub():
         final inner = _reserveCheck(e.children);
         final label = e.label;
-        final subNode =
-            focusNode ??
-            _subNodes[label] ??
-            (() {
-              final made = FocusNode(debugLabel: 'sub $label');
-              _ownSubNodes.add(made);
-              return made;
-            })();
-        _subNodes[label] = subNode;
+        // The node a menu's first focusable item shares is never kept for the
+        // label: the label's own node stays its own, and what this build used is
+        // remembered for Escape.
+        final own = _subNodes[label] ??= FocusNode(debugLabel: 'sub $label');
+        final subNode = focusNode ?? own;
+        _subUsed[label] = subNode;
         return _FocusRing(
           focusNode: subNode,
           builder: (node) => SubmenuButton(

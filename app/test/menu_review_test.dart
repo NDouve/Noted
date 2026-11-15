@@ -221,9 +221,18 @@ void main() {
       expect(find.byKey(ValueKey('menu-$first')), findsNothing, reason: 'one level closed');
       expect(find.byKey(ValueKey('menu-sub-$sub')), findsOneWidget, reason: 'the menu stays');
       expect(w.bar(t).holding, isTrue);
+      // Then the menu, then the bar: exactly three Escapes in all.
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t);
+      expect(find.byKey(ValueKey('menu-sub-$sub')), findsNothing, reason: 'the menu closed');
+      expect(w.bar(t).holding, isTrue);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t);
+      expect(w.bar(t).holding, isFalse);
       await w.close(t);
     });
   }
+
 
   testWidgets('overlay open, then another page: Escape still closes the overlay', (t) async {
     final w = await ShellWorld.open(t, size: const Size(1100, 800));
@@ -256,6 +265,73 @@ void main() {
     await _frames(t, 8);
     expect(find.byKey(const ValueKey('context-panel')), findsNothing);
     expect(FocusManager.instance.primaryFocus, same(before));
+    await w.close(t);
+  });
+
+  int rings(WidgetTester t) => t
+      .widgetList<DecoratedBox>(find.byType(DecoratedBox))
+      .where((d) {
+        final b = (d.decoration as BoxDecoration).border;
+        return d.position == DecorationPosition.foreground && b is Border && b.top.width == 2;
+      })
+      .length;
+
+  testWidgets('menus built on a cover, then a page: no focus node is shared, one ring on Zoom in', (t) async {
+    final w = await ShellWorld.open(t);
+    final b = await w.addBinderWithPage(t, 'Work');
+    w.nb.showCover(b.path);
+    await w.settle(t);
+    // On the cover View has no canvas items: Page background is the first one.
+    await t.sendKeyEvent(LogicalKeyboardKey.f10);
+    await _frames(t);
+    await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await _frames(t, 1);
+    await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await _frames(t, 1);
+    await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await _frames(t);
+    for (var i = 0; i < 4 && w.bar(t).holding; i++) {
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t);
+    }
+    expect(w.bar(t).holding, isFalse);
+    await w.openPage(t, w.first);
+    await _frames(t, 6);
+    await t.sendKeyEvent(LogicalKeyboardKey.f10);
+    await _frames(t);
+    await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await _frames(t, 1);
+    await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await _frames(t, 1);
+    await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await _frames(t);
+    expect(within(t, find.byKey(const ValueKey('menu-canvas.zoomIn'))), isTrue);
+    expect(rings(t), 1);
+    await w.close(t);
+  });
+
+  testWidgets('a submenu removed while open (the cover shows) is not a level: Escape still leaves the bar', (t) async {
+    final w = await ShellWorld.open(t);
+    final b = await w.addBinderWithPage(t, 'Work');
+    await t.sendKeyEvent(LogicalKeyboardKey.f10);
+    await _frames(t);
+    await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await _frames(t);
+    final sub = find.byKey(const ValueKey('menu-sub-Page'));
+    for (var i = 0; i < 20 && !within(t, sub); i++) {
+      await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await _frames(t, 1);
+    }
+    await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await _frames(t);
+    expect(find.byKey(const ValueKey('menu-app.page.newSubpage')), findsOneWidget);
+    w.nb.showCover(b.path);
+    await _frames(t, 6);
+    for (var i = 0; i < 3 && w.bar(t).holding; i++) {
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t);
+    }
+    expect(w.bar(t).holding, isFalse);
     await w.close(t);
   });
 }
