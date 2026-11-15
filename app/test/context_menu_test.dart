@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// The canvas context menus in the app: the session-only Radial setting, its
+// The canvas context menus in the app: the saved Radial setting, its
 // items in View and the gear menu, and the keys of the menu bar and the home
 // while a context menu is open.
 
@@ -48,7 +48,7 @@ void main() {
       expect(file.existsSync(), isFalse);
     });
 
-    test('Radial is held for the session: it notifies and writes nothing', () {
+    test('Radial is saved: it notifies once, writes the key and a new launch reads it', () {
       final s = AppSettings(file);
       var told = 0;
       s.addListener(() => told++);
@@ -57,36 +57,42 @@ void main() {
       expect(told, 1);
       s.contextMenu = ContextMenuStyle.radial;
       expect(told, 1);
-      expect(file.existsSync(), isFalse);
-      // A new launch starts with the list.
+      expect(file.readAsStringSync(), contains('"contextMenu":"radial"'));
+      expect(AppSettings(file).contextMenu, ContextMenuStyle.radial);
+      s.contextMenu = ContextMenuStyle.list;
       expect(AppSettings(file).contextMenu, ContextMenuStyle.list);
     });
 
-    test('a missing, unknown or damaged file value gives List and the file is left alone', () {
+    test('a missing, unknown or damaged value gives List and the file is left alone', () {
       file.parent.createSync(recursive: true);
       const bodies = [
         '{"format":1,"theme":"light"}',
         '{"format":1,"contextMenu":"ring","future":true}',
-        '{"format":1,"contextMenu":"radial"}',
+        '{"format":1,"contextMenu":7}',
         '{ nope',
       ];
       for (final body in bodies) {
         file.writeAsStringSync(body);
-        final s = AppSettings(file);
-        expect(s.contextMenu, ContextMenuStyle.list, reason: body);
-        s.contextMenu = ContextMenuStyle.radial;
+        expect(AppSettings(file).contextMenu, ContextMenuStyle.list, reason: body);
         expect(file.readAsStringSync(), body, reason: 'nothing written: $body');
       }
     });
 
-    test('changing another setting keeps the unknown keys and writes no contextMenu', () {
+    test('the saved value is read, and unknown keys are kept when it changes', () {
       file.parent.createSync(recursive: true);
-      file.writeAsStringSync('{"format":1,"future":true}');
-      final s = AppSettings(file)..contextMenu = ContextMenuStyle.radial;
+      file.writeAsStringSync('{"format":1,"contextMenu":"radial","future":true}');
+      final s = AppSettings(file);
+      expect(s.contextMenu, ContextMenuStyle.radial);
+      s.contextMenu = ContextMenuStyle.list;
       s.toolbar = ToolbarStyle.contextual;
       final written = file.readAsStringSync();
       expect(written, contains('"future":true'));
-      expect(written, isNot(contains('contextMenu')));
+      expect(written, contains('"contextMenu":"list"'));
+    });
+
+    test('settings without a file hold the choice for the session', () {
+      final s = AppSettings(null)..contextMenu = ContextMenuStyle.radial;
+      expect(s.contextMenu, ContextMenuStyle.radial);
     });
   });
 
@@ -106,7 +112,8 @@ void main() {
     await t.pump();
     await t.pump(const Duration(milliseconds: 50));
     expect(w.settings.contextMenu, ContextMenuStyle.radial);
-    expect(File('${w.dir.path}/settings.json').readAsStringSync(), isNot(contains('contextMenu')));
+    expect(File('${w.dir.path}/settings.json').readAsStringSync(), contains('"contextMenu":"radial"'));
+    expect(AppSettings(File('${w.dir.path}/settings.json')).contextMenu, ContextMenuStyle.radial);
 
     final origin = w.canvasOrigin(t);
     await _rightClick(t, origin + w.canvas(t).view!.toScreen(const Offset(150, 110)));
