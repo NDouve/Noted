@@ -223,7 +223,10 @@ void canvasSuite() {
           Size? last;
           for (var i = 0; i < 40; i++) {
             final size = t.getSize(find.byType(PageCanvas));
-            final now = Size(size.width, size.height - toolbarHeight(t));
+            // The inline contextual panel takes the right of the PageCanvas.
+            final panel = find.byKey(const ValueKey('context-panel-inline'));
+            final panelWidth = panel.evaluate().isEmpty ? 0.0 : t.getSize(panel).width;
+            final now = Size(size.width - panelWidth, size.height - toolbarHeight(t));
             if (now == last) return now;
             last = now;
             await s.pump(100);
