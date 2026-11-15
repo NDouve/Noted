@@ -404,11 +404,14 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       message: text,
       child: Padding(
         key: ValueKey('binder-other-${b.path}'),
-        padding: EdgeInsets.symmetric(horizontal: m.space3, vertical: m.space1),
+        padding: EdgeInsets.only(left: 36, right: m.space3, top: m.space1, bottom: m.space1),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(text, style: Theme.of(context).textTheme.bodySmall),
+            Text(
+              text,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: NotedColors.of(context).textDisabled),
+            ),
             Align(
               alignment: Alignment.centerRight,
               child: TextButton(
@@ -435,8 +438,10 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
           SidebarRow(
             key: ValueKey('binder-copy-${r.path}'),
             titleLines: 2,
-            title: 'Copy of the binder file: ${r.label}',
-            status: b.title,
+            title: r.forOtherBinder
+                ? "Copy of another binder's file: ${r.label}"
+                : 'Copy of the binder file: ${r.label}',
+            status: r.forOtherBinder ? null : b.title,
             disabled: true,
             leading: Icon(
               Icons.block_rounded,

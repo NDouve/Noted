@@ -227,7 +227,7 @@ class _BinderCoverState extends State<BinderCover> {
                         ),
                         TextButton(
                           key: const ValueKey('cover-discard'),
-                          onPressed: () => unawaited(widget.notebook.discardCoverChanges(widget.path)),
+                          onPressed: () => unawaited(widget.notebook.confirmDiscardCoverChanges(widget.path)),
                           child: const Text('Discard'),
                         ),
                       ],

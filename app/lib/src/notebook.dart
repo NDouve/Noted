@@ -313,6 +313,7 @@ final class BinderCopyRow {
     required this.canPutBack,
     required this.canReadAsBinder,
     this.canDelete = true,
+    this.forOtherBinder = false,
     this.bytes,
   });
 
@@ -325,6 +326,9 @@ final class BinderCopyRow {
 
   /// The binder file is missing and this is a complete copy of it.
   final bool canPutBack;
+
+  /// It is a copy of another binder's file.
+  final bool forOtherBinder;
 
   /// Delete is offered (not in a pull-only folder).
   final bool canDelete;
@@ -5585,6 +5589,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     _binders.remove(path);
     _coverPending.remove(_key(path));
+    _coverHalted.remove(_key(path));
     _coverTimers.remove(_key(path))?.cancel();
     _asideTimers.remove(_key(path))?.cancel();
     // Another remove of this binder may have put its id back after a declined
@@ -5706,6 +5711,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return '$who (${c.what})';
   }
 
+  /// Discard on the cover: asks first, naming the changes, like the other
+  /// places that drop them. False if the user chose to keep them.
+  Future<bool> confirmDiscardCoverChanges(String path) async {
+    final s = _binders[path];
+    for (final c in List<CoverChange>.of(_coverPending[_key(path)] ?? const <CoverChange>[])) {
+      if (!await _ask(UserQuestion.discardCoverChanges, _coverLabel(s, c))) return false;
+    }
+    await discardCoverChanges(path);
+    return true;
+  }
+
   /// Gives up the unwritten cover changes of binder [path] (Discard). The temps
   /// they wrote are removed only while the binder's file is there and readable;
   /// any other stays listed with the copies of the binder file.
@@ -5717,7 +5733,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (drop.isEmpty) return;
     final list = _coverPending[key];
     list?.removeWhere(drop.contains);
-    if (list != null && list.isEmpty) _coverPending.remove(key);
+    if (list != null && list.isEmpty) {
+      _coverPending.remove(key);
+      _coverHalted.remove(key);
+    }
     _coverTimers.remove(key)?.cancel();
     _coverDelay.remove(key);
     final s = _binders[path];
@@ -6109,6 +6128,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           label: label,
           canPutBack: s.fileMissing && !s.missing && !_pullOnly(s.path) && _copyIsThisBinders(s, binder),
           canDelete: !_pullOnly(s.path),
+          forOtherBinder: binder != null && !_copyIsThisBinders(s, binder),
           canReadAsBinder: binder != null,
           bytes: bytes,
         ),
@@ -6148,6 +6168,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final recorded = _binderIds[key];
     if (recorded != null) return copy.id == recorded;
     return !_binderIds.entries.any((e) => e.key != key && e.value == copy.id);
+  }
+
+  // Deletes [path] if it holds [bytes], never throwing.
+  Future<void> _quietDelete(String path, List<int> bytes) async {
+    try {
+      await deleteFileIfMatches(path, bytes: bytes);
+    } on Object {
+      // Left in place.
+    }
   }
 
   /// Runs in [putBackBinderCopy] between the publish and the removal of the copy.
@@ -6191,16 +6220,29 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // The verified bytes go to a private temp that is published; the copy
       // itself is never moved, and is removed only if it still holds them.
       final tmp = store.newTempFile();
-      await store.writeTemp(tmp, bytes);
+      try {
+        await store.writeTemp(tmp, bytes);
+      } on FileSystemException {
+        // Only our own part-written prefix is removed; anything else stays.
+        try {
+          final back = await tmp.readAsBytes();
+          if (back.length <= bytes.length && _sameBytes(back, bytes.sublist(0, back.length))) {
+            await deleteFileIfMatches(tmp.path, bytes: back);
+          }
+        } on Object {
+          // Left for the user; the error below is the one that matters.
+        }
+        throw const NotebookException("The binder file couldn't be put back: its copy couldn't be written.");
+      }
       final bool ok;
       try {
         ok = await publishExclusive(tmp, store.file.path);
       } on Object {
-        await deleteFileIfMatches(tmp.path, bytes: bytes);
+        await _quietDelete(tmp.path, bytes);
         rethrow;
       }
       if (!ok) {
-        await deleteFileIfMatches(tmp.path, bytes: bytes);
+        await _quietDelete(tmp.path, bytes);
         throw const NotebookException('A binder file appeared first, so nothing was put back.');
       }
       final text = utf8.decode(bytes);
@@ -6209,7 +6251,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await putBackBeforeDeleteHook?.call();
       var removed = false;
       try {
-        final r = await deleteFileIfMatches(copyPath, bytes: bytes);
+        // Only while the binder file still holds this binder: the copy may be the
+        // only one if sync removed or replaced the file meanwhile.
+        final r = await deleteFileIfMatches(
+          copyPath,
+          bytes: bytes,
+          stillRedundant: () => store.fileHoldsBinderSync(copy.id),
+        );
         removed = r.deleted || r.outcome == DeleteOutcome.absent;
       } on FileSystemException {
         removed = false;
@@ -9226,7 +9274,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     section.asideSince = null;
     if (!force && text != null && _binderText[dirKey] == text) {
-      if (section.available && _coverPending.containsKey(dirKey)) retryCovers();
+      if (section.available && _coverPending.containsKey(dirKey)) _queueCoverTries(force: false);
       return;
     }
     Binder? binder;
@@ -9274,7 +9322,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       } else {
         await _reopenBinder(section.path);
       }
-      if (!_disposed && _coverPending.containsKey(dirKey)) retryCovers();
+      if (!_disposed && _coverPending.containsKey(dirKey)) _queueCoverTries(force: false);
       return;
     }
     if (section.available) {

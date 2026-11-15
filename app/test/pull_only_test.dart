@@ -780,6 +780,7 @@ void main() {
       final copy = File('$path/$binderFileName.1-2.tmp')..writeAsStringSync(text);
       await nb.refreshBinderCopies(path);
       final row = nb.binderCopyRows(nb.binders.single).single;
+      File('$path/$binderFileName').deleteSync(); // so only the pull-only guard refuses Put back
       expect(row.canDelete, isFalse);
       expect(row.canPutBack, isFalse);
       await expectLater(nb.deleteBinderCopy(path, row.path), throwsA(isA<NotebookException>()));

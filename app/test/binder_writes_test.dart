@@ -609,6 +609,36 @@ void main() {
       await stop();
     });
 
+    test('round 3: the binder file removed between the publish and the copy\'s removal: the copy survives', () async {
+      final row = await goneWithTemp();
+      nb.putBackBeforeDeleteHook = () async => binderFile().deleteSync();
+      await nb.putBackBinderCopy(section.path, row.path);
+      nb.putBackBeforeDeleteHook = null;
+      expect(File(row.path).existsSync(), isTrue, reason: 'the only copy is kept');
+      expect(File(row.path).readAsBytesSync(), row.bytes);
+      await nb.checkBinderFile(binderFile().path);
+      await stop();
+    });
+
+    test('round 3: a check after a keepsChanging halt does not retry the cover change', () async {
+      await start();
+      var n = 0;
+      seams.beforeMoveAside = () => externalReplace(owner: 'Them ${n++}');
+      expect(await nb.updateBinder(section.path, title: 'Draft'), isFalse);
+      seams.beforeMoveAside = null;
+      await idle();
+      final before = seams.updates;
+      await nb.checkBinderFile(binderFile().path, force: true);
+      await idle();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await idle();
+      expect(seams.updates, before, reason: 'the halt holds until resume, hide or quit');
+      expect(nb.coverNotSaved(section.path), isTrue);
+      nb.retryCovers();
+      await until(() => !nb.coverNotSaved(section.path), 'the retry after resume');
+      await stop();
+    });
+
     test('an unlisted folder (no id recorded) uses the temp\'s own id', () async {
       final row = await goneWithTemp();
       nb.forgetBinderIdForTest(section.path);
@@ -976,7 +1006,11 @@ void main() {
       await run(t, idle);
       await t.pump();
       expect(find.byKey(const ValueKey('cover-not-saved')), findsOneWidget);
-      await run(t, () => nb.discardCoverChanges(section.path));
+      await t.tap(find.byKey(const ValueKey('cover-discard')));
+      await run(t, () => until(() => nb.coverPendingFor(section.path).isEmpty, 'the confirmed discard'));
+      await run(t, () => nb.runOnChainForTest(() async {}));
+      await run(t, () => nb.refreshBinderCopies(folder.path)); // after the discard's own listing
+      expect(asked.last.$1, UserQuestion.discardCoverChanges, reason: 'the cover Discard asks first');
       await t.pump();
       expect(nb.coverPendingFor(section.path), isEmpty);
       expect((t.widget(find.byKey(const ValueKey('cover-title'))) as TextField).controller!.text, 'Work');

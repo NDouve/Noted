@@ -298,7 +298,12 @@ after a refused or skipped setting, or after the user discards a cover change)
 and only while the same binder's file is present and readable, checked at the
 moment of the delete. The exceptions are the temporary file that creating a
 binder wrote and never published, and a part-written temporary file left by a
-write that failed; each is deleted only if it still holds the bytes written.
+write that failed. The first is deleted only if it still holds the bytes
+written; the second only if it holds a prefix of the bytes that write sent (or
+nothing), and any other content is kept as a copy. Putting a copy back
+publishes a private temporary file with the copy's verified bytes, never the
+copy itself, and then removes the restored copy only if it is unchanged and the
+binder file holds that binder.
 
 The file is not valid, and is never written to, when the JSON is invalid,
 `binderId` is missing or empty, `format` is missing or not an integer, or
