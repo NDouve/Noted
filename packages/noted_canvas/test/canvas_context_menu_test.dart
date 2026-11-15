@@ -627,6 +627,18 @@ void main() {
       expect(w.c.editingId, isNull);
     });
 
+    testWidgets('a command chosen for another box still runs on it while a note was being edited', (t) async {
+      await setUpWorld(t, nodes: [tbox('e', 'test.editor', ba, 'note'), tbox('o', 'test.text', const Bounds(700, 100, 100, 50), 'o')]);
+      editorNode.requestFocus();
+      await t.pump();
+      expect(w.c.editingId, 'e');
+      await w.rightClick(w.at(const Offset(720, 120)));
+      expect(w.c.selectedId, 'o');
+      await w.choose(CanvasCommands.sendToBack);
+      expect(w.order, ['o', 'e']);
+      expect(w.c.selectedId, 'o');
+    });
+
     testWidgets('the canvas disposing under an open menu releases the hold', (t) async {
       await setUpWorld(t, nodes: [tbox('e', 'test.editor', ba, 'note')]);
       editorNode.requestFocus();

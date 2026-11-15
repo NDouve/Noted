@@ -1375,7 +1375,7 @@ class PageCanvasState extends State<PageCanvas>
       if (!spec.points.contains(p)) p.dispose();
     }
 
-    final session = _ContextSession(target, spec, origin, hold ? c : null);
+    final session = _ContextSession(target, spec, origin, hold ? c : null, demoted: !hold && id != null ? editing : null);
     session.holdNow();
     _contextSession = session;
     _contextClose.value = false;
@@ -1446,6 +1446,12 @@ class PageCanvasState extends State<PageCanvas>
     if (!guard.holds(_c, _c.page.id, registry: _commands)) return;
     if (t.boxId != null) {
       if (_targetChanged(t)) return;
+      // The demoted note's editor took the focus back as the menu went and
+      // selected itself: the menu's box is the selection it was opened for.
+      final demoted = s.demoted;
+      if (t.selects && demoted != null && _c.selectedId == demoted && _c.page.node(t.boxId!) != null) {
+        _c.select(t.boxId);
+      }
       // A registry command acts on the selection: it must still be the box.
       if (!entry.point && _c.selectedId != t.boxId) return;
     }
@@ -2108,11 +2114,15 @@ class _ContextTarget {
 /// One open context menu: its target, entries, the focus to give back, and
 /// the editor focus hold it took (released once).
 class _ContextSession {
-  _ContextSession(this.target, this.spec, this.origin, this._holder);
+  _ContextSession(this.target, this.spec, this.origin, this._holder, {this.demoted});
 
   final _ContextTarget target;
   final ContextMenuSpec spec;
   final FocusNode? origin;
+
+  /// The note that was being edited when a menu for another box opened. Flutter
+  /// gives its editor the focus back as the menu route goes, which selects it.
+  final String? demoted;
   CanvasController? _holder;
 
   void holdNow() => _holder?.editorFocusHold.hold();
