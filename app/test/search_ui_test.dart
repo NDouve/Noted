@@ -355,7 +355,6 @@ void main() {
   testWidgets('the search field and its Clear button follow the touch-aware control size', (t) async {
     await start(t);
     final s = NotebookSearch(nb);
-    addTearDown(s.dispose);
     for (final (touch, size) in [(false, 36.0), (true, 44.0)]) {
       await t.pumpWidget(
         MaterialApp(
@@ -372,6 +371,8 @@ void main() {
       );
       expect(t.getSize(find.byKey(const ValueKey('search-field'))).height, greaterThanOrEqualTo(size));
     }
+    await t.pumpWidget(const SizedBox());
+    s.dispose();
     await finish(t);
   });
 
