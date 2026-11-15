@@ -231,6 +231,13 @@ class AppMenuBarState extends State<AppMenuBar> {
   // The first focusable item of each menu, which a keyboard opening focuses.
   final List<FocusNode> _firstNode = [for (final t in _titles) FocusNode(debugLabel: 'first $t')];
   final List<bool> _isOpen = [false, false, false, false];
+  // Nested submenus (Page, Theme..): their controllers and button nodes by label,
+  // and the ones open now, innermost last, so Escape closes one level.
+  final Map<String, MenuController> _subControllers = {};
+  final Map<String, FocusNode> _subNodes = {};
+  final Set<FocusNode> _ownSubNodes = {};
+
+  final List<String> _openSubs = [];
   late final _TreeProxy _proxy = _TreeProxy(() => widget.treeActions(), widget.openDrawer);
   final List<CommandRegistry> _appRegistries = [];
   late final AppLifecycleListener _lifecycle;
@@ -354,7 +361,7 @@ class AppMenuBarState extends State<AppMenuBar> {
     _lifecycle.dispose();
     _bar.removeListener(_barChanged);
     _bar.dispose();
-    for (final n in [..._top, ..._firstNode]) {
+    for (final n in [..._top, ..._firstNode, ..._ownSubNodes]) {
       n.dispose();
     }
     for (final r in _appRegistries) {
@@ -538,6 +545,13 @@ class AppMenuBarState extends State<AppMenuBar> {
   // when the one left was), Down and Up open the menu.
   // Returns whether the key was used.
   bool _barKey(LogicalKeyboardKey key) {
+    // Escape closes one level: the innermost open submenu, focus back on its button.
+    if (key == LogicalKeyboardKey.escape && _openSubs.isNotEmpty) {
+      final label = _openSubs.last;
+      _subControllers[label]?.close();
+      _subNodes[label]?.requestFocus();
+      return true;
+    }
     final focus = FocusManager.instance.primaryFocus;
     final i = _top.indexWhere((n) => identical(n, focus));
     if (key == LogicalKeyboardKey.escape && !_isOpen.contains(true)) {
@@ -952,11 +966,25 @@ class AppMenuBarState extends State<AppMenuBar> {
         );
       case _Sub():
         final inner = _reserveCheck(e.children);
+        final label = e.label;
+        final subNode =
+            focusNode ??
+            _subNodes[label] ??
+            (() {
+              final made = FocusNode(debugLabel: 'sub $label');
+              _ownSubNodes.add(made);
+              return made;
+            })();
+        _subNodes[label] = subNode;
         return _FocusRing(
-          focusNode: focusNode,
+          focusNode: subNode,
           builder: (node) => SubmenuButton(
             key: ValueKey('menu-sub-${e.label}'),
             focusNode: node,
+            controller: _subControllers[label] ??= MenuController(),
+            onOpen: () => _openSubs.add(label),
+            onClose: () => _openSubs.remove(label),
+
             style: _itemStyle(context),
             menuStyle: _panelStyle(context),
             leadingIcon: reserve ? const MenuCheckMark(checked: false) : null,
@@ -1133,7 +1161,9 @@ class _FocusRingState extends State<_FocusRing> {
     final ringed =
         _node.hasPrimaryFocus && FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
     return DecoratedBox(
-      key: ringed ? const ValueKey('focus-ring') : null,
+      // No key that changes with focus: that would rebuild the button's subtree
+      // (and a submenu's anchor) each time the ring comes and goes.
+
       position: DecorationPosition.foreground,
       decoration: BoxDecoration(
         border: ringed

@@ -267,6 +267,10 @@ class _ContextPanelOverlayState extends State<ContextPanelOverlay> {
   // The controller this overlay holds the editor focus of.
   late CanvasController _held;
 
+  // How many overlays are on screen: a page change makes the new one before the
+  // old one's restore runs, and that restore must not take the focus from it.
+  static int _live = 0;
+
   @override
   void didUpdateWidget(ContextPanelOverlay oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -286,6 +290,7 @@ class _ContextPanelOverlayState extends State<ContextPanelOverlay> {
     // selection) until the focus is given back.
     _held = widget.controller;
     _held.editorFocusHold.hold();
+    _live++;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _focus.requestFocus();
     });
@@ -297,12 +302,19 @@ class _ContextPanelOverlayState extends State<ContextPanelOverlay> {
     final canvas = widget.focusCanvas;
     final controller = _held;
     _focus.dispose();
+    _live--;
 
     // After this frame: the focus tree is being taken apart now.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       var restored = false;
+      // Another overlay took over (a page change): the focus is its.
+      if (_live > 0) {
+        controller.editorFocusHold.release();
+        return;
+      }
       try {
-        if (origin != null && origin.context?.mounted == true && origin.canRequestFocus) {
+        if (origin != null
+ && origin.context?.mounted == true && origin.canRequestFocus) {
           origin.requestFocus();
           restored = true;
         }

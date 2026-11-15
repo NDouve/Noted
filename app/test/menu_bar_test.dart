@@ -547,7 +547,8 @@ void main() {
     // accent border, inside the bounds.
     bool outlined(Finder f) => t
         .widgetList<DecoratedBox>(
-          find.ancestor(of: f, matching: find.byKey(const ValueKey('focus-ring'))),
+          find.ancestor(of: f, matching: find.byType(DecoratedBox)),
+
         )
         .any((d) {
           final b = (d.decoration as BoxDecoration).border;

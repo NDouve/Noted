@@ -88,12 +88,14 @@ void main() {
       await _frames(t, 1);
       await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await _frames(t);
-      await t.sendKeyEvent(LogicalKeyboardKey.escape);
-      await _frames(t);
-      await t.sendKeyEvent(LogicalKeyboardKey.escape);
-      await _frames(t);
+      // One Escape per level: a submenu the keyboard opened, the menu, the bar.
+      for (var i = 0; i < 4 && w.bar(t).holding; i++) {
+        await t.sendKeyEvent(LogicalKeyboardKey.escape);
+        await _frames(t);
+      }
       expect(w.bar(t).holding, isFalse);
       expect(c.editorFocusHold.count, 0);
+
       expect(c.editingId, 'n');
       expect(seen, isNot(contains(null)), reason: 'no demote');
       expect(noteEditorFinder, findsOneWidget);

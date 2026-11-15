@@ -138,7 +138,10 @@ void main() {
     final accent = DesignColors.dark.accent;
     await t.sendKeyEvent(LogicalKeyboardKey.f10);
     await _frames(t);
-    final ring = t.widget<DecoratedBox>(find.byKey(const ValueKey('focus-ring')));
+    final ring = t
+        .widgetList<DecoratedBox>(find.ancestor(of: find.byKey(const ValueKey('menu-top-File')), matching: find.byType(DecoratedBox)))
+        .firstWhere((d) => d.position == DecorationPosition.foreground && (d.decoration as BoxDecoration).border != null);
+
     final border = (ring.decoration as BoxDecoration).border! as Border;
     expect(border.top.width, 2);
     expect(border.top.color, accent);
@@ -171,6 +174,88 @@ void main() {
     await t.tap(find.byKey(const ValueKey('menu-top-View')));
     await _frames(t);
     expect(left('app.view.panel'), plain, reason: 'and stays there unchecked');
+    await w.close(t);
+  });
+
+  bool within(WidgetTester t, Finder root) {
+    final focus = FocusManager.instance.primaryFocus?.context;
+    if (focus == null) return false;
+    final rootElement = t.element(root);
+    var found = false;
+    focus.visitAncestorElements((e) {
+      if (identical(e, rootElement)) {
+        found = true;
+        return false;
+      }
+      return true;
+    });
+    return found;
+  }
+
+  for (final (_, rights, sub, first) in [
+    ('File', 0, 'Page', 'app.page.newSubpage'),
+    ('View', 2, 'Theme', 'app.theme.system'),
+  ]) {
+    testWidgets('keyboard: F10, Down to $sub, Right opens it with its first item focused; Escape closes one level', (t) async {
+      final w = await ShellWorld.open(t);
+      await t.sendKeyEvent(LogicalKeyboardKey.f10);
+      await _frames(t);
+      for (var i = 0; i < rights; i++) {
+        await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await _frames(t, 1);
+      }
+      await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await _frames(t);
+      final subFinder = find.byKey(ValueKey('menu-sub-$sub'));
+      for (var i = 0; i < 20 && !within(t, subFinder); i++) {
+        await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await _frames(t, 1);
+      }
+      expect(within(t, subFinder), isTrue, reason: 'focus reached $sub');
+      await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await _frames(t);
+      expect(find.byKey(ValueKey('menu-$first')), findsOneWidget, reason: 'the submenu is open');
+      expect(within(t, find.byKey(ValueKey('menu-$first'))), isTrue, reason: 'its first item has the focus');
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t);
+      expect(find.byKey(ValueKey('menu-$first')), findsNothing, reason: 'one level closed');
+      expect(find.byKey(ValueKey('menu-sub-$sub')), findsOneWidget, reason: 'the menu stays');
+      expect(w.bar(t).holding, isTrue);
+      await w.close(t);
+    });
+  }
+
+  testWidgets('overlay open, then another page: Escape still closes the overlay', (t) async {
+    final w = await ShellWorld.open(t, size: const Size(1100, 800));
+    await t.tap(find.byKey(const ValueKey('menu-top-View')));
+    await _frames(t);
+    await t.tap(find.byKey(const ValueKey('menu-app.view.panel')));
+    await _frames(t, 6);
+    expect(find.byKey(const ValueKey('context-panel')), findsOneWidget);
+    await w.openPage(t, w.second);
+    await _frames(t, 6);
+    expect(find.byKey(const ValueKey('context-panel')), findsOneWidget, reason: 'still open on the new page');
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await _frames(t, 6);
+    expect(find.byKey(const ValueKey('context-panel')), findsNothing);
+    await w.close(t);
+  });
+
+  testWidgets('closing the overlay with Escape puts the focus back in the page title field', (t) async {
+    final w = await ShellWorld.open(t, size: const Size(1100, 800));
+    await t.tap(find.descendant(of: find.byKey(ValueKey('title-${w.first}')), matching: find.byType(EditableText)));
+    await _frames(t);
+    final before = FocusManager.instance.primaryFocus;
+    expect(before, isNotNull);
+    await t.tap(find.byKey(const ValueKey('menu-top-View')));
+    await _frames(t);
+    await t.tap(find.byKey(const ValueKey('menu-app.view.panel')));
+    await _frames(t, 6);
+    expect(FocusManager.instance.primaryFocus, isNot(same(before)), reason: 'the overlay took the focus');
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await _frames(t, 8);
+    expect(find.byKey(const ValueKey('context-panel')), findsNothing);
+    expect(FocusManager.instance.primaryFocus, same(before));
     await w.close(t);
   });
 }
