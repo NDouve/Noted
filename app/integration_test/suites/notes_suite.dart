@@ -118,7 +118,7 @@ void notesSuite() {
         expect(find.byKey(const ValueKey('col-header-A')), findsOneWidget);
         expect(find.byKey(const ValueKey('row-header-1')), findsOneWidget);
         // 034: clicking outside the table hides them.
-        await t.tapAt(toScreen(t, const Offset(900, 600)));
+        await t.tapAt(toScreen(t, const Offset(780, 600)));
         await s.pump(500);
         expect(find.byKey(const ValueKey('col-header-A')), findsNothing);
         expect(find.byKey(const ValueKey('row-header-1')), findsNothing);

@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:appflowy_editor/appflowy_editor.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -183,6 +184,8 @@ class _NoteEditorState extends State<_NoteEditor>
     (_live[widget.box.boxId] ??= []).add(this);
     _focus.addListener(_focusChanged);
     widget.box.find.addListener(_findChanged);
+    // The host's hold on the editor focus (an app menu has it for a moment).
+    _rebindHold();
     _shown = widget.box.data;
     // A box a click just created starts as an editor, and so does a note
     // the light view can't draw.
@@ -237,11 +240,76 @@ class _NoteEditorState extends State<_NoteEditor>
 
   // The note commands (insert table, insert equation) act on the editor
   // that has focus.
+  // The editor focus hold (CanvasController.editorFocusHeld), or null off a
+  // canvas. While it is true the editor stays mounted, and the selection the
+  // editor loses with its focus is put back when the focus comes back.
+  ValueListenable<bool>? _held;
+  Selection? _savedSelection;
+
+  bool get _holding => _held?.value ?? false;
+
+  // Listens to the hold of the controller of the canvas this note is on now:
+  // the canvas can be given another controller (another page) without this
+  // note being made again.
+  void _rebindHold() {
+    final now = context.findAncestorStateOfType<PageCanvasState>()?.controller.editorFocusHeld;
+    if (identical(now, _held)) return;
+    _held?.removeListener(_holdChanged);
+    _held = now;
+    _savedSelection = null;
+    _held?.addListener(_holdChanged);
+  }
+
+  void _holdChanged() {
+    if (_holding) {
+      final editor = _editor;
+      if (_editing && editor != null && !editor.isDisposed) _savedSelection = editor.selection;
+      return;
+    }
+    // Released: the demote check runs again, with the real focus.
+    _savedSelection = null;
+    _scheduleDemote();
+  }
+
+  // The selection at [s], held to what the document still has.
+  Selection _fitted(EditorState editor, Selection s) {
+    Position fit(Position p) {
+      final node = editor.getNodeAtPath(p.path);
+      if (node != null) {
+        final length = node.delta?.length ?? 0;
+        return Position(path: p.path, offset: p.offset > length ? length : p.offset);
+      }
+      final root = editor.document.root.children;
+      if (root.isEmpty) return Position(path: [0]);
+      final last = root.last;
+      return Position(path: last.path, offset: last.delta?.length ?? 0);
+    }
+
+    return Selection(start: fit(s.start), end: fit(s.end));
+  }
+
+  // The editor got its focus back while the hold lasts: its selection comes
+  // back too, as a UI event (as [_activate] does).
+  void _restoreSelection() {
+    final saved = _savedSelection;
+    final editor = _editor;
+    if (saved == null || editor == null || !_holding) return;
+    _savedSelection = null;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_editing || editor.isDisposed || !identical(editor, _editor)) return;
+      editor.updateSelectionWithReason(
+        _fitted(editor, saved),
+        reason: SelectionUpdateReason.uiEvent,
+      );
+    });
+  }
+
   void _focusChanged() {
     NoteCommandFocus.report(
       this,
       focused: widget.editable && _focus.hasFocus,
     );
+    if (_focus.hasFocus) _restoreSelection();
     if (!_focus.hasFocus) {
       _scheduleDemote();
     } else if (!_editing) {
@@ -371,6 +439,7 @@ class _NoteEditorState extends State<_NoteEditor>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _rebindHold();
     final scheme = Theme.of(context).colorScheme;
     final changed = scheme != _scheme;
     final first = _scheme == null;
@@ -427,7 +496,7 @@ class _NoteEditorState extends State<_NoteEditor>
     final editor = _editor;
     if (!mounted || !_editing || editor == null) return;
     if (!noteLightViewEnabled) return;
-    if (_focus.hasFocus || keepEditorFocusNotifier.shouldKeepFocus) return;
+    if (_focus.hasFocus || keepEditorFocusNotifier.shouldKeepFocus || _holding) return;
     final route = _route;
     if (route != null && !route.isCurrent) return;
     if (!noteLightable(editor.document.root)) return;
@@ -482,6 +551,8 @@ class _NoteEditorState extends State<_NoteEditor>
   @override
   void didUpdateWidget(_NoteEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
+    _rebindHold();
+
     if (oldWidget.box.find != widget.box.find) {
       oldWidget.box.find.removeListener(_findChanged);
       widget.box.find.addListener(_findChanged);
@@ -523,8 +594,10 @@ class _NoteEditorState extends State<_NoteEditor>
     final live = _live[widget.box.boxId];
     if (live != null && (live..remove(this)).isEmpty) _live.remove(widget.box.boxId);
     widget.box.find.removeListener(_findChanged);
+    _held?.removeListener(_holdChanged);
     _focus.removeListener(_focusChanged);
     _disposeEditor();
+
     _focus.dispose();
     super.dispose();
   }

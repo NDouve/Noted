@@ -114,11 +114,16 @@ class _BoxHostState extends State<BoxHost> {
     super.initState();
     _autofocus = widget.controller.takeAutofocus(widget.node.id);
     widget.multiTouch?.addListener(_multiTouchChanged);
+    widget.controller.editorFocusHeld.addListener(_holdChanged);
   }
 
   @override
   void didUpdateWidget(BoxHost oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.editorFocusHeld.removeListener(_holdChanged);
+      widget.controller.editorFocusHeld.addListener(_holdChanged);
+    }
     if (oldWidget.multiTouch != widget.multiTouch) {
       oldWidget.multiTouch?.removeListener(_multiTouchChanged);
       widget.multiTouch?.addListener(_multiTouchChanged);
@@ -128,7 +133,25 @@ class _BoxHostState extends State<BoxHost> {
   @override
   void dispose() {
     widget.multiTouch?.removeListener(_multiTouchChanged);
+    widget.controller.editorFocusHeld.removeListener(_holdChanged);
+    _contentFocus.dispose();
     super.dispose();
+  }
+
+  // The box content's focus, read again when a hold on the editor focus ends.
+  final FocusNode _contentFocus = FocusNode(
+    debugLabel: 'BoxHost content',
+    canRequestFocus: false,
+    skipTraversal: true,
+  );
+
+  // The host's hold on the editor focus ended: report the focus the editor
+  // really has now, which was not reported while it was held.
+  void _holdChanged() {
+    final c = widget.controller;
+    if (c.editorFocusHeld.value || !mounted) return;
+    final id = widget.node.id;
+    if (!_contentFocus.hasFocus && c.editingId == id) c.setEditing(id, false);
   }
 
   bool get _multiTouchOn => widget.multiTouch?.value ?? false;
@@ -194,7 +217,11 @@ class _BoxHostState extends State<BoxHost> {
       content = Focus(
         canRequestFocus: false,
         skipTraversal: true,
+        focusNode: _contentFocus,
         onFocusChange: (focused) {
+          // While the host holds the editor focus (a menu has it for a
+          // moment), losing it is not the end of editing.
+          if (!focused && c.editorFocusHeld.value) return;
           if (focused) _autofocus = false;
           c.setEditing(node.id, focused);
         },
@@ -299,7 +326,7 @@ class _BoxHostState extends State<BoxHost> {
                 child: content,
               ),
             ),
-            // The border: 1px border-box idle, 1px accent selected, 2px
+            // The border: 1px box-frame idle, 1px accent selected, 2px
             // conflict. A frameless box shows a dashed accent outline only
             // while selected.
             if (conflicted)
@@ -348,7 +375,7 @@ class _BoxHostState extends State<BoxHost> {
                     decoration: BoxDecoration(
                       borderRadius: metrics.borderLg,
                       border: Border.all(
-                        color: lit ? scheme.primary : scheme.outlineVariant,
+                        color: lit ? scheme.primary : noted.boxFrame,
                       ),
                     ),
                   ),

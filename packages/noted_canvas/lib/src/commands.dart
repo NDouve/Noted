@@ -6,6 +6,7 @@
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/widgets.dart';
 import 'package:flutter/services.dart';
 
@@ -167,7 +168,40 @@ String shortcutLabel(SingleActivator s) {
   ].join('+');
 }
 
+/// A shortcut as a menu shows it: like [shortcutLabel], with the `meta` key
+/// written as `Cmd` (a tooltip keeps `Meta`).
+String menuShortcutLabel(SingleActivator s) {
+  if (!s.meta) return shortcutLabel(s);
+  final plain = shortcutLabel(
+    SingleActivator(s.trigger, control: s.control, alt: s.alt, shift: s.shift),
+  );
+  // Cmd comes before Shift, as in `Cmd+Shift+Z`.
+  final parts = plain.split('+');
+  final key = parts.removeLast();
+  final shift = parts.remove('Shift');
+  return [...parts, 'Cmd', if (shift) 'Shift', key].join('+');
+}
+
+
+/// The shortcut a menu shows for [c] on [platform] (default: this one), or
+/// null for none. On macOS it is the command's `meta` alternate, as `Cmd+Z`;
+/// a command without one shows nothing there, never a Ctrl label. Elsewhere it
+/// is [Command.shortcut].
+String? menuShortcutFor(Command c, {TargetPlatform? platform}) {
+  if ((platform ?? defaultTargetPlatform) == TargetPlatform.macOS) {
+    for (final a in c.alternateShortcuts) {
+      if (a.meta && !a.control) return menuShortcutLabel(a);
+    }
+    final s = c.shortcut;
+    // A key with no modifier (Delete, F3) is the same on every platform.
+    return s != null && !s.control && !s.meta && !s.alt && !s.shift ? shortcutLabel(s) : null;
+  }
+  final s = c.shortcut;
+  return s == null ? null : shortcutLabel(s);
+}
+
 /// The commands of one context, by id.
+
 ///
 /// Commands depend on context: undo acts on the open page, "insert table" on
 /// the note that has focus. Rather than one global registry that has to

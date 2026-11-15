@@ -20,6 +20,7 @@ class DesignColors {
     required this.surfaceHover,
     required this.border,
     required this.borderBox,
+    required this.boxFrame,
     required this.text,
     required this.textMuted,
     required this.textDisabled,
@@ -53,6 +54,7 @@ class DesignColors {
     surfaceHover: Color(0xFFEEF0F3),
     border: Color(0xFFDCDFE4),
     borderBox: Color(0xFFE3E6EA),
+    boxFrame: Color(0xFFE3E6EA),
     text: Color(0xFF1B1F24),
     textMuted: Color(0xFF5B6470),
     textDisabled: Color(0xFF9AA1AB),
@@ -86,6 +88,7 @@ class DesignColors {
     surfaceHover: Color(0xFF2C3138),
     border: Color(0xFF353A42),
     borderBox: Color(0xFF3C424B),
+    boxFrame: Color(0xFF6B717A),
     text: Color(0xFFE6E8EB),
     textMuted: Color(0xFFA0A8B3),
     textDisabled: Color(0xFF6B727C),
@@ -129,8 +132,11 @@ class DesignColors {
   /// Hairlines: toolbar and sidebar edges, table cells, control outlines.
   final Color border;
 
-  /// Idle box frame on the canvas. Quieter than border so content leads.
+  /// Quiet outline for the find bar, panels and dialogs. Quieter than border so content leads.
   final Color borderBox;
+
+  /// Idle box frame on the canvas. Dark is 3:1 on surface so box edges stay legible.
+  final Color boxFrame;
 
   /// Primary text on surface, bg-canvas and bg-app.
   final Color text;

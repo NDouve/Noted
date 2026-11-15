@@ -111,6 +111,16 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       }
       break;
     }
+    case WM_SYSCOMMAND:
+      // F10, a lone Alt and Alt+letter with no native menu send SC_KEYMENU.
+      // Without this, DefWindowProc enters system-menu mode (keys go to the
+      // invisible window menu) or beeps. Flutter has already seen the key
+      // events, so the in-window menu bar works as it should. Alt+Space
+      // (lParam is the space character) still opens the window menu.
+      if ((wparam & 0xFFF0) == SC_KEYMENU && lparam != ' ') {
+        return 0;
+      }
+      break;
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
       break;

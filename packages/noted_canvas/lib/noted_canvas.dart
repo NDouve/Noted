@@ -32,6 +32,7 @@ export 'src/geometry.dart';
 export 'src/module_registry.dart';
 export 'src/open_confirm.dart';
 export 'src/design_tokens.g.dart';
+export 'src/editor_focus_hold.dart';
 export 'src/noted_colors.dart';
 export 'src/noted_menu.dart';
 export 'src/noted_theme.dart';

@@ -174,16 +174,16 @@ void main() {
         [
           ('app.theme.system', 'Follow system'),
           ('app.theme.light', 'Light'),
-          ('app.theme.dark', 'Dark'),
+          ('app.theme.dark', 'Precision'),
         ],
       );
-      expect(r[AppCommands.themeSystem]!.checked, isTrue);
+      expect(r[AppCommands.themeLight]!.checked, isTrue, reason: 'unsaved settings are Light');
       var notified = 0;
       r.addListener(() => notified++);
       await r.invoke(AppCommands.themeDark);
       expect(settings.theme, ThemeSetting.dark);
       expect(r[AppCommands.themeDark]!.checked, isTrue);
-      expect(r[AppCommands.themeSystem]!.checked, isFalse);
+      expect(r[AppCommands.themeLight]!.checked, isFalse);
       expect(notified, greaterThan(0), reason: 'the registry heard the change');
       await r.invoke(AppCommands.themeLight);
       expect(settings.theme, ThemeSetting.light);
@@ -214,7 +214,7 @@ void main() {
     shows(['Undo (Ctrl+Z)', 'Redo (Ctrl+Y)', 'Search all pages (Ctrl+Shift+F)', 'Bold (Ctrl+B)']);
     await openTab('view');
     shows(['Fit all', 'Zoom to 100% (Ctrl+0)', 'Zoom in (Ctrl+=)', 'Find on page (Ctrl+F)']);
-    expect(find.text('100%'), findsOneWidget);
+    expect(find.descendant(of: find.byType(CommandToolbar), matching: find.text('100%')), findsOneWidget);
     await openTab('insert');
     shows(['Insert table', 'Insert equation', 'Insert image', 'Insert file', 'AI box']);
 

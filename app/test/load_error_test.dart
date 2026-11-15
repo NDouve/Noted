@@ -131,7 +131,50 @@ void main() {
     await close(t);
   });
 
+  testWidgets('firstLoadSucceeded flips in the callback that completes loadSucceeded, with a notification', (t) async {
+    await start(t, () async {});
+    expect(nb.firstLoadSucceeded, isFalse);
+    var notified = 0;
+    nb.addListener(() => notified++);
+    store.failWith = const FileSystemException('disk said no');
+    await t.runAsync(() => nb.loadChecked());
+    expect(nb.firstLoadSucceeded, isFalse, reason: 'a failed load is not a success');
+
+    // A late success after a timeout.
+    store.failWith = null;
+    final hang = store.hangOn = Completer<void>();
+    await t.runAsync(() => nb.loadChecked(timeout: const Duration(milliseconds: 100)));
+    expect(nb.firstLoadSucceeded, isFalse, reason: 'a timeout is not a success');
+    // A Retry that hangs clears the error and is neither an error nor a success.
+    final before = notified;
+    hang.complete();
+    var seenInCallback = false;
+    unawaited(nb.loadSucceeded.then((_) => seenInCallback = nb.firstLoadSucceeded));
+    await waitFor(t, () => nb.firstLoadSucceeded);
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    expect(seenInCallback, isTrue, reason: 'already set when loadSucceeded completes');
+    expect(notified, greaterThan(before), reason: 'listeners were told');
+    await close(t);
+  });
+
+  testWidgets('firstLoadSucceeded after a Retry that hung and then succeeded', (t) async {
+    await start(t, () async {});
+    store.failWith = const FileSystemException('disk said no');
+    await t.runAsync(() => nb.loadChecked());
+    store.failWith = null;
+    final hang = store.hangOn = Completer<void>();
+    unawaited(nb.loadChecked(timeout: const Duration(seconds: 30)));
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    expect(nb.loadError, isNull, reason: 'a Retry clears the error');
+    expect(nb.firstLoadSucceeded, isFalse, reason: 'and has no success yet');
+    hang.complete();
+    await waitFor(t, () => nb.firstLoadSucceeded);
+    expect(nb.firstLoadSucceeded, isTrue);
+    await close(t);
+  });
+
   testWidgets('Retry during a timed-out run starts no second load, and says it is still loading', (t) async {
+
     await start(t, () async {});
     final hang = store.hangOn = Completer<void>();
     await t.runAsync(() => nb.loadChecked(timeout: const Duration(milliseconds: 100)));

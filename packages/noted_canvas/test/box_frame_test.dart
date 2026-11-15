@@ -132,7 +132,7 @@ void main() {
         'bottomRight',
       ];
 
-      testWidgets('idle: surface fill, 1px border-box, radius-lg, no shadow', (
+      testWidgets('idle: surface fill, 1px box-frame, radius-lg, no shadow', (
         t,
       ) async {
         await pump(t, _box('a', 'test.text'));
@@ -142,7 +142,8 @@ void main() {
         expect(fill.boxShadow, isNull, reason: 'boxes have no drop shadow');
         final border = decorationOf(t, 'box-frame-border');
         final side = (border.border! as Border).top;
-        expect(side.color, scheme.outlineVariant);
+        expect(side.color, colors.boxFrame);
+        expect(colors.boxFrame, brightness == Brightness.dark ? DesignColors.dark.boxFrame : DesignColors.light.boxFrame);
         expect(side.width, 1);
         expect(border.borderRadius, BorderRadius.circular(metrics.radiusLg));
         // No handles while idle.

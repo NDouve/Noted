@@ -74,9 +74,28 @@ class PageCanvas extends StatefulWidget {
     this.aiMerge,
     this.issueSilence,
     this.boxTypeName,
+    this.onCommandsChanged,
+    this.sidePanel,
+    this.overlayPanel,
   });
 
   final CanvasController controller;
+
+  /// Host only. Called after the frame in which this canvas made a new
+  /// command registry (the page, the tool selection or the allowed box types
+  /// changed), and with null in the frame after the canvas is disposed. The
+  /// replaced registry is disposed one frame after the call, so a holder
+  /// never reads a disposed one.
+  final ValueChanged<CommandRegistry?>? onCommandsChanged;
+
+  /// Host only. A panel built with this canvas's live registry, shown right of
+  /// the canvas and below the toolbar; null shows none.
+  final Widget Function(BuildContext context, CommandRegistry registry)? sidePanel;
+
+  /// Host only. A panel drawn over the canvas area (below the toolbar, so the
+  /// toolbar stays uncovered), built with the canvas's live registry; null shows
+  /// none. It fills the area: it brings its own scrim and position.
+  final Widget Function(BuildContext context, CommandRegistry registry)? overlayPanel;
 
   /// The name of a box type for the list of boxes under a point ("Note"),
   /// or null for a type the app has no name for (it then reads "Unsupported
@@ -392,7 +411,28 @@ class PageCanvasState extends State<PageCanvas>
       ..registerAll(widget.extraCommands?.call() ?? const []);
     // Last, so a real command with a placeholder's id wins.
     _commands.registerAll(placeholderCommands(_commands));
-    old.dispose();
+    if (old.commands.isEmpty) {
+      old.dispose();
+      _announceCommands();
+      return;
+    }
+    // A holder may still read the old registry until it has the new one: tell
+    // it after this frame, and dispose the old one a frame later.
+    _announceCommands();
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      SchedulerBinding.instance.addPostFrameCallback((_) => old.dispose());
+      SchedulerBinding.instance.scheduleFrame();
+    });
+  }
+
+  // Tells the host about the registry that is current after this frame.
+  void _announceCommands() {
+    final callback = widget.onCommandsChanged;
+    if (callback == null) return;
+    final made = _commands;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (mounted && identical(_commands, made)) callback(made);
+    });
   }
 
   // The switchable modules whose type this page disallows.
@@ -556,6 +596,10 @@ class PageCanvasState extends State<PageCanvas>
       _find.dispose();
       _find = _makeFind();
     }
+    // A page that turns read-only (or editable) under an open menu: the edit
+    // commands read it, so they are re-read now.
+    if (oldWidget.readOnly != widget.readOnly) _commands.refresh();
+    if (oldWidget.onCommandsChanged != widget.onCommandsChanged) _announceCommands();
     if (oldWidget.findRequests != widget.findRequests) {
       oldWidget.findRequests?.removeListener(_takeFindRequest);
       widget.findRequests?.addListener(_takeFindRequest);
@@ -588,7 +632,14 @@ class PageCanvasState extends State<PageCanvas>
     widget.findRequests?.removeListener(_takeFindRequest);
     _find.dispose();
     _findFocus.dispose();
-    _commands.dispose();
+    // The host may read the registry until the next frame; it is told then
+    // that there is none, and the registry is disposed with that.
+    final registry = _commands;
+    final callback = widget.onCommandsChanged;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      callback?.call(null);
+      registry.dispose();
+    });
     // Listeners first: ending a session notifies the controller, and a
     // canvas being disposed must not rebuild.
     _c.removeListener(_changed);
@@ -1105,7 +1156,26 @@ class PageCanvasState extends State<PageCanvas>
             layout: widget.toolbar,
             readOnly: _readOnly,
           ),
-          Expanded(child: _canvasArea(scheme)),
+          Expanded(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (widget.sidePanel == null)
+                  _canvasArea(scheme)
+                else
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(child: _canvasArea(scheme)),
+                      widget.sidePanel!(context, _commands),
+                    ],
+                  ),
+                if (widget.overlayPanel != null) widget.overlayPanel!(context, _commands),
+              ],
+            ),
+          ),
+
+
         ],
       ),
     );

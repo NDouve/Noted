@@ -18,7 +18,8 @@ const int settingsFormatVersion = 1;
 enum ThemeSetting {
   system('system', 'Follow system', ThemeMode.system),
   light('light', 'Light', ThemeMode.light),
-  dark('dark', 'Dark', ThemeMode.dark);
+  // The dark theme is named Precision; its stored value stays "dark".
+  dark('dark', 'Precision', ThemeMode.dark);
 
   const ThemeSetting(this.value, this.label, this.mode);
 
@@ -51,15 +52,24 @@ File defaultSettingsFile() {
 /// Fields this build doesn't know are kept when the file is rewritten. A
 /// missing, damaged or unreadable file gives the defaults and is left alone
 /// until a setting is changed.
+///
+/// A new profile (no `settings.json` and no [profileMarker] file) starts in
+/// Light, and that is saved once. Any other missing theme is Follow system.
 class AppSettings extends ChangeNotifier {
-  /// Reads [file] (null: settings that aren't saved anywhere).
-  AppSettings(this.file) {
+  /// Reads [file] (null: settings that aren't saved anywhere). [profileMarker]
+  /// is the file whose absence, beside a missing [file], says this is a new
+  /// profile (`binders.json`); without it no profile counts as new.
+  AppSettings(this.file, {File? profileMarker}) {
+    _profileMarker = profileMarker;
     _read();
   }
 
   final File? file;
+  File? _profileMarker;
 
-  ThemeSetting _theme = ThemeSetting.system;
+  // Light for settings that aren't saved anywhere; a file's own default is
+  // Follow system (see [_read]).
+  ThemeSetting _theme = ThemeSetting.light;
   ToolbarStyle _toolbar = ToolbarStyle.tabs;
 
   /// Everything that was in the file, so unknown fields survive a rewrite.
@@ -162,12 +172,27 @@ class AppSettings extends ChangeNotifier {
     final f = file;
     if (f == null) return;
     try {
-      if (!f.existsSync()) return;
-      final json = jsonDecode(f.readAsStringSync());
-      if (json is! Map<String, dynamic>) {
-        _readFailed = true;
+      if (!f.existsSync()) {
+        // A new profile is Light, saved once so the next launch (which finds
+        // binders.json by then) keeps it. Where binders.json exists already,
+        // nobody chose a theme: Follow system, and nothing is written.
+        final marker = _profileMarker;
+        if (marker != null && !marker.existsSync()) {
+          _theme = ThemeSetting.light;
+          _write();
+        } else {
+          _theme = ThemeSetting.system;
+        }
         return;
       }
+      final json = jsonDecode(f.readAsStringSync());
+
+      if (json is! Map<String, dynamic>) {
+        _readFailed = true;
+        _theme = ThemeSetting.system;
+        return;
+      }
+
       _raw = Map<String, Object?>.of(json);
       _theme = ThemeSetting.parse(json['theme']) ?? ThemeSetting.system;
       _toolbar = ToolbarStyle.parse(json['toolbar']) ?? ToolbarStyle.tabs;

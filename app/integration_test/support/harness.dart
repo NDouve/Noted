@@ -136,7 +136,7 @@ class Session {
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
-    settings = AppSettings(env.settingsFile);
+    settings = AppSettings(env.settingsFile, profileMarker: env.binders);
     aiAccess = AiAccessService(dataFolder: env.appDir, pageOfBox: (id) => nb.aiPageOfBox(id));
     nb = Notebook(
       PageStore(env.pages),
@@ -156,7 +156,10 @@ class Session {
       aiAccess: aiAccess,
     );
     env.assertIsolated(nb, settings);
-    await nb.load();
+    await nb.loadChecked();
+    expect(nb.loadError, isNull, reason: 'the start-up load failed');
+    expect(nb.firstLoadSucceeded, isTrue, reason: 'the start-up load did not succeed');
+
     await tester.pumpWidget(NotedApp(notebook: nb, settings: settings));
     await pump(300);
   }

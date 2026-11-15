@@ -6,8 +6,8 @@ Noted's look is **quiet chrome, content first**. The canvas belongs to the user'
 
 1. **Neutral first, one accent.** The chrome is greys. `accent` is the only brand hue, and it means one thing: *this is selected or active* (the active tool, the active page, a selected box, a focus ring, a link).
 2. **Colour only for meaning.** `conflict` (amber) is for sync conflicts and for read-only and recovery banners. `error` (red) is for errors and for the sync-issue chips and icon (0120). Binder colours identify binders. Ink colours are the user's. Nothing is coloured for decoration.
-3. **Borders, not shadows.** Boxes sit on the canvas with a hairline (`border-box`) and `radius-lg`. Selection adds an `accent` border plus `shadow-selected`. The only drop shadow is `shadow-popover`, for things that float (menus, dialogs, tooltips).
-4. **Both themes are first-class.** Every token has a light and a dark value, and every pairing in this book passes WCAG AA in both. Default ink (`ink-default`) flips with the theme; picked ink colours (`ink-*`) never do. Binder colours keep their stored value and show a lifted shade in dark.
+3. **Borders, not shadows.** Boxes sit on the canvas with a hairline (`box-frame`) and `radius-lg`. Selection adds an `accent` border plus `shadow-selected`. The only drop shadow is `shadow-popover`, for things that float (menus, dialogs, tooltips).
+4. **Both themes are first-class.** The dark theme is named Precision (its id stays `dark`). Every token has a light and a dark value, and every pairing in this book passes WCAG AA in both. Default ink (`ink-default`) flips with the theme; picked ink colours (`ink-*`) never do. Binder colours keep their stored value and show a lifted shade in dark.
 5. **Dense but touchable.** Desktop controls are `control` (36px); on touch devices every control grows to `touch-target` (44px) and rows to 40px.
 
 ## Colour roles
@@ -17,7 +17,7 @@ Noted's look is **quiet chrome, content first**. The canvas belongs to the user'
 | Chrome | `bg-app`, `bg-sidebar` | Window behind sidebar and toolbar |
 | Canvas | `bg-canvas` | The page; page backgrounds draw on it |
 | Surfaces | `surface`, `surface-hover` | Boxes, toolbar, menus, dialogs; hover fills |
-| Lines | `border`, `border-box` | Hairlines; idle box frames |
+| Lines | `border`, `border-box`, `box-frame` | Hairlines; `box-frame` is the idle box frame (3:1 in Precision) |
 | Text | `text`, `text-muted`, `text-disabled` | Primary, secondary, inactive only |
 | Selection | `accent`, `accent-soft`, `on-accent` | Active/selected states, focus, links |
 | Conflict | `conflict`, `conflict-soft`, `on-conflict` | Sync conflicts, read-only and recovery banners |
@@ -48,7 +48,7 @@ Each page can draw one background on `bg-canvas`, chosen per page and saved in p
 
 ## Mapping to Flutter
 
-Build one `ThemeData` per theme from these tokens. `ColorScheme`: `primary` = `accent`, `onPrimary` = `on-accent`, `primaryContainer` = `accent-soft`, `onPrimaryContainer` = `accent`, `surface` = `surface`, `onSurface` = `text`, `onSurfaceVariant` = `text-muted`, `outline` = `border`, `outlineVariant` = `border-box`, `error` = `error`, `surfaceContainerLowest` = `bg-canvas`, `surfaceContainerLow` = `bg-app`. Put the tokens with no Material slot (`conflict*`, `ink-*`, `binder-*`, `paper-*`, `text-disabled`) in a `ThemeExtension` called `NotedColors`. Spacing, radius and size tokens go in a `NotedMetrics` extension. The snackbar is inverted: background = `text` (`inverseSurface`), message and close icon = `surface`, and the action label (`actionTextColor`) = the `accent` of the other theme (dark's accent in light, light's in dark), because this theme's own accent fails 4.5:1 on that background. Widgets read tokens only, never hex values.
+Build one `ThemeData` per theme from these tokens. `ColorScheme`: `primary` = `accent`, `onPrimary` = `on-accent`, `primaryContainer` = `accent-soft`, `onPrimaryContainer` = `accent`, `surface` = `surface`, `onSurface` = `text`, `onSurfaceVariant` = `text-muted`, `outline` = `border`, `outlineVariant` = `border-box`, `error` = `error`, `surfaceContainerLowest` = `bg-canvas`, `surfaceContainerLow` = `bg-app`. Put the tokens with no Material slot (`box-frame`, `conflict*`, `ink-*`, `binder-*`, `paper-*`, `text-disabled`) in a `ThemeExtension` called `NotedColors`. Spacing, radius and size tokens go in a `NotedMetrics` extension. The snackbar is inverted: background = `text` (`inverseSurface`), message and close icon = `surface`, and the action label (`actionTextColor`) = the `accent` of the other theme (dark's accent in light, light's in dark), because this theme's own accent fails 4.5:1 on that background. Widgets read tokens only, never hex values.
 
 ## Components
 
