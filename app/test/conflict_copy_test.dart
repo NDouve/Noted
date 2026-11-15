@@ -48,6 +48,9 @@ class FlakyStore extends PageStore {
     void Function()? afterRead,
     void Function()? beforePublish,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) async {
     if (dropSaves) return const ReplaceResult(ReplaceOutcome.replaced); // says so, keeps nothing
     return super.saveIfUnchanged(page, expectedText);

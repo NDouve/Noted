@@ -275,6 +275,50 @@ void main() {
       expect(h.engine.issues, hasIssue('p0.canvas'));
     });
 
+    test(
+      '13. a version written into the set-aside page is kept and reported',
+      () async {
+        seedMany(3);
+        await h.round();
+        h.fake.replaceFile('Noted/p0.canvas', Harness.b('v2'));
+        h.engine = h.newEngine(
+          onStep: (s) {
+            if (s == 'replaceBeforeFinalCheck') {
+              final aside = h.tree().singleWhere(
+                (p) => p.endsWith('.cas-verified'),
+              );
+              File(h.path(aside)).writeAsStringSync('written into the aside');
+            }
+          },
+        );
+        await h.round();
+        expect(h.read('p0.canvas'), 'v2');
+        final kept = h.tree().singleWhere((p) => p.contains('-recovered-'));
+        expect(h.read(kept), 'written into the aside');
+        expect(h.tree().where((p) => p.contains('.cas-')), isEmpty);
+        expect(h.engine.issues, hasIssue(kept));
+      },
+    );
+
+    test('13. a verified aside that could not be deleted is left to the sweep, not reported as a kept copy', () async {
+      seedMany(3);
+      await h.round();
+      h.fake.replaceFile('Noted/p0.canvas', Harness.b('v2'));
+      RandomAccessFile? hold;
+      h.engine = h.newEngine(
+        onStep: (s) {
+          if (s == 'replaceBeforeFinalCheck') {
+            final aside = h.tree().singleWhere((p) => p.endsWith('.cas-verified'));
+            hold = File(h.path(aside)).openSync(); // the unlink then fails (Windows)
+          }
+        },
+      );
+      await h.round();
+      hold?.closeSync();
+      expect(h.read('p0.canvas'), 'v2');
+      expect(h.engine.issues.where((i) => i.reason.contains('Kept as a copy')), isEmpty);
+    }, skip: Platform.isWindows ? false : 'needs a delete that fails (open handle, Windows)');
+
     test('a delete that throws after the page was set aside gets it back by a sweep', () async {
       seedMany(12);
       await h.round();

@@ -125,6 +125,16 @@
 //     sequences fail (seeds 1, 4, 7, 12; "stacking order of page" after a
 //     `layer:both` step) and so does the probe `layer:both`.
 //
+// 22. V2 skipped (the aside's final check: `replaceIfUnchanged` and
+//     `deleteFileIfMatches` delete the drop file unchecked; run 2026-11-15-01,
+//     task 1): 16 of the first 16 seeds fail (23 of the 24), at the
+//     `sync:swapAside/*` steps (seed 1: "the move should have been refused").
+//
+// 23. V3 skipped (`deleteFileIfMatches` does not ask `stillRedundant` again just
+//     before the unlink): 15 of the first 16 seeds fail (22 of the 24), at
+//     `sync:swapAside/redundant` (the binder Put back's copy is deleted
+//     although the binder file was replaced meanwhile).
+//
 // Rows 1-19 were counted again with the layer steps in (`layer:both` adds a
 // box, so the picks after it differ). Sequences of the 24 that fail, each row
 // made again by breaking the same behaviour (rows 14 and 16 at a place that
@@ -251,6 +261,12 @@ class _Chaos extends PageStore {
   /// Runs once, just before the next compare-and-delete.
   void Function()? beforeDeleteOnce;
 
+  /// Run once, inside the next compare-and-swap replace or compare-and-delete:
+  /// before the verified aside is renamed for its delete, and before its final
+  /// re-check (a sync client rewriting the aside, run 2026-11-15-01).
+  Future<void> Function(String path)? beforeAsideDeleteOnce;
+  Future<void> Function(String path)? beforeFinalCheckOnce;
+
   /// Pages whose new file can't be written (a destination that went away).
   final Set<String> failNew = {};
 
@@ -286,6 +302,9 @@ class _Chaos extends PageStore {
     void Function()? afterRead,
     void Function()? beforePublish,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) async {
     saves++;
     _fire();
@@ -293,6 +312,10 @@ class _Chaos extends PageStore {
     if (s != null && (stallId == null || stallId == page.id)) await s.future;
     final once = beforePublishOnce;
     beforePublishOnce = null;
+    final asideOnce = beforeAsideDeleteOnce;
+    beforeAsideDeleteOnce = null;
+    final finalOnce = beforeFinalCheckOnce;
+    beforeFinalCheckOnce = null;
     return super.saveIfUnchanged(
       page,
       expectedText,
@@ -304,6 +327,9 @@ class _Chaos extends PageStore {
         beforePublish?.call();
       },
       beforeRestore: beforeRestore,
+      beforeAsideDelete: asideOnce ?? beforeAsideDelete,
+      beforeFinalCheck: finalOnce ?? beforeFinalCheck,
+      afterFinalRead: afterFinalRead,
     );
   }
 
@@ -334,10 +360,17 @@ class _Chaos extends PageStore {
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) {
     final f = beforeDeleteOnce;
     beforeDeleteOnce = null;
     f?.call();
+    final asideOnce = beforeAsideDeleteOnce;
+    beforeAsideDeleteOnce = null;
+    final finalOnce = beforeFinalCheckOnce;
+    beforeFinalCheckOnce = null;
     if (failDelete.contains(pageId)) throw const FileSystemException('source gone');
     return super.deleteIfUnchanged(
       pageId,
@@ -346,6 +379,9 @@ class _Chaos extends PageStore {
       afterRead: afterRead,
       beforeDelete: beforeDelete,
       beforeRestore: beforeRestore,
+      beforeAsideDelete: asideOnce ?? beforeAsideDelete,
+      beforeFinalCheck: finalOnce ?? beforeFinalCheck,
+      afterFinalRead: afterFinalRead,
     );
   }
 }
@@ -745,6 +781,9 @@ class _Run {
     // A box is brought to front or sent to back (a generator of its own, after
     // the others, so their traces stay the ones they were).
     if (_yrng.nextInt(100) < 15) await _layerStep(n);
+    // A sync client rewrites the aside of a replace or delete (a generator of its
+    // own, after the others).
+    if (_srng.nextInt(100) < 20) await _swapStep(n);
   }
 
   /// The step `recover:overwrittenAfterLanding` after step [n], on pages picked
@@ -796,6 +835,156 @@ class _Run {
     await _settle();
     await verify('step $n ($ran)');
     kinds.add(ran);
+  }
+
+  // ---- sync:swapAside: a sync client rewrites the aside (run 2026-11-15-01) ----
+  //
+  // A sync client that follows items by id uploads the move aside as a rename
+  // of the page, and another device's edit then lands in the aside before it is
+  // deleted. The aside's re-check keeps what it finds: the other device's
+  // version is never deleted.
+  //  - `save`: the open page's save, the swap lands at the aside's name (or at
+  //    its re-check); the other device's box is merged from the conflict copy
+  //    the save reports.
+  //  - `move`, `delete`: the swap lands in the source's aside; the move is
+  //    refused and the delete keeps the page, with the other device's box.
+  //  - `redundant`: a binder's Put back, the binder file replaced by another
+  //    version of the same binder while the copy is re-checked; the copy is
+  //    kept, and a second Put back (the file removed again) lands it.
+
+  late final Random _srng = Random(seed * 47 + 19); // when and how an aside is rewritten (_swapStep)
+  static final Map<String, int> _swapTried = {};
+  static const _swapVariants = ['save', 'move', 'delete', 'redundant'];
+
+  Future<void> _swapStep(int n) async {
+    final sorted = [..._swapVariants]..shuffle(_srng);
+    sorted.sort((a, b) => (_swapTried[a] ?? 0).compareTo(_swapTried[b] ?? 0));
+    final variant = sorted.first;
+    final ran = await _swap(variant);
+    if (ran == null) return;
+    _swapTried[variant] = (_swapTried[variant] ?? 0) + 1;
+    trace.add('  ($ran done)');
+    await _settle();
+    await verify('step $n ($ran)');
+    kinds.add(ran);
+  }
+
+  /// Runs swap variant [variant]; returns its kind, or null when it could not
+  /// be made (nothing was changed then).
+  Future<String?> _swap(String variant) async {
+    if (variant == 'redundant') return _swapRedundant();
+    final single = [
+      for (final e in model.entries)
+        if (_subtree(e.key).length == 1) e.key,
+    ];
+    if (single.isEmpty) return null;
+    final id = single[_srng.nextInt(single.length)];
+    final m = model[id]!;
+    final st = storeOf(m.loc);
+    // Where the swap lands: at the aside's name, or at the re-check.
+    final atCheck = _srng.nextBool();
+    trace.add('sync:swapAside/$variant on ${_short(id)} in ${m.loc} (${atCheck ? 'at the re-check' : 'at the aside'})');
+    Future<void> Function(String) swapWith(NotedPage page, void Function() fired) => (path) async {
+      fired();
+      File(path).writeAsStringSync(writePage(page));
+    };
+    var fired = false;
+    switch (variant) {
+      case 'save':
+        await nb.open(id);
+        final c = nb.current!;
+        await nb.flush();
+        _localEdit(m, c, addOnly: true);
+        final y = _newBox(_text('sync'));
+        final theirs = _disk(id).insertNode(y);
+        final hook = swapWith(theirs, () => fired = true);
+        if (atCheck) {
+          st.beforeFinalCheckOnce = hook;
+        } else {
+          st.beforeAsideDeleteOnce = hook;
+        }
+        await nb.flush();
+        expect(fired, isTrue, reason: 'the sync writer never got its turn');
+        m.boxes[y.id] = _val(y);
+      case 'move':
+        final others = _locs.where((l) => l != m.loc).toList();
+        final to = others[_srng.nextInt(others.length)];
+        if (_standaloneLeft([id], to: to) < 1) return null;
+        await nb.flush();
+        final y = _newBox(_text('sync'));
+        final theirs = _disk(id).insertNode(y);
+        final hook = swapWith(theirs, () => fired = true);
+        if (atCheck) {
+          st.beforeFinalCheckOnce = hook;
+        } else {
+          st.beforeAsideDeleteOnce = hook;
+        }
+        Object? error;
+        try {
+          await _moveTo(id, to);
+        } on Object catch (e) {
+          error = e;
+        }
+        expect(fired, isTrue, reason: 'the sync writer never got its turn');
+        expect(error, isNotNull, reason: 'the move should have been refused');
+        m.boxes[y.id] = _val(y);
+      case 'delete':
+        if (_standaloneLeft([id], to: null) < 1) return null;
+        await nb.flush();
+        final y = _newBox(_text('sync'));
+        final theirs = _disk(id).insertNode(y);
+        final hook = swapWith(theirs, () => fired = true);
+        if (atCheck) {
+          st.beforeFinalCheckOnce = hook;
+        } else {
+          st.beforeAsideDeleteOnce = hook;
+        }
+        final deleted = await nb.delete(id);
+        expect(fired, isTrue, reason: 'the sync writer never got its turn');
+        expect(deleted.keptNote, isNotNull, reason: 'the page was kept with the other device box');
+        await nb.undoDelete(deleted);
+        m.boxes[y.id] = _val(y);
+    }
+    return 'sync:swapAside/$variant';
+  }
+
+  Future<String?> _swapRedundant() async {
+    if (!_canWrite) return null;
+    trace.add('sync:swapAside/redundant on binder A');
+    final now = Binder.parse(_aFile.readAsStringSync()).aiAccess ?? AiAccess.guarded;
+    final others = [for (final a in AiAccess.values) if (a != now) a];
+    final v = others[_srng.nextInt(others.length)];
+    _seams.beforeMoveAside = () {
+      _seams.beforeMoveAside = null;
+      _aFile.deleteSync();
+    };
+    await nb.setBinderAiAccess(pathA, v);
+    await nb.checkBinderFile(_aFile.path);
+    final rows = nb.binderCopyRows(_sectionA);
+    expect(rows, hasLength(1), reason: 'seed $seed: the temp is listed');
+    final copy = rows.single.path;
+    final bytes = File(copy).readAsBytesSync();
+    var fired = false;
+    nb.putBackBeforeFinalCheckHook = (path) async {
+      fired = true;
+      nb.putBackBeforeFinalCheckHook = null;
+      final b = Binder.parse(_aFile.readAsStringSync()).withOwner('Swap ${++_titleCounter}');
+      _aFile.writeAsStringSync(b.write());
+    };
+    await nb.putBackBinderCopy(pathA, copy);
+    nb.putBackBeforeFinalCheckHook = null;
+    expect(fired, isTrue, reason: 'seed $seed: the other version never got its turn');
+    expect(File(copy).readAsBytesSync(), bytes, reason: 'seed $seed: the copy is kept, not deleted');
+    expect(nb.binderCopyRows(_sectionA).map((r) => r.path), contains(copy), reason: 'seed $seed: the copy is still listed');
+    // The other device's version goes again; a second Put back lands the copy.
+    _aFile.deleteSync();
+    await nb.checkBinderFile(_aFile.path);
+    await nb.putBackBinderCopy(pathA, copy);
+    await nb.checkBinderFile(_aFile.path);
+    expect(File(copy).existsSync(), isFalse, reason: 'seed $seed: the landed copy is removed');
+    _aAi = Binder.parse(_aFile.readAsStringSync()).aiAccess;
+    expect(_aAi, v == AiAccess.guarded ? anyOf(v, isNull) : v);
+    return 'sync:swapAside/redundant';
   }
 
   /// The ids of the note boxes of [page] in its order.
@@ -2570,7 +2759,10 @@ class _Run {
         _aTitle = t;
       case 'write/goneAtPublish':
         if (!_canWrite) return;
-        final v = _pickAi();
+        var v = _pickAi();
+        // A value the file already holds writes nothing, so nothing is left to put back.
+        final held = Binder.parse(_aFile.readAsStringSync()).aiAccess ?? AiAccess.guarded;
+        if (v == held) v = AiAccess.values[(v.index + 1) % AiAccess.values.length];
         _seams.beforeMoveAside = () {
           _seams.beforeMoveAside = null;
           _aFile.deleteSync();
@@ -3092,6 +3284,7 @@ const _expectedKinds = {
   'binder:write/unseenReplace', 'binder:write/refuseOnce', 'binder:write/coverRefusedThenLands', //
   'binder:write/goneAtPublish', 'binder:write/tightenedBehindOtherDelta', 'binder:write/crashAside', //
   'binder:write/missingThenBack', 'binder:write/foreignAfterMissing', //
+  'sync:swapAside/save', 'sync:swapAside/move', 'sync:swapAside/delete', 'sync:swapAside/redundant', //
 };
 
 final Set<String> _seen = {};

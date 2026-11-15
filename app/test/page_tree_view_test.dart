@@ -34,6 +34,9 @@ class _ChangingStore extends PageStore {
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) {
     final f = this.beforeDelete;
     this.beforeDelete = null;
@@ -45,6 +48,9 @@ class _ChangingStore extends PageStore {
       afterRead: afterRead,
       beforeDelete: beforeDelete,
       beforeRestore: beforeRestore,
+      beforeAsideDelete: beforeAsideDelete,
+      beforeFinalCheck: beforeFinalCheck,
+      afterFinalRead: afterFinalRead,
     );
   }
 }
@@ -79,6 +85,9 @@ class _FailingStore extends PageStore {
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) {
     if (failDelete.contains(pageId)) throw const FileSystemException('source gone');
     return super.deleteIfUnchanged(
@@ -88,6 +97,9 @@ class _FailingStore extends PageStore {
       afterRead: afterRead,
       beforeDelete: beforeDelete,
       beforeRestore: beforeRestore,
+      beforeAsideDelete: beforeAsideDelete,
+      beforeFinalCheck: beforeFinalCheck,
+      afterFinalRead: afterFinalRead,
     );
   }
 

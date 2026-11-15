@@ -247,6 +247,12 @@ class BinderStore {
   /// How many times [update] reads the file and tries to replace it.
   final int tries;
 
+  /// Test seams of the final re-check of [removeTemps]'s and the failed-write
+  /// cleanup's deletes (see [deleteFileIfMatches]'s `beforeFinalCheck` and
+  /// `afterFinalRead`).
+  Future<void> Function(String path)? beforeFinalCheck;
+  Future<void> Function(String path)? afterFinalRead;
+
   static int _tmpCounter = 0;
 
   File get file => File('${directory.path}${Platform.pathSeparator}$binderFileName');
@@ -408,6 +414,8 @@ class BinderStore {
           afterRead: afterRead,
           beforePublish: beforePublish,
           beforeRestore: beforeRestore,
+          beforeFinalCheck: beforeFinalCheck,
+          afterFinalRead: afterFinalRead,
         );
       } on FileSystemException catch (e) {
         if (!_isWritable(f.path)) {
@@ -422,6 +430,7 @@ class BinderStore {
           final path = tmp.path;
           d.temps.removeWhere((t) => t.path == path);
           if (r.keptPath != null) kept.add(r.keptPath!);
+          kept.addAll(r.alsoKept);
           return BinderUpdated(next, written, wrote: true, kept: kept);
         case ReplaceOutcome.changed:
           if (attempt >= tries && _notFound(f.path)) {
@@ -434,6 +443,7 @@ class BinderStore {
           );
         case ReplaceOutcome.changedKept || ReplaceOutcome.supersededKept:
           if (r.keptPath != null) kept.add(r.keptPath!);
+          kept.addAll(r.alsoKept);
           last = BinderRefused(
             BinderRefusal.keepsChanging,
             'The binder file keeps changing',
@@ -448,8 +458,14 @@ class BinderStore {
   /// binder's file is present and readable at the moment it is deleted
   /// (see [deleteFileIfMatches]'s `stillRedundant`). The id is [d]'s
   /// `binderId`, else what [currentId] says now, else the temp's own.
+  /// Paths a delete kept a copy under (not at the temp's own path) are added to
+  /// [kept].
   /// Returns the temps that stayed; removed ones leave [BinderDelta.temps].
-  Future<List<BinderTemp>> removeTemps(BinderDelta d, {String? Function()? currentId}) async {
+  Future<List<BinderTemp>> removeTemps(
+    BinderDelta d, {
+    String? Function()? currentId,
+    List<String>? kept,
+  }) async {
     final stayed = <BinderTemp>[];
     for (final t in List<BinderTemp>.of(d.temps)) {
       try {
@@ -457,11 +473,19 @@ class BinderStore {
           t.path,
           bytes: t.bytes,
           stillRedundant: () => fileHoldsBinderSync(d.binderId ?? currentId?.call() ?? t.binderId),
+          beforeFinalCheck: beforeFinalCheck,
+          afterFinalRead: afterFinalRead,
         );
         if (r.outcome == DeleteOutcome.deleted || r.outcome == DeleteOutcome.absent) {
           d.temps.remove(t);
         } else {
           stayed.add(t);
+          // A copy the delete kept elsewhere (a newer file took its path) is
+          // reported in [kept], when given.
+          if (kept != null) {
+            if (r.keptPath != null) kept.add(r.keptPath!);
+            kept.addAll(r.alsoKept);
+          }
         }
       } on FileSystemException {
         stayed.add(t);
@@ -634,9 +658,14 @@ class BinderStore {
         temp.path,
         bytes: back,
         stillRedundant: () => fileHoldsBinderSync(binderId),
+        beforeFinalCheck: beforeFinalCheck,
+        afterFinalRead: afterFinalRead,
       );
       if (r.outcome != DeleteOutcome.deleted && r.outcome != DeleteOutcome.absent) {
-        kept.add(temp.path);
+        // The copy is at its own path, or (a newer file took the path) at the
+        // path the delete kept it under.
+        kept.add(r.keptPath ?? temp.path);
+        kept.addAll(r.alsoKept);
       }
     } on FileSystemException {
       kept.add(temp.path);

@@ -271,6 +271,47 @@ void main() {
       expect(await store.removeTemps(d, currentId: () => 'bb22'), isEmpty);
       expect(tmps(), isEmpty);
     });
+
+    test('12. the binder file gone while the temp is re-checked (final check): the temp is kept', () async {
+      final d = await landedWithTemp();
+      store.beforeFinalCheck = (path) async => binderFile().deleteSync();
+      expect(await store.removeTemps(d), hasLength(1));
+      expect(tmps(), hasLength(1));
+      expect(d.temps, hasLength(1));
+    });
+
+    test('12. the binder file replaced by another binder after the temp was read: the temp is kept', () async {
+      final d = await landedWithTemp();
+      store.afterFinalRead = (path) async => binderFile().writeAsStringSync(
+        Binder.create(id: 'bb22', title: 'Other', color: binderPalette.first).write(),
+      );
+      expect(await store.removeTemps(d), hasLength(1));
+      expect(tmps(), hasLength(1));
+    });
+
+    test('a temp swapped at the re-check with its path taken: the copy is reported in kept', () async {
+      final d = await landedWithTemp();
+      final tempPath = d.temps.single.path;
+      store.beforeFinalCheck = (drop) async {
+        File(drop).writeAsStringSync('swapped in the aside');
+        File(tempPath).writeAsStringSync('a newer file at the temp path');
+      };
+      final kept = <String>[];
+      expect(await store.removeTemps(d, kept: kept), hasLength(1));
+      expect(kept, hasLength(1));
+      expect(kept.single, contains('-recovered-'));
+      expect(File(kept.single).readAsStringSync(), 'swapped in the aside');
+      expect(File(tempPath).readAsStringSync(), 'a newer file at the temp path');
+    });
+  });
+
+  test('a version swapped into the binder file\'s aside is reported in the update\'s kept list', () async {
+    store.beforeFinalCheck = (drop) async => File(drop).writeAsStringSync('swapped in the aside');
+    final r = await store.update(title('New'));
+    expect(r, isA<BinderUpdated>());
+    final kept = (r as BinderUpdated).kept;
+    expect(kept, hasLength(1));
+    expect(File(kept.single).readAsStringSync(), 'swapped in the aside');
   });
 
   test(

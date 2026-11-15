@@ -81,6 +81,24 @@ void main() {
     },
   );
 
+  test('a source rewritten in its aside (another device\'s version) is kept, and the copy rolls back', () async {
+    f(from, 'x.txt').writeAsStringSync('one');
+    final r = AttachmentCopy();
+    await copyAttachmentTree(from, to, r);
+    attachmentAfterAsideHook = (source) {
+      final aside = from.listSync().whereType<File>().singleWhere((e) => e.path.endsWith('.cas-old'));
+      aside.writeAsStringSync('rewritten by another device in the aside');
+    };
+    addTearDown(() => attachmentAfterAsideHook = null);
+
+    await removeVerifiedSources(r, from);
+
+    expect(f(from, 'x.txt').readAsStringSync(), 'rewritten by another device in the aside');
+    expect(from.listSync().where((e) => e.path.contains('.cas-')), isEmpty);
+    expect(await removeCreated(r), isTrue, reason: 'the unchanged copy is rolled back by identity');
+    expect(to.existsSync(), isFalse);
+  });
+
   test(
     'R-1: an original set aside by a crashed delete is swept back, and copied',
     () async {

@@ -33,6 +33,9 @@ class HookedStore extends PageStore {
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) {
     onDelete?.call();
     return super.deleteIfUnchanged(pageId, expectedText);
