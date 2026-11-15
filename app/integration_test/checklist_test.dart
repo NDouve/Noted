@@ -17,6 +17,7 @@ import 'suites/folders_binders_suite.dart';
 import 'suites/notes_suite.dart';
 import 'suites/page_tree_suite.dart';
 import 'suites/search_suite.dart';
+import 'suites/shell_suite.dart';
 import 'suites/templates_suite.dart';
 import 'support/semantics_guard.dart';
 
@@ -31,5 +32,6 @@ void main() {
   templatesSuite();
   canvasSuite();
   searchSuite();
+  shellSuite();
   aiSuite();
 }

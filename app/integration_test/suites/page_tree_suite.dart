@@ -209,7 +209,7 @@ void pageTreeSuite() {
         expect(find.byIcon(Icons.tune_rounded), findsOneWidget, reason: 'only the one beside the page title');
         await s.tapKey('pages-menu', settle: 500);
         expect(find.text('Open binder…'), findsOneWidget);
-        await t.tapAt(const Offset(1, 1));
+        await t.tapAt(const Offset(700, 700));
         await s.pump(300);
         expect(find.byKey(const ValueKey('open-binder')), findsOneWidget);
         await s.pageMenu(a, 'Page settings…');

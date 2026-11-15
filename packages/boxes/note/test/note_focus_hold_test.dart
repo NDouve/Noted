@@ -139,4 +139,35 @@ void main() {
     expect(c.editingId, isNull);
     expect(find.byType(AppFlowyEditor), findsNothing);
   });
+
+  testWidgets('a canvas given another controller: the note follows the new one\'s hold, not the old one\'s', (
+    t,
+  ) async {
+    final (a, menu, _) = await pumpEditing(t);
+    final b = CanvasController(a.page, modules);
+    addTearDown(b.dispose);
+    await t.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: noteLocalizationsDelegates,
+        home: Scaffold(
+          body: Column(
+            children: [
+              Focus(focusNode: menu, child: const SizedBox(height: 20)),
+              Expanded(child: PageCanvas(controller: b)),
+            ],
+          ),
+        ),
+      ),
+    );
+    await frames(t);
+    expect(find.byType(AppFlowyEditor), findsOneWidget);
+    // Only the new controller is held: the note must read that one.
+    b.editorFocusHold.hold();
+    menu.requestFocus();
+    await frames(t);
+    expect(find.byType(AppFlowyEditor), findsOneWidget, reason: 'held by the new controller: not demoted');
+    b.editorFocusHold.release();
+    await frames(t);
+    expect(find.byType(AppFlowyEditor), findsNothing, reason: 'released: demoted as without a menu');
+  });
 }

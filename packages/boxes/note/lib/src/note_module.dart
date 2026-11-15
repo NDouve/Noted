@@ -185,8 +185,7 @@ class _NoteEditorState extends State<_NoteEditor>
     _focus.addListener(_focusChanged);
     widget.box.find.addListener(_findChanged);
     // The host's hold on the editor focus (an app menu has it for a moment).
-    _held = context.findAncestorStateOfType<PageCanvasState>()?.controller.editorFocusHeld;
-    _held?.addListener(_holdChanged);
+    _rebindHold();
     _shown = widget.box.data;
     // A box a click just created starts as an editor, and so does a note
     // the light view can't draw.
@@ -248,6 +247,18 @@ class _NoteEditorState extends State<_NoteEditor>
   Selection? _savedSelection;
 
   bool get _holding => _held?.value ?? false;
+
+  // Listens to the hold of the controller of the canvas this note is on now:
+  // the canvas can be given another controller (another page) without this
+  // note being made again.
+  void _rebindHold() {
+    final now = context.findAncestorStateOfType<PageCanvasState>()?.controller.editorFocusHeld;
+    if (identical(now, _held)) return;
+    _held?.removeListener(_holdChanged);
+    _held = now;
+    _savedSelection = null;
+    _held?.addListener(_holdChanged);
+  }
 
   void _holdChanged() {
     if (_holding) {
@@ -428,6 +439,7 @@ class _NoteEditorState extends State<_NoteEditor>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _rebindHold();
     final scheme = Theme.of(context).colorScheme;
     final changed = scheme != _scheme;
     final first = _scheme == null;
@@ -539,6 +551,8 @@ class _NoteEditorState extends State<_NoteEditor>
   @override
   void didUpdateWidget(_NoteEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
+    _rebindHold();
+
     if (oldWidget.box.find != widget.box.find) {
       oldWidget.box.find.removeListener(_findChanged);
       widget.box.find.addListener(_findChanged);

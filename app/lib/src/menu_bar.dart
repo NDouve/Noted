@@ -301,6 +301,10 @@ class AppMenuBarState extends State<AppMenuBar> {
       );
     }
     _appRegistries.add(r);
+    // A check mark or label that changes (theme, toolbar, panel) redraws the bar.
+    for (final reg in _appRegistries) {
+      reg.addListener(_rebuild);
+    }
   }
 
   Command? _app(String id) {
@@ -354,8 +358,10 @@ class AppMenuBarState extends State<AppMenuBar> {
       n.dispose();
     }
     for (final r in _appRegistries) {
+      r.removeListener(_rebuild);
       r.dispose();
     }
+
     super.dispose();
   }
 
@@ -416,6 +422,11 @@ class AppMenuBarState extends State<AppMenuBar> {
   // pointer (focus unchanged), Escape, Up and Down and the keys that close it.
   KeyEventResult _onKeyEarly(KeyEvent e) {
     if (!mounted || e.synthesized) return KeyEventResult.ignored;
+    // A dialog (or any modal route) covers the window: its keys are its own.
+    if (!(ModalRoute.of(context)?.isCurrent ?? true)) {
+      _altArmed = false;
+      return KeyEventResult.ignored;
+    }
     final k = HardwareKeyboard.instance;
     final key = e.logicalKey;
     final isAlt = key == LogicalKeyboardKey.altLeft || key == LogicalKeyboardKey.altRight;

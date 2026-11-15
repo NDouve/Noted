@@ -103,7 +103,7 @@ Offset viewportPoint(WidgetTester t, Offset local) =>
     t.getTopLeft(find.byType(PageCanvas)) + Offset(0, toolbarHeight(t)) + local;
 
 /// Clicks the empty canvas: a new note box takes focus.
-Future<void> clickNewNote(Session s, {Offset at = const Offset(700, 300)}) async {
+Future<void> clickNewNote(Session s, {Offset at = const Offset(600, 300)}) async {
   await s.tester.tapAt(toScreen(s.tester, at));
   await s.pump(400);
 }

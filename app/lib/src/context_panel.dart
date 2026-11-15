@@ -265,13 +265,28 @@ class _ContextPanelOverlayState extends State<ContextPanelOverlay> {
   // Recorded before the overlay takes the focus.
   late final FocusNode? _origin = FocusManager.instance.primaryFocus;
 
+  // The controller this overlay holds the editor focus of.
+  late CanvasController _held;
+
+  @override
+  void didUpdateWidget(ContextPanelOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Another page's controller: the hold moves to it.
+    if (!identical(_held, widget.controller)) {
+      _held.editorFocusHold.release();
+      _held = widget.controller;
+      _held.editorFocusHold.hold();
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     _origin;
     // The overlay takes the focus: a note being edited keeps its editor (and its
     // selection) until the focus is given back.
-    widget.controller.editorFocusHold.hold();
+    _held = widget.controller;
+    _held.editorFocusHold.hold();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _focus.requestFocus();
     });
@@ -281,8 +296,9 @@ class _ContextPanelOverlayState extends State<ContextPanelOverlay> {
   void dispose() {
     final origin = _origin;
     final canvas = widget.focusCanvas;
-    final controller = widget.controller;
+    final controller = _held;
     _focus.dispose();
+
     // After this frame: the focus tree is being taken apart now.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       var restored = false;
