@@ -13,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_box_ai/noted_box_ai.dart';
+import 'package:noted_canvas/noted_canvas.dart' show BoxHost;
 import 'package:noted_core/noted_core.dart';
 
 import 'support/real_io.dart';
@@ -128,7 +129,11 @@ void main() {
     (t) async {
       await start(t);
       await disallow(t, frames: true);
-      expect(find.text('Not allowed on this page'), findsOneWidget, reason: 'shown from its snapshot');
+      expect(
+        find.descendant(of: find.byType(BoxHost), matching: find.text('Not allowed on this page')),
+        findsOneWidget,
+        reason: 'shown from its snapshot',
+      );
       await expectKept(t);
       await finish(t);
     },

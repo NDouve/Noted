@@ -15,9 +15,11 @@ import 'ai_access_note.dart';
 import 'app_commands.dart';
 import 'app_settings.dart';
 import 'binder_cover.dart';
+import 'context_panel.dart';
 import 'device_storage.dart';
 import 'folder_wait_note.dart';
 import 'load_error_view.dart';
+import 'menu_bar.dart';
 import 'notebook.dart';
 import 'notebook_search.dart';
 import 'page_title_field.dart';
@@ -65,7 +67,20 @@ class Home extends StatefulWidget {
 class _HomeState extends State<Home> {
   final _tree = GlobalKey<PageTreeViewState>();
   final _scaffold = GlobalKey<ScaffoldState>();
+  final _menu = GlobalKey<AppMenuBarState>();
   String? _lastChoice;
+
+  /// The open page canvas's command registry (for the menu bar); null with no
+  /// canvas.
+  final ValueNotifier<CommandRegistry?> _registry = ValueNotifier<CommandRegistry?>(null);
+
+  // The contextual panel, for this session only (it is not saved). Inline from
+  // [_panelInlineWidth] wide, shown unless hidden; narrower it is an overlay
+  // that View > Contextual panel opens.
+  static const double _panelInlineWidth = 1200;
+  bool? _panelChoice;
+  bool _overlayOpen = false;
+  final ValueNotifier<bool> _panelShown = ValueNotifier<bool>(false);
 
   // Folded rows; kept here so they outlast the narrow-layout drawer.
   final Set<String> _folded = {};
@@ -283,6 +298,8 @@ class _HomeState extends State<Home> {
     unawaited(_kept?.cancel());
     _searchCommands.dispose();
     _findRequests.dispose();
+    _registry.dispose();
+    _panelShown.dispose();
     if (widget.search == null) _search.dispose();
     super.dispose();
   }
@@ -324,6 +341,8 @@ class _HomeState extends State<Home> {
   /// commands that work while editing answer, and the rest is left alone.
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+    // A menu has the focus: only its own keys act.
+    if (_menu.currentState?.hasFocus ?? false) return KeyEventResult.ignored;
     final k = HardwareKeyboard.instance;
     if (!k.isControlPressed && !k.isMetaPressed) return KeyEventResult.ignored;
     final actions = _tree.currentState;
@@ -379,16 +398,73 @@ class _HomeState extends State<Home> {
               )
             : null,
         body: _insetsOnDevice(
-          Stack(
-            fit: StackFit.expand,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _body(),
-              FolderWaitNote(notebook: notebook),
+              if (!isMobilePlatform) _menuBar(),
+              Expanded(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    _body(),
+                    FolderWaitNote(notebook: notebook),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  Widget _menuBar() => AppMenuBar(
+    key: _menu,
+    notebook: notebook,
+    settings: widget.settings,
+    search: _search,
+    microsoft: widget.microsoft,
+    treeActions: () => _tree.currentState,
+    openDrawer: (then) {
+      if (_tree.currentState != null) {
+        then();
+      } else {
+        _openDrawer(then: then);
+      }
+    },
+    canvas: _registry,
+    panelShown: _panelShown,
+    onTogglePanel: _togglePanel,
+    focusCanvas: () => _canvasKey?.currentState?.focusCanvas(),
+  );
+
+  bool _wideWindow(BuildContext context) => MediaQuery.sizeOf(context).width >= _panelInlineWidth;
+
+  void _togglePanel() {
+    if (!mounted) return;
+    setState(() {
+      if (_wideWindow(context)) {
+        _panelChoice = !(_panelChoice ?? true);
+      } else {
+        _overlayOpen = !_overlayOpen;
+      }
+    });
+  }
+
+  // The registry the canvas has now. A canvas that went away reports null in
+  // the frame after, which can come after the next page's registry: the
+  // canvas on screen decides then.
+  void _canvasCommandsChanged(CommandRegistry? r) {
+    if (!mounted) return;
+    _registry.value = r ?? _canvasKey?.currentState?.commands;
+  }
+
+  // Keeps the menu's Contextual panel check in step with what is on screen.
+  void _syncPanelShown(bool shown) {
+    if (_panelShown.value == shown) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _panelShown.value = shown;
+    });
   }
 
   // On a phone or tablet the system bars (status bar, notch, home indicator)
@@ -486,6 +562,10 @@ class _HomeState extends State<Home> {
         final current = notebook.current;
         final m = NotedMetrics.of(context);
         final narrow = isNarrowLayout(context);
+        final wide = _wideWindow(context) && !isMobilePlatform;
+        final inline = wide && (_panelChoice ?? true);
+        final overlay = !wide && !isMobilePlatform && _overlayOpen;
+        _syncPanelShown(inline || overlay);
         _closeDrawerOnChoice();
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -551,7 +631,10 @@ class _HomeState extends State<Home> {
                             reason: notebook.readOnlyReason!,
                           ),
                         Expanded(
-                          child: _droppable(
+                          child: Stack(
+                            children: [
+                              Positioned.fill(
+                                child: _droppable(
                             PageCanvas(
                               key: _keyFor(current.page.id),
                               attachments: notebook.attachments,
@@ -565,9 +648,34 @@ class _HomeState extends State<Home> {
                               aiMerge: notebook.aiMerge,
                               extraCommands: () => [searchCommand(_search)],
                               toolbar: (widget.settings?.toolbar ?? ToolbarStyle.tabs).layout,
+                              onCommandsChanged: isMobilePlatform ? null : _canvasCommandsChanged,
+                              sidePanel: inline
+                                  ? (context, registry) => ContextPanel(
+                                      key: const ValueKey('context-panel-inline'),
+                                      notebook: notebook,
+                                      // The canvas's own controller: the one its registry is for.
+                                      controller: _canvasKey?.currentState?.controller ?? current,
+                                      registry: registry,
+                                    )
+
+                                  : null,
                             ),
                           ),
+                              ),
+                              if (overlay)
+                                Positioned.fill(
+                                  child: ContextPanelOverlay(
+                                    notebook: notebook,
+                                    controller: current,
+                                    registry: _registry,
+                                    onClose: _togglePanel,
+                                    focusCanvas: () => _canvasKey?.currentState?.focusCanvas(),
+                                  ),
+                                ),
+                            ],
+                          ),
                         ),
+
                       ],
                     ),
             ),
