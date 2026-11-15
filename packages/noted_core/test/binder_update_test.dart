@@ -558,6 +558,19 @@ void main() {
     });
   });
 
+
+    test('a temp replaced by someone else after the failed write is kept, not deleted', () async {
+      final unrelated = Binder.create(id: 'zz99', title: 'Unrelated', color: binderPalette.first).write();
+      final store2 = _ReplacingWrite(dir, unrelated);
+      final d = title('New');
+      final r = await store2.update(d);
+      expect((r as BinderRefused).kind, BinderRefusal.cantWrite);
+      expect(r.kept, hasLength(1));
+      expect(File(r.kept.single).readAsStringSync(), unrelated);
+      expect(d.temps, isEmpty);
+    });
+
+
   test('a change that alters nothing writes nothing', () async {
     final r = await store.update(title('Work'));
     expect((r as BinderUpdated).wrote, isFalse);
@@ -576,6 +589,20 @@ class _FailingWrite extends BinderStore {
       partial ? bytes.sublist(0, bytes.length ~/ 2) : bytes,
       flush: true,
     );
+    throw FileSystemException('disk full', temp.path);
+  }
+}
+
+class _ReplacingWrite extends BinderStore {
+  _ReplacingWrite(super.directory, this.replacement);
+
+  final String replacement;
+
+  // Writes part of the file, then another writer replaces it, then the write fails.
+  @override
+  Future<void> writeTemp(File temp, List<int> bytes) async {
+    await temp.writeAsBytes(bytes.sublist(0, bytes.length ~/ 2), flush: true);
+    await temp.writeAsString(replacement, flush: true);
     throw FileSystemException('disk full', temp.path);
   }
 }

@@ -6150,6 +6150,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return !_binderIds.entries.any((e) => e.key != key && e.value == copy.id);
   }
 
+  /// Runs in [putBackBinderCopy] between the publish and the removal of the copy.
+  @visibleForTesting
+  Future<void> Function()? putBackBeforeDeleteHook;
+
   /// Puts the copy [copyPath] back as binder [path]'s file (P). Only while the
   /// file is missing, only a complete copy of this folder's binder, and never
   /// over anything.
@@ -6184,15 +6188,39 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (!await f.exists() || !_sameBytes(await f.readAsBytes(), bytes)) {
         throw const NotebookException('That copy changed, so it was left as it is.');
       }
-      final ok = await publishExclusive(f, store.file.path);
-      if (!ok) throw const NotebookException('A binder file appeared first, so nothing was put back.');
+      // The verified bytes go to a private temp that is published; the copy
+      // itself is never moved, and is removed only if it still holds them.
+      final tmp = store.newTempFile();
+      await store.writeTemp(tmp, bytes);
+      final bool ok;
+      try {
+        ok = await publishExclusive(tmp, store.file.path);
+      } on Object {
+        await deleteFileIfMatches(tmp.path, bytes: bytes);
+        rethrow;
+      }
+      if (!ok) {
+        await deleteFileIfMatches(tmp.path, bytes: bytes);
+        throw const NotebookException('A binder file appeared first, so nothing was put back.');
+      }
       final text = utf8.decode(bytes);
       _binderText[key] = text;
       _emitPublished(store.file.path, null, () => text);
-      final kept = _ownKeptTemps[key];
-      kept?.removeWhere((t) => t.path == copyPath);
-      if (kept != null && kept.isEmpty) _ownKeptTemps.remove(key);
-      s.copies = [for (final c in s.copies) if (c.path != copyPath) c];
+      await putBackBeforeDeleteHook?.call();
+      var removed = false;
+      try {
+        final r = await deleteFileIfMatches(copyPath, bytes: bytes);
+        removed = r.deleted || r.outcome == DeleteOutcome.absent;
+      } on FileSystemException {
+        removed = false;
+      }
+      if (removed) {
+        final kept = _ownKeptTemps[key];
+        kept?.removeWhere((t) => t.path == copyPath);
+        if (kept != null && kept.isEmpty) _ownKeptTemps.remove(key);
+      }
+      // A copy that changed meanwhile stays, and is listed as it is now.
+      await _listCopiesLocked(s, store);
     });
     if (!_disposed) {
       notifyListeners();

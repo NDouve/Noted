@@ -622,6 +622,13 @@ class BinderStore {
       d.temps.add(BinderTemp(temp.path, wanted, binderId));
       return;
     }
+    // Only our own part-written file is deleted: bytes that are a prefix of what
+    // this write sent, or nothing. Anything else was put there by someone else
+    // and is kept, listed with the other copies.
+    if (back.length > wanted.length || !_same(back, wanted.sublist(0, back.length))) {
+      kept.add(temp.path);
+      return;
+    }
     try {
       final r = await deleteFileIfMatches(
         temp.path,

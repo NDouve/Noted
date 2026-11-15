@@ -597,6 +597,18 @@ void main() {
       await t.runAsync(stop);
     });
 
+    test('R-1 (round 2): a copy replaced between the publish and its removal survives; the binder holds the verified bytes', () async {
+      final row = await goneWithTemp();
+      nb.putBackBeforeDeleteHook = () async => File(row.path).writeAsStringSync('a sync replacement');
+      await nb.putBackBinderCopy(section.path, row.path);
+      nb.putBackBeforeDeleteHook = null;
+      expect(fileText(), utf8.decode(row.bytes!));
+      expect(File(row.path).readAsStringSync(), 'a sync replacement');
+      expect(nb.binderCopyRows(nb.binders.single).map((r) => r.path), contains(row.path));
+      await nb.checkBinderFile(binderFile().path); // the reconcile that Put back queued
+      await stop();
+    });
+
     test('an unlisted folder (no id recorded) uses the temp\'s own id', () async {
       final row = await goneWithTemp();
       nb.forgetBinderIdForTest(section.path);
