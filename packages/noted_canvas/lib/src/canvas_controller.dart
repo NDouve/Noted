@@ -5,6 +5,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'editor_focus_hold.dart';
 import 'module_registry.dart';
 
 /// Default size of a box created by clicking the canvas.
@@ -63,6 +64,16 @@ class CanvasController extends ChangeNotifier {
   bool _readOnly;
 
   NotedPage get page => _page;
+
+  /// The host's hold on the editor's focus (an app menu). Host only: the
+  /// app calls `hold` and `release`; modules read [editorFocusHeld].
+  final EditorFocusHold editorFocusHold = EditorFocusHold();
+
+  /// While true, the host has moved focus away from a box's editor for a
+  /// moment (an app menu) and will give it back. Keep the editor mounted and
+  /// its selection: save the selection when this becomes true, and restore it
+  /// when the editor regains focus while it is still true.
+  ValueListenable<bool> get editorFocusHeld => editorFocusHold.held;
 
   Set<String> _disallowed = const {};
 
@@ -579,6 +590,7 @@ class CanvasController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    editorFocusHold.dispose();
     super.dispose();
   }
 }

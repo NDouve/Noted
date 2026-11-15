@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:noted_core/noted_core.dart';
@@ -68,6 +69,9 @@ abstract interface class CanvasCommandTarget implements CommandHost {
 
 const double _zoomStep = 1.25;
 
+bool get _isMacOS => defaultTargetPlatform == TargetPlatform.macOS;
+
+
 SingleActivator _key(LogicalKeyboardKey k, {bool ctrl = false, bool shift = false}) =>
     SingleActivator(k, control: ctrl, shift: shift);
 
@@ -108,6 +112,9 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
       label: 'Undo',
       icon: Icons.undo_rounded,
       shortcut: _key(LogicalKeyboardKey.keyZ, ctrl: true),
+      alternateShortcuts: [
+        if (_isMacOS) const SingleActivator(LogicalKeyboardKey.keyZ, meta: true),
+      ],
       enabled: () => !t.isReadOnly && c.canUndo,
       listenable: c,
       invoke: c.undo,
@@ -117,7 +124,15 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
       label: 'Redo',
       icon: Icons.redo_rounded,
       shortcut: _key(LogicalKeyboardKey.keyY, ctrl: true),
-      alternateShortcuts: [_key(LogicalKeyboardKey.keyZ, ctrl: true, shift: true)],
+      alternateShortcuts: [
+        _key(LogicalKeyboardKey.keyZ, ctrl: true, shift: true),
+        // Cmd+Shift+Z and Cmd+Y, on macOS only: elsewhere the Windows key
+        // must not redo.
+        if (_isMacOS) ...const [
+          SingleActivator(LogicalKeyboardKey.keyZ, meta: true, shift: true),
+          SingleActivator(LogicalKeyboardKey.keyY, meta: true),
+        ],
+      ],
       enabled: () => !t.isReadOnly && c.canRedo,
       listenable: c,
       invoke: c.redo,
@@ -208,7 +223,7 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
     // box's editor the editor pastes; a note pastes an image beside itself.
     Command(
       id: CanvasCommands.paste,
-      label: 'Paste',
+      label: 'Paste image or file',
       icon: Icons.content_paste_rounded,
       shortcut: _key(LogicalKeyboardKey.keyV, ctrl: true),
       alternateShortcuts: const [SingleActivator(LogicalKeyboardKey.keyV, meta: true)],
