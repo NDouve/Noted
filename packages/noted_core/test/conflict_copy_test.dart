@@ -61,6 +61,8 @@ String dataOf(CanvasNode? n) => (n as BoxRecord).data!.decode()! as String;
 PageMerge merge(NotedPage original, NotedPage copy) =>
     mergeConflictCopy(original, copy, registry(), copyTime: 777);
 
+List<String> o2(String n) => conflictCopyOriginalNames(n);
+
 void main() {
   final a = box('a', 'one');
   final b = box('b', 'two');
@@ -78,6 +80,30 @@ void main() {
       );
       expect(conflictCopyOriginalNames('abc-MyPC.canvas'), ['abc.canvas']);
       expect(conflictCopyOriginalNames('abc-12345.canvas'), ['abc.canvas']);
+    });
+
+    test('provider names', () {
+      List<String> o(String n) => conflictCopyOriginalNames(n);
+      expect(o('abc (1).canvas'), ['abc.canvas']); // Drive for desktop
+      expect(o('abc 2.canvas'), ['abc.canvas']); // Finder-style
+      expect(o('abc (conflicted copy 2018-04-10 093612).canvas'), ['abc.canvas']);
+      expect(o('abc (conflicted copy user 2018-04-10 093612).canvas'), ['abc.canvas']);
+      expect(o('abc_conflict-20180410-093612.canvas'), contains('abc.canvas'));
+      expect(o('abc (conflicted copy 2018-04-10).canvas'), isEmpty);
+      expect(o('abc (x).canvas'), isEmpty);
+    });
+
+    test('every combination of suffixes is a candidate, shortest first', () {
+      expect(o2('abc-HOST (1).canvas'), ['abc.canvas', 'abc-HOST.canvas']);
+      expect(o2('abc 2 (1).canvas'), ['abc.canvas', 'abc 2.canvas']);
+      expect(o2('abc (1) (2).canvas'), ['abc.canvas', 'abc (1).canvas']);
+      expect(o2('abc-PC (conflicted copy 2018-04-10 093612).canvas'), ['abc.canvas', 'abc-PC.canvas']);
+    });
+
+    test('the table is exported and a stem is not a candidate of itself', () {
+      expect(conflictCopyOriginalStems('abc 2'), ['abc']);
+      expect(conflictCopyOriginalStems('abc'), isEmpty);
+      expect(conflictCopyOriginalStems(' 2'), isEmpty);
     });
 
     test('names without the shape', () {

@@ -350,6 +350,19 @@ void main() {
       expect(again.binders, hasLength(4)); // the original, Copy, Project, Project 2
     });
 
+    test('a provider copy of a template is not merged or deleted (known limit)', () async {
+      final nb = make();
+      await nb.load();
+      final t = await nb.savePageAsTemplate(nb.currentId!, name: 'Fine');
+      final orig = File('${appTemplates().path}/${t.id}.notedtemplate');
+      final text = orig.readAsStringSync();
+      final copy = File('${appTemplates().path}/${t.id} (1).notedtemplate')..writeAsStringSync(text);
+      await nb.listTemplates(TemplateKind.page);
+      await nb.checkFolders();
+      expect(copy.existsSync(), isTrue);
+      expect(copy.readAsStringSync(), text);
+      expect(orig.readAsStringSync(), text);
+    });
     test('an unreadable template is listed and left alone', () async {
       final nb = make();
       await nb.load();

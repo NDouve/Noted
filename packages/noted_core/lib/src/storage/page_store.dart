@@ -108,15 +108,30 @@ class PageStore {
         entries.add(UnreadablePage(f.path, e.message));
       }
     }
-    // Names that are conflict copies, with the file each one is a copy of.
+    // Files chosen with [adopt] are listed first, so they are the ones kept.
+    bool chosen(MapEntry<String, (String, NotedPage)> e) {
+      final a = _adopted[e.value.$2.id];
+      if (a == null) return false;
+      final x = _name(a), y = e.key;
+      return Platform.isWindows ? x.toLowerCase() == y.toLowerCase() : x == y;
+    }
+    // Names that are conflict copies, with the file each one is a copy of. A
+    // chosen file is never a copy, and a chosen file with the copy's id is
+    // preferred over a shorter stem (`<id> 2 (1)` roots at a chosen `<id> 2`).
     final copyOf = <String, String>{};
     for (final e in read.entries) {
+      if (chosen(e)) continue;
+      String? first;
       for (final cand in conflictCopyOriginalNames(e.key, extension: extension)) {
-        if (read[cand]?.$2.id == e.value.$2.id) {
-          copyOf[e.key] = cand;
+        final o = read[cand];
+        if (o == null || o.$2.id != e.value.$2.id) continue;
+        if (chosen(MapEntry(cand, o))) {
+          first = cand;
           break;
         }
+        first ??= cand;
       }
+      if (first != null) copyOf[e.key] = first;
     }
     // A copy of a copy belongs to the file at the end of the chain.
     String rootOf(String name) {
@@ -142,13 +157,6 @@ class PageStore {
     }
     _released = released;
 
-    // Files chosen with [adopt] are listed first, so they are the ones kept.
-    bool chosen(MapEntry<String, (String, NotedPage)> e) {
-      final a = _adopted[e.value.$2.id];
-      if (a == null) return false;
-      final x = _name(a), y = e.key;
-      return Platform.isWindows ? x.toLowerCase() == y.toLowerCase() : x == y;
-    }
 
     for (final e in [
       ...read.entries.where(chosen),
@@ -170,12 +178,21 @@ class PageStore {
   }
 
   /// The file that [copyPath] (holding [copy]) is a conflict copy of: a file
-  /// in the same folder whose name [copyPath]'s name extends by a hyphen and
-  /// a suffix, and that holds the same page id. Null if there is none, so the
-  /// file is not a conflict copy.
-  static Future<String?> findConflictOriginal(String copyPath, NotedPage copy) async {
+  /// in the same folder whose name is [copyPath]'s name without one or more
+  /// provider suffixes (see [conflictCopyOriginalNames]), and that holds the
+  /// same page id. Null if there is none, so the file is not a conflict copy.
+  ///
+  /// [preferred] is the file chosen for the page (see [adopt]), if any. It is
+  /// never a copy (null if it is [copyPath]), and when it is among the
+  /// candidates it is the original, ahead of a shorter stem. Paths are
+  /// compared as absolute paths with either separator (and without case on
+  /// Windows).
+  static Future<String?> findConflictOriginal(String copyPath, NotedPage copy, {String? preferred}) async {
     final file = File(copyPath);
     final dir = file.parent.path;
+    final prefKey = preferred == null ? null : _pathKey(preferred);
+    if (prefKey != null && prefKey == _pathKey(copyPath)) return null;
+    String? firstOk;
     for (final cand in conflictCopyOriginalNames(_name(copyPath))) {
       final other = File('$dir${Platform.pathSeparator}$cand');
       try {
@@ -186,13 +203,24 @@ class PageStore {
       } on FileSystemException {
         continue;
       }
-      // Prefer the end of a chain of copies.
-      return await findConflictOriginal(other.path, copy) ?? other.path;
+      if (prefKey != null && prefKey == _pathKey(other.path)) return other.path;
+      firstOk ??= other.path;
+      if (prefKey == null) break;
     }
-    return null;
+    if (firstOk == null) return null;
+    // Prefer the end of a chain of copies.
+    return await findConflictOriginal(firstOk, copy, preferred: preferred) ?? firstOk;
   }
 
   static String _name(String path) => path.split(RegExp(r'[\\/]')).last;
+
+  // An absolute path with one separator, and lower case on Windows, so two
+  // spellings of one file compare equal.
+  static String _pathKey(String path) {
+    // "." and ".." segments are collapsed, so two spellings of one file match.
+    final p = File(path).absolute.uri.normalizePath().toFilePath().replaceAll(r'\', '/');
+    return Platform.isWindows ? p.toLowerCase() : p;
+  }
 
   /// Reads the page's file. Throws [PageFormatException] if the file holds a
   /// different page, so one page's content is never served under another id.

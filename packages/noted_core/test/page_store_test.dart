@@ -170,4 +170,129 @@ void main() {
       expect(File('${dir.path}/p1.canvas').existsSync(), isTrue);
     });
   });
+
+  group('provider conflict-copy names', () {
+    String text(String id, {String title = 'T'}) =>
+        writePage(NotedPage.create(PageMeta.create(id: id, title: title, order: 0)));
+    File put(String name, String id) => File('${dir.path}/$name')..writeAsStringSync(text(id));
+
+    test('a same-id Finder-style or Drive-style name is a copy, not a duplicate', () async {
+      put('p1.canvas', 'p1');
+      put('p1 2.canvas', 'p1');
+      put('p1 (1).canvas', 'p1');
+      final entries = await PageStore(dir).scan();
+      expect(entries.whereType<ConflictCopyPage>(), hasLength(2));
+      expect(entries.whereType<UnreadablePage>(), isEmpty);
+      expect(entries.whereType<ReadablePage>().single.path, endsWith('p1.canvas'));
+    });
+
+    test('a chain with a missing middle file roots at the original', () async {
+      put('p1.canvas', 'p1');
+      put('p1-HOST (1).canvas', 'p1');
+      final entries = await PageStore(dir).scan();
+      expect(entries.whereType<ConflictCopyPage>().single.originalPath, endsWith('p1.canvas'));
+    });
+
+    test('a chosen file is never a copy, and copies of it root at it', () async {
+      put('p1.canvas', 'p1');
+      final b = put('p1 2.canvas', 'p1');
+      put('p1 2 (1).canvas', 'p1');
+      final store = PageStore(dir)..adopt('p1', b.path);
+      final entries = await store.scan();
+      expect(entries.whereType<ReadablePage>().single.path, endsWith('p1 2.canvas'));
+      final copy = entries.whereType<ConflictCopyPage>().single;
+      expect(copy.path, endsWith('p1 2 (1).canvas'));
+      expect(copy.originalPath, endsWith('p1 2.canvas'));
+      // p1.canvas is a plain duplicate of the chosen file.
+      expect(entries.whereType<UnreadablePage>().single.path, endsWith('p1.canvas'));
+    });
+
+    test('findConflictOriginal: preferred file wins, is never a copy, and chains', () async {
+      put('p1.canvas', 'p1');
+      final b = put('p1 2.canvas', 'p1');
+      final c = put('p1 2 (1).canvas', 'p1');
+      final page = readPage(c.readAsStringSync());
+      expect(await PageStore.findConflictOriginal(c.path, page), endsWith('p1.canvas'));
+      expect(await PageStore.findConflictOriginal(c.path, page, preferred: b.path), endsWith('p1 2.canvas'));
+      expect(await PageStore.findConflictOriginal(b.path, page, preferred: b.path), isNull);
+      expect(await PageStore.findConflictOriginal(b.path, page), endsWith('p1.canvas'));
+    });
+
+    test('findConflictOriginal: a missing middle file still finds the original', () async {
+      put('p1.canvas', 'p1');
+      final c = put('p1-HOST (1).canvas', 'p1');
+      expect(await PageStore.findConflictOriginal(c.path, readPage(c.readAsStringSync())), endsWith('p1.canvas'));
+    });
+
+    test('a candidate with another page id is skipped', () async {
+      put('p1.canvas', 'other');
+      final c = put('p1 (1).canvas', 'p1');
+      expect(await PageStore.findConflictOriginal(c.path, readPage(c.readAsStringSync())), isNull);
+    });
+
+    test('a file named like a copy with no original is a plain page', () async {
+      put('p1 2.canvas', 'p1');
+      put('p1 (1).canvas', 'p1');
+      final entries = await PageStore(dir).scan();
+      // Neither is a copy of an existing file; the second is a duplicate.
+      expect(entries.whereType<ConflictCopyPage>(), isEmpty);
+      expect(entries.whereType<ReadablePage>(), hasLength(1));
+    });
+
+    test('a lone copy-shaped file is a readable page', () async {
+      put('p1 2.canvas', 'p1');
+      final entries = await PageStore(dir).scan();
+      expect(entries.single, isA<ReadablePage>());
+    });
+
+    test('older ownCloud names are copies', () async {
+      put('p1.canvas', 'p1');
+      put('p1_conflict-20180410-093612.canvas', 'p1');
+      final entries = await PageStore(dir).scan();
+      expect(entries.whereType<ConflictCopyPage>().single.originalPath, endsWith('p1.canvas'));
+      final c = File('${dir.path}/p1_conflict-20180410-093612.canvas');
+      expect(await PageStore.findConflictOriginal(c.path, readPage(c.readAsStringSync())), endsWith('p1.canvas'));
+    });
+
+    test('findConflictOriginal compares the preferred path as an absolute path with either separator', () async {
+      final b = put('p1 2.canvas', 'p1');
+      put('p1.canvas', 'p1');
+      final c = put('p1 2 (1).canvas', 'p1');
+      final page = readPage(c.readAsStringSync());
+      final swapped = Platform.isWindows ? b.path.replaceAll(r'\', '/') : b.path;
+      final mixed = Platform.isWindows ? b.path.toUpperCase() : b.path;
+      for (final pref in [swapped, mixed]) {
+        expect(await PageStore.findConflictOriginal(c.path, page, preferred: pref), endsWith('p1 2.canvas'));
+        expect(await PageStore.findConflictOriginal(b.path, page, preferred: pref), isNull);
+      }
+      final before = Directory.current;
+      Directory.current = dir;
+      try {
+        expect(await PageStore.findConflictOriginal(c.path, page, preferred: 'p1 2.canvas'), endsWith('p1 2.canvas'));
+        expect(await PageStore.findConflictOriginal('p1 2.canvas', page, preferred: b.path), isNull);
+        expect(await PageStore.findConflictOriginal('./p1 2 (1).canvas', page, preferred: './p1 2.canvas'), endsWith('p1 2.canvas'));
+      } finally {
+        Directory.current = before;
+      }
+    });
+
+    test('findConflictOriginal collapses . and .. segments in the paths it compares', () async {
+      final b = put('p1 2.canvas', 'p1');
+      put('p1.canvas', 'p1');
+      final c = put('p1 2 (1).canvas', 'p1');
+      final page = readPage(c.readAsStringSync());
+      final sep = Platform.pathSeparator;
+      final dotted = '${dir.path}$sep.${sep}p1 2.canvas';
+      final up = '${dir.path}${sep}x$sep..${sep}p1 2.canvas';
+      for (final pref in [dotted, up]) {
+        // the self check
+        expect(await PageStore.findConflictOriginal(b.path, page, preferred: pref), isNull);
+        // the preferred candidate
+        expect(await PageStore.findConflictOriginal(c.path, page, preferred: pref), endsWith('p1 2.canvas'));
+      }
+      // and the copy path spelled with the segments
+      expect(await PageStore.findConflictOriginal(dotted, page, preferred: b.path), isNull);
+      expect(await PageStore.findConflictOriginal(up, page, preferred: b.path), isNull);
+    });
+  });
 }

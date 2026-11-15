@@ -5,6 +5,7 @@
 import 'dart:math';
 
 import '../box_api/codec_registry.dart';
+import '../format/conflict_names.dart';
 import '../json/raw_json.dart';
 import '../model/ids.dart';
 import '../model/page.dart';
@@ -12,27 +13,21 @@ import 'merge_rules.dart';
 import 'page_issues.dart';
 import 'page_merge.dart';
 
+export '../format/conflict_names.dart';
+
 /// The file names a sync client may have renamed [fileName] from, when it
-/// keeps both copies of a file changed on two machines (unverified naming):
-/// OneDrive appends a hyphen and the computer name before the extension, and
-/// a number if that name is taken, e.g. `3f2a-DESKTOP-4QK2N8L.canvas` or
-/// `3f2a-DESKTOP-4QK2N8L-1.canvas`.
+/// keeps both copies of a file changed on two machines (unverified naming; the
+/// table is in `format/conflict_names.dart`): OneDrive appends a hyphen and the
+/// computer name, Drive for desktop ` (1)`, Nextcloud ` (conflicted copy ...)`,
+/// older ownCloud `_conflict-...`, Finder-style ` 2`, and combinations of these.
 ///
-/// Returns the candidate original file names, the shortest stem first. Every
-/// hyphen in the stem may start the suffix, since page ids and computer names
-/// can both hold hyphens; the caller checks which candidate exists and holds
-/// the same page. Empty if [fileName] doesn't have the shape.
+/// Returns the candidate original file names, the shortest stem first; the
+/// caller checks which candidate exists and holds the same page. Empty if
+/// [fileName] doesn't have the shape.
 List<String> conflictCopyOriginalNames(String fileName, {String extension = '.canvas'}) {
   if (!fileName.endsWith(extension)) return const [];
   final stem = fileName.substring(0, fileName.length - extension.length);
-  final suffix = RegExp(r'^[A-Za-z0-9][A-Za-z0-9_-]*$');
-  final out = <String>[];
-  for (var i = 1; i < stem.length - 1; i++) {
-    if (stem[i] != '-') continue;
-    if (!suffix.hasMatch(stem.substring(i + 1))) continue;
-    out.add('${stem.substring(0, i)}$extension');
-  }
-  return out;
+  return [for (final s in conflictCopyOriginalStems(stem)) '$s$extension'];
 }
 
 /// A file name for a conflict copy of [fileName], in the shape

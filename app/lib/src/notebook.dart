@@ -2121,7 +2121,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     if (page.id != id) return;
     // A sync client's conflict copy of a listed page is merged the usual way.
-    if (await PageStore.findConflictOriginal(path, page) != null) return;
+    if (await PageStore.findConflictOriginal(path, page, preferred: _adoptedFiles[page.id]) != null) return;
     final st = _storeOf(loc);
     await flush();
     String? blockedWhy;
@@ -9964,7 +9964,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on PageFormatException {
       return false;
     }
-    final original = await PageStore.findConflictOriginal(path, copy);
+    final original = await PageStore.findConflictOriginal(path, copy, preferred: _adoptedFiles[copy.id]);
     if (original == null) return false;
     if (_disposed) return true;
     if (_pathId[key] == copy.id && copy.id != currentId) {
@@ -10011,7 +10011,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on PageFormatException {
       return false;
     }
-    var originalPath = await PageStore.findConflictOriginal(path, copy);
+    var originalPath = await PageStore.findConflictOriginal(path, copy, preferred: _adoptedFiles[copy.id]);
     if (originalPath == null) return false;
     // The file it copies is listed as a duplicate (another file with its id
     // was chosen): merging would land in a file the copy is not of. It is left
@@ -10046,7 +10046,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             break; // the copy is gone: nothing left to merge or delete
           }
           copy = readPage(text);
-          originalPath = await PageStore.findConflictOriginal(path, copy);
+          originalPath = await PageStore.findConflictOriginal(path, copy, preferred: _adoptedFiles[copy.id]);
           if (originalPath == null) throw const FormatException('its page file is gone');
         }
       }
@@ -10268,8 +10268,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final u in list) {
         if (u.reason != 'duplicate page id $id') continue;
         final name = u.path.split(RegExp(r'[\\/]')).last;
-        // A name shaped like a sync client's conflict copy is merged, not chosen.
-        if (conflictCopyOriginalNames(name).isNotEmpty) continue;
+        // A file that is a sync client's conflict copy of a file that exists
+        // is merged, not chosen; a copy-shaped name without its original is a
+        // page file like any other.
+        if (conflictCopyOriginalNames(name).isNotEmpty) {
+          NotedPage? page;
+          try {
+            page = readPage(await File(u.path).readAsString());
+          } on Object {
+            page = null;
+          }
+          if (page != null && page.id == id && await PageStore.findConflictOriginal(u.path, page) != null) continue;
+        }
         candidates.add((loc, u));
       }
     }
