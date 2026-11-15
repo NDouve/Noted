@@ -275,5 +275,24 @@ void main() {
         Directory.current = before;
       }
     });
+
+    test('findConflictOriginal collapses . and .. segments in the paths it compares', () async {
+      final b = put('p1 2.canvas', 'p1');
+      put('p1.canvas', 'p1');
+      final c = put('p1 2 (1).canvas', 'p1');
+      final page = readPage(c.readAsStringSync());
+      final sep = Platform.pathSeparator;
+      final dotted = '${dir.path}$sep.${sep}p1 2.canvas';
+      final up = '${dir.path}${sep}x$sep..${sep}p1 2.canvas';
+      for (final pref in [dotted, up]) {
+        // the self check
+        expect(await PageStore.findConflictOriginal(b.path, page, preferred: pref), isNull);
+        // the preferred candidate
+        expect(await PageStore.findConflictOriginal(c.path, page, preferred: pref), endsWith('p1 2.canvas'));
+      }
+      // and the copy path spelled with the segments
+      expect(await PageStore.findConflictOriginal(dotted, page, preferred: b.path), isNull);
+      expect(await PageStore.findConflictOriginal(up, page, preferred: b.path), isNull);
+    });
   });
 }

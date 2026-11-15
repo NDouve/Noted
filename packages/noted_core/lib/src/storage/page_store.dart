@@ -217,7 +217,8 @@ class PageStore {
   // An absolute path with one separator, and lower case on Windows, so two
   // spellings of one file compare equal.
   static String _pathKey(String path) {
-    final p = File(path).absolute.path.replaceAll(r'\', '/');
+    // "." and ".." segments are collapsed, so two spellings of one file match.
+    final p = File(path).absolute.uri.normalizePath().toFilePath().replaceAll(r'\', '/');
     return Platform.isWindows ? p.toLowerCase() : p;
   }
 
