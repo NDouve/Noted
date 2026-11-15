@@ -11,6 +11,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/notebook_search.dart';
+import 'package:noted/src/search_panel.dart';
 import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
@@ -347,6 +349,29 @@ void main() {
     await until(t, () => nb.currentId == 'gamma');
     await settle(t);
     expect(titleMarks(t), isEmpty);
+    await finish(t);
+  });
+
+  testWidgets('the search field and its Clear button follow the touch-aware control size', (t) async {
+    await start(t);
+    final s = NotebookSearch(nb);
+    addTearDown(s.dispose);
+    for (final (touch, size) in [(false, 36.0), (true, 44.0)]) {
+      await t.pumpWidget(
+        MaterialApp(
+          theme: notedThemeData(Brightness.light, touch: touch),
+          home: Scaffold(body: SearchField(search: s, onOpen: (_, _) {})),
+        ),
+      );
+      await t.enterText(find.byKey(const ValueKey('search-field')), 'beta');
+      await t.pumpAndSettle();
+      expect(
+        t.getSize(find.byKey(const ValueKey('search-clear'))),
+        Size(size, size),
+        reason: touch ? 'touch: touch-target' : 'desktop pointer: control',
+      );
+      expect(t.getSize(find.byKey(const ValueKey('search-field'))).height, greaterThanOrEqualTo(size));
+    }
     await finish(t);
   });
 

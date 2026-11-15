@@ -112,10 +112,10 @@ class _SearchFieldState extends State<SearchField> {
             isDense: true,
             // 36 high and outlined with outline-control, so the field reads as
             // a field (the spec's mockups).
-            constraints: BoxConstraints(minHeight: m.control),
+            constraints: BoxConstraints(minHeight: m.controlSize),
             contentPadding: EdgeInsets.symmetric(horizontal: m.space3, vertical: m.space2),
-            prefixIconConstraints: BoxConstraints.tightFor(width: m.control, height: m.control),
-            suffixIconConstraints: BoxConstraints.tightFor(width: m.control, height: m.control),
+            prefixIconConstraints: BoxConstraints.tightFor(width: m.controlSize, height: m.controlSize),
+            suffixIconConstraints: BoxConstraints.tightFor(width: m.controlSize, height: m.controlSize),
             enabledBorder: OutlineInputBorder(
               borderRadius: m.borderLg,
               borderSide: BorderSide(color: NotedColors.of(context).outlineControl),
