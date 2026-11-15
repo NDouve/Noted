@@ -1309,12 +1309,10 @@ class PageCanvasState extends State<PageCanvas>
     final c = _c;
     final editing = c.editingId;
     // The editor keeps its selection through a hold: for the note itself or
-    // the canvas. Another box is selected and the note leaves its editor as
-    // on any click elsewhere.
+    // the canvas. Another box is selected only when an entry is chosen (the
+    // note leaves its editor then), never on open.
     final hold = editing != null && (id == null || id == editing);
     final origin = hold ? FocusManager.instance.primaryFocus : _focus;
-    final selects = node != null && !_readOnly;
-    if (selects) c.select(id);
 
     final target = _ContextTarget(
       controller: c,
@@ -1325,54 +1323,66 @@ class PageCanvasState extends State<PageCanvas>
       isRecord: node is BoxRecord,
       typeId: node is BoxRecord ? node.typeId : null,
       off: node is BoxRecord && _off.contains(node.typeId),
-      selects: selects,
       readOnly: _readOnly,
     );
 
     final boxesHere = Command(
-      id: contextPointId('boxesHere'),
+      id: contextPickId,
       label: 'Pick overlapping box…',
       icon: Icons.layers_rounded,
-      listenable: c,
-      enabled: () => !_readOnly && nodesAtPoint(c.page, world).length >= 2,
+      listenable: Listenable.merge([c, _tools]),
+      // Select tool, a writable page, no link under the point and at least two
+      // boxes there (§6).
+      enabled: () {
+        if (_readOnly || _tools.active != null) return false;
+        final rows = nodesAtPoint(c.page, world);
+        return rows.length >= 2 && !_linkAt(rows.first, global);
+      },
       invoke: () => _openPickList(global),
     );
-    final newNote = Command(
-      id: contextPointId('newNote'),
-      label: 'New note here',
-      icon: Icons.note_add_rounded,
-      listenable: c,
-      enabled: () => !_readOnly,
-      invoke: () {
-        if (_readOnly) return;
-        // A click-made note needs Select and type.
-        if (_tools.active != null) _tools.select(null);
-        _c.createBoxAt(Bounds(world.dx - 10, world.dy - 14, 0, 0));
-      },
-    );
     final paste = Command(
-      id: contextPointId('paste'),
+      id: CanvasCommands.paste,
       label: 'Paste',
       icon: Icons.content_paste_rounded,
       listenable: c,
       enabled: () => !_readOnly && widget.attachments != null,
       invoke: () => pasteFilesAt(world),
     );
-    final spec = node == null
+    final spec = node == null || _readOnly
         ? canvasContextSpec(
             registry: _commands,
-            newNote: newNote,
             paste: paste,
+            readOnly: _readOnly,
             hidden: _placeholderIds,
             notAllowed: _notAllowedIds,
           )
-        : boxContextSpec(registry: _commands, boxesHere: boxesHere, disallowed: target.off);
+        : boxContextSpec(
+            registry: _commands,
+            boxesHere: boxesHere,
+            disallowed: target.off,
+            listenable: c,
+            enabledFor: (commandId) => _boxEntryOn(id!, commandId),
+          );
     // The point commands the spec didn't take are not needed.
-    for (final p in [boxesHere, newNote, paste]) {
+    for (final p in [boxesHere, paste]) {
       if (!spec.points.contains(p)) p.dispose();
     }
+    // Nothing to offer (an empty target with nothing enabled, a disallowed box
+    // that can't be deleted): no popup.
+    if ((node == null || _readOnly || target.off) && !spec.entries.any((e) => e.enabled)) {
+      for (final p in spec.points) {
+        p.dispose();
+      }
+      return;
+    }
 
-    final session = _ContextSession(target, spec, origin, hold ? c : null, demoted: !hold && id != null ? editing : null);
+    final session = _ContextSession(
+      target,
+      spec,
+      origin,
+      hold ? c : null,
+      selectedAtOpen: c.selectedId,
+    );
     session.holdNow();
     _contextSession = session;
     _contextClose.value = false;
@@ -1383,7 +1393,8 @@ class PageCanvasState extends State<PageCanvas>
         spec: spec,
         anchor: global,
         within: area.localToGlobal(Offset.zero) & area.size,
-        radial: mouse && widget.contextMenuStyle == ContextMenuStyle.radial,
+        // A disallowed box always gets the list (Delete only).
+        radial: mouse && !target.off && widget.contextMenuStyle == ContextMenuStyle.radial,
         closeSignal: _contextClose,
       ).then((entry) => _contextDone(session, entry)),
     );
@@ -1441,18 +1452,38 @@ class PageCanvasState extends State<PageCanvas>
       registry: t.registry,
     );
     if (!guard.holds(_c, _c.page.id, registry: _commands)) return;
-    if (t.boxId != null) {
-      if (_targetChanged(t)) return;
-      // The demoted note's editor took the focus back as the menu went and
-      // selected itself: the menu's box is the selection it was opened for.
-      final demoted = s.demoted;
-      if (t.selects && demoted != null && _c.selectedId == demoted && _c.page.node(t.boxId!) != null) {
-        _c.select(t.boxId);
-      }
-      // A registry command acts on the selection: it must still be the box.
-      if (!entry.point && _c.selectedId != t.boxId) return;
+    if (t.boxId != null && _targetChanged(t)) return;
+    if (!entry.onTarget) {
+      await entry.command.run();
+      return;
     }
-    await entry.command.run();
+    // A box entry: select the target, look up the live command (it acts on the
+    // selection) and check it is on for the target now. If not, nothing runs
+    // and the selection goes back to what it was when the menu opened.
+    final id = t.boxId!;
+    final live = t.registry[entry.command.id];
+    _c.select(id);
+    if (live == null || !live.enabled) {
+      final prior = s.selectedAtOpen;
+      _c.select(prior != null && _c.page.node(prior) != null ? prior : null);
+      return;
+    }
+    await live.run();
+  }
+
+  // Whether the box entry [commandId] is on for the box [id] (its arrange
+  // moves, Delete): read for the menu's target, not for the selection.
+  bool _boxEntryOn(String id, String commandId) {
+    if (_readOnly) return false;
+    final move = switch (commandId) {
+      CanvasCommands.bringToFront => StackMove.front,
+      CanvasCommands.bringForward => StackMove.forward,
+      CanvasCommands.sendBackward => StackMove.backward,
+      CanvasCommands.sendToBack => StackMove.back,
+      _ => null,
+    };
+    if (move != null) return _c.canRestack(id, move);
+    return commandId == CanvasCommands.delete && _c.canDelete(id);
   }
 
   /// Whether the focused thing is a text field of its own (a sticky label, an
@@ -2088,7 +2119,6 @@ class _ContextTarget {
     required this.isRecord,
     required this.typeId,
     required this.off,
-    required this.selects,
     required this.readOnly,
   });
 
@@ -2101,8 +2131,6 @@ class _ContextTarget {
   final String? typeId;
   final bool off;
 
-  /// The box was selected for the menu (a writable page).
-  final bool selects;
 
   /// Whether the page could not be changed when the menu opened.
   final bool readOnly;
@@ -2111,15 +2139,14 @@ class _ContextTarget {
 /// One open context menu: its target, entries, the focus to give back, and
 /// the editor focus hold it took (released once).
 class _ContextSession {
-  _ContextSession(this.target, this.spec, this.origin, this._holder, {this.demoted});
+  _ContextSession(this.target, this.spec, this.origin, this._holder, {this.selectedAtOpen});
 
   final _ContextTarget target;
   final ContextMenuSpec spec;
   final FocusNode? origin;
-
-  /// The note that was being edited when a menu for another box opened. Flutter
-  /// gives its editor the focus back as the menu route goes, which selects it.
-  final String? demoted;
+  /// The selection when the menu opened: put back when a chosen entry is
+  /// refused.
+  final String? selectedAtOpen;
   CanvasController? _holder;
 
   void holdNow() => _holder?.editorFocusHold.hold();

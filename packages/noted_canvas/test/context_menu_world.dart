@@ -266,8 +266,8 @@ class World {
     fileGate = FileGate();
     editorSecondaryTaps = 0;
     saved = [];
-    this.pen = TPen('draw.pen', StylusRole.pen);
-    eraser = TPen('draw.eraser', StylusRole.eraser);
+    this.pen = TPen('noted.drawing.pen', StylusRole.pen);
+    eraser = TPen('noted.drawing.eraser', StylusRole.eraser);
     store = withStore ? TStore() : null;
     this.readOnly = readOnly;
     this.disallowed = disallowed;
