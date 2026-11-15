@@ -895,7 +895,7 @@ void main() {
     seams.failMoves = 0;
     binderFile().writeAsStringSync(original);
     await nb.checkBinderFile(binderFile().path);
-    await until(() => textOrEmpty().contains('Draft'), 'the cover change to land');
+    await until(() => textOrEmpty().contains('Draft') && nb.coverPendingFor(section.path).isEmpty, 'the cover change to land');
     expect(nb.coverPendingFor(section.path), isEmpty);
     await stop();
   });
