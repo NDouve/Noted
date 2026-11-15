@@ -635,7 +635,38 @@ void main() {
       nb.putBackBeforeDeleteHook = null;
       expect(File(row.path).existsSync(), isTrue, reason: 'the restored fields are kept only in the copy');
       expect(File(row.path).readAsBytesSync(), row.bytes);
+      expect(nb.binderCopyRows(nb.binders.single).map((r) => r.path), contains(row.path));
       await nb.checkBinderFile(binderFile().path);
+      expect(File(row.path).existsSync(), isTrue);
+      expect(nb.binderCopyRows(nb.binders.single).map((r) => r.path), contains(row.path));
+      await stop();
+    });
+
+    test('a pending cover change\'s temp, put back and kept, is not deleted when that change lands '
+        '(Codex run-diff-9 R-1, reviewer)', () async {
+      await start();
+      var n = 0;
+      seams.beforeMoveAside = () => externalReplace(owner: 'Them ${n++}');
+      expect(await nb.updateBinder(section.path, title: 'Draft'), isFalse);
+      seams.beforeMoveAside = null;
+      final temp = nb.binderCopyRows(section).firstWhere((r) => r.label == 'an interrupted change');
+      final kept = File(temp.path).readAsBytesSync();
+      binderFile().deleteSync();
+      await nb.checkBinderFile(binderFile().path);
+      nb.putBackBeforeDeleteHook = () async {
+        final json = jsonDecode(binderFile().readAsStringSync()) as Map<String, dynamic>;
+        json['owner'] = 'Another device';
+        binderFile().writeAsStringSync(jsonEncode(json));
+      };
+      await nb.putBackBinderCopy(section.path, temp.path);
+      nb.putBackBeforeDeleteHook = null;
+      await nb.checkBinderFile(binderFile().path, force: true);
+      nb.retryCovers();
+      await until(() => textOrEmpty().contains('Draft'), 'the cover change lands');
+      await idle();
+      expect(File(temp.path).existsSync(), isTrue, reason: 'only its row\'s Delete removes a copy that was put back');
+      expect(File(temp.path).readAsBytesSync(), kept);
+      expect(nb.binderCopyRows(nb.binders.single).map((r) => r.path), contains(temp.path));
       await stop();
     });
 

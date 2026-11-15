@@ -6297,6 +6297,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         kept?.removeWhere((t) => t.path == copyPath);
         if (kept != null && kept.isEmpty) _ownKeptTemps.remove(key);
       }
+      // A copy that was put back is no longer a pending change's temp: a kept one
+      // goes only through its row's Delete, never when that change lands, since
+      // the file the change lands on may lack the restored fields.
+      for (final c in _coverPending[key] ?? const <CoverChange>[]) {
+        c.delta.temps.removeWhere((t) => t.path == copyPath);
+      }
       // A copy that changed meanwhile stays, and is listed as it is now.
       await _listCopiesLocked(s, store);
     });
