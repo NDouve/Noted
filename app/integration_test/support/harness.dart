@@ -157,6 +157,9 @@ class Session {
     );
     env.assertIsolated(nb, settings);
     await nb.loadChecked();
+    expect(nb.loadError, isNull, reason: 'the start-up load failed');
+    expect(nb.firstLoadSucceeded, isTrue, reason: 'the start-up load did not succeed');
+
     await tester.pumpWidget(NotedApp(notebook: nb, settings: settings));
     await pump(300);
   }

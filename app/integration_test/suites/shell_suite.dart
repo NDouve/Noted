@@ -2,9 +2,16 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'package:noted/main.dart' show buildModules;
+import 'package:noted/src/notebook.dart';
+import 'package:noted_canvas/noted_canvas.dart' show PageCanvas;
+import 'package:noted_core/noted_core.dart';
 
 import '../support/harness.dart';
 import '../support/note_helpers.dart';
@@ -78,34 +85,71 @@ void shellSuite() {
       });
     });
 
-    testWidgets('M6: a read-only page keeps zoom and find on and edits off', (t) async {
-      await withSession(t, 'shellreadonly', (s) async {
-        final id = await putNote(s, 'ro');
-        s.nb.current!.select(id);
-        s.nb.current!.readOnly = true;
-        await s.pump(300);
-        await _top(s, 'Edit');
-        expect(_on(t, 'canvas.delete'), isFalse);
-        expect(_on(t, 'canvas.undo'), isFalse);
-        expect(_on(t, 'canvas.find'), isTrue);
-        await s.key(LogicalKeyboardKey.escape);
-        await _top(s, 'View');
-        expect(_on(t, 'canvas.zoomIn'), isTrue);
-        await s.key(LogicalKeyboardKey.escape);
-      });
+    testWidgets('M6: a read-only page (its binder file damaged) keeps zoom, find and File on and edits off', (t) async {
+      late Directory folder;
+      await withSession(
+        t,
+        'shellreadonly',
+        (s) async {
+          final binder = s.nb.binders.single;
+          final inB = binder.tree.roots.first.id;
+          final file = File('${folder.path}${Platform.pathSeparator}$binderFileName');
+          file.writeAsStringSync(file.readAsStringSync().replaceFirst('{', ''));
+          await s.until(() => binder.status == BinderStatus.unreadable, what: 'unreadable');
+          await t.tap(find.byKey(ValueKey('page-row-$inB')));
+          await s.pump(600);
+          // The notebook's own read-only path: the banner and PageCanvas.readOnly show.
+          expect(find.byKey(const ValueKey('read-only-banner')), findsOneWidget);
+          expect(t.widget<PageCanvas>(find.byType(PageCanvas)).readOnly, isTrue);
+          await _top(s, 'Edit');
+          expect(_on(t, 'canvas.delete'), isFalse);
+          expect(_on(t, 'canvas.undo'), isFalse);
+          expect(_on(t, 'canvas.paste'), isFalse);
+          expect(_on(t, 'canvas.find'), isTrue);
+          await s.key(LogicalKeyboardKey.escape);
+          await _top(s, 'View');
+          expect(_on(t, 'canvas.zoomIn'), isTrue);
+          await s.key(LogicalKeyboardKey.escape);
+          await _top(s, 'File');
+          expect(_on(t, 'app.page.new'), isTrue, reason: 'New page works on a read-only page');
+          await s.key(LogicalKeyboardKey.escape);
+        },
+        prepare: (env) async {
+          folder = env.folder('Work');
+          final nb = Notebook(PageStore(env.pages), buildModules(), bindersFile: env.binders, recoveryDirectory: env.recovery);
+          await nb.load();
+          final sec = await nb.addBinder(folder.path);
+          final p = await nb.createPage(binderPath: sec.path);
+          await nb.rename(p, 'Inside');
+          await nb.flush();
+          nb.dispose();
+        },
+        watchFiles: true,
+        folderCheckInterval: const Duration(milliseconds: 400),
+      );
     });
 
     testWidgets('M7: Edit opened by pointer while editing, Escape, then typing lands in the note', (t) async {
       await withSession(t, 'shelltyping', (s) async {
         final id = await putNote(s, 'abc');
-        await editNote(s, id);
+        final editor = await editNote(s, id);
+        final before = editor.selection;
+        expect(before, isNotNull);
+        final offset = before.end.offset as int;
         await _top(s, 'Edit');
         expect(s.nb.current!.editingId, id, reason: 'the bar took no focus');
         await s.key(LogicalKeyboardKey.escape);
         expect(s.nb.current!.editingId, id);
-        t.testTextInput.enterText('abcxyz');
+        expect(editorState(t).selection, before, reason: 'the caret is where it was');
+        // Typed at that caret, in the editor that still has the focus. (The
+        // editor takes characters from the text input, which a key event in a
+        // test does not drive, so the text goes in through its own transaction.)
+        final node = editor.getNodeAtPath(before.end.path);
+        await insertTextAt(editor, node, offset, 'xyz');
         await s.pump(500);
-        expect(snapshotOf(s, id), contains('xyz'));
+        final text = "${'abc'.substring(0, offset)}xyz${'abc'.substring(offset)}";
+        expect(snapshotOf(s, id), contains(text));
+
       });
     });
   });
