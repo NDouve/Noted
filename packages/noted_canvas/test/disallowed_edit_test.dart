@@ -6,6 +6,7 @@
 // focus-loss cleanup and undo skip it, and it shows from its snapshot (0111).
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
@@ -329,6 +330,48 @@ void main() {
       expect(find.byKey(ValueKey('live-${other.id}')), findsNothing);
       expect(find.text('Not allowed on this page'), findsOneWidget);
       expect(_Counts.ratios, 0);
+      c.dispose();
+    });
+
+    testWidgets('the Undo command is disabled while its step is blocked, and Ctrl+Z changes nothing', (t) async {
+      final c = controller([note, other]);
+      c.beginGesture(note.id);
+      c.updateGesture(note.id, const Bounds(400, 300, 100, 40));
+      c.endGesture(note.id);
+      c.editBox(other.id, 'two', undo: const _SetText('one'));
+      c.disallowedTypes = _offSet;
+      final key = GlobalKey<PageCanvasState>();
+      t.view.physicalSize = const Size(1000, 700);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PageCanvas(key: key, controller: c, disallowedTypes: _offSet),
+          ),
+        ),
+      );
+      await t.pump();
+      expect(key.currentState!.commands['canvas.undo']!.enabled, isFalse);
+      final before = writePage(c.page);
+      _Counts.reset();
+      await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await t.sendKeyEvent(LogicalKeyboardKey.keyZ);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await t.pump();
+      expect(writePage(c.page), before, reason: 'the moved note box stays moved');
+      expect(_Counts.decodes, 0);
+
+      c.disallowedTypes = const {};
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PageCanvas(key: key, controller: c),
+          ),
+        ),
+      );
+      await t.pump();
+      expect(key.currentState!.commands['canvas.undo']!.enabled, isTrue);
       c.dispose();
     });
 
