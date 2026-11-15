@@ -851,7 +851,8 @@ void main() {
       expect(find.byKey(const ValueKey('context-heading')), findsOneWidget);
       expect(w.enabled(CanvasCommands.delete), isTrue);
       expect(w.enabled(CanvasCommands.sendToBack), isFalse);
-// Boxes here stays enabled: it only selects.      expect(w.enabled('canvas.context.boxesHere'), isTrue);
+      // Boxes here stays enabled: it only selects.
+      expect(w.enabled('canvas.context.boxesHere'), isTrue);
     });
   });
 
