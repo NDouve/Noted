@@ -25,7 +25,13 @@ const double radialHeadingRoom = 40;
 /// Where the ring's pills sit: [radius] from [centre], one rect per slot (null
 /// for an empty slot), all in the coordinates of the anchor.
 class RadialLayout {
-  const RadialLayout(this.centre, this.radius, this.pills, {this.headingAbove = false, this.headingHeight = 0});
+  const RadialLayout(
+    this.centre,
+    this.radius,
+    this.pills, {
+    this.headingAbove = false,
+    this.headingHeight = 0,
+  });
 
   final Offset centre;
   final double radius;
@@ -37,7 +43,8 @@ class RadialLayout {
   final double headingHeight;
 
   /// The smallest rect holding every pill.
-  Rect get bounds => pills.whereType<Rect>().reduce((a, b) => a.expandToInclude(b));
+  Rect get bounds =>
+      pills.whereType<Rect>().reduce((a, b) => a.expandToInclude(b));
 }
 
 /// The centre of slot [i] on a ring of [radius] round [centre]: 60 degrees
@@ -60,13 +67,23 @@ RadialLayout? layoutRadial(
   var r = radialMinRadius;
   List<Rect?> at(Offset c, double r) => [
     for (final (i, s) in sizes.indexed)
-      s == null ? null : Rect.fromCenter(center: radialSlotCentre(c, r, i), width: s.width, height: s.height),
+      s == null
+          ? null
+          : Rect.fromCenter(
+              center: radialSlotCentre(c, r, i),
+              width: s.width,
+              height: s.height,
+            ),
   ];
   bool clear(List<Rect?> rects) {
     final live = rects.whereType<Rect>().toList();
     for (var i = 0; i < live.length; i++) {
       for (var j = i + 1; j < live.length; j++) {
-        if (live[i].inflate(radialGap / 2).overlaps(live[j].inflate(radialGap / 2))) return false;
+        if (live[i]
+            .inflate(radialGap / 2)
+            .overlaps(live[j].inflate(radialGap / 2))) {
+          return false;
+        }
       }
     }
     return true;
@@ -75,17 +92,37 @@ RadialLayout? layoutRadial(
   while (!clear(at(Offset.zero, r)) && r < 600) {
     r += 2;
   }
-  var box = at(Offset.zero, r).whereType<Rect>().reduce((a, b) => a.expandToInclude(b));
-  final inner = at(Offset.zero, r).whereType<Rect>().map(_distanceToRect).reduce(math.min);
+  var box = at(
+    Offset.zero,
+    r,
+  ).whereType<Rect>().reduce((a, b) => a.expandToInclude(b));
+  final inner = at(
+    Offset.zero,
+    r,
+  ).whereType<Rect>().map(_distanceToRect).reduce(math.min);
   final above = headingHeight != null && inner < radialHeadingRoom;
   final hh = above ? headingHeight(box.width) + 4 : 0.0;
-  if (above) box = box.expandToInclude(Rect.fromLTWH(box.left, box.top - hh, box.width, hh));
+  if (above) {
+    box = box.expandToInclude(
+      Rect.fromLTWH(box.left, box.top - hh, box.width, hh),
+    );
+  }
   final room = within.deflate(radialGap);
   if (box.width > room.width || box.height > room.height) return null;
-  final cx = anchor.dx.clamp(room.left - box.left, room.right - box.right).toDouble();
-  final cy = anchor.dy.clamp(room.top - box.top, room.bottom - box.bottom).toDouble();
+  final cx = anchor.dx
+      .clamp(room.left - box.left, room.right - box.right)
+      .toDouble();
+  final cy = anchor.dy
+      .clamp(room.top - box.top, room.bottom - box.bottom)
+      .toDouble();
   final centre = Offset(cx, cy);
-  return RadialLayout(centre, r, at(centre, r), headingAbove: above, headingHeight: hh);
+  return RadialLayout(
+    centre,
+    r,
+    at(centre, r),
+    headingAbove: above,
+    headingHeight: hh,
+  );
 }
 
 /// The ring: a pill for each slot, a dot at the point pressed, and, for a
@@ -117,7 +154,9 @@ class RadialMenuView extends StatelessWidget {
     required void Function(int slot) onHover,
   }) {
     final m = NotedMetrics.of(context);
-    final style = NotedTypography.of(context).label;
+    // The Material the ring sits in gives the base style the text merges with.
+    final base = Theme.of(context).textTheme.bodyMedium ?? const TextStyle();
+    final style = base.merge(NotedTypography.of(context).label);
     final scaler = MediaQuery.textScalerOf(context);
     final sizes = <Size?>[
       for (final e in slots)
@@ -140,7 +179,11 @@ class RadialMenuView extends StatelessWidget {
     ];
     double headingHeight(double width) {
       final p = TextPainter(
-        text: TextSpan(text: heading, style: NotedTypography.of(context).small),
+        text: TextSpan(
+          text: heading,
+          style: (Theme.of(context).textTheme.bodyMedium ?? const TextStyle())
+              .merge(NotedTypography.of(context).small),
+        ),
         textDirection: TextDirection.ltr,
         textScaler: scaler,
       )..layout(maxWidth: width);
@@ -193,52 +236,72 @@ class RadialMenuView extends StatelessWidget {
       container: true,
       role: SemanticsRole.menu,
       label: 'Context menu',
-      child: Stack(
-        key: const ValueKey('radial-menu'),
-        children: [
-          // A 6 px dot at the true point.
-          Positioned(
-            left: anchor.dx - 3,
-            top: anchor.dy - 3,
-            child: IgnorePointer(
-              child: DecoratedBox(
-                key: const ValueKey('radial-dot'),
-                decoration: BoxDecoration(color: scheme.primary, shape: BoxShape.circle),
-                child: const SizedBox(width: 6, height: 6),
-              ),
-            ),
-          ),
-          if (heading != null)
-            Positioned.fromRect(
-              rect: fits
-                  ? Rect.fromCenter(center: layout.centre, width: inner * 1.7, height: inner * 1.4)
-                  : Rect.fromLTWH(layout.bounds.left, layout.bounds.top - layout.headingHeight, layout.bounds.width, layout.headingHeight - 4),
-              child: Center(child: _heading(context, type, scheme)),
-            ),
-          for (final (i, e) in slots.indexed)
-            if (e != null)
-              Positioned.fromRect(
-                rect: layout.pills[i]!,
-                child: _Pill(
-                  entry: e,
-                  lit: at == i,
-                  outlined: at == i && keyboard,
-                  onRun: () => onRun(e),
-                  onHover: () => onHover(i),
-                  fg: !e.enabled
-                      ? colors.textDisabled
-                      : e.destructive
-                      ? scheme.error
-                      : scheme.onSurface,
-                  metrics: m,
+      // A Material gives the text its base style (no fallback underline).
+      child: Material(
+        type: MaterialType.transparency,
+        child: Stack(
+          key: const ValueKey('radial-menu'),
+          children: [
+            // A 6 px dot at the true point.
+            Positioned(
+              left: anchor.dx - 3,
+              top: anchor.dy - 3,
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  key: const ValueKey('radial-dot'),
+                  decoration: BoxDecoration(
+                    color: scheme.primary,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const SizedBox(width: 6, height: 6),
                 ),
               ),
-        ],
+            ),
+            if (heading != null)
+              Positioned.fromRect(
+                rect: fits
+                    ? Rect.fromCenter(
+                        center: layout.centre,
+                        width: inner * 1.7,
+                        height: inner * 1.4,
+                      )
+                    : Rect.fromLTWH(
+                        layout.bounds.left,
+                        layout.bounds.top - layout.headingHeight,
+                        layout.bounds.width,
+                        layout.headingHeight - 4,
+                      ),
+                child: Center(child: _heading(context, type, scheme)),
+              ),
+            for (final (i, e) in slots.indexed)
+              if (e != null)
+                Positioned.fromRect(
+                  rect: layout.pills[i]!,
+                  child: _Pill(
+                    entry: e,
+                    lit: at == i,
+                    outlined: at == i && keyboard,
+                    onRun: () => onRun(e),
+                    onHover: () => onHover(i),
+                    fg: !e.enabled
+                        ? colors.textDisabled
+                        : e.destructive
+                        ? scheme.error
+                        : scheme.onSurface,
+                    metrics: m,
+                  ),
+                ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _heading(BuildContext context, NotedTypography type, ColorScheme scheme) => Text(
+  Widget _heading(
+    BuildContext context,
+    NotedTypography type,
+    ColorScheme scheme,
+  ) => Text(
     heading!,
     key: const ValueKey('context-heading'),
     textAlign: TextAlign.center,
@@ -302,7 +365,10 @@ class _Pill extends StatelessWidget {
               boxShadow: metrics.shadowPopover,
             ),
             child: Padding(
-              padding: EdgeInsets.symmetric(horizontal: 10, vertical: metrics.space1),
+              padding: EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: metrics.space1,
+              ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -312,7 +378,8 @@ class _Pill extends StatelessWidget {
                     entry.text,
                     maxLines: 1,
                     softWrap: false,
-                    style: NotedTypography.of(context).label.copyWith(color: fg),
+                    style: NotedTypography.of(context).label
+                        .copyWith(color: fg),
                   ),
                 ],
               ),
