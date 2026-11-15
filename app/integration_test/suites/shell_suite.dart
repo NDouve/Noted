@@ -63,6 +63,7 @@ void shellSuite() {
         final id = await putNote(s, 'panel');
         final c = s.nb.current!;
         // A new box opens in its editor, and the panel follows the box being edited.
+        // This stands in for focus leaving the editor, which ends editing for a user.
         c.setEditing(id, false);
         c.select(null);
         await s.pump(200);
@@ -70,7 +71,6 @@ void shellSuite() {
         c.select(id);
         await s.pump(200);
         expect(find.byKey(const ValueKey('panel-box-type')), findsOneWidget);
-        c.setEditing(id, false);
         c.select(null);
         await s.pump(200);
         expect(find.byKey(const ValueKey('panel-page-title')), findsOneWidget);
