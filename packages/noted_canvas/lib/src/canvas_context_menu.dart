@@ -576,14 +576,17 @@ class _ListView extends StatelessWidget {
     // The width the widest row needs (the list scrolls, so it can't be
     // measured by the layout).
     final scaler = MediaQuery.textScalerOf(context);
+    // Bold text (an accessibility setting) widens the text the Text widget draws.
+    final bold = MediaQuery.boldTextOf(context);
     double text(String s, TextStyle st) {
       final p = TextPainter(
-        text: TextSpan(text: s, style: st),
+        // The Material the rows sit in gives the base style the text merges with.
+        text: TextSpan(text: s, style: (Theme.of(context).textTheme.bodyMedium ?? const TextStyle()).merge(st).merge(bold ? const TextStyle(fontWeight: FontWeight.bold) : null)),
         textDirection: TextDirection.ltr,
         textScaler: scaler,
         maxLines: 1,
       )..layout();
-      final w = p.width;
+      final w = p.maxIntrinsicWidth.ceilToDouble() + 1;
       p.dispose();
       return w;
     }

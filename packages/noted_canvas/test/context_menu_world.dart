@@ -242,6 +242,7 @@ class World {
   double textScale = 1;
   ThemeData? theme;
   bool disableAnimations = true;
+  bool boldText = false;
   late ModuleRegistry modules;
 
   PageCanvasState get state => key.currentState!;
@@ -294,13 +295,17 @@ class World {
 
   Widget _app({CanvasController? controller, CanvasToolSelection? tools}) => MaterialApp(
     theme: theme,
-    home: MediaQuery(
-      data: MediaQueryData(
-        size: size,
+    // Above the Navigator, so the menu routes see these settings too.
+    builder: (context, child) => MediaQuery(
+      data: MediaQuery.of(context).copyWith(
         textScaler: TextScaler.linear(textScale),
         disableAnimations: disableAnimations,
+        boldText: boldText,
       ),
-      child: Scaffold(
+      child: child!,
+    ),
+    home: Builder(
+      builder: (context) => Scaffold(
         body: PageCanvas(
           key: key,
           controller: controller ?? c,
