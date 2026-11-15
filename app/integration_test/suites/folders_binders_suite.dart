@@ -243,11 +243,12 @@ void foldersBindersSuite() {
           // 112: renamed: unavailable.
           file.renameSync(bak.path);
           await s.until(() => binder().status == BinderStatus.unavailable, what: 'unavailable');
-          await s.until(() => find.text('On another device').evaluate().isNotEmpty, what: 'label');
+          // The folder is still there, so the label names the file (0165).
+          await s.until(() => find.text('Binder file is missing').evaluate().isNotEmpty, what: 'label');
           // 113: renamed back.
           bak.renameSync(file.path);
           await s.until(() => binder().status == BinderStatus.available, what: 'available again');
-          expect(find.text('On another device'), findsNothing);
+          expect(find.text('Binder file is missing'), findsNothing);
           // 114: first "{" deleted.
           final text = file.readAsStringSync();
           file.writeAsStringSync(text.replaceFirst('{', ''));
