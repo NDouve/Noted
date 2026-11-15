@@ -42,7 +42,7 @@ void main() {
         stillRedundant: () => ++asked > 0,
       );
       expect(r.deleted, isTrue);
-      expect(asked, 1);
+      expect(asked, 2, reason: 'the early exit and the late check');
       expect(names(), isEmpty);
     });
 

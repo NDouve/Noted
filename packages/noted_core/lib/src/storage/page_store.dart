@@ -272,6 +272,9 @@ class PageStore {
     void Function()? afterRead,
     void Function()? beforePublish,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) async {
     final path = _pathFor(page.id);
     final tmp = File('$path.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
@@ -287,6 +290,9 @@ class PageStore {
         afterRead: afterRead,
         beforePublish: beforePublish,
         beforeRestore: beforeRestore,
+        beforeAsideDelete: beforeAsideDelete,
+        beforeFinalCheck: beforeFinalCheck,
+        afterFinalRead: afterFinalRead,
       );
       if (result.replaced) _paths[page.id] = path;
       return result;
@@ -310,6 +316,9 @@ class PageStore {
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) async {
     final r = await deleteFileIfUnchanged(
       _pathFor(pageId),
@@ -318,6 +327,9 @@ class PageStore {
       afterRead: afterRead,
       beforeDelete: beforeDelete,
       beforeRestore: beforeRestore,
+      beforeAsideDelete: beforeAsideDelete,
+      beforeFinalCheck: beforeFinalCheck,
+      afterFinalRead: afterFinalRead,
     );
     if (r.deleted || r.outcome == DeleteOutcome.absent) _paths.remove(pageId);
     return r;

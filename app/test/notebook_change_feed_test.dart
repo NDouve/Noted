@@ -31,6 +31,9 @@ class FailingStore extends PageStore {
     void Function()? afterRead,
     void Function()? beforePublish,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) {
     if (failSaves) throw const FileSystemException('disk full');
     return super.saveIfUnchanged(page, expectedText);
@@ -50,6 +53,9 @@ class FailingStore extends PageStore {
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) {
     if (failDeletes) throw const FileSystemException('delete failed');
     hookBeforeDelete?.call();

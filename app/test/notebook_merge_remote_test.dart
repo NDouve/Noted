@@ -57,6 +57,9 @@ class HookStore extends PageStore {
     void Function()? afterRead,
     void Function()? beforePublish,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) {
     final hook = this.beforeMoveAside;
     this.beforeMoveAside = null;
@@ -67,6 +70,9 @@ class HookStore extends PageStore {
       afterRead: afterRead,
       beforePublish: beforePublish,
       beforeRestore: beforeRestore,
+      beforeAsideDelete: beforeAsideDelete,
+      beforeFinalCheck: beforeFinalCheck,
+      afterFinalRead: afterFinalRead,
     ).then((r) {
       if (r.replaced) writes++;
       return r;
@@ -685,6 +691,9 @@ class FlakyDelete extends PageStore {
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) async {
     if (failDelete) throw const FileSystemException('delete failed');
     return super.deleteIfUnchanged(pageId, expectedText);

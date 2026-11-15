@@ -104,6 +104,9 @@ class FlakyStore extends PageStore {
     void Function()? afterRead,
     void Function()? beforePublish,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) async {
     if (failSave || failSaveIds.contains(page.id)) {
       onFailedSave?.call(page.id);
@@ -116,6 +119,9 @@ class FlakyStore extends PageStore {
       afterRead: afterRead,
       beforePublish: beforePublish,
       beforeRestore: beforeRestore,
+      beforeAsideDelete: beforeAsideDelete,
+      beforeFinalCheck: beforeFinalCheck,
+      afterFinalRead: afterFinalRead,
     );
     if (r.replaced) saves.update(page.id, (n) => n + 1, ifAbsent: () => 1);
     return r;
@@ -165,6 +171,9 @@ class FlakyStore extends PageStore {
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) async {
     if (failDelete.contains(pageId)) {
       onFailedDelete?.call(pageId);
@@ -179,6 +188,9 @@ class FlakyStore extends PageStore {
       afterRead: seam ? seamAfterRead : afterRead,
       beforeDelete: seam ? seamBeforeDelete : beforeDelete,
       beforeRestore: beforeRestore,
+      beforeAsideDelete: beforeAsideDelete,
+      beforeFinalCheck: beforeFinalCheck,
+      afterFinalRead: afterFinalRead,
     );
     if (r.deleted && failSaveAfterDelete) failSave = true;
     return r;

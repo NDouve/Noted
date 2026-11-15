@@ -103,6 +103,9 @@ class CountingStore extends PageStore {
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) {
     final f = beforeDeleteOnce;
     beforeDeleteOnce = null;
@@ -118,6 +121,9 @@ class CountingStore extends PageStore {
       afterRead: afterRead,
       beforeDelete: beforeDelete,
       beforeRestore: beforeRestore,
+      beforeAsideDelete: beforeAsideDelete,
+      beforeFinalCheck: beforeFinalCheck,
+      afterFinalRead: afterFinalRead,
     );
   }
 
@@ -142,6 +148,9 @@ class CountingStore extends PageStore {
     void Function()? afterRead,
     void Function()? beforePublish,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) {
     saves++;
     _fire();
@@ -154,6 +163,9 @@ class CountingStore extends PageStore {
       afterRead: afterRead,
       beforePublish: hook ?? beforePublish,
       beforeRestore: beforeRestore,
+      beforeAsideDelete: beforeAsideDelete,
+      beforeFinalCheck: beforeFinalCheck,
+      afterFinalRead: afterFinalRead,
     );
   }
 }
@@ -173,6 +185,9 @@ class _GoneStore extends CountingStore {
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) async {
     if (failDelete.contains(pageId)) {
       await beforeFail?.call();
@@ -185,6 +200,9 @@ class _GoneStore extends CountingStore {
       afterRead: afterRead,
       beforeDelete: beforeDelete,
       beforeRestore: beforeRestore,
+      beforeAsideDelete: beforeAsideDelete,
+      beforeFinalCheck: beforeFinalCheck,
+      afterFinalRead: afterFinalRead,
     );
   }
 }

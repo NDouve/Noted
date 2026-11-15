@@ -143,6 +143,29 @@ void main() {
       });
     }
 
+    test('a temp swapped while it is removed after a landed change, its path taken: the kept copy is listed', () async {
+      await start();
+      var once = true;
+      seams.beforeMoveAside = () {
+        if (!once) return;
+        once = false;
+        externalReplace();
+      };
+      seams.beforeFinalCheck = (path) async {
+        if (!path.contains('.tmp.')) return;
+        seams.beforeFinalCheck = null;
+        File(path).writeAsStringSync('swapped in the temp\'s aside');
+        File(path.substring(0, path.indexOf('.tmp.') + 4)).writeAsStringSync('a newer file');
+      };
+      await nb.updateBinder(section.path, description: 'mine');
+      await nb.flush();
+      seams.beforeMoveAside = null;
+      final recovered = folder.listSync().whereType<File>().where((f) => f.path.contains('-recovered-')).toList();
+      expect(recovered, hasLength(1), reason: 'the kept copy of the swapped temp');
+      expect(nb.binderCopyRows(nb.binders.single).map((r) => r.path), contains(recovered.single.path));
+      await stop();
+    });
+
     test('queued changes each apply only their own delta', () async {
       await start();
       externalReplace();
@@ -639,6 +662,34 @@ void main() {
       await nb.checkBinderFile(binderFile().path);
       expect(File(row.path).existsSync(), isTrue);
       expect(nb.binderCopyRows(nb.binders.single).map((r) => r.path), contains(row.path));
+      await stop();
+    });
+
+    test('12. the binder file replaced by another version of the same binder while the copy is re-checked '
+        '(the final check, not the early one): the copy survives and Put back reports it', () async {
+      final row = await goneWithTemp();
+      nb.putBackBeforeFinalCheckHook = (path) async {
+        final json = jsonDecode(binderFile().readAsStringSync()) as Map<String, dynamic>;
+        json['title'] = 'Changed on another device during the re-check';
+        binderFile().writeAsStringSync(jsonEncode(json));
+      };
+      await nb.putBackBinderCopy(section.path, row.path);
+      nb.putBackBeforeFinalCheckHook = null;
+      expect(File(row.path).existsSync(), isTrue, reason: 'the copy was not deleted on an older redundancy check');
+      expect(File(row.path).readAsBytesSync(), row.bytes);
+      expect(nb.binderCopyRows(nb.binders.single).map((r) => r.path), contains(row.path));
+      await nb.checkBinderFile(binderFile().path);
+      expect(File(row.path).existsSync(), isTrue);
+      await stop();
+    });
+
+    test('12. the binder file removed while the copy is re-checked (after its read): the copy survives', () async {
+      final row = await goneWithTemp();
+      nb.putBackBeforeFinalCheckHook = (path) async => binderFile().deleteSync();
+      await nb.putBackBinderCopy(section.path, row.path);
+      nb.putBackBeforeFinalCheckHook = null;
+      expect(File(row.path).readAsBytesSync(), row.bytes);
+      await nb.checkBinderFile(binderFile().path);
       await stop();
     });
 
