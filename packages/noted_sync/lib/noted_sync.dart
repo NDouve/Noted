@@ -8,8 +8,10 @@ library;
 
 export 'src/clock.dart';
 export 'src/graph_client.dart';
+export 'src/graph_driver.dart';
+export 'src/remote_driver.dart';
 export 'src/remote_item.dart';
-export 'src/journal.dart' show JournalUnreadable, syncJournalFile;
+export 'src/journal.dart' show JournalUnreadable, RemoteEntry, syncJournalFile;
 export 'src/pull_engine.dart';
 export 'src/remote_tree.dart' show isSafeName;
 export 'src/types.dart';

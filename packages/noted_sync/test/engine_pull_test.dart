@@ -611,9 +611,11 @@ void main() {
           workingCopy: h.work,
           stateDir: h.state,
           locks: h.locks,
-          graph: g,
-          driveId: FakeGraph.driveId,
-          rootItemId: h.rootId,
+          driver: GraphDriver(
+            graph: g,
+            driveId: FakeGraph.driveId,
+            rootItemId: h.rootId,
+          ),
           clock: h.clock,
         );
         final r = await e.runRound();

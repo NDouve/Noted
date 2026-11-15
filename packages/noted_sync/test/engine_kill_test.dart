@@ -94,7 +94,7 @@ void main() {
       expect(h.read('p0.canvas'), 'page 0');
     });
 
-    test('a new file published, journal old: the file is adopted without a download', () async {
+    test('with a server hash, a new file published, journal old: the file is adopted without a download', () async {
       seedMany(3);
       await killed('published');
       expect(h.tree(), hasLength(1));
