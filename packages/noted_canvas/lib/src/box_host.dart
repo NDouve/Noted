@@ -299,7 +299,7 @@ class _BoxHostState extends State<BoxHost> {
                 child: content,
               ),
             ),
-            // The border: 1px border-box idle, 1px accent selected, 2px
+            // The border: 1px box-frame idle, 1px accent selected, 2px
             // conflict. A frameless box shows a dashed accent outline only
             // while selected.
             if (conflicted)
@@ -348,7 +348,7 @@ class _BoxHostState extends State<BoxHost> {
                     decoration: BoxDecoration(
                       borderRadius: metrics.borderLg,
                       border: Border.all(
-                        color: lit ? scheme.primary : scheme.outlineVariant,
+                        color: lit ? scheme.primary : noted.boxFrame,
                       ),
                     ),
                   ),

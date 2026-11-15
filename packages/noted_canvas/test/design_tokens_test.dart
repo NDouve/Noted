@@ -13,6 +13,7 @@ import '../../../app/scripts/generate_tokens.dart' show generateTokens;
 String _normalize(String s) => s.replaceAll('\r\n', '\n');
 
 void main() {
+  precisionTests();
   test('design_tokens.g.dart is up to date with docs/design/tokens.json', () {
     final tokens = File('../../docs/design/tokens.json').readAsStringSync();
     final generated = File('lib/src/design_tokens.g.dart').readAsStringSync();
@@ -109,5 +110,41 @@ void main() {
         },
       );
     }
+  });
+}
+
+void precisionTests() {
+  group('Precision (the dark theme)', () {
+    final d = DesignColors.dark;
+    final l = DesignColors.light;
+
+    test('box-frame is 3:1 on the box and the canvas in Precision', () {
+      expect(contrastRatio(d.boxFrame, d.surface), greaterThanOrEqualTo(3));
+      expect(contrastRatio(d.boxFrame, d.bgCanvas), greaterThanOrEqualTo(3));
+    });
+
+    test('light box-frame equals border-box, and border-box is unchanged', () {
+      expect(l.boxFrame, l.borderBox);
+      expect(l.borderBox, const Color(0xFFE3E6EA));
+      expect(d.borderBox, const Color(0xFF3C424B));
+    });
+
+    test('the canvas pairs meet their ratios', () {
+      for (final (label, fg, bg, min) in [
+        ('text on surface', d.text, d.surface, 4.5),
+        ('text on bg-canvas', d.text, d.bgCanvas, 4.5),
+        ('text-muted on bg-canvas', d.textMuted, d.bgCanvas, 4.5),
+        ('accent on surface', d.accent, d.surface, 4.5),
+        ('accent on bg-canvas', d.accent, d.bgCanvas, 4.5),
+        ('conflict on surface', d.conflict, d.surface, 3.0),
+      ]) {
+        expect(contrastRatio(fg, bg), greaterThanOrEqualTo(min), reason: label);
+      }
+    });
+
+    test('the dark theme keeps its id and is named Precision', () {
+      final json = File('../../docs/design/tokens.json').readAsStringSync();
+      expect(json, contains('{"id": "dark", "name": "Precision"}'));
+    });
   });
 }
