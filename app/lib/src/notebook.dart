@@ -6206,6 +6206,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   @visibleForTesting
   Future<void> Function()? putBackBeforeDeleteHook;
 
+  /// Runs in [putBackBinderCopy] inside the delete of the copy, after the copy
+  /// was read again and before it is deleted (the re-check's seam).
+  @visibleForTesting
+  Future<void> Function(String path)? putBackBeforeFinalCheckHook;
+
   /// Puts the copy [copyPath] back as binder [path]'s file (P). Only while the
   /// file is missing, only a complete copy of this folder's binder, and never
   /// over anything.
@@ -6280,6 +6285,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final r = await deleteFileIfMatches(
           copyPath,
           bytes: bytes,
+          beforeFinalCheck: putBackBeforeFinalCheckHook,
           stillRedundant: () {
             try {
               return listEquals(store.file.readAsBytesSync(), bytes);
@@ -8818,6 +8824,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _pathId[key] = page.id;
     if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
     onPageContent?.call(loc, page);
+    // A file the aside's final check kept (a version a sync client wrote into
+    // the set-aside copy) is a conflict copy of this page: merge it now, on every
+    // platform. Not awaited: checkFile waits for the save chain to be idle, and
+    // this save runs on it.
+    if (!_disposed) {
+      for (final kept in [if (result.keptPath != null) result.keptPath!, ...result.alsoKept]) {
+        unawaited(checkFile(kept));
+      }
+    }
     return _WriteOutcome(landed: true, identity: published);
   }
 

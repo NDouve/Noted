@@ -30,6 +30,9 @@ class _FailDeleteStore extends PageStore {
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) {
     if (failDelete.contains(pageId)) throw const FileSystemException('drive gone');
     return super.deleteIfUnchanged(
@@ -39,6 +42,9 @@ class _FailDeleteStore extends PageStore {
       afterRead: afterRead,
       beforeDelete: beforeDelete,
       beforeRestore: beforeRestore,
+      beforeAsideDelete: beforeAsideDelete,
+      beforeFinalCheck: beforeFinalCheck,
+      afterFinalRead: afterFinalRead,
     );
   }
 }

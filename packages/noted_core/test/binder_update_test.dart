@@ -271,6 +271,23 @@ void main() {
       expect(await store.removeTemps(d, currentId: () => 'bb22'), isEmpty);
       expect(tmps(), isEmpty);
     });
+
+    test('12. the binder file gone while the temp is re-checked (final check): the temp is kept', () async {
+      final d = await landedWithTemp();
+      store.beforeFinalCheck = (path) async => binderFile().deleteSync();
+      expect(await store.removeTemps(d), hasLength(1));
+      expect(tmps(), hasLength(1));
+      expect(d.temps, hasLength(1));
+    });
+
+    test('12. the binder file replaced by another binder after the temp was read: the temp is kept', () async {
+      final d = await landedWithTemp();
+      store.afterFinalRead = (path) async => binderFile().writeAsStringSync(
+        Binder.create(id: 'bb22', title: 'Other', color: binderPalette.first).write(),
+      );
+      expect(await store.removeTemps(d), hasLength(1));
+      expect(tmps(), hasLength(1));
+    });
   });
 
   test(

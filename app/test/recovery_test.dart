@@ -31,6 +31,9 @@ class _LossyStore extends PageStore {
     void Function()? afterRead,
     void Function()? beforePublish,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) => super.saveIfUnchanged(NotedPage.create(page.meta), expectedText);
 }
 
@@ -80,6 +83,12 @@ class _FlakyFile implements File {
   Future<DateTime> lastModified() => _f.lastModified();
 
   @override
+  Future<FileStat> stat() => _f.stat();
+
+  @override
+  void deleteSync({bool recursive = false}) => _f.deleteSync(recursive: recursive);
+
+  @override
   Future<File> writeAsString(String contents, {FileMode mode = FileMode.write, Encoding encoding = utf8, bool flush = false}) =>
       _f.writeAsString(contents, mode: mode, encoding: encoding, flush: flush);
 
@@ -123,6 +132,9 @@ class _OverlapStore extends PageStore {
     void Function()? afterRead,
     void Function()? beforePublish,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) async {
     if (_scanning) overlapped = true;
     _replacing = true;
@@ -166,6 +178,9 @@ class _RacingStore extends PageStore {
     void Function()? afterRead,
     void Function()? beforePublish,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) {
     onPublish(calls++);
     return super.saveIfUnchanged(page, expectedText);
@@ -216,6 +231,9 @@ class _ToggleStore extends PageStore {
     void Function()? afterRead,
     void Function()? beforePublish,
     void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
   }) {
     if (failWrite) throw const FileSystemException('injected write failure');
     return super.saveIfUnchanged(
@@ -225,6 +243,9 @@ class _ToggleStore extends PageStore {
     afterRead: afterRead,
     beforePublish: beforePublish,
     beforeRestore: beforeRestore,
+    beforeAsideDelete: beforeAsideDelete,
+    beforeFinalCheck: beforeFinalCheck,
+    afterFinalRead: afterFinalRead,
   );
   }
 
