@@ -999,17 +999,38 @@ class PullEngine {
     }
   }
 
-  Future<void> _adopt(
+  /// Records the file at [rel] as [d]'s. With [verify] (a file compared before
+  /// the call, by a download that took time), the file is read again first and
+  /// must still be [ident] and unchanged until the record's time is taken;
+  /// otherwise nothing is recorded and false is returned.
+  Future<bool> _adopt(
     DesiredFile d,
     String rel,
     ContentIdentity ident, {
     FileRecord? existing,
+    bool verify = false,
   }) async {
     final j = _journal!;
     final abs = _abs(rel);
     final pageLike = _pageLike(d);
+    FileStat? before;
+    if (verify) {
+      try {
+        before = await File(abs).stat();
+        if (before.type != FileSystemEntityType.file ||
+            await ContentIdentity.ofFile(abs) != ident) {
+          return false;
+        }
+      } on FileSystemException {
+        return false;
+      }
+    }
     if (pageLike) await _blobs.put(File(abs), ident.sha256);
     final st = await File(abs).stat();
+    if (before != null &&
+        (st.modified != before.modified || st.size != before.size)) {
+      return false;
+    }
     final rec = existing ?? FileRecord(path: rel);
     rec
       ..path = rel
@@ -1026,6 +1047,7 @@ class PullEngine {
     j.mismatches.remove(d.key);
     _changedMeanwhile.remove(d.key);
     await _save();
+    return true;
   }
 
   Future<void> _rowNew(DesiredFile d, FileRecord? retained) async {
@@ -1053,8 +1075,17 @@ class PullEngine {
       final ident = await ContentIdentity.ofFile(abs);
       final same = await _equalsRemote(abs, ident, d, rel);
       if (same == null) return;
-      if (same) {
-        await _adopt(d, rel, ident, existing: retained);
+      if (same &&
+          await _adopt(
+            d,
+            rel,
+            ident,
+            existing: retained,
+            verify: !driver.caps.serverHash,
+          )) {
+        // Adopted.
+      } else if (same) {
+        _issue(rel, 'Changed on this device; left alone');
       } else {
         _issue(rel, 'A different file is already here; left alone');
         j.mismatches.remove(d.key);
@@ -1270,8 +1301,15 @@ class PullEngine {
             : false;
         if (same == null) {
           // Not known this round; the compare listed why.
-        } else if (same) {
-          await _adopt(d, rel, ident, existing: rec);
+        } else if (same &&
+            await _adopt(
+              d,
+              rel,
+              ident,
+              existing: rec,
+              verify: !driver.caps.serverHash,
+            )) {
+          // Adopted.
         } else {
           _issue(
             rel,

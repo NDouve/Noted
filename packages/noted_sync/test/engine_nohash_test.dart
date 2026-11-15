@@ -28,6 +28,9 @@ class NoHashDriver implements RemoteDriver {
   /// Makes a download leave no file, so reading it fails.
   bool writeNothing = false;
 
+  /// Runs after a download, as a local edit during the compare would.
+  void Function()? afterDownload;
+
   @override
   String get provider => 'nohash';
   @override
@@ -87,7 +90,7 @@ class NoHashDriver implements RemoteDriver {
       throw RemoteException('Refused', statusCode: status);
     }
     if (writeNothing) return Future<void>.value();
-    return inner.download(entry, dest);
+    return inner.download(entry, dest).then((_) => afterDownload?.call());
   }
 }
 
@@ -281,5 +284,22 @@ void main() {
       await h.round();
       expect(h.issueText().single, contains('keeps changing'));
     });
+  });
+
+  test('a local file replaced with other same-size bytes during the compare is not adopted', () async {
+    h.fake.addFile('Noted/a.canvas', Harness.b('AAA'));
+    h.write('a.canvas', 'AAA');
+    driver.afterDownload = () => h.write('a.canvas', 'BBB');
+    await h.round();
+    expect(h.read('a.canvas'), 'BBB');
+    expect(h.engine.issues, hasIssue('a.canvas'));
+    expect((journal()['files'] as Map), isEmpty);
+    expect(h.stateFiles('base'), isEmpty);
+    expect(h.stateFiles('tmp'), isEmpty);
+    // The next round compares the new file, and finds it different.
+    driver.afterDownload = null;
+    await h.round();
+    expect(h.issueText().single, contains('different file'));
+    expect((journal()['files'] as Map), isEmpty);
   });
 }
