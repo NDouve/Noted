@@ -248,7 +248,6 @@ class AppMenuBarState extends State<AppMenuBar> {
   bool _barFocused = false;
 
   bool _altArmed = false;
-  bool _loadSucceeded = false;
   CommandRegistry? _registry;
 
   bool get _altKeys => defaultTargetPlatform != TargetPlatform.macOS;
@@ -336,14 +335,6 @@ class AppMenuBarState extends State<AppMenuBar> {
     widget.settings?.addListener(_rebuild);
     FocusManager.instance.addEarlyKeyEventHandler(_onKeyEarly);
     GestureBinding.instance.pointerRouter.addGlobalRoute(_onPointer);
-    // TODO(task 6): replace with Notebook.firstLoadSucceeded once notebook.dart
-    // has it (set in the _loadSucceeded callback, followed by _notifyLoad()).
-    unawaited(
-      widget.notebook.loadSucceeded.then((_) {
-        if (!mounted) return;
-        setState(() => _loadSucceeded = true);
-      }),
-    );
   }
 
   @override
@@ -659,7 +650,7 @@ class AppMenuBarState extends State<AppMenuBar> {
 
   List<_Entry> _file() {
     final nb = widget.notebook;
-    final ok = _loadSucceeded;
+    final ok = widget.notebook.firstLoadSucceeded;
     final header = _headerRegistry();
     final items = <_Entry>[
       for (final c in header.commands) _fromCommand(_Kind.header, c, enabled: ok),
@@ -822,7 +813,8 @@ class AppMenuBarState extends State<AppMenuBar> {
     final registry = widget.canvas.value;
     final toPage = item.kind != _Kind.app;
     if (toPage && !target.holds(nb, registry, canvas: item.kind == _Kind.canvas)) return;
-    if (toPage && item.kind != _Kind.canvas && !_loadSucceeded) return;
+    if (toPage && item.kind != _Kind.canvas && !nb.firstLoadSucceeded) return;
+
     _proxy.valid = () => mounted && target.holds(nb, widget.canvas.value, canvas: false);
     final temp = <CommandRegistry>[];
     try {

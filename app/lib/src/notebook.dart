@@ -1452,6 +1452,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// timeout, or a Retry). Never completes with an error.
   Future<void> get loadSucceeded => _loadSucceeded.future;
 
+  bool _firstLoadSucceeded = false;
+
+  /// Whether a [loadChecked] run has succeeded, however late (after a timeout
+  /// or a Retry). Set in the same callback that completes [loadSucceeded], then
+  /// listeners are told. Not derived from [loaded] or [loadError]: a Retry
+  /// clears the error before its load runs, so a hanging Retry has neither.
+  bool get firstLoadSucceeded => _firstLoadSucceeded;
+
   /// [load] for the app's start and its Retry: a failure, or a load still
   /// running after [timeout], sets [loadError] (and notifies) instead of
   /// throwing. A load still running is never started twice: a call then waits
@@ -1472,9 +1480,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       run.then<void>(
         (_) {
           if (!_loadSucceeded.isCompleted) _loadSucceeded.complete();
-          if (_loadError == null) return;
+          final first = !_firstLoadSucceeded;
+          _firstLoadSucceeded = true;
+          if (_loadError == null) {
+            if (first) _notifyLoad();
+            return;
+          }
           _loadError = null;
           _notifyLoad();
+
         },
         onError: (Object e) {
           _loadError = e;
