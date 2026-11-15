@@ -14,13 +14,15 @@ import 'package:noted_core/noted_core.dart';
 const _off = 'test.other';
 const _offSet = {_off};
 
-/// Counts decodes and aspect-ratio asks of the switchable type.
+/// Counts decodes of the switchable type.
+///
+/// Not tested here: that a resize ignores `hostAspectRatio` (and the image
+/// variant). A disallowed box is not editable, so it has no resize handles, and
+/// `_aspectRatio` shares `_resolve`, which the display test shows is not decoded.
 class _Counts {
   static int decodes = 0;
-  static int ratios = 0;
   static void reset() {
     decodes = 0;
-    ratios = 0;
   }
 }
 
@@ -63,11 +65,6 @@ class _Module extends BoxModule<String> {
   @override
   Widget buildView(BuildContext context, BoxContext<String> box) =>
       Text('live ${box.data}', key: ValueKey('live-${box.boxId}'));
-  @override
-  double? hostAspectRatio(Object? data) {
-    _Counts.ratios++;
-    return 2;
-  }
 }
 
 /// Sets the text back to [before]; its inverse sets it to what it was.
@@ -250,7 +247,7 @@ void main() {
       expect(_Counts.decodes, 0);
     });
 
-    test('Delete, an add and a replacement undo and redo at once, verbatim', () {
+    test('(guard: these reverts never used a codec) Delete, an add and a replacement undo and redo at once, verbatim', () {
       // Delete, then Undo and Redo.
       var c = controller([other]);
       final raw = bytes(c);
@@ -314,7 +311,6 @@ void main() {
       expect(find.text('one'), findsOneWidget);
       expect(find.byKey(ValueKey('live-${other.id}')), findsNothing);
       expect(_Counts.decodes, 0);
-      expect(_Counts.ratios, 0);
 
       c.disallowedTypes = const {};
       await pump(t, c, const {});
@@ -329,7 +325,6 @@ void main() {
       await t.pump();
       expect(find.byKey(ValueKey('live-${other.id}')), findsNothing);
       expect(find.text('Not allowed on this page'), findsOneWidget);
-      expect(_Counts.ratios, 0);
       c.dispose();
     });
 

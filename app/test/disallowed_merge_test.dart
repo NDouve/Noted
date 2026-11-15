@@ -203,6 +203,7 @@ void main() {
       final r = await nb.mergeRemote(pathIn(dir, id), bytes(base), bytes(theirsPage));
       expect(r.outcome, RemoteMergeOutcome.merged, reason: '$r');
       expectKeptMine(nb.current!.page, mine, theirsBox);
+      expect(nb.current!.disallowedTypes, contains(spyDrawing), reason: 'the controller holds the merged header set');
       expectMergedHeader(nb.current!.page);
       expect(SpyCalls.total(spyDrawing), 0);
     });

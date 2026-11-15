@@ -7,11 +7,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/busy_retry.dart';
+import 'support/spy_modules.dart';
 
 Map<String, Object?> doc(String text) => {
   'document': {
@@ -94,7 +94,7 @@ void main() {
 
   Future<void> start({bool listen = true, FolderLocks? locks}) async {
     dir = await Directory.systemTemp.createTemp('noted_merge_remote');
-    modules = buildModules();
+    modules = spyModules();
     store = HookStore(dir);
     nb = Notebook(
       store,
@@ -121,11 +121,6 @@ void main() {
   BoxRecord noteBox(String text, {Bounds at = const Bounds(10, 10, 200, 40)}) {
     final codec = modules.codecs.codecFor('noted.note')!;
     return commitBox(createBox(codec, at), codec, codec.decode(doc(text), 1));
-  }
-
-  BoxRecord withText(BoxRecord b, String text) {
-    final codec = modules.codecs.codecFor('noted.note')!;
-    return commitBox(b, codec, codec.decode(doc(text), 1));
   }
 
   String pathOf(String id) => '${dir.path}$sep$id.canvas';
@@ -281,22 +276,26 @@ void main() {
       }
     });
 
-    test('both sides changing a box of a type the page disallows leave it conflicted, both versions byte for byte', () async {
+    test('both sides adding strokes to a drawing of a type the page disallows leave it conflicted, both versions byte for byte', () async {
       await start();
-      final (id, box, _) = await closedPage();
-      await nb.setBoxType(id, 'noted.note', false);
-      await nb.flush();
+      final (id, _, _) = await closedPage();
+      final box = spyDrawingBox('d000000000000001', [spyStroke('s0', 30, t0: 1)]);
+      await nb.setBoxType(id, spyDrawing, false);
+      await busyRetry(() => other.save(onDisk(id).insertNode(box)));
       final base = onDisk(id);
-      final mine = withText(box, 'local side');
+      final mine = withStrokes(box, [spyStroke('s0', 30, t0: 1), spyStroke('s1', 60, t0: 2)]);
       await busyRetry(() => other.save(base.replaceNode(mine)));
-      final theirs = withText(box, 'remote side');
+      final theirs = withStrokes(box, [spyStroke('s0', 30, t0: 1), spyStroke('s2', 90, t0: 3)]);
+      SpyCalls.reset();
       final r = await nb.mergeRemote(pathOf(id), bytes(base), bytes(base.replaceNode(theirs)));
       expect(r.outcome, RemoteMergeOutcome.merged, reason: '$r');
       final saved = onDisk(id).node(box.id)! as BoxRecord;
       expect(saved.isConflicted, isTrue);
-      expect(saved.snapshotText, 'local side');
+      expect(saved.data!.text, mine.data!.text);
+      expect(saved.snapshotText, mine.snapshotText);
       expect(saved.conflicts.single.node, theirs.toRaw());
       expect(nb.hasConflict(id), isTrue);
+      expect(SpyCalls.total(spyDrawing), 0);
     });
 
     test('a box of an unregistered type passes through byte for byte', () async {

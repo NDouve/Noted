@@ -722,6 +722,23 @@ void main() {
       expect(spy.decodes, 0);
     });
 
+    test('the live header disallows it while a save has not landed: the older saved header is not enough', () async {
+      await conflicted('a1', type: aiBoxTypeId);
+      final spy = _Spy(nb, () {})..gate = Completer<void>();
+      spy.stale = await nb.aiSavedPage(pageId); // the file as it is before the disallow
+      final s = AiMergeService(access: service, host: spy);
+      final pending = s.ask(pageId, 'a1');
+      final failed = expectLater(pending, throwsA(isA<AiMergeException>()));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await nb.setBoxType(pageId, aiBoxTypeId, false);
+      expect(spy.stale!.meta.boxTypeChoice(aiBoxTypeId), isNull, reason: 'the saved header still allows it');
+      expect(nb.boxTypeAvailabilityFor(pageId, aiBoxTypeId).allowed, isFalse);
+      spy.gate!.complete();
+      await failed;
+      expect(s.pendingFor(service.store.codes().single), isEmpty);
+      expect(spy.decodes, 0);
+    });
+
     test('after the request was sent: the answer is not decoded, no proposal is offered, propose says no_request', () async {
       await conflicted('a1', type: aiBoxTypeId);
       final spy = _Spy(nb, () {});
@@ -761,11 +778,14 @@ class _Spy implements AiMergeHost {
   /// Holds the read open until completed, when set.
   Completer<void>? gate;
 
+  /// Returned as the saved page when set: a save that has not landed.
+  NotedPage? stale;
+
   @override
   Future<NotedPage?> aiSavedPage(String pageId) async {
     onRead();
     await gate?.future;
-    return inner.aiSavedPage(pageId);
+    return stale ?? inner.aiSavedPage(pageId);
   }
 
   @override

@@ -8978,7 +8978,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final knownBefore = _known[key]; // the file as last seen, before the merge
     final merged = mergePage(basePage, c.page, remotePage, _mergeCodecs(id, [basePage, c.page, remotePage]), theirsTime: time).page;
     final changed = writePage(merged) != writePage(c.page);
-    if (changed) c.applyExternal(merged); // not an undo step
+    if (changed) {
+      c.applyExternal(merged); // not an undo step
+      _syncDisallowed(); // the merged header may disallow a type
+    }
     // The save of the merged page (or of the page as it is when nothing
     // changed), which reports how it ended.
     _saveTimer?.cancel();
@@ -10027,7 +10030,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     Future<String?> openBranch(CanvasController c) async {
       final original = c.page;
       final merged = mergeConflictCopy(original, copy, _mergeCodecs(id, [original, copy]), copyTime: time).page;
-      if (writePage(merged) != writePage(original)) c.applyExternal(merged);
+      if (writePage(merged) != writePage(original)) {
+        c.applyExternal(merged);
+        _syncDisallowed();
+      }
       await flush();
       return verifyConflictCopyMerge(readPage(await st.readText(id)), original, copy);
     }

@@ -208,7 +208,7 @@ class AiMergeService implements PageAiMerge {
     if (!identical(_asks[key], a) || a.done.isCompleted) return a.done.future;
     // The type may have been disallowed while the file was read (0111).
     final saved = page?.node(boxId);
-    if (page != null && saved is BoxRecord && !host.aiMergeTypeAllowed(pageId, saved.typeId, page: page)) {
+    if (page != null && saved is BoxRecord && !(host.aiMergeTypeAllowed(pageId, saved.typeId) && host.aiMergeTypeAllowed(pageId, saved.typeId, page: page))) {
       _end(a, const AiMergeException(_notAllowed));
       return a.done.future;
     }
@@ -242,7 +242,7 @@ class AiMergeService implements PageAiMerge {
     if (typeId != _noteTypeId && typeId != aiBoxTypeId) return null;
     // Before the box's JSON is parsed: a type the saved page's header
     // disallows is not read (invariant 2).
-    if (!host.aiMergeTypeAllowed(pageId, typeId, page: page)) return null;
+    if (!host.aiMergeTypeAllowed(pageId, typeId) || !host.aiMergeTypeAllowed(pageId, typeId, page: page)) return null;
     if (isEncryptedBox(box)) return null;
     final codec = host.aiMergeCodec(typeId);
     if (codec == null || box.dataVersion > codec.dataVersion) return null;
