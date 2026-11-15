@@ -88,6 +88,9 @@ class TModule extends BoxModule<String> {
   int fileAffinity(IncomingFile file) => kind == 'file' ? 1 : 0;
 
   @override
+  bool linkAt(String boxId, Offset global) => kind == 'link';
+
+  @override
   Future<(String, Size)?> createFromFile(IncomingFile file, AttachmentStore store) async {
     if (kind != 'file') return null;
     final gate = fileGate;
@@ -268,6 +271,7 @@ class World {
       ..register(const TModule('test.text'), isDefault: true)
       ..register(const TModule('test.editor', 'editor'))
       ..register(const TModule('test.field', 'field'))
+      ..register(const TModule('test.link', 'link'))
       ..register(const TModule('test.off'))
       ..register(const TModule('test.insert', 'insert'))
       ..register(const TModule('test.file', 'file'))

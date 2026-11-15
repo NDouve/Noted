@@ -471,6 +471,36 @@ void main() {
     });
   });
 
+  group('claims, links and fields', () {
+    testWidgets('an inner secondary-tap recognizer that wins (a text field) keeps the click', (t) async {
+      await setUpWorld(t, nodes: [tbox('f', 'test.field', ba, 'label')]);
+      await w.rightClick(w.at(const Offset(200, 200)));
+      // The field's own selection toolbar, not Noted's menu.
+      expect(w.open, isFalse);
+    });
+
+    testWidgets('a right click on a link opens the box menu', (t) async {
+      await setUpWorld(t, nodes: [tbox('l', 'test.link', ba, 'a link')]);
+      await w.rightClick(w.at(const Offset(200, 200)));
+      expect(w.menu, findsOneWidget);
+      expect(w.c.selectedId, 'l');
+      expect(w.c.editingId, isNull);
+    });
+
+    testWidgets('the Menu key in the find bar and in a text field is left to the field', (t) async {
+      await setUpWorld(t, nodes: [tbox('a', 'test.text', ba, 'alpha')]);
+      w.state.openFind();
+      await t.pump();
+      await t.pump();
+      await t.sendKeyEvent(LogicalKeyboardKey.contextMenu);
+      await t.pump();
+      await t.pump();
+      expect(w.open, isFalse);
+      await w.shiftF10();
+      expect(w.open, isFalse);
+    });
+  });
+
   group('a note being edited', () {
     testWidgets('right click on its grip opens its menu under the hold; Escape restores focus; the hold is released once', (t) async {
       await setUpWorld(t, nodes: [tbox('e', 'test.editor', ba, 'note'), tbox('o', 'test.text', const Bounds(700, 100, 100, 50), 'o')]);
