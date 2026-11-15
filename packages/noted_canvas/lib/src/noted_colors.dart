@@ -25,7 +25,11 @@ double contrastRatio(Color a, Color b) {
 class NotedColors extends ThemeExtension<NotedColors> {
   const NotedColors({
     required this.bgSidebar,
-    required this.boxFrame,
+    required this.outlineControl,
+    required this.overlayScrim,
+    required this.brandBlueStart,
+    required this.brandBlueEnd,
+    required this.menuShadowColor,
     required this.surfaceHover,
     required this.textDisabled,
     required this.conflict,
@@ -52,7 +56,11 @@ class NotedColors extends ThemeExtension<NotedColors> {
   /// The colors of the design tokens [c].
   factory NotedColors.fromTokens(DesignColors c) => NotedColors(
     bgSidebar: c.bgSidebar,
-    boxFrame: c.boxFrame,
+    outlineControl: c.outlineControl,
+    overlayScrim: c.overlayScrim,
+    brandBlueStart: c.brandBlueStart,
+    brandBlueEnd: c.brandBlueEnd,
+    menuShadowColor: c.menuShadowColor,
     surfaceHover: c.surfaceHover,
     textDisabled: c.textDisabled,
     conflict: c.conflict,
@@ -97,8 +105,18 @@ class NotedColors extends ThemeExtension<NotedColors> {
   /// Sidebar (page tree) background.
   final Color bgSidebar;
 
-  /// The idle frame of a box on the canvas (3:1 on the box in Precision).
-  final Color boxFrame;
+  /// Boundary of a control that identifies it (3:1 on its background).
+  final Color outlineControl;
+
+  /// Scrim behind the Details overlay.
+  final Color overlayScrim;
+
+  /// The brand gradient stops (decorative).
+  final Color brandBlueStart;
+  final Color brandBlueEnd;
+
+  /// Colour of the popover shadow.
+  final Color menuShadowColor;
 
   /// Hover fill for rows, menu items and ghost buttons.
   final Color surfaceHover;
@@ -150,7 +168,11 @@ class NotedColors extends ThemeExtension<NotedColors> {
   @override
   NotedColors copyWith({
     Color? bgSidebar,
-    Color? boxFrame,
+    Color? outlineControl,
+    Color? overlayScrim,
+    Color? brandBlueStart,
+    Color? brandBlueEnd,
+    Color? menuShadowColor,
     Color? surfaceHover,
     Color? textDisabled,
     Color? conflict,
@@ -174,7 +196,11 @@ class NotedColors extends ThemeExtension<NotedColors> {
     Color? onReadout,
   }) => NotedColors(
     bgSidebar: bgSidebar ?? this.bgSidebar,
-    boxFrame: boxFrame ?? this.boxFrame,
+    outlineControl: outlineControl ?? this.outlineControl,
+    overlayScrim: overlayScrim ?? this.overlayScrim,
+    brandBlueStart: brandBlueStart ?? this.brandBlueStart,
+    brandBlueEnd: brandBlueEnd ?? this.brandBlueEnd,
+    menuShadowColor: menuShadowColor ?? this.menuShadowColor,
     surfaceHover: surfaceHover ?? this.surfaceHover,
     textDisabled: textDisabled ?? this.textDisabled,
     conflict: conflict ?? this.conflict,
@@ -204,7 +230,11 @@ class NotedColors extends ThemeExtension<NotedColors> {
     Color l(Color a, Color b) => Color.lerp(a, b, t)!;
     return NotedColors(
       bgSidebar: l(bgSidebar, other.bgSidebar),
-      boxFrame: l(boxFrame, other.boxFrame),
+      outlineControl: l(outlineControl, other.outlineControl),
+      overlayScrim: l(overlayScrim, other.overlayScrim),
+      brandBlueStart: l(brandBlueStart, other.brandBlueStart),
+      brandBlueEnd: l(brandBlueEnd, other.brandBlueEnd),
+      menuShadowColor: l(menuShadowColor, other.menuShadowColor),
       surfaceHover: l(surfaceHover, other.surfaceHover),
       textDisabled: l(textDisabled, other.textDisabled),
       conflict: l(conflict, other.conflict),

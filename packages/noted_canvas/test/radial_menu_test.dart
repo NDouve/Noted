@@ -149,7 +149,7 @@ void main() {
     expect(w.focused(), 'Send to back');
     await t.sendKeyEvent(LogicalKeyboardKey.tab);
     await t.pump();
-    expect(w.focused(), 'Boxes here…');
+    expect(w.focused(), 'Pick overlapping box…');
     await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
     await t.pump();
     expect(w.focused(), 'More');
@@ -354,7 +354,7 @@ void main() {
         expect(view.deflate(7.99).contains(r.bottomRight), isTrue);
       }
       // Labels are whole.
-      expect(find.text('Paste image or file'), findsOneWidget);
+      expect(find.text('Paste'), findsOneWidget);
     });
   });
 

@@ -58,7 +58,7 @@ void main() {
       expect(w.enabled('canvas.context.paste'), isTrue);
       expect(w.enabled('noted.image.insert'), isTrue);
       expect(w.c.selectedId, isNull);
-      expect(find.text('Boxes here…'), findsNothing);
+      expect(find.text('Pick overlapping box…'), findsNothing);
       // No placeholder is shown.
       expect(find.textContaining('coming later'), findsNothing);
       expect(find.text('AI box'), findsNothing);
@@ -101,7 +101,7 @@ void main() {
       expect(w.c.selectedId, 'a');
     });
 
-    testWidgets('overlapping boxes: the topmost is the target; Boxes here opens the list; Send to back reorders and Undo restores', (t) async {
+    testWidgets('overlapping boxes: the topmost is the target; Pick overlapping box opens the list; Send to back reorders and Undo restores', (t) async {
       await setUpWorld(t);
       await w.rightClick(w.at(overlapPoint));
       expect(w.c.selectedId, 'c');
@@ -120,7 +120,7 @@ void main() {
       expect(w.order, ['a', 'b', 'c']);
     });
 
-    testWidgets('Boxes here is off with one node at the point', (t) async {
+    testWidgets('Pick overlapping box is off with one node at the point', (t) async {
       await setUpWorld(t);
       await w.rightClick(w.at(const Offset(120, 120)));
       expect(w.c.selectedId, 'a');
@@ -145,7 +145,7 @@ void main() {
       final before = w.c.page.node('x')! as BoxRecord;
       await w.rightClick(w.at(const Offset(200, 200)));
       expect(find.byKey(const ValueKey('context-heading')), findsOneWidget);
-      // Boxes here stays: it only selects (pinned).
+      // Pick overlapping box stays: it only selects (pinned).
       expect(find.byKey(const ValueKey('context-canvas.context.boxesHere')), findsOneWidget);
       expect(w.enabled('canvas.context.boxesHere'), isTrue);
       for (final id in [
@@ -377,7 +377,7 @@ void main() {
       w.c.select('a');
       await t.pump();
       await w.shiftF10();
-      // One box: Boxes here and Bring... are off; Delete is the only enabled.
+      // One box: Pick overlapping box and Bring... are off; Delete is the only enabled.
       expect(w.focused(), 'Delete box');
       await t.sendKeyEvent(LogicalKeyboardKey.tab);
       await t.pump();
@@ -712,7 +712,7 @@ void main() {
       expect(w.c.page.nodes, hasLength(4));
     });
 
-    testWidgets('Paste image or file places the box at the point', (t) async {
+    testWidgets('Paste places the box at the point', (t) async {
       await setUpWorld(t, withStore: true);
       FileClipboard.read = () async => [IncomingFile('p.dat', Uint8List.fromList([1, 2, 3]))];
       addTearDown(() => FileClipboard.read = () async => const []);
@@ -757,17 +757,14 @@ void main() {
   });
 
   group('touch', () {
-    testWidgets('a hold on empty canvas opens the canvas menu at the finger and creates no note', (t) async {
+    testWidgets('a hold on empty canvas opens no menu and creates a note as before', (t) async {
       await setUpWorld(t);
-      final p = w.at(const Offset(900, 600));
-      final g = await w.hold(p);
+      final g = await w.hold(w.at(const Offset(900, 600)));
       await g.up();
       await t.pumpAndSettle();
-      expect(w.menu, findsOneWidget);
-      expect(w.c.page.nodes, hasLength(3));
-      expect(w.entries().first, 'canvas.context.newNote');
-      final rect = t.getRect(w.menu);
-      expect((rect.topLeft - p).distance, lessThan(20));
+      expect(w.menu, findsNothing);
+      expect(w.open, isFalse);
+      expect(w.c.page.nodes, hasLength(4));
     });
 
     testWidgets('a quick tap on empty canvas still creates a note', (t) async {
@@ -851,7 +848,7 @@ void main() {
       expect(find.byKey(const ValueKey('context-heading')), findsOneWidget);
       expect(w.enabled(CanvasCommands.delete), isTrue);
       expect(w.enabled(CanvasCommands.sendToBack), isFalse);
-      // Boxes here stays enabled: it only selects.
+      // Pick overlapping box stays enabled: it only selects.
       expect(w.enabled('canvas.context.boxesHere'), isTrue);
     });
   });

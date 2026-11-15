@@ -118,15 +118,46 @@ void precisionTests() {
     final d = DesignColors.dark;
     final l = DesignColors.light;
 
-    test('box-frame is 3:1 on the box and the canvas in Precision', () {
-      expect(contrastRatio(d.boxFrame, d.surface), greaterThanOrEqualTo(3));
-      expect(contrastRatio(d.boxFrame, d.bgCanvas), greaterThanOrEqualTo(3));
-    });
-
-    test('light box-frame equals border-box, and border-box is unchanged', () {
-      expect(l.boxFrame, l.borderBox);
+    test('border-box is unchanged and box-frame is retired', () {
       expect(l.borderBox, const Color(0xFFE3E6EA));
       expect(d.borderBox, const Color(0xFF3C424B));
+      final json = File('../../docs/design/tokens.json').readAsStringSync();
+      expect(json, isNot(contains('box-frame')));
+    });
+
+    test('outline-control is 3:1 on every listed background', () {
+      for (final c in [l, d]) {
+        for (final bg in [c.surface, c.bgApp, c.bgCanvas, c.bgSidebar]) {
+          expect(contrastRatio(c.outlineControl, bg), greaterThanOrEqualTo(3));
+        }
+      }
+      expect(l.outlineControl, const Color(0xFF717B89));
+      expect(d.outlineControl, const Color(0xFF85909E));
+    });
+
+    test('scrim, brand and menu shadow tokens', () {
+      for (final c in [l, d]) {
+        expect(c.overlayScrim, const Color(0x29000000));
+        expect(c.brandBlueStart, const Color(0xFF2F86C8));
+        expect(c.brandBlueEnd, const Color(0xFF0D4A78));
+      }
+      expect(l.menuShadowColor, const Color(0x1F101828));
+      expect(d.menuShadowColor, const Color(0x80000000));
+    });
+
+    test('the spec size roles', () {
+      expect(DesignMetrics.titleBarHeight, 40);
+      expect(DesignMetrics.menuBarHeight, 36);
+      expect(DesignMetrics.detailsWidth, 288);
+      expect(DesignMetrics.detailsHeaderHeight, 48);
+      expect(DesignMetrics.detailsBreakpoint, 1120);
+      expect(DesignMetrics.contextRingRadius, 118);
+      expect(DesignMetrics.compactTreeWidth, 220);
+      expect(DesignMetrics.statusHeight, 34);
+      const m = NotedMetrics();
+      expect(m.menuBarHeight, 36);
+      expect(m.detailsWidth, 288);
+      expect(m.statusHeight, 34);
     });
 
     test('the canvas pairs meet their ratios', () {

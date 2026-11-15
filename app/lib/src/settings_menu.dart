@@ -97,14 +97,17 @@ class SettingsMenu extends StatelessWidget {
                   label: toolbar[AppCommands.toolbarId(s)]!.label,
                   leading: check(toolbar[AppCommands.toolbarId(s)]!),
                 ),
-              const NotedMenuHeading('Context menu'),
-              for (final s in ContextMenuStyle.values)
-                NotedMenuItem<String>(
-                  key: ValueKey('context-menu-${s.name}'),
-                  value: AppCommands.contextMenuId(s),
-                  label: contextMenu[AppCommands.contextMenuId(s)]!.label,
-                  leading: check(contextMenu[AppCommands.contextMenuId(s)]!),
+              // One checkable item; the choice is saved (0168 follow-up).
+              NotedMenuItem<String>(
+                key: const ValueKey('context-menu-radial'),
+                value: AppCommands.contextMenuId(
+                  settings.contextMenu == ContextMenuStyle.radial
+                      ? ContextMenuStyle.list
+                      : ContextMenuStyle.radial,
                 ),
+                label: 'Radial context menu',
+                leading: check(contextMenu[AppCommands.contextMenuId(ContextMenuStyle.radial)]!),
+              ),
               if (canPick) ...[
                 const NotedMenuHeading('Default page folder'),
                 NotedMenuItem<String>(

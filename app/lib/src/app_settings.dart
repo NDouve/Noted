@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart' show ContextMenuStyle, ToolbarStyle;
+import 'package:noted_core/noted_core.dart' show PageStore, binderFileName;
 
 import 'device_storage.dart';
 import 'notebook.dart' show defaultPagesDirectory;
@@ -53,19 +54,22 @@ File defaultSettingsFile() {
 /// missing, damaged or unreadable file gives the defaults and is left alone
 /// until a setting is changed.
 ///
-/// A new profile (no `settings.json` and no [profileMarker] file) starts in
+/// A new profile (no `settings.json`, no [profileMarker] file and no page or
+/// binder data in the [profileData] folder) starts in
 /// Light, and that is saved once. Any other missing theme is Follow system.
 class AppSettings extends ChangeNotifier {
   /// Reads [file] (null: settings that aren't saved anywhere). [profileMarker]
   /// is the file whose absence, beside a missing [file], says this is a new
   /// profile (`binders.json`); without it no profile counts as new.
-  AppSettings(this.file, {File? profileMarker}) {
+  AppSettings(this.file, {File? profileMarker, Directory? profileData}) {
+    _profileData = profileData;
     _profileMarker = profileMarker;
     _read();
   }
 
   final File? file;
   File? _profileMarker;
+  Directory? _profileData;
 
   // Light for settings that aren't saved anywhere; a file's own default is
   // Follow system (see [_read]).
@@ -188,6 +192,30 @@ class AppSettings extends ChangeNotifier {
     _write();
   }
 
+  /// Whether the default pages folder already holds page or binder data: a
+  /// page file, or a direct subfolder with a binder file (a binder is a folder
+  /// of any name). Looked at once, one level, and only for a profile with
+  /// neither file. A missing folder is no evidence; a folder that exists but
+  /// can't be listed (or any error) counts as data, so nothing is chosen for
+  /// someone who already has some.
+  bool _profileHasData() {
+    final dir = _profileData;
+    if (dir == null) return false;
+    try {
+      if (!dir.existsSync()) return false;
+      for (final e in dir.listSync(followLinks: false)) {
+        if (e is File && e.path.endsWith(PageStore.extension)) return true;
+        if (e is Directory &&
+            File('${e.path}${Platform.pathSeparator}$binderFileName').existsSync()) {
+          return true;
+        }
+      }
+      return false;
+    } on Object {
+      return true;
+    }
+  }
+
   void _read() {
     final f = file;
     if (f == null) return;
@@ -197,7 +225,7 @@ class AppSettings extends ChangeNotifier {
         // binders.json by then) keeps it. Where binders.json exists already,
         // nobody chose a theme: Follow system, and nothing is written.
         final marker = _profileMarker;
-        if (marker != null && !marker.existsSync()) {
+        if (marker != null && !marker.existsSync() && !_profileHasData()) {
           _theme = ThemeSetting.light;
           _write();
         } else {

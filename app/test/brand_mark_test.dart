@@ -26,9 +26,9 @@ Widget _app(
 
 void main() {
   test(
-    'the painted height is 16 / 20 / 24 device px at 100 / 125 / 150%, the stroke 3 / 4 / 5',
+    'the painted height is 16 / 20 / 24 device px at 100 / 125 / 150%, the stroke 3 / 3 / 4',
     () {
-      for (final (dpr, height, stroke) in [(1.0, 16, 3), (1.25, 20, 4), (1.5, 24, 5)]) {
+      for (final (dpr, height, stroke) in [(1.0, 16, 3), (1.25, 20, 3), (1.5, 24, 4)]) {
         final g = BrandMarkGeometry.at(dpr);
         expect(g.height, height, reason: 'dpr $dpr');
         expect(g.stroke, stroke, reason: 'dpr $dpr');
@@ -37,8 +37,8 @@ void main() {
         expect(left, 0);
         expect(right, isA<int>());
         expect(g.width, right + g.stroke);
-        // The proportions are the master's: about 0.77 wide to 1 high.
-        expect(g.width / g.height, closeTo(0.77, 0.12), reason: 'dpr $dpr');
+        // The compact N's proportions: 216 wide to 336 high (stroke included).
+        expect(g.width / g.height, closeTo(0.643, 0.12), reason: 'dpr $dpr');
       }
     },
   );
@@ -87,12 +87,34 @@ void main() {
     expect(find.bySemanticsLabel('Noted'), findsOneWidget);
   });
 
-  test('the stops reach 3:1 on bg-app in Precision, and light shows the master stops', () {
-    final dark = brandMarkColors(DesignColors.dark.bgApp, Brightness.dark);
-    expect(contrastRatio(dark.$1, DesignColors.dark.bgApp), greaterThanOrEqualTo(3));
-    expect(contrastRatio(dark.$2, DesignColors.dark.bgApp), greaterThanOrEqualTo(3));
-    final light = brandMarkColors(DesignColors.light.bgApp, Brightness.light);
-    expect(light.$1, const Color(0xFF2F86C8));
-    expect(light.$2, const Color(0xFF0D4A78));
+  test('the compact path: 380 view box, stroke 56, the left stem below the right', () {
+    // The icon's path is M110 330 V74 L270 298 V50 with stroke 56: the
+    // painted box is (160 + 56) wide and (280 + 56) high.
+    for (final dpr in [1.0, 1.25, 1.5]) {
+      final g = BrandMarkGeometry.at(dpr);
+      final p = BrandMarkPainter(
+        geometry: g,
+        devicePixelRatio: dpr,
+        from: const Color(0xFF000000),
+        to: const Color(0xFF000000),
+      ).path();
+      final b = p.getBounds();
+      final half = g.stroke / 2;
+      expect(b.top, half, reason: 'right stem top, dpr $dpr');
+      expect(b.bottom, g.height - half, reason: 'left stem bottom, dpr $dpr');
+      expect(b.width, g.stemGap.toDouble());
+      // 56 of 336 units is the stroke.
+      expect(g.stroke / g.height, closeTo(56 / 336, 0.06), reason: 'dpr $dpr');
+    }
+  });
+
+  test('the stops are the brand tokens, unlifted, in both themes', () {
+    for (final c in [NotedColors.light, NotedColors.dark]) {
+      final stops = brandMarkColors(c);
+      expect(stops.$1, const Color(0xFF2F86C8));
+      expect(stops.$2, const Color(0xFF0D4A78));
+      expect(stops.$1, c.brandBlueStart);
+      expect(stops.$2, c.brandBlueEnd);
+    }
   });
 }

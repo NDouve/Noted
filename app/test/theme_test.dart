@@ -409,6 +409,54 @@ void main() {
         expect(file.existsSync(), isFalse);
       });
 
+      group('page and binder data in the pages folder (D5)', () {
+        late Directory pages;
+        setUp(() => pages = Directory('${dir.path}/pages'));
+
+        void expectFollowSystemUntouched(AppSettings s) {
+          expect(s.theme, ThemeSetting.system);
+          expect(file.existsSync(), isFalse, reason: 'nothing is written');
+        }
+
+        test('a missing or empty folder is no evidence: Light, written once', () {
+          expect(AppSettings(file, profileMarker: binders, profileData: pages).theme, ThemeSetting.light);
+          expect(file.existsSync(), isTrue);
+          file.deleteSync();
+          pages.createSync(recursive: true);
+          expect(AppSettings(file, profileMarker: binders, profileData: pages).theme, ThemeSetting.light);
+        });
+
+        test('a page file in the folder: Follow system and nothing is written', () {
+          pages.createSync(recursive: true);
+          File('${pages.path}/Notes${PageStore.extension}').writeAsStringSync('{}');
+          expectFollowSystemUntouched(AppSettings(file, profileMarker: binders, profileData: pages));
+        });
+
+        test('a profile with only a binder folder (any name): Follow system and nothing is written', () {
+          Directory('${pages.path}/My notes').createSync(recursive: true);
+          File('${pages.path}/My notes/$binderFileName').writeAsStringSync('{}');
+          expectFollowSystemUntouched(AppSettings(file, profileMarker: binders, profileData: pages));
+        });
+
+        test('a subfolder without a binder file, or a deeper binder, is no evidence', () {
+          Directory('${pages.path}/Plain/Deeper').createSync(recursive: true);
+          File('${pages.path}/Plain/Deeper/$binderFileName').writeAsStringSync('{}');
+          File('${pages.path}/readme.txt').writeAsStringSync('x');
+          expect(AppSettings(file, profileMarker: binders, profileData: pages).theme, ThemeSetting.light);
+        });
+
+        test('a folder that cannot be listed counts as data: Follow system, nothing written', () {
+          expectFollowSystemUntouched(AppSettings(file, profileMarker: binders, profileData: _UnlistableDirectory()));
+        });
+
+        test('the check is not made when binders.json exists', () {
+          binders.createSync(recursive: true);
+          final probe = _UnlistableDirectory();
+          expect(AppSettings(file, profileMarker: binders, profileData: probe).theme, ThemeSetting.system);
+          expect(probe.listed, isFalse);
+        });
+      });
+
       test('without a marker no profile counts as new: Follow system, nothing written', () {
         final s = AppSettings(file);
         expect(s.theme, ThemeSetting.system);
@@ -526,4 +574,21 @@ void main() {
       });
     });
   });
+}
+
+/// A pages folder that exists but throws when listed.
+class _UnlistableDirectory implements Directory {
+  bool listed = false;
+
+  @override
+  bool existsSync() => true;
+
+  @override
+  List<FileSystemEntity> listSync({bool recursive = false, bool followLinks = true}) {
+    listed = true;
+    throw const FileSystemException('denied');
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

@@ -132,7 +132,7 @@ void main() {
         'bottomRight',
       ];
 
-      testWidgets('idle: surface fill, 1px box-frame, radius-lg, no shadow', (
+      testWidgets('idle: surface fill, 1px border-box, radius-lg, no shadow', (
         t,
       ) async {
         await pump(t, _box('a', 'test.text'));
@@ -142,8 +142,13 @@ void main() {
         expect(fill.boxShadow, isNull, reason: 'boxes have no drop shadow');
         final border = decorationOf(t, 'box-frame-border');
         final side = (border.border! as Border).top;
-        expect(side.color, colors.boxFrame);
-        expect(colors.boxFrame, brightness == Brightness.dark ? DesignColors.dark.boxFrame : DesignColors.light.boxFrame);
+        expect(side.color, scheme.outlineVariant);
+        expect(
+          side.color,
+          brightness == Brightness.dark
+              ? DesignColors.dark.borderBox
+              : DesignColors.light.borderBox,
+        );
         expect(side.width, 1);
         expect(border.borderRadius, BorderRadius.circular(metrics.radiusLg));
         // No handles while idle.
@@ -153,17 +158,18 @@ void main() {
         expect(find.byKey(const ValueKey('issue-chip')), findsNothing);
       });
 
-      testWidgets('selected: accent border, shadow-selected, 8px handles', (
+      testWidgets('selected: 2px accent border, 3px halo, 8px handles', (
         t,
       ) async {
         await pump(t, _box('a', 'test.text'), select: true);
         final side = borderOf(t, 'box-frame-border').top;
         expect(side.color, scheme.primary);
-        expect(side.width, 1);
+        expect(side.width, 2);
         expect(
           decorationOf(t, 'box-frame-fill').boxShadow,
           metrics.shadowSelected,
         );
+        expect(metrics.shadowSelected.single.spreadRadius, 3);
         for (final h in handles()) {
           final key = find.byKey(ValueKey('box-handle-$h'));
           expect(key, findsOneWidget, reason: h);
@@ -230,6 +236,9 @@ void main() {
         final painter = paint.painter! as DashedOutlinePainter;
         expect(painter.color, scheme.primary);
         expect(painter.radius, metrics.radiusLg);
+        expect(painter.strokeWidth, 2);
+        expect(painter.dash, 6);
+        expect(painter.gap, 4);
         for (final h in handles()) {
           expect(find.byKey(ValueKey('box-handle-$h')), findsOneWidget);
         }

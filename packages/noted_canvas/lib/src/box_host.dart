@@ -326,7 +326,7 @@ class _BoxHostState extends State<BoxHost> {
                 child: content,
               ),
             ),
-            // The border: 1px box-frame idle, 1px accent selected, 2px
+            // The border: 1px border-box idle, 2px accent selected, 2px
             // conflict. A frameless box shows a dashed accent outline only
             // while selected.
             if (conflicted)
@@ -359,6 +359,9 @@ class _BoxHostState extends State<BoxHost> {
                     painter: DashedOutlinePainter(
                       color: scheme.primary,
                       radius: metrics.radiusLg,
+                      strokeWidth: 2,
+                      dash: 6,
+                      gap: 4,
                     ),
                   ),
                 ),
@@ -375,7 +378,8 @@ class _BoxHostState extends State<BoxHost> {
                     decoration: BoxDecoration(
                       borderRadius: metrics.borderLg,
                       border: Border.all(
-                        color: lit ? scheme.primary : noted.boxFrame,
+                        color: lit ? scheme.primary : scheme.outlineVariant,
+                        width: lit ? 2 : 1,
                       ),
                     ),
                   ),
@@ -762,33 +766,35 @@ class _BoxHostState extends State<BoxHost> {
   }
 }
 
-/// Paints a 1px dashed outline with rounded corners around its box: the
-/// selection outline of a frameless (drawing) box.
+/// Paints a dashed outline (1px by default) with rounded corners around its
+/// box: the selection outline of a frameless (drawing) box.
 class DashedOutlinePainter extends CustomPainter {
   const DashedOutlinePainter({
     required this.color,
     required this.radius,
     this.dash = 4,
     this.gap = 3,
+    this.strokeWidth = 1,
   });
 
   final Color color;
   final double radius;
   final double dash;
   final double gap;
+  final double strokeWidth;
 
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..color = color
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1;
+      ..strokeWidth = strokeWidth;
     final path = Path()
       ..addRRect(
         RRect.fromRectAndRadius(
           Offset.zero & size,
           Radius.circular(radius),
-        ).deflate(0.5),
+        ).deflate(strokeWidth / 2),
       );
     for (final metric in path.computeMetrics()) {
       var d = 0.0;
@@ -804,7 +810,8 @@ class DashedOutlinePainter extends CustomPainter {
       old.color != color ||
       old.radius != radius ||
       old.dash != dash ||
-      old.gap != gap;
+      old.gap != gap ||
+      old.strokeWidth != strokeWidth;
 }
 
 /// A box shown from its saved snapshot because this device can't run it.

@@ -93,8 +93,8 @@ class _HomeState extends State<Home> {
 
   // The contextual panel, for this session only (it is not saved). Inline from
   // [_panelInlineWidth] wide, shown unless hidden; narrower it is an overlay
-  // that View > Contextual panel opens.
-  static const double _panelInlineWidth = 1200;
+  // that View > Details opens.
+  static const double _panelInlineWidth = DesignMetrics.detailsBreakpoint;
   bool? _panelChoice;
   bool _overlayOpen = false;
   final ValueNotifier<bool> _panelShown = ValueNotifier<bool>(false);
@@ -482,7 +482,7 @@ class _HomeState extends State<Home> {
     _followContextMenu();
   }
 
-  // Keeps the menu's Contextual panel check in step with what is on screen.
+  // Keeps the menu's Details check in step with what is on screen.
   void _syncPanelShown(bool shown) {
     if (_panelShown.value == shown) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
