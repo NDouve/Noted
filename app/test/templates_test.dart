@@ -2,6 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+// A test that hangs fails after 3 minutes instead of holding the run.
+@Timeout(Duration(minutes: 5))
+library;
+
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -372,6 +376,16 @@ void main() {
   group('menus', () {
     late Notebook nb;
 
+    // A step that needs real time (files), bounded: one stuck on a timer of the
+    // fake clock fails here, with its stack, instead of holding the run until
+    // the job's limit.
+    Future<T?> real<T>(WidgetTester tester, Future<T> Function() step) => tester.runAsync(
+      () => step().timeout(
+        const Duration(seconds: 60),
+        onTimeout: () => throw TestFailure('A real-time step did not finish within 60 s.'),
+      ),
+    );
+
     Future<void> settle(WidgetTester tester) async {
       for (var i = 0; i < 10; i++) {
         await tester.pump(const Duration(milliseconds: 100));
@@ -400,7 +414,7 @@ void main() {
       tester.view.physicalSize = const Size(1200, 800);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
-      await tester.runAsync(() async {
+      await real(tester, () async {
         await setUpDirs();
         nb = make();
         await nb.load();
@@ -446,9 +460,9 @@ void main() {
 
     testWidgets('page menu: Save as template asks for a name and a place', (tester) async {
       await start(tester);
-      await tester.runAsync(() => nb.addBinder(binderDir.path));
+      await real(tester, () => nb.addBinder(binderDir.path));
       late String inB;
-      await tester.runAsync(() async {
+      await real(tester, () async {
         inB = await nb.createPage(binderPath: nb.binders.single.path);
         await nb.rename(inB, 'Bound');
         addNote(nb, 'Bound text');
@@ -493,7 +507,7 @@ void main() {
 
     testWidgets('Pages menu: New page from template picks, then creates it in the default folder', (tester) async {
       await start(tester);
-      await tester.runAsync(() => nb.savePageAsTemplate(nb.currentId!, name: 'Alpha template'));
+      await real(tester, () => nb.savePageAsTemplate(nb.currentId!, name: 'Alpha template'));
       final before = pages.listSync().where((f) => f.path.endsWith('.canvas')).length;
 
       await tester.tap(find.byKey(const ValueKey('pages-menu')));
@@ -514,7 +528,7 @@ void main() {
 
     testWidgets('New subpage from template; delete a template from the picker', (tester) async {
       await start(tester);
-      await tester.runAsync(() => nb.savePageAsTemplate(nb.currentId!, name: 'Alpha template'));
+      await real(tester, () => nb.savePageAsTemplate(nb.currentId!, name: 'Alpha template'));
       final parent = nb.currentId!;
       await tester.pumpAndSettle();
       await pageMenu(tester, 'New subpage from template…');
@@ -527,7 +541,7 @@ void main() {
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
 
-      await tester.runAsync(() => nb.savePageAsTemplate(parent, name: 'Again'));
+      await real(tester, () => nb.savePageAsTemplate(parent, name: 'Again'));
       await pageMenu(tester, 'New subpage from template…');
       await tapAsync(tester, find.text('Again'));
       // Making the page reads and writes files: wait for it.
@@ -541,8 +555,8 @@ void main() {
 
     testWidgets('binder menu: save as template, then New binder from template', (tester) async {
       await start(tester);
-      await tester.runAsync(() => nb.addBinder(binderDir.path));
-      await tester.runAsync(() async {
+      await real(tester, () => nb.addBinder(binderDir.path));
+      await real(tester, () async {
         final p = await nb.createPage(binderPath: nb.binders.single.path);
         await nb.rename(p, 'Inside');
         await nb.open(nb.tree.roots.first.id);
