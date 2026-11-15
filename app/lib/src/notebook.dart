@@ -6274,12 +6274,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await putBackBeforeDeleteHook?.call();
       var removed = false;
       try {
-        // Only while the binder file still holds this binder: the copy may be the
-        // only one if sync removed or replaced the file meanwhile.
+        // Only while the binder file still holds exactly the restored bytes: the
+        // copy may be the only one if sync removed or replaced the file meanwhile,
+        // also with another version of the same binder (Codex run-diff-9 R-1).
         final r = await deleteFileIfMatches(
           copyPath,
           bytes: bytes,
-          stillRedundant: () => store.fileHoldsBinderSync(copy.id),
+          stillRedundant: () {
+            try {
+              return listEquals(store.file.readAsBytesSync(), bytes);
+            } on FileSystemException {
+              return false;
+            }
+          },
         );
         removed = r.deleted || r.outcome == DeleteOutcome.absent;
       } on FileSystemException {
@@ -6289,6 +6296,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final kept = _ownKeptTemps[key];
         kept?.removeWhere((t) => t.path == copyPath);
         if (kept != null && kept.isEmpty) _ownKeptTemps.remove(key);
+      }
+      // A copy that was put back is no longer a pending change's temp: a kept one
+      // goes only through its row's Delete, never when that change lands, since
+      // the file the change lands on may lack the restored fields.
+      for (final c in _coverPending[key] ?? const <CoverChange>[]) {
+        c.delta.temps.removeWhere((t) => t.path == copyPath);
       }
       // A copy that changed meanwhile stays, and is listed as it is now.
       await _listCopiesLocked(s, store);

@@ -303,7 +303,7 @@ written; the second only if it holds a prefix of the bytes that write sent (or
 nothing), and any other content is kept as a copy. Putting a copy back
 publishes a private temporary file with the copy's verified bytes, never the
 copy itself, and then removes the restored copy only if it is unchanged and the
-binder file holds that binder.
+binder file still holds exactly the restored bytes.
 
 The file is not valid, and is never written to, when the JSON is invalid,
 `binderId` is missing or empty, `format` is missing or not an integer, or
