@@ -1403,6 +1403,7 @@ class PullEngine {
             identity: rec.base,
             beforePublish: () => _step('replaceBeforePublish'),
             beforeRestore: () => _step('replaceBeforeRestore'),
+            beforeFinalCheck: (_) async => _step('replaceBeforeFinalCheck'),
           ),
         );
       } on FileSystemException catch (e) {
@@ -1415,6 +1416,11 @@ class PullEngine {
         _changed(abs);
         await _adopt(d, rel, dl.identity, existing: rec);
         _step('journalSaved');
+        // A file the final check kept (a version written into the set-aside copy):
+        // it is a conflict copy of this page, reported like the one below.
+        for (final kept in [if (res.keptPath != null) res.keptPath!, ...res.alsoKept]) {
+          _issue(_relOf(kept), 'Kept as a copy of a version replaced meanwhile');
+        }
       } else {
         _issue(rel, 'Changed on this device; OneDrive\'s version not applied');
         if (res.keptPath != null) {

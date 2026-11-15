@@ -45,7 +45,7 @@ enum ReplaceOutcome {
 }
 
 class ReplaceResult {
-  const ReplaceResult(this.outcome, [this.keptPath]);
+  const ReplaceResult(this.outcome, [this.keptPath, this.alsoKept = const []]);
 
   final ReplaceOutcome outcome;
 
@@ -55,7 +55,17 @@ class ReplaceResult {
   /// [verifiedSuffix] if no conflict copy could be made), and the next
   /// [PageStore.scan] turns it back into a page or a conflict copy. Null when
   /// nothing was left behind.
+  ///
+  /// After [ReplaceOutcome.replaced] it is set when the set-aside file could not
+  /// be deleted (it keeps its name), or when the final check before the delete
+  /// found it changed, or a file arrived at the set-aside name: such a file is
+  /// kept as `<id>-recovered-<hex>.canvas` (it may hold a version a sync client
+  /// wrote into the aside, which the caller never saw).
   final String? keptPath;
+
+  /// Further files kept for the same reason when more than one was (the first is
+  /// [keptPath]); a caller that merges kept copies passes these on too.
+  final List<String> alsoKept;
 
   bool get replaced => outcome == ReplaceOutcome.replaced;
 
@@ -87,7 +97,7 @@ Future<String?> _keepAsConflictCopy(File file, String target, String label) asyn
     final path = '$dir$sep${conflictCopyName(name, label: label, extension: ext, random: _random)}';
     try {
       if (await publishExclusive(file, path)) {
-        await _dropLeftoverLink(file, path);
+        await _dropLeftoverLink(file, path, target);
         return path;
       }
     } on FileSystemException {
@@ -100,16 +110,133 @@ Future<String?> _keepAsConflictCopy(File file, String target, String label) asyn
 
 /// On POSIX [publishExclusive] can rarely leave the source as a second hard link
 /// to the published file. Remove it, but only if it still holds the same bytes
-/// (so it is our link, not something that took the name since).
-Future<void> _dropLeftoverLink(File source, String published) async {
+/// as the published file (so it is our link, not something that took the name
+/// since). The source is first moved to a drop name built from [target] (the
+/// original target, not the source's name) and re-checked there, as in
+/// [_dropAside] but without the late-arrival step; a file that doesn't verify
+/// stays under the drop name, where the sweep finds the target taken and keeps it
+/// as a `-conflict-` copy. There is no recursion into [_keepAsConflictCopy].
+Future<void> _dropLeftoverLink(File source, String published, String target) async {
   try {
     if (!await source.exists()) return;
-    final a = await source.readAsBytes();
-    if (_same(a, await File(published).readAsBytes())) await source.delete();
+    final publishedBytes = await File(published).readAsBytes();
+    await _dropAside(source, target, bytes: publishedBytes, late: false);
   } on FileSystemException {
     // Leave it; the sweep treats it as a leftover and finds the target taken.
   }
 }
+
+enum _DropKind {
+  /// The verified file was deleted.
+  deleted,
+
+  /// Nothing was there to drop (someone took it first).
+  vanished,
+
+  /// The file is in doubt (or a delete's copy stopped being redundant): keep it.
+  keep,
+
+  /// A rename or delete failed; the file is where [_Drop.file] says.
+  failed,
+}
+
+class _Drop {
+  const _Drop(this.kind, {this.file, this.late, this.error});
+
+  final _DropKind kind;
+
+  /// The file to keep ([_DropKind.keep]) or that is stuck ([_DropKind.failed]).
+  final File? file;
+
+  /// A file found at the pre-drop name after the rename (a by-name write).
+  final String? late;
+  final Object? error;
+}
+
+/// The shared tail of [replaceIfUnchanged] and [deleteFileIfMatches] (V1 to V5
+/// of the aside re-check): deletes the verified [aside] only if, under a name no
+/// one else knows, it still holds [bytes] or [identity], and (for a delete) the
+/// copy [stillRedundant] speaks for still does, checked immediately before the
+/// unlink with nothing awaited in between. On any doubt the file is kept.
+Future<_Drop> _dropAside(
+  File aside,
+  String target, {
+  List<int>? bytes,
+  ContentIdentity? identity,
+  bool Function()? stillRedundant,
+  Future<void> Function(String path)? beforeAsideDelete,
+  Future<void> Function(String path)? beforeFinalCheck,
+  Future<void> Function(String path)? afterFinalRead,
+  bool late = true,
+}) async {
+  final drop = File(_dropName(target));
+  // V1. Rename to a fresh name only this call knows.
+  try {
+    if (beforeAsideDelete != null) await beforeAsideDelete(aside.path);
+    for (var attempt = 1;; attempt++) {
+      try {
+        await aside.rename(drop.path);
+        break;
+      } on FileSystemException catch (e) {
+        if (_isNotFound(e) || attempt >= 4) rethrow;
+        await Future<void>.delayed(Duration(milliseconds: 25 * attempt));
+      }
+    }
+  } on FileSystemException catch (e) {
+    if (_isNotFound(e)) return const _Drop(_DropKind.vanished);
+    return _Drop(_DropKind.failed, file: aside, error: e);
+  } catch (e) {
+    return _Drop(_DropKind.failed, file: aside, error: e);
+  }
+  // V2 (re-check), V3 (redundancy again) and V4 (delete).
+  var keep = false;
+  try {
+    if (beforeFinalCheck != null) await beforeFinalCheck(drop.path);
+    final first = await drop.stat();
+    if (first.type == FileSystemEntityType.notFound) {
+      return const _Drop(_DropKind.vanished);
+    }
+    if (first.type != FileSystemEntityType.file) {
+      keep = true;
+    } else {
+      final equal = await _matches(drop, bytes, identity);
+      if (afterFinalRead != null) await afterFinalRead(drop.path);
+      final second = await drop.stat();
+      keep = !equal ||
+          second.type != FileSystemEntityType.file ||
+          second.size != first.size ||
+          second.modified != first.modified;
+    }
+  } catch (_) {
+    keep = true;
+  }
+  if (!keep && stillRedundant != null && !stillRedundant()) keep = true;
+  Object? failure;
+  if (!keep) {
+    try {
+      drop.deleteSync();
+    } on FileSystemException catch (e) {
+      failure = e;
+    }
+  }
+  // V5. A by-name write after V1 landed at the old name.
+  final lateFile = late &&
+          FileSystemEntity.typeSync(aside.path, followLinks: false) !=
+              FileSystemEntityType.notFound
+      ? aside.path
+      : null;
+  if (failure != null) {
+    return _Drop(_DropKind.failed, file: drop, late: lateFile, error: failure);
+  }
+  if (keep) return _Drop(_DropKind.keep, file: drop, late: lateFile);
+  return _Drop(_DropKind.deleted, late: lateFile);
+}
+
+/// A fresh name for a verified file about to be dropped. It ends in
+/// [verifiedSuffix], so a leftover is swept like any other verified aside.
+String _dropName(String target) =>
+    '$target.$pid-${_random.nextInt(1 << 32).toRadixString(16)}-'
+    '${_random.nextInt(1 << 32).toRadixString(16)}$verifiedSuffix';
 
 String _asideName(String target) =>
     '$target.$pid-${_random.nextInt(1 << 32).toRadixString(16)}-'
@@ -150,6 +277,17 @@ String _asideName(String target) =>
 /// target is moved aside, [afterRead] after the aside file's bytes were read
 /// (the target is absent then), [beforePublish] just before [tmp] is published,
 /// and [beforeRestore] just before the aside file is put back.
+///
+/// Once published, the verified aside is deleted only after a re-check (see
+/// [_dropAside]): it is renamed to a fresh name, read again and compared, and
+/// deleted only if it still holds the verified bytes. A file that fails the
+/// re-check, or one that arrived at the old name meanwhile, is kept as a
+/// `-recovered-` conflict copy and reported in [ReplaceResult.keptPath] with the
+/// outcome [ReplaceOutcome.replaced]. The asynchronous seams [beforeAsideDelete]
+/// (before the rename), [beforeFinalCheck] (before the re-check, given the new
+/// name) and [afterFinalRead] (after the re-check's read) are for tests. Known
+/// gap: between the last check and the unlink (microseconds) a writer that
+/// follows the file to its new name, or writes it in place, is not detected.
 Future<ReplaceResult> replaceIfUnchanged(
   File tmp,
   String target,
@@ -159,6 +297,9 @@ Future<ReplaceResult> replaceIfUnchanged(
   void Function()? afterRead,
   void Function()? beforePublish,
   void Function()? beforeRestore,
+  Future<void> Function(String path)? beforeAsideDelete,
+  Future<void> Function(String path)? beforeFinalCheck,
+  Future<void> Function(String path)? afterFinalRead,
 }) async {
   if (expected != null && identity != null) {
     throw ArgumentError('give at most one of expected and identity');
@@ -236,13 +377,31 @@ Future<ReplaceResult> replaceIfUnchanged(
     final copy = await _keepAsConflictCopy(aside, target, 'conflict');
     return ReplaceResult(ReplaceOutcome.supersededKept, copy ?? aside.path);
   }
-  // Verified equal to what the caller expected: safe to drop.
-  try {
-    await aside.delete();
-  } on FileSystemException {
-    return ReplaceResult(ReplaceOutcome.replaced, aside.path);
+  // Verified equal to what the caller expected: drop it, re-checked under a
+  // name only this call knows (see [_dropAside]); anything in doubt is kept.
+  final drop = await _dropAside(
+    aside,
+    target,
+    bytes: expected,
+    identity: identity,
+    beforeAsideDelete: beforeAsideDelete,
+    beforeFinalCheck: beforeFinalCheck,
+    afterFinalRead: afterFinalRead,
+  );
+  final kept = <String>[];
+  switch (drop.kind) {
+    case _DropKind.deleted || _DropKind.vanished:
+      break;
+    case _DropKind.failed:
+      kept.add(drop.file!.path);
+    case _DropKind.keep:
+      kept.add(await _keepAsConflictCopy(drop.file!, target, 'recovered') ?? drop.file!.path);
   }
-  return const ReplaceResult(ReplaceOutcome.replaced);
+  if (drop.late != null) {
+    kept.add(await _keepAsConflictCopy(File(drop.late!), target, 'recovered') ?? drop.late!);
+  }
+  if (kept.isEmpty) return const ReplaceResult(ReplaceOutcome.replaced);
+  return ReplaceResult(ReplaceOutcome.replaced, kept.first, kept.sublist(1));
 }
 
 /// Puts back every file in [directory] that a crashed or failed
@@ -400,10 +559,13 @@ enum DeleteOutcome {
 }
 
 class DeleteResult {
-  const DeleteResult(this.outcome, [this.keptPath]);
+  const DeleteResult(this.outcome, [this.keptPath, this.alsoKept = const []]);
 
   final DeleteOutcome outcome;
   final String? keptPath;
+
+  /// Further files kept when more than one was (the first is [keptPath]).
+  final List<String> alsoKept;
 
   bool get deleted => outcome == DeleteOutcome.deleted;
 
@@ -452,6 +614,9 @@ Future<DeleteResult> deleteFileIfUnchanged(
   void Function()? afterRead,
   Future<void> Function()? beforeDelete,
   void Function()? beforeRestore,
+  Future<void> Function(String path)? beforeAsideDelete,
+  Future<void> Function(String path)? beforeFinalCheck,
+  Future<void> Function(String path)? afterFinalRead,
 }) => deleteFileIfMatches(
   target,
   bytes: expected,
@@ -459,6 +624,9 @@ Future<DeleteResult> deleteFileIfUnchanged(
   afterRead: afterRead,
   beforeDelete: beforeDelete,
   beforeRestore: beforeRestore,
+  beforeAsideDelete: beforeAsideDelete,
+  beforeFinalCheck: beforeFinalCheck,
+  afterFinalRead: afterFinalRead,
 );
 
 /// Deletes the file at [target] (any file: a page or an attachment) only if it
@@ -490,9 +658,19 @@ Future<DeleteResult> deleteFileIfUnchanged(
 /// It lets a caller delete a copy only while something else still holds the
 /// same data.
 ///
+/// The final delete is re-checked as in [replaceIfUnchanged]: the verified file
+/// is renamed to a fresh name, compared again, and [stillRedundant] is called
+/// once more right before the unlink with nothing awaited in between; a copy
+/// that fails either is put back like a file that differs (never over anything;
+/// if the target is occupied, as a `-recovered-` conflict copy, result
+/// [DeleteOutcome.changedKept]). A file someone took from the set-aside name
+/// meanwhile reports [DeleteOutcome.absent] (or [DeleteOutcome.changed] if the
+/// target is occupied again).
+///
 /// Test seams: [beforeMoveAside], [afterRead] (the target is absent), the
-/// asynchronous [beforeDelete] (the verified file is still set aside) and
-/// [beforeRestore], as in [replaceIfUnchanged].
+/// asynchronous [beforeDelete] (the verified file is still set aside),
+/// [beforeRestore], and [beforeAsideDelete], [beforeFinalCheck] and
+/// [afterFinalRead], as in [replaceIfUnchanged].
 Future<DeleteResult> deleteFileIfMatches(
   String target, {
   List<int>? bytes,
@@ -502,6 +680,9 @@ Future<DeleteResult> deleteFileIfMatches(
   Future<void> Function()? beforeDelete,
   void Function()? beforeRestore,
   bool Function()? stillRedundant,
+  Future<void> Function(String path)? beforeAsideDelete,
+  Future<void> Function(String path)? beforeFinalCheck,
+  Future<void> Function(String path)? afterFinalRead,
 }) async {
   if ((bytes == null) == (identity == null)) {
     throw ArgumentError('give exactly one of bytes and identity');
@@ -547,12 +728,68 @@ Future<DeleteResult> deleteFileIfMatches(
           ? const DeleteResult(DeleteOutcome.changed)
           : DeleteResult(DeleteOutcome.changedKept, r.keptPath);
     }
-    await aside.delete();
   } catch (e) {
     await _putBackOrThrow(aside, target, beforeRestore, e);
     rethrow;
   }
+  final drop = await _dropAside(
+    aside,
+    target,
+    bytes: bytes,
+    identity: identity,
+    stillRedundant: stillRedundant,
+    beforeAsideDelete: beforeAsideDelete,
+    beforeFinalCheck: beforeFinalCheck,
+    afterFinalRead: afterFinalRead,
+  );
+  if (drop.kind == _DropKind.failed) {
+    await _putBackOrThrow(drop.file!, target, beforeRestore, drop.error!);
+    throw drop.error!;
+  }
+  var restored = false;
+  final kept = <String>[];
+  if (drop.kind == _DropKind.keep) {
+    final k = await _keepForDelete(drop.file!, target, beforeRestore);
+    restored = k.restored;
+    if (k.kept != null) kept.add(k.kept!);
+  }
+  if (drop.late != null) {
+    final k = await _keepForDelete(File(drop.late!), target, beforeRestore);
+    restored = restored || k.restored;
+    if (k.kept != null) kept.add(k.kept!);
+  }
+  if (kept.isNotEmpty) {
+    return DeleteResult(DeleteOutcome.changedKept, kept.first, kept.sublist(1));
+  }
+  if (restored) return const DeleteResult(DeleteOutcome.changed);
+  if (drop.kind == _DropKind.vanished) {
+    return FileSystemEntity.typeSync(target, followLinks: false) ==
+            FileSystemEntityType.notFound
+        ? const DeleteResult(DeleteOutcome.absent)
+        : const DeleteResult(DeleteOutcome.changed);
+  }
   return const DeleteResult(DeleteOutcome.deleted);
+}
+
+/// Puts [file], which a delete found in doubt, back at [target] without
+/// replacing anything; if the target is occupied (or the put-back fails) it is
+/// kept as a `-recovered-` conflict copy, else under its own name.
+Future<({bool restored, String? kept})> _keepForDelete(
+  File file,
+  String target,
+  void Function()? hook,
+) async {
+  try {
+    if (await _retry(() => publishExclusive(file, target, beforeOsCall: hook))) {
+      return (restored: true, kept: null);
+    }
+  } on FileSystemException {
+    // Fall through to a conflict copy.
+  }
+  return (
+    restored: false,
+    kept: await _keepAsConflictCopy(file, target, 'recovered') ?? file.path,
+  );
 }
 
 /// As [_putBack], but when the file could not be put back where it was (the

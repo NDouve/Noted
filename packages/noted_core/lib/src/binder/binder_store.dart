@@ -247,6 +247,12 @@ class BinderStore {
   /// How many times [update] reads the file and tries to replace it.
   final int tries;
 
+  /// Test seams of the final re-check of [removeTemps]'s and the failed-write
+  /// cleanup's deletes (see [deleteFileIfMatches]'s `beforeFinalCheck` and
+  /// `afterFinalRead`).
+  Future<void> Function(String path)? beforeFinalCheck;
+  Future<void> Function(String path)? afterFinalRead;
+
   static int _tmpCounter = 0;
 
   File get file => File('${directory.path}${Platform.pathSeparator}$binderFileName');
@@ -408,6 +414,8 @@ class BinderStore {
           afterRead: afterRead,
           beforePublish: beforePublish,
           beforeRestore: beforeRestore,
+          beforeFinalCheck: beforeFinalCheck,
+          afterFinalRead: afterFinalRead,
         );
       } on FileSystemException catch (e) {
         if (!_isWritable(f.path)) {
@@ -457,6 +465,8 @@ class BinderStore {
           t.path,
           bytes: t.bytes,
           stillRedundant: () => fileHoldsBinderSync(d.binderId ?? currentId?.call() ?? t.binderId),
+          beforeFinalCheck: beforeFinalCheck,
+          afterFinalRead: afterFinalRead,
         );
         if (r.outcome == DeleteOutcome.deleted || r.outcome == DeleteOutcome.absent) {
           d.temps.remove(t);
@@ -634,6 +644,8 @@ class BinderStore {
         temp.path,
         bytes: back,
         stillRedundant: () => fileHoldsBinderSync(binderId),
+        beforeFinalCheck: beforeFinalCheck,
+        afterFinalRead: afterFinalRead,
       );
       if (r.outcome != DeleteOutcome.deleted && r.outcome != DeleteOutcome.absent) {
         kept.add(temp.path);
