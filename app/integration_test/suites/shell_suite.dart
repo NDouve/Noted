@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:noted/main.dart' show buildModules;
 import 'package:noted/src/notebook.dart';
+
 import 'package:noted_canvas/noted_canvas.dart' show PageCanvas;
 import 'package:noted_core/noted_core.dart';
 
@@ -62,12 +63,15 @@ void shellSuite() {
       await withSession(t, 'shellpanel', (s) async {
         final id = await putNote(s, 'panel');
         final c = s.nb.current!;
+        c.setEditing(id, false);
         c.select(null);
         await s.pump(200);
+        // A new box opens in its editor; the panel follows the box being edited.
         expect(find.byKey(const ValueKey('panel-page-title')), findsOneWidget);
         c.select(id);
         await s.pump(200);
         expect(find.byKey(const ValueKey('panel-box-type')), findsOneWidget);
+        c.setEditing(id, false);
         c.select(null);
         await s.pump(200);
         expect(find.byKey(const ValueKey('panel-page-title')), findsOneWidget);
