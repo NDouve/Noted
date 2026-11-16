@@ -871,5 +871,102 @@ void main() {
       expect(barExclude().excluding, isTrue);
       await w.close(t);
     });
+
+    // The bar's focus exclusion, and the keyboard entry to the Details toggle.
+    ExcludeFocus barExclude(WidgetTester t) =>
+        t.widget<ExcludeFocus>(find.descendant(of: find.byType(AppMenuBar), matching: find.byType(ExcludeFocus)).first);
+
+    bool onToggleNow() =>
+        FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<TextButton>()?.key ==
+        const ValueKey('details-toggle');
+
+    Future<void> keyboardToToggle(WidgetTester t) async {
+      await t.sendKeyEvent(LogicalKeyboardKey.f10);
+      await _frames(t, 4);
+      for (var i = 0; i < 12 && !onToggleNow(); i++) {
+        await t.sendKeyEvent(LogicalKeyboardKey.tab);
+        await t.pump();
+      }
+      expect(onToggleNow(), isTrue);
+    }
+
+    testWidgets('docked: F10, Tab to Details, Enter, Escape leaves the whole bar out of the focus again', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(1440, 900));
+      await keyboardToToggle(t);
+      await t.sendKeyEvent(LogicalKeyboardKey.enter);
+      await _frames(t, 6);
+      expect(_panel, findsNothing, reason: 'the docked panel was toggled');
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t, 8);
+      expect(barExclude(t).excluding, isTrue);
+      await w.close(t);
+    });
+
+    for (final how in ['a page switch', 'crossing 1120', 'a binder cover']) {
+      testWidgets('the toggle hold is released when $how closes the overlay', (t) async {
+        final w = await ShellWorld.open(t, size: const Size(900, 900));
+        final binder = how == 'a binder cover' ? await w.addBinderWithPage(t, 'Work') : null;
+        await keyboardToToggle(t);
+        await t.sendKeyEvent(LogicalKeyboardKey.enter);
+        await _frames(t, 6);
+        expect(_panel, findsOneWidget);
+        if (how == 'a page switch') {
+          await w.openPage(t, w.second);
+        } else if (how == 'crossing 1120') {
+          t.view.physicalSize = const Size(1200, 900);
+        } else {
+          w.nb.showCover(binder!.path);
+        }
+        await w.settle(t);
+        await _frames(t, 4);
+        expect(find.byKey(const ValueKey('context-panel-overlay')), findsNothing);
+        // The focus may have gone back to the toggle; once it moves on, the bar
+        // is out of the focus again.
+        await t.sendKeyEvent(LogicalKeyboardKey.tab);
+        await _frames(t, 4);
+        expect(barExclude(t).excluding, isTrue);
+        await w.close(t);
+      });
+    }
+
+    testWidgets('docked keyboard toggle then Escape: a click on File then Escape gives the focus to the canvas', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(1440, 900));
+      await keyboardToToggle(t);
+      await t.sendKeyEvent(LogicalKeyboardKey.enter);
+      await _frames(t, 6);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t, 8);
+      await t.tap(find.byKey(const ValueKey('menu-top-File')));
+      await _frames(t, 6);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t, 8);
+      expect(
+        FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<PageCanvas>(),
+        isNotNull,
+        reason: 'a pointer-opened menu never moved the focus into the bar',
+      );
+      expect(barExclude(t).excluding, isTrue);
+      await w.close(t);
+    });
+
+    testWidgets('the toggle going away (a narrow window) while it is held releases the hold', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(900, 900));
+      await keyboardToToggle(t);
+      await t.sendKeyEvent(LogicalKeyboardKey.enter);
+      await _frames(t, 6);
+      expect(_panel, findsOneWidget);
+      t.view.physicalSize = const Size(500, 900);
+      await w.settle(t);
+      await _frames(t, 4);
+      expect(toggle, findsNothing);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t, 8);
+      t.view.physicalSize = const Size(900, 900);
+      await w.settle(t);
+      await t.tapAt(const Offset(500, 500));
+      await _frames(t, 4);
+      expect(barExclude(t).excluding, isTrue);
+      await w.close(t);
+    });
   });
 }

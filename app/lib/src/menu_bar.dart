@@ -184,6 +184,7 @@ class AppMenuBar extends StatefulWidget {
     required this.canvas,
     required this.panelShown,
     required this.onTogglePanel,
+    this.overlayShown,
     required this.focusCanvas,
     this.contextMenuOpen,
     this.settings,
@@ -209,6 +210,10 @@ class AppMenuBar extends StatefulWidget {
   /// Whether Details is shown, and how Details toggles it.
   final ValueListenable<bool> panelShown;
   final VoidCallback onTogglePanel;
+
+  /// True while Details is an overlay (not docked). The toggle's keyboard focus
+  /// is held for the overlay's return only while this is true.
+  final ValueListenable<bool>? overlayShown;
 
   /// Puts the focus on the open page's canvas, if there is one.
   final VoidCallback focusCanvas;
@@ -357,6 +362,7 @@ class AppMenuBarState extends State<AppMenuBar> {
     _buildAppCommands();
 
     _bar.addListener(_barChanged);
+    widget.overlayShown?.addListener(_overlayChanged);
     widget.notebook.addListener(_notebookChanged);
     widget.canvas.addListener(_canvasChanged);
     _registry = widget.canvas.value;
@@ -378,6 +384,7 @@ class AppMenuBarState extends State<AppMenuBar> {
     _holdController = null;
     _lifecycle.dispose();
     _bar.removeListener(_barChanged);
+    widget.overlayShown?.removeListener(_overlayChanged);
     _bar.dispose();
     for (final n in [..._top, ..._firstNode, ..._subNodes.values]) {
       n.dispose();
@@ -439,10 +446,39 @@ class AppMenuBarState extends State<AppMenuBar> {
     } else if (_togglePhase == 1 && has) {
       _togglePhase = 2;
     } else if (_togglePhase == 2 && !has) {
-      _toggleHeld = false;
-      _togglePhase = 0;
-      _rebuild();
+      _releaseToggle();
     }
+  }
+
+  void _releaseToggle() {
+    if (!_toggleHeld) return;
+    _toggleHeld = false;
+    _togglePhase = 0;
+    _rebuild();
+  }
+
+  // The hold lasts only for an overlay that is up. Not up (docked, or the layout
+  // crossed 1120), or closed without the focus coming back (a page switch, a
+  // cover): released. Checked two frames on, once the host has settled.
+  void _checkToggleHold() {
+    if (!_toggleHeld || (widget.overlayShown?.value ?? false)) return;
+    // The focus came back to the toggle: the phases end it when it moves on.
+    if (_togglePhase == 2) return;
+    _releaseToggle();
+  }
+
+  void _afterFrames(VoidCallback run) {
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        if (mounted) run();
+      });
+      SchedulerBinding.instance.scheduleFrame();
+    });
+    SchedulerBinding.instance.scheduleFrame();
+  }
+
+  void _overlayChanged() {
+    if (_toggleHeld && !(widget.overlayShown?.value ?? false)) _afterFrames(_checkToggleHold);
   }
 
   void _barChanged() {
@@ -667,6 +703,9 @@ class AppMenuBarState extends State<AppMenuBar> {
       return;
     }
     if (restoreFocus) {
+      // The bar's own Escape: no overlay is taking the focus now.
+      _toggleHeld = false;
+      _togglePhase = 0;
       _restoreFocus(origin);
       SchedulerBinding.instance.addPostFrameCallback((_) => finish());
       SchedulerBinding.instance.scheduleFrame();
@@ -1153,6 +1192,8 @@ class AppMenuBarState extends State<AppMenuBar> {
                   _togglePhase = 0;
                 }
                 widget.onTogglePanel();
+                // Docked: no overlay will take the focus, so nothing is held.
+                if (_toggleHeld) _afterFrames(_checkToggleHold);
               },
               style: _itemStyle(context, bar: true).copyWith(
                 backgroundColor: WidgetStatePropertyAll(open ? scheme.primaryContainer : scheme.surface),
@@ -1172,6 +1213,8 @@ class AppMenuBarState extends State<AppMenuBar> {
     final m = NotedMetrics.of(context);
     final wide = MediaQuery.sizeOf(context).width >= wordmarkMinWidth;
     final menus = [_file(), _edit(), _view(), _help()];
+    // The toggle is gone (a narrow window): nothing is left to hold.
+    if (!wide && _toggleHeld) SchedulerBinding.instance.addPostFrameCallback((_) => _releaseToggle());
     return SizedBox(
       height: menuBarHeight,
       child: DecoratedBox(

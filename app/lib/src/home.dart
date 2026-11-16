@@ -102,6 +102,7 @@ class _HomeState extends State<Home> {
   bool _overlayOpen = false;
   String? _overlayPage;
   final ValueNotifier<bool> _panelShown = ValueNotifier<bool>(false);
+  final ValueNotifier<bool> _overlayShown = ValueNotifier<bool>(false);
 
   // Folded rows; kept here so they outlast the narrow-layout drawer.
   final Set<String> _folded = {};
@@ -324,6 +325,7 @@ class _HomeState extends State<Home> {
     _canvasContextOpen?.removeListener(_syncContextOpen);
     _contextOpen.dispose();
     _panelShown.dispose();
+    _overlayShown.dispose();
     if (widget.search == null) _search.dispose();
     super.dispose();
   }
@@ -461,6 +463,7 @@ class _HomeState extends State<Home> {
     canvas: _registry,
     contextMenuOpen: _contextOpen,
     panelShown: _panelShown,
+    overlayShown: _overlayShown,
     onTogglePanel: _togglePanel,
     focusCanvas: () => _canvasKey?.currentState?.focusCanvas(),
   );
@@ -504,10 +507,12 @@ class _HomeState extends State<Home> {
   }
 
   // Keeps the menu's Details check in step with what is on screen.
-  void _syncPanelShown(bool shown) {
-    if (_panelShown.value == shown) return;
+  void _syncPanelShown(bool shown, {required bool overlay}) {
+    if (_panelShown.value == shown && _overlayShown.value == overlay) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _panelShown.value = shown;
+      if (!mounted) return;
+      _overlayShown.value = overlay;
+      _panelShown.value = shown;
     });
   }
 
@@ -717,7 +722,7 @@ class _HomeState extends State<Home> {
         final overlay = !wide && !isMobilePlatform && _overlayOpen;
         final compactTree = !isMobilePlatform && !wide;
         // A cover has no Details, so the toggle does not look open over it.
-        _syncPanelShown(notebook.cover == null && (inline || overlay));
+        _syncPanelShown(notebook.cover == null && (inline || overlay), overlay: notebook.cover == null && overlay);
         _closeDrawerOnChoice();
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
