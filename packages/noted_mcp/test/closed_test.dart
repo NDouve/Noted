@@ -6,7 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:noted_core/noted_core.dart' show conflictCopyOriginalNames;
+import 'package:noted_core/noted_core.dart' show conflictCopyOriginalNames, sweepAsideFiles;
 import 'package:noted_core/noted_core_read.dart';
 import 'package:noted_core/src/storage/exclusive_publish.dart' show publishExclusive;
 import 'package:noted_mcp/noted_mcp.dart';
@@ -995,6 +995,84 @@ void main() {
       expect(f.readAsStringSync(), 'new');
       expect(FileSystemEntity.typeSync(asidePath), isNot(FileSystemEntityType.notFound));
       expect(names(), hasLength(2), reason: 'the page and the aside only');
+    });
+
+    // The aside is dropped only if, under a fresh name, it still holds the old bytes.
+    List<String> verified() => names().where((n) => n.endsWith('.cas-verified')).toList();
+    String verifiedText(String name) => File('${folder.path}/$name').readAsStringSync();
+
+    test('bytes written into the aside in place after publishing are kept, not deleted', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      w.beforeAsideDelete = (aside) async => aside.writeAsStringSync('other');
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.done);
+      expect(f.readAsStringSync(), 'new');
+      expect(names(), hasLength(2));
+      expect(verified(), hasLength(1));
+      expect(verifiedText(verified().single), 'other');
+    });
+
+    test('a different file renamed over the aside (a sync client) is kept', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      w.beforeAsideDelete = (aside) async {
+        final other = File('${root.path}/other.tmp')..writeAsStringSync('from sync');
+        other.renameSync(aside.path);
+      };
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.done);
+      expect(f.readAsStringSync(), 'new');
+      expect(verified(), hasLength(1));
+      expect(verifiedText(verified().single), 'from sync');
+      expect(names(), hasLength(2));
+    });
+
+    test('bytes written to the drop path between the check and the delete are kept', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      w.beforeFinalCheck = (path) async => File(path).writeAsStringSync('other');
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.done);
+      expect(f.readAsStringSync(), 'new');
+      expect(verified(), hasLength(1));
+      expect(verifiedText(verified().single), 'other');
+      expect(names(), hasLength(2));
+    });
+
+    test('a file arriving at the aside name is untouched; the verified drop is deleted', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      late String asidePath;
+      w.beforeAsideDelete = (aside) async => asidePath = aside.path;
+      w.beforeFinalCheck = (path) async => File(asidePath).writeAsStringSync('arrived');
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.done);
+      expect(f.readAsStringSync(), 'new');
+      expect(File(asidePath).readAsStringSync(), 'arrived');
+      expect(verified(), isEmpty);
+      expect(names(), hasLength(2));
+    });
+
+    test('a drop whose time changed during the final read, same bytes, is kept', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      w.afterFinalRead = (path) async => File(path).setLastModifiedSync(DateTime.now().add(const Duration(hours: 1)));
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.done);
+      expect(f.readAsStringSync(), 'new');
+      expect(verified(), hasLength(1));
+      expect(verifiedText(verified().single), 'old');
+    });
+
+    test('a kept drop is swept by Noted into a conflict copy that maps to the page', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      w.beforeAsideDelete = (aside) async => aside.writeAsStringSync('other');
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.done);
+      expect(verified(), hasLength(1));
+      await sweepAsideFiles(folder);
+      expect(verified(), isEmpty);
+      final copies = names().where((n) => n != 'p.canvas').toList();
+      expect(copies, hasLength(1));
+      expect(File('${folder.path}/${copies.single}').readAsStringSync(), 'other');
+      expect(conflictCopyOriginalNames(copies.single), contains('p.canvas'));
+      expect(f.readAsStringSync(), 'new');
+    });
+
+    test('a clean write leaves only the page', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.done);
+      expect(names(), ['p.canvas']);
     });
 
     test('changed bytes: nothing is written', () async {

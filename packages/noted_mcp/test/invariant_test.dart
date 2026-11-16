@@ -75,11 +75,14 @@ void main() {
 
   test('of Noted\'s own code only the read-only core and the server itself are reachable', () {
     const allowedCore = {'ai', 'binder', 'format', 'json', 'model', 'search', 'tree'};
-    // The one storage file: the exclusive publisher the narrow writer uses.
-    const publisher = 'package:noted_core/src/storage/exclusive_publish.dart';
+    // The storage files: the exclusive publisher and the checked drop (dart:io only) the narrow writer uses.
+    const storage = {
+      'package:noted_core/src/storage/exclusive_publish.dart',
+      'package:noted_core/src/storage/drop_verified.dart',
+    };
     final bad = [
       for (final lib in graph)
-        if (lib.startsWith('package:noted') && !lib.startsWith('package:noted_mcp/') && lib != publisher)
+        if (lib.startsWith('package:noted') && !lib.startsWith('package:noted_mcp/') && !storage.contains(lib))
           if (!lib.startsWith('package:noted_core/') ||
               lib == 'package:noted_core/noted_core.dart' ||
               (lib.startsWith('package:noted_core/src/') && !allowedCore.contains(lib.split('/')[2])))
@@ -108,6 +111,7 @@ void main() {
   const closedWriter = 'package:noted_mcp/src/closed_writer.dart';
   const runningProbe = 'package:noted_mcp/src/running_probe.dart';
   const exclusivePublish = 'package:noted_core/src/storage/exclusive_publish.dart';
+  const dropVerifiedLib = 'package:noted_core/src/storage/drop_verified.dart';
 
   test('crypto is SHA-256 only: one import, `show sha256`, in the core\'s code format, and nothing else hashes', () {
     final sources = notedSources();
@@ -155,6 +159,7 @@ void main() {
     expect(names, contains('package:noted_mcp/src/toolbox.dart'));
     expect(names, contains('package:noted_core/src/ai/ai_access.dart'));
     expect(names, contains('package:noted_core/src/ai/ai_link.dart'));
+    expect(names, contains(dropVerifiedLib));
     expect(names.where((n) => n.startsWith('file:')), isNotEmpty, reason: 'the executable\'s entry');
   });
 
@@ -192,6 +197,8 @@ void main() {
                 // The exclusive publisher loads the OS library (`DynamicLibrary.open`);
                 // its calls are checked in their own test below.
                 !(e.key == exclusivePublish && w.key == 'open') &&
+                // The checked drop renames and deletes once each (checked below).
+                !(e.key == dropVerifiedLib && (w.key == 'rename' || w.key == 'delete')) &&
                 w.value.hasMatch(e.value))
               '${e.key}: ${w.key}',
     ];
@@ -246,14 +253,31 @@ void main() {
     expect(src.indexOf('publish(tmp, probe.path)'), lessThan(src.indexOf('await file.rename(aside.path);')));
     expect(src, contains('published = await publish(tmp, file.path);'));
     expect(src, contains('return await publish(aside, file.path);'));
-    // Deletes: the temporary file and the aside, nothing else.
-    expect(count(writes['delete']!), 2);
+    // Deletes: the temporary file here; the aside only through the checked drop.
+    expect(count(writes['delete']!), 1);
     expect(count(RegExp(r'\btmp\.delete\(\)')), 1);
-    expect(count(RegExp(r'\baside\.delete\(\)')), 1);
+    expect(count(RegExp(r'\baside\.delete\(\)')), 0);
+    expect(count(RegExp(r'\bdropVerified\(')), 1);
+    expect(src, contains("import 'package:noted_core/src/storage/drop_verified.dart' show dropVerified, verifiedSuffix;"));
     final afterAside = src.substring(src.indexOf('await file.rename(aside.path);'), src.indexOf('Future<bool> _putBack'));
-    // The aside is deleted only once the new text is published, never in a
+    // The aside is dropped only once the new text is published, never in a
     // changed or busy branch; the temporary file only in the final clause.
-    expect(afterAside.indexOf('aside.delete()'), greaterThan(afterAside.indexOf('if (!published) return PageReplace.busy;')));
+    expect(afterAside.indexOf('dropVerified('), greaterThan(afterAside.indexOf('if (!published) return PageReplace.busy;')));
+    expect(afterAside, contains(r"'${aside.path}.$pid-"));
+    expect(afterAside, contains(r'$verifiedSuffix'));
+    // The drop: dart:io only, one rename and one synchronous delete, nothing else.
+    final dv = sources[dropVerifiedLib]!;
+    expect(RegExp(r'''^\s*import\s+['"]([^'"]+)['"]''', multiLine: true).allMatches(dv).map((m) => m.group(1)).toList(), ['dart:io']);
+    expect(RegExp(r'\bRandom\b|sha256|crypto|dart:ffi|publishExclusive').hasMatch(dv), isFalse);
+    expect(writes['rename']!.allMatches(dv).length, 1);
+    expect(writes['delete']!.allMatches(dv).length, 1);
+    expect(dv, contains('await aside.rename(dropPath);'));
+    expect(dv, contains('drop.deleteSync();'));
+    expect([for (final w in writes.entries) if (w.key != 'rename' && w.key != 'delete' && w.value.hasMatch(dv)) w.key], isEmpty);
+    expect(
+      ([for (final e in sources.entries) if (RegExp(r'\bdropVerified\b').hasMatch(e.value)) e.key]..sort()),
+      [dropVerifiedLib, closedWriter],
+    );
     expect(afterAside.indexOf('tmp.delete()'), greaterThan(afterAside.indexOf('finally')));
     // Nothing is written at the page's path after the move aside.
     expect(RegExp(r'writeAs|\.create\(|\.open\(|FileMode').hasMatch(afterAside), isFalse);

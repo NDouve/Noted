@@ -191,16 +191,10 @@ const List<Site> deleteSites = [
     _unique,
   ),
   (
-    'packages/noted_core/lib/src/storage/replace_if_unchanged.dart',
+    'packages/noted_core/lib/src/storage/drop_verified.dart',
     'drop.deleteSync();',
     1,
     'deleteFileIfMatches: the verified file renamed to a fresh name, checked again just before',
-  ),
-  (
-    'packages/noted_mcp/lib/src/closed_writer.dart',
-    'await aside.delete();',
-    1,
-    'PARKED (run 2026-11-15-02, task 6 part 4): unchecked delete of the MCP aside; needs the maintainer',
   ),
   (
     'packages/noted_mcp/lib/src/closed_writer.dart',
@@ -364,8 +358,8 @@ const List<Site> renameSites = [
     '$_unchecked: PageStore.save',
   ),
   (
-    'packages/noted_core/lib/src/storage/replace_if_unchanged.dart',
-    'await aside.rename(drop.path);',
+    'packages/noted_core/lib/src/storage/drop_verified.dart',
+    'await aside.rename(dropPath);',
     1,
     _primitive,
   ),

@@ -3891,6 +3891,34 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 3)));
 
+  // The MCP server keeps its aside under a verified drop name when it can't
+  // tell the aside is unchanged (run 2026-11-16-01, task 5). The state is built
+  // directly: `<id>-NOTED-MCP-<hex>.canvas.<pid>-a-b.cas-verified` holding a box
+  // the page file lacks. Noted's start sweeps it into a conflict copy and merges
+  // it: both boxes are live, and after a restart.
+  test('a kept MCP aside (a .cas-verified leftover) is swept and merged: both boxes, live and after a restart', () async {
+    final run = _Run(922);
+    try {
+      await run.start();
+      await run.nb.flush();
+      final id = run.model.keys.firstWhere((i) => i != run.nb.currentId);
+      final m = run.model[id]!;
+      final z = run._newBox(run._text('mcp aside'));
+      final leftover =
+          '${run.dirs[m.loc]!.path}${run.sep}$id-NOTED-MCP-0123456789abcdef.canvas.4242-a-b.cas-verified';
+      File(leftover).writeAsStringSync(writePage(run._disk(id).insertNode(z)));
+      m.boxes[z.id] = _val(z);
+      await run._opRestart();
+      await run.nb.flush();
+      await run.verify('after the start', fresh: true);
+      expect(File(leftover).existsSync(), isFalse);
+      await run._opRestart();
+      await run.verify('after a restart', fresh: true);
+    } finally {
+      await run.stop();
+    }
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
   test('a page opened during the merge of its conflict copy: an edit keeps the copy, and the files and a restart agree', () async {
     final run = _Run(923);
     try {
