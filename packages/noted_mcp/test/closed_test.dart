@@ -6,7 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:noted_core/noted_core.dart' show conflictCopyOriginalNames;
+import 'package:noted_core/noted_core.dart' show conflictCopyOriginalNames, sweepAsideFiles;
 import 'package:noted_core/noted_core_read.dart';
 import 'package:noted_core/src/storage/exclusive_publish.dart' show publishExclusive;
 import 'package:noted_mcp/noted_mcp.dart';
@@ -1053,6 +1053,20 @@ void main() {
       expect(f.readAsStringSync(), 'new');
       expect(verified(), hasLength(1));
       expect(verifiedText(verified().single), 'old');
+    });
+
+    test('a kept drop is swept by Noted into a conflict copy that maps to the page', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      w.beforeAsideDelete = (aside) async => aside.writeAsStringSync('other');
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.done);
+      expect(verified(), hasLength(1));
+      await sweepAsideFiles(folder);
+      expect(verified(), isEmpty);
+      final copies = names().where((n) => n != 'p.canvas').toList();
+      expect(copies, hasLength(1));
+      expect(File('${folder.path}/${copies.single}').readAsStringSync(), 'other');
+      expect(conflictCopyOriginalNames(copies.single), contains('p.canvas'));
+      expect(f.readAsStringSync(), 'new');
     });
 
     test('a clean write leaves only the page', () async {

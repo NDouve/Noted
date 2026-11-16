@@ -6,8 +6,8 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:noted_core/noted_core_read.dart';
-// The core's read-only barrel leaves out storage code; this one file is
-// imported directly (invariant_test.dart allows exactly it).
+// The core's read-only barrel leaves out storage code; two storage files are
+// imported directly (invariant_test.dart allows exactly these two).
 // ignore: implementation_imports
 import 'package:noted_core/src/storage/exclusive_publish.dart' show publishExclusive;
 // ignore: implementation_imports
