@@ -62,11 +62,17 @@ class PickGate {
   final List<CommandInvocation?> seen = [];
   CommandInvocation? afterAwait;
   bool armed = false;
+  bool throwSync = false;
 }
 
 PickGate pickGate = PickGate();
 
-Future<void> _insert(CommandHost host, String id) async {
+Future<void> _insert(CommandHost host) {
+  if (pickGate.throwSync) throw StateError('the command failed at its start');
+  return _pick(host);
+}
+
+Future<void> _pick(CommandHost host) async {
   final gate = pickGate;
   if (!gate.armed) return;
   final inv = host.invocation;
@@ -96,7 +102,7 @@ class TModule extends BoxModule<String> {
             icon: Icons.image_rounded,
             enabled: () => host.attachments != null && !host.controller.readOnly,
             listenable: host.controller,
-            invoke: () => _insert(host, 'noted.image.insert'),
+            invoke: () => _insert(host),
           ),
           Command(
             id: 'noted.file.insert',
@@ -104,7 +110,7 @@ class TModule extends BoxModule<String> {
             icon: Icons.attach_file_rounded,
             enabled: () => host.attachments != null && !host.controller.readOnly,
             listenable: host.controller,
-            invoke: () => _insert(host, 'noted.file.insert'),
+            invoke: () => _insert(host),
           ),
         ]
       : const [];

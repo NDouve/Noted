@@ -112,6 +112,7 @@ void main() {
       await t.pump();
       expect(boxes(c), isEmpty);
       expect(boxes(other), isEmpty);
+      expect(store.notices, [insertStoppedNotice]);
     });
   }
 }

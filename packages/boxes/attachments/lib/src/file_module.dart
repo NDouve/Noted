@@ -65,7 +65,10 @@ final class FileModule extends BoxModule<FileData?> {
         // Read before the first await; the picker may outlive the page.
         final inv = host.invocation;
         final files = await store.pick(imagesOnly: false);
-        if (inv != null && !inv.isCurrent) return;
+        if (inv != null && !inv.isCurrent) {
+          store.notify(insertStoppedNotice);
+          return;
+        }
         await host.insertFiles(files, at: inv?.anchor);
       },
     ),

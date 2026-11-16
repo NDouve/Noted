@@ -242,3 +242,6 @@ class StillSyncing extends StatelessWidget {
     );
   }
 }
+
+/// Shown when a picker returned after the page changed and the insert was dropped.
+const String insertStoppedNotice = 'The insert stopped; nothing was added to another page.';
