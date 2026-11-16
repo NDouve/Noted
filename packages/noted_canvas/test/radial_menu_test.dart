@@ -539,6 +539,37 @@ void main() {
     }
   });
 
+  testWidgets('the rect watch runs only while a menu is open and leaves no callback behind a disposed canvas', (t) async {
+    for (var round = 0; round < 3; round++) {
+      await setUpWorld(t);
+      final state = w.state;
+      expect(state.contextRectChecks, 0);
+      await w.rightClick(w.at(const Offset(600, 300)));
+      await t.pump();
+      await t.pump();
+      expect(state.contextRectChecks, greaterThan(0));
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settle(t);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settle(t);
+      expect(w.open, isFalse);
+      final after = state.contextRectChecks;
+      for (var i = 0; i < 5; i++) {
+        await t.pump(const Duration(milliseconds: 20));
+      }
+      expect(state.contextRectChecks, after, reason: 'closed: no more checks');
+      // Dispose with a menu open: it stops too.
+      await w.rightClick(w.at(const Offset(600, 300)));
+      await t.pump();
+      await t.pumpWidget(const SizedBox());
+      final gone = state.contextRectChecks;
+      for (var i = 0; i < 5; i++) {
+        await t.pump(const Duration(milliseconds: 20));
+      }
+      expect(state.contextRectChecks, gone, reason: 'disposed: no more checks');
+    }
+  });
+
   group('the canvas rect changes under an open menu', () {
     // A bar appearing above the canvas, or the toolbar wrapping after the input
     // mode changed, moves the canvas rect without a resize of the window.

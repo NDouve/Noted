@@ -631,7 +631,6 @@ class PageCanvasState extends State<PageCanvas>
   @override
   void initState() {
     super.initState();
-    SchedulerBinding.instance.addPersistentFrameCallback((_) => _checkContextRect());
     _c.addListener(_changed);
     _tools.addListener(_toolChanged);
     _find = _makeFind();
@@ -1388,6 +1387,7 @@ class PageCanvasState extends State<PageCanvas>
     );
     session.holdNow();
     _contextSession = session;
+    _watchContextRect(session);
     _contextClose.value = false;
     if (!_contextDisposed) _contextOpen.value = true;
     unawaited(
@@ -1403,12 +1403,25 @@ class PageCanvasState extends State<PageCanvas>
     );
   }
 
-  /// Run after every frame: a menu is laid out against the canvas rect as it is
-  /// now (it moves with the toolbar wrapping, a bar appearing, a panel), so the
-  /// open menu is told the new rect. It closes only when the canvas is gone.
-  void _checkContextRect() {
-    final s = _contextSession;
-    if (!mounted || s == null || _contextClose.value) return;
+  /// Test hook: how many times the open-menu rect check has run.
+  @visibleForTesting
+  int contextRectChecks = 0;
+
+  /// While [s] is the open menu, runs after each frame: the menu is laid out
+  /// against the canvas rect as it is now (it moves with the toolbar wrapping, a
+  /// bar appearing, a panel), so it is told the new rect. It closes only when
+  /// the canvas is gone. Each run arms the next; nothing is armed once the menu
+  /// ends or the canvas is disposed.
+  void _watchContextRect(_ContextSession s) {
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !identical(_contextSession, s) || _contextClose.value) return;
+      contextRectChecks++;
+      _checkContextRect(s);
+      _watchContextRect(s);
+    });
+  }
+
+  void _checkContextRect(_ContextSession s) {
     final area = _areaKey.currentContext?.findRenderObject();
     if (area is! RenderBox || !area.hasSize) {
       _contextClose.value = true;
