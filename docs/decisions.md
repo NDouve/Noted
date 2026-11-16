@@ -2574,6 +2574,18 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Rationale:** the maintainer's UI spec puts the brand in a 40 px title bar of the app's own; native Win32 keeps the platform behaviours (snap layouts, the window menu) that a frameless window with a package would have to rebuild.
 - **Alternatives considered:** a window-management package (a dependency; the maintainer chose native); a frameless window drawn entirely in Dart (loses snap layouts and the native resize edges).
 
+## 0182 — The maintainer's answers for the cloud drivers and the rename-based move
+- **Date:** 2026-11-15
+- **Status:** Active (the maintainer, answers of 2026-11-15 to the reviewed notes `2026-11-15-01-cloud-parity` and `2026-11-14-02-rename-move`). The WebDAV pull built from them is 0177; the iCloud and Google Drive drivers and the rename-based move are not built yet.
+- **Decision:**
+  - **iCloud Drive:** on Apple devices and on Windows (through the iCloud for Windows folder) only; elsewhere such a folder follows the usual read-only rules. On Apple devices the folder is chosen with the folder picker and kept by a bookmark. No iCloud flag is stored; the MCP server recognises an iCloud folder by the dataless flag on its files, with a path rule until that check exists.
+  - **Google Drive:** the full `drive` scope under Google's personal-use path (published, unverified, under 100 users); never a paid assessment. For a public release Google's free verification is tried; if Google requires a paid security assessment, the public build uses `drive.file` instead, which cannot see files Noted didn't create (for example binders written through the Drive desktop folder, and Drive's own conflict copies). The scope is one setting in the driver. Sign-in uses `flutter_appauth` on devices if the probe passes, and Noted's own redirect flow in the browser. If a Drive probe fails, the gap is accepted.
+  - **WebDAV:** Noted's own small XML parser; in the browser only on servers set up for CORS; servers without locks or strong ETags are pull-only.
+  - **Watching:** chosen cloud folders are watched on devices.
+  - **A deleted page's attachments folder** that can't be moved to the recovery folder is set aside in place, renamed beside the page, rather than moved (amends 0098 when built).
+- **Rationale:** the maintainer's answers to the questions the two notes raised; recorded so the builds that follow use them.
+- **Alternatives considered:** the options each note listed (for Google Drive, paying for an assessment, or `drive.file` from the start).
+
 ---
 
 ## Open items
