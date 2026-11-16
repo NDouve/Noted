@@ -321,7 +321,6 @@ void main() {
       await t.pumpAndSettle();
       final field = find.descendant(of: find.byType(Drawer), matching: find.byType(TextField)).first;
       expect(t.getTopLeft(field).dy, greaterThanOrEqualTo(40));
-      expect(t.getTopLeft(find.byType(Drawer)).dy, greaterThanOrEqualTo(40));
       await t.tap(field);
       await t.pump();
       expect(t.widget<TextField>(field).focusNode?.hasFocus ?? true, isTrue);
@@ -353,7 +352,7 @@ void main() {
     testWidgets('an opaque page route leaves the bar in place', (t) async {
       await pumpApp(t);
       final nav = Navigator.of(t.element(find.byType(Scaffold).first));
-      unawaited(nav.push(MaterialPageRoute<void>(builder: (_) => const Scaffold(body: Text('Over')))));
+      unawaited(nav.push(MaterialPageRoute<void>(builder: (_) => const Scaffold(body: SafeArea(child: Text('Over'))))));
       await t.pumpAndSettle();
       expect(find.text('Over'), findsOneWidget);
       expect(find.byType(TitleBar), findsOneWidget);

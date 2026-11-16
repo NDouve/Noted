@@ -513,13 +513,25 @@ class _NotedAppState extends State<NotedApp> {
         );
         final window = widget.window;
         if (window == null) return app;
-        // Above the Navigator: routes, dialogs and the drawer lay out below
-        // the bar, so nothing covers the caption.
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        // The Navigator keeps the whole window, so global and overlay
+        // coordinates agree (popups, the editor's menus). The bar is painted on
+        // top of it; the runner owns those pixels (caption hit codes), so
+        // nothing under it takes a click. The app reserves the top inset:
+        // dialogs and routes use the padding, the home and its drawer a spacer.
+        final media = MediaQuery.of(context);
+        const bar = DesignMetrics.titleBarHeight;
+        return Stack(
           children: [
-            TitleBar(window: window),
-            Expanded(child: app),
+            Positioned.fill(
+              child: MediaQuery(
+                data: media.copyWith(
+                  padding: media.padding.copyWith(top: media.padding.top + bar),
+                  viewPadding: media.viewPadding.copyWith(top: media.viewPadding.top + bar),
+                ),
+                child: app,
+              ),
+            ),
+            Positioned(left: 0, top: 0, right: 0, child: TitleBar(window: window)),
           ],
         );
       },

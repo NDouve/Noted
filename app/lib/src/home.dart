@@ -339,6 +339,23 @@ class _HomeState extends State<Home> {
 
 
   @override
+  void didUpdateWidget(Home old) {
+    super.didUpdateWidget(old);
+    if (old.window != widget.window) {
+      if (old.window?.onNcPointerDown == _ncPointerDown) old.window?.onNcPointerDown = null;
+      widget.window?.onNcPointerDown = _ncPointerDown;
+    }
+  }
+
+  // The title bar is drawn over the top of the window: content starts below it.
+  Widget _belowTitleBar(Widget child) => widget.window == null
+      ? child
+      : Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [const SizedBox(height: DesignMetrics.titleBarHeight), Expanded(child: child)],
+        );
+
+  @override
   void dispose() {
     for (final s in _syncs.toList()) {
       _unwatch(s);
@@ -451,13 +468,14 @@ class _HomeState extends State<Home> {
                 width: NotedMetrics.of(context).sidebarWidth,
                 shape: const RoundedRectangleBorder(),
                 backgroundColor: NotedColors.of(context).bgSidebar,
-                child: _insetsOnDevice(_sidebar(NotedMetrics.of(context))),
+                child: _belowTitleBar(_insetsOnDevice(_sidebar(NotedMetrics.of(context)))),
               )
             : null,
         body: _insetsOnDevice(
           Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              if (widget.window != null) const SizedBox(height: DesignMetrics.titleBarHeight),
               if (!isMobilePlatform) _menuBar(),
               Expanded(
                 child: Stack(
@@ -482,6 +500,9 @@ class _HomeState extends State<Home> {
     _menu.currentState?.closeForNativePress();
     if (_scaffold.currentState?.isDrawerOpen ?? false) _scaffold.currentState?.closeDrawer();
     if (_overlayOpen) setState(() => _overlayOpen = false);
+    // Open popup routes (a canvas context menu or pick list, a popup menu, a
+    // dismissible dialog) close as on a click on their barrier.
+    Navigator.maybeOf(context)?.popUntil((r) => !(r is PopupRoute && r.barrierDismissible));
   }
 
   Widget _menuBar() => AppMenuBar(
