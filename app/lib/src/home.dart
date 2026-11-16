@@ -34,6 +34,8 @@ import 'microsoft_account.dart';
 import 'onedrive_guard_dialog.dart';
 import 'onedrive_sync.dart';
 import 'settings_menu.dart';
+import 'title_bar.dart';
+import 'window_channel.dart';
 
 /// The snack bar for an attachment notice. A long one (it names a file and
 /// says where a copy went) stays 20 seconds and can be closed; a short one
@@ -49,7 +51,11 @@ SnackBar attachmentNoticeBar(String message) {
 
 /// Sidebar with the page tree, and the open page's canvas.
 class Home extends StatefulWidget {
-  const Home({super.key, required this.notebook, this.settings, this.search, this.microsoft});
+  const Home({super.key, required this.notebook, this.settings, this.search, this.microsoft, this.window});
+
+  /// The Windows runner's custom frame, when it is on: the home then draws the
+  /// title bar. Null elsewhere (the native caption stays).
+  final WindowChannel? window;
 
   final Notebook notebook;
 
@@ -429,6 +435,7 @@ class _HomeState extends State<Home> {
           Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              if (widget.window != null) TitleBar(window: widget.window!, onNcPointerDown: _ncPointerDown),
               if (!isMobilePlatform) _menuBar(),
               Expanded(
                 child: Stack(
@@ -446,8 +453,18 @@ class _HomeState extends State<Home> {
     );
   }
 
+  // A press on the title bar (a drag, a button, the window menu): the open
+  // menus, the narrow drawer and the Details overlay close as on a click-away.
+  void _ncPointerDown() {
+    if (!mounted) return;
+    _menu.currentState?.closeForNativePress();
+    if (_scaffold.currentState?.isDrawerOpen ?? false) _scaffold.currentState?.closeDrawer();
+    if (_overlayOpen) setState(() => _overlayOpen = false);
+  }
+
   Widget _menuBar() => AppMenuBar(
     key: _menu,
+    showBrand: widget.window == null,
     notebook: notebook,
     settings: widget.settings,
     search: _search,
