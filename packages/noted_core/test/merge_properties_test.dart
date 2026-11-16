@@ -40,7 +40,7 @@ final codecs = propertyRegistry();
 PageMerge three(NotedPage b, NotedPage m, NotedPage t) =>
     mergePage(b, m, t, codecs, theirsTime: 5000);
 
-PageMerge copyMerge(NotedPage o, NotedPage c) => mergeConflictCopy(o, c, codecs, copyTime: 5000);
+PageMerge copyMerge(NotedPage o, NotedPage c) => mergeConflictCopy(o, c, codecs, copyTime: 5000, topOfChain: false);
 
 /// The pages of one run as text, for a failure message.
 String dump(Map<String, List<String>> pages) =>

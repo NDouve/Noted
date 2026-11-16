@@ -7698,6 +7698,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return l == null || l.held ? null : l.problem;
   }
 
+  // Whether [x], the version whose header a same-id merge keeps, is the top of
+  // its AI-access chain in [loc]: no binder and no parent (the merged `ai` is
+  // the stricter, ranked as in aiAccessRank).
+  bool _topOfChain(String loc, NotedPage x) => !_binders.containsKey(loc) && x.meta.parentId == null;
+
   // The codecs for a merge of page [id]'s [versions]: a type is off if the page
   // disallows it as this device knows it now, or under the header of any
   // version the merge reads (strictest wins), so a merge treats such a box
@@ -8350,6 +8355,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               mine,
               _mergeCodecs(id, [theirs, mine]),
               copyTime: e.time.millisecondsSinceEpoch,
+              topOfChain: _topOfChain(loc, theirs),
               forRecovery: true,
             ).page
           : mergePage(
@@ -8398,7 +8404,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       final result = _readForReplay(back, 'the saved file of $label');
       final why = theirs != null && noBase
-          ? verifyConflictCopyMerge(result, theirs, mine, forRecovery: true)
+          ? verifyConflictCopyMerge(result, theirs, mine, topOfChain: _topOfChain(loc, theirs), forRecovery: true)
           : verifyRecoveredPage(base: base, mine: mine, theirs: theirs, result: result);
       if (why != null) throw _ReplayFailure(_notAllKept(label), detail: why);
       await _applyClosed(readPage(back), loc, _key(path), path);
@@ -8515,7 +8521,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // The page reads back as written: it must pass the check too. If not,
         // the entry is merged again (0124's "landed and verified").
         final why = theirs != null && noBase
-            ? verifyConflictCopyMerge(now, theirs, mine, forRecovery: true)
+            ? verifyConflictCopyMerge(now, theirs, mine, topOfChain: _topOfChain(loc, theirs), forRecovery: true)
             : verifyRecoveredPage(base: base, mine: mine, theirs: theirs, result: now);
         if (why != null) {
           _landedText.remove(e.gen);
@@ -10376,13 +10382,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // The page on screen: merge into it, keeping unsaved edits, and save it.
     Future<String?> openBranch(CanvasController c) async {
       final original = c.page;
-      final merged = mergeConflictCopy(original, copy, _mergeCodecs(id, [original, copy]), copyTime: time).page;
+      final top = _topOfChain(loc, original);
+      final merged = mergeConflictCopy(
+        original,
+        copy,
+        _mergeCodecs(id, [original, copy]),
+        copyTime: time,
+        topOfChain: top,
+      ).page;
       if (writePage(merged) != writePage(original)) {
         c.applyExternal(merged);
         _syncDisallowed();
       }
       await flush();
-      return verifyConflictCopyMerge(readPage(await st.readText(id)), original, copy);
+      return verifyConflictCopyMerge(readPage(await st.readText(id)), original, copy, topOfChain: top);
     }
 
     // The page is closed: one chain job from the read of the original to
@@ -10393,9 +10406,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (openHere()) return (open: true, failure: null);
       final text = await File(originalPath).readAsString();
       final original = readPage(text);
-      final merged = mergeConflictCopy(original, copy, _mergeCodecs(id, [original, copy]), copyTime: time).page;
+      final top = _topOfChain(loc, original);
+      final merged = mergeConflictCopy(
+        original,
+        copy,
+        _mergeCodecs(id, [original, copy]),
+        copyTime: time,
+        topOfChain: top,
+      ).page;
       final out = writePage(merged);
-      if (out == text) return (open: false, failure: verifyConflictCopyMerge(readPage(text), original, copy));
+      if (out == text) {
+        return (open: false, failure: verifyConflictCopyMerge(readPage(text), original, copy, topOfChain: top));
+      }
       // Make the store write to the file the original was read from.
       if (_key(st.pathFor(id)) != _key(originalPath)) {
         await _scan(st);
@@ -10407,7 +10429,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (!await _writeIfUnchanged(loc, merged, text)) throw const _SourceChanged();
       final back = await st.readText(id);
       if (back != out) throw const FormatException('the saved page differs from what was written');
-      final failure = verifyConflictCopyMerge(readPage(back), original, copy);
+      final failure = verifyConflictCopyMerge(readPage(back), original, copy, topOfChain: top);
       if (_loc[id] != loc) {
         await _applyClosed(merged, loc, _key(originalPath), originalPath);
       }
@@ -12157,6 +12179,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             e.page,
             _mergeCodecs(id, [merged, e.page]),
             copyTime: e.time.millisecondsSinceEpoch,
+            topOfChain: _topOfChain(loc, merged),
             forRecovery: true,
           ).page;
           continue;

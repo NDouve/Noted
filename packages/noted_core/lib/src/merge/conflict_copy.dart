@@ -4,6 +4,7 @@
 
 import 'dart:math';
 
+import '../ai/ai_access.dart';
 import '../box_api/codec_registry.dart';
 import '../format/conflict_names.dart';
 import '../json/raw_json.dart';
@@ -72,7 +73,9 @@ final Random _nameRandom = Random.secure();
 /// follows the content choice. A box only the copy has that overlaps a box
 /// the copy doesn't have in that place is marked landed; a landed marker on
 /// either side's version is kept. The page header and other top-level fields are
-/// the original's. A node that isn't a JSON object can't take an id, so when
+/// the original's, except the AI access (`ai`): the stricter of the two
+/// ([stricterAiAccess]; [topOfChain]: the page is in no binder and has no
+/// parent). A node that isn't a JSON object can't take an id, so when
 /// it differs from the other side's at the same place both are kept as they
 /// are. [codecs] is unused for now and kept so the signature can
 /// grow a codec-level merge.
@@ -86,6 +89,7 @@ PageMerge mergeConflictCopy(
   NotedPage copy,
   CodecRegistry codecs, {
   required int copyTime,
+  required bool topOfChain,
   bool forRecovery = false,
 }) {
   final copyById = {for (final n in copy.nodes) n.id: n};
@@ -154,7 +158,8 @@ PageMerge mergeConflictCopy(
     out.insert(at, c);
   }
 
-  final merged = NotedPage.fromParts(original.top, original.meta, out);
+  final meta = stricterAiAccess(original.meta, copy.meta, topOfChain: topOfChain);
+  final merged = NotedPage.fromParts(original.top, meta, out);
   return PageMerge(merged, conflicted);
 }
 
@@ -283,14 +288,22 @@ bool _sameContent(BoxRecord x, BoxRecord y) =>
 /// content, as it may have taken a new id.
 ///
 /// [forRecovery] checks the form [mergeConflictCopy] gives with the same flag.
+/// The AI access on disk must be at least as strict as either side's
+/// ([aiAccessRank] at [topOfChain]).
 ///
 /// Returns null if all is well, otherwise what is missing.
 String? verifyConflictCopyMerge(
   NotedPage onDisk,
   NotedPage original,
   NotedPage copy, {
+  required bool topOfChain,
   bool forRecovery = false,
 }) {
+  final rank = aiAccessRank(onDisk.meta, topOfChain: topOfChain);
+  if (rank < aiAccessRank(original.meta, topOfChain: topOfChain) ||
+      rank < aiAccessRank(copy.meta, topOfChain: topOfChain)) {
+    return 'the AI access is looser than one of the merged versions';
+  }
   final copyById = {for (final n in copy.nodes) n.id: n};
   final originalById = {for (final n in original.nodes) n.id: n};
   final held = _heldCopyNodes(original, copy); // need no node of their own
@@ -364,6 +377,92 @@ String? verifyConflictCopyMerge(
         (x.rev != null && d.baseRev == x.rev);
     if (!isVersion(o) && !isVersion(c)) return 'box ${o.id} holds neither version';
     if (!covered(o) || !covered(c)) return 'a version of box ${o.id} was lost';
+  }
+  return null;
+}
+
+/// Checks, on the page file read again some time after a conflict [copy] was
+/// merged into it, that the file still holds what the copy held: the copy half
+/// of [verifyConflictCopyMerge], for retiring the copy's kept version only once
+/// a later read shows it.
+///
+/// Disk nodes are claimed one to one. Each copy box needs a disk box, found by
+/// its id or, for a box that took a new id, by revision, then by content, that
+/// is the same version, was edited from it (`baseRev`), or records it in its
+/// `conflicts`; in each case the disk box also holds every one of the copy
+/// box's own `conflicts`, and a landed marker when the copy box has one. Each
+/// node Noted doesn't own needs a disk node equal to it but for the id, or a
+/// record in the `conflicts` of the box at its id. The disk's own AI access
+/// must be at least as strict as the copy's ([aiAccessRank] at [topOfChain]).
+///
+/// The nodes whose ids are in [touched], and with [headerTouched] the AI
+/// access, are this app's own changes since the merge and are not checked.
+///
+/// Returns null if all is held, otherwise what is missing.
+String? consumedCopyHeld(
+  NotedPage onDisk,
+  NotedPage copy, {
+  Set<String> touched = const {},
+  bool headerTouched = false,
+  required bool topOfChain,
+}) {
+  if (!headerTouched &&
+      aiAccessRank(onDisk.meta, topOfChain: topOfChain) < aiAccessRank(copy.meta, topOfChain: topOfChain)) {
+    return 'the AI access is looser than the copy\'s';
+  }
+  final disk = onDisk.nodes;
+  final used = <int>{};
+  int? claim(bool Function(CanvasNode d) test) {
+    for (var i = 0; i < disk.length; i++) {
+      if (used.contains(i) || !test(disk[i])) continue;
+      used.add(i);
+      return i;
+    }
+    return null;
+  }
+
+  String? holds(BoxRecord c, BoxRecord d) {
+    final same = c.rev != null && d.rev != null ? d.rev == c.rev : _sameContent(d, c);
+    final derived = c.rev != null && d.baseRev == c.rev;
+    final recorded = d.conflicts.any((k) => k.node == _recordedForm(c, false) || k.node == _recordedForm(c, true));
+    if (!same && !derived && !recorded) return 'box ${c.id} holds an older version';
+    for (final x in c.conflicts) {
+      if (!d.conflicts.contains(x)) return 'a recorded version of box ${c.id} is missing';
+    }
+    if (c.landed != null && d.landed == null) return 'the landed marker of box ${c.id} is missing';
+    return null;
+  }
+
+  final boxes = [
+    for (final c in copy.nodes)
+      if (c is BoxRecord && !touched.contains(c.id)) c,
+  ];
+  final unmatched = <BoxRecord>[];
+  for (final c in boxes) {
+    final i = claim((d) => d is BoxRecord && d.id == c.id);
+    if (i == null) {
+      unmatched.add(c);
+      continue;
+    }
+    final why = holds(c, disk[i] as BoxRecord);
+    if (why != null) return why;
+  }
+  // A box that took a new id: by revision first, so a content match can't take
+  // a node a later revision match needs.
+  for (final byRev in [true, false]) {
+    for (final c in unmatched) {
+      if ((c.rev != null) != byRev) continue;
+      final i = claim((d) => d is BoxRecord && (byRev ? d.rev == c.rev : _sameContent(d, c)));
+      if (i == null) return 'box ${c.id} is missing';
+      final why = holds(c, disk[i] as BoxRecord);
+      if (why != null) return why;
+    }
+  }
+  for (final c in copy.nodes) {
+    if (c is! ForeignNode || touched.contains(c.id)) continue;
+    final at = onDisk.node(c.id);
+    if (at is BoxRecord && at.conflicts.any((k) => k.node == c.toRaw())) continue;
+    if (claim((d) => _sameModuloId(d, c)) == null) return 'foreign node ${c.id} is missing or changed';
   }
   return null;
 }

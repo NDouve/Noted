@@ -6,7 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:noted_core/noted_core.dart' show conflictCopyOriginalNames;
+import 'package:noted_core/noted_core.dart' show CodecRegistry, conflictCopyOriginalNames, mergeConflictCopy;
 import 'package:noted_core/noted_core_read.dart';
 import 'package:noted_mcp/noted_mcp.dart';
 
@@ -198,6 +198,21 @@ void main() {
       final hits = jsonDecode((await t.search('Trip')).text)['results'] as List;
       expect(hits.map((r) => (r as Map)['id']), isNot(contains(Ids.public)));
       expect((await t.readBox('note')).text, noSuchBox('note'));
+    });
+
+    test('1. a Guarded "<id> 2" merged into an Open original: the merged page stays hidden', () async {
+      final t = toolbox();
+      expect(listedIds((await t.listPages()).text), contains(Ids.public));
+      final original = readPage(File(pagePath(Ids.public)).readAsStringSync());
+      final copy = original.withMeta(original.meta.withAiAccess(AiAccess.guarded));
+      save(pagesDir(), copy, '${Ids.public} 2');
+      expect(listedIds((await t.listPages()).text), isNot(contains(Ids.public)), reason: 'two copies (0150)');
+      // The app's merge, then the copy is gone: the header takes the stricter AI access.
+      final merged = mergeConflictCopy(original, copy, CodecRegistry(), copyTime: 1, topOfChain: true).page;
+      save(pagesDir(), merged);
+      File('${pagesDir()}/${Ids.public} 2.canvas').deleteSync();
+      expect((await load()).page(Ids.public)!.access, AiAccess.guarded);
+      expect(listedIds((await t.listPages()).text), isNot(contains(Ids.public)));
     });
 
     test(

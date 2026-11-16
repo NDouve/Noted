@@ -2153,6 +2153,7 @@ void main() {
         deleted,
         modules.codecs,
         copyTime: e.time.millisecondsSinceEpoch,
+        topOfChain: fileVersion.meta.parentId == null,
         forRecovery: true,
       ).page;
       expect(writePage(nb.current!.page), writePage(want));

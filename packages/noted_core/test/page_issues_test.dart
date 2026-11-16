@@ -280,14 +280,14 @@ void main() {
       final without = pageOf([plain]);
       expect(
         boxOf(
-          mergeConflictCopy(withMarker, without, registry(), copyTime: 1).page,
+          mergeConflictCopy(withMarker, without, registry(), copyTime: 1, topOfChain: false).page,
           'n',
         ).landed,
         BoxLanded(at: 5, device: 'PC'),
       );
       expect(
         boxOf(
-          mergeConflictCopy(without, withMarker, registry(), copyTime: 1).page,
+          mergeConflictCopy(without, withMarker, registry(), copyTime: 1, topOfChain: false).page,
           'n',
         ).landed,
         BoxLanded(at: 5, device: 'PC'),
@@ -313,7 +313,7 @@ void main() {
         ),
       ]) {
         final r = boxOf(
-          mergeConflictCopy(o, c, registry(), copyTime: 1).page,
+          mergeConflictCopy(o, c, registry(), copyTime: 1, topOfChain: false).page,
           'n',
         );
         expect(r.landed, BoxLanded(at: 5, device: 'PC'));
@@ -339,7 +339,7 @@ void main() {
           pageOf([plain]),
           pageOf([other]),
           registry(),
-          copyTime: 1,
+          copyTime: 1, topOfChain: false,
         ).page,
         'n',
       );
@@ -360,7 +360,7 @@ void main() {
           pageOf([original]),
           pageOf([newer]),
           registry(),
-          copyTime: 1,
+          copyTime: 1, topOfChain: false,
         ).page,
         'n',
       );
@@ -381,7 +381,7 @@ void main() {
         original,
         copy,
         registry(),
-        copyTime: 1,
+        copyTime: 1, topOfChain: false,
       ).page;
       expect(boxOf(merged, 'n').landed, isNull);
       expect(boxOf(merged, 'm').landed, isNull);
@@ -393,7 +393,7 @@ void main() {
       ]);
       expect(
         boxOf(
-          mergeConflictCopy(orig2, copy2, registry(), copyTime: 1).page,
+          mergeConflictCopy(orig2, copy2, registry(), copyTime: 1, topOfChain: false).page,
           'n',
         ).landed,
         isNotNull,
@@ -417,7 +417,7 @@ void main() {
         original,
         copy,
         registry(),
-        copyTime: 999,
+        copyTime: 999, topOfChain: false,
       ).page;
       expect(boxOf(merged, 'n').landed, BoxLanded(at: 77, device: 'PC'));
       expect(boxOf(merged, 'q').landed, isNull);
@@ -433,7 +433,7 @@ void main() {
         original,
         copy,
         registry(),
-        copyTime: 999,
+        copyTime: 999, topOfChain: false,
       ).page;
       expect(boxOf(merged, 'n').landed, BoxLanded(at: 999));
     });

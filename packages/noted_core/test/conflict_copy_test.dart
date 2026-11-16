@@ -59,7 +59,10 @@ NotedPage pageOf(List<CanvasNode> nodes, {String title = 'T'}) {
 String dataOf(CanvasNode? n) => (n as BoxRecord).data!.decode()! as String;
 
 PageMerge merge(NotedPage original, NotedPage copy) =>
-    mergeConflictCopy(original, copy, registry(), copyTime: 777);
+    mergeConflictCopy(original, copy, registry(), copyTime: 777, topOfChain: false);
+
+String? verifyMerge(NotedPage onDisk, NotedPage original, NotedPage copy, {bool forRecovery = false}) =>
+    verifyConflictCopyMerge(onDisk, original, copy, topOfChain: false, forRecovery: forRecovery);
 
 List<String> o2(String n) => conflictCopyOriginalNames(n);
 
@@ -212,13 +215,13 @@ void main() {
     test('rejects a result that dropped a same-id foreign node with other content', () {
       final original = pageOf([raw(a, 'f')]);
       final copy = pageOf([raw(b, 'f')]);
-      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+      expect(verifyMerge(original, original, copy), isNotNull);
     });
 
     test('rejects a result that dropped a non-object node', () {
       final original = pageOf([raw('1', '#node0')]);
       final copy = pageOf([raw('2', '#node0')]);
-      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+      expect(verifyMerge(original, original, copy), isNotNull);
     });
 
     String obj(String id, String text) =>
@@ -229,34 +232,34 @@ void main() {
       final copy = pageOf([raw(a.replaceFirst('"f"', '"b"'), 'b')]);
       final m = merge(original, copy).page;
       expect((m.node('b')! as BoxRecord).conflicts, hasLength(1));
-      expect(verifyConflictCopyMerge(readPage(writePage(m)), original, copy), isNull);
+      expect(verifyMerge(readPage(writePage(m)), original, copy), isNull);
       // Without the record it is lost.
-      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+      expect(verifyMerge(original, original, copy), isNotNull);
     });
 
     test('matches nodes one to one', () {
       final x = raw(obj('x', 'one'), 'x');
       final g = raw(obj('g', 'one'), 'g');
-      expect(verifyConflictCopyMerge(pageOf([x]), pageOf([x]), pageOf([g])), isNotNull);
+      expect(verifyMerge(pageOf([x]), pageOf([x]), pageOf([g])), isNotNull);
       final one = raw('1', '#node0');
       final two = raw('1', '#node1');
       final both = pageOf([one, two]);
-      expect(verifyConflictCopyMerge(pageOf([one]), both, both), isNotNull);
-      expect(verifyConflictCopyMerge(both, both, both), isNull);
+      expect(verifyMerge(pageOf([one]), both, both), isNotNull);
+      expect(verifyMerge(both, both, both), isNull);
     });
 
     test('the original foreign node must be there with its own id', () {
       final original = pageOf([raw(a, 'f')]);
       final moved = pageOf([raw(obj('z', 'A'), 'z')]);
-      expect(verifyConflictCopyMerge(moved, original, pageOf([])), isNotNull);
+      expect(verifyMerge(moved, original, pageOf([])), isNotNull);
     });
 
     test('checks a box the copy has against a foreign node of the original', () {
       final original = pageOf([raw(obj('b', 'A'), 'b')]);
       final copy = pageOf([box('b', 'theirs')]);
-      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+      expect(verifyMerge(original, original, copy), isNotNull);
       final m = merge(original, copy).page;
-      expect(verifyConflictCopyMerge(readPage(writePage(m)), original, copy), isNull);
+      expect(verifyMerge(readPage(writePage(m)), original, copy), isNull);
     });
 
     String boxText(String data, String rev) =>
@@ -274,7 +277,7 @@ void main() {
       var count = -1;
       for (var i = 0; i < 3; i++) {
         final next = readPage(writePage(merge(cur, copy).page));
-        expect(verifyConflictCopyMerge(next, cur, copy), isNull, reason: 'round $i');
+        expect(verifyMerge(next, cur, copy), isNull, reason: 'round $i');
         if (i > 0) expect(next.nodes.length, count, reason: 'round $i grew');
         count = next.nodes.length;
         cur = next;
@@ -289,7 +292,7 @@ void main() {
       NotedPage? first;
       for (var i = 0; i < 3; i++) {
         final next = readPage(writePage(merge(cur, copy).page));
-        expect(verifyConflictCopyMerge(next, cur, copy), isNull, reason: 'round $i');
+        expect(verifyMerge(next, cur, copy), isNull, reason: 'round $i');
         first ??= next;
         expect(next.nodes.length, first.nodes.length, reason: 'round $i changed the count');
         cur = next;
@@ -305,7 +308,7 @@ void main() {
       expect(m.nodes.map((n) => n.toRaw().text).join(), contains('"text":"B"'));
       expect(m.nodes.where((n) => n.toRaw().text.contains('"text":"B"')), hasLength(2));
       // A page holding only the original's two nodes lost the copy's x.
-      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+      expect(verifyMerge(original, original, copy), isNotNull);
     });
 
     test('equal non-object nodes in the copy are all kept', () {
@@ -336,14 +339,14 @@ void main() {
           '"noted":{"type":"test.plain","v":1,${rev == null ? '' : '"rev":"$rev",'}"data":"k"}}';
       final copy = fileOf([text('b', null), text('a', 'ra')]);
       final disk = fileOf([text('a', 'ra'), text('b', null)]);
-      expect(verifyConflictCopyMerge(disk, pageOf([]), copy), isNull);
+      expect(verifyMerge(disk, pageOf([]), copy), isNull);
     });
 
     test('accepts the merge, including a copy moved to a new id', () {
       final original = pageOf([raw(a, 'f'), raw('1', '#node1')]);
       final copy = pageOf([raw(b, 'f'), raw('2', '#node1')]);
       final m = merge(original, copy).page;
-      expect(verifyConflictCopyMerge(readPage(writePage(m)), original, copy), isNull);
+      expect(verifyMerge(readPage(writePage(m)), original, copy), isNull);
     });
   });
 
@@ -352,31 +355,31 @@ void main() {
       final original = base.replaceNode(edit(a, 'mine')).insertNode(box('x', 'x'));
       final copy = base.replaceNode(edit(a, 'theirs')).insertNode(box('y', 'y'));
       final m = merge(original, copy).page;
-      expect(verifyConflictCopyMerge(readPage(writePage(m)), original, copy), isNull);
+      expect(verifyMerge(readPage(writePage(m)), original, copy), isNull);
     });
 
     test('accepts the newer side taken', () {
       final copy = base.replaceNode(edit(a, 'newer'));
       final m = merge(base, copy).page;
-      expect(verifyConflictCopyMerge(m, base, copy), isNull);
+      expect(verifyMerge(m, base, copy), isNull);
     });
 
     test('rejects a missing node', () {
       final copy = base.insertNode(box('y', 'y'));
-      expect(verifyConflictCopyMerge(base, base, copy), contains('y'));
+      expect(verifyMerge(base, base, copy), contains('y'));
     });
 
     test('rejects a lost version', () {
       final original = base.replaceNode(edit(a, 'mine'));
       final copy = base.replaceNode(edit(a, 'theirs'));
       // The original kept, but the copy's version not recorded.
-      expect(verifyConflictCopyMerge(original, original, copy), isNotNull);
+      expect(verifyMerge(original, original, copy), isNotNull);
     });
   });
 
   group('recovery mode (forRecovery)', () {
     PageMerge recover(NotedPage original, NotedPage copy) =>
-        mergeConflictCopy(original, copy, registry(), copyTime: 777, forRecovery: true);
+        mergeConflictCopy(original, copy, registry(), copyTime: 777, topOfChain: false, forRecovery: true);
 
     test('a box only the copy has, overlapping, gets no landed marker; the default does', () {
       final original = pageOf([box('a', 'one')]);
@@ -384,7 +387,7 @@ void main() {
       expect((merge(original, copy).page.node('y')! as BoxRecord).landed, isNotNull);
       final r = recover(original, copy).page;
       expect((r.node('y')! as BoxRecord).landed, isNull);
-      expect(verifyConflictCopyMerge(readPage(writePage(r)), original, copy, forRecovery: true), isNull);
+      expect(verifyMerge(readPage(writePage(r)), original, copy, forRecovery: true), isNull);
     });
 
     test('a landed marker already on either side is kept', () {
@@ -403,7 +406,7 @@ void main() {
       var cur = x;
       for (var i = 0; i < 3; i++) {
         final next = readPage(writePage(recover(cur, copy).page));
-        expect(verifyConflictCopyMerge(next, cur, copy, forRecovery: true), isNull, reason: 'round $i');
+        expect(verifyMerge(next, cur, copy, forRecovery: true), isNull, reason: 'round $i');
         cur = next;
       }
       final m = cur.node('a')! as BoxRecord;
@@ -423,8 +426,8 @@ void main() {
       final original = file(text('same'));
       final copy = file(text('same', rev: 'r9'));
       final m = readPage(writePage(merge(original, copy).page));
-      expect(verifyConflictCopyMerge(m, original, copy), isNull);
-      expect(verifyConflictCopyMerge(original, original, copy), isNull);
+      expect(verifyMerge(m, original, copy), isNull);
+      expect(verifyMerge(original, original, copy), isNull);
     });
 
     test('a foreign node recorded on a box is recorded once over repeats', () {
@@ -486,6 +489,161 @@ void main() {
         await PageStore.findConflictOriginal('${dir.path}${sep}3f2a-OTHER.canvas', withId('zzzz')),
         isNull,
       );
+    });
+  });
+
+  group('same-id AI access: the stricter', () {
+    // The own values of the matrix: null is absent, 'x' an unknown value.
+    const values = <String?>[null, 'open', 'privileged', 'guarded', 'x'];
+    // How strict each is, below the top of a chain (absent inherits) and at
+    // the top (absent is the default, Guarded).
+    int rank(String? v, bool top) => switch (v) {
+      null => top ? 2 : -1,
+      'open' => 0,
+      'privileged' => 1,
+      _ => 2,
+    };
+    NotedPage withAi(List<CanvasNode> nodes, String? v) {
+      final p = pageOf(nodes);
+      if (v == null) return p;
+      return p.withMeta(PageMeta.tryRead(p.meta.fields.set(aiAccessKey, RawJson.encode(v)))!);
+    }
+
+    for (final top in [false, true]) {
+      for (final o in values) {
+        for (final c in values) {
+          test('original $o, copy $c, top of chain $top', () {
+            final original = withAi([a], o);
+            final copy = withAi([a, b], c);
+            final want = rank(c, top) > rank(o, top) ? c : o;
+            final merged = mergeConflictCopy(original, copy, registry(), copyTime: 1, topOfChain: top).page;
+            expect(merged.meta.rawAiAccess, want == null ? isNull : RawJson.encode(want));
+            final back = readPage(writePage(merged));
+            expect(verifyConflictCopyMerge(back, original, copy, topOfChain: top), isNull);
+            final recovered = mergeConflictCopy(
+              original,
+              copy,
+              registry(),
+              copyTime: 1,
+              topOfChain: top,
+              forRecovery: true,
+            ).page;
+            expect(recovered.meta.rawAiAccess, merged.meta.rawAiAccess);
+          });
+        }
+      }
+    }
+
+    test('a tie keeps the original raw value ("guarded" against an unknown one)', () {
+      final merged = mergeConflictCopy(withAi([a], 'guarded'), withAi([a], 'x'), registry(), copyTime: 1, topOfChain: false);
+      expect(merged.page.meta.rawAiAccess, RawJson.encode('guarded'));
+    });
+
+    test('the rest of the header stays the original\'s', () {
+      final original = withAi([a], 'open');
+      final copy = withAi([a], 'guarded').withMeta(
+        PageMeta.tryRead(withAi([a], 'guarded').meta.fields.set('title', RawJson.encode('Other')))!,
+      );
+      final merged = mergeConflictCopy(original, copy, registry(), copyTime: 1, topOfChain: true).page;
+      expect(merged.meta.title, original.meta.title);
+      expect(merged.meta.aiAccess, AiAccess.guarded);
+    });
+
+    test('verifyConflictCopyMerge rejects a disk header looser than either side', () {
+      final original = withAi([a], 'open');
+      final copy = withAi([a], 'privileged');
+      expect(verifyConflictCopyMerge(withAi([a], 'open'), original, copy, topOfChain: false), isNotNull);
+      expect(verifyConflictCopyMerge(withAi([a], 'privileged'), original, copy, topOfChain: false), isNull);
+      // At the top, absent is Guarded: a disk without the field is strict enough.
+      expect(verifyConflictCopyMerge(withAi([a], null), original, copy, topOfChain: true), isNull);
+      expect(verifyConflictCopyMerge(withAi([a], null), original, copy, topOfChain: false), isNotNull);
+    });
+  });
+
+  group('consumedCopyHeld', () {
+    final v1 = edit(a, 'v1');
+    final conflicted = a.withConflict(BoxConflict.other(node: v1.toRaw(), at: 3));
+
+    test('the merged file holds the copy', () {
+      final copy = pageOf([a, b]);
+      final disk = readPage(writePage(merge(pageOf([a]), copy).page));
+      expect(consumedCopyHeld(disk, copy, topOfChain: false), isNull);
+    });
+
+    test('the pre-merge file put back does not', () {
+      expect(consumedCopyHeld(pageOf([a]), pageOf([a, b]), topOfChain: false), contains('b'));
+    });
+
+    test('a box edited from the copy\'s version, or recording it, is held', () {
+      final copy = pageOf([a]);
+      expect(consumedCopyHeld(pageOf([edit(a, 'later')]), copy, topOfChain: false), isNull);
+      // Another device's version, not edited from the copy's.
+      final other = BoxRecord.create(
+        id: 'a',
+        typeId: 'test.plain',
+        dataVersion: 1,
+        bounds: const Bounds(0, 0, 100, 50),
+        data: RawJson.encode('other'),
+        snapshotText: 'snap:other',
+        rev: 'r-other',
+      );
+      final recording = other.withConflict(BoxConflict.other(node: a.toRaw(), at: 1));
+      expect(consumedCopyHeld(pageOf([recording]), copy, topOfChain: false), isNull);
+      expect(consumedCopyHeld(pageOf([other]), copy, topOfChain: false), isNotNull);
+    });
+
+    test('equal revs without the copy\'s recorded conflict fail, with it pass', () {
+      final copy = pageOf([conflicted]);
+      expect(conflicted.rev, a.rev);
+      expect(consumedCopyHeld(pageOf([a]), copy, topOfChain: false), contains('recorded'));
+      expect(consumedCopyHeld(pageOf([conflicted]), copy, topOfChain: false), isNull);
+    });
+
+    test('equal revs without the copy\'s landed marker fail, with any marker pass', () {
+      final landed = a.withLanded(BoxLanded(at: 5));
+      final copy = pageOf([landed]);
+      expect(consumedCopyHeld(pageOf([a]), copy, topOfChain: false), contains('landed'));
+      expect(consumedCopyHeld(pageOf([a.withLanded(BoxLanded(at: 9))]), copy, topOfChain: false), isNull);
+    });
+
+    test('a box that took a new id is found by revision', () {
+      final copy = pageOf([b]);
+      expect(consumedCopyHeld(pageOf([b.withId('n')]), copy, topOfChain: false), isNull);
+    });
+
+    test('disk nodes are claimed one to one', () {
+      final twin = box('t', 'two').withId('t');
+      // Two copy-only boxes with the same rev under other ids: one disk box
+      // can't stand for both.
+      final c1 = BoxRecord.create(
+        id: 'c1',
+        typeId: 'test.plain',
+        dataVersion: 1,
+        bounds: const Bounds(0, 0, 10, 10),
+        data: RawJson.encode('same'),
+        snapshotText: 'snap:same',
+        rev: 'r-same',
+      );
+      final c2 = c1.withId('c2');
+      final copy = pageOf([c1, c2]);
+      expect(consumedCopyHeld(pageOf([twin, c1.withId('n1')]), copy, topOfChain: false), isNotNull);
+      expect(consumedCopyHeld(pageOf([c1.withId('n1'), c1.withId('n2')]), copy, topOfChain: false), isNull);
+    });
+
+    test('touched boxes and a touched header are not checked', () {
+      expect(consumedCopyHeld(pageOf([a]), pageOf([a, b]), touched: {'b'}, topOfChain: false), isNull);
+      final strict = pageOf([a]).withMeta(pageOf([a]).meta.withAiAccess(AiAccess.guarded));
+      final loose = pageOf([a]).withMeta(pageOf([a]).meta.withAiAccess(AiAccess.open));
+      expect(consumedCopyHeld(loose, strict, topOfChain: false), contains('AI access'));
+      expect(consumedCopyHeld(loose, strict, headerTouched: true, topOfChain: false), isNull);
+      expect(consumedCopyHeld(strict, loose, topOfChain: false), isNull);
+    });
+
+    test('a foreign node needs its equal on disk, or a record at its id', () {
+      const f = '{"id":"f","type":"text","x":0,"y":0,"width":5,"height":5,"text":"A"}';
+      final copy = pageOf([raw(f, 'f')]);
+      expect(consumedCopyHeld(pageOf([raw(f, 'f')]), copy, topOfChain: false), isNull);
+      expect(consumedCopyHeld(pageOf([]), copy, topOfChain: false), isNotNull);
     });
   });
 }

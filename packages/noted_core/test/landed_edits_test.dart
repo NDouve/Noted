@@ -305,7 +305,7 @@ void main() {
       final empty = NotedPage.create(base.meta);
       final mine = pageOf([a1]);
       final file = pageOf([foreign('a')]);
-      final landed = mergeConflictCopy(file, mine, CodecRegistry()..register(_plain), copyTime: 1, forRecovery: true).page;
+      final landed = mergeConflictCopy(file, mine, CodecRegistry()..register(_plain), copyTime: 1, topOfChain: false, forRecovery: true).page;
       expect(landed.nodes, hasLength(2));
       final r = recordLostEdits(empty, mine, landed, file, at: 9, structure: false).page;
       expect(r.nodes.whereType<BoxRecord>().map((x) => x.rev), contains(a1.rev), reason: 'the box is back');

@@ -79,6 +79,29 @@ extension PageAiAccess on PageMeta {
   }
 }
 
+/// How strict a page's own `ai` field makes it, for comparing two headers of
+/// the same page: the [AiAccess.strictness] of its value (legacy and unknown
+/// values read as in [AiAccess.parse]); an absent field is the loosest below
+/// [AiAccess.open] (it inherits, and an own value can only tighten), except at
+/// the [topOfChain] (no binder, no parent), where it means [defaultAiAccess].
+int aiAccessRank(PageMeta meta, {required bool topOfChain}) {
+  final own = meta.aiAccess;
+  if (own != null) return own.strictness;
+  return topOfChain ? defaultAiAccess.strictness : -1;
+}
+
+/// [original] with the `ai` field of whichever of [original] and [copy], two
+/// headers of the same page, is the stricter ([aiAccessRank]): the stricter
+/// side's raw field is taken as written, present or removed. On a tie
+/// [original] is returned unchanged.
+PageMeta stricterAiAccess(PageMeta original, PageMeta copy, {required bool topOfChain}) {
+  if (aiAccessRank(copy, topOfChain: topOfChain) <= aiAccessRank(original, topOfChain: topOfChain)) return original;
+  final raw = copy.rawAiAccess;
+  if (raw == original.rawAiAccess) return original;
+  final fields = raw == null ? original.fields.remove(aiAccessKey) : original.fields.set(aiAccessKey, raw);
+  return PageMeta.tryRead(fields) ?? original;
+}
+
 /// The access on a binder.
 extension BinderAiAccess on Binder {
   /// The binder's choice, or null if it has none.
