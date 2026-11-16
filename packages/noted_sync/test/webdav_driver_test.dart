@@ -854,6 +854,30 @@ void _engineCases(RemoteKind kind) {
     expect(h.tree(), hasLength(3));
   });
 
+  test('a synced binder renamed to an unusable name keeps its files here and is listed', () async {
+    seedMany(10);
+    h.remote.addFile('Noted/S/noted-binder.json', Harness.b('{"id":"s"}'));
+    h.remote.addFile('Noted/S/a.canvas', Harness.b('A'));
+    await h.round();
+    expect(h.read('S/a.canvas'), 'A');
+    h.remote.rename('Noted/S', 'bad:name');
+    for (var i = 0; i < 3; i++) {
+      await h.roundsWithDelay();
+    }
+    expect(h.read('S/a.canvas'), 'A');
+    expect(h.has('S/noted-binder.json'), isTrue);
+    expect(h.engine.issues, hasIssue('bad:name'));
+    if (kind != RemoteKind.davPath) {
+      // The same folder, now unusable: nothing under it is a removal.
+      expect(h.engine.guardQuestion, isNull);
+    }
+    // Back to a usable name: still there, no copy, no issue.
+    h.remote.rename('Noted/bad:name', 'S');
+    await h.roundsWithDelay();
+    expect(h.read('S/a.canvas'), 'A');
+    expect(h.engine.issues, isEmpty);
+  });
+
   test('a compare that found a different file is not repeated until the version or the file changes', () async {
     h.remote.addFile('Noted/a.canvas', Harness.b('AAA'));
     h.write('a.canvas', 'BBB');

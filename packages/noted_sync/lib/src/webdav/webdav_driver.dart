@@ -188,6 +188,27 @@ class WebDavDriver implements RemoteDriver {
       );
       urls[id] = n.url;
     }
+    // A folder with an unusable name isn't walked. What was known below it is
+    // carried forward unchanged, so the engine skips and lists it (as it does
+    // for OneDrive, whose map keeps the descendants) and never reads the
+    // folder's going unusable as the removal of what it held.
+    final carried = <String>{};
+    var grew = true;
+    while (grew) {
+      grew = false;
+      for (final e in map.values) {
+        if (entries.containsKey(e.id) || e.parent == null) continue;
+        final p = entries[e.parent];
+        if (p != null &&
+            p.folder &&
+            p.id != rootId &&
+            (carried.contains(p.id) || !isSafeName(p.name))) {
+          carried.add(e.id);
+          entries[e.id] = e;
+          grew = true;
+        }
+      }
+    }
     _urls
       ..clear()
       ..addAll(urls);
