@@ -142,6 +142,46 @@
 //     attachments landing over a damaged hash file keep both, live and after a
 //     restart" (the damaged copy is gone).
 //
+// Rows 25-29 are for the scripted WebDAV and desktop-folder scenarios (run
+// 2026-11-15-02, task 4, step 5), which don't use the seeds. Counts are of the
+// 39 tests of "a WebDAV pull and a reload" (path ids and oc:fileid, 14 kill
+// rows, 6 copy names and the held removal for each, less the re-path rows of
+// path ids) and the 12 of "a plain desktop folder".
+//
+// 25. `PullEngine._adopt` returns false: 37 of the 39 fail (every kill row and
+//     copy test fail, since a pull adopts in other places too; it is not
+//     specific to the `published` row).
+//
+// 26. The end of a round doesn't sweep base copies that have no record
+//     (`_blobs.sweep` only when the journal is empty): 37 of the 39 fail, "the
+//     base copies are those the journal records". Not caught: the sweep of
+//     `tmp/` at the start; the engine removes a killed download's temp itself,
+//     so nothing is left in these scenarios (engine_kill_test covers it).
+//
+// 27. The pull adopts a different local file beside the published one (the
+//     `_rowNew` compare taken as equal): both "a kill after a file was
+//     published, then a different file there" tests fail.
+//
+// 28. `conflictCopyOriginalNames` knows only the hyphen names (the four space
+//     and underscore suffixes of section 5 removed): 10 of the 14 WebDAV copy
+//     tests fail (` 2`, ` (1)`, both Nextcloud names and the chained name, for
+//     both kinds of id; `_conflict-` is still found by the hyphen rule), "the
+//     copy is listed, not the original" (the copy sorts first and becomes the
+//     page), and all 12 desktop-folder tests, "the files in x" (the copy is not
+//     merged and removed).
+//
+// 29. A WebDAV removal is not held for the unusable sibling it became
+//     (`becameUnusable` returns null): the path-id test "a page renamed to an
+//     unusable name is held" fails ("the page is kept"); the oc:fileid one,
+//     which has no removal to hold, does not.
+//
+// The kill rows are throws at `onStep`. `replaceBeforePublish`,
+// `deleteBeforeDelete` and the two restore seams run inside the core's replace
+// and checked delete, which turn a throw into a failed call; those rows inject
+// an I/O failure (the round ends with the item listed) and the process is
+// killed after that round. `replaceBeforeFinalCheck` is not reached by a pull
+// and has no row.
+//
 // Rows 1-19 were counted again with the layer steps in (`layer:both` adds a
 // box, so the picks after it differ). Sequences of the 24 that fail, each row
 // made again by breaking the same behaviour (rows 14 and 16 at a place that
@@ -189,7 +229,10 @@ import 'package:noted_box_ai/noted_box_ai.dart';
 import 'package:noted_box_attachments/noted_box_attachments.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_sync/noted_sync.dart' show DavIdKind, PullEngine, RoundResult, WebDavClient, WebDavDriver;
 
+import '../../packages/noted_sync/test/fake_webdav.dart';
+import '../../packages/noted_sync/test/helpers.dart' show FakeClock;
 import 'support/binder_seams.dart';
 import 'support/real_io.dart' show realIoUntil;
 
@@ -3291,6 +3334,254 @@ const _expectedKinds = {
 final Set<String> _seen = {};
 int _started = 0;
 
+// ---------------------------------------------------------------------------
+// The WebDAV pull and the reload (run 2026-11-15-02, task 4, step 5)
+
+/// Thrown by the engine's test seam to stand for the process being killed.
+class _DavKilled extends Error {
+  _DavKilled(this.step);
+  final String step;
+  @override
+  String toString() => 'killed at $step';
+}
+
+int _davBoxCounter = 0;
+
+/// A page file holding [texts] as notes (box ids from a counter).
+String _davPage(String id, String title, List<String> texts, {int order = 1}) {
+  final codec = buildModules().codecs.codecFor('noted.note')!;
+  var page = NotedPage.create(PageMeta.create(id: id, title: title, order: order));
+  for (final t in texts) {
+    final n = ++_davBoxCounter;
+    final box = commitBox(
+      createBox(codec, Bounds(10.0 + 20 * (n % 20), 10.0 + 40 * (n % 13), 200, 40)).withId((0x2000000000000000 + n).toRadixString(16)),
+      codec,
+      codec.decode(_doc(t), 1),
+    );
+    page = page.insertNode(box);
+  }
+  return writePage(page);
+}
+
+/// [base] with one more note, as a provider's copy of a page holds.
+String _davCopyOf(String base, String text) {
+  final codec = buildModules().codecs.codecFor('noted.note')!;
+  final n = ++_davBoxCounter;
+  final box = commitBox(
+    createBox(codec, const Bounds(300, 300, 200, 40)).withId((0x2000000000000000 + n).toRadixString(16)),
+    codec,
+    codec.decode(_doc(text), 1),
+  );
+  return writePage(readPage(base).insertNode(box));
+}
+
+/// A pull-only WebDAV folder as the app has it on a tablet: a notebook over a
+/// working copy in a read-only root, a real engine and driver on the noted_sync
+/// tests' fake server, and the calls the controller makes after a round. The
+/// test is the writer on the server, as a PC would be (put, move, delete,
+/// copies).
+class _DavWorld {
+  _DavWorld._(this.fake, this.fileIds, this.top);
+
+  final FakeWebDav fake;
+
+  /// `oc:fileid` ids instead of the path.
+  final bool fileIds;
+  final Directory top;
+  final FakeClock clock = FakeClock();
+  final ModuleRegistry modules = buildModules();
+  late final Directory work = Directory('${top.path}/webdav/acct/Noted');
+  late final Directory state = Directory('${top.path}/support/state');
+  late final Directory pages = Directory('${top.path}/pages');
+  late final File bindersFile = File('${top.path}/app/binders.json');
+  late Notebook nb;
+  late PullEngine engine;
+  late String rootId;
+  final Set<Notebook> _all = {};
+
+  static Future<_DavWorld> create({required bool fileIds}) async {
+    final fake = await FakeWebDav.start(ids: fileIds ? FakeDavIds.ocFileId : FakeDavIds.path);
+    final top = await Directory.systemTemp.createTemp('noted_reload_dav');
+    final w = _DavWorld._(fake, fileIds, top);
+    final id = fake.addFolder('Noted');
+    w.rootId = fileIds ? id : '/';
+    await w.work.create(recursive: true);
+    await w.pages.create(recursive: true);
+    await w.state.create(recursive: true);
+    w.nb = await w._open();
+    await w.nb.addStandaloneFolder(w.work.path);
+    w.engine = w.newEngine();
+    return w;
+  }
+
+  Notebook _make() => Notebook(
+    PageStore(pages),
+    modules,
+    saveDelay: Duration.zero,
+    bindersFile: bindersFile,
+    readOnlyRoots: ['${top.path}/webdav'],
+    readOnlyRootNames: {'${top.path}/webdav': 'WebDAV'},
+    watchFiles: false,
+    folderCheckInterval: Duration.zero,
+  );
+
+  Future<Notebook> _open() async {
+    final n = _make();
+    _all.add(n);
+    await n.load();
+    await n.discoveryIdle;
+    return n;
+  }
+
+  PullEngine newEngine({void Function(String step)? onStep}) => PullEngine(
+    workingCopy: work,
+    stateDir: state,
+    locks: nb.folderLocks,
+    driver: WebDavDriver(
+      client: WebDavClient(
+        root: fake.urlOf('Noted'),
+        user: FakeWebDav.user,
+        password: fake.password,
+        clock: clock,
+        allowLoopbackHttp: true,
+      ),
+      idKind: fileIds ? DavIdKind.fileId : DavIdKind.path,
+      rootId: rootId,
+    ),
+    clock: clock,
+    onStep: onStep,
+  );
+
+  /// The calls the controller makes after a round that changed something.
+  Future<void> afterRound(List<String> paths) async {
+    await nb.filesChanged(paths);
+    await nb.checkFolders();
+    await nb.discoverBinders();
+    await nb.discoveryIdle;
+  }
+
+  /// One round, reported to the notebook as the controller does.
+  Future<RoundResult> round() async {
+    final r = await engine.runRound();
+    if (r.changedPaths.isNotEmpty) await afterRound(r.changedPaths);
+    return r;
+  }
+
+  /// Rounds 31 s apart, so a removal has lasted, until a round changes nothing.
+  Future<void> settle({int max = 6}) async {
+    for (var i = 0; i < max; i++) {
+      clock.advance(const Duration(seconds: 31));
+      final r = await round();
+      expect(r.error, isNull, reason: 'a round finishes');
+      if (r.changedPaths.isEmpty && i > 0) return;
+    }
+  }
+
+  /// The process ends and starts again: a new notebook over the folders as the
+  /// kill left them, and a new engine (the journal is read again).
+  Future<void> reload() async {
+    _all.remove(nb);
+    nb.dispose();
+    nb = await _open();
+    engine = newEngine();
+  }
+
+  /// The files on the server, by path below the folder, as text.
+  Map<String, String> serverFiles() {
+    final out = <String, String>{};
+    String pathOf(FakeDavNode n) {
+      final parts = <String>[];
+      FakeDavNode? cur = n;
+      while (cur != null && cur.parent != null) {
+        parts.add(cur.name);
+        cur = fake.nodes[cur.parent];
+      }
+      return parts.reversed.join('/');
+    }
+
+    for (final n in fake.nodes.values) {
+      if (n.gone || n.folder || n.parent == null) continue;
+      final p = pathOf(n);
+      if (p.startsWith('Noted/')) out[p.substring(6)] = utf8.decode(n.bytes);
+    }
+    return out;
+  }
+
+  /// The files of the working copy, by path, as text.
+  Map<String, String> localFiles() => {
+    for (final e in work.listSync(recursive: true, followLinks: false))
+      if (e is File) e.path.substring(work.path.length + 1).replaceAll(r'\', '/'): e.readAsStringSync(),
+  };
+
+  /// What is left in the state folder's `tmp/`.
+  List<String> tmpLeft() {
+    final d = Directory('${state.path}/tmp');
+    return d.existsSync() ? [for (final e in d.listSync()) e.path] : [];
+  }
+
+  /// The pages of the WebDAV folder the notebook lists (not the default folder's).
+  Set<String> ids(Notebook n) => {
+    ...n.tree.roots.expand((r) => [r.id, ...n.tree.descendantsOf(r.id)]),
+    for (final b in n.binders) ...b.tree.roots.expand((r) => [r.id, ...b.tree.descendantsOf(r.id)]),
+  }.where((id) => _norm(n.folderOfPage(id) ?? '').startsWith(_norm(work.path))).toSet();
+
+  List<String> summary(Notebook n) => _Run(0).summary(n);
+
+  /// The live notebook lists exactly what a fresh one does, and shows every
+  /// listed page with the same boxes.
+  Future<void> sameAsReload(String when) async {
+    await nb.discoveryIdle;
+    await nb.flush();
+    final other = _make();
+    _all.add(other);
+    try {
+      await other.load();
+      await other.discoveryIdle;
+      expect(summary(nb), summary(other), reason: '$when: the live notebook and a reload list the same');
+      expect(ids(nb), ids(other), reason: '$when: the same pages');
+      for (final id in ids(nb)) {
+        await nb.open(id);
+        await other.open(id);
+        expect(
+          _Run.boxTexts(nb.current!.page),
+          _Run.boxTexts(other.current!.page),
+          reason: '$when: the live editor and a reload show page $id the same',
+        );
+      }
+    } finally {
+      _all.remove(other);
+      other.dispose();
+    }
+  }
+
+  /// Everything the server holds is here byte for byte, nothing else is, no
+  /// file is left as "a different file is already here", and no temp is left.
+  void mirrored(String when) {
+    expect(localFiles(), serverFiles(), reason: '$when: the working copy equals the server');
+    expect(
+      [for (final i in engine.issues) '$i'].where((t) => t.contains('different file')),
+      isEmpty,
+      reason: '$when: no file is stuck as "a different file is already here"',
+    );
+    expect(tmpLeft(), isEmpty, reason: '$when: no download is left in tmp');
+    // One base copy per distinct page content, so a copy a kill left with no record is swept.
+    final base = Directory('${state.path}/base');
+    expect(
+      base.existsSync() ? base.listSync().length : 0,
+      serverFiles().values.toSet().length,
+      reason: '$when: the base copies are those the journal records',
+    );
+  }
+
+  Future<void> close() async {
+    for (final n in _all) {
+      n.dispose();
+    }
+    await fake.close();
+    await _busyRetry(() => top.delete(recursive: true));
+  }
+}
+
 void main() {
   Future<void> sequence(int seed) async {
     _started++;
@@ -3846,6 +4137,300 @@ void main() {
       expect(run.nb.currentId, id);
       await run.verify('after the binder file is back', fresh: true);
     }, timeout: const Timeout(Duration(minutes: 3)));
+  });
+
+  // Run 2026-11-15-02, task 4, step 5 (design 2026-11-15-01 section 12): the
+  // WebDAV pull on a pull-only notebook, with a real engine and driver on the
+  // noted_sync tests' fake server and the test as a PC writing to it. Scripted,
+  // so the seeds above don't move. After each scenario the live notebook lists
+  // what a fresh one does, the working copy equals the server, and nothing is
+  // stuck as "a different file is already here". There are no local edits on a
+  // pull-only folder to overwrite; the pull's own work is what is checked.
+  group('a WebDAV pull and a reload (run 2026-11-15-02, task 4)', () {
+    setUpAll(() => HttpOverrides.global = null);
+
+    const p1 = 'aaaa000000000001';
+    const p2 = 'aaaa000000000002';
+    const p3 = 'aaaa000000000003';
+    const p4 = 'aaaa000000000004';
+    const p5 = 'aaaa000000000005';
+
+    // Enough other pages that one removal stays under the pull's guard (20 %).
+    void fillers(_DavWorld w) {
+      for (var i = 1; i <= 12; i++) {
+        final id = 'bbbb${i.toString().padLeft(12, '0')}';
+        w.fake.addFile('Noted/$id.canvas', utf8.encode(_davPage(id, 'Filler $i', ['filler $i'], order: 10 + i)));
+      }
+    }
+
+    /// The listed pages other than the fillers.
+    Set<String> mine(_DavWorld w) => w.ids(w.nb).where((i) => !i.startsWith('bbbb')).toSet();
+
+    Set<String> serverPageIds(_DavWorld w) => {
+      for (final e in w.serverFiles().entries)
+        if (e.key.endsWith('.canvas')) readPage(e.value).meta.id,
+    };
+
+    for (final fileIds in [false, true]) {
+      final ids = fileIds ? 'oc:fileid' : 'path ids';
+
+      // Every step the engine reports on a WebDAV pull, and the writer's
+      // changes that reach it: an edit (the replace steps), a removal (the
+      // delete steps), a new page (the download steps) and a rename (a re-path
+      // with oc:fileid, a removal plus a new file with path ids). The
+      // replace seam `replaceBeforeFinalCheck` is not here: a pull never reaches the
+      // aside's final check (it is the core's own delete path).
+
+      const steps = [
+        'mapSaved',
+        'downloaded',
+        'blobWritten',
+        'published',
+        'journalSaved',
+        'replaceBeforePublish',
+        'replaceBeforeRestore',
+        'deleteBeforeDelete',
+        'deleteBeforeRestore',
+        'deleted',
+      ];
+      // A re-path needs an id that survives a rename.
+      for (final step in [...steps, if (fileIds) ...['repathCopied', 'movingWritten', 'oldDeleted']]) {
+        test('$ids: a pull round killed at $step, then a reload: the pages, boxes and copies agree with the server', () async {
+          final w = await _DavWorld.create(fileIds: fileIds);
+          try {
+            fillers(w);
+            w.fake.addFile('Noted/$p1.canvas', utf8.encode(_davPage(p1, 'One', ['one a'], order: 1)));
+            w.fake.addFile('Noted/$p2.canvas', utf8.encode(_davPage(p2, 'Two', ['two a'], order: 2)));
+            w.fake.addFile('Noted/$p3.canvas', utf8.encode(_davPage(p3, 'Three', ['three a'], order: 3)));
+            w.fake.addFile('Noted/$p4.canvas', utf8.encode(_davPage(p4, 'Four', ['four a'], order: 4)));
+            await w.round();
+            w.mirrored('the first round');
+            await w.sameAsReload('the first round');
+            expect(mine(w), {p1, p2, p3, p4});
+            // The PC edits one page, removes one, adds one and renames one.
+            w.fake.replaceFile('Noted/$p1.canvas', utf8.encode(_davPage(p1, 'One edited', ['one a', 'one b'], order: 1)));
+            w.fake.delete('Noted/$p2.canvas');
+            w.fake.addFile('Noted/$p5.canvas', utf8.encode(_davPage(p5, 'Five', ['five a'], order: 5)));
+            w.fake.rename('Noted/$p3.canvas', 'moved3.canvas');
+            // The core's seams (the replace and the checked delete) turn a throw
+            // into a failed call, which is not a death: the I/O failure is
+            // injected at the named step (and at the one before it, for the
+            // restore seams), the round ends with that item listed, and the
+            // process is killed after it.
+            final ioFaults = switch (step) {
+              'replaceBeforePublish' || 'deleteBeforeDelete' => {step},
+              'replaceBeforeRestore' => {'replaceBeforePublish', step},
+              'deleteBeforeRestore' => {'deleteBeforeDelete', step},
+              _ => <String>{},
+            };
+            var fired = false;
+            var reached = false;
+            w.engine = w.newEngine(
+              onStep: (s) {
+                if (s == step) reached = true;
+                if (ioFaults.contains(s)) {
+                  fired = true;
+                  throw const FileSystemException('injected');
+                }
+                if (ioFaults.isEmpty && s == step) throw _DavKilled(s);
+              },
+            );
+            var killed = false;
+            final seen = <String>[];
+            for (var i = 0; i < 4 && !killed; i++) {
+              w.clock.advance(const Duration(seconds: 31));
+              final r = await w.engine.runRound();
+              seen.add('${r.error} ${r.changedPaths.length} ${w.engine.status.state}');
+              if (r.error is _DavKilled || fired) {
+                killed = true;
+              } else if (r.changedPaths.isNotEmpty) {
+                await w.afterRound(r.changedPaths);
+              }
+            }
+            expect(killed && reached, isTrue, reason: 'the step $step is reached (rounds: $seen)');
+            // The process starts again on what the kill left.
+            await w.reload();
+            for (final e in w.localFiles().entries.where((e) => e.key.endsWith('.canvas'))) {
+              expect(() => readPage(e.value), returnsNormally, reason: '${e.key} is a whole page after the kill');
+            }
+            await w.sameAsReload('after the kill');
+            await w.settle();
+            w.mirrored('after the next rounds');
+            expect(w.ids(w.nb), serverPageIds(w), reason: 'the pages listed are the server\'s');
+            expect(mine(w), {p1, p3, p4, p5});
+            await w.nb.open(p1);
+            expect(_Run.boxTexts(w.nb.current!.page).values.toSet(), {'one a', 'one b'}, reason: 'the edited page');
+            expect(w.nb.pageTitleOf(p1), 'One edited');
+            await w.sameAsReload('after the next rounds');
+            await w.reload();
+            await w.sameAsReload('after another restart');
+          } finally {
+            await w.close();
+          }
+        }, timeout: const Timeout(Duration(minutes: 3)));
+      }
+
+      test('$ids: a kill after a file was published, then a different file there: it is listed, left alone, and a reload lists it the same', () async {
+        final w = await _DavWorld.create(fileIds: fileIds);
+        try {
+          fillers(w);
+          w.fake.addFile('Noted/$p1.canvas', utf8.encode(_davPage(p1, 'One', ['one a'])));
+          await w.round();
+          w.fake.addFile('Noted/$p5.canvas', utf8.encode(_davPage(p5, 'Five', ['five a'], order: 5)));
+          w.engine = w.newEngine(
+            onStep: (s) {
+              if (s == 'published') throw _DavKilled(s);
+            },
+          );
+          expect((await w.engine.runRound()).error, isA<_DavKilled>());
+          // Before the next launch the published file was replaced by another.
+          final local = File('${w.work.path}/$p5.canvas');
+          expect(local.existsSync(), isTrue, reason: 'the file was published');
+          final other = _davPage(p5, 'Five elsewhere', ['five other'], order: 5);
+          local.writeAsStringSync(other);
+          await w.reload();
+          await w.round();
+          expect(local.readAsStringSync(), other, reason: 'left alone');
+          expect([for (final i in w.engine.issues) '$i'].join('\n'), contains('different file'));
+          await w.sameAsReload('with the different file listed');
+          await w.reload();
+          await w.sameAsReload('after a restart');
+        } finally {
+          await w.close();
+        }
+      }, timeout: const Timeout(Duration(minutes: 3)));
+
+      // Section 5's names, kept by a PC or a sync client beside the original:
+      // a pull-only folder lists the copy (it is never merged there), the
+      // original keeps the page, and a reload lists the same.
+      const copyNames = {
+        'a Finder-style copy': ' 2',
+        'a Drive for desktop copy': ' (1)',
+        'a Nextcloud copy': ' (conflicted copy 2026-11-15 093612)',
+        'a Nextcloud copy with a user name': ' (conflicted copy bob 2026-11-15 093612)',
+        'an older ownCloud copy': '_conflict-20261115-093612',
+        'a OneDrive copy that was copied again': '-DESKTOP-9 (1)',
+      };
+      for (final e in copyNames.entries) {
+        test('$ids: ${e.key} (<id>${e.value}.canvas) is listed beside the original, live and after a reload; the original keeps the page', () async {
+          final w = await _DavWorld.create(fileIds: fileIds);
+          try {
+            fillers(w);
+            final base = _davPage(p1, 'One', ['one a']);
+            w.fake.addFile('Noted/$p1.canvas', utf8.encode(base));
+            w.fake.addFile('Noted/$p2.canvas', utf8.encode(_davPage(p2, 'Two', ['two a'], order: 2)));
+            await w.round();
+            await w.nb.open(p1);
+            final copy = '$p1${e.value}.canvas';
+            w.fake.addFile('Noted/$copy', utf8.encode(_davCopyOf(base, 'from the copy')));
+            await w.round();
+            w.mirrored('with the copy');
+            expect(
+              w.summary(w.nb),
+              contains(predicate<String>((s) => s.startsWith('unreadable') && s.endsWith('${_norm(copy)} duplicate page id $p1'))),
+              reason: 'the copy is listed, not the original',
+            );
+            expect(_Run.boxTexts(w.nb.current!.page).values, ['one a'], reason: 'the page is the original');
+            await w.sameAsReload('with the copy beside the original');
+            // The PC then removes the original: the copy is what is left.
+            w.fake.delete('Noted/$p1.canvas');
+            await w.settle();
+            w.mirrored('after the original went');
+            await w.nb.open(p1);
+            expect(_Run.boxTexts(w.nb.current!.page).values.toSet(), {'one a', 'from the copy'}, reason: 'the open page follows the survivor');
+            await w.sameAsReload('after the original went');
+            await w.reload();
+            await w.sameAsReload('after a restart');
+          } finally {
+            await w.close();
+          }
+        }, timeout: const Timeout(Duration(minutes: 3)));
+      }
+
+      // A page renamed on the server to a name this device can't keep (a colon):
+      // with path ids that looks like a removal, which is held while the
+      // unusable file is there; the page stays, live and after a reload, and
+      // goes only with the real removal.
+      test('$ids: a page renamed to an unusable name is held: it stays listed, live and after a reload, until it is really removed', () async {
+        final w = await _DavWorld.create(fileIds: fileIds);
+        try {
+          fillers(w);
+          w.fake.addFile('Noted/$p1.canvas', utf8.encode(_davPage(p1, 'One', ['one a'])));
+          w.fake.addFile('Noted/$p2.canvas', utf8.encode(_davPage(p2, 'Two', ['two a'], order: 2)));
+          await w.round();
+          await w.sameAsReload('the first round');
+          w.fake.rename('Noted/$p1.canvas', '$p1:old.canvas');
+          for (var i = 0; i < 3; i++) {
+            await w.settle(max: 2);
+          }
+          expect(File('${w.work.path}/$p1.canvas').existsSync(), isTrue, reason: 'the page is kept');
+          expect(mine(w), {p1, p2});
+          if (!fileIds) {
+            expect([for (final i in w.engine.issues) '$i'].join('\n'), contains('kept here while'));
+          }
+          await w.sameAsReload('with the removal held');
+          await w.reload();
+          await w.sameAsReload('after a restart while held');
+          expect(mine(w), {p1, p2});
+          // The unusable file goes: now it is a real removal.
+          w.fake.delete('Noted/$p1:old.canvas');
+          await w.settle();
+          await w.settle();
+          expect(File('${w.work.path}/$p1.canvas').existsSync(), isFalse, reason: 'the removal went through');
+          expect(mine(w), {p2});
+          w.mirrored('after the removal');
+          await w.sameAsReload('after the removal');
+        } finally {
+          await w.close();
+        }
+      }, timeout: const Timeout(Duration(minutes: 3)));
+    }
+  });
+
+  // A plain desktop folder (a Nextcloud client's folder, a mounted share): no
+  // engine, a writable folder, and the sync client leaves a copy beside a
+  // page. The copy is merged into the page and removed, as OneDrive's are
+  // (0053), with each of section 5's names; the model, the files, the live
+  // notebook and a fresh one agree, with the original open and closed.
+  group('a plain desktop folder with the names of Nextcloud, Drive and Finder', () {
+    const names = [
+      ' 2',
+      ' (1)',
+      ' (conflicted copy 2026-11-15 093612)',
+      ' (conflicted copy bob 2026-11-15 093612)',
+      '_conflict-20261115-093612',
+      '-DESKTOP-9 (1)',
+    ];
+    var seed = 940;
+    for (final name in names) {
+      for (final open in [false, true]) {
+        final s = seed++;
+        test('<id>$name.canvas beside ${open ? 'the open' : 'a closed'} page is merged and removed, live and after a restart', () async {
+          final run = _Run(s);
+          try {
+            await run.start();
+            await run.nb.flush();
+            final id = run.model.entries.firstWhere((e) => e.value.loc == 'x').key;
+            final m = run.model[id]!;
+            if (open) {
+              await run.nb.open(id);
+            } else {
+              await run.nb.open(run.model.keys.firstWhere((i) => i != id));
+            }
+            final z = run._newBox(run._text('copy'));
+            final path = '${run.dirs['x']!.path}${run.sep}$id$name.canvas';
+            File(path).writeAsStringSync(writePage(run._disk(id).insertNode(z)));
+            m.boxes[z.id] = _val(z);
+            await run.nb.checkFile(path);
+            await run.verify('after the copy was merged', fresh: true);
+            await run._opRestart();
+            await run.verify('after a restart', fresh: true);
+          } finally {
+            await run.stop();
+          }
+        }, timeout: const Timeout(Duration(minutes: 3)));
+      }
+    }
   });
 
   group('probes of the faults on their own', () {
