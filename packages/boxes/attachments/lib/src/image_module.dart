@@ -98,8 +98,11 @@ final class ImageModule extends BoxModule<ImageData?> {
       invoke: () async {
         final store = host.attachments;
         if (store == null) return;
+        // Read before the first await; the picker may outlive the page.
+        final inv = host.invocation;
         final files = await store.pick(imagesOnly: true);
-        await host.insertFiles(files);
+        if (inv != null && !inv.isCurrent) return;
+        await host.insertFiles(files, at: inv?.anchor);
       },
     ),
   ];

@@ -28,6 +28,10 @@ Host-only (not the Box API), run 2026-11-01-04: `PageChange.landed(id, before)` 
 
 Host-only (not the Box API), run 2026-11-04-02, task 3: `AttachmentConversion.failed` (default `0`) counts boxes whose conversion threw and were left as they were; `convertPageAttachments` converts the other boxes. `publishAttachment` (app) is the attachment publisher with the no-hard-link fallback. A paste or drop whose file cannot be stored makes no box and shows a notice. No version bump.
 
+## 0.16 — 2026-11-15
+- `CommandHost.invocation` (`CommandInvocation?`) and `CommandInvocation` (`anchor`, `isCurrent`) in noted_canvas: when the running command was chosen from a context menu at a page point, that point and a validity check, during the synchronous start of `invoke` only (null after the first `await`, on a toolbar, keyboard or menu-bar run, and after a throw). Read it before the first `await`; after an `await` insert nothing unless `isCurrent` (the canvas is still open on the same page, controller and commands, and the page is writable). The image and file modules insert at the anchor through `insertFiles(at:)`.
+- Additive for modules, which only consume `CommandHost`; the implementers are host-side (`PageCanvasState` through `CanvasCommandTarget`, and a test fake). A module that reads `invocation` needs a host of 0.16 or later. Decided by the PM under delegated authority; run 2026-11-15-02, task 1 step 7.
+
 ## 0.15 — 2026-11-09
 - `BoxModule.linkAt(String boxId, Offset global)` (default `false`; noted_canvas): whether the live box has a link at that screen point. The canvas asks only the topmost live box under an Alt/Option click, and opens the pick list (the boxes under the point) only when it answers false, so a link keeps the plain click it has today (decision 0099). The note module answers from its light view (`lightHitTest`) or its editor (the `href` at the position). Additive: a module that does not override it is unaffected. Decided by the PM under delegated authority; run 2026-11-09-02, task 4.
 

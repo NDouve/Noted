@@ -55,6 +55,30 @@ class FileGate {
 
 FileGate fileGate = FileGate();
 
+/// What the fake insert commands saw and wait for: like the image and file
+/// modules, they read `invocation`, wait for a picker, then insert.
+class PickGate {
+  final List<Completer<List<IncomingFile>>> pickers = [];
+  final List<CommandInvocation?> seen = [];
+  CommandInvocation? afterAwait;
+  bool armed = false;
+}
+
+PickGate pickGate = PickGate();
+
+Future<void> _insert(CommandHost host, String id) async {
+  final gate = pickGate;
+  if (!gate.armed) return;
+  final inv = host.invocation;
+  gate.seen.add(inv);
+  final picker = Completer<List<IncomingFile>>();
+  gate.pickers.add(picker);
+  final files = await picker.future;
+  gate.afterAwait = host.invocation;
+  if (inv != null && !inv.isCurrent) return;
+  await host.insertFiles(files, at: inv?.anchor);
+}
+
 class TModule extends BoxModule<String> {
   const TModule(this.id, [this.kind = '']);
   final String id;
@@ -72,7 +96,7 @@ class TModule extends BoxModule<String> {
             icon: Icons.image_rounded,
             enabled: () => host.attachments != null && !host.controller.readOnly,
             listenable: host.controller,
-            invoke: () {},
+            invoke: () => _insert(host, 'noted.image.insert'),
           ),
           Command(
             id: 'noted.file.insert',
@@ -80,7 +104,7 @@ class TModule extends BoxModule<String> {
             icon: Icons.attach_file_rounded,
             enabled: () => host.attachments != null && !host.controller.readOnly,
             listenable: host.controller,
-            invoke: () {},
+            invoke: () => _insert(host, 'noted.file.insert'),
           ),
         ]
       : const [];
@@ -266,6 +290,7 @@ class World {
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
     fileGate = FileGate();
+    pickGate = PickGate();
     editorSecondaryTaps = 0;
     saved = [];
     this.pen = TPen('noted.drawing.pen', StylusRole.pen);

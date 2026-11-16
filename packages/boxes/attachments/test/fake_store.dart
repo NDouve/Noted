@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -140,8 +141,14 @@ class FakeStore extends ChangeNotifier implements AttachmentStore {
   Future<void> open(String name, {String? fileName, Uint8List? bytes}) async =>
       opened.add((name, fileName, bytes));
 
+  /// Holds `pick` until completed (a picker that is still open).
+  Completer<void>? pickGate;
+
   @override
-  Future<List<IncomingFile>> pick({required bool imagesOnly}) async => toPick;
+  Future<List<IncomingFile>> pick({required bool imagesOnly}) async {
+    await pickGate?.future;
+    return toPick;
+  }
 }
 
 /// A [FakeStore] that also stores and checks files "in the page folder"
