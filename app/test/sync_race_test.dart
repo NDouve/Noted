@@ -1483,9 +1483,19 @@ void main() {
 
     Set<String> ids([String? at]) => readPage(File(at ?? pathOf(id)).readAsStringSync()).nodes.map((n) => n.id).toSet();
 
+    // Polls [done]; a read of a file the notebook is writing at that moment
+    // (Windows refuses it) counts as not done yet.
     Future<void> until(FutureOr<bool> Function() done, String what) async {
       final end = DateTime.now().add(const Duration(seconds: 20));
-      while (!await done()) {
+      Future<bool> check() async {
+        try {
+          return await done();
+        } on FileSystemException {
+          return false;
+        }
+      }
+
+      while (!await check()) {
         if (DateTime.now().isAfter(end)) fail('timed out waiting for $what');
         await Future<void>.delayed(const Duration(milliseconds: 20));
       }
@@ -1640,6 +1650,24 @@ void main() {
       expect(writes, 4, reason: 'parked until a restart');
       expect(await entries(), hasLength(1));
     }, timeout: const Timeout(Duration(minutes: 1)));
+
+    test('(f) a box from the copy moved inside the window: a revert brings it back in the copy\'s version', () async {
+      await start();
+      await withCopy();
+      await nb.checkFile(copy);
+      final away = nb.currentId!;
+      await nb.open(id);
+      nb.current!.requestBounds(extra.id, const Bounds(600, 300, 200, 40));
+      await nb.flush();
+      await nb.open(away);
+      expect((onDisk(id).node(extra.id)! as BoxRecord).bounds, const Bounds(600, 300, 200, 40));
+      revert();
+      await recheck();
+      expect(ids(), {box.id, extra.id}, reason: 'a moved box is still the copy\'s');
+      expect((onDisk(id).node(extra.id)! as BoxRecord).bounds, extra.bounds);
+      await recheck();
+      expect(await entries(), isEmpty);
+    });
 
     test('(f) opened inside the window: editable; a box deleted there stays deleted after a revert', () async {
       await start();
@@ -1903,8 +1931,11 @@ void main() {
       at = at.add(const Duration(seconds: 1));
       await until(() => ids(moved).contains(extra.id) && read.isNotEmpty, 'the re-check at the new place');
       expect(read.first, moved);
-      at = at.add(const Duration(seconds: 1));
-      await until(() async => (await entries()).isEmpty, 'the entry to be retired');
+      // The clock moves on at every look: the redo may still be setting its time.
+      await until(() async {
+        at = at.add(const Duration(seconds: 1));
+        return (await entries()).isEmpty;
+      }, 'the entry to be retired');
     }, timeout: const Timeout(Duration(minutes: 1)));
   });
 

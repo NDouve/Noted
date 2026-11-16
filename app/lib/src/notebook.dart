@@ -8509,15 +8509,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // This app changed page [id] from [base] to [mine] (a save, before mine is
-  // merged with the file): a redo of a consumed copy of the page leaves those
-  // nodes, and a changed AI access, as they are.
+  // merged with the file): a redo of a consumed copy of the page leaves out
+  // the nodes it deleted (in [base], not in [mine]), and keeps a changed AI
+  // access. A box it moved or edited is still required: a revert brings it
+  // back in the copy's version.
   void _noteOwnEdits(String id, NotedPage? base, NotedPage mine) {
     if (base == null || !_consumedCopies.values.any((m) => m.pageId == id)) return;
-    final before = {for (final n in base.nodes) n.id: n.toRaw()};
-    final after = {for (final n in mine.nodes) n.id: n.toRaw()};
+    final kept = {for (final n in mine.nodes) n.id};
     final ids = {
-      for (final k in {...before.keys, ...after.keys})
-        if (before[k] != after[k]) k,
+      for (final n in base.nodes)
+        if (!kept.contains(n.id)) n.id,
     };
     final header = base.meta.rawAiAccess != mine.meta.rawAiAccess;
     for (final m in _consumedCopies.values) {
@@ -13178,8 +13179,8 @@ class _ConsumedCopy {
   bool deleting = true; // the copy file is still to be deleted
   bool failed = false; // the last redo or read failed: retried at the backoff
   bool decideNow = false; // due at once: a delete of the page was let go, or confirmed
-  // This app's own changes of the page since the merge: node ids, and the AI
-  // access. A redo leaves them as they are.
+  // This app's own changes of the page since the merge: the ids of nodes it
+  // deleted, and the AI access. A redo leaves them as they are.
   final Set<String> touched = {};
   bool headerTouched = false;
   Timer? timer;
