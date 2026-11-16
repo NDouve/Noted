@@ -1841,6 +1841,53 @@ void main() {
       expect(diskBox(box.id).rev, mineEdit.rev);
     });
 
+    // A resolution that carries the copy's version forward doesn't settle it:
+    // after a revert the copy's version is back in the file (perhaps recorded
+    // again as a conflict), never lost.
+    for (final how in ['placeBoth', 'acceptMerged', 'keepOtherThenEdit']) {
+      test('(f) the merge\'s conflict resolved by $how, then a revert: the copy\'s version is back in the file', () async {
+        await start();
+        final codec = modules.codecs.codecFor('noted.note')!;
+        late BoxRecord theirs;
+        await withCopy(
+          shape: (c) {
+            theirs = commitBox(c.node(box.id)! as BoxRecord, codec, codec.decode(doc('edited in the copy'), 1));
+            return c.replaceNode(theirs);
+          },
+        );
+        final mineEdit = commitBox(box, codec, codec.decode(doc('edited here'), 1));
+        final preMerge = writePage(readPage(before).replaceNode(mineEdit));
+        File(pathOf(id)).writeAsStringSync(preMerge);
+        await nb.checkFile(pathOf(id));
+        await nb.checkFile(copy);
+        expect(diskBox(box.id).conflicts.single.node, theirs.toRaw());
+        final away = nb.currentId!;
+        await nb.open(id);
+        final c = nb.current!;
+        switch (how) {
+          case 'placeBoth':
+            c.resolveKeepBoth(box.id);
+          case 'acceptMerged':
+            expect(c.resolveWithData(box.id, codec.decode(doc('merged by hand'), 1)), isTrue);
+          case 'keepOtherThenEdit':
+            c.resolveKeepTheirs(box.id);
+            c.editBox(box.id, codec.decode(doc('then edited'), 1));
+        }
+        expect((c.page.node(box.id)! as BoxRecord).conflicts, isEmpty);
+        await nb.flush();
+        await nb.open(away);
+        File(pathOf(id)).writeAsStringSync(preMerge); // sync puts back the pre-merge original
+        await recheck();
+        final page = onDisk(id);
+        final held = page.nodes.whereType<BoxRecord>().any(
+          (b) => b.rev == theirs.rev || b.conflicts.any((k) => k.node == theirs.toRaw()),
+        );
+        expect(held, isTrue, reason: 'the copy\'s version is in the file');
+        await recheck();
+        expect(await entries(), isEmpty);
+      });
+    }
+
     test('(f) opened inside the window: editable; a box deleted there stays deleted after a revert', () async {
       await start();
       final more = noteBox('also from the copy', at: const Bounds(400, 100, 200, 40));

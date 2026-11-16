@@ -8535,11 +8535,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final n in mineBoxes) {
       final b = baseBoxes[n.id];
       if (b == null) continue;
+      if (b.landed != null && n.landed == null) cleared.add(n.id);
+      // Only a plain "keep mine" settles a record: the box is still base's
+      // version, and no box of mine holds the recorded one (Place both, a
+      // merged result or Keep theirs carry it forward, so it stays required:
+      // after a revert it may be recorded again, but it is never lost).
+      final kept = b.rev != null && n.rev != null ? n.rev == b.rev : _sameBoxContent(n, b);
+      if (!kept) continue;
       settled[n.id] = [
         for (final k in b.conflicts)
-          if (!n.conflicts.contains(k) && !_recordIsVersion(k, n)) k,
+          if (!n.conflicts.contains(k) && !mineBoxes.any((x) => _recordIsVersion(k, x))) k,
       ];
-      if (b.landed != null && n.landed == null) cleared.add(n.id);
     }
     final ai = mine.meta.rawAiAccess;
     final header = base.meta.rawAiAccess != ai;
@@ -8568,20 +8574,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  // Whether the version recorded in [k] is [b]'s own (same rev, or the same
-  // content when either has none): the user took that version.
+  // Whether [b] holds the version recorded in [k] (the same rev, or the same
+  // content): the user kept it, in that box.
   static bool _recordIsVersion(BoxConflict k, BoxRecord b) {
     final node = k.node;
     if (node == null || !node.isObject) return false;
     try {
       final x = BoxRecord.tryRead(RawObject.parse(node.text), node);
       if (x == null) return false;
-      if (x.rev != null && b.rev != null) return x.rev == b.rev;
-      return x.typeId == b.typeId && x.data == b.data && x.snapshotText == b.snapshotText;
+      return (x.rev != null && x.rev == b.rev) || _sameBoxContent(x, b);
     } on FormatException {
       return false;
     }
   }
+
+  static bool _sameBoxContent(BoxRecord x, BoxRecord y) =>
+      x.typeId == y.typeId && x.data == y.data && x.snapshotText == y.snapshotText;
 
   // The copy's node [n] as a consumed copy's re-check requires it, without
   // what the user settled since the merge (0120): null when [n] is itself a
