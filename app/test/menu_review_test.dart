@@ -234,7 +234,7 @@ void main() {
   }
 
 
-  testWidgets('overlay open, then another page: Escape still closes the overlay', (t) async {
+  testWidgets('overlay open, then another page: the overlay closes, and the canvas has the focus (0178)', (t) async {
     final w = await ShellWorld.open(t, size: const Size(1100, 800));
     await t.tap(find.byKey(const ValueKey('menu-top-View')));
     await _frames(t);
@@ -243,10 +243,8 @@ void main() {
     expect(find.byKey(const ValueKey('context-panel')), findsOneWidget);
     await w.openPage(t, w.second);
     await _frames(t, 6);
-    expect(find.byKey(const ValueKey('context-panel')), findsOneWidget, reason: 'still open on the new page');
-    await t.sendKeyEvent(LogicalKeyboardKey.escape);
-    await _frames(t, 6);
-    expect(find.byKey(const ValueKey('context-panel')), findsNothing);
+    expect(find.byKey(const ValueKey('context-panel')), findsNothing, reason: 'a page switch closes it');
+    expect(FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<PageCanvas>(), isNotNull);
     await w.close(t);
   });
 

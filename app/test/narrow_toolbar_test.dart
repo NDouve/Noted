@@ -2,10 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// The toolbar at the width of a phone (400 px), with the real commands.
+// The toolbar at the width of a phone (400 px) and at 900 px, with the real
+// commands.
 
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
@@ -46,6 +49,8 @@ void main() {
       nb.dispose();
       await dir.delete(recursive: true);
     });
+    // Before the test ends: the framework checks the override then.
+    debugDefaultTargetPlatformOverride = null;
   }
 
   testWidgets('tabs at 400 px: every tab is whole and clear of Undo and Search', (t) async {
@@ -71,4 +76,55 @@ void main() {
     expect(t.takeException(), isNull);
     await close(t);
   });
+
+  // 900 px (0178): on desktop the tree is inline (220), so the toolbar is 679
+  // wide and compact; on a phone or tablet the drawer rule of 1000 holds and
+  // the bar is the whole 900.
+  for (final style in ToolbarStyle.values) {
+    for (final mobile in [false, true]) {
+      testWidgets('${style.name} at 900 px on ${mobile ? 'mobile' : 'desktop'}: whole and clear of the edge', (t) async {
+        if (mobile) debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        await open(t, 900, style);
+        final bar = t.getRect(find.byType(CommandToolbar));
+        expect(bar.width, mobile ? 900 : 679);
+        final search = find.byKey(const ValueKey('app.search'));
+        final undo = find.byKey(const ValueKey('canvas.undo'));
+        final redo = find.byKey(const ValueKey('canvas.redo'));
+        for (final f in [search, undo, redo]) {
+          expect(f, findsOneWidget);
+          final r = t.getRect(f);
+          // The phone rule scales the ends a little (0.3 share), as it did.
+          expect(r.width, mobile ? greaterThan(30) : closeTo(36, 0.01), reason: 'not scaled down');
+          expect(r.left, greaterThanOrEqualTo(bar.left));
+          expect(r.right, lessThanOrEqualTo(bar.right));
+          expect(r.bottom, lessThanOrEqualTo(bar.bottom));
+        }
+        if (style == ToolbarStyle.tabs && !mobile) {
+          // Compact Tabs: the tabs have the first row, Undo, Redo and Search the
+          // command row below.
+          expect(t.getRect(undo).top, greaterThan(t.getRect(find.byKey(CommandToolbar.tabKey('home'))).bottom));
+          expect(t.getRect(search).top, greaterThan(t.getRect(find.byKey(CommandToolbar.tabKey('home'))).bottom));
+        }
+        expect(t.takeException(), isNull);
+        await close(t);
+      });
+    }
+  }
+
+  for (final style in ToolbarStyle.values) {
+    testWidgets('${style.name} at 900 px on desktop, after a touch: wraps and nothing clips', (t) async {
+      await open(t, 900, style);
+      final g = await t.startGesture(const Offset(700, 600), kind: PointerDeviceKind.touch);
+      await g.up();
+      await t.pumpAndSettle();
+      final bar = t.getRect(find.byType(CommandToolbar));
+      expect(bar.width, 679);
+      expect(find.byKey(const ValueKey('toolbar-more')), findsNothing, reason: 'touch wraps instead of More');
+      final search = t.getRect(find.byKey(const ValueKey('app.search')));
+      expect(search.right, lessThanOrEqualTo(bar.right));
+      expect(search.bottom, lessThanOrEqualTo(bar.bottom));
+      expect(t.takeException(), isNull);
+      await close(t);
+    });
+  }
 }

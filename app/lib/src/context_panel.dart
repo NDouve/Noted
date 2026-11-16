@@ -26,6 +26,7 @@ class ContextPanel extends StatefulWidget {
     required this.controller,
     required this.registry,
     this.onClose,
+    this.closeFocus,
   });
 
   final Notebook notebook;
@@ -34,6 +35,9 @@ class ContextPanel extends StatefulWidget {
 
   /// Shown as the header's Close button when given.
   final VoidCallback? onClose;
+
+  /// The focus node of the Close button (the overlay focuses it first).
+  final FocusNode? closeFocus;
 
   @override
   State<ContextPanel> createState() => _ContextPanelState();
@@ -142,6 +146,7 @@ class _ContextPanelState extends State<ContextPanel> {
                 // A 36 px target at the trailing edge.
                 IconButton(
                   key: const ValueKey('context-panel-close'),
+                  focusNode: widget.closeFocus,
                   tooltip: 'Close',
                   onPressed: onClose,
                   icon: const Icon(Icons.close_rounded),
@@ -451,10 +456,11 @@ class _ContextPanelState extends State<ContextPanel> {
 }
 
 /// The contextual panel as an overlay, for a window too narrow to show it
-/// beside the canvas: from the right edge of the page area, over the canvas,
-/// with a scrim. Escape, a click on the scrim, the panel's Close button or the
-/// menu item close it. Focus goes back to the node that had it when the
-/// overlay opened, or to the canvas if that node is gone.
+/// beside the canvas: from the right edge of the content band, over the canvas,
+/// with a scrim. The Close button has the focus first, Tab stays inside the
+/// overlay, and Escape, a click on the scrim, the Close button or the menu item
+/// close it. Focus goes back to the node that had it when the overlay opened,
+/// or to the canvas if that node is gone.
 class ContextPanelOverlay extends StatefulWidget {
   const ContextPanelOverlay({
     super.key,
@@ -476,7 +482,10 @@ class ContextPanelOverlay extends StatefulWidget {
 }
 
 class _ContextPanelOverlayState extends State<ContextPanelOverlay> {
-  final FocusNode _focus = FocusNode(debugLabel: 'context panel overlay');
+  // A scope, so Tab and Shift+Tab cycle inside the overlay and the page behind
+  // it is out of the traversal.
+  final FocusScopeNode _focus = FocusScopeNode(debugLabel: 'context panel overlay');
+  final FocusNode _closeFocus = FocusNode(debugLabel: 'context panel close');
 
   // Recorded before the overlay takes the focus.
   late final FocusNode? _origin = FocusManager.instance.primaryFocus;
@@ -509,7 +518,7 @@ class _ContextPanelOverlayState extends State<ContextPanelOverlay> {
     _held.editorFocusHold.hold();
     _live++;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _focus.requestFocus();
+      if (mounted) _closeFocus.requestFocus();
     });
   }
 
@@ -519,6 +528,7 @@ class _ContextPanelOverlayState extends State<ContextPanelOverlay> {
     final canvas = widget.focusCanvas;
     final controller = _held;
     _focus.dispose();
+    _closeFocus.dispose();
     _live--;
 
     // After this frame: the focus tree is being taken apart now.
@@ -549,8 +559,8 @@ class _ContextPanelOverlayState extends State<ContextPanelOverlay> {
 
   @override
   Widget build(BuildContext context) {
-    return Focus(
-      focusNode: _focus,
+    return FocusScope(
+      node: _focus,
       onKeyEvent: (node, event) {
         if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) {
           widget.onClose();
@@ -578,8 +588,8 @@ class _ContextPanelOverlayState extends State<ContextPanelOverlay> {
               controller: widget.controller,
               registry: widget.registry,
               onClose: widget.onClose,
+              closeFocus: _closeFocus,
             ),
-
           ),
         ],
       ),

@@ -94,11 +94,15 @@ class _HomeState extends State<Home> {
 
   // The contextual panel, for this session only (it is not saved). Inline from
   // [_panelInlineWidth] wide, shown unless hidden; narrower it is an overlay
-  // that View > Details opens.
+  // that View > Details opens, closed again by a page switch or by widening the
+  // window to the inline width. Desktop only: from there to 720 the tree is
+  // [NotedMetrics.compactTreeWidth] wide.
   static const double _panelInlineWidth = DesignMetrics.detailsBreakpoint;
   bool? _panelChoice;
   bool _overlayOpen = false;
+  String? _overlayPage;
   final ValueNotifier<bool> _panelShown = ValueNotifier<bool>(false);
+  final ValueNotifier<bool> _overlayShown = ValueNotifier<bool>(false);
 
   // Folded rows; kept here so they outlast the narrow-layout drawer.
   final Set<String> _folded = {};
@@ -321,6 +325,7 @@ class _HomeState extends State<Home> {
     _canvasContextOpen?.removeListener(_syncContextOpen);
     _contextOpen.dispose();
     _panelShown.dispose();
+    _overlayShown.dispose();
     if (widget.search == null) _search.dispose();
     super.dispose();
   }
@@ -458,6 +463,7 @@ class _HomeState extends State<Home> {
     canvas: _registry,
     contextMenuOpen: _contextOpen,
     panelShown: _panelShown,
+    overlayShown: _overlayShown,
     onTogglePanel: _togglePanel,
     focusCanvas: () => _canvasKey?.currentState?.focusCanvas(),
   );
@@ -471,6 +477,7 @@ class _HomeState extends State<Home> {
         _panelChoice = !(_panelChoice ?? true);
       } else {
         _overlayOpen = !_overlayOpen;
+        _overlayPage = notebook.currentId;
       }
     });
   }
@@ -500,10 +507,12 @@ class _HomeState extends State<Home> {
   }
 
   // Keeps the menu's Details check in step with what is on screen.
-  void _syncPanelShown(bool shown) {
-    if (_panelShown.value == shown) return;
+  void _syncPanelShown(bool shown, {required bool overlay}) {
+    if (_panelShown.value == shown && _overlayShown.value == overlay) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _panelShown.value = shown;
+      if (!mounted) return;
+      _overlayShown.value = overlay;
+      _panelShown.value = shown;
     });
   }
 
@@ -514,9 +523,9 @@ class _HomeState extends State<Home> {
 
   // The page tree with search and settings; inline, or in the drawer on a
   // narrow window.
-  Widget _sidebar(NotedMetrics m) {
+  Widget _sidebar(NotedMetrics m, {bool compact = false}) {
     return SizedBox(
-      width: m.sidebarWidth,
+      width: compact ? m.compactTreeWidth : m.sidebarWidth,
       child: ColoredBox(
         color: NotedColors.of(context).bgSidebar,
         child: Column(
@@ -705,14 +714,21 @@ class _HomeState extends State<Home> {
         final desktopShell = !isMobilePlatform && !narrow;
         final wide = _wideWindow(context) && !isMobilePlatform;
         final inline = wide && (_panelChoice ?? true);
+        // A page switch, a binder cover or the inline width closes the overlay
+        // for good.
+        if (_overlayOpen && (wide || notebook.cover != null || _overlayPage != notebook.currentId)) {
+          _overlayOpen = false;
+        }
         final overlay = !wide && !isMobilePlatform && _overlayOpen;
-        _syncPanelShown(inline || overlay);
+        final compactTree = !isMobilePlatform && !wide;
+        // A cover has no Details, so the toggle does not look open over it.
+        _syncPanelShown(notebook.cover == null && (inline || overlay), overlay: notebook.cover == null && overlay);
         _closeDrawerOnChoice();
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (!narrow) ...[
-              _sidebar(m),
+              _sidebar(m, compact: compactTree),
               const VerticalDivider(width: 1),
             ],
             Expanded(

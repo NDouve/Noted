@@ -16,6 +16,7 @@ import 'package:noted/src/save_trouble.dart';
 import 'package:noted/src/menu_bar.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_title_field.dart';
+import 'package:noted/src/page_tree_view.dart';
 import 'package:noted/src/settings_panel.dart';
 import 'package:noted/src/status_strip.dart';
 import 'package:noted_canvas/noted_canvas.dart';
@@ -350,6 +351,58 @@ void main() {
     );
   });
 
+  // The layout by window width on desktop (0178): the tree is 264 wide from
+  // 1120, 220 from 720 to 1119, and a drawer below 720.
+  group('desktop layout by width', () {
+    final tree = find.byType(PageTreeView);
+    for (final (width, treeWidth, docked) in [(1440.0, 264.0, true), (1120.0, 264.0, true), (1119.0, 220.0, false), (1000.0, 220.0, false), (900.0, 220.0, false), (720.0, 220.0, false)]) {
+      testWidgets('at ${width.toInt()} the tree is $treeWidth wide inline and the desktop header and strip show', (t) async {
+        final w = await ShellWorld.open(t, size: Size(width, 900));
+        expect(find.byKey(const ValueKey('sidebar-menu')), findsNothing);
+        expect(rect(t, tree).width, treeWidth);
+        final divider = rect(t, find.byType(VerticalDivider).first);
+        expect(divider.left, treeWidth);
+        expect(rect(t, toolbar).left, divider.right);
+        expect(rect(t, toolbar).right, width);
+        expect(breadcrumb, findsOneWidget);
+        expect(strip, findsOneWidget);
+        expect(rect(t, strip).bottom, 900);
+        expect(find.byKey(const ValueKey('page-settings')), findsNothing);
+        expect(panel, docked ? findsOneWidget : findsNothing);
+        await w.close(t);
+      });
+    }
+
+    testWidgets('at 719 the tree is a drawer and the old header row shows', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(719, 900));
+      expect(tree, findsNothing);
+      expect(find.byKey(const ValueKey('sidebar-menu')), findsOneWidget);
+      expect(find.byKey(const ValueKey('page-settings')), findsOneWidget);
+      expect(breadcrumb, findsNothing);
+      expect(strip, findsNothing);
+      expect(rect(t, toolbar).left, 0);
+      await t.tap(find.byKey(const ValueKey('sidebar-menu')));
+      await t.pumpAndSettle();
+      expect(rect(t, tree).width, 264, reason: 'the drawer keeps the full width');
+      await w.close(t);
+    });
+
+    testWidgets('a window resized across 720 and 1120 changes layout with the same page open', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(1440, 900));
+      final id = w.nb.currentId;
+      for (final (width, treeWidth) in [(900.0, 220.0), (1440.0, 264.0), (700.0, null)]) {
+        t.view.physicalSize = Size(width, 900);
+        await w.settle(t);
+        if (treeWidth == null) {
+          expect(tree, findsNothing);
+        } else {
+          expect(rect(t, tree).width, treeWidth);
+        }
+        expect(w.nb.currentId, id);
+      }
+      await w.close(t);
+    });
+  });
   group('desktop below the desktop width', () {
     testWidgets(
       'keeps the header row: drawer button, title and page settings, no breadcrumb or strip',
@@ -434,6 +487,20 @@ void main() {
       },
     );
 
+    testWidgets('1050 wide: the tree is inline at the full 264, not the compact 220', (t) async {
+      final (dir, nb) = await mobile(t, 1050);
+      expect(t.getSize(find.byType(PageTreeView)).width, 264);
+      expect(find.byKey(const ValueKey('sidebar-menu')), findsNothing);
+      await done(t, dir, nb);
+    });
+
+    testWidgets('900 wide: the drawer, as 0130 has it (the 720 rule is desktop only)', (t) async {
+      final (dir, nb) = await mobile(t, 900);
+      expect(find.byType(PageTreeView), findsNothing);
+      expect(find.byKey(const ValueKey('sidebar-menu')), findsOneWidget);
+      expect(strip, findsNothing);
+      await done(t, dir, nb);
+    });
     testWidgets(
       '1200 wide: page settings stays in the header row, the tree is inline',
       (t) async {

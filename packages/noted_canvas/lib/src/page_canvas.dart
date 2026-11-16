@@ -1715,7 +1715,6 @@ class PageCanvasState extends State<PageCanvas>
                       widget.sidePanel!(context, _commands),
                     ],
                   ),
-                if (widget.overlayPanel != null) widget.overlayPanel!(context, _commands),
               ],
             ),
           ),
@@ -1724,17 +1723,30 @@ class PageCanvasState extends State<PageCanvas>
     );
   }
 
-  // The canvas area between the host's header and footer, if it has them.
+  // The canvas area between the host's header and footer, if it has them. The
+  // overlay panel covers the header and the area but not the footer (the
+  // status strip stays visible under it).
   Widget _canvasColumn(ColorScheme scheme) {
     final (header, footer) = (widget.header, widget.footer);
-    if (header == null && footer == null) return _canvasArea(scheme);
+    final overlay = widget.overlayPanel;
+    final band = header == null
+        ? _canvasArea(scheme)
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              KeyedSubtree(key: _headerKey, child: header),
+              Expanded(child: _canvasArea(scheme)),
+            ],
+          );
+    // A Stack either way, so the header keeps its state when the overlay comes.
+    final covered = Stack(
+      fit: StackFit.expand,
+      children: [band, if (overlay != null) overlay(context, _commands)],
+    );
+    if (footer == null) return covered;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (header != null) KeyedSubtree(key: _headerKey, child: header),
-        Expanded(child: _canvasArea(scheme)),
-        ?footer,
-      ],
+      children: [Expanded(child: covered), footer],
     );
   }
 

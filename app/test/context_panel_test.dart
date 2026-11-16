@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/context_panel.dart';
+import 'package:noted/src/menu_bar.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -676,5 +677,296 @@ void main() {
         },
       );
     }
+  });
+
+  // The overlay of 720 to 1119 px (0178): in the content band, above the status
+  // strip; Close focused first, Tab inside, Escape in order, the scrim opaque.
+  group('overlay', () {
+    final strip = find.byKey(const ValueKey('status-strip'));
+    final scrim = find.byKey(const ValueKey('context-panel-scrim'));
+    final toggle = find.byKey(const ValueKey('details-toggle'));
+    final toolbar = find.byType(CommandToolbar);
+
+    Future<void> openOverlay(WidgetTester t, ShellWorld w) async {
+      await t.tap(toggle);
+      await w.settle(t);
+      expect(_panel, findsOneWidget);
+    }
+
+    bool inside(FocusNode? n) {
+      if (n == null) return false;
+      var found = false;
+      n.context?.visitAncestorElements((e) {
+        if (e.widget.key == const ValueKey('context-panel-overlay')) found = true;
+        return !found;
+      });
+      return found;
+    }
+
+    testWidgets('is 288 wide between the toolbar and the status strip, and the strip stays visible', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(900, 900));
+      await openOverlay(t, w);
+      final p = t.getRect(_panel);
+      expect(p.width, 288);
+      expect(p.right, 900);
+      expect(p.top, t.getRect(toolbar).bottom);
+      expect(p.bottom, t.getRect(strip).top);
+      final s = t.getRect(scrim);
+      expect(s.bottom, t.getRect(strip).top, reason: 'the scrim stops at the strip');
+      expect(s.left, t.getRect(toolbar).left);
+      expect(t.getRect(strip).bottom, 900);
+      await w.close(t);
+    });
+
+    testWidgets('Close has the focus first and Tab and Shift+Tab stay inside the overlay', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(900, 900));
+      await openOverlay(t, w);
+      expect(FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<IconButton>()?.key, const ValueKey('context-panel-close'));
+      for (var i = 0; i < 12; i++) {
+        await t.sendKeyEvent(LogicalKeyboardKey.tab);
+        await t.pump();
+        expect(inside(FocusManager.instance.primaryFocus), isTrue, reason: 'Tab $i stays in the overlay');
+      }
+      for (var i = 0; i < 12; i++) {
+        await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await t.sendKeyEvent(LogicalKeyboardKey.tab);
+        await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await t.pump();
+        expect(inside(FocusManager.instance.primaryFocus), isTrue, reason: 'Shift+Tab $i stays in the overlay');
+      }
+      await w.close(t);
+    });
+
+    testWidgets('Escape closes the open menu first, then Details, and focus returns to where it was', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(900, 900));
+      // The toggle does not take the focus from a click, so it stays where it was.
+      final before = FocusManager.instance.primaryFocus;
+      expect(before, isNotNull);
+      await openOverlay(t, w);
+      await t.tap(find.byKey(const ValueKey('panel-background-dropdown')));
+      await _frames(t, 4);
+      expect(find.byKey(const ValueKey('menu-canvas.pageBackground.graph')), findsOneWidget);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t, 8);
+      expect(find.byKey(const ValueKey('menu-canvas.pageBackground.graph')), findsNothing);
+      expect(_panel, findsOneWidget, reason: 'the first Escape closed only the menu');
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t, 4);
+      expect(_panel, findsNothing);
+      expect(FocusManager.instance.primaryFocus, same(before));
+      await w.close(t);
+    });
+    testWidgets('a click on the scrim closes it and reaches nothing under it', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(900, 900));
+      await w.addNote(t, 'a', 'one', at: const Bounds(40, 40, 200, 40));
+      await w.addNote(t, 'b', 'two', at: const Bounds(40, 200, 200, 40));
+      w.nb.current!.select('a');
+      await t.pump();
+      await openOverlay(t, w);
+      final at = w.canvasOrigin(t) + const Offset(100, 215);
+      await t.tapAt(at);
+      await w.settle(t);
+      expect(_panel, findsNothing);
+      expect(w.nb.current!.selectedId, 'a', reason: 'the tap did not select the box under the scrim');
+      expect(w.nb.current!.editingId, isNull);
+      expect(w.nb.current!.page.nodes.length, 2);
+      await w.close(t);
+    });
+
+    testWidgets('a page switch closes it', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(900, 900));
+      await openOverlay(t, w);
+      await w.openPage(t, w.second);
+      await w.settle(t);
+      expect(_panel, findsNothing);
+      await t.tap(toggle);
+      await w.settle(t);
+      expect(_panel, findsOneWidget, reason: 'it opens again on the new page');
+      await w.close(t);
+    });
+
+    testWidgets('crossing 1120 closes it, keeps the docked choice, and the way back stays closed', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(900, 900));
+      await openOverlay(t, w);
+      t.view.physicalSize = const Size(1200, 900);
+      await w.settle(t);
+      expect(find.byKey(const ValueKey('context-panel-inline')), findsOneWidget, reason: 'docked, open by default');
+      expect(scrim, findsNothing);
+      t.view.physicalSize = const Size(900, 900);
+      await w.settle(t);
+      expect(_panel, findsNothing, reason: 'the overlay did not come back');
+      // The docked choice is remembered: hidden at 1200, still hidden after an overlay.
+      t.view.physicalSize = const Size(1200, 900);
+      await w.settle(t);
+      await t.tap(toggle);
+      await w.settle(t);
+      expect(_panel, findsNothing);
+      t.view.physicalSize = const Size(900, 900);
+      await w.settle(t);
+      await openOverlay(t, w);
+      t.view.physicalSize = const Size(1200, 900);
+      await w.settle(t);
+      expect(_panel, findsNothing, reason: 'the remembered wide state was hidden');
+      await w.close(t);
+    });
+
+    testWidgets('a binder cover closes it, and the toggle does not look open over the cover', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(900, 900));
+      final binder = await w.addBinderWithPage(t, 'Work');
+      await openOverlay(t, w);
+      Color? face() => t.widget<Material>(find.descendant(of: toggle, matching: find.byType(Material)).first).color;
+      final scheme = Theme.of(t.element(toggle)).colorScheme;
+      expect(face(), scheme.primaryContainer);
+      w.nb.showCover(binder.path);
+      await w.settle(t);
+      expect(_panel, findsNothing);
+      expect(face(), scheme.surface, reason: 'not open over a cover');
+      await w.openPage(t, w.first);
+      await w.settle(t);
+      expect(_panel, findsNothing, reason: 'back on a page it stays closed');
+      expect(face(), scheme.surface);
+      await w.close(t);
+    });
+
+    testWidgets('crossing 1120 gives the focus back to where it was', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(900, 900));
+      await w.addNote(t, 'a', 'hello');
+      await w.editNote(t, 'a');
+      final focused = FocusManager.instance.primaryFocus;
+      await openOverlay(t, w);
+      expect(FocusManager.instance.primaryFocus, isNot(same(focused)));
+      t.view.physicalSize = const Size(1200, 900);
+      await w.settle(t);
+      expect(scrim, findsNothing);
+      expect(FocusManager.instance.primaryFocus, same(focused));
+      await w.close(t);
+    });
+
+    testWidgets('opened from the keyboard on the toggle, Escape puts the focus back on the toggle', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(900, 900));
+      bool onToggle() =>
+          FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<TextButton>()?.key ==
+          const ValueKey('details-toggle');
+      // F10 enters the menu bar; Tab walks along it to the toggle.
+      await t.sendKeyEvent(LogicalKeyboardKey.f10);
+      await _frames(t, 4);
+      for (var i = 0; i < 12 && !onToggle(); i++) {
+        await t.sendKeyEvent(LogicalKeyboardKey.tab);
+        await t.pump();
+      }
+      expect(onToggle(), isTrue, reason: 'Tab reaches the toggle from the bar');
+      await t.sendKeyEvent(LogicalKeyboardKey.enter);
+      await _frames(t, 6);
+      expect(_panel, findsOneWidget);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t, 8);
+      expect(_panel, findsNothing);
+      expect(onToggle(), isTrue, reason: 'focus is back on the toggle (0178)');
+      // Then the bar takes no focus again once the focus has moved on.
+      ExcludeFocus barExclude() => t.widget<ExcludeFocus>(find.descendant(of: find.byType(AppMenuBar), matching: find.byType(ExcludeFocus)).first);
+      expect(barExclude().excluding, isFalse, reason: 'kept open for the toggle meanwhile');
+      await t.sendKeyEvent(LogicalKeyboardKey.tab);
+      await _frames(t, 4);
+      expect(onToggle(), isFalse);
+      expect(barExclude().excluding, isTrue);
+      await w.close(t);
+    });
+
+    // The bar's focus exclusion, and the keyboard entry to the Details toggle.
+    ExcludeFocus barExclude(WidgetTester t) =>
+        t.widget<ExcludeFocus>(find.descendant(of: find.byType(AppMenuBar), matching: find.byType(ExcludeFocus)).first);
+
+    bool onToggleNow() =>
+        FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<TextButton>()?.key ==
+        const ValueKey('details-toggle');
+
+    Future<void> keyboardToToggle(WidgetTester t) async {
+      await t.sendKeyEvent(LogicalKeyboardKey.f10);
+      await _frames(t, 4);
+      for (var i = 0; i < 12 && !onToggleNow(); i++) {
+        await t.sendKeyEvent(LogicalKeyboardKey.tab);
+        await t.pump();
+      }
+      expect(onToggleNow(), isTrue);
+    }
+
+    testWidgets('docked: F10, Tab to Details, Enter, Escape leaves the whole bar out of the focus again', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(1440, 900));
+      await keyboardToToggle(t);
+      await t.sendKeyEvent(LogicalKeyboardKey.enter);
+      await _frames(t, 6);
+      expect(_panel, findsNothing, reason: 'the docked panel was toggled');
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t, 8);
+      expect(barExclude(t).excluding, isTrue);
+      await w.close(t);
+    });
+
+    for (final how in ['a page switch', 'crossing 1120', 'a binder cover']) {
+      testWidgets('the toggle hold is released when $how closes the overlay', (t) async {
+        final w = await ShellWorld.open(t, size: const Size(900, 900));
+        final binder = how == 'a binder cover' ? await w.addBinderWithPage(t, 'Work') : null;
+        await keyboardToToggle(t);
+        await t.sendKeyEvent(LogicalKeyboardKey.enter);
+        await _frames(t, 6);
+        expect(_panel, findsOneWidget);
+        if (how == 'a page switch') {
+          await w.openPage(t, w.second);
+        } else if (how == 'crossing 1120') {
+          t.view.physicalSize = const Size(1200, 900);
+        } else {
+          w.nb.showCover(binder!.path);
+        }
+        await w.settle(t);
+        await _frames(t, 4);
+        expect(find.byKey(const ValueKey('context-panel-overlay')), findsNothing);
+        // The focus may have gone back to the toggle; once it moves on, the bar
+        // is out of the focus again.
+        await t.sendKeyEvent(LogicalKeyboardKey.tab);
+        await _frames(t, 4);
+        expect(barExclude(t).excluding, isTrue);
+        await w.close(t);
+      });
+    }
+
+    testWidgets('docked keyboard toggle then Escape: a click on File then Escape gives the focus to the canvas', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(1440, 900));
+      await keyboardToToggle(t);
+      await t.sendKeyEvent(LogicalKeyboardKey.enter);
+      await _frames(t, 6);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t, 8);
+      await t.tap(find.byKey(const ValueKey('menu-top-File')));
+      await _frames(t, 6);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t, 8);
+      expect(
+        FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<PageCanvas>(),
+        isNotNull,
+        reason: 'a pointer-opened menu never moved the focus into the bar',
+      );
+      expect(barExclude(t).excluding, isTrue);
+      await w.close(t);
+    });
+
+    testWidgets('the toggle going away (a narrow window) while it is held releases the hold', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(900, 900));
+      await keyboardToToggle(t);
+      await t.sendKeyEvent(LogicalKeyboardKey.enter);
+      await _frames(t, 6);
+      expect(_panel, findsOneWidget);
+      t.view.physicalSize = const Size(500, 900);
+      await w.settle(t);
+      await _frames(t, 4);
+      expect(toggle, findsNothing);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t, 8);
+      t.view.physicalSize = const Size(900, 900);
+      await w.settle(t);
+      await t.tapAt(const Offset(500, 500));
+      await _frames(t, 4);
+      expect(barExclude(t).excluding, isTrue);
+      await w.close(t);
+    });
   });
 }
