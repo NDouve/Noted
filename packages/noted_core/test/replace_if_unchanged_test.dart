@@ -292,6 +292,41 @@ void main() {
       expect(names(), hasLength(2));
     });
 
+    // The MCP server's aside, left over after a kept drop: `<stem>-NOTED-MCP-<hex>.canvas.<pid>-a-b.cas-verified`.
+    test('a kept MCP aside (verified drop name) is published by scan as a conflict copy of the page', () async {
+      final store = PageStore(dir);
+      final theirs = writePage(page('Theirs'));
+      final old = writePage(page('Old'));
+      File(p('p1.canvas')).writeAsStringSync(theirs);
+      const mcp = 'p1-NOTED-MCP-0123456789abcdef.canvas';
+      File(p('$mcp.1-a-b$verifiedSuffix')).writeAsStringSync(old);
+      final entries = await store.scan();
+      final copy = entries.whereType<ConflictCopyPage>().single;
+      expect(copy.path, p(mcp));
+      expect(copy.originalPath, p('p1.canvas'));
+      expect(File(copy.path).readAsStringSync(), old);
+      expect(File(p('p1.canvas')).readAsStringSync(), theirs);
+      expect(names(), hasLength(2));
+    });
+
+    test('a kept MCP aside whose own name is taken becomes a -conflict- copy that maps to the page', () async {
+      final store = PageStore(dir);
+      final theirs = writePage(page('Theirs'));
+      final old = writePage(page('Old'));
+      final other = writePage(page('Other'));
+      File(p('p1.canvas')).writeAsStringSync(theirs);
+      const mcp = 'p1-NOTED-MCP-0123456789abcdef.canvas';
+      File(p(mcp)).writeAsStringSync(other);
+      File(p('$mcp.1-a-b$verifiedSuffix')).writeAsStringSync(old);
+      await sweepAsideFiles(dir);
+      final copies = names().where((n) => n.contains('-conflict-')).toList();
+      expect(copies, hasLength(1));
+      expect(File(p(copies.single)).readAsStringSync(), old);
+      expect(conflictCopyOriginalNames(copies.single), contains('p1.canvas'));
+      expect(names().where((n) => n.endsWith(verifiedSuffix)), isEmpty);
+      expect(await store.scan(), isNotEmpty);
+    });
+
     test('with extension empty, a non-page leftover is put back or kept as a copy', () async {
       File(p('x.bin.1-a-b$asideSuffix')).writeAsBytesSync([1]);
       File(p('y.bin')).writeAsBytesSync([9]);

@@ -10,6 +10,8 @@ import 'package:noted_core/noted_core_read.dart';
 // imported directly (invariant_test.dart allows exactly it).
 // ignore: implementation_imports
 import 'package:noted_core/src/storage/exclusive_publish.dart' show publishExclusive;
+// ignore: implementation_imports
+import 'package:noted_core/src/storage/drop_verified.dart' show dropVerified, verifiedSuffix;
 
 import 'running_probe.dart' show LockIdentity;
 
@@ -45,7 +47,9 @@ enum PageReplace {
 ///    kept as a conflict copy, never deleted.
 ///
 /// It never creates a folder, never deletes or renames anything but its own
-/// temporary file and aside, and never follows a link out of the folders: the page file
+/// temporary file and aside (the aside is deleted only after being renamed to a
+/// fresh name and found, twice, to still hold the page's previous bytes; in any
+/// doubt it stays for Noted's sweep), and never follows a link out of the folders: the page file
 /// must itself be a plain file (not a link) whose real folder is one of the
 /// given folders' real paths. The invariant test checks that no other file in
 /// the server (or the core it imports) calls a file-writing API.
@@ -70,6 +74,11 @@ final class ClosedWriter {
   /// aside is deleted after publishing.
   Future<void> Function()? beforePublish;
   Future<void> Function(File aside)? beforeAsideDelete;
+
+  /// Test seams for the aside's drop: with the path it was renamed to, before
+  /// the final check and after the final read.
+  Future<void> Function(String path)? beforeFinalCheck;
+  Future<void> Function(String path)? afterFinalRead;
 
   /// Publishes a finished file at a path without replacing.
   final Future<bool> Function(File tmp, String target) publish;
@@ -158,7 +167,8 @@ final class ClosedWriter {
   /// If a file is at the page's path at that point (another writer, such as a
   /// sync client, put one there), it is untouched, the aside stays as a
   /// conflict copy holding the page's previous bytes, and the answer is
-  /// [PageReplace.busy]. The server never deletes a kept copy. If publishing
+  /// [PageReplace.busy]. The server never deletes a kept copy; after a
+  /// successful publish it deletes the aside only if it still verifies. If publishing
   /// fails, the aside is put back the same exclusive way (kept as a conflict
   /// copy if that is not possible) and the answer is [PageReplace.refused].
   Future<PageReplace> replacePage(
@@ -217,9 +227,20 @@ final class ClosedWriter {
       // A file is at the page's path: it stays, and so does the aside.
       if (!published) return PageReplace.busy;
       tmp = null;
+      // The aside is dropped only if, renamed to a name no one else knows, it
+      // still holds the previous bytes (a sync client may have written into or
+      // replaced it). In doubt it stays, as a conflict copy for Noted's sweep.
       try {
-        if (beforeAsideDelete != null) await beforeAsideDelete!(aside);
-        await aside.delete();
+        final drop = '${aside.path}.$pid-${_suffix()}-${_suffix()}$verifiedSuffix';
+        await dropVerified(
+          aside,
+          drop,
+          (f) async => _same(await f.readAsBytes(), expected),
+          beforeRename: beforeAsideDelete == null ? null : (_) => beforeAsideDelete!(aside),
+          beforeFinalCheck: beforeFinalCheck,
+          afterFinalRead: afterFinalRead,
+          late: false,
+        );
       } on Object {
         // Published; the aside stays as a conflict copy.
       }
