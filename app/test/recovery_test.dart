@@ -2065,9 +2065,33 @@ void main() {
       keep();
       assetsOf(id).createSync();
       File('${assetsOf(id).path}/$keptName').writeAsBytesSync(bytes);
-      File('${assetsOf(id).path}/$keptName.landing.tmp').writeAsBytesSync([1]);
+      File('${assetsOf(id).path}/$keptName.landing.tmp').writeAsBytesSync(bytes);
       await launch();
       expect(assetsOf(id).listSync().map((f) => f.path.split(RegExp(r'[\\/]')).last), [keptName]);
+    });
+
+    test('a stale landing temp with other bytes is kept and the landing succeeds', () async {
+      await pageOnly();
+      keep();
+      assetsOf(id).createSync();
+      final stale = File('${assetsOf(id).path}/$keptName.landing.tmp')..writeAsBytesSync([1]);
+      final nb = await launch();
+      expect(stale.readAsBytesSync(), [1]);
+      expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
+      expect(keptDir().existsSync(), isFalse);
+      expect(nb.recoveryDamaged, isEmpty);
+    });
+
+    test('a folder at the stale temp name does not fail the landing', () async {
+      await pageOnly();
+      keep();
+      assetsOf(id).createSync();
+      Directory('${assetsOf(id).path}/$keptName.landing.tmp').createSync();
+      final nb = await launch();
+      expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
+      expect(Directory('${assetsOf(id).path}/$keptName.landing.tmp').existsSync(), isTrue);
+      expect(keptDir().existsSync(), isFalse);
+      expect(nb.recoveryDamaged, isEmpty);
     });
 
     test('a kept folder whose page is not there stays, and is listed only once nothing is away', () async {

@@ -8734,11 +8734,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
         await copyAttachmentFile(e, target.path, name, r);
         if (r.verified.any((c) => c.target.path == target.path)) {
-          // A landing temp left by an earlier version, removed only while it
-          // still holds what it held when it was looked at.
-          final stale = '${target.path}.landing.tmp';
-          if (await File(stale).exists()) {
-            await deleteFileIfMatches(stale, identity: await ContentIdentity.ofFile(stale));
+          // A landing temp left by an earlier version goes only while it holds the
+          // source's bytes (length and hash); anything else, or an error, keeps it.
+          try {
+            final stale = '${target.path}.landing.tmp';
+            if (await FileSystemEntity.type(stale, followLinks: false) == FileSystemEntityType.file) {
+              await deleteFileIfMatches(stale, identity: ContentIdentity(await e.length(), _hashName.firstMatch(name)!.group(1)!));
+            }
+          } on FileSystemException {
+            // Only a leftover; the landing goes on.
           }
           done.add(_LandedFile(e, name, target));
         } else if (r.stillChanging.contains(target.path)) {
