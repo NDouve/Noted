@@ -140,7 +140,7 @@ void main() {
       expect(pageFile(folder, d.page).lastModifiedSync(), modified);
     });
 
-    test('while running: pending edits are saved first, then the open page turns read-only', () async {
+    test('while running: pending edits are not written to the folder, and the open page turns read-only', () async {
       final nb = make();
       await nb.load();
       final s = await nb.addBinder(folder.path);
@@ -153,8 +153,9 @@ void main() {
       expect(nb.currentId, p);
       expect(nb.current!.readOnly, isTrue);
       expect(nb.readOnlyReason, isNotNull);
-      // The edit made before the damage reached the disk.
-      expect(readPage(pageFile(folder, p).readAsStringSync()).nodes, hasLength(1));
+      // The edit made before the damage is not written into the folder: it is
+      // kept in recovery (held edits).
+      expect(readPage(pageFile(folder, p).readAsStringSync()).nodes, isEmpty);
       final after = pageFile(folder, p).readAsBytesSync();
       nb.current!.updateMeta(nb.current!.page.meta.withTitle('Late'));
       await nb.flush();

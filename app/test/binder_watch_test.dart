@@ -24,7 +24,7 @@ void main() {
 
   File binderFile() => File('${folder.path}${Platform.pathSeparator}$binderFileName');
 
-  Future<void> start({bool watch = false}) async {
+  Future<void> start({bool watch = false, bool recovery = false}) async {
     root = await Directory.systemTemp.createTemp('noted_binder_watch');
     pages = await Directory('${root.path}/pages').create();
     folder = await Directory('${root.path}/Work').create();
@@ -35,6 +35,7 @@ void main() {
       bindersFile: File('${root.path}/binders.json'),
       watchFiles: watch,
       watchDebounce: const Duration(milliseconds: 50),
+      recoveryDirectory: recovery ? Directory('${root.path}/recovery') : null,
     );
     await nb.load();
     standalone = nb.currentId!;
@@ -169,8 +170,11 @@ void main() {
       await stop();
     });
 
-    test('an open page of the binder is saved before the binder goes away', () async {
-      await start();
+    test('an open page of the binder: its unsaved edits go to recovery, not the folder, and land when the file is back', () async {
+      await start(recovery: true);
+      final binderText = binderFile().readAsStringSync();
+      final pageFile = File('${folder.path}/$inBinder.canvas');
+      final before = pageFile.readAsStringSync();
       final c = nb.current!;
       final box = c.createBoxAt(const Bounds(10, 10, 0, 0));
       c.commit(box.id, buildModules().codecs.codecFor('noted.note')!.decode({
@@ -190,8 +194,18 @@ void main() {
       }, 1));
       await binderFile().delete();
       await nb.checkBinderFile(binderFile().path);
-      final saved = readPage(File('${folder.path}/$inBinder.canvas').readAsStringSync());
+      // Nothing was written to the folder: the box is kept in recovery.
+      expect(pageFile.readAsStringSync(), before);
+      final kept = nb.recoveryStoreForTest!.indexEntries.where((e) => e.pageId == inBinder).toList();
+      expect(kept, hasLength(1));
+      expect(kept.single.page.node(box.id), isNotNull);
+      // The file back: the edits land and the entry is retired.
+      binderFile().writeAsStringSync(binderText);
+      await nb.checkBinderFile(binderFile().path);
+      await nb.flush();
+      final saved = readPage(pageFile.readAsStringSync());
       expect(saved.node(box.id), isNotNull);
+      expect(nb.recoveryStoreForTest!.indexEntries.where((e) => e.pageId == inBinder), isEmpty);
       await stop();
     });
 

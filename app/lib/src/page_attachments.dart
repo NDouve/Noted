@@ -62,8 +62,11 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     this.opener,
     bool watch = true,
     this.readOnly = false,
+    bool Function()? readOnlyNow,
+    this.mutate,
   }) : _storage = storage,
-       _watch = watch {
+       _watch = watch,
+       _readOnlyNow = readOnlyNow {
     _startWatching();
   }
 
@@ -71,6 +74,43 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
   /// file isn't looked for among kept copies, a damaged one is shown as
   /// damaged and not set aside, and nothing is stored.
   final bool readOnly;
+
+  // Whether the page's folder can't be written now, read at each use (a
+  // binder folder can be held after the store is made); [readOnly] when not
+  // given.
+  final bool Function()? _readOnlyNow;
+
+  bool get _ro => _readOnlyNow?.call() ?? readOnly;
+
+  /// Runs one change of the assets folder (a single store helper call) as its
+  /// own turn at the page's folder, where the notebook checks its binder file
+  /// first. Null: the change runs directly.
+  final Future<T> Function<T>(Future<T> Function() job)? mutate;
+
+  // [job], a single helper call that changes [d], as its own [mutate] turn
+  // when [d] is the assets folder; read-only is checked again inside it.
+  Future<T> _mutateIn<T>(Directory d, Future<T> Function() job) async {
+    final m = mutate;
+    if (m == null || d.path != folder.path) return job();
+    Object? jobError;
+    try {
+      return await m(() async {
+        if (_ro) throw _Refused('This page is read-only', pageFolder.path);
+        try {
+          return await job();
+        } on Object catch (e) {
+          jobError = e;
+          rethrow;
+        }
+      });
+    } on _Refused {
+      rethrow;
+    } on Object catch (e) {
+      if (identical(e, jobError)) rethrow;
+      // Refused at the folder's turn (its binder file changed): nothing changed.
+      throw _Refused('This page is read-only ($e)', pageFolder.path);
+    }
+  }
 
   /// The folder that holds the page file.
   final Directory pageFolder;
@@ -169,7 +209,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     // A page that was moved or deleted closed its store first: a late write
     // must not recreate the assets folder at the old place.
     if (_disposed) throw FileSystemException('The page is closed', pageFolder.path);
-    if (readOnly) throw FileSystemException('This page is read-only', pageFolder.path);
+    if (_ro) throw FileSystemException('This page is read-only', pageFolder.path);
     final hash = contentHash(bytes);
     final name = attachmentFileName(hash, extension);
     final want = storage ?? this.storage;
@@ -196,7 +236,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
   // it never returns for a copy it didn't make.
   Future<void> _write(String name, String hash, Uint8List bytes, {required bool allowRecovery}) async {
     Future<void> keepBeside(Directory d, String why, {bool tellIfNoCopy = false}) async {
-      final kept = await keepGoodCopy(d, name, bytes);
+      final kept = await _mutateIn(d, () => keepGoodCopy(d, name, bytes));
       if (kept == null) {
         // The caller reports the failure; a damaged file that stays is still
         // reported here, with where it is (0132).
@@ -222,7 +262,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
           await keepBeside(d, 'is incomplete or still changing');
           return;
         }
-        final r = await setAsideDamaged(target, c.found!);
+        final r = await _mutateIn(d, () => setAsideDamaged(target, c.found!));
         if (r.name == null) {
           await keepBeside(
             d,
@@ -238,7 +278,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
       // `<hash>.tmp`).
       bool wrote;
       try {
-        wrote = await writeNewAttachmentFile(target, bytes, hash);
+        wrote = await _mutateIn(d, () => writeNewAttachmentFile(target, bytes, hash));
       } on FileSystemException {
         if (damagedKeptAs != null) {
           notify('A damaged copy of a file in this page\'s folder was kept as "$damagedKeptAs".');
@@ -318,7 +358,9 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     for (final d in [folder, if (!pageFolderOnly) ?recoveryFolder]) {
       final f = _in(d, fileName);
       var type = FileSystemEntity.typeSync(f.path, followLinks: false);
-      if (!readOnly && type == FileSystemEntityType.notFound && await restoreKeptCopy(d, fileName, hash, size)) {
+      // While the folder can't be written a missing file shows as Still
+      // syncing: its kept copy is not put back.
+      if (!_ro && type == FileSystemEntityType.notFound && await _restoreIn(d, fileName, hash, size)) {
         type = FileSystemEntity.typeSync(f.path, followLinks: false);
         filesChanged();
       }
@@ -340,12 +382,19 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
           case AttachmentState.syncing:
             out = const VerifiedAttachment(AttachmentState.syncing);
           case AttachmentState.damaged:
-            if (readOnly) {
+            if (_ro) {
               // Shown as damaged, not renamed: nothing is written here.
               out = const VerifiedAttachment(AttachmentState.damaged);
               break;
             }
-            final r = await setAsideDamaged(f, c.found!);
+            final SetAside r;
+            try {
+              r = await _mutateIn(d, () => setAsideDamaged(f, c.found!));
+            } on _Refused {
+              // Refused at its turn: shown as damaged, not renamed.
+              out = const VerifiedAttachment(AttachmentState.damaged);
+              break;
+            }
             if (r.leftAt != fileName) filesChanged();
             out = VerifiedAttachment(AttachmentState.damaged, keptAs: r.name, leftAt: r.leftAt);
         }
@@ -353,6 +402,15 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
       first ??= out;
     }
     return first ?? const VerifiedAttachment(AttachmentState.syncing);
+  }
+
+  // [restoreKeptCopy] as its own turn; a refusal restores nothing.
+  Future<bool> _restoreIn(Directory d, String fileName, String hash, int size) async {
+    try {
+      return await _mutateIn(d, () => restoreKeptCopy(d, fileName, hash, size));
+    } on _Refused {
+      return false;
+    }
   }
 
   @override
@@ -448,4 +506,10 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     _stopWatching();
     super.dispose();
   }
+}
+
+// A change of the assets folder refused because the folder can't be written
+// now (read-only, or its binder file changed at its turn).
+class _Refused extends FileSystemException {
+  const _Refused(super.message, super.path);
 }

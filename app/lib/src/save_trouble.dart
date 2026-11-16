@@ -356,6 +356,10 @@ enum UserQuestion {
 
   /// Deleting the only readable copy of a binder file. True: delete.
   deleteOnlyBinderCopy,
+
+  /// Removing a held binder whose folder has changes kept in recovery (the
+  /// title is how many pages). They stay kept. True: remove.
+  removeWithKeptChanges,
 }
 
 /// A page whose edits were put in recovery on leaving it: the window shows a

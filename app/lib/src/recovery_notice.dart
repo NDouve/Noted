@@ -29,7 +29,34 @@ Future<void> showRecoveryNoticeOnExit(
   // The abandoned listing may still finish settling its temp files; its result
   // is ignored. The in-memory notices are known without the drive.
   if (listing == null) return _showCouldNotCheck(navigator, _rows(notebook.recoveryOwnDamaged));
-  final pages = {for (final e in listing.entries) e.pageId}.length;
+  // Pages of a held binder folder are said apart: they are saved when the user
+  // chooses Use this binder, or when the binder file can be read.
+  final otherIds = <String>{};
+  final damagedIds = <String>{};
+  final plainIds = <String>{};
+  for (final e in listing.entries) {
+    switch (notebook.holdOfFolder(e.folder)) {
+      case BinderHold.otherBinder:
+        otherIds.add(e.pageId);
+      case BinderHold.damaged:
+        damagedIds.add(e.pageId);
+      case BinderHold.missing || null:
+        plainIds.add(e.pageId);
+    }
+  }
+  final pages = otherIds.length + damagedIds.length + plainIds.length;
+  String said(int n, String when) => n == 1
+      ? "1 page couldn't be saved yet. It is kept safely and will be saved $when."
+      : "$n pages couldn't be saved yet. They are kept safely and will be saved $when.";
+  final lines = [
+    if (plainIds.isNotEmpty)
+      plainIds.length == 1
+          ? said(1, 'automatically when its folder is available')
+          : said(plainIds.length, 'automatically when their folder is available'),
+    if (otherIds.isNotEmpty) said(otherIds.length, 'when you choose Use this binder'),
+    if (damagedIds.isNotEmpty)
+      said(damagedIds.length, damagedIds.length == 1 ? 'when its binder file can be read' : 'when their binder file can be read'),
+  ];
   // The same files and reasons as the sidebar's "Can't open" list.
   final problems = _rows([...listing.damaged, ...notebook.recoveryOwnDamaged]);
   final landedLeft = notebook.landedEntryLeft;
@@ -46,14 +73,7 @@ Future<void> showRecoveryNoticeOnExit(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (pages > 0)
-              Text(
-                pages == 1
-                    ? "1 page couldn't be saved yet. "
-                          'It is kept safely and will be saved automatically when its folder is available.'
-                    : "$pages pages couldn't be saved yet. "
-                          'They are kept safely and will be saved automatically when their folder is available.',
-              ),
+            for (final l in lines) Text(l),
             if (landedLeft) ...[
               if (pages > 0) SizedBox(height: NotedMetrics.of(context).space3),
               const Text(

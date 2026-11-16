@@ -110,6 +110,9 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     for (final b in _nb.binders) {
       rows.add(_binderHeader(context, b));
       if (b.other != null) rows.add(_otherBinderRow(context, b));
+      // A held folder's unsaved edits are kept in recovery: said under its reason.
+      final kept = b.hold == null ? 0 : _nb.heldPagesFor(b.path);
+      if (kept > 0) rows.add(_keptRow(context, b, kept));
       copies.addAll([for (final r in _nb.binderCopyRows(b)) (b, r)]);
       // A binder whose folder is away keeps its pages listed, greyed.
       if (!b.available && !b.readOnly && !b.missing) continue;
@@ -422,6 +425,19 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  // How many pages of a held binder folder have changes kept in recovery.
+  Widget _keptRow(BuildContext context, BinderSection b, int pages) {
+    final m = NotedMetrics.of(context);
+    return Padding(
+      key: ValueKey('binder-kept-${b.path}'),
+      padding: EdgeInsets.only(left: 36, right: m.space3, top: m.space1, bottom: m.space1),
+      child: Text(
+        'Changes to $pages ${pages == 1 ? 'page' : 'pages'} kept',
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: NotedColors.of(context).textDisabled),
       ),
     );
   }

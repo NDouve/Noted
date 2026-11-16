@@ -365,27 +365,60 @@ void main() {
       expect(nb.binders.single.binder!.id, id);
     }
 
+    // A box added to the open page, its save still to come.
+    String pendingEdit() => nb.current!.createBoxAt(const Bounds(10, 10, 0, 0)).id;
+
+    File pageFile() => File('${folder.path}${Platform.pathSeparator}$pageId.canvas');
+
+    // The edit is kept in recovery, not written into the folder (held edits).
+    void expectKept(String box) {
+      final kept = nb.recoveryStoreForTest!.indexEntries.where((e) => e.pageId == pageId).toList();
+      expect(kept, hasLength(1), reason: 'the edit is kept in recovery');
+      expect(kept.single.page.node(box), isNotNull);
+      expect(readPage(pageFile().readAsStringSync()).node(box), isNull, reason: 'nothing is written to the folder');
+    }
+
+    // Back with the original file: the kept edit lands.
+    Future<void> expectLanded(String box) async {
+      await nb.flush();
+      await until(() {
+        try {
+          return readPage(pageFile().readAsStringSync()).node(box) != null &&
+              nb.recoveryStoreForTest!.indexEntries.where((e) => e.pageId == pageId).isEmpty;
+        } on Object {
+          return false;
+        }
+      }, 'the kept edit to land');
+    }
+
     test('original, missing, foreign', () async {
       await begin();
+      final box = pendingEdit();
       binderFile().deleteSync();
       await nb.checkBinderFile(binderFile().path);
       expect(nb.binders.single.status, BinderStatus.unavailable);
+      expectKept(box);
       await foreignThenRestore();
+      await expectLanded(box);
       await stop();
     });
 
     test('original, damaged, foreign', () async {
       await begin();
+      final box = pendingEdit();
       binderFile().writeAsStringSync('{oops');
       await nb.checkBinderFile(binderFile().path);
       expect(nb.binders.single.status, BinderStatus.unreadable);
+      expectKept(box);
       await foreignThenRestore();
+      await expectLanded(box);
       await stop();
     });
 
     test('the folder gone, back with another binder', () async {
       await begin();
       await nb.flush();
+      final box = pendingEdit();
       final moved = Directory('${root.path}/Elsewhere');
       folder.renameSync(moved.path);
       await nb.checkFolders();
@@ -397,6 +430,7 @@ void main() {
       expect(s.binder, isNull);
       expect(s.other, isNotNull);
       expect(s.available, isFalse);
+      expectKept(box);
       await stop();
     });
 

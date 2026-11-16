@@ -253,6 +253,12 @@ Future<bool> showTroubleQuestion(
       '"$title" is the only readable copy of the binder file, which is missing or damaged. Deleting it can\'t be undone.',
       'Delete the only readable copy',
     ),
+    UserQuestion.removeWithKeptChanges => (
+      'Remove this binder?',
+      '${title == '1' ? '1 page has' : '$title pages have'} unsaved changes kept for this folder. '
+          'They stay kept and are saved if you add the folder again.',
+      'Remove binder',
+    ),
   };
   final answer = await showDialog<bool>(
     context: context,

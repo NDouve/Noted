@@ -572,19 +572,24 @@ void main() {
         atReplace = null;
       });
 
-      Future<void> replaceBinder() async {
+      // Another binder's file takes the folder. The watcher's read holds the
+      // folder and its own work (steps 3 and 4) runs after; it is awaited, so
+      // the order is fixed. With [use], Use this binder follows.
+      Future<void> replaceBinder({bool use = true}) async {
         final file = File('${binderDir.path}/$binderFileName');
         file.writeAsStringSync(Binder.create(title: 'Other', id: newId(), color: binderPalette.first).write());
         await nb.checkBinderFile(file.path);
-        await nb.useThisBinder(binderDir.path);
+        await nb.afterHoldForTest(binderDir.path);
+        if (use) await nb.useThisBinder(binderDir.path);
         atReplace = snapshot(templates);
       }
 
-      // Replaces the binder the [nth] time [step] is reached.
-      void crossAt(String step, {int nth = 1}) {
+      // Replaces the binder the [nth] time [step] is reached. The hooks fire
+      // before the step's turn at the folder, so this never waits on itself.
+      void crossAt(String step, {int nth = 1, bool use = true}) {
         var n = 0;
         nb.templateStepHook = (s) async {
-          if (s == step && ++n == nth) await replaceBinder();
+          if (s == step && ++n == nth) await replaceBinder(use: use);
         };
       }
 
@@ -668,6 +673,76 @@ void main() {
         expect(File(item.path).existsSync(), isTrue);
         await expectUnchanged();
       });
+
+      // Held legs: the folder still holds the other binder (no Use this
+      // binder), so the step's turn refuses with the held text (G2).
+      const heldText = 'This folder now holds another binder, so its pages are read-only.';
+
+      test('held: a queued Save as template into the binder, crossing the replacement after the page was read', () async {
+        crossAt('saveTemplate', use: false);
+        await expectLater(nb.savePageAsTemplate(inB, name: 'B', inBinder: true), refusal(heldText));
+        await expectUnchanged();
+        expect(templates.existsSync() ? tplFiles(templates) : <String>[], isEmpty);
+      });
+
+      test('held: a delete crossing the replacement before the file delete', () async {
+        await binderTemplate();
+        final item = (await nb.listTemplates(TemplateKind.page, binderPath: binder.path)).items.firstWhere((i) => i.binderPath != null);
+        crossAt('delete', use: false);
+        await expectLater(nb.deleteTemplate(item), refusal(heldText));
+        expect(File(item.path).existsSync(), isTrue);
+        await expectUnchanged();
+      });
+
+      test('held: a template listed before the binder was replaced is not deleted', () async {
+        await binderTemplate();
+        final item = (await nb.listTemplates(TemplateKind.page, binderPath: binder.path)).items.firstWhere((i) => i.binderPath != null);
+        await replaceBinder(use: false);
+        await expectLater(nb.deleteTemplate(item), refusal(heldText));
+        expect(File(item.path).existsSync(), isTrue);
+        await expectUnchanged();
+      });
+
+
+      // Another binder's file the watcher has not read yet, put there when
+      // [step] is reached: the step's own turn at the folder reads it (G2).
+      void unseenAt(String step) {
+        nb.templateStepHook = (s) async {
+          if (s != step) return;
+          nb.templateStepHook = null;
+          File('${binderDir.path}/$binderFileName')
+              .writeAsStringSync(Binder.create(title: 'Other', id: newId(), color: binderPalette.first).write());
+          atReplace = snapshot(templates);
+        };
+      }
+
+      test('unseen: a Save as template into the binder writes nothing in its templates folder', () async {
+        unseenAt('saveTemplate');
+        await expectLater(nb.savePageAsTemplate(inB, name: 'B', inBinder: true), refusal(heldText));
+        await expectUnchanged();
+        expect(templates.existsSync() ? tplFiles(templates) : <String>[], isEmpty);
+      });
+
+      test('unseen: a sweeping listing sweeps nothing and lists the leftover', () async {
+        final (t, _) = await binderTemplate(files: false);
+        final file = File('${templates.path}/${t.id}.notedtemplate');
+        final left = file.renameSync('${file.path}.4242-a-b.cas-old');
+        unseenAt('sweep');
+        final listing = await nb.listTemplates(TemplateKind.page, binderPath: binder.path);
+        expect(listing.unreadable.map((u) => base(u.path)), contains(base(left.path)));
+        expect(left.existsSync(), isTrue);
+        await expectUnchanged();
+      });
+
+      test('unseen: a delete is refused and the template stays', () async {
+        await binderTemplate();
+        final item = (await nb.listTemplates(TemplateKind.page, binderPath: binder.path)).items.firstWhere((i) => i.binderPath != null);
+        unseenAt('delete');
+        await expectLater(nb.deleteTemplate(item), refusal(heldText));
+        expect(File(item.path).existsSync(), isTrue);
+        await expectUnchanged();
+      });
+
 
       test('a page made from a binder template reads its assets without sweeping after the replacement', () async {
         final (t, a) = await binderTemplate(files: false);

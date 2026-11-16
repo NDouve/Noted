@@ -98,7 +98,7 @@ const List<Site> deleteSites = [
   ),
   (
     'app/lib/src/notebook.dart',
-    'final r = await TemplateStore(dir).delete(item.path, item.identity);',
+    "final r = await _templateLocked(binder, snap, 'delete', () => TemplateStore(dir).delete(item.path, item.identity));",
     1,
     'checked: TemplateStore.delete is deleteFileIfMatches with the listed identity',
   ),
