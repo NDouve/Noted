@@ -25,6 +25,7 @@ import 'src/ai/ai_link_server.dart';
 import 'src/ai/ai_running_lock.dart';
 import 'src/app_settings.dart';
 import 'src/attachment_platform.dart';
+import 'src/cloud_sync.dart' show CloudSync;
 import 'src/device_storage.dart';
 import 'src/app_theme.dart';
 import 'src/home.dart';
@@ -37,6 +38,7 @@ import 'src/recovery_lock.dart';
 import 'src/recovery_notice.dart';
 import 'src/recovery_store.dart';
 import 'src/save_trouble_bar.dart';
+import 'src/webdav_sync.dart';
 
 /// The box modules compiled into this build (0034, stage 1).
 ///
@@ -112,6 +114,11 @@ Future<void> main(List<String> args) async {
   final microsoft = MicrosoftAccount.create();
   // Mobile builds with a client id only: the OneDrive pull (sync stage 3).
   final sync = buildOneDriveSync(notebook, microsoft);
+  // The first-launch keychain clean-up, one step for everything that holds a
+  // keychain secret (N6): started below, whether or not Microsoft is configured.
+  final cleaner = KeychainCleaner(settings);
+  // Mobile builds: the WebDAV pull. It waits for the clean-up step.
+  final webdav = buildWebDavSync(notebook, cleaner);
   await openWhenOwned(
     notebook,
     defaultAiDataFolder(),
@@ -120,14 +127,21 @@ Future<void> main(List<String> args) async {
     openFiles: openFiles,
     microsoft: microsoft,
     sync: sync,
+    webdav: webdav,
     args: args,
-    // Its first-launch clean-up can write settings.json: not before the lock.
-    onOwned: () {
-      if (microsoft != null) unawaited(microsoft.start(settings: settings));
-    },
+    // The clean-up can write settings.json: not before the lock.
+    onOwned: () => startOwned(cleaner: cleaner, microsoft: microsoft, settings: settings),
   );
   // After the first frame, so the window can show the questions.
   WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(notebook.askPendingAiApprovals()));
+}
+
+/// What starts once Noted owns its data (from `openWhenOwned`'s `onOwned`): the
+/// keychain clean-up step (N6), whether or not Microsoft is configured, then
+/// Microsoft's restore, which waits for the same step.
+void startOwned({required KeychainCleaner cleaner, MicrosoftAccount? microsoft, required AppSettings settings}) {
+  unawaited(cleaner.cleanKeychainOnce());
+  if (microsoft != null) unawaited(microsoft.start(settings: settings, cleaner: cleaner));
 }
 
 /// Shown instead of the app when another Noted process already owns the
@@ -209,9 +223,11 @@ Notebook buildAppNotebook({
   RecoveryLock? recoveryLock,
 }) {
   final binders = bindersFile ?? defaultBindersFile();
-  // The one lock the notebook and the OneDrive pull share (stage 3, G11). On
-  // a device the working copies are read-only here while the sync only pulls.
+  // The one lock the notebook and the cloud pulls share (stage 3, G11). On
+  // a device the working copies (OneDrive, WebDAV) are read-only here while the
+  // sync only pulls.
   final oneDriveRoot = deviceOneDriveRoot();
+  final webDavRoot = deviceWebDavRoot();
   late final Notebook notebook;
   final aiAccess = isMobilePlatform
       ? null
@@ -236,7 +252,8 @@ Notebook buildAppNotebook({
     attachmentOpener: openWithDefaultApp,
     recoveryLock: recoveryLock,
     folderLocks: FolderLocks(),
-    readOnlyRoots: isMobilePlatform && oneDriveRoot != null ? [oneDriveRoot.path] : const [],
+    readOnlyRoots: isMobilePlatform ? [?oneDriveRoot?.path, ?webDavRoot?.path] : const [],
+    readOnlyRootNames: isMobilePlatform && webDavRoot != null ? {webDavRoot.path: 'WebDAV'} : const {},
   );
 }
 
@@ -249,6 +266,22 @@ OneDriveSync? buildOneDriveSync(Notebook notebook, MicrosoftAccount? microsoft) 
   final support = deviceSupportDirectory();
   if (root == null || support == null) return null;
   return OneDriveSync.create(notebook: notebook, microsoft: microsoft, workingRoot: root, support: support);
+}
+
+/// The WebDAV pull of this build: null on desktop and when the device's
+/// folders aren't known. It uses the notebook's own [FolderLocks], and waits
+/// for [cleaner] before it reads or writes the password.
+WebDavSync? buildWebDavSync(Notebook notebook, KeychainCleaner cleaner) {
+  if (!isMobilePlatform) return null;
+  final root = deviceWebDavRoot();
+  final support = deviceSupportDirectory();
+  if (root == null || support == null) return null;
+  return WebDavSync.create(
+    notebook: notebook,
+    workingRoot: root,
+    support: support,
+    keychainReady: cleaner.cleanKeychainOnce,
+  );
 }
 
 /// Starts the app in the one order that keeps `noted_mcp` out of an open page
@@ -272,6 +305,7 @@ Future<({AiRunningLock? lock, AiLinkServer? link})> openWhenOwned(
   OpenFileService? openFiles,
   MicrosoftAccount? microsoft,
   OneDriveSync? sync,
+  WebDavSync? webdav,
   List<String> args = const [],
   VoidCallback? onOwned,
 }) async {
@@ -289,16 +323,17 @@ Future<({AiRunningLock? lock, AiLinkServer? link})> openWhenOwned(
   }
   onOwned?.call();
   final link = lock != null && startLink ? await startAiLink(notebook, dataFolder) : null;
-  show(NotedApp(notebook: notebook, settings: settings, aiLink: link, runningLock: lock, openFiles: openFiles, microsoft: microsoft, sync: sync));
+  show(NotedApp(notebook: notebook, settings: settings, aiLink: link, runningLock: lock, openFiles: openFiles, microsoft: microsoft, sync: sync, webdav: webdav));
   // A load that fails or hangs shows its error screen, with Retry.
   await notebook.loadChecked();
   // Only once a load has succeeded (this one, or a later Retry): it adds its
   // folder to the loaded notebook and starts polling. start() is idempotent.
-  if (sync != null) {
+  for (final CloudSync? s in [sync, webdav]) {
+    if (s == null) continue;
     if (notebook.loadError == null) {
-      unawaited(sync.start());
+      unawaited(s.start());
     } else {
-      unawaited(notebook.loadSucceeded.then((_) => sync.start()));
+      unawaited(notebook.loadSucceeded.then((_) => s.start()));
     }
   }
   // Files named on the command line, then those a second launch hands over.
@@ -334,7 +369,7 @@ Future<bool> saveBeforeExit(Notebook notebook) async {
 }
 
 class NotedApp extends StatefulWidget {
-  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock, this.openFiles, this.microsoft, this.sync});
+  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock, this.openFiles, this.microsoft, this.sync, this.webdav});
 
   final Notebook notebook;
 
@@ -356,6 +391,9 @@ class NotedApp extends StatefulWidget {
 
   /// The OneDrive pull (mobile builds with a client id); null elsewhere.
   final OneDriveSync? sync;
+
+  /// The WebDAV pull (mobile builds); null elsewhere.
+  final WebDavSync? webdav;
 
   @override
   State<NotedApp> createState() => _NotedAppState();
@@ -436,7 +474,10 @@ class _NotedAppState extends State<NotedApp> {
       theme: buildNotedTheme(Brightness.light, touch: touch),
       darkTheme: buildNotedTheme(Brightness.dark, touch: touch),
       themeMode: _settings.themeMode,
-      builder: (context, child) => OneDriveScope(sync: widget.sync, child: InputModeScope(child: child!)),
+      builder: (context, child) => OneDriveScope(
+        sync: widget.sync,
+        child: WebDavScope(sync: widget.webdav, child: InputModeScope(child: child!)),
+      ),
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,

@@ -2087,13 +2087,13 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0147 — iOS keychain clean-up deletes first and blocks sign-in until it is recorded; a failed token rotation means Sign in again
 - **Date:** 2026-11-06
-- **Status:** Active (findings accepted by the maintainer's PM chat, `run-diff-2` R-1 and R-2; details decided by the build team; supersedes 0145's "after saving the `keychainCleaned` flag")
+- **Status:** Active (findings accepted by the maintainer's PM chat, `run-diff-2` R-1 and R-2; details decided by the build team; supersedes 0145's "after saving the `keychainCleaned` flag"); the clean-up's caller amended by 0177
 - **Decision:**
   - **iOS keychain clean-up:**
     - On a first launch, Noted deletes its keychain items first, then saves `keychainCleaned: true` in `settings.json`.
     - Until both have succeeded in this session, the account isn't restored and sign-in is refused with "Noted couldn't prepare sign-in. Try again."
     - A sign-in attempt retries the clean-up first. A failed delete or a failed save leaves the flag unset, so the next launch retries.
-    - A `settings.json` that exists but can't be read skips the clean-up, because a reinstall removes that file rather than damaging it.
+    - A `settings.json` that exists but can't be read skips the clean-up, because a reinstall removes that file rather than damaging it. *(Amended by 0177: the clean-up is one app-level step that Microsoft and WebDAV both wait for.)*
   - **Rotation:**
     - If writing or reading back a rotated refresh token fails, the session goes to Sign in again.
     - The access token is not returned, in-memory tokens are dropped, and the stored token is deleted best-effort.
@@ -2170,10 +2170,10 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0154 — OneDrive sync stage 3: a read-only pull on iPad and Android
 - **Date:** 2026-11-08
-- **Status:** Active (scope decided by the maintainer's PM chat from the approved sync design; details decided by the build team from the reviewed note `2026-11-08-01-sync-stage3`; amends 0064 for this one folder tree)
+- **Status:** Active (scope decided by the maintainer's PM chat from the approved sync design; details decided by the build team from the reviewed note `2026-11-08-01-sync-stage3`; amends 0064 for this one folder tree); read-only roots per provider amended by 0177
 - **Decision:**
   - **Where.** Phones and tablets only, behind the hidden Microsoft section of About. A chosen OneDrive folder is copied to `<documents>/Noted/onedrive/<account>/<root item id>/`, listed as a standalone folder, with binders as its immediate subfolders. Its state is in `<support>/onedrive/<account>/<root item id>/`. The top level of OneDrive and a folder that is itself a binder can't be chosen. There is no way yet to choose another folder or stop.
-  - **Read-only.** Everything under `<documents>/Noted/onedrive/` is pull-only, computed from the path and not saved: pages list and open, saves, moves, deletes, binder and template changes and conflict-copy merges are refused with "This OneDrive folder is read-only on this device for now.", and reading writes nothing there. Nothing goes back to OneDrive.
+  - **Read-only.** Everything under `<documents>/Noted/onedrive/` is pull-only, computed from the path and not saved: pages list and open, saves, moves, deletes, binder and template changes and conflict-copy merges are refused with "This OneDrive folder is read-only on this device for now.", and reading writes nothing there. Nothing goes back to OneDrive. *(Amended by 0177: `<documents>/Noted/webdav/` is pull-only the same way, with its own provider name in the message.)*
   - **Rounds.** A delta round is folded in full and stored only at its `deltaLink`, then the stored remote tree is compared with the journal by case-folded path, so every poll also retries. Polls: launch, resume, 10 s with a OneDrive page open, 5 minutes otherwise, and *Check now*, foreground only. A folder delta the service refuses falls back to drive-root delta.
   - **Local differences win.** Nothing is replaced or deleted unless the local file equals its last pulled version, checked under the shared folder lock immediately before. A file that differs, or has no pulled version, is left alone and listed.
   - **Deletes.** A remote delete takes effect only if still planned at least 30 seconds later. More than 10 files, more than 20 % of tracked files other than attachments, or a whole binder, asks first: *Remove them here too* or *Keep them here*. A deleted root pauses sync and removes nothing. Attachments are never deleted by a pull.
@@ -2490,6 +2490,40 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - Host-only: `PageCanvas.header` and `PageCanvas.footer` (`noted_canvas`); no Box API, format or module change.
 - **Rationale:** the maintainer's UI spec (§1): chrome rows above the canvas, the title as page content, and a reserved status row.
 - **Alternatives considered:** a "Page saved" label (the notebook has no signal to back it); showing the new layout on mobile (it has no menu bar or Details, so the header row is its only route to the tree and Page settings).
+
+## 0177 — WebDAV pull on iPad and Android
+- **Date:** 2026-11-16
+- **Status:** Active (the build team (PM), run 2026-11-15-02, from the reviewed note `2026-11-15-01-cloud-parity` §4.3 and §11 step 4, under 0163; amends 0147 and 0154)
+- **Decision:**
+  - **Where and what.** Phones and tablets only, in About beside the OneDrive section. About is offered whenever the WebDAV controller exists, with or without a Microsoft account; the WebDAV section shows at once when Microsoft is absent, and after the same five-tap reveal as the OneDrive section when it is present. One WebDAV folder, read-only, pulled by the engine of 0154 through a WebDAV driver. WebDAV writes are not built. On desktop the provider's own client folder or a mounted share is a local folder, and 0171 handles its copies.
+  - **Connect.**
+    - The user gives an `https` address, a user name and an app password. `http` is refused, loopback included; only tests reach a local server. An address holding a user name is refused.
+    - `OPTIONS` must list class `1` in `DAV:`, the address must be a collection, and the password must be accepted. The folder is then chosen as for OneDrive (the top level of the address can't be chosen; a folder that is itself a binder can't be chosen).
+    - A first full walk of the chosen folder must give every file a `getetag`; otherwise "This server doesn't report file versions." and nothing is saved.
+    - A self-signed or otherwise untrusted certificate is refused ("The server's certificate is not trusted."), never skipped.
+  - **Saved.**
+    - The password is in the keychain or keystore (`SecureTokenStore`). The address, user name, id kind, root id and shown path are in `connection.json` in the state folder, written (atomically) after the password and never holding it.
+    - The working copy is `<documents>/Noted/webdav/<account key>/<root key>/` and the state is `<support>/webdav/<account key>/<root key>/`. The account key is the SHA-256 of the origin and user name, the root key of the normalised folder address.
+    - One connection at a time. *Disconnect* deletes the password and `connection.json`; the working copy and sync record stay and nothing on the server is touched. A missing password, or a `connection.json` that can't be read, isn't `https`, or isn't where its own keys put it, pauses the sync and is never overwritten.
+  - **Read-only (amends 0154).** Everything under `<documents>/Noted/webdav/` is pull-only like OneDrive's, with "This WebDAV folder is read-only on this device for now."; the message names the provider that owns the root. A user's own binder or folder named `webdav` directly under `<documents>/Noted/` falls inside that root and becomes pull-only; renaming or moving it lifts that. Polls, the guard (its question says "WebDAV says …"), showing changes and the 10 s and 5 minute intervals are 0154's, shared with OneDrive through one controller base.
+  - **Ids.** An item's id is `DAV:resource-id` if the server gives it for every item and no two share one, else Nextcloud's `oc:fileid` on the same terms, else the path below the root. The kind is fixed at connect. A later round in which an item lacks it is incomplete. Paths are built from the raw `href` split on `/`, each segment decoded on its own; a segment holding `/` or an unusable name is skipped and listed.
+  - **Path ids.**
+    - A remote move arrives as a delete plus a new file, which 0154's 30 s delay and guard handle.
+    - When the new name is unusable (so skipped), the vanished entry of the same kind in the same parent is held back with its whole subtree: a folder for a folder, a file for a file of the same size whose name the mirror would keep (a page, a binder file, or any name in a templates or attachments folder). It stays, and is listed "Removed or renamed on WebDAV; kept here while "<name>" is there, which can't be used", until the unusable item is gone or the vanished one is back.
+    - Any other unusable name holds nothing back.
+  - **Versions and rounds.** The version is `getetag`, stored in the journal's `c` field; comparisons ignore a leading `W/`, which is enough to see a change, not to write. Every round is a full walk, one `PROPFIND` of depth 1 per folder. It is complete or nothing is applied. It is incomplete on a `response` whose own status isn't 2xx, a 2xx `propstat` without `resourcetype`, a file without `getetag` or length, a folder that doesn't describe itself, an item with no id of the chosen kind, a transport error, or when every child of a folder that held some was skipped. A 404 `propstat` for a property an item lacks is normal.
+  - **Caps.** 8 MB per response (read in a stream and abandoned beyond that), folder depth 32, 10 000 folders and 100 000 items per walk. Past any, the round is incomplete and "Too large to sync" is listed.
+  - **Download check.** Requests send `Accept-Encoding: identity`. A `GET` streams to `tmp/`; its `ETag` must weakly equal the listed `getetag` and its length must match. With no `ETag` on the `GET`, a `PROPFIND` of depth 0 after it must show the same `getetag`. Anything else is "changed meanwhile": nothing is applied, it is retried next round and listed after three in a row (the count is kept in memory). A length or hash that differs from the listing still counts toward the pause after three mismatches, as for OneDrive.
+  - **Without a server hash.** A local file with the listed size is adopted only when a version-checked download has the same content, so a file published before a kill isn't stuck as "A different file is already here". The result is remembered in memory by item id, version and local content.
+  - **Transport.** Basic auth goes only to the folder's origin. Redirects are followed by hand, at most 5 and same origin only; another origin is refused. A 401 pauses with "WebDAV refused the password. Disconnect and connect again." and the refused password is not sent again (no poll, resume or Check now) until a new connection is made; a 429 or 503 waits for `Retry-After`.
+  - **Parsing.** The multistatus parser is our own, namespace-aware, with the five predefined entities and numeric references only; `<!DOCTYPE` and `<!ENTITY` are refused.
+  - **Keychain clean-up (amends 0147 and 0154).**
+    - The first-launch clean-up is one app-level step, started when Noted owns its data whether or not Microsoft is configured. Microsoft's start and sign-in and WebDAV's connect and restore all wait for its result and proceed only on true.
+    - A success is kept for the launch, a running call is shared, and a false result is cleared, so the next Microsoft sign-in or WebDAV connect runs it again.
+    - 0147's rules are unchanged: the delete runs before the flag is saved and is not repeated when only the flag failed, a sign-in retries a failed step, and an unreadable `settings.json` skips the clean-up and returns true.
+    - Only the caller moved. Before, a build without `NOTED_MS_CLIENT_ID` never ran it.
+- **Rationale:** 0163 makes WebDAV a full in-scope cloud, and the read-only pull is the stage OneDrive has. A server that reports no versions can't be pulled without risking a stale copy, so it is refused. WebDAV needs the keychain clean-up in builds that have no Microsoft account, and waiting for a flag that an unreadable `settings.json` never sets would block it for good.
+- **Alternatives considered:** a hash of the content in place of the version (the server gives none); skipping unchanged folders by their collection ETag (servers differ; it waits for a probe); a user name and password in the address (leaks into keys and logs); trusting a self-signed certificate on request (the credential would reach any server); waiting for the `keychainCleaned` flag (an unreadable settings file never sets it); keeping the clean-up inside `MicrosoftAccount` (a build without Microsoft never ran it).
 
 ## 0178 — UI spec follow-up, step 6: the 900 px layout
 - **Date:** 2026-11-15

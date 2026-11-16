@@ -23,22 +23,25 @@ class GuardPrompt {
   }
 }
 
-/// "OneDrive says N pages were removed." with the list.
-GuardPrompt showOneDriveGuardDialog(BuildContext context, GuardQuestion question) {
+/// "OneDrive says N pages were removed." (or WebDAV) with the list.
+GuardPrompt showOneDriveGuardDialog(BuildContext context, GuardQuestion question, {String provider = 'OneDrive'}) {
   final navigator = Navigator.of(context);
   final route = DialogRoute<bool>(
     context: context,
     barrierDismissible: false,
-    builder: (context) => OneDriveGuardDialog(question: question),
+    builder: (context) => OneDriveGuardDialog(question: question, provider: provider),
   );
   final answer = navigator.push<bool>(route);
   return GuardPrompt._(navigator, route, answer);
 }
 
 class OneDriveGuardDialog extends StatefulWidget {
-  const OneDriveGuardDialog({super.key, required this.question});
+  const OneDriveGuardDialog({super.key, required this.question, this.provider = 'OneDrive'});
 
   final GuardQuestion question;
+
+  /// The provider that asks: `OneDrive`, `WebDAV`.
+  final String provider;
 
   @override
   State<OneDriveGuardDialog> createState() => _OneDriveGuardDialogState();
@@ -63,7 +66,7 @@ class _OneDriveGuardDialogState extends State<OneDriveGuardDialog> {
       canPop: false,
       child: AlertDialog(
         key: const ValueKey('onedrive-guard'),
-        title: Text(n == 1 ? 'OneDrive says 1 page was removed.' : 'OneDrive says $n pages were removed.'),
+        title: Text(n == 1 ? '${widget.provider} says 1 page was removed.' : '${widget.provider} says $n pages were removed.'),
         content: SizedBox(
           width: 380,
           child: Scrollbar(

@@ -279,6 +279,17 @@ void main() {
       expect(w.nb.log, contains('checkFolders'));
     });
 
+    sTest('an answer given while signed out still reaches the runner (saved, applied after sign-in)', (t) async {
+      await build(t);
+      await start(t);
+      await t.runAsync(() => w.account.signOut());
+      await t.pump();
+      final q = GuardQuestion(['a.canvas']);
+      final saved = await t.runAsync(() => w.sync.answerGuard(q, remove: true));
+      expect(saved, isTrue);
+      expect(w.runner.answers, [(q, true)]);
+    });
+
     sTest('answering the guard reports the round it ran, like any other round', (t) async {
       await build(t);
       await start(t);

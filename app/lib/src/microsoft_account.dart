@@ -81,46 +81,25 @@ class MicrosoftAccount extends ChangeNotifier {
   String? get error => _error;
 
   // Set by start(); until the iOS clean-up has succeeded in this session the
-  // account is not restored and sign-in is refused.
-  AppSettings? _settings;
-  Future<void> Function()? _cleanup;
-  bool _ready = true;
-  bool _deleted = false;
+  // account is not restored and sign-in is refused. Null: nothing to clean.
+  KeychainCleaner? _cleaner;
 
   /// Runs the clean-up if it is due. True when sign-in may go ahead: nothing to
   /// clean, or the items were deleted and the flag saved.
-  Future<bool> _prepare() async {
-    final settings = _settings;
-    if (settings == null || _ready) return true;
-    try {
-      if (_deleted) {
-        // The items are gone; only the flag is left to save.
-        _ready = settings.markKeychainCleaned();
-      } else {
-        final delete = _cleanup ?? SecureTokenStore.deleteEverything;
-        _ready = await clearKeychainOnFirstLaunch(settings, () async {
-          await delete();
-          _deleted = true;
-        });
-      }
-    } on Object {
-      _ready = false;
-    }
-    return _ready;
-  }
+  Future<bool> _prepare() => _cleaner?.cleanKeychainOnce() ?? Future.value(true);
 
   /// Reads the stored account (after, on iOS, the one-time keychain
   /// clean-up). Never throws. If the clean-up fails the account is not
   /// restored and sign-in is refused until a later sign-in or start retries
-  /// the clean-up and it succeeds.
+  /// the clean-up and it succeeds. [cleaner] is the app's one clean-up step
+  /// (WebDAV waits for the same one); without it [settings] and
+  /// [firstLaunchCleanup] make a step of its own.
   Future<void> start({
     AppSettings? settings,
     Future<void> Function()? firstLaunchCleanup,
+    KeychainCleaner? cleaner,
   }) async {
-    _settings = settings;
-    _cleanup = firstLaunchCleanup;
-    _ready = settings == null;
-    _deleted = false;
+    _cleaner = cleaner ?? (settings == null ? null : KeychainCleaner(settings, delete: firstLaunchCleanup));
     try {
       if (await _prepare()) await session.restore();
     } on Object {
@@ -165,6 +144,50 @@ class MicrosoftAccount extends ChangeNotifier {
     unawaited(_sub.cancel());
     session.dispose();
     super.dispose();
+  }
+}
+
+/// The first-launch keychain clean-up as one app-level step (N6), run through
+/// [cleanKeychainOnce] by everything that reads or writes a keychain secret:
+/// Microsoft sign-in and restore, and WebDAV connect and restore. It starts
+/// from `onOwned`, whether or not Microsoft is configured.
+///
+/// A success is kept for the rest of the launch, a call already running is
+/// shared, and a false result is cleared, so the next sign-in or connect runs
+/// it again. The delete that succeeded is not repeated when only the flag
+/// failed to save. The rules are [clearKeychainOnFirstLaunch]'s.
+class KeychainCleaner {
+  KeychainCleaner(this.settings, {Future<void> Function()? delete})
+    : _delete = delete ?? SecureTokenStore.deleteEverything;
+
+  final AppSettings settings;
+  final Future<void> Function() _delete;
+  bool _ready = false;
+  bool _deleted = false;
+  Future<bool>? _running;
+
+  /// True when secrets may be read and written: nothing to clean, or the items
+  /// were deleted and the flag saved. Never throws.
+  Future<bool> cleanKeychainOnce() {
+    if (_ready) return Future.value(true);
+    return _running ??= _run().whenComplete(() => _running = null);
+  }
+
+  Future<bool> _run() async {
+    try {
+      if (_deleted) {
+        // The items are gone; only the flag is left to save.
+        _ready = settings.markKeychainCleaned();
+      } else {
+        _ready = await clearKeychainOnFirstLaunch(settings, () async {
+          await _delete();
+          _deleted = true;
+        });
+      }
+    } on Object {
+      _ready = false;
+    }
+    return _ready;
   }
 }
 

@@ -15,9 +15,9 @@ const String binderFolderRefusal = 'This is a binder. Choose the folder that hol
 
 /// Opens the full-screen folder browser; returns the folder the user chose,
 /// or null if they went back.
-Future<ChosenRoot?> pickOneDriveFolder(BuildContext context, FolderSource source) =>
+Future<ChosenRoot?> pickOneDriveFolder(BuildContext context, FolderSource source, {String providerName = 'OneDrive'}) =>
     Navigator.of(context).push<ChosenRoot>(
-      MaterialPageRoute(fullscreenDialog: true, builder: (_) => OneDriveFolderPicker(source: source)),
+      MaterialPageRoute(fullscreenDialog: true, builder: (_) => OneDriveFolderPicker(source: source, providerName: providerName)),
     );
 
 /// "12 pages, 3 binders", "No Noted files".
@@ -34,9 +34,12 @@ String folderHintText(FolderHint h) {
 /// folder* for the open one (OneDrive sync stage 3, §5). It only offers a
 /// folder that holds Noted pages and binders, never one that is a binder.
 class OneDriveFolderPicker extends StatefulWidget {
-  const OneDriveFolderPicker({super.key, required this.source});
+  const OneDriveFolderPicker({super.key, required this.source, this.providerName = 'OneDrive'});
 
   final FolderSource source;
+
+  /// For the words on the screen: `OneDrive`, `WebDAV`.
+  final String providerName;
 
   @override
   State<OneDriveFolderPicker> createState() => _OneDriveFolderPickerState();
@@ -84,7 +87,7 @@ class _OneDriveFolderPickerState extends State<OneDriveFolderPicker> {
       if (!mounted || gen != _generation) return;
       setState(() {
         _loading = false;
-        _error = "OneDrive's folders couldn't be listed.";
+        _error = "${widget.providerName}'s folders couldn't be listed.";
       });
     }
   }
@@ -111,7 +114,7 @@ class _OneDriveFolderPickerState extends State<OneDriveFolderPicker> {
     if (open == null || hint == null || hint.holdsBinderFile) return;
     final driveId = open.driveId;
     if (driveId == null) {
-      setState(() => _error = "OneDrive didn't say which drive this folder is in.");
+      setState(() => _error = "${widget.providerName} didn't say which drive this folder is in.");
       return;
     }
     if (hint.isEmpty) {
@@ -147,7 +150,7 @@ class _OneDriveFolderPickerState extends State<OneDriveFolderPicker> {
     final hint = _hint;
     final refused = hint != null && hint.holdsBinderFile;
     final note = open == null
-        ? (_error != null ? null : "Open a folder to use it. The top level of OneDrive can't be chosen.")
+        ? (_error != null ? null : "Open a folder to use it. The top level of ${widget.providerName} can't be chosen.")
         : refused
         ? binderFolderRefusal
         : hint == null
@@ -161,7 +164,7 @@ class _OneDriveFolderPickerState extends State<OneDriveFolderPicker> {
           icon: Icon(open == null ? Icons.close_rounded : Icons.arrow_back_rounded),
           onPressed: _up,
         ),
-        title: Text(open?.name ?? 'OneDrive', key: const ValueKey('picker-title')),
+        title: Text(open?.name ?? widget.providerName, key: const ValueKey('picker-title')),
       ),
       body: Column(
         children: [
