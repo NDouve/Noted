@@ -1049,6 +1049,10 @@ void main() {
       if (error != null) throw error!;
     }
 
+    // Waits on the test clock, which [run] advances: the app's retries and lock
+    // waits are test-clock timers, and a real-time limit shrinks under load.
+    Future<void> until(bool Function() done, String what) => fakeUntil(done, what);
+
     Future<void> drain(WidgetTester t) async {
       for (var i = 0; i < 400 && nb.unsavedDescription != null; i++) {
         await t.pump(const Duration(milliseconds: 25));
@@ -1084,7 +1088,8 @@ void main() {
         await t.runAsync(() async => repair(original!));
         await run(t, () => nb.checkBinderFile(binderFile().path));
         await drain(t);
-        await run(t, () => until(() => textOrEmpty().contains('Typed title'), 'the typing to land'));
+        await run(t, () => until(() => nb.coverPendingCountForTest(section.path) == 0, 'the typing to land'));
+        expect(fileText(), contains('Typed title'));
         await end(t);
       });
     }
@@ -1102,7 +1107,8 @@ void main() {
       expect(fileText(), other);
       await t.runAsync(() async => binderFile().writeAsStringSync(original!));
       await run(t, () => nb.checkBinderFile(binderFile().path));
-      await run(t, () => until(() => textOrEmpty().contains('Typed title'), 'the typing to land'));
+      await run(t, () => until(() => nb.coverPendingCountForTest(section.path) == 0, 'the typing to land'));
+      expect(fileText(), contains('Typed title'));
       await end(t);
     });
 
@@ -1119,7 +1125,8 @@ void main() {
       final theirs = Binder.parse(original!).withDescription('Their description').write();
       await t.runAsync(() async => binderFile().writeAsStringSync(theirs));
       await run(t, () => nb.checkBinderFile(binderFile().path));
-      await run(t, () => until(() => textOrEmpty().contains('Typed while away'), 'the title to land'));
+      await run(t, () => until(() => nb.coverPendingCountForTest(section.path) == 0, 'the title to land'));
+      expect(fileText(), contains('Typed while away'));
       expect(Binder.parse(fileText()).description, 'Their description');
       await end(t);
     });
@@ -1244,6 +1251,9 @@ void main() {
       await t.runAsync(stop);
     }
 
+    // Waits on the test clock, which [run] advances (see group 22).
+    Future<void> until(bool Function() done, String what) => fakeUntil(done, what);
+
     testWidgets('a pending cover change at quit: one try, then the question; Cancel keeps Noted open; Leave quits', (t) async {
       await begin(t);
       seams.failMoves = 10000;
@@ -1312,7 +1322,8 @@ void main() {
       await run(t, () async {});
       expect(nb.coverPendingFor(section.path).map((c) => c.fields['title']), ['Typed at hide']);
       seams.failMoves = 0;
-      await run(t, () => until(() => textOrEmpty().contains('Typed at hide'), 'the hide write'));
+      await run(t, () => until(() => nb.coverPendingCountForTest(section.path) == 0, 'the hide write'));
+      expect(fileText(), contains('Typed at hide'));
       await end(t);
     });
 
@@ -1335,7 +1346,8 @@ void main() {
       await run(t, () async {});
       expect(nb.coverPendingFor(section.path).any((c) => c.fields['description'] == 'More typing'), isTrue);
       seams.failMoves = 0;
-      await run(t, () => until(() => textOrEmpty().contains('More typing'), 'it to land'));
+      await run(t, () => until(() => nb.coverPendingCountForTest(section.path) == 0, 'it to land'));
+      expect(fileText(), contains('More typing'));
       await end(t);
     });
 
