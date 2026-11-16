@@ -360,10 +360,14 @@ class BinderHeldException extends NotebookException {
   const BinderHeldException(super.message);
 }
 
+/// What a job refused at its turn says when the binder file isn't there or
+/// can't be read just now (no hold; the watcher looks again).
+const String binderUnreadableNowMessage = "The binder's file can't be read just now.";
+
 // A job refused at its turn because the binder file isn't there or can't be
 // read just now (no hold; the watcher looks again). A save tries again later.
 class _BinderUnreadableNow extends NotebookException {
-  const _BinderUnreadableNow() : super("This binder's file can't be read just now, so nothing was written.");
+  const _BinderUnreadableNow() : super(binderUnreadableNowMessage);
 }
 
 /// What a turn at a binder folder found its binder file to be.
@@ -846,7 +850,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> _gateMove(String loc) async {
     if (_sectionAt(loc) == null) return;
     if (!await _binderGate(loc) || _isLocked(loc)) {
-      throw FileSystemException(_isLocked(loc) ? _lockedMessage(loc) : "The binder's file can't be read just now", loc);
+      throw FileSystemException(_isLocked(loc) ? _lockedMessage(loc) : binderUnreadableNowMessage, loc);
     }
   }
 
@@ -5928,7 +5932,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // between that and the copy.
       await templateStepHook?.call('saveAssets');
       if (binder != null && !await _binderGate(binder) && !_isLocked(binder)) {
-        throw const NotebookException("The binder's file can't be read just now.");
+        throw const NotebookException(binderUnreadableNowMessage);
       }
       _templateGate(binder, snap);
     } on NotebookException catch (e) {
@@ -5982,7 +5986,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // turn, inside this job (a hold set while it waited is seen), and
           // nothing is copied into a held folder.
           if (binder != null && (!await _binderGate(binder) || _isLocked(binder))) {
-            throw NotebookException(_isLocked(binder) ? _lockedMessage(binder) : "The binder's file can't be read just now.");
+            throw NotebookException(_isLocked(binder) ? _lockedMessage(binder) : binderUnreadableNowMessage);
           }
           // A binder that changed since is only read, never swept.
           if (own) sweepSource = _templateGateProblem(binder, snap) == null && !_isLocked(binder);
@@ -13728,7 +13732,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final intoBinder = _sectionAt(dir.path)?.path;
     if (intoBinder != null && (!await _binderGate(intoBinder) || _isLocked(intoBinder))) {
       throw NotebookException(
-        _isLocked(intoBinder) ? _lockedMessage(intoBinder) : "That binder's file can't be read just now, so nothing was written.",
+        _isLocked(intoBinder) ? _lockedMessage(intoBinder) : binderUnreadableNowMessage,
       );
     }
     try {

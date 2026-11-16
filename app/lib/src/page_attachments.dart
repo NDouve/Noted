@@ -108,7 +108,8 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     } on Object catch (e) {
       if (identical(e, jobError)) rethrow;
       // Refused at the folder's turn (its binder file changed): nothing changed.
-      throw _Refused('This page is read-only ($e)', pageFolder.path);
+      // In its own words ("This folder now holds another binder…").
+      throw _Refused(_messageOf(e) ?? 'This page is read-only', pageFolder.path);
     }
   }
 
@@ -513,4 +514,16 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
 // now (read-only, or its binder file changed at its turn).
 class _Refused extends FileSystemException {
   const _Refused(super.message, super.path);
+}
+
+// The plain message of a refusal (a notebook or file system exception), or
+// null.
+String? _messageOf(Object e) {
+  if (e is FileSystemException) return e.message;
+  try {
+    final m = (e as dynamic).message;
+    return m is String ? m : null;
+  } on Object {
+    return null;
+  }
 }
