@@ -1669,6 +1669,63 @@ void main() {
       expect(await entries(), isEmpty);
     });
 
+    test('(f) a box from the copy deleted and the delete undone inside the window: a revert brings it back', () async {
+      await start();
+      await withCopy();
+      await nb.checkFile(copy);
+      final away = nb.currentId!;
+      await nb.open(id);
+      nb.current!.delete(extra.id);
+      await nb.flush();
+      nb.current!.undo();
+      expect(nb.current!.page.node(extra.id), isNotNull, reason: 'the delete is undone');
+      await nb.flush();
+      await nb.open(away);
+      revert();
+      await recheck();
+      expect(ids(), {box.id, extra.id}, reason: 'an undone delete is not the user\'s');
+      await recheck();
+      expect(await entries(), isEmpty);
+    });
+
+    for (final open in [true, false]) {
+      final where = open ? 'open' : 'closed';
+      test('(f) AI access loosened, then tightened back (page $where), then a revert: the user\'s last choice stands', () async {
+        await start();
+        await withCopy(originalAi: AiAccess.open, shape: (c) => c.withMeta(c.meta.withAiAccess(AiAccess.guarded)));
+        await nb.checkFile(copy);
+        final away = nb.currentId!;
+        if (open) await nb.open(id);
+        await nb.setAiAccess(id, AiAccess.open);
+        await nb.flush();
+        await nb.setAiAccess(id, AiAccess.guarded);
+        await nb.flush();
+        if (open) await nb.open(away);
+        expect(onDisk(id).meta.aiAccess, AiAccess.guarded);
+        revert(); // the pre-merge file, Open
+        await recheck();
+        expect(ids(), {box.id, extra.id});
+        expect(onDisk(id).meta.aiAccess, AiAccess.guarded);
+      });
+
+      test('(f) AI access set to Privileged (page $where), then a revert to the Open original: Privileged, the user\'s', () async {
+        await start();
+        await withCopy(originalAi: AiAccess.open, shape: (c) => c.withMeta(c.meta.withAiAccess(AiAccess.guarded)));
+        await nb.checkFile(copy);
+        final away = nb.currentId!;
+        if (open) await nb.open(id);
+        await nb.setAiAccess(id, AiAccess.privileged);
+        await nb.flush();
+        if (open) await nb.open(away);
+        revert();
+        await recheck();
+        expect(ids(), {box.id, extra.id});
+        expect(onDisk(id).meta.aiAccess, AiAccess.privileged, reason: 'not the disk\'s Open, nor the copy\'s Guarded');
+        await recheck();
+        expect(await entries(), isEmpty);
+      });
+    }
+
     test('(f) opened inside the window: editable; a box deleted there stays deleted after a revert', () async {
       await start();
       final more = noteBox('also from the copy', at: const Bounds(400, 100, 200, 40));

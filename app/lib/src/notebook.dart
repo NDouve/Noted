@@ -2366,14 +2366,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       notifyListeners();
       return;
     }
+    NotedPage? read;
     final next = await _updateClosedPage(loc, id, (page) {
       final meta = page.meta.withAiAccess(value);
       if (identical(meta, page.meta)) return null;
-      // The user's choice: a redo of a consumed copy leaves it as it is.
-      _noteOwnEdits(id, page, page.withMeta(meta));
+      read = page;
       return page.withMeta(meta);
     });
     if (next == null) return;
+    // The user's choice, once written: a redo of a consumed copy keeps it.
+    _noteOwnEdits(id, read, next);
     _touch(loc);
     _metas[id] = next.meta;
     _rebuildTree();
@@ -7353,7 +7355,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final id = base.id;
     final path = st.pathFor(id);
     final baseText = writePage(base);
-    _noteOwnEdits(id, base, mine);
     // The file is gone but its folder is there, or the page isn't in this
     // place any more: it was deleted or moved meanwhile, and is not recreated.
     // (A vanished folder is different: the save goes to recovery.)
@@ -7403,6 +7404,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
         throw _SaveRefused(await _keptAnswer(loc, st, toSave, recoveryBase));
       }
+      // Landed: this app's own deletes and AI access stand against a later
+      // redo of a consumed copy (taken from mine, not from what was written).
+      _noteOwnEdits(id, base, mine);
       return toSave;
     }
     throw _SaveRefused(
@@ -8298,7 +8302,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       debugPrint('Keeping the merged copy of page ${copy.id} in recovery failed: $e');
       throw refused;
     }
-    final m = _consumedCopies[gen] = _ConsumedCopy(gen, copy.id, copyTime, now());
+    final m = _consumedCopies[gen] = _ConsumedCopy(gen, copy.id, copyTime, now(), copy.meta.rawAiAccess);
     _armConsumed(m);
     return m;
   }
@@ -8393,6 +8397,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on NotebookException {
       return false;
     }
+    // A delete that Undo can still reach holds the page (0143): the entry waits.
+    if (_deleteHolds(id)) return false;
     m.decideNow = false;
     final path = st.pathFor(id);
     await syncHook?.call('copy-recheck', path); // a test seam: sync puts a file back here
@@ -8412,10 +8418,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       return false;
     }
     if (text == null) {
-      // A delete Undo can reach waits; a page still listed may be a sync
-      // client's replace in flight. Listed nowhere: the deleting writer's
-      // decision stands.
-      if (_deleteHolds(id) || _loc[id] != null) return false;
+      // A page still listed may be a sync client's replace in flight. Listed
+      // nowhere: the deleting writer's decision stands.
+      if (_loc[id] != null) return false;
       m.failed = false;
       await _deleteEntry(rec, e);
       return true;
@@ -8430,20 +8435,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       m.failed = true;
       return false;
     }
-    final missing = consumedCopyHeld(
-      disk,
-      e.page,
-      touched: m.touched,
-      headerTouched: m.headerTouched,
-      topOfChain: _topOfChain(at, disk),
-    );
-    if (missing == null) {
-      m.failed = false;
-      await _deleteEntry(rec, e);
-      return true;
-    }
-    debugPrint('Page $id no longer holds its merged copy ($missing): merging it again');
-    // This app's own deletes and AI access change since the merge stand.
+    // What the file must hold, and what a redo merges: the copy without the
+    // nodes this app deleted since, and with the user's own last AI access
+    // when they changed it (after a revert the disk's is the pre-merge one).
     var redo = e.page;
     if (m.touched.isNotEmpty) {
       redo = NotedPage.fromParts(redo.top, redo.meta, [
@@ -8452,10 +8446,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       ]);
     }
     if (m.headerTouched) {
-      final raw = disk.meta.rawAiAccess;
+      final raw = m.userAi;
       final fields = raw == null ? redo.meta.fields.remove(aiAccessKey) : redo.meta.fields.set(aiAccessKey, raw);
       redo = redo.withMeta(PageMeta.tryRead(fields) ?? redo.meta);
     }
+    final missing = consumedCopyHeld(disk, redo, topOfChain: _topOfChain(at, disk));
+    if (missing == null) {
+      m.failed = false;
+      await _deleteEntry(rec, e);
+      return true;
+    }
+    debugPrint('Page $id no longer holds its merged copy ($missing): merging it again');
     final label = '"${_titleOrUntitled(e.page.meta.title)}"';
     try {
       for (var attempt = 0; ; attempt++) {
@@ -8508,11 +8509,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  // This app changed page [id] from [base] to [mine] (a save, before mine is
-  // merged with the file): a redo of a consumed copy of the page leaves out
-  // the nodes it deleted (in [base], not in [mine]), and keeps a changed AI
-  // access. A box it moved or edited is still required: a revert brings it
-  // back in the copy's version.
+  // This app changed page [id] from [base] to [mine] (a change of the open
+  // page, or a closed save that landed; before mine is merged with the file):
+  // a redo of a consumed copy of the page leaves out the nodes it deleted (in
+  // [base], not in [mine]) and takes the user's own AI access. A node back in
+  // [mine] (an Undo, a discarded change) counts again, and an AI access equal
+  // to the copy's again is no longer the user's own change. A box it moved or
+  // edited is still required: a revert brings it back in the copy's version.
   void _noteOwnEdits(String id, NotedPage? base, NotedPage mine) {
     if (base == null || !_consumedCopies.values.any((m) => m.pageId == id)) return;
     final kept = {for (final n in mine.nodes) n.id};
@@ -8520,11 +8523,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final n in base.nodes)
         if (!kept.contains(n.id)) n.id,
     };
-    final header = base.meta.rawAiAccess != mine.meta.rawAiAccess;
+    final ai = mine.meta.rawAiAccess;
+    final header = base.meta.rawAiAccess != ai;
     for (final m in _consumedCopies.values) {
       if (m.pageId != id) continue;
-      m.touched.addAll(ids);
-      if (header) m.headerTouched = true;
+      m.touched
+        ..removeAll(kept)
+        ..addAll(ids);
+      if (!header) continue;
+      if (ai == m.copyAi) {
+        m.headerTouched = false;
+        m.userAi = null;
+      } else {
+        m.headerTouched = true;
+        m.userAi = ai;
+      }
     }
   }
 
@@ -13167,10 +13180,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 // A conflict copy that a merge consumed and that is kept as recovery entry
 // [gen] until a read of its page file shows the merge holds (copy retire).
 class _ConsumedCopy {
-  _ConsumedCopy(this.gen, this.pageId, this.copyTime, this.since);
+  _ConsumedCopy(this.gen, this.pageId, this.copyTime, this.since, this.copyAi);
 
   String gen; // moves with the entry when a move re-keys it
   final String pageId;
+  final RawJson? copyAi; // the copy's own `ai` field, as written
   final int copyTime; // the copy's time, for the conflicts a redo records
   DateTime since; // the merge or the last redo: due [copyRetireAfter] after
   int rounds = 0; // redos made
@@ -13180,9 +13194,11 @@ class _ConsumedCopy {
   bool failed = false; // the last redo or read failed: retried at the backoff
   bool decideNow = false; // due at once: a delete of the page was let go, or confirmed
   // This app's own changes of the page since the merge: the ids of nodes it
-  // deleted, and the AI access. A redo leaves them as they are.
+  // deleted, and the AI access the user chose ([userAi], raw; null: none, the
+  // page follows its parent). A redo leaves them as they are.
   final Set<String> touched = {};
   bool headerTouched = false;
+  RawJson? userAi;
   Timer? timer;
 }
 
