@@ -206,7 +206,7 @@ void pageTreeSuite() {
       await withSession(t, 'location', (s) async {
         final a = s.nb.currentId!;
         // No settings icon on the row; the item is in both menus.
-        expect(find.byIcon(Icons.tune_rounded), findsOneWidget, reason: 'only the one beside the page title');
+        expect(find.byIcon(Icons.tune_rounded), findsNothing, reason: 'the page-settings button moved to the Details panel');
         await s.tapKey('pages-menu', settle: 500);
         expect(find.text('Open binder…'), findsOneWidget);
         await t.tapAt(const Offset(700, 700));
