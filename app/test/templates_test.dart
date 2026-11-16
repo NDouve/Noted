@@ -733,6 +733,33 @@ void main() {
       });
     }
 
+    test('another template replaced by a copy of this one during the cleanup keeps every attachment', () async {
+      final nb = make();
+      await nb.load();
+      final notices = collect(nb);
+      final (a, assets) = await appTemplate(nb);
+      final b = await nb.savePageAsTemplate(nb.currentId!, name: 'B');
+      final other = File('${appTemplates().path}/Other.notedtemplate');
+      File('${appTemplates().path}/${b.id}.notedtemplate').renameSync(other.path);
+      final items = (await nb.listTemplates(TemplateKind.page)).items;
+      final item = items.firstWhere((i) => i.template.id == a.id);
+      final text = File(item.path).readAsStringSync();
+      nb.templateStepHook = (step) async {
+        if (step == 'assetDelete') other.writeAsStringSync(text);
+      };
+      await nb.deleteTemplate(item);
+      await tick();
+      expect(File('${assets.path}/$name1').existsSync(), isTrue);
+      expect(File('${assets.path}/$name2').existsSync(), isTrue);
+      expect(notices.single, contains('another copy of the template may need them'));
+      final again = make();
+      await again.load();
+      final listed = (await again.listTemplates(TemplateKind.page)).items.firstWhere((i) => i.template.id == a.id);
+      final page = await again.createPageFromTemplate(listed.template);
+      expect(File('${pages.path}/$page.assets/$name1').readAsBytesSync(), good1);
+      expect(File('${pages.path}/$page.assets/$name2').readAsBytesSync(), good2);
+    });
+
     test('a template whose page id is a path copies nothing from outside its assets folder', () async {
       final nb = make();
       await nb.load();

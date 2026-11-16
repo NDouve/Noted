@@ -5522,29 +5522,45 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // was deleted: another readable template with the id, any
   // template file that can't be read (its id can't be established), a
   // set-aside leftover, or any other file named from the id. A fresh scan, no
-  // sweep. Fills [known] with the template files seen.
-  Future<bool> _templateAssetsShared(Directory dir, String id, Set<String> known) async {
+  // sweep. Fills [known] with the stamp (size and modified time) of every
+  // template file, taken before the scan reads them: a file that changes after
+  // that no longer matches its stamp.
+  Future<bool> _templateAssetsShared(Directory dir, String id, Map<String, String> known) async {
+    try {
+      for (final e in dir.listSync(followLinks: false)) {
+        if (e is File && e.path.endsWith(templateExtension)) known[_key(e.path)] = _stamp(e);
+      }
+    } on FileSystemException {
+      return true;
+    }
     for (final e in await TemplateStore(dir).scan()) {
       if (e is UnreadableTemplate) return true;
-      if (e is ReadableTemplate) {
-        if (e.template.id == id) return true;
-        known.add(_key(e.path));
-      }
+      if (e is ReadableTemplate && e.template.id == id) return true;
     }
     return _templateSurvivorNow(dir, id, known);
   }
 
+  static String _stamp(File f) {
+    final st = f.statSync();
+    if (st.type != FileSystemEntityType.file) throw const FileSystemException('not a file');
+    return [st.size, st.modified.microsecondsSinceEpoch].join(':');
+  }
+
   // The synchronous listing of the folder: a leftover, a file named from the
-  // id (such as `<id>.notedtemplate.tmp`; folders are not files) or a template
-  // file that was not there at the scan. A file at the deleted path counts too:
-  // a copy synced back under the same name is a survivor.
-  bool _templateSurvivorNow(Directory dir, String id, Set<String> known) {
+  // id (such as `<id>.notedtemplate.tmp`; folders are not files), a template
+  // file that was not there at the scan (a copy synced back to the deleted
+  // path included) or one whose stamp changed since, or can't be read now: a
+  // template replaced by a copy of this one is a survivor too.
+  bool _templateSurvivorNow(Directory dir, String id, Map<String, String> known) {
     try {
       for (final e in dir.listSync(followLinks: false)) {
         if (e is! File) continue;
         final n = _baseName(e.path);
         if (n.endsWith(asideSuffix) || n.endsWith(verifiedSuffix) || n.startsWith(id)) return true;
-        if (n.endsWith(templateExtension) && !known.contains(_key(e.path))) return true;
+        if (n.endsWith(templateExtension)) {
+          final was = known[_key(e.path)];
+          if (was == null || was != _stamp(e)) return true;
+        }
       }
     } on FileSystemException {
       return true; // can't tell: the assets stay
@@ -5563,7 +5579,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final assets = Directory('${dir.path}${Platform.pathSeparator}$id.assets');
     if (!_plainName.hasMatch(id) || _key(assets.parent.absolute.path) != _key(dir.absolute.path)) return;
     if (!await assets.exists()) return;
-    final known = <String>{};
+    final known = <String, String>{};
     if (await _templateAssetsShared(dir, id, known)) {
       _templateNotice(_assetsKeptShared);
       return;
