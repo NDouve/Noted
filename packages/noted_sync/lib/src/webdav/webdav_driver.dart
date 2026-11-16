@@ -139,7 +139,10 @@ class WebDavDriver implements RemoteDriver {
     String? endpoint,
     int seq,
   ) async {
-    final listing = await client.list(idProps: _idProps);
+    final listing = await client.list(
+      idProps: _idProps,
+      populated: _populated(map),
+    );
     final root = listing.nodes.first;
     final rid = root.idFor(idKind);
     if (rid == null) throw WebDavIncomplete('The server gave an item no id');
@@ -209,6 +212,33 @@ class WebDavDriver implements RemoteDriver {
         }
       }
     }
+    // With path ids, a renamed folder is a delete plus a new folder. When the
+    // new name is unusable (so skipped), the folder that vanished from the
+    // same parent is carried forward with its whole subtree, unchanged, so
+    // nothing below it is read as removed. It goes on until the unusable
+    // folder is gone or the vanished folder is back.
+    if (idKind == DavIdKind.path) {
+      final unusableParents = {
+        for (final e in entries.values)
+          if (e.folder && e.parent != null && !isSafeName(e.name)) e.parent!,
+      };
+      final kept = <String>{};
+      var more = true;
+      while (more) {
+        more = false;
+        for (final e in map.values) {
+          if (entries.containsKey(e.id) || e.parent == null) continue;
+          final p = entries[e.parent];
+          if (p == null) continue;
+          if ((e.folder && unusableParents.contains(p.id)) ||
+              kept.contains(p.id)) {
+            kept.add(e.id);
+            entries[e.id] = e;
+            more = true;
+          }
+        }
+      }
+    }
     _urls
       ..clear()
       ..addAll(urls);
@@ -219,6 +249,31 @@ class WebDavDriver implements RemoteDriver {
       seq: next,
       issues: listing.issues,
     );
+  }
+
+  /// The re-encoded paths of the folders of [map] that have children.
+  Set<String> _populated(Map<String, RemoteEntry> map) {
+    String? pathOf(RemoteEntry e) {
+      final parts = <String>[];
+      var cur = e;
+      for (var i = 0; i < 100; i++) {
+        if (cur.parent == null) return parts.reversed.join('/');
+        parts.add(Uri.encodeComponent(cur.name));
+        final up = map[cur.parent];
+        if (up == null) return null;
+        cur = up;
+      }
+      return null;
+    }
+
+    final out = <String>{};
+    for (final e in map.values) {
+      final p = e.parent == null ? null : map[e.parent];
+      if (p == null) continue;
+      final path = pathOf(p);
+      if (path != null) out.add(path);
+    }
+    return out;
   }
 
   Future<DavFolder> _list(String itemId) {

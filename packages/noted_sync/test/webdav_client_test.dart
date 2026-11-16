@@ -771,6 +771,22 @@ void main() {
   });
 
   group('review fixes', () {
+    test('an empty folder with one stray address is empty; one that held children is incomplete', () async {
+      dav.addFile('Noted/a.canvas', b('A'));
+      dav.addFolder('Noted/Empty');
+      dav.strayHrefs.add('/dav/Elsewhere/x.canvas');
+      expect(paths(await client().list()), contains('Empty/'));
+      expect(
+        paths(await client().list(populated: {'B'})),
+        contains('Empty/'),
+        reason: 'another folder held children, not this one',
+      );
+      await expectLater(
+        client().list(populated: {'Empty'}),
+        throwsA(isA<WebDavIncomplete>()),
+      );
+    });
+
     test(
       'a body longer than listed stops at once and leaves no file',
       () async {

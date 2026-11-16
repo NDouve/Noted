@@ -214,9 +214,10 @@ class WebDavClient {
     Uri url, {
     Set<DavIdKind> idProps = const {DavIdKind.resourceId, DavIdKind.fileId},
     bool connecting = false,
+    bool hadChildren = false,
   }) async {
     final (at, responses) = await _propfind(url, 1, idProps);
-    return _folderFrom(at, responses, connecting);
+    return _folderFrom(at, responses, connecting, hadChildren: hadChildren);
   }
 
   /// One item's own properties (`Depth: 0`).
@@ -234,9 +235,13 @@ class WebDavClient {
   }
 
   /// Every item below the root, folder by folder. Complete or an exception.
+  /// [populated] holds the re-encoded paths ([DavNode.pathId]; the root is
+  /// empty) of folders that held children before: a folder whose every child
+  /// then comes back skipped makes the listing incomplete.
   Future<DavListing> list({
     Set<DavIdKind> idProps = const {DavIdKind.resourceId, DavIdKind.fileId},
     bool connecting = false,
+    Set<String> populated = const {},
   }) async {
     final nodes = <DavNode>[];
     final issues = <SyncIssue>[];
@@ -251,7 +256,12 @@ class WebDavClient {
       final (url, depth) = queue[q];
       final DavFolder f;
       try {
-        f = await listFolder(url, idProps: idProps, connecting: connecting);
+        f = await listFolder(
+          url,
+          idProps: idProps,
+          connecting: connecting,
+          hadChildren: populated.contains(_idPath(url)),
+        );
       } on RemoteNotFound {
         if (q == 0) rethrow;
         throw WebDavIncomplete('A folder went away during the listing');
@@ -432,6 +442,7 @@ class WebDavClient {
     Uri at,
     List<DavResponse> responses,
     bool connecting, {
+    bool hadChildren = false,
     bool selfOnly = false,
   }) {
     final issues = <SyncIssue>[];
@@ -490,12 +501,29 @@ class WebDavClient {
     }
     // A listing whose every entry was skipped (the server spells its own
     // address another way) says nothing about the folder: not "empty".
-    if (!selfOnly && skipped > 0 && kids.isEmpty) {
+    // Only when the folder did hold something before, or the server did not
+    // even describe the folder itself: an empty folder with one stray address
+    // is just that.
+    if (!selfOnly &&
+        skipped > 0 &&
+        kids.isEmpty &&
+        (self == null || hadChildren)) {
       throw WebDavIncomplete(
         'The server listed only addresses outside the folder',
       );
     }
     return DavFolder(self, kids, issues);
+  }
+
+  /// The re-encoded path of [url] below the root, as [DavNode.pathId] gives it.
+  String _idPath(Uri url) {
+    try {
+      return (_relative(url) ?? const <String>[])
+          .map(Uri.encodeComponent)
+          .join('/');
+    } on FormatException {
+      return '';
+    }
   }
 
   static bool _sameSegments(List<String> a, List<String> b, [int? n]) {

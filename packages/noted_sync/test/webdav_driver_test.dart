@@ -854,30 +854,65 @@ void _engineCases(RemoteKind kind) {
     expect(h.tree(), hasLength(3));
   });
 
-  test('a synced binder renamed to an unusable name keeps its files here and is listed', () async {
+  for (final binder in [true, false]) {
+    test(
+      'a synced ${binder ? 'binder' : 'plain folder'} renamed to an unusable name keeps its files here and is listed',
+      () async {
+        seedMany(10);
+        // A plain folder is only mirrored below templates.
+        final dir = binder ? 'Noted/S' : 'Noted/templates/S';
+        final local = binder ? 'S' : 'templates/S';
+        if (binder) {
+          h.remote.addFile('$dir/noted-binder.json', Harness.b('{"id":"s"}'));
+        }
+        h.remote.addFile('$dir/a.canvas', Harness.b('A'));
+        await h.round();
+        expect(h.read('$local/a.canvas'), 'A');
+        h.remote.rename(dir, 'bad:name');
+        for (var i = 0; i < 3; i++) {
+          await h.roundsWithDelay();
+        }
+        expect(h.read('$local/a.canvas'), 'A');
+        expect(
+          h.engine.issues.map((i) => i.path),
+          contains(endsWith('bad:name')),
+        );
+        // Still there on the next rounds, with nothing asked.
+        await h.roundsWithDelay();
+        expect(h.read('$local/a.canvas'), 'A');
+        // Back to a usable name: still there, no copy, no issue.
+        h.remote.rename('${dir.substring(0, dir.length - 1)}bad:name', 'S');
+        await h.roundsWithDelay();
+        expect(h.read('$local/a.canvas'), 'A');
+        expect(h.engine.issues, isEmpty);
+        // And an unusable folder that goes away lets a real removal through.
+        h.remote.delete(dir);
+        await h.roundsWithDelay();
+        await h.roundsWithDelay();
+        if (!binder) {
+          expect(h.has('$local/a.canvas'), isFalse);
+        }
+      },
+    );
+  }
+
+  test('an unusable folder next to a plain folder that is really deleted: the deletion waits, listed, until the unusable one is gone', () async {
     seedMany(10);
-    h.remote.addFile('Noted/S/noted-binder.json', Harness.b('{"id":"s"}'));
-    h.remote.addFile('Noted/S/a.canvas', Harness.b('A'));
+    h.remote.addFile('Noted/templates/S/a.canvas', Harness.b('A'));
+    h.remote.addFolder('Noted/templates/bad:name');
     await h.round();
-    expect(h.read('S/a.canvas'), 'A');
-    h.remote.rename('Noted/S', 'bad:name');
+    h.remote.delete('Noted/templates/S');
     for (var i = 0; i < 3; i++) {
       await h.roundsWithDelay();
     }
-    expect(h.read('S/a.canvas'), 'A');
-    expect(h.has('S/noted-binder.json'), isTrue);
-    expect(h.engine.issues, hasIssue('bad:name'));
-    if (kind != RemoteKind.davPath) {
-      // The same folder, now unusable: nothing under it is a removal.
-      expect(h.engine.guardQuestion, isNull);
+    if (kind == RemoteKind.davPath) {
+      expect(h.read('templates/S/a.canvas'), 'A');
     }
-    // Back to a usable name: still there, no copy, no issue.
-    h.remote.rename('Noted/bad:name', 'S');
+    h.remote.delete('Noted/templates/bad:name');
     await h.roundsWithDelay();
-    expect(h.read('S/a.canvas'), 'A');
-    expect(h.engine.issues, isEmpty);
+    await h.roundsWithDelay();
+    expect(h.has('templates/S/a.canvas'), isFalse);
   });
-
   test('a compare that found a different file is not repeated until the version or the file changes', () async {
     h.remote.addFile('Noted/a.canvas', Harness.b('AAA'));
     h.write('a.canvas', 'BBB');
