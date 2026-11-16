@@ -297,7 +297,9 @@ class PullEngine {
       _setStatus(
         SyncStatus(
           SyncState.paused,
-          'Downloads keep failing the checksum from $_name',
+          driver.caps.serverHash
+              ? 'Downloads keep failing the checksum from $_name'
+              : 'Downloads keep not matching what $_name lists',
         ),
       );
     } else {
@@ -973,6 +975,9 @@ class PullEngine {
         _compared[key] = same;
       }
       return same;
+    } on RemoteSizeMismatch {
+      _countMismatch(d, rel, length: true);
+      return null;
     } on RemoteChanged {
       _changedMeanwhileIssue(d, rel);
       return null;
@@ -1104,12 +1109,16 @@ class PullEngine {
   }
 
   /// Counts a download that failed its checksum or length, and lists it.
-  void _countMismatch(DesiredFile d, String rel) {
+  void _countMismatch(DesiredFile d, String rel, {bool length = false}) {
     final n = (_journal!.mismatches[d.key] ?? 0) + 1;
     _journal!.mismatches[d.key] = n;
     _issue(
       rel,
-      n >= 3
+      length
+          ? (n >= 3
+                ? 'The download keeps not matching the length $_name lists; not applied'
+                : 'The download didn\'t match the length $_name lists; trying again next time')
+          : n >= 3
           ? 'The download keeps failing $_name\'s checksum; not applied'
           : 'The download failed $_name\'s checksum; trying again next time',
     );
@@ -1134,7 +1143,7 @@ class PullEngine {
       // A length that differs under the same version counts like a checksum
       // mismatch (0177); a moved version doesn't.
       if (e is RemoteSizeMismatch) {
-        _countMismatch(d, rel);
+        _countMismatch(d, rel, length: true);
         return null;
       }
       if (e is RemoteChanged) {

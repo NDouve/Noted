@@ -314,7 +314,7 @@ class WebDavClient {
     required int size,
     required File dest,
   }) async {
-    final (sentEtag, at) = await _call<(String?, Uri)>(
+    final (sentEtag, at, badSize) = await _call<(String?, Uri, bool)>(
       'GET',
       url,
       onResponse: (r, at) async {
@@ -330,7 +330,9 @@ class WebDavClient {
         final length = r.contentLength;
         if (length != null && length != size) {
           await _abandon(r);
-          throw RemoteSizeMismatch('The size differs from the listing');
+          // With no ETag on the GET the version check is the PROPFIND below,
+          // and a moved version outranks a length failure.
+          return (got, at, true);
         }
         var written = 0;
         var over = false;
@@ -356,12 +358,15 @@ class WebDavClient {
           } on FileSystemException {
             // The engine removes its temp too.
           }
-          throw RemoteSizeMismatch('The size differs from the listing');
+          return (got, at, true);
         }
-        return (got, at);
+        return (got, at, false);
       },
     );
-    if (sentEtag != null) return;
+    if (sentEtag != null) {
+      if (badSize) throw RemoteSizeMismatch('The size differs from the listing');
+      return;
+    }
     final DavNode now;
     try {
       now = await stat(at, idProps: const {});
@@ -371,6 +376,7 @@ class WebDavClient {
     if (!etagsMatch(now.etag, etag)) {
       throw RemoteChanged('The version moved during the download');
     }
+    if (badSize) throw RemoteSizeMismatch('The size differs from the listing');
   }
 
   // --- Plumbing ------------------------------------------------------------

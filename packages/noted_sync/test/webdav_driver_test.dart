@@ -706,11 +706,50 @@ void _engineCases(RemoteKind kind) {
       expect(h.stateFiles('tmp'), isEmpty);
     }
     expect(h.engine.status.state, SyncState.paused);
-    expect(h.engine.status.reason, contains('checksum'));
+    expect(h.engine.status.reason, contains('what WebDAV lists'));
+    expect(h.engine.status.reason, isNot(contains('checksum')));
     h.dav.listedLengthExtra = 0;
     await h.round();
     expect(h.read('a.canvas'), 'AAA');
     expect(h.engine.status.state, SyncState.idle);
+  });
+
+  test('with no ETag on the GET, a length failure under the same version counts', () async {
+    h.remote.addFile('Noted/a.canvas', Harness.b('AAA'));
+    h.dav.omitGetEtag = true;
+    h.dav.listedLengthExtra = 1;
+    for (var i = 0; i < 3; i++) {
+      await h.round();
+    }
+    expect(h.has('a.canvas'), isFalse);
+    expect(h.engine.status.state, SyncState.paused);
+  });
+
+  test('with no ETag on the GET, a version that moved is not counted', () async {
+    h.remote.addFile('Noted/a.canvas', Harness.b('AAA'));
+    h.dav.omitGetEtag = true;
+    var n = 0;
+    h.dav.onRequest = (method, path) {
+      if (method == 'GET') {
+        h.dav.replaceFile('Noted/a.canvas', Harness.b('AAA${'B' * ++n}'));
+      }
+    };
+    for (var i = 0; i < 4; i++) {
+      await h.round();
+    }
+    expect(h.engine.status.state, isNot(SyncState.paused));
+    expect(h.has('a.canvas'), isFalse);
+  });
+
+  test('a compare against a local file of the listed size counts length failures too', () async {
+    h.remote.addFile('Noted/a.canvas', Harness.b('AAA'));
+    h.dav.listedLengthExtra = 1;
+    h.write('a.canvas', 'BBBB');
+    for (var i = 0; i < 3; i++) {
+      await h.round();
+    }
+    expect(h.read('a.canvas'), 'BBBB');
+    expect(h.engine.status.state, SyncState.paused);
   });
 
   test('a listing that is cut short never reads as deletions', () async {

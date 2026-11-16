@@ -511,6 +511,29 @@ void main() {
       );
     });
 
+    test('with no ETag on the GET, the PROPFIND decides between a moved version and a size failure', () async {
+      dav.addFile('Noted/a.canvas', b('hello'));
+      dav.omitGetEtag = true;
+      final n = await listed();
+      // Same version, wrong length: a size mismatch.
+      await expectLater(
+        client().download(n.url, etag: n.etag!, size: n.size + 1, dest: dest()),
+        throwsA(isA<RemoteSizeMismatch>()),
+      );
+      // The version moved and the length with it: not a size mismatch.
+      dav.replaceFile('Noted/a.canvas', b('hello, longer'));
+      await expectLater(
+        client().download(n.url, etag: n.etag!, size: n.size, dest: dest()),
+        throwsA(
+          isA<RemoteChanged>().having(
+            (e) => e is RemoteSizeMismatch,
+            'is a size mismatch',
+            isFalse,
+          ),
+        ),
+      );
+    });
+
     test('a body shorter than the length it announced: RemoteChanged, not a short file', () async {
       dav.addFile('Noted/a.canvas', b('hello'));
       final n = await listed();
