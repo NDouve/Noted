@@ -145,7 +145,7 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
       alternateShortcuts: [_key(LogicalKeyboardKey.backspace)],
       enabled: () {
         final sel = c.selectedId;
-        return !t.isReadOnly && sel != null && c.canDelete(sel);
+        return !t.isReadOnly && c.multiSelection.length < 2 && sel != null && c.canDelete(sel);
       },
       listenable: c,
       invoke: () {
@@ -172,6 +172,9 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
           tools.select(null);
         } else if (tools.active != null) {
           tools.select(null);
+        } else if (c.multiSelection.isNotEmpty) {
+          // The set goes first; the next Escape clears a single selection.
+          c.clearMulti();
         } else {
           c.select(null);
         }
@@ -279,7 +282,7 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
         alternateShortcuts: [SingleActivator(key, meta: true, shift: shift)],
         enabled: () {
           final sel = c.selectedId;
-          return !t.isReadOnly && sel != null && c.canRestack(sel, move);
+          return !t.isReadOnly && c.multiSelection.length < 2 && sel != null && c.canRestack(sel, move);
         },
         listenable: c,
         invoke: () {
