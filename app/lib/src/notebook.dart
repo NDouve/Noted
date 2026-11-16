@@ -4791,7 +4791,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               'A page was not copied correctly, so nothing was moved.',
             );
           }
-          // Its images and files go with it.
+          // Its images and files go with it, unless the target was held since
+          // its page file was written (checked with no await before the copy).
+          if (_isLocked(toLoc)) throw NotebookException(_lockedMessage(toLoc));
           await _copyDir(
             _assetsDir(fromLoc, p.id),
             _assetsDir(toLoc, p.id),
