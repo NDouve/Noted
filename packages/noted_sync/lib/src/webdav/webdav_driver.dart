@@ -217,11 +217,15 @@ class WebDavDriver implements RemoteDriver {
     // same parent is carried forward with its whole subtree, unchanged, so
     // nothing below it is read as removed. It goes on until the unusable
     // folder is gone or the vanished folder is back.
+    final carriedIssues = <SyncIssue>[];
     if (idKind == DavIdKind.path) {
-      final unusableParents = {
-        for (final e in entries.values)
-          if (e.folder && e.parent != null && !isSafeName(e.name)) e.parent!,
-      };
+      // A folder or a file: the first unusable name in each parent.
+      final unusableIn = <String, String>{};
+      for (final e in entries.values) {
+        if (e.parent != null && !isSafeName(e.name)) {
+          unusableIn.putIfAbsent(e.parent!, () => e.name);
+        }
+      }
       final kept = <String>{};
       var more = true;
       while (more) {
@@ -230,8 +234,18 @@ class WebDavDriver implements RemoteDriver {
           if (entries.containsKey(e.id) || e.parent == null) continue;
           final p = entries[e.parent];
           if (p == null) continue;
-          if ((e.folder && unusableParents.contains(p.id)) ||
-              kept.contains(p.id)) {
+          final sibling = unusableIn[p.id];
+          if (sibling != null || kept.contains(p.id)) {
+            if (sibling != null && !kept.contains(p.id)) {
+              final path = e.id.split('/').map(Uri.decodeComponent).join('/');
+              carriedIssues.add(
+                SyncIssue(
+                  path,
+                  'Removed or renamed on WebDAV; kept here while '
+                  '"$sibling" is there, which can\'t be used',
+                ),
+              );
+            }
             kept.add(e.id);
             entries[e.id] = e;
             more = true;
@@ -247,7 +261,7 @@ class WebDavDriver implements RemoteDriver {
       cursor: WebDavDriver.cursor,
       endpoint: 'full',
       seq: next,
-      issues: listing.issues,
+      issues: [...listing.issues, ...carriedIssues],
     );
   }
 

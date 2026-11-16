@@ -877,6 +877,12 @@ void _engineCases(RemoteKind kind) {
           h.engine.issues.map((i) => i.path),
           contains(endsWith('bad:name')),
         );
+        if (kind == RemoteKind.davPath) {
+          // The removal that is held is shown, with the unusable name.
+          expect(h.engine.issues, hasIssue(local));
+          expect(h.issueText().join('\n'), contains('kept here while'));
+          expect(h.issueText().join('\n'), contains('bad:name'));
+        }
         // Still there on the next rounds, with nothing asked.
         await h.roundsWithDelay();
         expect(h.read('$local/a.canvas'), 'A');
@@ -895,6 +901,37 @@ void _engineCases(RemoteKind kind) {
       },
     );
   }
+
+  test(
+    'a file renamed to an unusable name keeps its local copy and is listed',
+    () async {
+      seedMany(10);
+      h.remote.addFile('Noted/templates/t.canvas', Harness.b('T'));
+      h.remote.addFile('Noted/templates/u.canvas', Harness.b('U'));
+      await h.round();
+      expect(h.read('templates/t.canvas'), 'T');
+      h.remote.rename('Noted/templates/t.canvas', 'bad:t.canvas');
+      for (var i = 0; i < 3; i++) {
+        await h.roundsWithDelay();
+      }
+      expect(h.read('templates/t.canvas'), 'T');
+      expect(h.read('templates/u.canvas'), 'U');
+      expect(
+        h.engine.issues.map((i) => i.path),
+        contains(endsWith('bad:t.canvas')),
+      );
+      if (kind == RemoteKind.davPath) {
+        expect(h.engine.issues, hasIssue('templates/t.canvas'));
+        expect(h.issueText().join('\n'), contains('kept here while'));
+      }
+      // The unusable file goes: the removal then goes through.
+      h.remote.delete('Noted/templates/bad:t.canvas');
+      await h.roundsWithDelay();
+      await h.roundsWithDelay();
+      expect(h.has('templates/t.canvas'), isFalse);
+      expect(h.read('templates/u.canvas'), 'U');
+    },
+  );
 
   test('an unusable folder next to a plain folder that is really deleted: the deletion waits, listed, until the unusable one is gone', () async {
     seedMany(10);
