@@ -192,13 +192,11 @@ void _apply(Map<String, dynamic> event, Map<int, _Test> tests) {
         t.stacks.add('${event['stackTrace']}');
       case 'print':
         tests[event['testID']]?.prints.add('${event['message']}');
+      // A failure always comes with an error event (handled above). A done
+      // "error" without one is a test cut off when the process was killed
+      // (the step's timeout): not a failure; the timeout annotation names it.
       case 'testDone':
-        final t = tests[event['testID']];
-        if (t != null && event['hidden'] != true) {
-          if (event['result'] == 'failure' || event['result'] == 'error') {
-            t.failed = true;
-          }
-        }
+        break;
     }
   }
 }

@@ -22,3 +22,6 @@
 {"test":{"id":7,"name":"odd :: name, 100%","suiteID":0,"groupIDs":[],"metadata":{"skip":false,"skipReason":null},"line":50,"column":3,"url":"file:///work/noted/app/test/a_test.dart"},"type":"testStart","time":18}
 {"testID":7,"error":"odd failure","stackTrace":"","isFailure":true,"type":"error","time":19}
 {"testID":7,"result":"failure","skipped":false,"hidden":false,"type":"testDone","time":20}
+{"test":{"id":8,"name":"stopped by the timeout","suiteID":0,"groupIDs":[],"metadata":{"skip":false,"skipReason":null},"line":60,"column":3,"url":"file:///work/noted/app/test/a_test.dart"},"type":"testStart","time":21}
+{"testID":8,"messageType":"print","message":"output before the kill","type":"print","time":22}
+{"testID":8,"result":"error","skipped":false,"hidden":false,"type":"testDone","time":23}
