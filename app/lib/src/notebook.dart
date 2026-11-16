@@ -949,6 +949,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // outside every lock and save-chain job. One run per folder at a time; a
   // request while it runs gives one rerun, and so does a hold that differs at
   // its end. Never throws: an error is logged and the hold stays as it is.
+  //
+  // `checkBinderFile` waits for this run from inside a `_checking` job, so no
+  // path under it may await a `_checking` job (checkFile, checkFolders,
+  // checkBinderFile, a `_queued` add): that would wait on itself.
   Future<void> _afterHold(String key, bool insideChain) async {
     // A request from a save-chain job: that job ends first.
     if (insideChain) await _chain.idle;
