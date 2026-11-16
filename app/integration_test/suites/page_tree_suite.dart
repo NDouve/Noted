@@ -240,7 +240,7 @@ void pageTreeSuite() {
         final inBinder = await s.newPage('In binder', binderPath: b.path);
         await s.nb.open(inBinder);
         await s.pump(300);
-        await s.tapKey('page-settings', settle: 500);
+        await s.tapKey('panel-app.page.settings', settle: 500);
         expect(find.textContaining('In the binder'), findsOneWidget);
         await s.tapKey('settings-close');
       });

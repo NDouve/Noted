@@ -59,9 +59,9 @@ void searchSuite() {
         await s.ctrl(LogicalKeyboardKey.keyF);
         await t.enterText(find.byKey(const ValueKey('find-field')), 'needle');
         await s.pump(800);
-        final size = t.getSize(find.byType(PageCanvas));
+        final size = t.getSize(find.byKey(PageCanvas.overlayKey));
         final view = canvasState(t).view!;
-        final visible = view.visible(Size(size.width, size.height - 52));
+        final visible = view.visible(size);
         expect(visible.contains(const Offset(3040, 2520)), isTrue, reason: 'the match box is in view');
       });
     });

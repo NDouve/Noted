@@ -158,6 +158,23 @@ void shellSuite() {
       });
     });
 
+    testWidgets('M8: the title is edited in the canvas header, saved, and kept after a restart', (t) async {
+      await withSession(t, 'shelltitle', (s) async {
+        final id = s.nb.currentId!;
+        final field = find.byKey(const ValueKey('page-title-field'));
+        final canvas = t.getRect(find.byType(PageCanvas));
+        expect(t.getRect(field).top, greaterThan(canvas.top), reason: 'the title is inside the canvas column');
+        await t.enterText(field, 'Kept title');
+        await t.testTextInput.receiveAction(TextInputAction.done);
+        await s.pump(600);
+        expect(s.nb.tree[id]!.title, 'Kept title');
+        await s.flush();
+        await s.restart();
+        expect(s.nb.tree[id]!.title, 'Kept title');
+        expect(t.widget<TextField>(field).controller!.text, 'Kept title');
+      });
+    });
+
     testWidgets('C1: right-click a note, Bring to front, then Undo', (t) async {
       await withSession(t, 'contextfront', (s) async {
         final a = await putNote(s, 'first', x: 100, y: 100);

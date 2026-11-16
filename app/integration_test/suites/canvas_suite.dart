@@ -222,11 +222,8 @@ void canvasSuite() {
         Future<Size> settledViewport() async {
           Size? last;
           for (var i = 0; i < 40; i++) {
-            final size = t.getSize(find.byType(PageCanvas));
-            // The inline contextual panel takes the right of the PageCanvas.
-            final panel = find.byKey(const ValueKey('context-panel-inline'));
-            final panelWidth = panel.evaluate().isEmpty ? 0.0 : t.getSize(panel).width;
-            final now = Size(size.width - panelWidth, size.height - toolbarHeight(t));
+            // The viewport, under the toolbar and the page title.
+            final now = t.getSize(find.byKey(PageCanvas.overlayKey));
             if (now == last) return now;
             last = now;
             await s.pump(100);
@@ -331,7 +328,7 @@ void canvasSuite() {
     testWidgets('step 169, 173-174, 176-177: page backgrounds from the page settings, undo, and persistence', (t) async {
       await withSession(t, 'background', (s) async {
         // 169: Page settings, Background: Dots.
-        await s.tapKey('page-settings');
+        await s.tapKey('panel-app.page.settings');
         await s.tapKey('settings-bg-dots');
         await s.tapKey('settings-close');
         await s.pump(300);

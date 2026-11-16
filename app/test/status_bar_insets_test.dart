@@ -153,7 +153,7 @@ void main() {
       late List<Rect> r;
       await withInsets(t, TargetPlatform.windows, const Size(1024, 768), p, () async {
         r = [
-          t.getRect(find.byKey(const ValueKey('page-settings'))),
+          t.getRect(find.byType(PageTitleField)),
           t.getRect(find.byType(PageCanvas)),
           t.getRect(find.byType(SearchField)),
         ];

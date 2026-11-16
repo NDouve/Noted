@@ -79,6 +79,8 @@ class PageCanvas extends StatefulWidget {
     this.onCommandsChanged,
     this.sidePanel,
     this.overlayPanel,
+    this.header,
+    this.footer,
     this.contextMenuStyle = ContextMenuStyle.list,
   });
 
@@ -98,6 +100,15 @@ class PageCanvas extends StatefulWidget {
   /// Host only. A panel built with this canvas's live registry, shown right of
   /// the canvas and below the toolbar; null shows none.
   final Widget Function(BuildContext context, CommandRegistry registry)? sidePanel;
+
+  /// Host only. A band between the toolbar and the canvas viewport, in the
+  /// canvas column (left of [sidePanel]): the host's page title and notices.
+  /// Null shows none.
+  final Widget? header;
+
+  /// Host only. A strip under the canvas, in the canvas column (left of
+  /// [sidePanel]): the host's status. Null shows none.
+  final Widget? footer;
 
   /// Host only. A panel drawn over the canvas area (below the toolbar, so the
   /// toolbar stays uncovered), built with the canvas's live registry; null shows
@@ -1498,6 +1509,23 @@ class PageCanvasState extends State<PageCanvas>
   /// Whether the focused thing is a text field of its own (a sticky label, an
   /// image caption, the title, the find bar): it keeps Shift+F10 and the Menu
   /// key.
+  final GlobalKey _headerKey = GlobalKey();
+
+  // Whether the focus is inside the host's header (its page title).
+  bool _headerOwnsFocus() {
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    if (ctx == null) return false;
+    var inside = false;
+    ctx.visitAncestorElements((e) {
+      if (e.widget.key == _headerKey) {
+        inside = true;
+        return false;
+      }
+      return true;
+    });
+    return inside;
+  }
+
   bool _fieldOwnsKey() {
     if (_findFocus.hasFocus) return true;
     final ctx = FocusManager.instance.primaryFocus?.context;
@@ -1580,10 +1608,16 @@ class PageCanvasState extends State<PageCanvas>
     }
     final command = _commands.resolve(
       event,
-      // The find bar's text field owns the keys like a box's editor does.
-      editing: _c.editingId != null || _findFocus.hasFocus,
+      // The find bar's text field, and any other (the host's page title), own
+      // the keys like a box's editor does.
+      editing: _c.editingId != null || _fieldOwnsKey(),
       readOnly: _readOnly,
     );
+    // Escape in the host's own header (its page title) is the field's;
+    // it never clears the selection. A box's own fields still reach the canvas.
+    if (command != null && command.id == CanvasCommands.escape && _c.editingId == null && _headerOwnsFocus()) {
+      return KeyEventResult.ignored;
+    }
     if (command == null) return KeyEventResult.ignored;
     command.run();
     return KeyEventResult.handled;
@@ -1617,12 +1651,12 @@ class PageCanvasState extends State<PageCanvas>
               fit: StackFit.expand,
               children: [
                 if (widget.sidePanel == null)
-                  _canvasArea(scheme)
+                  _canvasColumn(scheme)
                 else
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Expanded(child: _canvasArea(scheme)),
+                      Expanded(child: _canvasColumn(scheme)),
                       widget.sidePanel!(context, _commands),
                     ],
                   ),
@@ -1630,10 +1664,22 @@ class PageCanvasState extends State<PageCanvas>
               ],
             ),
           ),
-
-
         ],
       ),
+    );
+  }
+
+  // The canvas area between the host's header and footer, if it has them.
+  Widget _canvasColumn(ColorScheme scheme) {
+    final (header, footer) = (widget.header, widget.footer);
+    if (header == null && footer == null) return _canvasArea(scheme);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (header != null) KeyedSubtree(key: _headerKey, child: header),
+        Expanded(child: _canvasArea(scheme)),
+        ?footer,
+      ],
     );
   }
 
@@ -1710,6 +1756,17 @@ class PageCanvasState extends State<PageCanvas>
     final v = _view;
     if (box is! RenderBox || !box.hasSize || v == null) return null;
     return v.toWorld(box.globalToLocal(global));
+  }
+
+  /// Whether the screen point [global] is over the canvas viewport (not the
+  /// toolbar, the host's header or footer, or a side panel), and no overlay
+  /// panel (with its scrim) is open.
+  bool viewportContains(Offset global) {
+    final box = _areaKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return false;
+    // The overlay panel and its scrim cover the whole canvas area.
+    if (widget.overlayPanel != null) return false;
+    return (Offset.zero & box.size).contains(box.globalToLocal(global));
   }
 
   /// Creates boxes for files dropped at the screen point [global].
