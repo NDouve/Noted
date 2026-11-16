@@ -2051,8 +2051,15 @@ void main() {
         revert();
         nb.discardDeleted(d);
         await until(() => ids().contains(extra.id), 'the let-go re-check');
-        await recheck();
-        expect(await entries(), isEmpty);
+        // The box is in the file once the redo has written it, but the let-go
+        // pass may still be finishing (the page busy, the redo's time not yet
+        // set), so a single re-check may find nothing due: re-check until the
+        // entry is retired.
+        await until(() async {
+          await recheck();
+          return (await entries()).isEmpty;
+        }, 'the entry to be retired');
+        expect(ids(), contains(extra.id));
       });
 
       test('at quit with no file: the entry is retired', () async {
