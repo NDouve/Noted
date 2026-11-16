@@ -210,6 +210,24 @@
 // Row 17 is caught by one sequence (seed 9) and by its probe; row 15 is a
 // probe only and was not run again.
 //
+// Rows 32 and 33 are for the conflict copy whose original a sync client puts
+// back after the merge was verified (run 2026-11-16-01, R-1 of the 2026-11-16
+// data-integrity audit): `conflict:revertedAfterVerify` (the re-check merges
+// it again) and `conflict:revertedRestart` (no re-check; the replay at the next
+// start does), drawn from `_opCopy`'s plain ones and by a step of their own
+// (`_crng`). Which sequences draw them depends on the variants the others
+// tried (`_tried` and the like are shared), so each count is of the seeds that
+// drew the variant in that same run of the first 16.
+//
+// 32. No entry before the copy's delete (`_keepConsumedCopy` skipped): the 14
+//     seeds of 16 that draw either variant (1, 2, 4-8, 10-16) fail, and only
+//     those: "boxes of page" after `conflict:reverted*` (the copy's box is in
+//     no file).
+// 33. The re-check retires without `consumedCopyHeld` (every read counts as
+//     held): the 8 seeds of 16 that draw `revertedAfterVerify` (1, 2, 4, 5, 11,
+//     14-16) fail, and only those: "the re-check merged the kept copy again".
+//     `revertedRestart` doesn't catch it (the replay at the start has no mark).
+//
 // Wait for watchers: none is used. The notebook runs with `watchFiles` off,
 // and the steps call `checkFile` and `checkFolders` themselves, the way the
 // watcher would, so a step is over when its calls return. Folder renames and
@@ -708,6 +726,7 @@ class _Run {
     binderStoreFactory: (d) => SeamStore(d, _seams),
     binderRecheckDelay: const Duration(milliseconds: 100),
     asideRestoreAfter: const Duration(milliseconds: 400),
+    copyRetireAfter: const Duration(hours: 1),
     coverRetryFirst: const Duration(milliseconds: 100),
     readOnlyRoots: pullOnly ? [root.path] : const [],
   );
@@ -838,6 +857,9 @@ class _Run {
     // A sync client rewrites the aside of a replace or delete (a generator of its
     // own, after the others).
     if (_srng.nextInt(100) < 20) await _swapStep(n);
+    // The old file is put back after a conflict copy's merge (own generator,
+    // after the others).
+    if (_crng.nextInt(100) < 20) await _revertedCopyStep(n);
   }
 
   /// The step `recover:overwrittenAfterLanding` after step [n], on pages picked
@@ -1233,6 +1255,10 @@ class _Run {
         await nb.checkFile(c);
       }
     }
+    // A merged copy stays in recovery until its re-check (run 2026-11-16-01),
+    // which the notebook times with `copyRetireAfter` (an hour here, so no
+    // timer fires in a run): the re-check runs now, as it would later.
+    await nb.recheckConsumedCopiesForTest();
   }
 
   /// How many standalone pages (default folder, second folder) the model has
@@ -2094,7 +2120,7 @@ class _Run {
   Future<void> _opCopy() async {
     final id = _pickPage();
     final m = model[id]!;
-    final variant = _pick([
+    var variant = _pick([
       'plain',
       'plain',
       'replacedMidMerge',
@@ -2102,12 +2128,22 @@ class _Run {
       'stealPublish',
       'scan',
     ]);
+    // Half the plain ones have the old file put back after the merge (run
+    // 2026-11-16-01), picked by a generator of their own so the sequences of
+    // the other steps stay the ones they were.
+    if (variant == 'plain' && _crng.nextBool()) {
+      variant = _crng.nextBool() ? 'revertedAfterVerify' : 'revertedRestart';
+    }
     trace.add('conflict copy of ${_short(id)} in ${m.loc}: $variant');
     _kind = 'conflict:$variant';
     // The merge hooks belong to the closed-page merge: close the page.
     if (variant == 'replacedMidMerge' || variant == 'originalChanged') {
       await nb.open(_pickPage(where: (i, p) => i != id));
     }
+    // A reverted page that is open would take the old file in at its next
+    // save, and the re-check waits for it to close: another page is opened
+    // (the first the model lists, so the main generator is not drawn from).
+    if (variant.startsWith('reverted')) await nb.open(model.keys.firstWhere((i) => i != id));
     final disk = _disk(id);
     final z = _newBox(_text('copy'));
     final path = '${dirs[m.loc]!.path}$sep$id-DESKTOP-${++_copyCounter}.canvas';
@@ -2164,7 +2200,63 @@ class _Run {
         nb.syncHook = null;
         expect(fired, isTrue);
         m.boxes[newer.id] = _val(newer);
+      case 'revertedAfterVerify':
+      case 'revertedRestart':
+        await _copyReverted(id, path, disk, z, restart: variant == 'revertedRestart');
     }
+  }
+
+  // R-1 (run 2026-11-16-01): the copy at [path] (the page [id] as [disk], plus
+  // [z]) is merged, and once the merge is verified a sync client puts back the
+  // file it fetched before. The copy is deleted all the same; recovery keeps
+  // it, and its merge is done again by the re-check, or, with [restart] (no
+  // re-check), by the replay at the next start. The page is closed.
+  Future<void> _copyReverted(String id, String path, NotedPage disk, BoxRecord z, {required bool restart}) async {
+    var fired = false;
+    nb.syncHook = (point, p) async {
+      if (point != 'copy-merged' || fired) return;
+      fired = true;
+      _externalWriteSync(id, disk);
+    };
+    await nb.checkFile(path);
+    nb.syncHook = null;
+    expect(fired, isTrue);
+    expect(File(path).existsSync(), isFalse, reason: 'the copy is deleted');
+    expect(_disk(id).node(z.id), isNull, reason: 'the old file is back');
+    if (restart) {
+      final kind = _kind;
+      await _opRestart();
+      _kind = kind;
+    } else {
+      await nb.recheckConsumedCopiesForTest();
+      expect(_disk(id).node(z.id), isNotNull, reason: 'the re-check merged the kept copy again');
+    }
+  }
+
+  /// The step `conflict:reverted*` after step [n]: a conflict copy of a page
+  /// picked by its own generator, merged, and the old file put back after the
+  /// merge (with [_opCopy]'s plain draws this reaches too few sequences).
+  Future<void> _revertedCopyStep(int n) async {
+    if (model.length < 2) return;
+    final ids = model.keys.toList();
+    final id = ids[_crng.nextInt(ids.length)];
+    final m = model[id]!;
+    final restart = _crng.nextBool();
+    final kind = 'conflict:${restart ? 'revertedRestart' : 'revertedAfterVerify'}';
+    trace.add('$kind on ${_short(id)} in ${m.loc}');
+    _kind = kind;
+    await nb.open(ids.firstWhere((i) => i != id));
+    final disk = _disk(id);
+    final z = _newBox(_text('copy'));
+    final path = '${dirs[m.loc]!.path}$sep$id-DESKTOP-${++_copyCounter}.canvas';
+    File(path).writeAsStringSync(writePage(disk.insertNode(z)));
+    m.boxes[z.id] = _val(z);
+    await _copyReverted(id, path, disk, z, restart: restart);
+    trace.add('  ($kind done)');
+    await _settle();
+    await verify('step $n ($kind)');
+    kinds.add(kind);
+    _kind = null;
   }
 
   // ---- rename: a closed page is saved, sometimes raced ------------------------
@@ -2652,6 +2744,7 @@ class _Run {
   late final Random _yrng = Random(seed * 43 + 17); // when a box is restacked (_layerStep)
   late final Random _urng = Random(seed * 17 + 3); // which Undos fail (_opDelete)
   late final Random _rrng = Random(seed * 19 + 5); // which failed deletes are followed by a kill (_opDelete)
+  late final Random _crng = Random(seed * 23 + 29); // which conflict copies get the old file put back (_opCopy)
   int _binderStepCount = 0;
   int _binderCounter = 0;
   late String _idA;
@@ -3339,7 +3432,7 @@ const _expectedKinds = {
   'edit:failOnce', 'edit:failAlways', //
   'external', 'rename:plain', 'rename:syncAtPublish', 'rename:syncBeforeWrite',
   'conflict:plain', 'conflict:replacedMidMerge', 'conflict:originalChanged',
-  'conflict:stealPublish', 'conflict:scan', //
+  'conflict:stealPublish', 'conflict:scan', 'conflict:revertedAfterVerify', 'conflict:revertedRestart', //
   'move:plain', 'move:pendingEdit', 'move:failDestination', 'move:failSourceDelete',
   'move:syncAtSource', //
   'delete:undo', 'delete:keep', 'delete:syncAtDelete', 'delete:failDelete', //
