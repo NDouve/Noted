@@ -3065,6 +3065,21 @@ class _Run {
   // While held, nothing is written to A, and the folder's files (templates
   // included) and its recovery entries are the same live and after a fresh
   // launch. Afterwards the edit lands and the model holds.
+  // What the page files of [d] hold (each box's id, text and bounds, and the
+  // title), and what recovery keeps for A.
+  Map<String, Object> _landedState(Directory d) => {
+    for (final f in d.listSync().whereType<File>())
+      if (f.path.endsWith('.canvas'))
+        f.path.split(RegExp(r'[\\/]')).last: () {
+          final p = readPage(f.readAsStringSync());
+          return [
+            'title ${p.meta.title}',
+            ...[for (final n in p.nodes) if (n is BoxRecord) '${n.id} ${n.snapshotText} ${n.bounds}']..sort(),
+          ].join('\n');
+        }(),
+    'recovery for A': '${nb.heldPagesFor(pathA)}',
+  };
+
   Future<void> _heldStep(String leg) async {
     if (!_canWrite) return;
     final inA = [for (final e in model.entries) if (e.value.loc == 'a') e.key];
@@ -3224,12 +3239,37 @@ class _Run {
         await nb.checkBinderFile(_aFile.path);
         await nb.afterHoldForTest(pathA);
       case 'freshThenUse':
+        // Use this binder live, then the same held state again (put back on
+        // disk) with a fresh launch and Use this binder there: the page files
+        // and recovery come out the same.
+        final held = {...bytes(), settings.path: base64Encode(settings.readAsBytesSync())};
+        await nb.useThisBinder(pathA);
+        await nb.flush();
+        await realIoUntil(() => nb.heldPagesFor(pathA) == 0, 'the kept edit to land (live)');
+        final afterLive = _landedState(dirA);
         await nb.flush();
         _drop();
+        for (final f in dirA.listSync(recursive: true).whereType<File>()) {
+          if (!held.containsKey(f.path)) f.deleteSync();
+        }
+        if (rec.existsSync()) {
+          for (final f in rec.listSync(recursive: true).whereType<File>()) {
+            if (f.path.endsWith('.entry') && forA(f) && !held.containsKey(f.path)) f.deleteSync();
+          }
+        }
+        for (final e in held.entries) {
+          File(e.key)
+            ..parent.createSync(recursive: true)
+            ..writeAsBytesSync(base64Decode(e.value));
+        }
         nb = _make();
         _spare.add(nb);
         await nb.load();
+        expect(_sectionA.hold, BinderHold.otherBinder, reason: 'seed $seed: held again after the put-back');
         await nb.useThisBinder(pathA);
+        await nb.flush();
+        await realIoUntil(() => nb.heldPagesFor(pathA) == 0, 'the kept edit to land (fresh)');
+        expect(_landedState(dirA), afterLive, reason: 'seed $seed: Use this binder live and after a fresh launch agree');
       default:
         await nb.useThisBinder(pathA);
     }
