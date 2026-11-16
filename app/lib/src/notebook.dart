@@ -528,6 +528,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     this.binderStoreFactory = BinderStore.new,
     this.binderRecheckDelay = const Duration(seconds: 2),
     this.asideRestoreAfter = const Duration(seconds: 30),
+    this.copyRetireAfter = const Duration(seconds: 30),
     this.coverRetryFirst = const Duration(seconds: 2),
     this.watchFiles = false,
     this.watchDebounce = const Duration(milliseconds: 300),
@@ -804,6 +805,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // again. Memory only; cleared with the entry.
   final Map<String, ({String out, NotedPage? theirs})> _landedText = {};
 
+  // Conflict copies a merge consumed, kept as recovery entries until a later
+  // read of the page file holds them (_recheckConsumedCopy), by generation.
+  // Memory only: after a restart the entry is an ordinary one with no base.
+  final Map<String, _ConsumedCopy> _consumedCopies = {};
+
+  // Whether [e] is an edit waiting to land: not landed, and not a consumed
+  // copy kept only until its merge is seen to hold.
+  bool _waitingEntry(RecoveryStore rec, RecoveryEntry e) =>
+      !rec.isLanded(e.gen) && !_consumedCopies.containsKey(e.gen);
+
+  /// Test seam: the generations kept as consumed conflict copies, and whether
+  /// each is parked (sync kept putting an older file back).
+  @visibleForTesting
+  Map<String, bool> get consumedCopiesForTest => {for (final m in _consumedCopies.values) m.gen: m.parked};
+
   // Kept `<id>.assets` folders that couldn't be landed, or whose page isn't
   // there, by the folder's path: why (0098).
   final Map<String, String> _keptProblems = {};
@@ -886,7 +902,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (rec == null) return const RecoveryListing([], []);
     if (!rec.indexed) return rec.list();
     return RecoveryListing(
-      [for (final e in rec.indexEntries) if (!rec.isLanded(e.gen)) e],
+      [for (final e in rec.indexEntries) if (_waitingEntry(rec, e)) e],
       _recoveryProblems,
       _recoveryDamaged,
     );
@@ -937,6 +953,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// How long a set-aside copy of the binder file may stand with no binder file
   /// before it is put back.
   final Duration asideRestoreAfter;
+
+  /// How long after a conflict copy was merged and deleted its kept version
+  /// waits in recovery before a read of the page file decides whether it is
+  /// held (then the entry goes) or a sync client put an older file back (then
+  /// the merge is done again). Timed by [now].
+  final Duration copyRetireAfter;
 
   /// The first wait before a cover change that was refused is tried again; each
   /// failure doubles it, up to a minute.
@@ -1416,6 +1438,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _lastDeleted = null;
     if (_undoing.containsKey(last)) return; // its Undo is copying from the set-aside
     await _removeSetAside(last);
+    await _retireConsumedOfDeleted(last);
   }
 
   // Standalone pages from every standalone folder share one tree.
@@ -2345,7 +2368,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     final next = await _updateClosedPage(loc, id, (page) {
       final meta = page.meta.withAiAccess(value);
-      return identical(meta, page.meta) ? null : page.withMeta(meta);
+      if (identical(meta, page.meta)) return null;
+      // The user's choice: a redo of a consumed copy leaves it as it is.
+      _noteOwnEdits(id, page, page.withMeta(meta));
+      return page.withMeta(meta);
     });
     if (next == null) return;
     _touch(loc);
@@ -3170,7 +3196,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     if (why == 'deleting') {
       final rec = _recovery;
-      final kept = rec != null && ids.any((p) => rec.entriesOfPage(p).any((e) => !rec.isLanded(e.gen)));
+      final kept = rec != null && ids.any((p) => rec.entriesOfPage(p).any((e) => _waitingEntry(rec, e)));
       final troubled = _trouble.isTrouble && ids.contains(_trouble.pageId);
       if (kept || troubled) {
         final title = _titleOrUntitled(pageTitleOf(ids.first) ?? '');
@@ -3202,7 +3228,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // The last save may have put new edits in recovery. They were not what the
     // user was asked about: ask now, so they are not deleted unseen.
     final rec = _recovery;
-    if (!asked && rec != null && ids.any((p) => rec.entriesOfPage(p).any((e) => !rec.isLanded(e.gen)))) {
+    if (!asked && rec != null && ids.any((p) => rec.entriesOfPage(p).any((e) => _waitingEntry(rec, e)))) {
       if (!await _ask(UserQuestion.deleteKept, _titleOrUntitled(pageTitleOf(ids.first) ?? ''))) {
         throw const LeaveCancelled();
       }
@@ -3701,13 +3727,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // copy (a fresh slot with the same page and base); a combined
           // generation merges again on replay (0156).
           final landed = _landedText[victim.gen];
-          if (landed != null && identical(victim, k.old) && !k.preexisting) {
+          final mark = _consumedCopies[victim.gen];
+          if ((landed != null || mark != null) && identical(victim, k.old) && !k.preexisting) {
             final copy = rec.indexEntries.where((x) => x.gen == k.freshGen).firstOrNull;
             if (copy != null && copy.pageText == victim.pageText && copy.baseText == victim.baseText) {
-              _landedText[k.freshGen] = landed;
+              if (landed != null) _landedText[k.freshGen] = landed;
+              // A consumed copy's mark moves with its exact copy; a combined
+              // generation is replayed as after a restart.
+              if (mark != null) {
+                _consumedCopies.remove(victim.gen);
+                mark.gen = k.freshGen;
+                _consumedCopies[k.freshGen] = mark;
+              }
             }
           }
           _landedText.remove(victim.gen);
+          _dropConsumed(victim.gen);
           await _deleteEntry(rec, victim);
         }
       } on Object catch (e) {
@@ -3717,14 +3752,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     keys.clear();
   }
   // Deletes the recovery entries of [pageIds] in the folder of [st], by exact
-  // generation (the pages are deleted).
+  // generation (the pages are deleted). A consumed copy's entry stays: Undo
+  // may bring the page back, and its re-check decides once the delete is let
+  // go (_recheckConsumedCopy).
   Future<void> _dropKeptEntries(List<String> pageIds, PageStore st) async {
     final rec = _recovery;
     if (rec == null) return;
     final folder = _key(_normalizePath(st.directory.path));
     final gens = [
       for (final e in rec.indexEntries)
-        if (pageIds.contains(e.pageId) && _key(e.folder) == folder) e.gen,
+        if (pageIds.contains(e.pageId) && _key(e.folder) == folder && !_consumedCopies.containsKey(e.gen)) e.gen,
     ];
     if (gens.isNotEmpty) await _deleteGens(rec, gens, null);
   }
@@ -3796,6 +3833,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (_allRestored(deleted)) _settle(deleted);
       _undoRuns.remove(done.future);
       done.complete();
+      // A consumed copy of a page written back is re-checked against it.
+      final ids = {for (final p in deleted.pages) p.id};
+      for (final m in _consumedCopies.values) {
+        if (!ids.contains(m.pageId)) continue;
+        m.since = now();
+        m.decideNow = false;
+        _armConsumed(m);
+      }
     }
   }
 
@@ -3987,6 +4032,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_undoing.containsKey(deleted)) return; // its Undo is copying from the set-aside
     _held.remove(deleted);
     unawaited(_removeSetAside(deleted));
+    _letGoConsumed(deleted);
   }
 
   /// Moves [id] under [parentId] (null: top level) at [index] among that
@@ -7307,6 +7353,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final id = base.id;
     final path = st.pathFor(id);
     final baseText = writePage(base);
+    _noteOwnEdits(id, base, mine);
     // The file is gone but its folder is there, or the page isn't in this
     // place any more: it was deleted or moved meanwhile, and is not recreated.
     // (A vanished folder is different: the save goes to recovery.)
@@ -7412,6 +7459,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_preview != null) return; // a preview is never saved
     final s = _session;
     if (s != null && s.pageId == page.id) s.seq++;
+    // What the save will hold beyond the file last seen: this app's own edits
+    // (a sync revert merged in by _mergeOpen moved the base along, so it isn't).
+    if (_current?.page.id == page.id) _noteOwnEdits(page.id, _base, page);
     _pendingSave = page;
     _pendingSeq = s?.seq ?? 0;
     if (_metas[page.id] != page.meta) {
@@ -7845,7 +7895,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   ) async {
     if (seq < session.floor) return KeepOutcome.discarded;
     if (seq <= session.newestWritten) return KeepOutcome.dropped;
-    final foreign = entries.where((e) => !session.own.containsKey(e.gen) && !rec.isLanded(e.gen));
+    final foreign = entries.where((e) => !session.own.containsKey(e.gen) && _waitingEntry(rec, e));
     if (foreign.isNotEmpty) {
       // Only reachable after the lock was taken late: never replaced.
       return const KeepOutcome(
@@ -7857,13 +7907,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final gen = rec.generationFor(folder, time, baseText, writePage(page));
     // Recorded before writing: a tmp file that gets promoted is recognised.
     session.own[gen] = seq;
-    final replaceable = {...session.own.keys, for (final e in entries) e.gen};
+    // A consumed copy's entry is never replaced: its slot is passed over.
+    final consumed = {for (final e in entries) if (_consumedCopies.containsKey(e.gen)) e.gen};
+    final replaceable = {
+      ...session.own.keys,
+      for (final e in entries) if (!consumed.contains(e.gen)) e.gen,
+    };
     final written = await tx.write(
       folder: folder,
       page: page,
       baseText: baseText,
       time: time,
       replaceable: replaceable,
+      passOver: consumed,
     );
     session.newestWritten = seq;
     // Older generations in other slots go; one that can't be deleted is marked
@@ -7900,8 +7956,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final nb = basePage ?? (baseText == null ? null : _tryRead(baseText));
     var np = page;
     final sorted = [...entries]..sort((a, b) => a.time.compareTo(b.time));
+    // A consumed copy's entry is left alone: not folded in, replaced or deleted.
+    final consumed = {for (final e in entries) if (_consumedCopies.containsKey(e.gen)) e.gen};
     for (final e in sorted) {
-      if (rec.isLanded(e.gen)) continue; // deleted, never merged
+      if (rec.isLanded(e.gen) || consumed.contains(e.gen)) continue; // deleted, never merged
       final NotedPage eb;
       if (e.baseText == null) {
         eb = NotedPage.create(e.page.meta);
@@ -7941,10 +7999,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       page: np,
       baseText: baseText,
       time: time,
-      replaceable: {for (final e in entries) e.gen},
+      replaceable: {for (final e in entries) if (!consumed.contains(e.gen)) e.gen},
+      passOver: consumed,
     );
     for (final e in entries) {
-      if (e.gen == written.gen || e.file.path == written.file.path) continue;
+      if (e.gen == written.gen || e.file.path == written.file.path || consumed.contains(e.gen)) continue;
       try {
         await tx.delete(e);
       } on Object catch (ex) {
@@ -8091,6 +8150,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (listing.problems.isEmpty && listing.damaged.isEmpty) {
       final liveGens = {for (final e in rec.indexEntries) e.gen};
       _landedText.removeWhere((g, _) => !liveGens.contains(g));
+      for (final g in [..._consumedCopies.keys]) {
+        if (!liveGens.contains(g)) _dropConsumed(g);
+      }
     }
     // Landed leftovers are deleted, never merged (0130).
     if (rec.landedEntries.isNotEmpty) {
@@ -8187,6 +8249,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // that can't be deleted is marked landed (deleted later, never merged).
   Future<void> _deleteEntry(RecoveryStore rec, RecoveryEntry e) async {
     _landedText.remove(e.gen);
+    _dropConsumed(e.gen);
     if (_lockProblem() != null) {
       rec.markLanded(e.gen);
       return;
@@ -8196,6 +8259,307 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on Object catch (ex) {
       debugPrint('Deleting a replayed recovery entry failed: $ex');
       rec.markLanded(e.gen);
+    }
+  }
+
+  // Consumed conflict copies (R-1 of the 2026-11-16 data-integrity audit) --------
+  //
+  // A conflict copy that a merge consumed is kept as a recovery entry (a fresh
+  // slot, no base, read back) before the copy file is deleted, and the entry is
+  // retired only once a later read of the page file shows it still holds what
+  // the copy held (consumedCopyHeld). If a sync client put an older file back
+  // meanwhile, the merge is done again from the entry.
+
+  // Ends the mark of [gen], if any, and its timer.
+  void _dropConsumed(String gen) {
+    final m = _consumedCopies.remove(gen);
+    m?.timer?.cancel();
+    m?.timer = null;
+  }
+
+  // Keeps [copy], read from the copy file a merge consumed, in recovery and
+  // marks it for its re-check. Throws a FormatException when it can't be kept
+  // (no recovery, the lock, a write or read-back that fails): the copy then
+  // stays, listed, as any failed merge, so nothing is retired unkept.
+  Future<_ConsumedCopy> _keepConsumedCopy(PageStore st, NotedPage copy, int copyTime) async {
+    const refused = FormatException('the merged copy could not be kept in recovery');
+    final rec = _recovery;
+    if (rec == null || _lockProblem() != null) throw refused;
+    final String gen;
+    try {
+      final folder = _normalizePath(st.directory.path);
+      final written = await rec.transaction(
+        (tx) => tx.write(folder: folder, page: copy, baseText: null, time: DateTime.now(), freshSlot: true),
+      );
+      gen = written.gen;
+      final entry = rec.indexEntries.where((x) => x.gen == gen).firstOrNull;
+      if (entry == null || !await rec.transaction((tx) => tx.verify(entry))) throw refused;
+    } on Object catch (e) {
+      debugPrint('Keeping the merged copy of page ${copy.id} in recovery failed: $e');
+      throw refused;
+    }
+    final m = _consumedCopies[gen] = _ConsumedCopy(gen, copy.id, copyTime, now());
+    _armConsumed(m);
+    return m;
+  }
+
+  // The shortest wait before a mark is looked at again.
+  static const Duration _consumedMinWait = Duration(milliseconds: 250);
+
+  // How long until [m] is due; for a mark already due that is waiting (the
+  // page open, a delete holding it, a lock problem), [copyRetireAfter] again.
+  // At least [_consumedMinWait].
+  Duration _consumedWait(_ConsumedCopy m) {
+    final left = copyRetireAfter - now().difference(m.since);
+    final wait = left > Duration.zero ? left : copyRetireAfter;
+    return wait > _consumedMinWait ? wait : _consumedMinWait;
+  }
+
+  /// Test seam: runs the re-check of every consumed conflict copy now, as if
+  /// it were due, and nothing else (no other entry is replayed).
+  @visibleForTesting
+  Future<void> recheckConsumedCopiesForTest() async {
+    final rec = _recovery;
+    if (rec == null) return;
+    for (final m in [..._consumedCopies.values]) {
+      final e = rec.indexEntries.where((x) => x.gen == m.gen).firstOrNull;
+      final loc = e == null ? null : _locOfFolder(e.folder);
+      if (e == null || loc == null || _busy.containsKey(m.pageId)) continue;
+      m.decideNow = true;
+      _busy[m.pageId] = _busyReplaying;
+      try {
+        await _replayEntry(rec, e, loc);
+      } finally {
+        _free(m.pageId, _busyReplaying);
+      }
+    }
+  }
+
+  // Arms [m]'s one-shot timer ([copyRetireAfter] unless [after] is given). Not
+  // for a parked mark.
+  void _armConsumed(_ConsumedCopy m, [Duration? after]) {
+    m.timer?.cancel();
+    m.timer = null;
+    if (_disposed || m.parked) return;
+    late final Timer t;
+    t = m.timer = Timer(after ?? copyRetireAfter, () {
+      if (identical(m.timer, t)) m.timer = null;
+      unawaited(_consumedTick(m));
+    });
+  }
+
+  // [m]'s timer fired: a replay pass at the page's current place. A pass can
+  // return before the re-check (a lock problem, a busy page, a folder away), so
+  // while the mark stands, isn't parked and no redo armed it, it arms again:
+  // after a failed redo or read with the backoff's wait.
+  Future<void> _consumedTick(_ConsumedCopy m) async {
+    if (_disposed || !identical(_consumedCopies[m.gen], m)) return;
+    final e = _recovery?.indexEntries.where((x) => x.gen == m.gen).firstOrNull;
+    final loc = _loc[m.pageId] ?? (e == null ? null : _locOfFolder(e.folder));
+    try {
+      await _recoverPending(onlyLoc: loc);
+    } on Object catch (ex) {
+      debugPrint('Re-checking the merged copy of page ${m.pageId} failed: $ex');
+    }
+    if (_disposed || !identical(_consumedCopies[m.gen], m) || m.parked || m.timer != null) return;
+    _armConsumed(m, m.failed ? (_backoff.delay ?? backoffFirst) : _consumedWait(m));
+  }
+
+  // Whether a delete that Undo can still reach holds page [id] (0143).
+  bool _deleteHolds(String id) {
+    bool has(DeletedPages d) => d.pages.any((p) => p.id == id);
+    final last = _lastDeleted;
+    return (last != null && has(last)) || _held.any(has);
+  }
+
+  // The re-check of consumed copy [m], kept as [e] (whose folder is [loc]).
+  // True once the entry is retired; false while it waits: not due, the copy
+  // still being deleted, parked, the page open in any form (a preview too), the
+  // place away, a delete holding the page, a page still listed whose file is
+  // missing, or a read that failed (looked at again after the backoff's wait).
+  // The page file is read at the page's current place under the folder lock:
+  // when it holds the copy the entry is retired; when it doesn't, the merge is
+  // done again (the entry stays and is re-checked); a page listed nowhere
+  // whose file is gone was deleted, and the entry goes.
+  Future<bool> _recheckConsumedCopy(RecoveryStore rec, RecoveryEntry e, String loc, _ConsumedCopy m) async {
+    final id = e.pageId;
+    final due = m.decideNow || now().difference(m.since) >= copyRetireAfter;
+    if (!due || m.deleting || m.parked || _current?.page.id == id) return false;
+    final at = _loc[id] ?? loc;
+    final PageStore st;
+    try {
+      if (_isLocked(at)) return false;
+      st = _storeOf(at);
+    } on NotebookException {
+      return false;
+    }
+    m.decideNow = false;
+    final path = st.pathFor(id);
+    await syncHook?.call('copy-recheck', path); // a test seam: sync puts a file back here
+    final String? text;
+    try {
+      text = await _underFolderLock(st, () async {
+        try {
+          return await File(path).readAsString();
+        } on PathNotFoundException {
+          return null;
+        }
+      });
+    } on Object catch (ex) {
+      // Held by a sync client, or not text yet.
+      debugPrint('Reading page $id to check its merged copy failed: $ex');
+      m.failed = true;
+      return false;
+    }
+    if (text == null) {
+      // A delete Undo can reach waits; a page still listed may be a sync
+      // client's replace in flight. Listed nowhere: the deleting writer's
+      // decision stands.
+      if (_deleteHolds(id) || _loc[id] != null) return false;
+      m.failed = false;
+      await _deleteEntry(rec, e);
+      return true;
+    }
+    NotedPage? disk;
+    try {
+      disk = readPage(text);
+    } on PageFormatException catch (ex) {
+      debugPrint('Page $id can not be read to check its merged copy: $ex');
+    }
+    if (disk == null || disk.id != id) {
+      m.failed = true;
+      return false;
+    }
+    final missing = consumedCopyHeld(
+      disk,
+      e.page,
+      touched: m.touched,
+      headerTouched: m.headerTouched,
+      topOfChain: _topOfChain(at, disk),
+    );
+    if (missing == null) {
+      m.failed = false;
+      await _deleteEntry(rec, e);
+      return true;
+    }
+    debugPrint('Page $id no longer holds its merged copy ($missing): merging it again');
+    // This app's own deletes and AI access change since the merge stand.
+    var redo = e.page;
+    if (m.touched.isNotEmpty) {
+      redo = NotedPage.fromParts(redo.top, redo.meta, [
+        for (final n in redo.nodes)
+          if (!m.touched.contains(n.id)) n,
+      ]);
+    }
+    if (m.headerTouched) {
+      final raw = disk.meta.rawAiAccess;
+      final fields = raw == null ? redo.meta.fields.remove(aiAccessKey) : redo.meta.fields.set(aiAccessKey, raw);
+      redo = redo.withMeta(PageMeta.tryRead(fields) ?? redo.meta);
+    }
+    final label = '"${_titleOrUntitled(e.page.meta.title)}"';
+    try {
+      for (var attempt = 0; ; attempt++) {
+        try {
+          await _mergeConflictCopy(at, null, path, redo, m.copyTime, '');
+          break;
+        } on _SourceChanged {
+          if (attempt >= 4) {
+            throw _ReplayFailure(
+              'the saved file of $label keeps changing',
+              detail: 'the page file changed on every attempt to merge the kept copy into it',
+              transient: true,
+            );
+          }
+        }
+      }
+    } on Object {
+      m.failed = true;
+      rethrow;
+    }
+    m.failed = false;
+    m.since = now();
+    m.rounds++;
+    if (m.rounds >= 3) {
+      // Sync keeps putting an older file back: no more redos until a change of
+      // the file (once) or a restart.
+      m.parked = true;
+      m.timer?.cancel();
+      m.timer = null;
+      _replayProblems[_entryKey(e)] = (
+        path: _entryPath(e),
+        why: 'Sync keeps putting back an older version of $label; the merged copy is kept in recovery',
+      );
+    } else {
+      _armConsumed(m);
+    }
+    return false;
+  }
+
+  // A change of the file at [path] takes a parked mark of its page out of
+  // parked, once per mark, for one more round.
+  void _unparkConsumed(String path) {
+    if (_consumedCopies.isEmpty) return;
+    final name = _baseName(path);
+    for (final m in _consumedCopies.values) {
+      if (!m.parked || m.unparked || name != '${m.pageId}${PageStore.extension}') continue;
+      m.parked = false;
+      m.unparked = true;
+      _armConsumed(m, _consumedWait(m));
+    }
+  }
+
+  // This app changed page [id] from [base] to [mine] (a save, before mine is
+  // merged with the file): a redo of a consumed copy of the page leaves those
+  // nodes, and a changed AI access, as they are.
+  void _noteOwnEdits(String id, NotedPage? base, NotedPage mine) {
+    if (base == null || !_consumedCopies.values.any((m) => m.pageId == id)) return;
+    final before = {for (final n in base.nodes) n.id: n.toRaw()};
+    final after = {for (final n in mine.nodes) n.id: n.toRaw()};
+    final ids = {
+      for (final k in {...before.keys, ...after.keys})
+        if (before[k] != after[k]) k,
+    };
+    final header = base.meta.rawAiAccess != mine.meta.rawAiAccess;
+    for (final m in _consumedCopies.values) {
+      if (m.pageId != id) continue;
+      m.touched.addAll(ids);
+      if (header) m.headerTouched = true;
+    }
+  }
+
+  // A delete holding page(s) [d] was let go: their marks are decided by the
+  // re-check that follows, with a read of the file (no file retires them).
+  void _letGoConsumed(DeletedPages d) {
+    final ids = {for (final p in d.pages) p.id};
+    var any = false;
+    for (final m in _consumedCopies.values) {
+      if (!ids.contains(m.pageId)) continue;
+      m.decideNow = true;
+      any = true;
+    }
+    if (any && !_disposed) unawaited(_recoverPending(onlyLoc: d._location));
+  }
+
+  // At quit, the delete [d] is let go: the marked entries of its pages whose
+  // file a read under the folder lock finds absent are retired. One whose file
+  // is there, or whose read can't be made within [leaveSaveLimit], stays for
+  // the replay at the next start.
+  Future<void> _retireConsumedOfDeleted(DeletedPages d) async {
+    final rec = _recovery;
+    if (rec == null) return;
+    final ids = {for (final p in d.pages) p.id};
+    for (final m in [..._consumedCopies.values]) {
+      if (!ids.contains(m.pageId) || _disposed) continue;
+      final e = rec.indexEntries.where((x) => x.gen == m.gen).firstOrNull;
+      if (e == null) continue;
+      try {
+        final st = _storeOf(_loc[m.pageId] ?? d._location);
+        final path = st.pathFor(m.pageId);
+        final gone = await _underFolderLock(st, () async => !await File(path).exists()).timeout(leaveSaveLimit);
+        if (gone && _loc[m.pageId] == null) await _deleteEntry(rec, e);
+      } on Object catch (ex) {
+        debugPrint('Retiring the merged copy of deleted page ${m.pageId} failed: $ex');
+      }
     }
   }
 
@@ -8291,6 +8655,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     final st = _storeOf(loc);
     if (!await st.directory.exists()) return false;
+    // A consumed conflict copy is re-checked, not replayed (it is merged again
+    // only when the file no longer holds it).
+    final mark = _consumedCopies[e.gen];
+    if (mark != null) return _recheckConsumedCopy(rec, e, loc, mark);
     final base = e.baseText == null
         ? NotedPage.create(mine.meta)
         : _readForReplay(e.baseText!, 'the copy kept with the edits for $label');
@@ -9496,6 +9864,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// file was deleted the page stays as it is and the next save writes it
   /// again.
   Future<void> checkFile(String path) {
+    _unparkConsumed(path);
     final job = _checking.then((_) async {
       await _chain.idle; // let writes in flight land first
       if (!_disposed) await _checkFile(path);
@@ -10363,10 +10732,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return true;
   }
 
-  // [consumed] is the text of the copy that [copy] was read from.
+  // [consumed] is the text of the copy that [copy] was read from. Once the
+  // merge is verified, the copy is kept in recovery (_keepConsumedCopy) and only
+  // then deleted; the entry goes once a later read shows the file still holds
+  // it (_recheckConsumedCopy). A null [copyPath] is that re-check's redo: the
+  // entry is the copy, so the merge is all there is to do.
   Future<void> _mergeConflictCopy(
     String loc,
-    String copyPath,
+    String? copyPath,
     String originalPath,
     NotedPage copy,
     int time,
@@ -10452,7 +10825,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         r = await closedBranch();
       } else {
         // A test seam: the page may be opened here, before the job is queued.
-        await syncHook?.call('conflict-copy-closed', copyPath);
+        await syncHook?.call('conflict-copy-closed', copyPath ?? originalPath);
         r = await _afterSaves(closedBranch, what: 'conflict-copy merge of page $id', pages: {id});
       }
       if (!r.open) {
@@ -10463,25 +10836,38 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Opened and closed again every round: leave the copy for the next check.
     if (!settled) throw const _SourceChanged();
     if (failure != null) throw FormatException(failure);
+    if (copyPath == null) return; // a redo: the entry is the copy
     // Delete the copy only if it is still exactly what was merged.
     await syncHook?.call('copy-merged', copyPath);
-    final String now;
+    final String current;
     try {
-      now = await File(copyPath).readAsString();
+      current = await File(copyPath).readAsString();
     } on FileSystemException {
       if (await FileSystemEntity.type(copyPath) == FileSystemEntityType.notFound) return;
       rethrow;
     } on FormatException {
       throw const _SourceChanged();
     }
-    if (now != consumed) throw const _SourceChanged();
-    // Deleted only if it still holds exactly the text that was merged, checked
-    // at the moment of deleting (0128); a copy that changed since is merged again.
-    final deleted = await _underFolderLock(st, () async {
-      final r = await deleteFileIfUnchanged(copyPath, utf8.encode(consumed));
-      if (r.deleted) _emitDeleted(copyPath);
-      return r;
-    });
+    if (current != consumed) throw const _SourceChanged();
+    // Kept before it is deleted: a sync client may put the pre-merge original
+    // back after the check above, and then the copy's content would be in no
+    // file. Also when the merge wrote nothing (it may have been written before
+    // a crash or a refusal here). The re-check waits until the delete is over.
+    final mark = await _keepConsumedCopy(st, copy, time);
+    final DeleteResult deleted;
+    try {
+      // Deleted only if it still holds exactly the text that was merged, checked
+      // at the moment of deleting (0128); a copy that changed since is merged
+      // again (with an entry of its own; this one is re-checked on its own).
+      deleted = await _underFolderLock(st, () async {
+        final r = await deleteFileIfUnchanged(copyPath, utf8.encode(consumed));
+        if (r.deleted) _emitDeleted(copyPath);
+        return r;
+      });
+    } finally {
+      mark.deleting = false;
+    }
+    if (deleted.deleted) await syncHook?.call('copy-deleted', copyPath);
     if (!deleted.deleted && deleted.outcome != DeleteOutcome.absent) throw const _SourceChanged();
   }
 
@@ -10569,6 +10955,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _rebuildTree();
       }
       await _promoteReleased();
+      // Another device's delete: a consumed copy of the page is retired by the
+      // re-check's read when it finds no file (the confirmation alone doesn't).
+      var marked = false;
+      for (final m in _consumedCopies.values) {
+        if (m.pageId != id) continue;
+        m.decideNow = true;
+        marked = true;
+      }
+      if (marked && !_disposed) unawaited(_recoverPending(onlyLoc: loc));
     }
   }
 
@@ -11998,7 +12393,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await syncHook?.call('open-read', st.pathFor(id));
       final entries = rec == null ? const <RecoveryEntry>[] : rec.entriesFor(folder, id);
       final landed = [for (final e in entries) if (rec != null && rec.isLanded(e.gen)) e];
-      final pending = entries.length - landed.length;
+      // A consumed copy's entry is not an edit waiting: the page opens editable.
+      final pending = rec == null ? 0 : entries.where((e) => _waitingEntry(rec, e)).length;
       final NotedPage page;
       try {
         if (text == null) throw readError!;
@@ -12011,7 +12407,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           st,
           null,
           null,
-          [for (final x in entries) if (!rec!.isLanded(x.gen)) x],
+          [for (final x in entries) if (_waitingEntry(rec!, x)) x],
           unreadable: e.why,
         );
         return (done: true, landed: landed, ownsBusy: false);
@@ -12025,7 +12421,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           st,
           null,
           null,
-          [for (final x in entries) if (!rec!.isLanded(x.gen)) x],
+          [for (final x in entries) if (_waitingEntry(rec!, x)) x],
           unreadable: e is UnsupportedPageFormatException
               ? 'the page file is from a newer version of Noted'
               : "the page file isn't a valid page file",
@@ -12059,7 +12455,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (readError?.why == _holdsOtherPage) sawOtherPage();
       final pending = rec == null
           ? const <RecoveryEntry>[]
-          : [for (final e in rec.entriesFor(folder, id)) if (!rec.isLanded(e.gen)) e];
+          : [for (final e in rec.entriesFor(folder, id)) if (_waitingEntry(rec, e)) e];
       final NotedPage page;
       try {
         if (text == null) throw readError!;
@@ -12241,7 +12637,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_busy.containsKey(p.id)) return;
     final pending = [
       for (final e in rec.indexEntries)
-        if (e.pageId == p.id && !rec.isLanded(e.gen)) e,
+        if (e.pageId == p.id && _waitingEntry(rec, e)) e,
     ];
     if (pending.isEmpty) {
       _reopening = true;
@@ -12732,6 +13128,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _waitingForFolder.dispose();
     _aiMerge?.dispose();
     _saveTimer?.cancel();
+    for (final m in _consumedCopies.values) {
+      m.timer?.cancel();
+      m.timer = null;
+    }
     _backoff.dispose();
     unawaited(_keptNotices.close());
     _folderTimer?.cancel();
@@ -12761,6 +13161,28 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     tools.dispose();
     super.dispose();
   }
+}
+
+// A conflict copy that a merge consumed and that is kept as recovery entry
+// [gen] until a read of its page file shows the merge holds (copy retire).
+class _ConsumedCopy {
+  _ConsumedCopy(this.gen, this.pageId, this.copyTime, this.since);
+
+  String gen; // moves with the entry when a move re-keys it
+  final String pageId;
+  final int copyTime; // the copy's time, for the conflicts a redo records
+  DateTime since; // the merge or the last redo: due [copyRetireAfter] after
+  int rounds = 0; // redos made
+  bool parked = false; // sync kept putting an older file back: no timer
+  bool unparked = false; // a change of the file took it out of parked once
+  bool deleting = true; // the copy file is still to be deleted
+  bool failed = false; // the last redo or read failed: retried at the backoff
+  bool decideNow = false; // due at once: a delete of the page was let go, or confirmed
+  // This app's own changes of the page since the merge: node ids, and the AI
+  // access. A redo leaves them as they are.
+  final Set<String> touched = {};
+  bool headerTouched = false;
+  Timer? timer;
 }
 
 /// A page file that could not be read as text, and what to say about it.

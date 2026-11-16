@@ -91,6 +91,8 @@ void main() {
       folderLocks: locks,
       pickFolder: pick,
       templatesDirectory: Directory('${root.path}${sep}templates'),
+      // A merged copy is deleted only once recovery keeps it (run 2026-11-16-01).
+      recoveryDirectory: Directory('${root.path}${sep}rec'),
     );
     events = [];
     await nb.load();

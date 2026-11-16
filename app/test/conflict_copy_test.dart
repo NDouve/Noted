@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/recovery_store.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/busy_retry.dart';
@@ -70,16 +71,29 @@ void main() {
   late ModuleRegistry modules;
   final sep = Platform.pathSeparator;
 
-  Future<void> start({bool watch = false, PageStore Function(Directory)? make}) async {
-    dir = await Directory.systemTemp.createTemp('noted_copies');
-    modules = buildModules();
-    nb = Notebook(
-      (make ?? PageStore.new)(dir),
+  // A merged copy is kept in recovery until a re-check: [recovery] false runs
+  // without a recovery folder (a copy is then never deleted). The re-check is
+  // due [copyRetireAfter] after the merge, by [clock] (advanced by tests).
+  late Directory recDir;
+  var clock = DateTime(2026, 11, 16, 12);
+  Notebook makeNotebook(PageStore st, {bool recovery = true, bool watch = false}) {
+    clock = DateTime(2026, 11, 16, 12);
+    return Notebook(
+      st,
       modules,
       saveDelay: const Duration(hours: 1),
       watchFiles: watch,
       watchDebounce: const Duration(milliseconds: 50),
-    );
+      recoveryDirectory: recovery ? recDir : null,
+      copyRetireAfter: const Duration(hours: 1),
+    )..now = () => clock;
+  }
+
+  Future<void> start({bool watch = false, bool recovery = true, PageStore Function(Directory)? make}) async {
+    dir = await Directory.systemTemp.createTemp('noted_copies');
+    recDir = Directory('${dir.path}-rec');
+    modules = buildModules();
+    nb = makeNotebook((make ?? PageStore.new)(dir), recovery: recovery, watch: watch);
     other = PageStore(dir);
     await nb.load();
     await other.scan();
@@ -88,7 +102,16 @@ void main() {
   tearDown(() async {
     nb.dispose();
     await busyRetry(() => dir.delete(recursive: true));
+    if (recDir.existsSync()) await busyRetry(() => recDir.delete(recursive: true));
   });
+
+  // Makes every consumed copy's re-check due and runs a replay pass.
+  Future<void> recheck() async {
+    clock = clock.add(const Duration(hours: 2));
+    await nb.recoverNowForTest();
+  }
+
+  Future<List<RecoveryEntry>> entries() async => (await nb.recoveryStoreForTest!.list()).entries;
 
   BoxRecord noteBox(String text, {Bounds at = const Bounds(10, 10, 200, 40)}) {
     final codec = modules.codecs.codecFor('noted.note')!;
@@ -247,6 +270,7 @@ void main() {
 
   test('a copy found at startup is merged on load', () async {
     dir = await Directory.systemTemp.createTemp('noted_copies');
+    recDir = Directory('${dir.path}-rec');
     modules = buildModules();
     other = PageStore(dir);
     final page = NotedPage.create(PageMeta.create(id: 'aaaa1111', title: 'A', order: 0));
@@ -254,7 +278,7 @@ void main() {
     final added = noteBox('new');
     final path = copyPath('aaaa1111', 'DESKTOP-4QK2N8L');
     await writeCopy(path, page.insertNode(added));
-    nb = Notebook(PageStore(dir), modules, saveDelay: const Duration(hours: 1));
+    nb = makeNotebook(PageStore(dir));
     await nb.load();
     expect(File(path).existsSync(), isFalse);
     expect(nb.unreadable, isEmpty);
@@ -295,6 +319,38 @@ void main() {
     expect(File(path).existsSync(), isFalse);
     expect(nb.unreadable, isEmpty);
     expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
+  });
+
+  // Run 2026-11-16-01 (R-1): a merged copy is deleted only once it is kept in
+  // recovery, and the entry goes only once a later read holds it.
+  test('without a recovery folder a merged copy is never deleted: it stays listed', () async {
+    await start(recovery: false);
+    final (id, _) = await closedPageWithBox();
+    final path = copyPath(id, 'DESKTOP-4QK2N8L');
+    await writeCopy(path, (await other.load(id)).insertNode(noteBox('extra', at: const Bounds(400, 10, 200, 40))));
+    await nb.checkFile(path);
+    expect(File(path).existsSync(), isTrue);
+    expect(nb.unreadable.map((u) => u.path), [path]);
+    expect(nb.unreadable.single.reason, contains('could not be kept in recovery'));
+  });
+
+  test('an identical copy is kept in recovery; the first re-check retires it and the page file is untouched', () async {
+    await start();
+    final (id, _) = await closedPageWithBox();
+    final before = File(pathOf(id)).readAsStringSync();
+    final stamp = File(pathOf(id)).lastModifiedSync();
+    final path = copyPath(id, 'DESKTOP-4QK2N8L');
+    await File(path).writeAsString(before);
+    await nb.checkFile(path);
+    expect(File(path).existsSync(), isFalse);
+    expect((await entries()).single.pageId, id);
+    expect((await nb.pendingRecovery()).entries, isEmpty, reason: 'not an edit waiting');
+    await nb.recoverNowForTest();
+    expect(await entries(), hasLength(1), reason: 'not due yet');
+    await recheck();
+    expect(await entries(), isEmpty);
+    expect(File(pathOf(id)).readAsStringSync(), before);
+    expect(File(pathOf(id)).lastModifiedSync(), stamp);
   });
 
   test('a watcher merges a copy that appears while running', () async {
@@ -479,6 +535,48 @@ void main() {
       expect(File(path).existsSync(), isFalse);
       expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
       expect(nb.unreadable, isEmpty);
+    });
+
+    // Run 2026-11-16-01: a copy found at startup goes through the same keep and
+    // re-check (R-1), and the same-id merge takes the stricter AI access.
+    Future<void> restart() async {
+      nb.dispose();
+      nb = makeNotebook(PageStore(dir));
+      await nb.load();
+      await nb.createPage(); // the merged page is closed (an open one waits)
+    }
+
+    test('an <id> 2.canvas merged after a restart, then the old original put back: the re-check restores it', () async {
+      await start();
+      final (id, box) = await closedPageWithBox();
+      final before = File(pathOf(id)).readAsStringSync();
+      final added = noteBox('from the second file', at: const Bounds(400, 10, 200, 40));
+      final path = named(id, ' 2');
+      await writeCopy(path, (await other.load(id)).insertNode(added));
+      await restart();
+      expect(File(path).existsSync(), isFalse);
+      expect(onDisk(id).node(added.id), isNotNull);
+      expect((await entries()).single.page.node(added.id), isNotNull, reason: 'kept until the re-check');
+      await busyRetry(() => File(pathOf(id)).writeAsString(before)); // sync puts the old file back
+      await recheck();
+      expect(onDisk(id).nodes.map((n) => n.id).toSet(), {box.id, added.id});
+      expect(await entries(), hasLength(1), reason: 'merged again: re-checked once more');
+      await recheck();
+      expect(await entries(), isEmpty);
+      expect(onDisk(id).node(added.id), isNotNull);
+    });
+
+    test('a Guarded <id> 2.canvas merged into an Open original after a restart: the page is Guarded', () async {
+      await start();
+      final (id, _) = await closedPageWithBox();
+      final open = await other.load(id);
+      await saveAsOther(open.withMeta(open.meta.withAiAccess(AiAccess.open)));
+      final path = named(id, ' 2');
+      await writeCopy(path, open.withMeta(open.meta.withAiAccess(AiAccess.guarded)));
+      await restart();
+      expect(File(path).existsSync(), isFalse);
+      expect(onDisk(id).meta.rawAiAccess, RawJson.encode('guarded'));
+      expect(nb.ownAiAccess(id), AiAccess.guarded);
     });
 
     // A chosen <id> 2.canvas (id has no <id>.canvas when it is chosen), then

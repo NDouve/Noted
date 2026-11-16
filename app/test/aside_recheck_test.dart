@@ -130,6 +130,8 @@ void main() {
       modules,
       saveDelay: const Duration(hours: 1),
       watchFiles: false,
+      // A merged copy is deleted only once recovery keeps it (run 2026-11-16-01).
+      recoveryDirectory: Directory('${root.path}${sep}rec'),
     );
     await nb.load();
   });

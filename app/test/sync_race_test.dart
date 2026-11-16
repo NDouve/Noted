@@ -13,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/attachment_copy.dart';
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/recovery_lock.dart';
 import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted_canvas/noted_canvas.dart';
@@ -217,13 +218,20 @@ void main() {
   late ModuleRegistry modules;
   final sep = Platform.pathSeparator;
 
-  Future<void> start({bool withRecovery = true, PageStore Function(Directory)? factory, Duration? backoff}) async {
-    root = await Directory.systemTemp.createTemp('noted_race');
-    dir = await Directory('${root.path}${sep}pages').create();
-    rec = Directory('${root.path}${sep}rec');
-    modules = buildModules();
-    counting = CountingStore(dir);
-    nb = Notebook(
+  // A merged conflict copy's re-check is due [copyRetireAfter] after the merge
+  // by [clock] (tests advance it), unless a test runs the real clock.
+  var clock = DateTime(2026, 11, 16, 12);
+  late FolderLocks locks;
+
+  Notebook makeNotebook({
+    bool withRecovery = true,
+    PageStore Function(Directory)? factory,
+    Duration? backoff,
+    Duration? retire,
+    RecoveryLock? lock,
+  }) {
+    clock = DateTime(2026, 11, 16, 12);
+    final n = Notebook(
       counting,
       modules,
       saveDelay: const Duration(hours: 1),
@@ -231,7 +239,29 @@ void main() {
       backoffFirst: backoff ?? const Duration(seconds: 2),
       folderCheckInterval: Duration.zero,
       storeFactory: factory ?? PageStore.new,
+      copyRetireAfter: retire ?? const Duration(hours: 1),
+      recoveryLock: lock,
+      folderLocks: locks,
     );
+    // A test given a real wait for the re-check runs on the real clock.
+    if (retire == null) n.now = () => clock;
+    return n;
+  }
+
+  Future<void> start({
+    bool withRecovery = true,
+    PageStore Function(Directory)? factory,
+    Duration? backoff,
+    Duration? retire,
+    RecoveryLock? lock,
+  }) async {
+    root = await Directory.systemTemp.createTemp('noted_race');
+    dir = await Directory('${root.path}${sep}pages').create();
+    rec = Directory('${root.path}${sep}rec');
+    modules = buildModules();
+    counting = CountingStore(dir);
+    locks = FolderLocks();
+    nb = makeNotebook(withRecovery: withRecovery, factory: factory, backoff: backoff, retire: retire, lock: lock);
     nb.syncHook = (point, path) => point == 'new-before-publish' ? counting.pauseRestore() : Future<void>.value();
     other = PageStore(dir);
     await nb.load();
@@ -1398,6 +1428,473 @@ void main() {
     });
   });
 
+  // Run 2026-11-16-01 (R-1 of the 2026-11-16 data-integrity audit): a merged
+  // copy is kept in recovery before it is deleted, and the entry goes only once
+  // a later read of the page file still holds it. A sync client putting back
+  // the file it fetched before the merge has the merge done again.
+  group('a merged copy is retired only after a re-check', () {
+    late String id;
+    late BoxRecord box;
+    late BoxRecord extra;
+    late String copy;
+    late String before; // the original as it was before the merge
+
+    // The closed page [id] holds [box]; the copy beside it adds [extra]
+    // ([shape] changes the copy further). [originalAi]: the original's own AI
+    // access.
+    Future<void> withCopy({NotedPage Function(NotedPage copy)? shape, AiAccess? originalAi}) async {
+      id = nb.currentId!;
+      box = noteBox('base');
+      var page = (await other.load(id)).insertNode(box);
+      if (originalAi != null) page = page.withMeta(page.meta.withAiAccess(originalAi));
+      await other.save(page);
+      await nb.createPage(); // [id] is closed
+      await nb.checkFile(pathOf(id));
+      before = File(pathOf(id)).readAsStringSync();
+      extra = noteBox('from the copy', at: const Bounds(400, 10, 200, 40));
+      var c = readPage(before).insertNode(extra);
+      if (shape != null) c = shape(c);
+      copy = '${dir.path}$sep$id-DESKTOP-ABC.canvas';
+      File(copy).writeAsStringSync(writePage(c));
+    }
+
+    // A sync client puts back the file it fetched before the merge.
+    void revert([String? at]) => File(at ?? pathOf(id)).writeAsStringSync(before);
+
+    // Reverts the original at the hook [point], once (or [every] time).
+    void revertAt(String point, {bool every = false}) {
+      var fired = false;
+      final hook = nb.syncHook;
+      nb.syncHook = (p, path) async {
+        await hook?.call(p, path);
+        if (p != point || (fired && !every)) return;
+        fired = true;
+        revert();
+      };
+    }
+
+    Future<List<RecoveryEntry>> entries() async => (await nb.recoveryStoreForTest!.list()).entries;
+
+    // Makes the re-check due and runs a replay pass.
+    Future<void> recheck() async {
+      clock = clock.add(const Duration(hours: 2));
+      await nb.recoverNowForTest();
+    }
+
+    Set<String> ids([String? at]) => readPage(File(at ?? pathOf(id)).readAsStringSync()).nodes.map((n) => n.id).toSet();
+
+    Future<void> until(FutureOr<bool> Function() done, String what) async {
+      final end = DateTime.now().add(const Duration(seconds: 20));
+      while (!await done()) {
+        if (DateTime.now().isAfter(end)) fail('timed out waiting for $what');
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    }
+
+    Future<void> restart() async {
+      nb.dispose();
+      counting = CountingStore(dir);
+      nb = makeNotebook();
+      await nb.load();
+      await nb.createPage(); // the page with the copy is closed
+    }
+
+    for (final point in ['copy-merged', 'copy-deleted']) {
+      test('(a, b) the old original put back at $point: the re-check merges the copy again, then retires it', () async {
+        await start();
+        await withCopy();
+        revertAt(point);
+        await nb.checkFile(copy);
+        expect(File(copy).existsSync(), isFalse);
+        expect(ids(), {box.id}, reason: 'sync put the old file back');
+        final kept = await entries();
+        expect(kept.single.page.node(extra.id), isNotNull, reason: 'the copy is kept in recovery');
+        expect(kept.single.baseText, isNull);
+        await recheck();
+        expect(ids(), {box.id, extra.id});
+        expect(verifyConflictCopyMerge(onDisk(id), readPage(before), kept.single.page, topOfChain: true), isNull);
+        expect(await entries(), hasLength(1), reason: 'merged again: re-checked once more');
+        await recheck();
+        expect(await entries(), isEmpty);
+        expect(ids(), {box.id, extra.id});
+      });
+    }
+
+    test('(c) no revert: the entry is retired at the first re-check and the page file is untouched', () async {
+      await start();
+      await withCopy();
+      await nb.checkFile(copy);
+      final merged = File(pathOf(id)).readAsStringSync();
+      expect(await entries(), hasLength(1));
+      expect((await nb.pendingRecovery()).entries, isEmpty, reason: 'not an edit waiting');
+      await nb.recoverNowForTest();
+      expect(await entries(), hasLength(1), reason: 'not due yet');
+      await recheck();
+      expect(await entries(), isEmpty);
+      expect(nb.consumedCopiesForTest, isEmpty);
+      expect(File(pathOf(id)).readAsStringSync(), merged);
+    });
+
+    test('(d) recovery locked: the copy stays listed; once it is back a revert at the retry is undone', () async {
+      final lock = _SwitchLock(File('${Directory.systemTemp.path}${sep}noted_race_unused.lock'));
+      await start(lock: lock);
+      await withCopy();
+      lock.broken = true;
+      await nb.checkFile(copy);
+      expect(File(copy).existsSync(), isTrue);
+      expect(nb.unreadable.map((u) => u.path), [copy]);
+      expect(ids(), {box.id, extra.id}, reason: 'the merge itself landed; nothing was lost');
+      lock.broken = false;
+      revertAt('copy-merged');
+      await nb.checkFile(copy); // the retry's merge writes nothing, and still keeps the copy
+      expect(File(copy).existsSync(), isFalse);
+      expect(ids(), {box.id});
+      await recheck();
+      expect(ids(), {box.id, extra.id});
+    });
+
+    test('(d2) after a restart the original already holds the merge: the copy is still kept, and a revert undone', () async {
+      await start();
+      await withCopy();
+      // Merged before a crash: the original holds the merge, the copy is still there.
+      File(pathOf(id)).writeAsStringSync(File(copy).readAsStringSync());
+      nb.dispose();
+      counting = CountingStore(dir);
+      nb = makeNotebook();
+      revertAt('copy-merged');
+      await nb.load();
+      await nb.createPage();
+      expect(File(copy).existsSync(), isFalse);
+      expect(ids(), {box.id});
+      expect(await entries(), hasLength(1));
+      await recheck();
+      expect(ids(), {box.id, extra.id});
+    });
+
+    for (final kind in ['recorded conflict', 'landed marker']) {
+      test('(d3) the box put back with the same rev and no $kind: the redo puts it back', () async {
+        await start();
+        late BoxRecord marked;
+        await withCopy(
+          shape: (c) {
+            final b = c.node(box.id)! as BoxRecord;
+            marked = kind == 'landed marker'
+                ? b.withLanded(BoxLanded(at: 5))
+                : b.withConflict(BoxConflict.other(node: noteBox('v1').toRaw(), at: 5));
+            return c.replaceNode(marked);
+          },
+        );
+        BoxRecord now() => onDisk(id).node(box.id)! as BoxRecord;
+        await nb.checkFile(copy);
+        expect(now().rev, marked.rev);
+        revert();
+        expect(now().conflicts, isEmpty);
+        expect(now().landed, isNull);
+        await recheck();
+        if (kind == 'landed marker') {
+          expect(now().landed, isNotNull);
+        } else {
+          expect(now().conflicts, marked.conflicts);
+        }
+        await recheck();
+        expect(await entries(), isEmpty);
+      });
+    }
+
+    test('(e) sync puts the old file back at every re-check: three rounds by the timer, parked, one more on a change', () async {
+      await start(retire: const Duration(milliseconds: 300));
+      await withCopy();
+      // Each re-check reads the file once; sync has put the old one back each time.
+      var writes = 0;
+      final hook = nb.syncHook;
+      nb.syncHook = (p, path) async {
+        await hook?.call(p, path);
+        if (p != 'copy-recheck') return;
+        writes++;
+        revert();
+      };
+      await nb.checkFile(copy);
+      bool parked() => nb.consumedCopiesForTest.values.any((p) => p);
+      await until(parked, 'the mark to be parked');
+      expect(writes, 3);
+      expect(nb.recoveryProblems.join('\n'), contains('Sync keeps putting back an older version'));
+      await Future<void>.delayed(const Duration(seconds: 1));
+      expect(writes, 3, reason: 'no fourth round while parked');
+      await nb.checkFile(pathOf(id)); // a change of the file
+      await until(() => writes == 4 && parked(), 'the fourth round');
+      await nb.checkFile(pathOf(id));
+      await Future<void>.delayed(const Duration(seconds: 1));
+      expect(writes, 4, reason: 'parked until a restart');
+      expect(await entries(), hasLength(1));
+    }, timeout: const Timeout(Duration(minutes: 1)));
+
+    test('(f) opened inside the window: editable; a box deleted there stays deleted after a revert', () async {
+      await start();
+      final more = noteBox('also from the copy', at: const Bounds(400, 100, 200, 40));
+      await withCopy(shape: (c) => c.insertNode(more));
+      await nb.checkFile(copy);
+      final away = nb.currentId!;
+      await nb.open(id);
+      expect(nb.current!.readOnly, isFalse, reason: 'not a preview');
+      nb.current!.delete(extra.id);
+      await nb.flush();
+      await nb.open(away);
+      expect(ids(), {box.id, more.id});
+      revert();
+      await recheck();
+      expect(ids(), {box.id, more.id});
+      await recheck();
+      expect(await entries(), isEmpty);
+    });
+
+    for (final open in [true, false]) {
+      test('(f) AI access loosened in settings inside the window (page ${open ? 'open' : 'closed'}) stays after a revert', () async {
+        await start();
+        await withCopy(originalAi: AiAccess.open, shape: (c) => c.withMeta(c.meta.withAiAccess(AiAccess.guarded)));
+        await nb.checkFile(copy);
+        expect(onDisk(id).meta.aiAccess, AiAccess.guarded, reason: 'the stricter');
+        final away = nb.currentId!;
+        if (open) await nb.open(id);
+        await nb.setAiAccess(id, AiAccess.open);
+        await nb.flush();
+        if (open) await nb.open(away);
+        expect(onDisk(id).meta.aiAccess, AiAccess.open);
+        revert();
+        await recheck();
+        expect(ids(), {box.id, extra.id});
+        expect(onDisk(id).meta.aiAccess, AiAccess.open);
+      });
+    }
+
+    test('(f2) shown as a preview when the re-check is due: it waits, and runs once the preview is closed', () async {
+      await start();
+      await withCopy();
+      await nb.checkFile(copy);
+      final away = nb.currentId!;
+      final disk = onDisk(id);
+      final edit = noteBox('a kept edit', at: const Bounds(10, 300, 200, 40));
+      expect((await nb.keepClosedForTest(disk.insertNode(edit), disk, dir.path)).kind, KeepKind.kept);
+      final hook = nb.syncHook;
+      nb.syncHook = (p, path) async {
+        if (p == 'recover-before-publish') throw const FileSystemException('not now');
+        await hook?.call(p, path);
+      };
+      await nb.open(id);
+      expect(nb.current!.readOnly, isTrue, reason: 'a preview: the kept edit waits');
+      revert();
+      await recheck();
+      expect(ids(), {box.id}, reason: 'waits while the page is shown');
+      expect(nb.consumedCopiesForTest, hasLength(1));
+      nb.syncHook = hook;
+      await nb.open(away);
+      await recheck();
+      expect(ids(), containsAll({box.id, extra.id}));
+    });
+
+    test('(f3) a failed save of the open page keeps its own entry beside the copy\'s, which is unchanged', () async {
+      await start();
+      await withCopy();
+      await nb.checkFile(copy);
+      final kept = (await entries()).single;
+      await nb.open(id);
+      final mine = nb.current!.createBoxAt(const Bounds(10, 300, 0, 0));
+      counting.beforeWrite = () => throw const FileSystemException('disk full');
+      await nb.flush();
+      final now = await entries();
+      expect(now, hasLength(2), reason: 'the session keep is not refused');
+      expect(now.singleWhere((e) => e.gen == kept.gen).pageText, kept.pageText);
+      expect(now.singleWhere((e) => e.gen != kept.gen).page.node(mine.id), isNotNull);
+      expect(nb.consumedCopiesForTest.keys, [kept.gen]);
+    });
+
+    test('(f3) a closed save inside the window is a separate entry; the mark stays', () async {
+      await start();
+      await withCopy();
+      await nb.checkFile(copy);
+      final kept = (await entries()).single;
+      final disk = onDisk(id);
+      final edit = noteBox('a kept edit', at: const Bounds(10, 300, 200, 40));
+      expect((await nb.keepClosedForTest(disk.insertNode(edit), disk, dir.path)).kind, KeepKind.kept);
+      final now = await entries();
+      expect(now, hasLength(2));
+      expect(now.singleWhere((e) => e.gen == kept.gen).pageText, kept.pageText);
+      expect(nb.consumedCopiesForTest.keys, [kept.gen]);
+    });
+
+    test('(f4) moved to another folder inside the window: a revert at the new place is merged again there', () async {
+      await start();
+      await withCopy();
+      await nb.checkFile(copy);
+      final extraDir = await Directory('${root.path}${sep}extra').create();
+      expect(await nb.moveToFolder(id, extraDir.path), isTrue);
+      final moved = '${extraDir.path}$sep$id.canvas';
+      expect(File(pathOf(id)).existsSync(), isFalse);
+      expect(nb.consumedCopiesForTest, hasLength(1), reason: 'the mark moved with the entry');
+      revert(moved);
+      await recheck();
+      expect(ids(moved), {box.id, extra.id});
+      await recheck();
+      expect(await entries(), isEmpty);
+    });
+
+    test('(g) another device\'s version without the box brings it back (the stated limit)', () async {
+      await start();
+      await withCopy();
+      await nb.checkFile(copy);
+      File(pathOf(id)).writeAsStringSync(writePage(onDisk(id).removeNode(extra.id)));
+      await recheck();
+      expect(ids(), {box.id, extra.id});
+    });
+
+    test('(h) a restart before the re-check replays the entry: the box is in the file and the entry is gone', () async {
+      await start();
+      await withCopy();
+      revertAt('copy-merged');
+      await nb.checkFile(copy);
+      expect(ids(), {box.id});
+      await restart();
+      expect(ids(), {box.id, extra.id});
+      expect(await entries(), isEmpty);
+    });
+
+    group('(i) the page deleted inside the window', () {
+      test('the entry survives the delete, waits while Undo can reach it, and goes once the delete is let go', () async {
+        await start();
+        await withCopy();
+        await nb.checkFile(copy);
+        final d = await nb.delete(id);
+        expect(await entries(), hasLength(1));
+        await recheck();
+        expect(await entries(), hasLength(1), reason: 'Undo can still bring the page back');
+        nb.discardDeleted(d);
+        await until(() async => (await entries()).isEmpty, 'the let-go re-check');
+        expect(File(pathOf(id)).existsSync(), isFalse);
+      });
+
+      test('delete, Undo, then the old original put back: the re-check restores the box', () async {
+        await start();
+        await withCopy();
+        await nb.checkFile(copy);
+        final d = await nb.delete(id);
+        await nb.undoDelete(d);
+        expect(ids(), {box.id, extra.id});
+        revert();
+        await recheck();
+        expect(ids(), {box.id, extra.id});
+      });
+
+      test('delete, sync puts the old original back, the delete is let go before a scan: the box comes back', () async {
+        await start();
+        await withCopy();
+        await nb.checkFile(copy);
+        final d = await nb.delete(id);
+        revert();
+        nb.discardDeleted(d);
+        await until(() => ids().contains(extra.id), 'the let-go re-check');
+        await recheck();
+        expect(await entries(), isEmpty);
+      });
+
+      test('at quit with no file: the entry is retired', () async {
+        await start();
+        await withCopy();
+        await nb.checkFile(copy);
+        await nb.delete(id);
+        await nb.discardPendingDelete();
+        expect(await entries(), isEmpty);
+      });
+
+      test('at quit with the old original put back: the entry stays and the next start brings the box back', () async {
+        await start();
+        await withCopy();
+        await nb.checkFile(copy);
+        await nb.delete(id);
+        revert();
+        await nb.discardPendingDelete();
+        expect(await entries(), hasLength(1));
+        await restart();
+        expect(ids(), {box.id, extra.id});
+        expect(await entries(), isEmpty);
+      });
+    });
+
+    test('(j) a re-check due while the copy waits for its delete does not retire it; a later revert is undone', () async {
+      await start();
+      await withCopy();
+      final gate = Completer<void>();
+      final held = Completer<void>();
+      final hook = nb.syncHook;
+      nb.syncHook = (p, path) async {
+        await hook?.call(p, path);
+        if (p != 'copy-merged' || held.isCompleted) return;
+        // Another job takes the folder: the copy's delete waits for it.
+        unawaited(
+          locks.run(dir, () {
+            held.complete();
+            return gate.future;
+          }),
+        );
+        await held.future;
+      };
+      final merging = nb.checkFile(copy);
+      await until(() async => (await entries()).isNotEmpty, 'the copy kept');
+      await recheck().timeout(const Duration(seconds: 10));
+      expect(await entries(), hasLength(1), reason: 'not retired before the copy is deleted');
+      gate.complete();
+      await merging;
+      expect(File(copy).existsSync(), isFalse);
+      revert();
+      await recheck();
+      expect(ids(), {box.id, extra.id});
+    });
+
+    test('(k) recovery locked when the timer fires: it arms again and re-checks once the lock is back', () async {
+      final lock = _SwitchLock(File('${Directory.systemTemp.path}${sep}noted_race_unused.lock'));
+      await start(retire: const Duration(milliseconds: 300), lock: lock);
+      await withCopy();
+      revertAt('copy-merged');
+      final hook = nb.syncHook;
+      nb.syncHook = (p, path) async {
+        await hook?.call(p, path);
+        if (p == 'copy-deleted') lock.broken = true; // before the timer can re-check
+      };
+      await nb.checkFile(copy);
+      await Future<void>.delayed(const Duration(seconds: 1));
+      expect(ids(), {box.id}, reason: 'nothing replayed without the lock');
+      lock.broken = false;
+      await until(() => ids().contains(extra.id), 'the re-check');
+      // The next round retires the entry; nothing is left running at the tear-down.
+      await until(() async => (await entries()).isEmpty, 'the entry to be retired');
+    }, timeout: const Timeout(Duration(minutes: 1)));
+
+    test('(k) moved between arming and firing: the timer re-checks at the new place', () async {
+      await start(retire: const Duration(milliseconds: 500));
+      final extraDir = await Directory('${root.path}${sep}extra').create();
+      await withCopy();
+      final moved = '${extraDir.path}$sep$id.canvas';
+      final read = <String>[];
+      final hook = nb.syncHook;
+      nb.syncHook = (p, path) async {
+        await hook?.call(p, path);
+        if (p != 'copy-recheck') return;
+        read.add(path);
+        // Sync puts the old file back at the new place, just before the read.
+        if (read.length == 1 && File(moved).existsSync()) revert(moved);
+      };
+      // The timer fires every half second; the re-check is due only once the
+      // clock moves on, after the move.
+      var at = DateTime(2026, 11, 16, 12);
+      nb.now = () => at;
+      await nb.checkFile(copy);
+      expect(await nb.moveToFolder(id, extraDir.path), isTrue);
+      at = at.add(const Duration(seconds: 1));
+      await until(() => ids(moved).contains(extra.id) && read.isNotEmpty, 'the re-check at the new place');
+      expect(read.first, moved);
+      at = at.add(const Duration(seconds: 1));
+      await until(() async => (await entries()).isEmpty, 'the entry to be retired');
+    }, timeout: const Timeout(Duration(minutes: 1)));
+  });
+
   // Area R-1: every write of a page file is a compare-and-swap, so a version a
   // sync client lands during the write is merged, never overwritten.
   group('a sync replacement during a write is merged, not overwritten', () {
@@ -1849,8 +2346,15 @@ void main() {
         expect(entryFiles(), isNotEmpty, reason: 'its delete failed');
         await killAndLaunch();
         await nb.checkFolders();
-        expect(entryFiles(), isEmpty, reason: 'the entry was replayed and retired');
         expect(copies(), isEmpty, reason: 'the copy was merged and removed');
+        // The merged copy is kept in recovery until its re-check (run
+        // 2026-11-16-01); the replayed entry is gone already.
+        expect(nb.consumedCopiesForTest, hasLength(1));
+        expect(entryFiles(), hasLength(1));
+        nb.now = () => DateTime.now().add(const Duration(hours: 1));
+        await nb.createPage(); // the page is closed: an open one waits
+        await nb.recoverNowForTest();
+        expect(entryFiles(), isEmpty, reason: 'the entry was replayed and retired, and the copy\'s after its re-check');
         final merged = readPage(File(pathOf(parent)).readAsStringSync());
         expect(merged.node(onlyP), isNotNull);
         final a = merged.node(boxA)! as BoxRecord;
@@ -2159,4 +2663,20 @@ void main() {
       expect(writePage(nb.current!.page), writePage(want));
     });
   });
+}
+
+// A recovery lock that can be made to fail and come back.
+class _SwitchLock extends RecoveryLock {
+  _SwitchLock(super.file);
+
+  bool broken = false;
+
+  @override
+  bool check() => !broken;
+
+  @override
+  bool ensure() => !broken;
+
+  @override
+  String get problem => 'another window holds the recovery folder';
 }
