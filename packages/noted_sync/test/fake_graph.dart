@@ -8,6 +8,8 @@ import 'dart:io';
 
 import 'package:noted_core/noted_core.dart';
 
+import 'remote_fake.dart';
+
 /// A request the fake server saw.
 class SeenRequest {
   SeenRequest(this.path, this.query, this.authorization, this.at);
@@ -53,7 +55,7 @@ class _Fault {
 /// items, children, delta pages and tokens, downloads by redirect, and the
 /// faults a real service shows. Paths in its API are relative to the drive
 /// root, so a test's "OneDrive folder" is e.g. `Noted`.
-class FakeGraph {
+class FakeGraph implements RemoteFake {
   FakeGraph._(this._server);
 
   static const String driveId = 'drv1';
@@ -69,7 +71,36 @@ class FakeGraph {
 
   final HttpServer _server;
   Uri get origin => Uri.parse('http://127.0.0.1:${_server.port}');
+  @override
   Future<void> close() => _server.close(force: true);
+
+  @override
+  int get requestCount => requests.length;
+
+  @override
+  set onAnyRequest(void Function()? f) =>
+      onRequest = f == null ? null : (_) => f();
+
+  @override
+  int get downloadCount =>
+      requests.where((r) => r.path.endsWith('/content')).length;
+
+  @override
+  void loseNextListing() => fail('/delta', lose: true);
+
+  @override
+  void failDownloads({
+    int status = 503,
+    String? retryAfter,
+    bool lose = false,
+    int times = 1,
+  }) => fail(
+    '/content',
+    status: status,
+    retryAfter: retryAfter,
+    lose: lose,
+    times: times,
+  );
 
   final Map<String, FakeItem> items = {};
   final List<Map<String, dynamic>> _log = [];
@@ -147,6 +178,7 @@ class FakeGraph {
     return cur;
   }
 
+  @override
   String idOf(String path) => lookup(path)!.id;
 
   FakeItem _parentOf(String path) {
@@ -157,6 +189,7 @@ class FakeGraph {
     return p;
   }
 
+  @override
   String addFolder(String path) {
     final segs = path.split('/');
     var cur = items[driveRootId]!;
@@ -173,6 +206,7 @@ class FakeGraph {
     return cur.id;
   }
 
+  @override
   String addFile(String path, List<int> bytes, {String? id}) {
     final i = path.lastIndexOf('/');
     if (i >= 0) addFolder(path.substring(0, i));
@@ -189,6 +223,7 @@ class FakeGraph {
 
   /// Changes a file's content; [newId] is what a delete plus create by a
   /// sync client looks like.
+  @override
   String replaceFile(
     String path,
     List<int> bytes, {
@@ -209,6 +244,7 @@ class FakeGraph {
 
   /// Deletes an item. A folder's descendants are not reported (as Graph
   /// does), unless [reportChildren].
+  @override
   void delete(
     String path, {
     bool withName = false,
@@ -227,6 +263,7 @@ class FakeGraph {
     mark(f, true);
   }
 
+  @override
   void rename(String path, String newName) {
     final f = lookup(path)!;
     f.name = newName;
@@ -234,6 +271,7 @@ class FakeGraph {
     _record(f);
   }
 
+  @override
   void move(String path, String newParentPath) {
     final f = lookup(path)!;
     f.parent = lookup(newParentPath)!.id;

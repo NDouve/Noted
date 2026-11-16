@@ -11,30 +11,56 @@ import 'fake_graph.dart';
 import 'harness.dart';
 
 void main() {
+  for (final kind in RemoteKind.values) {
+    group(kind.label, () => _cases(kind));
+  }
+}
+
+/// The cases, on one kind of fake remote store. Those that only OneDrive has
+/// (delta pages, hashes, Graph's errors) run on it alone; those that need an id
+/// to survive a rename don't run on path ids, where a rename is a delete plus a
+/// new file.
+void _cases(RemoteKind kind) {
+  final graph = kind == RemoteKind.graph;
+  final renames = kind != RemoteKind.davPath;
+
+  // Cases only OneDrive's fake can run (delta pages, hashes, Graph's errors).
+  void graphTest(Object description, dynamic Function() body) {
+    if (graph) test(description, body);
+  }
+
+  void graphGroup(Object description, void Function() body) {
+    if (graph) group(description, body);
+  }
+
+  // A rename must keep the id (not on path ids).
+  void renameTest(Object description, dynamic Function() body) {
+    if (renames) test(description, body);
+  }
   late Harness h;
-  setUp(() async => h = await Harness.create());
+  setUp(() async => h = await Harness.create(kind: kind));
   tearDown(() => h.close());
 
   void seedMany(int n) {
     for (var i = 0; i < n; i++) {
-      h.fake.addFile('Noted/p$i.canvas', Harness.b('page $i'));
+      h.remote.addFile('Noted/p$i.canvas', Harness.b('page $i'));
     }
   }
 
   group('first sync and polls', () {
     test('mirrors pages, binders, attachments and templates only', () async {
-      h.fake.addFile('Noted/a.canvas', Harness.b('A'));
-      h.fake.addFile('Noted/a.assets/img.png', Harness.b('IMG'));
-      h.fake.addFile('Noted/templates/t.canvas', Harness.b('T'));
-      h.fake.addFile('Noted/B1/noted-binder.json', Harness.b('{}'));
-      h.fake.addFile('Noted/B1/b.canvas', Harness.b('B'));
-      h.fake.addFile('Noted/B1/b.assets/x.bin', Harness.b('X'));
+      h.remote.addFile('Noted/a.canvas', Harness.b('A'));
+      h.remote.addFile('Noted/a.assets/img.png', Harness.b('IMG'));
+      h.remote.addFile('Noted/templates/t.canvas', Harness.b('T'));
+      h.remote.addFile('Noted/B1/noted-binder.json', Harness.b('{}'));
+      h.remote.addFile('Noted/B1/b.canvas', Harness.b('B'));
+      h.remote.addFile('Noted/B1/b.assets/x.bin', Harness.b('X'));
       // Not mirrored.
-      h.fake.addFile('Noted/notes.txt', Harness.b('txt'));
-      h.fake.addFile('Noted/a-remote-0123abcd.canvas', Harness.b('copy'));
-      h.fake.addFile('Noted/a.canvas.tmp', Harness.b('tmp'));
-      h.fake.addFile('Noted/Plain/p.canvas', Harness.b('P'));
-      h.fake.addFile('Noted/noted-binder.json', Harness.b('{}'));
+      h.remote.addFile('Noted/notes.txt', Harness.b('txt'));
+      h.remote.addFile('Noted/a-remote-0123abcd.canvas', Harness.b('copy'));
+      h.remote.addFile('Noted/a.canvas.tmp', Harness.b('tmp'));
+      h.remote.addFile('Noted/Plain/p.canvas', Harness.b('P'));
+      h.remote.addFile('Noted/noted-binder.json', Harness.b('{}'));
       final r = await h.round();
       expect(r.error, isNull);
       expect(h.engine.status.state, SyncState.idle);
@@ -72,12 +98,12 @@ void main() {
       },
     );
 
-    test(
+    graphTest(
       'works over delta pages, children first, a duplicate and no root item',
       () async {
         seedMany(6);
-        h.fake.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
-        h.fake.addFile('Noted/B/q.canvas', Harness.b('Q'));
+        h.remote.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
+        h.remote.addFile('Noted/B/q.canvas', Harness.b('Q'));
         h.fake
           ..pageSize = 2
           ..childrenFirst = true
@@ -89,24 +115,24 @@ void main() {
       },
     );
 
-    test(
+    graphTest(
       'the drive-root delta is used when the folder form is not supported',
       () async {
         seedMany(2);
-        h.fake.addFile('Other/x.canvas', Harness.b('not ours'));
+        h.remote.addFile('Other/x.canvas', Harness.b('not ours'));
         h.fake.folderDeltaSupported = false;
         final r = await h.round();
         expect(r.error, isNull);
         expect(h.tree(), ['p0.canvas', 'p1.canvas']);
-        h.fake.addFile('Noted/p2.canvas', Harness.b('new'));
-        h.fake.addFile('Other/y.canvas', Harness.b('not ours either'));
+        h.remote.addFile('Noted/p2.canvas', Harness.b('new'));
+        h.remote.addFile('Other/y.canvas', Harness.b('not ours either'));
         await h.round();
         expect(h.tree(), ['p0.canvas', 'p1.canvas', 'p2.canvas']);
       },
     );
 
-    test('an item with no hash and a size is listed, not applied', () async {
-      h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+    graphTest('an item with no hash and a size is listed, not applied', () async {
+      h.remote.addFile('Noted/a.canvas', Harness.b('A'));
       h.fake.includeHashes = false;
       await h.round();
       expect(h.has('a.canvas'), isFalse);
@@ -118,7 +144,7 @@ void main() {
     test('a changed file replaces the local one', () async {
       seedMany(2);
       await h.round();
-      h.fake.replaceFile('Noted/p0.canvas', Harness.b('page 0 v2'));
+      h.remote.replaceFile('Noted/p0.canvas', Harness.b('page 0 v2'));
       final r = await h.round();
       expect(h.read('p0.canvas'), 'page 0 v2');
       expect(changedRel(h, r), ['p0.canvas']);
@@ -127,8 +153,8 @@ void main() {
     test('an id-changing replace, with or without a name on the delete, is a content change', () async {
       seedMany(6);
       await h.round();
-      h.fake.replaceFile('Noted/p0.canvas', Harness.b('v2'), newId: true);
-      h.fake.replaceFile(
+      h.remote.replaceFile('Noted/p0.canvas', Harness.b('v2'), newId: true);
+      h.remote.replaceFile(
         'Noted/p1.canvas',
         Harness.b('v2b'),
         newId: true,
@@ -145,7 +171,7 @@ void main() {
     test('a delete takes effect only when planned again 30 s later', () async {
       seedMany(8);
       await h.round();
-      h.fake.delete('Noted/p0.canvas');
+      h.remote.delete('Noted/p0.canvas');
       await h.round();
       expect(h.has('p0.canvas'), isTrue);
       h.clock.advance(const Duration(seconds: 20));
@@ -162,10 +188,10 @@ void main() {
       () async {
         seedMany(8);
         await h.round();
-        h.fake.delete('Noted/p0.canvas', withName: true);
+        h.remote.delete('Noted/p0.canvas', withName: true);
         await h.round();
         h.clock.advance(const Duration(seconds: 10));
-        h.fake.addFile('Noted/p0.canvas', Harness.b('back, new id'));
+        h.remote.addFile('Noted/p0.canvas', Harness.b('back, new id'));
         await h.round();
         h.clock.advance(const Duration(seconds: 60));
         await h.round();
@@ -173,14 +199,14 @@ void main() {
       },
     );
 
-    test(
+    renameTest(
       'a folder rename without descendants moves the binder, its file last',
       () async {
-        h.fake.addFile('Noted/B1/noted-binder.json', Harness.b('{"id":"b"}'));
-        h.fake.addFile('Noted/B1/a.canvas', Harness.b('A'));
-        h.fake.addFile('Noted/B1/a.assets/i.png', Harness.b('I'));
+        h.remote.addFile('Noted/B1/noted-binder.json', Harness.b('{"id":"b"}'));
+        h.remote.addFile('Noted/B1/a.canvas', Harness.b('A'));
+        h.remote.addFile('Noted/B1/a.assets/i.png', Harness.b('I'));
         await h.round();
-        h.fake.rename('Noted/B1', 'Renamed');
+        h.remote.rename('Noted/B1', 'Renamed');
         final order = <String>[];
         h.engine = h.newEngine(
           onStep: (s) {
@@ -212,10 +238,10 @@ void main() {
     );
 
     test('a case-only rename of a folder keeps the disk name and new files go in it', () async {
-      h.fake.addFile('Noted/Notes/noted-binder.json', Harness.b('{}'));
+      h.remote.addFile('Noted/Notes/noted-binder.json', Harness.b('{}'));
       await h.round();
-      h.fake.rename('Noted/Notes', 'notes');
-      h.fake.addFile('Noted/notes/new.canvas', Harness.b('N'));
+      h.remote.rename('Noted/Notes', 'notes');
+      h.remote.addFile('Noted/notes/new.canvas', Harness.b('N'));
       await h.round();
       final names = [
         for (final e in h.work.listSync()) e.path.split(RegExp(r'[\\/]')).last,
@@ -228,10 +254,10 @@ void main() {
   group('the guard', () {
     test('a whole binder removed asks, and Remove applies', () async {
       seedMany(30);
-      h.fake.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
-      h.fake.addFile('Noted/B/q.canvas', Harness.b('Q'));
+      h.remote.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
+      h.remote.addFile('Noted/B/q.canvas', Harness.b('Q'));
       await h.round();
-      h.fake.delete('Noted/B');
+      h.remote.delete('Noted/B');
       await h.round();
       h.clock.advance(const Duration(seconds: 31));
       await h.round();
@@ -256,10 +282,10 @@ void main() {
     for (final remove in [true, false]) {
       test('${remove ? 'Remove' : 'Keep'}: an answer that could not be saved is taken back, and asked again', () async {
         seedMany(30);
-        h.fake.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
-        h.fake.addFile('Noted/B/q.canvas', Harness.b('Q'));
+        h.remote.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
+        h.remote.addFile('Noted/B/q.canvas', Harness.b('Q'));
         await h.round();
-        h.fake.delete('Noted/B');
+        h.remote.delete('Noted/B');
         await h.round();
         h.clock.advance(const Duration(seconds: 31));
         await h.round();
@@ -292,10 +318,10 @@ void main() {
 
     test('Keep leaves them and does not ask again', () async {
       seedMany(30);
-      h.fake.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
-      h.fake.addFile('Noted/B/q.canvas', Harness.b('Q'));
+      h.remote.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
+      h.remote.addFile('Noted/B/q.canvas', Harness.b('Q'));
       await h.round();
-      h.fake.delete('Noted/B');
+      h.remote.delete('Noted/B');
       await h.round();
       h.clock.advance(const Duration(seconds: 31));
       await h.round();
@@ -317,18 +343,18 @@ void main() {
       () async {
         seedMany(12);
         for (var i = 0; i < 40; i++) {
-          h.fake.addFile('Noted/p0.assets/a$i.bin', Harness.b('att $i'));
+          h.remote.addFile('Noted/p0.assets/a$i.bin', Harness.b('att $i'));
         }
         await h.round();
         // Two of twelve pages: under the threshold.
-        h.fake.delete('Noted/p0.canvas');
-        h.fake.delete('Noted/p1.canvas');
+        h.remote.delete('Noted/p0.canvas');
+        h.remote.delete('Noted/p1.canvas');
         await h.roundsWithDelay();
         expect(h.engine.guardQuestion, isNull);
         expect(h.has('p0.canvas'), isFalse);
         expect(h.has('p1.canvas'), isFalse);
         // Deleting every attachment asks nothing and removes nothing.
-        h.fake.delete('Noted/p0.assets');
+        h.remote.delete('Noted/p0.assets');
         await h.roundsWithDelay();
         expect(h.engine.guardQuestion, isNull);
         expect(
@@ -337,7 +363,7 @@ void main() {
         );
         // Three more of the ten left: 30 percent.
         for (final n in ['p2', 'p3', 'p4']) {
-          h.fake.delete('Noted/$n.canvas');
+          h.remote.delete('Noted/$n.canvas');
         }
         await h.roundsWithDelay();
         expect(h.engine.guardQuestion?.paths, [
@@ -350,13 +376,13 @@ void main() {
     );
   });
 
-  group('410', () {
+  graphGroup('410', () {
     test(
       'resyncChangesApplyDifferences: a missing path reads as removed',
       () async {
         seedMany(8);
         await h.round();
-        h.fake.delete('Noted/p0.canvas');
+        h.remote.delete('Noted/p0.canvas');
         h.fake.expireTokens();
         await h.round();
         expect(h.has('p0.canvas'), isTrue);
@@ -370,7 +396,7 @@ void main() {
     test('resyncChangesUploadDifferences: a missing path is kept and listed, even after a kill', () async {
       seedMany(8);
       await h.round();
-      h.fake.delete('Noted/p0.canvas');
+      h.remote.delete('Noted/p0.canvas');
       h.fake.expireTokens(uploadDifferences: true);
       h.killAt('mapSaved');
       final r = await h.round();
@@ -382,7 +408,7 @@ void main() {
       expect(h.has('p0.canvas'), isTrue);
       expect(h.engine.issues, hasIssue('p0.canvas'));
       // A path that comes back is treated normally again.
-      h.fake.addFile('Noted/p0.canvas', Harness.b('back'));
+      h.remote.addFile('Noted/p0.canvas', Harness.b('back'));
       await h.round();
       await h.round();
       expect(h.read('p0.canvas'), 'back');
@@ -403,25 +429,25 @@ void main() {
   group('folders moved', () {
     test('a folder moved in from outside gets its children listed', () async {
       seedMany(2);
-      h.fake.addFile('Other/Sub/noted-binder.json', Harness.b('{}'));
-      h.fake.addFile('Other/Sub/q.canvas', Harness.b('Q'));
-      h.fake.addFile('Other/Sub/q.assets/a.bin', Harness.b('A'));
+      h.remote.addFile('Other/Sub/noted-binder.json', Harness.b('{}'));
+      h.remote.addFile('Other/Sub/q.canvas', Harness.b('Q'));
+      h.remote.addFile('Other/Sub/q.assets/a.bin', Harness.b('A'));
       await h.round();
-      h.fake.move('Other/Sub', 'Noted');
+      h.remote.move('Other/Sub', 'Noted');
       await h.round();
       expect(h.read('Sub/q.canvas'), 'Q');
       expect(h.read('Sub/q.assets/a.bin'), 'A');
       expect(h.has('Sub/noted-binder.json'), isTrue);
     });
 
-    test('a folder moved out of the root is a removal of its subtree, through the guard (drive-root delta)', () async {
+    graphTest('a folder moved out of the root is a removal of its subtree, through the guard (drive-root delta)', () async {
       h.fake.folderDeltaSupported = false;
-      h.fake.addFolder('Other');
+      h.remote.addFolder('Other');
       seedMany(10);
-      h.fake.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
-      h.fake.addFile('Noted/B/q.canvas', Harness.b('Q'));
+      h.remote.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
+      h.remote.addFile('Noted/B/q.canvas', Harness.b('Q'));
       await h.round();
-      h.fake.move('Noted/B', 'Other');
+      h.remote.move('Noted/B', 'Other');
       await h.roundsWithDelay();
       expect(h.engine.guardQuestion?.paths, [
         'B/noted-binder.json',
@@ -443,13 +469,13 @@ void main() {
 
   group('the root', () {
     for (final driveDelta in [true, false]) {
-      test(
+      graphTest(
         'a root deleted in the delta pauses and applies nothing (${driveDelta ? 'drive-root' : 'folder'} delta)',
         () async {
           seedMany(4);
           h.fake.folderDeltaSupported = !driveDelta;
           await h.round();
-          h.fake.delete('Noted');
+          h.remote.delete('Noted');
           final r = await h.round();
           h.clock.advance(const Duration(minutes: 5));
           await h.round();
@@ -462,7 +488,7 @@ void main() {
     }
 
     test('a root that is gone at the start pauses', () async {
-      h.fake.delete('Noted');
+      h.remote.delete('Noted');
       await h.round();
       expect(h.engine.status.state, SyncState.rootGone);
     });
@@ -478,7 +504,7 @@ void main() {
     });
   });
 
-  group('names from the server', () {
+  graphGroup('names from the server', () {
     test('unusable names are skipped with their subtree and listed', () async {
       seedMany(1);
       await h.round();
@@ -541,7 +567,7 @@ void main() {
       'a lost delta page fails the round and the next one succeeds',
       () async {
         seedMany(2);
-        h.fake.fail('/delta', lose: true);
+        h.remote.loseNextListing();
         final r = await h.round();
         expect(r.error, isNotNull);
         expect(h.engine.status.state, SyncState.paused);
@@ -556,7 +582,7 @@ void main() {
       'a lost download leaves no temp and the next round finishes',
       () async {
         seedMany(3);
-        h.fake.fail('/content', lose: true);
+        h.remote.failDownloads(lose: true);
         final r = await h.round();
         expect(r.error, isNotNull);
         expect(h.stateFiles('tmp'), isEmpty);
@@ -567,8 +593,8 @@ void main() {
       },
     );
 
-    test('a download that fails the checksum is discarded; repeated mismatches show as a status', () async {
-      h.fake.addFile('Noted/a.canvas', Harness.b('AAA'));
+    graphTest('a download that fails the checksum is discarded; repeated mismatches show as a status', () async {
+      h.remote.addFile('Noted/a.canvas', Harness.b('AAA'));
       h.fake.corruptContent = true;
       for (var i = 0; i < 3; i++) {
         await h.round();
@@ -587,7 +613,7 @@ void main() {
       'a 429 in the middle of a round pauses requests and the round completes',
       () async {
         seedMany(3);
-        h.fake.fail('/content', status: 429, retryAfter: '9');
+        h.remote.failDownloads(status: 429, retryAfter: '9');
         final r = await h.round();
         expect(r.error, isNull);
         expect(h.clock.delays, contains(const Duration(seconds: 9)));
@@ -596,7 +622,7 @@ void main() {
     );
   });
 
-  group('sign-in state', () {
+  graphGroup('sign-in state', () {
     test(
       'a signed-out token callback sets the status and changes nothing',
       () async {
