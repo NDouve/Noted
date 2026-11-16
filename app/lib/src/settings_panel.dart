@@ -159,6 +159,12 @@ class _SettingsPanelState extends State<SettingsPanel> {
     return s == null || !s.available || nb.isPullOnlyLocation(s.path);
   }
 
+  // The location whose pull-only message applies.
+  String? get _pullLoc {
+    final id = _pid;
+    return id != null ? nb.folderOfPage(id) : _path;
+  }
+
   // Why it is read-only, when it is a pull-only location.
   bool get _pullOnly {
     final id = _pid;
@@ -214,7 +220,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
       children: [
         if (_readOnly) ...[
           Text(
-            _pullOnly ? Notebook.pullOnlyMessage : 'Read-only: changes are off until this is available again.',
+            _pullOnly ? _pullLoc == null ? Notebook.pullOnlyMessage : nb.pullOnlyMessageFor(_pullLoc!) : 'Read-only: changes are off until this is available again.',
             key: const ValueKey('settings-read-only'),
             style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
           ),

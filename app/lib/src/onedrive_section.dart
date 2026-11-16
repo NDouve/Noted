@@ -7,6 +7,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 
+import 'cloud_sync.dart';
 import 'onedrive_folder_picker.dart';
 import 'onedrive_sync.dart';
 
@@ -86,14 +87,15 @@ class OneDriveSection extends StatelessWidget {
 class OneDriveIssuesPage extends StatelessWidget {
   const OneDriveIssuesPage({super.key, required this.sync});
 
-  final OneDriveSync sync;
+  /// The pull whose issues are listed (OneDrive or WebDAV).
+  final CloudSync sync;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final m = NotedMetrics.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('OneDrive issues')),
+      appBar: AppBar(title: Text('${sync.providerName} issues')),
       body: ListenableBuilder(
         listenable: sync,
         builder: (context, _) {

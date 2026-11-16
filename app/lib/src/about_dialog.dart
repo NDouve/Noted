@@ -11,6 +11,8 @@ import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 import 'microsoft_account.dart';
 import 'onedrive_section.dart';
 import 'onedrive_sync.dart' show OneDriveScope;
+import 'webdav_section.dart';
+import 'webdav_sync.dart' show WebDavScope;
 
 /// Taps on the about line that uncover the Microsoft account entry.
 const int aboutTapsToReveal = 5;
@@ -48,25 +50,30 @@ class _AboutNotedDialogState extends State<AboutNotedDialog> {
         width: 380,
         child: ListenableBuilder(
           listenable: widget.microsoft,
-          builder: (context, _) => Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              GestureDetector(
-                key: const ValueKey('about-line'),
-                behavior: HitTestBehavior.opaque,
-                onTap: _tap,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Text(
-                    'Noted, an open-source notebook',
-                    style: text.bodyMedium,
+          builder: (context, _) => SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                GestureDetector(
+                  key: const ValueKey('about-line'),
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _tap,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      'Noted, an open-source notebook',
+                      style: text.bodyMedium,
+                    ),
                   ),
                 ),
-              ),
-              if (widget.microsoft.revealed)
-                _MicrosoftSection(microsoft: widget.microsoft),
-            ],
+                if (widget.microsoft.revealed)
+                  _MicrosoftSection(microsoft: widget.microsoft),
+                // Mobile builds only: the controller is null elsewhere.
+                if (widget.microsoft.revealed && WebDavScope.maybeOf(context) != null)
+                  WebDavSection(sync: WebDavScope.maybeOf(context)!),
+              ],
+            ),
           ),
         ),
       ),

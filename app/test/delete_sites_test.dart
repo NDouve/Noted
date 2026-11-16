@@ -216,6 +216,12 @@ const List<Site> deleteSites = [
   ),
   (
     'packages/noted_sync/lib/src/journal.dart',
+    'if (part.existsSync()) await part.delete();',
+    1,
+    _private,
+  ),
+  (
+    'packages/noted_sync/lib/src/journal.dart',
     'await fileFor(sha).delete();',
     1,
     _private,
@@ -235,13 +241,13 @@ const List<Site> deleteSites = [
   (
     'packages/noted_sync/lib/src/pull_engine.dart',
     'if (tmp.existsSync()) tmp.deleteSync();',
-    1,
+    2,
     _unique,
   ),
   (
     'packages/noted_sync/lib/src/pull_engine.dart',
     'await tmp.delete();',
-    1,
+    2,
     _unique,
   ),
   (
@@ -255,6 +261,30 @@ const List<Site> deleteSites = [
     'dir.deleteSync();',
     1,
     _emptyDir,
+  ),
+  (
+    'packages/noted_sync/lib/src/webdav/webdav_client.dart',
+    'if (dest.existsSync()) dest.deleteSync();',
+    1,
+    _private,
+  ),
+  (
+    'app/lib/src/webdav_sync.dart',
+    'await store.delete(conn.passwordKey);',
+    1,
+    'not a file: a keychain item of a connection that could not be saved',
+  ),
+  (
+    'app/lib/src/webdav_sync.dart',
+    'await store.delete(c.passwordKey);',
+    1,
+    'not a file: the keychain item of the connection being disconnected',
+  ),
+  (
+    'app/lib/src/webdav_sync.dart',
+    'if (await file.exists()) await file.delete();',
+    1,
+    'the connection file in the app-private state folder; Disconnect forgets it',
   ),
 ];
 
@@ -285,6 +315,12 @@ const List<Site> renameSites = [
   ('app/lib/src/notebook.dart', 'await tmp.rename(f.path);', 1, _ownTemp),
   (
     'app/lib/src/onedrive_sync.dart',
+    'await tmp.rename(file.path);',
+    1,
+    _ownTemp,
+  ),
+  (
+    'app/lib/src/webdav_sync.dart',
     'await tmp.rename(file.path);',
     1,
     _ownTemp,
