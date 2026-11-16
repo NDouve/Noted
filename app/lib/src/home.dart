@@ -637,6 +637,7 @@ class _HomeState extends State<Home> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
+                SizedBox(height: m.space3),
                 _titleField(current),
               ],
             ),

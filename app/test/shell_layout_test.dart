@@ -61,7 +61,7 @@ void main() {
       expect(crumb.right, lessThanOrEqualTo(p.left));
       final title = rect(t, find.byType(PageTitleField));
       expect(title.left, tools.left + 32);
-      expect(title.top, closeTo(crumb.bottom, 0.5));
+      expect(title.top, closeTo(crumb.bottom + 12, 0.5), reason: '12 px between the breadcrumb and the title');
       expect(title.bottom, lessThanOrEqualTo(rect(t, find.byKey(PageCanvas.overlayKey)).top));
       expect(find.text('Pages / Alpha'), findsOneWidget);
       // The old title row's controls are gone.
@@ -132,6 +132,35 @@ void main() {
       await dropAt(rect(t, toolbar).center);
       expect(boxes(), 0);
       await dropAt(rect(t, find.byKey(PageCanvas.overlayKey)).center);
+      expect(boxes(), 1);
+      await w.close(t);
+    });
+
+    testWidgets('at 1000 px a drop on the open Details overlay or its scrim makes no box', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(1000, 800));
+      final file = File('${w.dir.path}/dropped.pdf')..writeAsBytesSync([1, 2, 3]);
+      final target = t.widget<DropTarget>(find.byType(DropTarget));
+      Future<void> dropAt(Offset at) async {
+        await t.runAsync(() async {
+          target.onDragDone!(DropDoneDetails(files: [DropItemFile(file.path)], localPosition: at, globalPosition: at));
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        });
+        await w.settle(t);
+      }
+
+      int boxes() => w.nb.current!.page.nodes.whereType<BoxRecord>().length;
+      final view = rect(t, find.byKey(PageCanvas.overlayKey));
+      await t.tap(toggle);
+      await w.settle(t);
+      expect(find.byKey(const ValueKey('context-panel-inline')), findsNothing);
+      expect(find.byKey(const ValueKey('panel-header-title')), findsOneWidget, reason: 'the overlay is open');
+      await dropAt(rect(t, find.byKey(const ValueKey('panel-header-title'))).center);
+      await dropAt(view.centerLeft + const Offset(40, 0));
+      expect(boxes(), 0);
+      await t.tap(toggle);
+      await w.settle(t);
+      expect(find.byKey(const ValueKey('panel-header-title')), findsNothing);
+      await dropAt(view.center);
       expect(boxes(), 1);
       await w.close(t);
     });

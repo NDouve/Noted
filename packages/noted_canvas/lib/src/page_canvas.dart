@@ -1759,10 +1759,13 @@ class PageCanvasState extends State<PageCanvas>
   }
 
   /// Whether the screen point [global] is over the canvas viewport (not the
-  /// toolbar, the host's header or footer, or a side panel).
+  /// toolbar, the host's header or footer, or a side panel), and no overlay
+  /// panel (with its scrim) is open.
   bool viewportContains(Offset global) {
     final box = _areaKey.currentContext?.findRenderObject();
     if (box is! RenderBox || !box.hasSize) return false;
+    // The overlay panel and its scrim cover the whole canvas area.
+    if (widget.overlayPanel != null) return false;
     return (Offset.zero & box.size).contains(box.globalToLocal(global));
   }
 
