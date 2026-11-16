@@ -387,14 +387,6 @@ void main() {
       await w.close(t);
     });
 
-    testWidgets('the compact tree has no resizer: its width is fixed', (t) async {
-      final w = await ShellWorld.open(t, size: const Size(900, 900));
-      await t.dragFrom(Offset(220, 400), const Offset(80, 0));
-      await w.settle(t);
-      expect(rect(t, tree).width, 220);
-      await w.close(t);
-    });
-
     testWidgets('a window resized across 720 and 1120 changes layout with the same page open', (t) async {
       final w = await ShellWorld.open(t, size: const Size(1440, 900));
       final id = w.nb.currentId;

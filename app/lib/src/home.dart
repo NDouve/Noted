@@ -709,11 +709,15 @@ class _HomeState extends State<Home> {
         final desktopShell = !isMobilePlatform && !narrow;
         final wide = _wideWindow(context) && !isMobilePlatform;
         final inline = wide && (_panelChoice ?? true);
-        // A page switch or the inline width closes the overlay for good.
-        if (_overlayOpen && (wide || _overlayPage != notebook.currentId)) _overlayOpen = false;
+        // A page switch, a binder cover or the inline width closes the overlay
+        // for good.
+        if (_overlayOpen && (wide || notebook.cover != null || _overlayPage != notebook.currentId)) {
+          _overlayOpen = false;
+        }
         final overlay = !wide && !isMobilePlatform && _overlayOpen;
         final compactTree = !isMobilePlatform && !wide;
-        _syncPanelShown(inline || overlay);
+        // A cover has no Details, so the toggle does not look open over it.
+        _syncPanelShown(notebook.cover == null && (inline || overlay));
         _closeDrawerOnChoice();
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,

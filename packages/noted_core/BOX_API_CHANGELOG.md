@@ -8,7 +8,7 @@ version.
 
 Versions are listed newest first.
 
-Host-only (not the Box API), run 2026-11-15-02, task 1 step 6 (the 900 px layout): `NotedMetrics.narrowLayoutBelow` (default 1000, the new `defaultNarrowLayoutWidth`, which replaces `narrowLayoutWidth`) is the width under which `isNarrowLayout` is true; `notedThemeData` and `NotedMetrics.forBrightness` take it as `narrowLayoutBelow`. The app passes 720 on desktop and 1000 on a phone or tablet. The `PageCanvas` overlay panel now covers the header and the viewport but not the footer. No module-facing member changed; no version bump.
+Host-only (not the Box API), run 2026-11-15-02, task 1 step 6 (the 900 px layout): `NotedMetrics.narrowLayoutBelow` (default 1000, the new `defaultNarrowLayoutWidth`; `narrowLayoutWidth` stays as a deprecated alias) is the width under which `isNarrowLayout` is true; `notedThemeData` and `NotedMetrics.forBrightness` take it as `narrowLayoutBelow`. The app passes 720 on desktop and 1000 on a phone or tablet. The `PageCanvas` overlay panel now covers the header and the viewport but not the footer. No module-facing member changed; no version bump.
 
 Host-only (not the Box API), run 2026-11-15-02, task 1 step 5 (toolbar, title and status strip): `PageCanvas.header` (a band between the toolbar and the viewport, left of the side panel) and `PageCanvas.footer` (a strip under the canvas, left of the side panel). No module-facing change, no version bump.
 

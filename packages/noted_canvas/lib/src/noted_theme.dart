@@ -633,6 +633,11 @@ ButtonStyle notedDestructiveButtonStyle(BuildContext context) {
 /// (1080 px and more) keeps the desktop layout. The app passes 720 on desktop.
 const double defaultNarrowLayoutWidth = 1000;
 
+/// The old name of [defaultNarrowLayoutWidth], kept so modules built against it
+/// still compile. It is no longer what [isNarrowLayout] compares against.
+@Deprecated('Use NotedMetrics.narrowLayoutBelow')
+const double narrowLayoutWidth = defaultNarrowLayoutWidth;
+
 /// Whether the window is narrower than the theme's
 /// [NotedMetrics.narrowLayoutBelow].
 bool isNarrowLayout(BuildContext context) =>
