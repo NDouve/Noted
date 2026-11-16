@@ -37,8 +37,9 @@ void main() {
 
   test('deletes pages', () async {
     final store = PageStore(dir);
-    await store.save(NotedPage.create(PageMeta.create(id: 'p1', title: '', order: 0)));
-    await store.delete('p1');
+    final page = NotedPage.create(PageMeta.create(id: 'p1', title: '', order: 0));
+    await store.save(page);
+    expect((await store.deleteIfUnchanged('p1', writePage(page))).deleted, isTrue);
     expect(await store.scan(), isEmpty);
   });
 

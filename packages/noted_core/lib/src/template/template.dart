@@ -49,6 +49,7 @@
 /// `templates` inside the binder's folder.
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import '../binder/binder.dart';
@@ -56,6 +57,7 @@ import '../format/page_format.dart';
 import '../json/raw_json.dart';
 import '../model/ids.dart';
 import '../model/page.dart';
+import '../storage/replace_if_unchanged.dart';
 
 /// The template format version this build reads and writes.
 const int templateFormatVersion = 1;
@@ -448,9 +450,13 @@ sealed class TemplateEntry {
 }
 
 final class ReadableTemplate extends TemplateEntry {
-  const ReadableTemplate(super.path, this.template);
+  const ReadableTemplate(super.path, this.template, this.identity);
 
   final NotedTemplate template;
+
+  /// The identity of the bytes the scan read: what [TemplateStore.delete]
+  /// must still find to delete the file.
+  final ContentIdentity identity;
 }
 
 /// A file that couldn't be read as a template. The store never overwrites
@@ -469,13 +475,25 @@ final class TemplateStore {
 
   /// Reads every template file in the folder, newest first. A folder that
   /// doesn't exist has none; it is not created.
-  Future<List<TemplateEntry>> scan() async {
+  ///
+  /// With [sweep] true it first puts back what a crashed delete left under a
+  /// set-aside name (see [sweepAsideFiles]); that writes, so only a caller
+  /// that may write to the folder, and has no delete of its own in flight on
+  /// it, passes it. Without it such a leftover is listed as unreadable.
+  Future<List<TemplateEntry>> scan({bool sweep = false}) async {
     if (!await directory.exists()) return const [];
+    if (sweep) await sweepAsideFiles(directory, extension: templateExtension);
     final entries = <TemplateEntry>[];
     await for (final f in directory.list()) {
+      if (f is File && (f.path.endsWith(asideSuffix) || f.path.endsWith(verifiedSuffix))) {
+        entries.add(UnreadableTemplate(f.path, 'left over from a delete; not put back yet'));
+        continue;
+      }
       if (f is! File || !f.path.endsWith(templateExtension)) continue;
       try {
-        entries.add(ReadableTemplate(f.path, NotedTemplate.parse(await f.readAsString())));
+        final bytes = await f.readAsBytes();
+        final text = utf8.decode(bytes);
+        entries.add(ReadableTemplate(f.path, NotedTemplate.parse(text), ContentIdentity.ofBytes(bytes)));
       } on TemplateFormatException catch (e) {
         entries.add(UnreadableTemplate(f.path, e.message));
       } on FileSystemException catch (e) {
@@ -512,12 +530,14 @@ final class TemplateStore {
   }
 
   /// Deletes the template file at [path], which must be a template file in
-  /// this folder.
-  Future<void> delete(String path) async {
+  /// this folder, only if it still holds the bytes with identity [expected]
+  /// (see [ReadableTemplate.identity] and [deleteFileIfMatches]). A file that
+  /// changed is kept.
+  Future<DeleteResult> delete(String path, ContentIdentity expected) async {
     final f = File(path);
     if (!path.endsWith(templateExtension) || f.parent.absolute.path != directory.absolute.path) {
       throw ArgumentError.value(path, 'path', 'not a template file of this folder');
     }
-    if (await f.exists()) await f.delete();
+    return deleteFileIfMatches(path, identity: expected);
   }
 }

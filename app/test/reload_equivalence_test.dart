@@ -347,12 +347,6 @@ class _Chaos extends PageStore {
   }
 
   @override
-  Future<void> delete(String pageId) {
-    if (failDelete.contains(pageId)) throw const FileSystemException('source gone');
-    return super.delete(pageId);
-  }
-
-  @override
   Future<DeleteResult> deleteIfUnchanged(
     String pageId,
     String expectedText, {

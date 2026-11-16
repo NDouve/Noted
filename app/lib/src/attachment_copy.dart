@@ -501,11 +501,15 @@ Future<void> copyAttachmentTree(Directory from, Directory to, AttachmentCopy r, 
     if (e is! File) continue;
     final name = await attachmentNameToTake(e, raw);
     if (name == null) continue;
-    await _copyFile(e, '${to.path}$sep$name', name, r);
+    await copyAttachmentFile(e, '${to.path}$sep$name', name, r);
   }
 }
 
-Future<void> _copyFile(File src, String target, String name, AttachmentCopy r, {bool settleOnce = false}) async {
+/// Copies one file to [target], the per-file path of [copyAttachmentTree]: what
+/// is at the target is checked (a damaged hash-named file is kept as
+/// `.damaged-<12 hex>`), the copy is published exclusively and verified. The
+/// outcome is in [r].
+Future<void> copyAttachmentFile(File src, String target, String name, AttachmentCopy r, {bool settleOnce = false}) async {
   final type = FileSystemEntity.typeSync(target, followLinks: false);
   if (type != FileSystemEntityType.notFound) {
     await _settleExisting(src, target, name, type, r, settleOnce: settleOnce);
@@ -626,7 +630,7 @@ Future<void> _settleExisting(
   if (entry != null) r.damagedKept.add(entry);
   final now = FileSystemEntity.typeSync(target, followLinks: false);
   if (now == FileSystemEntityType.notFound) {
-    await _copyFile(src, target, name, r, settleOnce: true);
+    await copyAttachmentFile(src, target, name, r, settleOnce: true);
   } else {
     // Nothing was set aside (the file changed and was put back, or the move was
     // refused), or something arrived since: one more look, never another set-aside.

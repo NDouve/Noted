@@ -143,16 +143,6 @@ class FlakyStore extends PageStore {
   final Map<String, int> reads = {};
   void Function(String pageId, int count)? onRead;
 
-  @override
-  Future<void> delete(String pageId) async {
-    if (failDelete.contains(pageId)) {
-      onFailedDelete?.call(pageId);
-      throw const FileSystemException('drive gone');
-    }
-    await super.delete(pageId);
-    if (failSaveAfterDelete) failSave = true;
-  }
-
   /// Pages whose compare-and-delete runs the two seam hooks below (the
   /// move-aside and the read of the set-aside file).
   final Set<String> seamIds = {};

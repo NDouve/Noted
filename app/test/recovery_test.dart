@@ -9,6 +9,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
+import 'package:noted/src/attachment_copy.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
@@ -1827,25 +1828,94 @@ void main() {
       expect(nb.recoveryDamaged, isEmpty);
     });
 
-    test('a partial copy of the same size is replaced, and the kept folder goes only then', () async {
+    List<String> namesIn(Directory d) => d.listSync().map((f) => f.path.split(RegExp(r'[\\/]')).last).toList()..sort();
+
+    // The wrong bytes are kept under a `.damaged-<12 hex>` name (0132), the
+    // good copy takes the hash name.
+    void expectKeptAsDamaged(List<int> wrong) {
+      final names = namesIn(assetsOf(id));
+      final damaged = names.where((n) => n.startsWith('$keptName.damaged-')).toList();
+      expect(damaged, hasLength(1));
+      expect(names, unorderedEquals([keptName, damaged.single]));
+      expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
+      expect(File('${assetsOf(id).path}/${damaged.single}').readAsBytesSync(), wrong);
+    }
+
+    test('a partial copy of the same size is kept as damaged, the good copy lands, and the kept folder goes only then', () async {
       await pageOnly();
       keep();
       assetsOf(id).createSync();
       File('${assetsOf(id).path}/$keptName').writeAsBytesSync([9, 9, 9, 9]);
       await launch();
-      expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
+      expectKeptAsDamaged([9, 9, 9, 9]);
       expect(keptDir().existsSync(), isFalse);
-      expect(assetsOf(id).listSync().map((f) => f.path.split(RegExp(r'[\\/]')).last), [keptName]);
     });
 
-    test('a partial copy of another size is replaced', () async {
+    test('a partial copy of another size is kept as damaged too', () async {
       await pageOnly();
       keep();
       assetsOf(id).createSync();
       File('${assetsOf(id).path}/$keptName').writeAsBytesSync([1, 2]);
       await launch();
-      expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
+      expectKeptAsDamaged([1, 2]);
       expect(keptDir().existsSync(), isFalse);
+    });
+
+    test('a full-size wrong-hash file at the hash name is kept as damaged, and a notice is posted', () async {
+      await pageOnly();
+      keep();
+      assetsOf(id).createSync();
+      File('${assetsOf(id).path}/$keptName').writeAsBytesSync([8, 8, 8, 8]);
+      final nb = make();
+      final notices = <String>[];
+      nb.attachmentNotices.listen(notices.add);
+      await nb.load();
+      await Future<void>.delayed(Duration.zero);
+      expectKeptAsDamaged([8, 8, 8, 8]);
+      expect(keptDir().existsSync(), isFalse);
+      expect(notices, hasLength(1));
+      expect(notices.single, allOf(contains('damaged'), contains(keptName), contains('.damaged-')));
+    });
+
+    test('a target that grows while it is checked is left alone, the source stays, a problem is listed', () async {
+      await pageOnly();
+      keep();
+      assetsOf(id).createSync();
+      final target = File('${assetsOf(id).path}/$keptName')..writeAsBytesSync([8, 8, 8, 8]);
+      var grown = false;
+      attachmentAfterHashHook = (f) async {
+        if (grown || !f.path.endsWith(keptName) || f.path.contains('.damaged-')) return;
+        grown = true;
+        target.writeAsBytesSync([8, 8, 8, 8, 8, 8]);
+      };
+      addTearDown(() => attachmentAfterHashHook = null);
+      final nb = await launch();
+      expect(grown, isTrue);
+      expect(target.readAsBytesSync(), [8, 8, 8, 8, 8, 8]);
+      expect(namesIn(assetsOf(id)), [keptName]);
+      expect(File('${keptDir().path}/$keptName').readAsBytesSync(), bytes);
+      expect(nb.recoveryDamaged.single.reason, allOf(startsWith('The files kept for'), contains('still changing')));
+    });
+
+    test('wrong bytes that arrive at the target just before the publish are kept as damaged', () async {
+      await pageOnly();
+      keep();
+      attachmentBeforePublishHook = (t) async {
+        attachmentBeforePublishHook = null;
+        File(t).writeAsBytesSync([6, 6, 6, 6]);
+      };
+      addTearDown(() => attachmentBeforePublishHook = null);
+      await launch();
+      expectKeptAsDamaged([6, 6, 6, 6]);
+      expect(keptDir().existsSync(), isFalse);
+    });
+
+    test('a wrong-hash source is not landed even when its target is free, and nothing is created', () async {
+      await pageOnly();
+      keep(content: [7, 7, 7, 7]);
+      await launch();
+      expect(assetsOf(id).existsSync() ? namesIn(assetsOf(id)) : <String>[], isEmpty);
+      expect(File('${keptDir().path}/$keptName').readAsBytesSync(), [7, 7, 7, 7]);
     });
 
     test('a kept file that does not match its hash name is not landed and the folder stays', () async {
@@ -1906,23 +1976,22 @@ void main() {
     });
 
 
-    test('a failed rename onto a hash-named file that already holds the hash drops the temp and deletes nothing', () async {
+    test('the correct file arriving before the publish is verified and no temp is left', () async {
       await pageOnly();
       keep();
-      assetsOf(id).createSync();
       final target = '${assetsOf(id).path}/$keptName';
-      // The correct file arrives after the check, then the rename fails.
-      Notebook.landHashRenameHook = () {
-        File(target).writeAsBytesSync(bytes);
-        throw const FileSystemException('rename failed');
+      attachmentBeforePublishHook = (t) async {
+        attachmentBeforePublishHook = null;
+        File(t).writeAsBytesSync(bytes);
       };
-      addTearDown(() => Notebook.landHashRenameHook = null);
+      addTearDown(() => attachmentBeforePublishHook = null);
       final nb = await launch();
       expect(File(target).readAsBytesSync(), bytes);
-      expect(assetsOf(id).listSync(), hasLength(1), reason: 'no temp file left');
+      expect(namesIn(assetsOf(id)), [keptName], reason: 'no temp file left');
       expect(keptDir().existsSync(), isFalse, reason: 'it counted as landed');
       expect(nb.recoveryDamaged, isEmpty);
     });
+
     test('a complete kept temp file (the writer\'s unique name) is landed under its hash name', () async {
       await pageOnly();
       keep(name: '$keptName.1700000000000-3.tmp');
