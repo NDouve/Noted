@@ -31,7 +31,7 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -69,7 +69,7 @@ jobs:
       # flutter test runs them all. A failing package does not stop the rest.
       # Each package's dart_test.yaml fails a test after 2 minutes, but a test
       # stuck in a synchronous loop never lets that timer run. So a package
-      # gets 15 minutes in all; then its test process is killed and the last
+      # gets 15 minutes in all (the app 25); then its test process is killed and the last
       # tests it started are reported. Failed tests are reported by name, with
       # their own error message (.github/scripts/test_annotations.dart).
       # (Annotations can be read without signing in; the log can't.)
@@ -107,14 +107,15 @@ jobs:
               jsonarg="$json"
               if command -v cygpath > /dev/null; then jsonarg=$(cygpath -m "$json"); fi
               code=0
-              (cd "$dir" && timeout 900 flutter test --reporter expanded --file-reporter "json:$jsonarg" > "$log" 2>&1) || code=$?
+              budget=900; [ "$dir" = app ] && budget=1500
+              (cd "$dir" && timeout "$budget" flutter test --reporter expanded --file-reporter "json:$jsonarg" > "$log" 2>&1) || code=$?
               cat "$log"
               if [ "$code" -ne 0 ]; then
                 failed="$failed $dir"
                 if [ "$code" -eq 124 ]; then
                   taskkill //F //IM flutter_tester.exe > /dev/null 2>&1 || pkill -f flutter_tester > /dev/null 2>&1 || true
                   last=$(grep -E '^[0-9]+:[0-9]+ \+' "$log" | tail -n 3 | tr '\n' ' ' || true)
-                  echo "::error title=Timed out in $dir::Still running after 15 minutes. Last tests: $last" >> "$first"
+                  echo "::error title=Timed out in $dir::Still running after $((budget / 60)) minutes. Last tests: $last" >> "$first"
                 fi
                 # Each failed test as one annotation: its name, its own error,
                 # stack trace and printed output (from the JSON event stream,

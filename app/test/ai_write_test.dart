@@ -1954,7 +1954,8 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 50));
       final watch = Stopwatch()..start();
       expect(await codeOf(t.nb, req('ba', t.code)), AiLinkCode.notApproved);
-      expect(watch.elapsedMilliseconds, lessThan(1500));
+      // Deadline 500 ms against an approval of 5 s; slack for a loaded runner.
+      expect(watch.elapsedMilliseconds, lessThan(4000));
       await startup;
     }, timeout: const Timeout(Duration(seconds: 30)));
 

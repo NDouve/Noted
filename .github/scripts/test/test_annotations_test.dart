@@ -35,6 +35,11 @@ void main() {
   check(!two.contains('first problem') && !two.contains('hello'), 'two clean');
   check(one.contains('file=app/test/a_test.dart,line=12'), 'file and line');
   check(!out.any((l) => l.contains('passes')), 'passing test left out');
+  // summary is not capped at five, so it would list the cut-off test.
+  check(
+    !summary(lines, 'app').contains('stopped by the timeout'),
+    'a test cut off by the kill is not a failure',
+  );
   check(out.every((l) => !l.contains('\n')), 'one line each');
 
   final late = find('late error');
