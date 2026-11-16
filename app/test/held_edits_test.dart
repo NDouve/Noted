@@ -1365,4 +1365,17 @@ void main() {
     expect(snapshot(folder), swapped);
     await stop();
   });
+
+  test('29. an attachment added with the swap at its first turn: no assets folder is made in the held folder', () async {
+    await start();
+    final assets = Directory('${folder.path}$sep${assetsFolderName(pageId)}');
+    expect(assets.existsSync(), isFalse);
+    atGate({1: () => swap(_Swap.other)});
+    await nb.attachments!
+        .put(Uint8List.fromList(utf8.encode('new file')), extension: 'txt')
+        .then<void>((_) {}, onError: (_) {});
+    nb.syncHook = null;
+    expect(assets.existsSync(), isFalse);
+    await stop();
+  });
 }
