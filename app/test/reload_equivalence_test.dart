@@ -313,6 +313,23 @@ Future<T> _busyRetry<T>(Future<T> Function() op) async {
   }
 }
 
+/// [_busyRetry] for a step that cannot wait asynchronously (a sync client's
+/// delete or write of a binder file, inside a callback): a few short retries
+/// while the file is in use, then the error.
+T _busySync<T>(T Function() op) {
+  final end = DateTime.now().add(const Duration(seconds: 10));
+  while (true) {
+    try {
+      return op();
+    } on FileSystemException catch (e) {
+      final code = e.osError?.errorCode;
+      final busy = Platform.isWindows && (code == 5 || code == 32);
+      if (!busy || DateTime.now().isAfter(end)) rethrow;
+      sleep(const Duration(milliseconds: 25));
+    }
+  }
+}
+
 String _norm(String p) => p.replaceAll(r'\', '/').toLowerCase();
 
 /// A page store that can be made to fail or to be raced at exact moments.
@@ -1032,7 +1049,7 @@ class _Run {
     final v = others[_srng.nextInt(others.length)];
     _seams.beforeMoveAside = () {
       _seams.beforeMoveAside = null;
-      _aFile.deleteSync();
+      _busySync(() => _aFile.deleteSync());
     };
     await nb.setBinderAiAccess(pathA, v);
     await nb.checkBinderFile(_aFile.path);
@@ -1045,7 +1062,7 @@ class _Run {
       fired = true;
       nb.putBackBeforeFinalCheckHook = null;
       final b = Binder.parse(_aFile.readAsStringSync()).withOwner('Swap ${++_titleCounter}');
-      _aFile.writeAsStringSync(b.write());
+      _busySync(() => _aFile.writeAsStringSync(b.write()));
     };
     await nb.putBackBinderCopy(pathA, copy);
     nb.putBackBeforeFinalCheckHook = null;
@@ -1053,7 +1070,7 @@ class _Run {
     expect(File(copy).readAsBytesSync(), bytes, reason: 'seed $seed: the copy is kept, not deleted');
     expect(nb.binderCopyRows(_sectionA).map((r) => r.path), contains(copy), reason: 'seed $seed: the copy is still listed');
     // The other device's version goes again; a second Put back lands the copy.
-    _aFile.deleteSync();
+    _busySync(() => _aFile.deleteSync());
     await nb.checkBinderFile(_aFile.path);
     await nb.putBackBinderCopy(pathA, copy);
     await nb.checkBinderFile(_aFile.path);
@@ -2897,7 +2914,7 @@ class _Run {
         if (!_canWrite) return;
         final v = _pickAi();
         final b = Binder.parse(_aFile.readAsStringSync()).withOwner('Them $seed');
-        _aFile.writeAsStringSync(b.write().replaceFirst('{', '{"x-future":{"k":1},'));
+        _busySync(() => _aFile.writeAsStringSync(b.write().replaceFirst('{', '{"x-future":{"k":1},')));
         _aForeign = true;
         await nb.setBinderAiAccess(pathA, v);
         _aAi = v;
@@ -2928,7 +2945,7 @@ class _Run {
         if (v == held) v = AiAccess.values[(v.index + 1) % AiAccess.values.length];
         _seams.beforeMoveAside = () {
           _seams.beforeMoveAside = null;
-          _aFile.deleteSync();
+          _busySync(() => _aFile.deleteSync());
         };
         await nb.setBinderAiAccess(pathA, v);
         await nb.checkBinderFile(_aFile.path);
@@ -2968,7 +2985,7 @@ class _Run {
         final bytes = _aFile.readAsBytesSync();
         File('${dirs['a']!.path}$sep$binderFileName.4242-${seed.toRadixString(16)}-ab12.cas-old')
             .writeAsBytesSync(bytes);
-        _aFile.deleteSync();
+        _busySync(() => _aFile.deleteSync());
         await _opRestart();
         await nb.discoveryIdle;
         expect(_aFile.readAsBytesSync(), bytes, reason: 'seed $seed: the aside was put back');
@@ -2979,13 +2996,13 @@ class _Run {
         if (pageInA != null) await nb.open(pageInA);
         await nb.flush();
         final bytes = _aFile.readAsBytesSync();
-        _aFile.deleteSync();
+        _busySync(() => _aFile.deleteSync());
         await nb.checkBinderFile(_aFile.path);
         expect(_sectionA.status, BinderStatus.unavailable, reason: 'seed $seed: unavailable at once');
         final t = 'Title $seed.${++_titleCounter}';
         await nb.updateBinder(pathA, title: t);
         expect(nb.coverPendingCountForTest(pathA), 1, reason: 'seed $seed: the change waits');
-        _aFile.writeAsBytesSync(bytes);
+        _busySync(() => _aFile.writeAsBytesSync(bytes));
         await nb.checkBinderFile(_aFile.path);
         await realIoUntil(() => nb.coverPendingCountForTest(pathA) == 0, 'the waiting change to land');
         if (pageInA != null) expect(nb.currentId, pageInA, reason: 'seed $seed: the page that was open is open again');
@@ -2993,10 +3010,10 @@ class _Run {
       case 'write/foreignAfterMissing':
         if (!_canWrite) return;
         await nb.flush();
-        _aFile.deleteSync();
+        _busySync(() => _aFile.deleteSync());
         await nb.checkBinderFile(_aFile.path);
         final other = Binder.create(id: _newBinderId(), title: 'Foreign $seed', color: binderPalette[2]);
-        _aFile.writeAsStringSync(other.write());
+        _busySync(() => _aFile.writeAsStringSync(other.write()));
         await nb.checkBinderFile(_aFile.path);
         expect(_sectionA.other?.id, other.id, reason: 'seed $seed: another binder is listed read-only');
         expect(_sectionA.binder, isNull);
@@ -3128,7 +3145,7 @@ class _Run {
       final holding = nb.folderLocks.run(dirA, () => release.future);
       final running = op().then<Object?>((r) => r, onError: (Object e) => e);
       await Future<void>.delayed(const Duration(milliseconds: 30));
-      _aFile.writeAsStringSync(other.write());
+      _busySync(() => _aFile.writeAsStringSync(other.write()));
       release.complete();
       await holding;
       return running;
@@ -3153,20 +3170,20 @@ class _Run {
         expect(r, isA<NotebookException>(), reason: 'seed $seed: the queued template delete is refused');
         expect(File(item!.path).existsSync(), isTrue);
       case 'damaged':
-        _aFile.writeAsStringSync('{ not json');
+        _busySync(() => _aFile.writeAsStringSync('{ not json'));
       case 'missing':
-        _aFile.deleteSync();
+        _busySync(() => _aFile.deleteSync());
       case 'transient':
         var fired = false;
         nb.syncHook = (point, path) async {
           if (point == 'binder-gate' && !fired) {
             fired = true;
-            _aFile.writeAsStringSync('{"format":1,"binderId":');
+            _busySync(() => _aFile.writeAsStringSync('{"format":1,"binderId":'));
           }
         };
         await nb.flush();
         nb.syncHook = null;
-        _aFile.writeAsBytesSync(original);
+        _busySync(() => _aFile.writeAsBytesSync(original));
         expect(fired, isTrue, reason: 'seed $seed: the save reached its turn');
         expect(_sectionA.hold, isNull, reason: 'seed $seed: a half-written file holds nothing');
         expect(nb.heldPagesFor(pathA), 1, reason: 'seed $seed: the edit is kept');
@@ -3235,7 +3252,7 @@ class _Run {
 
     switch (leg) {
       case 'damaged' || 'missing':
-        _aFile.writeAsBytesSync(original);
+        _busySync(() => _aFile.writeAsBytesSync(original));
         await nb.checkBinderFile(_aFile.path);
         await nb.afterHoldForTest(pathA);
       case 'freshThenUse':
@@ -5657,14 +5674,14 @@ void main() {
           await service.setClosedWrites('aibox', false);
         } else {
           final b = Binder.parse(utf8.decode(binderBefore)).withBoxType(aiBoxTypeId, false);
-          binderFile.writeAsStringSync(b.write());
+          _busySync(() => binderFile.writeAsStringSync(b.write()));
         }
         c.process.stdin.writeln('go');
         final result = resultOf(await until(c, 'result:'));
         expect(result['error'], isTrue);
         expect(result['text'], contains(change == 'closed writes turned off' ? 'closed' : 'does not take writes'));
         expect(File(pagePath).readAsBytesSync(), before);
-        binderFile.writeAsBytesSync(binderBefore); // restored
+        _busySync(() => binderFile.writeAsBytesSync(binderBefore)); // restored
         await freshNotebook();
         await run.verify('after the refused write', fresh: true);
       });
