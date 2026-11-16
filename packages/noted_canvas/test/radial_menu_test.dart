@@ -517,6 +517,28 @@ void main() {
     });
   });
 
+  testWidgets('shrinking the window under an open list or ring closes it; focus returns and the next right click works', (t) async {
+    for (final style in [ContextMenuStyle.list, ContextMenuStyle.radial]) {
+      await setUpWorld(t, style: style);
+      final a = Rect.fromLTWH(0, CommandToolbar.height, 1200, 800 - CommandToolbar.height);
+      await w.rightClick(a.bottomRight - const Offset(40, 40));
+      expect(w.open, isTrue, reason: '$style');
+      t.view.physicalSize = const Size(700, 500);
+      await t.pump();
+      await t.pump();
+      await t.pump();
+      expect(w.open, isFalse, reason: '$style');
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'PageCanvas', reason: '$style');
+      expect(w.c.page.nodes, hasLength(3));
+      await w.rightClick(const Offset(300, 300));
+      expect(w.open, isTrue, reason: '$style');
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await t.pump();
+      await t.pump();
+      await t.pumpWidget(const SizedBox());
+    }
+  });
+
   group('motion', () {
     testWidgets('the ring fades in over 120 ms; reduced motion has no animation', (t) async {
       await setUpWorld(t, animate: true);

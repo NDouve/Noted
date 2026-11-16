@@ -1401,6 +1401,32 @@ class PageCanvasState extends State<PageCanvas>
     );
   }
 
+  // The canvas shifts a little after a menu opens (a status row appearing);
+  // only a move or resize of 24 px or more counts.
+  static bool _sameRect(Rect a, Rect b) =>
+      (a.left - b.left).abs() <= 24 && (a.top - b.top).abs() <= 24 && (a.right - b.right).abs() <= 24 && (a.bottom - b.bottom).abs() <= 24;
+
+  /// A menu is placed inside the canvas rect it opened in: when that rect
+  /// changes (the window or a panel resized) the menu closes, as for a cancel.
+  void _checkContextRect() {
+    final s = _contextSession;
+    if (s == null || _contextClose.value) return;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      final now = _contextSession;
+      if (!mounted || now == null || !identical(now, s) || _contextClose.value) return;
+      final area = _areaKey.currentContext?.findRenderObject();
+      if (area is! RenderBox || !area.hasSize) {
+        _contextClose.value = true;
+        return;
+      }
+      final rect = area.localToGlobal(Offset.zero) & area.size;
+      // The first check after the menu opens is the baseline (the canvas can
+      // still settle then).
+      final base = s.settled ??= rect;
+      if (!_sameRect(rect, base)) _contextClose.value = true;
+    });
+  }
+
   void _contextDone(_ContextSession s, ContextEntry? entry) {
     if (identical(_contextSession, s)) _contextSession = null;
     if (!_contextDisposed) _contextOpen.value = false;
@@ -1591,6 +1617,7 @@ class PageCanvasState extends State<PageCanvas>
 
   @override
   Widget build(BuildContext context) {
+    _checkContextRect();
     assert(
       setEquals(_off, _c.disallowedTypes),
       'The owner of the controller sets controller.disallowedTypes to the '
@@ -1720,6 +1747,7 @@ class PageCanvasState extends State<PageCanvas>
     return LayoutBuilder(
         builder: (context, constraints) {
           final size = constraints.biggest;
+          _checkContextRect();
           final content = _contentRect();
           final area = _sessionArea;
           final g = CanvasGeometry.compute(
@@ -2149,6 +2177,9 @@ class _ContextTarget {
 /// the editor focus hold it took (released once).
 class _ContextSession {
   _ContextSession(this.target, this.spec, this.origin, this._holder, {this.selectedAtOpen, this.editingAtOpen});
+
+  /// The canvas rect (global) seen by the first check after the menu opened.
+  Rect? settled;
 
   final _ContextTarget target;
   final ContextMenuSpec spec;

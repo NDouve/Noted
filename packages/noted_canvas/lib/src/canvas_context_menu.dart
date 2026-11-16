@@ -315,6 +315,7 @@ class _ContextPanelState extends State<_ContextPanel> {
   final FocusNode _focus = FocusNode(debugLabel: 'ContextMenu');
   final Map<int, GlobalKey> _rowKeys = {};
   bool _closing = false;
+  Size? _size;
 
   /// The canvas asked for the menu to close: its commands may be gone, so
   /// nothing here reads them any more.
@@ -492,6 +493,14 @@ class _ContextPanelState extends State<_ContextPanel> {
 
   @override
   Widget build(BuildContext context) {
+    // The window changed size under the menu: it was placed for the old one, so
+    // it shows nothing (the canvas closes it too).
+    final size = MediaQuery.sizeOf(context);
+    _size ??= size;
+    if (_size != size) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _close());
+      return const SizedBox.shrink();
+    }
     if (_gone) return const SizedBox.shrink();
     return Focus(
       focusNode: _focus,
