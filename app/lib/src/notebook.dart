@@ -1743,6 +1743,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// folder), or null.
   BinderHold? holdOfFolder(String folder) => _sectionAt(folder)?._hold;
 
+  /// Whether [e] counts as kept edits: not the entry of a merged conflict copy
+  /// kept until its re-check (copy retire).
+  bool isKeptEdit(RecoveryEntry e) => !_consumedCopies.containsKey(e.gen);
+
   /// How many pages have changes kept in recovery for the folder [path].
   int heldPagesFor(String path) {
     final rec = _recovery;
@@ -1750,13 +1754,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final key = _key(path);
     return {
       for (final e in rec.indexEntries)
-        if (_key(e.folder) == key) e.pageId,
+        if (_key(e.folder) == key && isKeptEdit(e)) e.pageId,
     }.length;
   }
 
   // The open page's banner in held folder [s].
   String _heldBanner(BinderSection s, String pageId, BinderHold h) {
-    final kept = _recovery?.entriesFor(_normalizePath(s.path), pageId).isNotEmpty ?? false;
+    final kept = _recovery?.entriesFor(_normalizePath(s.path), pageId).any(isKeptEdit) ?? false;
     if (h == BinderHold.damaged) {
       return kept
           ? "This binder's file can't be read, so this page is read-only. Your unsaved changes are kept until it can be read."

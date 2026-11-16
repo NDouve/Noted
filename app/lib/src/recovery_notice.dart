@@ -34,7 +34,7 @@ Future<void> showRecoveryNoticeOnExit(
   final otherIds = <String>{};
   final damagedIds = <String>{};
   final plainIds = <String>{};
-  for (final e in listing.entries) {
+  for (final e in listing.entries.where(notebook.isKeptEdit)) {
     switch (notebook.holdOfFolder(e.folder)) {
       case BinderHold.otherBinder:
         otherIds.add(e.pageId);
