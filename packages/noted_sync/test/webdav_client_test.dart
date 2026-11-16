@@ -769,4 +769,88 @@ void main() {
       await expectLater(c.list(), throwsA(isA<RemoteTransport>()));
     });
   });
+
+  group('review fixes', () {
+    test(
+      'a body longer than listed stops at once and leaves no file',
+      () async {
+        dav.addFile('Noted/a.canvas', b('hello'));
+        final n = (await client().list()).nodes.firstWhere((n) => !n.folder);
+        dav.endlessBody = 1024;
+        final d = dest();
+        await expectLater(
+          client().download(n.url, etag: n.etag!, size: n.size, dest: d),
+          throwsA(isA<RemoteChanged>()),
+        );
+        expect(d.existsSync(), isFalse);
+        expect(dav.endlessSent, lessThan(2 * 1024 * 1024));
+      },
+    );
+
+    test('the address: no user name, no invalid escapes, loopback http is refused outside debug', () {
+      expect(
+        () => client(root: Uri.parse('https://u:p@example.org/dav/')),
+        throwsA(isA<RemoteRefused>()),
+      );
+      expect(
+        () => client(root: Uri.parse('https://example.org/a%ff')),
+        throwsA(isA<RemoteRefused>()),
+      );
+      // Asserts are on in tests, so the flag works here; a release build
+      // (asserts off) refuses it, which `allowLoopbackHttp: false` shows.
+      expect(
+        () => client(allowLoopbackHttp: false),
+        throwsA(isA<RemoteRefused>()),
+      );
+    });
+
+    test('a redirect that carries a user name is refused', () async {
+      dav.redirect(
+        'Noted',
+        'http://u:p@127.0.0.1:${dav.origin.port}/dav/Noted/',
+      );
+      await expectLater(client().list(), throwsA(isA<RemoteRefused>()));
+    });
+
+    test(
+      'odd hrefs are skipped and listed, never read as items of the folder',
+      () async {
+        dav.addFile('Noted/a.canvas', b('A'));
+        dav.strayHrefs.addAll([
+          '/dav/Noted/%2E%2E/Elsewhere/x.canvas',
+          '//evil.example/dav/Noted/x.canvas',
+          'javascript:alert(1)',
+          '/DAV/NOTED/y.canvas',
+          'http://user:pw@127.0.0.1:${dav.origin.port}/dav/Noted/z.canvas',
+        ]);
+        final l = await client().list();
+        expect(l.issues, hasLength(5));
+        expect(paths(l), ['/', 'a.canvas']);
+      },
+    );
+
+    test(
+      'a double-encoded slash is a name with a percent sign, not a path',
+      () async {
+        dav.addFile('Noted/a.canvas', b('A'));
+        dav.strayHrefs.add('/dav/Noted/a%252Fb.canvas');
+        final l = await client().list();
+        expect(l.issues, isEmpty);
+        final n = l.nodes.firstWhere((n) => n.name == 'a%2Fb.canvas');
+        expect(n.segments, ['a%2Fb.canvas']);
+      },
+    );
+
+    test('a listing whose every entry was skipped is incomplete, not an empty folder', () async {
+      dav.addFile('Noted/a.canvas', b('A'));
+      dav.addFile('Noted/B/q.canvas', b('Q'));
+      dav.hrefs = FakeDavHrefs.absoluteUrl;
+      dav.hrefHost = 'localhost';
+      await expectLater(client().list(), throwsA(isA<WebDavIncomplete>()));
+      // A real empty folder is still empty.
+      dav.hrefHost = null;
+      dav.addFolder('Noted/Empty');
+      expect(paths(await client().list()), contains('Empty/'));
+    });
+  });
 }

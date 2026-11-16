@@ -122,6 +122,7 @@ class WebDavDriver implements RemoteDriver {
   Future<RemoteItem> root() async {
     final n = await client.stat(client.root, idProps: _idProps);
     final id = n.idFor(idKind);
+    if (id == null) throw WebDavIncomplete('The server gave an item no id');
     return RemoteItem(
       id: rootId,
       name: '',

@@ -292,6 +292,14 @@ void _driverCases() {
       },
     );
 
+    test('a root with no id property is incomplete, not gone', () async {
+      dav.ids = FakeDavIds.ocFileId;
+      dav.addFile('Noted/a.canvas', b('A'));
+      final d = await WebDavDriver.connect(client());
+      dav.noIdFor.add('Noted');
+      await expectLater(d.root(), throwsA(isA<WebDavIncomplete>()));
+    });
+
     test('a root that is missing, or is a file', () async {
       dav.addFile('Noted/a.canvas', b('A'));
       final d = await WebDavDriver.connect(client());

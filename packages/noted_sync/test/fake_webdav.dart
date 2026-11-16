@@ -155,6 +155,12 @@ class FakeWebDav implements RemoteFake {
   /// Hrefs of files that a listing names although they aren't in the folder\n  /// (above it, or on another host).
   final List<String> strayHrefs = [];
 
+  /// The host name `absoluteUrl` hrefs use (another name for the server).
+  String? hrefHost;
+
+  /// A `GET` that never ends: this many bytes per chunk, forever.
+  int? endlessBody;
+
   /// Bytes of padding added to every listing (a comment).
   int padListing = 0;
 
@@ -506,10 +512,29 @@ class FakeWebDav implements RemoteFake {
     if (!omitGetEtag) {
       req.response.headers.set('ETag', getEtagOverride ?? etag);
     }
+    final endless = endlessBody;
+    if (endless != null) {
+      // Chunked, no length: runs until the client hangs up.
+      req.response.headers.chunkedTransferEncoding = true;
+      try {
+        while (true) {
+          req.response.add(List.filled(endless, 0x41));
+          await req.response.flush();
+          endlessSent += endless;
+          if (endlessSent > (64 << 20)) break;
+          await Future<void>.delayed(Duration.zero);
+        }
+      } catch (_) {
+        return;
+      }
+    }
     req.response.contentLength = bytes.length;
     req.response.add(bytes);
     await req.response.close();
   }
+
+  /// Bytes an endless body has sent so far.
+  int endlessSent = 0;
 
   String _href(List<String> segs, bool folder, List<String> requestSegs) {
     final enc = segs.map(Uri.encodeComponent).join('/');
@@ -517,7 +542,7 @@ class FakeWebDav implements RemoteFake {
       case FakeDavHrefs.absolutePath:
         return '$mount/$enc${folder && segs.isNotEmpty ? '/' : ''}';
       case FakeDavHrefs.absoluteUrl:
-        return '${origin.toString()}$mount/$enc${folder && segs.isNotEmpty ? '/' : ''}';
+        return '${hrefHost == null ? origin : origin.replace(host: hrefHost)}$mount/$enc${folder && segs.isNotEmpty ? '/' : ''}';
       case FakeDavHrefs.relative:
         // Relative to the requested folder, which ends with a slash.
         if (folder && _sameList(segs, requestSegs)) return './';

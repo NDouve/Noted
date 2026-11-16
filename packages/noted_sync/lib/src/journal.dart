@@ -375,7 +375,11 @@ class BlobStore {
     try {
       await src.copy(part.path);
       if ((await ContentIdentity.ofFile(part.path)).sha256 != sha) {
-        await part.delete();
+        try {
+          await part.delete();
+        } on FileSystemException {
+          // Swept later; the answer is the same.
+        }
         return false;
       }
       await part.rename(fileFor(sha).path);

@@ -147,10 +147,26 @@ class WebDavClient {
          clock: clock ?? const SystemClock(),
          maxInFlight: maxInFlight,
        ) {
+    if (allowLoopbackHttp) {
+      // Debug and test builds only: asserts are off in a release build, where
+      // the flag is refused, so production can never switch it on.
+      var debug = false;
+      assert(debug = true);
+      if (!debug) {
+        throw RemoteRefused('Loopback http is for tests only');
+      }
+    }
+    if (root.userInfo.isNotEmpty) {
+      throw RemoteRefused('The address must not hold a user name');
+    }
     if (!_allowed(root)) {
       throw RemoteRefused('WebDAV needs an https address');
     }
-    _rootSegments = _decodedSegments(root.path);
+    try {
+      _rootSegments = _decodedSegments(root.path);
+    } on FormatException {
+      throw RemoteRefused('The address is not valid');
+    }
   }
 
   /// The chosen folder (or the account's top folder, for choosing one).
@@ -300,19 +316,29 @@ class WebDavClient {
           throw RemoteChanged('The size moved during the download');
         }
         var written = 0;
+        var over = false;
         final sink = dest.openWrite();
         try {
-          await sink.addStream(
-            r.stream.timeout(timeout).map((c) {
-              written += c.length;
-              return c;
-            }),
-          );
+          await for (final c in r.stream.timeout(timeout)) {
+            written += c.length;
+            if (written > size) {
+              // Longer than listed: stop reading now (leaving the loop cancels
+              // the stream and closes the connection).
+              over = true;
+              break;
+            }
+            sink.add(c);
+          }
           await sink.flush();
         } finally {
           await sink.close();
         }
-        if (written != size) {
+        if (over || written != size) {
+          try {
+            if (dest.existsSync()) dest.deleteSync();
+          } on FileSystemException {
+            // The engine removes its temp too.
+          }
           throw RemoteChanged('The size moved during the download');
         }
         return (got, at);
@@ -415,16 +441,18 @@ class WebDavClient {
     }
     DavNode? self;
     final kids = <DavNode>[];
+    var skipped = 0;
     for (final r in responses) {
       final u = _resolve(at, r.hrefs.first);
       if (u == null) {
+        skipped++;
         issues.add(
           const SyncIssue('', 'The server sent an address that can\'t be read'),
         );
         continue;
       }
       List<String>? rel;
-      if (_sameOrigin(u)) {
+      if (_sameOrigin(u) && u.userInfo.isEmpty) {
         try {
           rel = _relative(u);
         } on FormatException {
@@ -432,6 +460,7 @@ class WebDavClient {
         }
       }
       if (rel == null) {
+        skipped++;
         issues.add(
           SyncIssue(_shown(base), 'An address outside the folder was skipped'),
         );
@@ -442,6 +471,7 @@ class WebDavClient {
           rel.length == base.length + 1 &&
           _sameSegments(rel, base, rel.length - 1);
       if (!isSelf && !isChild) {
+        skipped++;
         issues.add(
           SyncIssue(_shown(rel), 'An address outside the folder was skipped'),
         );
@@ -457,6 +487,13 @@ class WebDavClient {
       } else {
         kids.add(node);
       }
+    }
+    // A listing whose every entry was skipped (the server spells its own
+    // address another way) says nothing about the folder: not "empty".
+    if (!selfOnly && skipped > 0 && kids.isEmpty) {
+      throw WebDavIncomplete(
+        'The server listed only addresses outside the folder',
+      );
     }
     return DavFolder(self, kids, issues);
   }
@@ -607,7 +644,7 @@ class WebDavClient {
       });
       if (done) return value as T;
       final n = next!;
-      if (!_sameOrigin(n) || !_allowed(n)) {
+      if (!_sameOrigin(n) || !_allowed(n) || n.userInfo.isNotEmpty) {
         throw RemoteRefused('A redirect to another address was refused');
       }
       uri = n;
