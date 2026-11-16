@@ -216,6 +216,12 @@ const List<Site> deleteSites = [
   ),
   (
     'packages/noted_sync/lib/src/journal.dart',
+    'if (part.existsSync()) await part.delete();',
+    1,
+    'its own blob copy: .part-<random> file in the app-private base folder, after a failed copy',
+  ),
+  (
+    'packages/noted_sync/lib/src/journal.dart',
     'await fileFor(sha).delete();',
     1,
     _private,
@@ -235,14 +241,20 @@ const List<Site> deleteSites = [
   (
     'packages/noted_sync/lib/src/pull_engine.dart',
     'if (tmp.existsSync()) tmp.deleteSync();',
-    1,
-    _unique,
+    2,
+    'its own download or compare temp (a unique name in the app-private state folder)',
   ),
   (
     'packages/noted_sync/lib/src/pull_engine.dart',
     'await tmp.delete();',
+    2,
+    'its own download temp (a unique name in the app-private state folder)',
+  ),
+  (
+    'packages/noted_sync/lib/src/webdav/webdav_client.dart',
+    'if (dest.existsSync()) dest.deleteSync();',
     1,
-    _unique,
+    'the fresh temp the engine gave the download (a unique name in the app-private state folder), dropped when the body was not the listed size',
   ),
   (
     'packages/noted_sync/lib/src/pull_engine.dart',
