@@ -34,6 +34,9 @@ class SpyTokenStore implements TokenStore {
   /// While set, a read waits for it (made in the real zone).
   Future<void>? readGate;
 
+  /// While true, a delete throws.
+  bool deleteFails = false;
+
   @override
   Future<String?> read(String key) async {
     log.add('store.read');
@@ -51,6 +54,7 @@ class SpyTokenStore implements TokenStore {
   @override
   Future<void> delete(String key) {
     log.add('store.delete');
+    if (deleteFails) throw StateError('keychain');
     return inner.delete(key);
   }
 }

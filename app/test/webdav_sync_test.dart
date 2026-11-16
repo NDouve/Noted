@@ -828,6 +828,145 @@ void main() {
         },
       );
     });
+
+    group('disconnect and connect never overlap', () {
+      sTest('a guard answer while signed out runs no round', (t) async {
+        await build(t, saveConnection: true);
+        final q = GuardQuestion(['a.canvas']);
+        w.runner.guardQuestion = q;
+        await start(t);
+        w.runner.status = const SyncStatus(SyncState.signedOut);
+        final rounds = w.runner.rounds;
+        final saved = await t.runAsync(
+          () => w.sync.answerGuard(q, remove: true, source: w.sync.guardSource),
+        );
+        expect(saved, isFalse);
+        expect(w.runner.answers, isEmpty);
+        expect(w.runner.rounds, rounds);
+      });
+
+      sTest(
+        'a Disconnect that fails is kept, can be repeated, and blocks a new connect meanwhile',
+        (t) async {
+          await build(t, server: true);
+          await start(t);
+          expect(await connectToFirstFolder(t), isNull);
+          final file = webDavConnectionFile(
+            webDavStateDir(
+              w.support,
+              w.sync.connection!.accountKey,
+              w.sync.connection!.rootKey,
+            ),
+          );
+          w.store.deleteFails = true;
+          final failed = await t.runAsync(() => w.sync.disconnect());
+          expect(failed, startsWith("Disconnect didn't finish"));
+          expect(w.sync.connection, isNotNull, reason: 'kept until it is gone');
+          expect(w.sync.disconnectPending, isTrue);
+          expect(w.sync.canConnect, isFalse);
+          expect(w.sync.statusLine, contains("Disconnect didn't finish"));
+          expect(file.existsSync(), isTrue);
+          final rounds = w.runner.rounds;
+          await t.pump(const Duration(minutes: 30));
+          expect(
+            w.runner.rounds,
+            rounds,
+            reason: 'no pull while it is pending',
+          );
+          expect(
+            await connectToFirstFolder(t),
+            contains('Disconnect again first'),
+          );
+
+          w.store.deleteFails = false;
+          expect(await t.runAsync(() => w.sync.disconnect()), isNull);
+          expect(w.sync.connection, isNull);
+          expect(w.store.inner.values, isEmpty);
+          expect(file.existsSync(), isFalse);
+          expect(await connectToFirstFolder(t), isNull);
+          final files = Directory('${w.support.path}/webdav')
+              .listSync(recursive: true)
+              .whereType<File>()
+              .where((f) => f.path.endsWith('connection.json'));
+          expect(files.length, 1);
+        },
+      );
+
+      sTest('two saved connection files pause the sync: neither is picked', (
+        t,
+      ) async {
+        await build(t, saveConnection: true);
+        final other = _conn(
+          url: 'https://dav.example.test/dav/Other/',
+          path: 'Other',
+        );
+        final f = webDavConnectionFile(
+          webDavStateDir(w.support, other.accountKey, other.rootKey),
+        );
+        await t.runAsync(() async {
+          await f.parent.create(recursive: true);
+          await f.writeAsString(jsonEncode(other.toJson()));
+        });
+        await start(t);
+        expect(w.sync.connectionUnreadable, isTrue);
+        expect(w.built, isEmpty);
+        expect(f.existsSync(), isTrue);
+        expect(webDavConnectionFile(w.stateDir).existsSync(), isTrue);
+      });
+
+      sTest(
+        'overlapping connects: one wins, and the files, the screen and the runner agree',
+        (t) async {
+          await build(t, server: true);
+          await t.runAsync(() async => w.fake!.addFolder('Other'));
+          await start(t);
+          final results = await t.runAsync(() async {
+            Future<WebDavLogin> login() => w.sync.checkLogin(
+              address: address(),
+              user: FakeWebDav.user,
+              password: w.fake!.password,
+            );
+            final a = await login();
+            final b = await login();
+            final r = await Future.wait([
+              w.sync.connect(
+                a,
+                const ChosenRoot(
+                  driveId: webDavPickerDriveId,
+                  itemId: 'Noted',
+                  path: 'Noted',
+                ),
+              ),
+              w.sync.connect(
+                b,
+                const ChosenRoot(
+                  driveId: webDavPickerDriveId,
+                  itemId: 'Other',
+                  path: 'Other',
+                ),
+              ),
+            ]);
+            a.close();
+            b.close();
+            return r;
+          });
+          await t.pump();
+          expect(results!.where((r) => r == null).length, 1);
+          expect(results.where((r) => r != null).single, contains('busy'));
+          final c = w.sync.connection!;
+          final files = Directory('${w.support.path}/webdav')
+              .listSync(recursive: true)
+              .whereType<File>()
+              .where((f) => f.path.endsWith('connection.json'))
+              .toList();
+          expect(files.length, 1);
+          expect(jsonDecode(files.single.readAsStringSync())['path'], c.path);
+          expect(w.built.single.url, c.url);
+          expect(w.store.inner.values.keys, [c.passwordKey]);
+          expect(w.nb.standaloneFolders.length, 1);
+        },
+      );
+    });
     group('disconnecting', () {
       sTest(
         'forgets the password and the connection file, keeps the folder and the journal, and stops polling',

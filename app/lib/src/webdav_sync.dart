@@ -299,6 +299,32 @@ class WebDavSync extends CloudSync {
   bool _scanned = false;
   bool _unreadable = false;
   bool _signedOut = false;
+  bool _busy = false;
+  bool _disconnecting = false;
+
+  static const String _busyMessage =
+      'WebDAV is busy with another connection. Try again in a moment.';
+  static const String _disconnectFailed =
+      "Disconnect didn't finish: the saved password or connection could not be removed. Try again.";
+
+  /// A connect or disconnect is running.
+  bool get busy => _busy;
+
+  // A guard answer runs a round: none while the password is refused or the
+  // connection is paused.
+  @override
+  Future<bool> answerGuard(
+    GuardQuestion q, {
+    required bool remove,
+    Object? source,
+  }) async {
+    if (!canPoll) return false;
+    return super.answerGuard(q, remove: remove, source: source);
+  }
+
+  /// A Disconnect started and could not finish: the connection is paused and
+  /// Disconnect can be tried again.
+  bool get disconnectPending => _disconnecting && !_busy;
 
   /// The folder this device is connected to, if any.
   WebDavConnection? get connection => _conn;
@@ -324,6 +350,7 @@ class WebDavSync extends CloudSync {
   @override
   bool get canPoll =>
       _conn != null &&
+      !_disconnecting &&
       !_unreadable &&
       !_signedOut &&
       _password != null &&
@@ -337,6 +364,9 @@ class WebDavSync extends CloudSync {
   @override
   String? get blockedLine {
     if (_unreadable) return "Paused: the saved connection can't be read";
+    if (_disconnecting) {
+      return "Paused: Disconnect didn't finish. Disconnect again.";
+    }
     if (_signedOut) {
       return 'Paused: the password is missing. Disconnect and connect again.';
     }
@@ -421,7 +451,22 @@ class WebDavSync extends CloudSync {
   /// (atomically), then the folder is added to the notebook and pulled.
   /// Returns what to show when it could not be done, null when it was.
   Future<String?> connect(WebDavLogin login, ChosenRoot picked) async {
+    if (_busy) return _busyMessage;
+    _busy = true;
+    notifyListeners();
+    try {
+      return await _connect(login, picked);
+    } finally {
+      _busy = false;
+      if (!disposed) notifyListeners();
+    }
+  }
+
+  Future<String?> _connect(WebDavLogin login, ChosenRoot picked) async {
     if (!_scanned) await _scan();
+    if (_disconnecting) {
+      return "The last Disconnect didn't finish. Disconnect again first.";
+    }
     if (!canConnect) {
       return _unreadable
           ? "The saved connection can't be read."
@@ -478,29 +523,47 @@ class WebDavSync extends CloudSync {
   /// Forgets the connection on this device: the password and `connection.json`
   /// go, the working copy and the sync record stay, and nothing on the server
   /// is touched.
-  Future<void> disconnect() async {
+  ///
+  /// The connection stays (paused, "Disconnecting") until the password and the
+  /// file are both gone. If either can't be removed, the reason is returned and
+  /// Disconnect can be tried again; no new connection is made meanwhile.
+  /// Null when it is done. One connect or disconnect runs at a time.
+  Future<String?> disconnect() async {
+    if (_busy) return _busyMessage;
     final c = _conn;
-    if (c == null) return;
+    if (c == null) return null;
+    _busy = true;
+    _disconnecting = true;
     teardownRunner();
-    _conn = null;
     _password = null;
     _signedOut = false;
     reschedule();
     notifyListeners();
+    var done = true;
     try {
       await store.delete(c.passwordKey);
     } on Object {
-      // The next connect writes it again.
+      done = false;
     }
-    try {
-      final file = webDavConnectionFile(
-        webDavStateDir(support, c.accountKey, c.rootKey),
-      );
-      if (await file.exists()) await file.delete();
-    } on Object {
-      // Found again at the next start; Disconnect again.
+    // The file goes only after the password: while it stays, Disconnect can be
+    // tried again.
+    if (done) {
+      try {
+        final file = webDavConnectionFile(
+          webDavStateDir(support, c.accountKey, c.rootKey),
+        );
+        if (await file.exists()) await file.delete();
+      } on Object {
+        done = false;
+      }
     }
-    notifyListeners();
+    if (done) {
+      _conn = null;
+      _disconnecting = false;
+    }
+    _busy = false;
+    if (!disposed) notifyListeners();
+    return done ? null : _disconnectFailed;
   }
 
   // --- Start ----------------------------------------------------------------
@@ -510,7 +573,7 @@ class WebDavSync extends CloudSync {
     if (disposed || !loaded) return;
     if (!_scanned) await _scan();
     final c = _conn;
-    if (c != null && !_unreadable && runner == null) {
+    if (c != null && !_unreadable && !_disconnecting && runner == null) {
       await _restore(c);
       if (runner != null) wantPoll = true;
     }
@@ -541,6 +604,11 @@ class WebDavSync extends CloudSync {
       return;
     }
     if (files.isEmpty) return;
+    // More than one saved connection: never pick one.
+    if (files.length > 1) {
+      _unreadable = true;
+      return;
+    }
     files.sort((a, b) => a.path.compareTo(b.path));
     try {
       final c = WebDavConnection.fromJson(

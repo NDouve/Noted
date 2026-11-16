@@ -190,7 +190,7 @@ class _WebDavSectionState extends State<WebDavSection> {
                   const Spacer(),
                   TextButton(
                     key: const ValueKey('dav-disconnect'),
-                    onPressed: () => unawaited(sync.disconnect()),
+                    onPressed: sync.busy ? null : () => unawaited(sync.disconnect()),
                     child: const Text('Disconnect'),
                   ),
                 ],
