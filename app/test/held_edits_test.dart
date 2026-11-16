@@ -1213,4 +1213,132 @@ void main() {
       await stop();
     },
   );
+
+  // Runs [act] with [at] called at the nth turn of a gated job (by the
+  // `binder-gate` seam), counted from 1.
+  void atGate(Map<int, void Function()> at) {
+    var n = 0;
+    nb.syncHook = (point, path) async {
+      if (point != 'binder-gate') return;
+      at[++n]?.call();
+    };
+  }
+
+  // An attachment of page [id] in [dir] (its assets folder).
+  File attach(Directory dir, String id) {
+    final a = Directory('${dir.path}$sep${assetsFolderName(id)}')
+      ..createSync(recursive: true);
+    return File('${a.path}${sep}a.txt')..writeAsStringSync('attached $id');
+  }
+
+  group('each gate', () {
+    test('a delete rollback puts no set-aside attachments back into a folder held since', () async {
+      await start();
+      final p = await nb.createPage(binderPath: section().path);
+      final sub = await nb.createPage(parentId: p);
+      await nb.open(pageId);
+      await nb.flush();
+      attach(folder, p);
+      attach(folder, sub);
+      // Both set aside, the first page deleted; the second page's turn finds
+      // another binder's file: the delete throws and is rolled back.
+      atGate({4: () => swap(_Swap.other)});
+      await expectLater(nb.delete(p), throwsA(isA<NotebookException>()));
+      nb.syncHook = null;
+      expect(
+        Directory('${folder.path}$sep${assetsFolderName(p)}').existsSync(),
+        isFalse,
+      );
+      expect(
+        Directory('${folder.path}$sep${assetsFolderName(sub)}').existsSync(),
+        isFalse,
+      );
+      await stop();
+    });
+
+    test('a page kept because it changed gets no attachments back once the folder is held', () async {
+      await start();
+      final p = await nb.createPage(binderPath: section().path);
+      await nb.open(pageId);
+      await nb.flush();
+      final file = attach(folder, p);
+      atGate({
+        // The page's own delete: another device changed the file just before.
+        2: () => pageFile(p).writeAsStringSync(
+          writePage(
+            NotedPage.create(PageMeta.create(id: p, title: 'Newer', order: 3)),
+          ),
+        ),
+        // Its attachments' way back.
+        3: () => swap(_Swap.other),
+      });
+      await nb.delete(p).then<void>((_) {}, onError: (_) {});
+      nb.syncHook = null;
+      expect(pageFile(p).existsSync(), isTrue);
+      expect(
+        file.existsSync(),
+        isFalse,
+        reason: 'not moved back into the held folder',
+      );
+      await stop();
+    });
+
+    test('a move into a binder that fails: its attachment copies stay in a folder held since', () async {
+      await start();
+      await nb.open(standalone);
+      final p = await nb.createPage();
+      final sub = await nb.createPage(parentId: p);
+      await nb.open(standalone);
+      await nb.flush();
+      attach(pages, p);
+      // The first page is written and its files copied into the binder; the
+      // second page's turn finds another binder's file.
+      atGate({2: () => swap(_Swap.other)});
+      await expectLater(
+        nb.moveToLocation(p, binderPath: section().path),
+        throwsA(isA<NotebookException>()),
+      );
+      nb.syncHook = null;
+      expect(
+        File('${folder.path}$sep${assetsFolderName(p)}${sep}a.txt')
+            .existsSync(),
+        isTrue,
+        reason: 'never removed from a held folder',
+      );
+      expect(pageFile(sub).existsSync(), isFalse);
+      await stop();
+    });
+
+    test('a move rolled back after the source changed: the copies stay in a target held since', () async {
+      await start();
+      await nb.open(standalone);
+      final p = await nb.createPage();
+      await nb.open(standalone);
+      await nb.flush();
+      attach(pages, p);
+      nb.syncHook = (point, path) async {
+        if (point == 'move-before-source-delete') {
+          nb.syncHook = null;
+          File('${pages.path}$sep$p.canvas').writeAsStringSync(
+            writePage(
+              NotedPage.create(
+                PageMeta.create(id: p, title: 'Newer', order: 3),
+              ),
+            ),
+          );
+          swap(_Swap.other);
+        }
+      };
+      await expectLater(
+        nb.moveToLocation(p, binderPath: section().path),
+        throwsA(isA<NotebookException>()),
+      );
+      expect(
+        File('${folder.path}$sep${assetsFolderName(p)}${sep}a.txt')
+            .existsSync(),
+        isTrue,
+      );
+      await stop();
+    });
+  });
 }

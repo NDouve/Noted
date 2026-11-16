@@ -2032,6 +2032,42 @@ void main() {
       expect(stored(t.code).approved, isNotNull);
     });
   });
+
+  // Held edits, test 4 (run 2026-11-16-01, task 3).
+  group('a binder folder that stops holding its binder', () {
+    Future<({Notebook nb, String a, String code, File file})> inBinder() async {
+      final nb = make();
+      await nb.load();
+      final b = await nb.addBinder(folder.path);
+      final a = await nb.createPage(binderPath: b.path);
+      nb.current!.insertBox(box('ba', text: 'old'));
+      await nb.flush();
+      final code = await issue('ba');
+      await nb.createPage(); // [a] is closed now
+      await nb.flush();
+      return (nb: nb, a: a, code: code, file: File('${folder.path}/$a.canvas'));
+    }
+
+    void otherBinder() => File('${folder.path}/$binderFileName')
+        .writeAsStringSync(Binder.create(title: 'Other', color: binderPalette[1]).write());
+
+    test('a closed write queued at the folder, then another binder\'s file: refused locked, nothing written', () async {
+      final t = await inBinder();
+      final before = t.file.readAsStringSync();
+      final release = Completer<void>();
+      final holding = t.nb.folderLocks.run(folder, () => release.future);
+      final writing = codeOf(t.nb, req('ba', t.code, content: 'late'));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      otherBinder();
+      release.complete();
+      await holding;
+      expect(await writing, AiLinkCode.locked);
+      expect(t.file.readAsStringSync(), before);
+      // Held now: nothing of the folder is open to AI.
+      expect(await codeOf(t.nb, req('ba', t.code, content: 'later')), AiLinkCode.locked);
+      expect(t.file.readAsStringSync(), before);
+    });
+  });
 }
 
 /// A host whose naming lookup never finishes (an offline or slow page load).
