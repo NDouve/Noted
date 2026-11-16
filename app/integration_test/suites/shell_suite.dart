@@ -169,8 +169,9 @@ void shellSuite() {
         // Above the second note's grip, over the first note alone.
         await _rightClick(s, toScreen(t, const Offset(300, 103)));
         expect(find.byKey(const ValueKey('context-menu')), findsOneWidget);
-        expect(c.selectedId, a);
+        expect(c.selectedId, isNull, reason: 'opening a menu selects nothing');
         await s.tapKey('context-${CanvasCommands.bringToFront}', settle: 600);
+        expect(c.selectedId, a, reason: 'choosing the entry selected the box');
         expect(_order(c), [b, a]);
         await _top(s, 'Edit');
         await s.tapKey('menu-canvas.undo', settle: 600);

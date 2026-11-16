@@ -1308,10 +1308,10 @@ class PageCanvasState extends State<PageCanvas>
 
     final c = _c;
     final editing = c.editingId;
-    // The editor keeps its selection through a hold: for the note itself or
-    // the canvas. Another box is selected only when an entry is chosen (the
+    // A note being edited keeps its editor and selection through a hold, for
+    // any target. Another box is selected only when an entry is chosen (the
     // note leaves its editor then), never on open.
-    final hold = editing != null && (id == null || id == editing);
+    final hold = editing != null;
     final origin = hold ? FocusManager.instance.primaryFocus : _focus;
 
     final target = _ContextTarget(
@@ -1382,6 +1382,7 @@ class PageCanvasState extends State<PageCanvas>
       origin,
       hold ? c : null,
       selectedAtOpen: c.selectedId,
+      editingAtOpen: editing,
     );
     session.holdNow();
     _contextSession = session;
@@ -1466,8 +1467,16 @@ class PageCanvasState extends State<PageCanvas>
     if (live == null || !live.enabled) {
       final prior = s.selectedAtOpen;
       _c.select(prior != null && _c.page.node(prior) != null ? prior : null);
+      // The note that was being edited gets its editor back.
+      final editing = s.editingAtOpen;
+      if (editing != null && _c.page.node(editing) != null && _c.editingId != editing) {
+        _focusOrigin(s.origin);
+      }
       return;
     }
+    // Choosing an entry for another box ends the edit of the note (0092).
+    final editing = _c.editingId;
+    if (editing != null && editing != id) _focus.requestFocus();
     await live.run();
   }
 
@@ -2139,7 +2148,7 @@ class _ContextTarget {
 /// One open context menu: its target, entries, the focus to give back, and
 /// the editor focus hold it took (released once).
 class _ContextSession {
-  _ContextSession(this.target, this.spec, this.origin, this._holder, {this.selectedAtOpen});
+  _ContextSession(this.target, this.spec, this.origin, this._holder, {this.selectedAtOpen, this.editingAtOpen});
 
   final _ContextTarget target;
   final ContextMenuSpec spec;
@@ -2147,6 +2156,9 @@ class _ContextSession {
   /// The selection when the menu opened: put back when a chosen entry is
   /// refused.
   final String? selectedAtOpen;
+
+  /// The note being edited when the menu opened (its editor is the origin).
+  final String? editingAtOpen;
   CanvasController? _holder;
 
   void holdNow() => _holder?.editorFocusHold.hold();

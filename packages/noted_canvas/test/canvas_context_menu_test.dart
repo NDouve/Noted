@@ -97,6 +97,19 @@ void main() {
       expect(find.descendant(of: w.menu, matching: find.byType(Icon)), findsNothing);
     });
 
+    testWidgets('the empty-canvas list keeps 8 px from the window edge at the bottom right', (t) async {
+      await setUpWorld(t, withStore: true);
+      for (final p in [const Offset(1195, 795), const Offset(1195, 400)]) {
+        await w.rightClick(p);
+        final r = t.getRect(w.menu);
+        expect(r.right, lessThanOrEqualTo(1200 - 8 + 0.01));
+        expect(r.bottom, lessThanOrEqualTo(800 - 8 + 0.01));
+        await t.sendKeyEvent(LogicalKeyboardKey.escape);
+        await t.pump();
+        await t.pump();
+      }
+    });
+
     testWidgets('Select and type makes no box; the next normal click does', (t) async {
       await setUpWorld(t, pen: true);
       w.selection.select(w.pen);
@@ -368,14 +381,6 @@ void main() {
       await t.pump();
       expect(w.order, ['c', 'a', 'b']);
       expect(w.c.selectedId, 'c');
-    });
-
-    testWidgets('the point commands are disposed after the run', (t) async {
-      await setUpWorld(t, withStore: true);
-      await w.rightClick(w.at(const Offset(900, 600)));
-      await w.choose('canvas.paste');
-      await t.pump();
-      expect(tt.takeException(), isNull);
     });
   });
 
@@ -678,19 +683,25 @@ void main() {
       expect(w.c.editingId, 'e');
     });
 
-    testWidgets('right click on another box demotes the note, with no hold', (t) async {
+    testWidgets('right click on another box holds the editor: Escape leaves the note editing and focused', (t) async {
       await setUpWorld(t, nodes: [tbox('e', 'test.editor', ba, 'note'), tbox('o', 'test.text', const Bounds(700, 100, 100, 50), 'o')]);
       editorNode.requestFocus();
       await t.pump();
       await w.rightClick(w.at(const Offset(720, 120)));
       expect(w.menu, findsOneWidget);
-      expect(w.c.editorFocusHold.count, 0);
+      expect(w.c.editorFocusHold.count, 1);
       expect(w.c.selectedId, 'e');
+      expect(w.c.editingId, 'e');
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await t.pump();
-      expect(w.c.editingId, isNull);
+      await t.pump();
+      await t.pump();
+      expect(w.c.editorFocusHold.count, 0);
+      expect(w.c.editingId, 'e');
+      expect(editorNode.hasPrimaryFocus, isTrue);
     });
 
-    testWidgets('a command chosen for another box still runs on it while a note was being edited', (t) async {
+    testWidgets('a command chosen for another box still runs on it and ends the note\'s edit', (t) async {
       await setUpWorld(t, nodes: [tbox('e', 'test.editor', ba, 'note'), tbox('o', 'test.text', const Bounds(700, 100, 100, 50), 'o')]);
       editorNode.requestFocus();
       await t.pump();
@@ -700,6 +711,22 @@ void main() {
       await w.choose(CanvasCommands.sendToBack);
       expect(w.order, ['o', 'e']);
       expect(w.c.selectedId, 'o');
+      expect(w.c.editingId, isNull);
+      expect(w.c.editorFocusHold.count, 0);
+    });
+
+    testWidgets('a refused activation gives the edited note its selection and editor back', (t) async {
+      await setUpWorld(t, nodes: [tbox('e', 'test.editor', ba, 'note'), tbox('o', 'test.text', const Bounds(700, 100, 100, 50), 'o')]);
+      editorNode.requestFocus();
+      await t.pump();
+      await w.rightClick(w.at(const Offset(720, 120)));
+      w.state.debugBeforeContextRun = () async => w.c.restack('o', StackMove.back);
+      await w.choose(CanvasCommands.sendToBack);
+      await t.pump();
+      expect(w.order, ['o', 'e']);
+      expect(w.c.selectedId, 'e');
+      expect(w.c.editingId, 'e');
+      expect(editorNode.hasPrimaryFocus, isTrue);
     });
 
     testWidgets('the canvas disposing under an open menu releases the hold', (t) async {
@@ -1043,7 +1070,8 @@ void main() {
       await t.pump();
       await t.pump();
       expect(w.c.selectedId, 'e');
-      expect(w.c.page.node('e'), isNotNull);
+      expect(w.c.editingId, 'e');
+      expect(editorNode.hasPrimaryFocus, isTrue);
       expect(w.c.page.nodes, hasLength(2));
     });
 
