@@ -210,7 +210,8 @@ void main() {
       'app.view.panel',
       'sub:Context menu',
     ]);
-    expect(find.text('Details'), findsOneWidget);
+    // The menu item and the toggle at the bar's right end.
+    expect(find.text('Details'), findsNWidgets(2));
     expect(_shortcut(t, 'canvas.zoomIn'), 'Ctrl+=');
     expect(_shortcut(t, 'canvas.zoomOut'), 'Ctrl+-');
     expect(_shortcut(t, 'canvas.zoomReset'), 'Ctrl+0');

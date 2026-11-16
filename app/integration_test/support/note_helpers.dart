@@ -96,11 +96,11 @@ Future<Finder> toolbarButton(WidgetTester t, String id) async {
 
 /// Screen position of a page (world) point.
 Offset toScreen(WidgetTester t, Offset world) =>
-    canvasState(t).view!.toScreen(world) + t.getTopLeft(find.byType(PageCanvas)) + Offset(0, toolbarHeight(t));
+    canvasState(t).view!.toScreen(world) + t.getTopLeft(find.byKey(PageCanvas.overlayKey));
 
-/// Screen position of a canvas-local point (the viewport, below the toolbar).
+/// Screen position of a canvas-local point (the viewport: below the toolbar and the page title).
 Offset viewportPoint(WidgetTester t, Offset local) =>
-    t.getTopLeft(find.byType(PageCanvas)) + Offset(0, toolbarHeight(t)) + local;
+    t.getTopLeft(find.byKey(PageCanvas.overlayKey)) + local;
 
 /// Clicks the empty canvas: a new note box takes focus.
 Future<void> clickNewNote(Session s, {Offset at = const Offset(600, 300)}) async {

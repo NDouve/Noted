@@ -79,6 +79,8 @@ class PageCanvas extends StatefulWidget {
     this.onCommandsChanged,
     this.sidePanel,
     this.overlayPanel,
+    this.header,
+    this.footer,
     this.contextMenuStyle = ContextMenuStyle.list,
   });
 
@@ -98,6 +100,15 @@ class PageCanvas extends StatefulWidget {
   /// Host only. A panel built with this canvas's live registry, shown right of
   /// the canvas and below the toolbar; null shows none.
   final Widget Function(BuildContext context, CommandRegistry registry)? sidePanel;
+
+  /// Host only. A band between the toolbar and the canvas viewport, in the
+  /// canvas column (left of [sidePanel]): the host's page title and notices.
+  /// Null shows none.
+  final Widget? header;
+
+  /// Host only. A strip under the canvas and [sidePanel], the full width of
+  /// this widget: the host's status. Null shows none.
+  final Widget? footer;
 
   /// Host only. A panel drawn over the canvas area (below the toolbar, so the
   /// toolbar stays uncovered), built with the canvas's live registry; null shows
@@ -1617,12 +1628,12 @@ class PageCanvasState extends State<PageCanvas>
               fit: StackFit.expand,
               children: [
                 if (widget.sidePanel == null)
-                  _canvasArea(scheme)
+                  _canvasColumn(scheme)
                 else
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Expanded(child: _canvasArea(scheme)),
+                      Expanded(child: _canvasColumn(scheme)),
                       widget.sidePanel!(context, _commands),
                     ],
                   ),
@@ -1630,10 +1641,22 @@ class PageCanvasState extends State<PageCanvas>
               ],
             ),
           ),
-
-
+          ?widget.footer,
         ],
       ),
+    );
+  }
+
+  // The canvas area under the host's header, if there is one.
+  Widget _canvasColumn(ColorScheme scheme) {
+    final header = widget.header;
+    if (header == null) return _canvasArea(scheme);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        header,
+        Expanded(child: _canvasArea(scheme)),
+      ],
     );
   }
 

@@ -318,4 +318,38 @@ void main() {
       );
     });
   });
+
+  group('header and footer', () {
+    testWidgets('the header is under the toolbar and left of the side panel, the footer under both', (t) async {
+      t.view.physicalSize = const Size(1200, 800);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      final c = CanvasController(emptyPage(), modules);
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PageCanvas(
+              controller: c,
+              header: const SizedBox(key: ValueKey('header'), height: 70),
+              footer: const SizedBox(key: ValueKey('footer'), height: 34),
+              sidePanel: (context, registry) => const SizedBox(key: ValueKey('panel'), width: 264),
+            ),
+          ),
+        ),
+      );
+      await t.pump();
+      final header = t.getRect(find.byKey(const ValueKey('header')));
+      final footer = t.getRect(find.byKey(const ValueKey('footer')));
+      final panel = t.getRect(find.byKey(const ValueKey('panel')));
+      expect(header.top, CommandToolbar.height);
+      expect(header.left, 0);
+      expect(header.right, 1200 - 264);
+      expect(panel.top, CommandToolbar.height);
+      expect(panel.bottom, footer.top);
+      expect(footer.bottom, 800);
+      expect(footer.width, 1200);
+      // The viewport starts under the header.
+      expect(t.getRect(find.byKey(PageCanvas.overlayKey)).top, header.bottom);
+    });
+  });
 }
