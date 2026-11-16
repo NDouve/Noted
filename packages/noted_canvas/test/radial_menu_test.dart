@@ -158,17 +158,17 @@ void main() {
     expect(w.focused(), 'Send to back');
     await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
     await t.pump();
-    expect(w.focused(), 'Pick overlapping box…');
+    expect(w.focused(), 'Pick overlapping');
     await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
     await t.pump();
-    expect(w.focused(), 'More');
+    expect(w.focused(), 'More…');
     // The arrows go round the slots; Tab has Cancel in its cycle.
     await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
     await t.pump();
     expect(w.focused(), 'Send backward');
     await t.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
     await t.pump();
-    expect(w.focused(), 'More');
+    expect(w.focused(), 'More…');
     await t.sendKeyEvent(LogicalKeyboardKey.tab);
     await t.pump();
     expect(w.focused(), 'Cancel');
@@ -177,14 +177,14 @@ void main() {
     expect(w.focused(), 'Send backward');
     await t.sendKeyEvent(LogicalKeyboardKey.arrowUp);
     await t.pump();
-    expect(w.focused(), 'More');
+    expect(w.focused(), 'More…');
     // Back from Cancel goes to the last enabled slot.
     await t.sendKeyEvent(LogicalKeyboardKey.tab);
     await t.pump();
     expect(w.focused(), 'Cancel');
     await t.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
     await t.pump();
-    expect(w.focused(), 'More');
+    expect(w.focused(), 'More…');
   });
 
   testWidgets('Enter on Cancel and a click on Cancel close the ring without running anything', (t) async {
@@ -200,6 +200,50 @@ void main() {
     await settle(t);
     expect(w.open, isFalse);
     expect(w.order, ['a', 'b', 'c']);
+  });
+
+  testWidgets('Shift+Tab goes back through Cancel; Space on Cancel closes; a click on a dimmed slot does nothing', (t) async {
+    await setUpWorld(t);
+    await w.rightClick(w.at(overlapPoint));
+    // Cancel -> back -> the last enabled slot -> ... -> Send backward -> Cancel.
+    for (final want in ['More…', 'Pick overlapping', 'Send to back', 'Send backward', 'Cancel', 'More…']) {
+      await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await t.sendKeyEvent(LogicalKeyboardKey.tab);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await t.pump();
+      expect(w.focused(), want);
+    }
+    // A dimmed slot takes no click and moves no focus.
+    await w.choose(CanvasCommands.bringForward);
+    expect(w.ring, findsOneWidget);
+    expect(w.order, ['a', 'b', 'c']);
+    await t.sendKeyEvent(LogicalKeyboardKey.tab);
+    await t.pump();
+    expect(w.focused(), 'Cancel');
+    await t.sendKeyEvent(LogicalKeyboardKey.space);
+    await settle(t);
+    expect(w.open, isFalse);
+    expect(w.order, ['a', 'b', 'c']);
+  });
+
+  testWidgets('slot text is left-aligned with a 10 px inset; the pick slot shows "Pick overlapping" and keeps its full name', (t) async {
+    final handle = t.ensureSemantics();
+    await setUpWorld(t);
+    await w.rightClick(w.at(overlapPoint));
+    final slot = w.slot('canvas.pickOverlappingBox');
+    final text = find.descendant(of: slot, matching: find.byType(Text));
+    expect(t.widget<Text>(text).data, 'Pick overlapping');
+    final visual = find.descendant(
+      of: slot,
+      matching: find.byWidgetPredicate((x) => x is SizedBox && x.width == 132 && x.height == 32),
+    );
+    expect(t.getTopLeft(text).dx - t.getTopLeft(visual).dx, closeTo(10, 0.01));
+    expect(t.getSemantics(slot).label, 'Pick overlapping box…');
+    // The Cancel label stays in the middle.
+    final cancelText = find.descendant(of: cancel, matching: find.byType(Text));
+    expect(t.getCenter(cancelText).dx, closeTo(t.getCenter(cancel).dx, 0.5));
+    expect(find.text('More…'), findsOneWidget);
+    handle.dispose();
   });
 
   testWidgets('an unavailable slot is dimmed and keeps its place', (t) async {
@@ -250,7 +294,7 @@ void main() {
     await settle(t);
     expect(w.menu, findsNothing);
     expect(w.ring, findsOneWidget);
-    expect(w.focused(), 'More');
+    expect(w.focused(), 'More…');
     // Escape on the ring itself closes it.
     await t.sendKeyEvent(LogicalKeyboardKey.escape);
     await settle(t);
@@ -369,7 +413,7 @@ void main() {
   });
 
   group('the focused slot and row', () {
-    testWidgets('the focused slot has the accent-soft fill, accent bold text and a 2 px accent outline', (t) async {
+    testWidgets('the focused slot has the accent-soft fill, accent text and a 2 px accent outline', (t) async {
       await setUpWorld(t);
       await w.rightClick(w.at(overlapPoint));
       await t.sendKeyEvent(LogicalKeyboardKey.arrowRight);
@@ -382,7 +426,7 @@ void main() {
       expect((d.border! as Border).top.width, 2);
       final text = t.widget<Text>(find.descendant(of: w.focusOutline, matching: find.byType(Text)));
       expect(text.style!.color, scheme.primary);
-      expect(text.style!.fontWeight, FontWeight.w700);
+      expect(text.style!.fontWeight, isNot(FontWeight.w700));
     });
 
     testWidgets('the focused list row has the accent-soft fill and accent bold text, not grey', (t) async {

@@ -36,6 +36,7 @@ class ContextEntry {
     this.point = false,
     this.more = false,
     this.onTarget = false,
+    this.short,
   });
 
   final Command command;
@@ -54,6 +55,9 @@ class ContextEntry {
   /// menu's target. Choosing it selects the target, then runs the registry
   /// command with the same id.
   final bool onTarget;
+
+  /// A shorter text for the ring's slot (its semantics keep the full text).
+  final String? short;
 
   String get text => label ?? command.label;
   bool get enabled => more || command.enabled;
@@ -140,7 +144,7 @@ ContextMenuSpec boxContextSpec({
   final forward = reg(CanvasCommands.bringForward);
   final backward = reg(CanvasCommands.sendBackward);
   final back = reg(CanvasCommands.sendToBack);
-  final here = ContextEntry(boxesHere, point: true);
+  final here = ContextEntry(boxesHere, point: true, short: 'Pick overlapping');
   final more = ContextEntry(_moreCommand(), point: true, more: true);
   return ContextMenuSpec(
     groups: [
@@ -202,7 +206,7 @@ ContextMenuSpec canvasContextSpec({
 }
 
 Command _moreCommand() =>
-    Command(id: contextPointId('more'), label: 'More', icon: Icons.more_horiz_rounded, invoke: () {});
+    Command(id: contextPointId('more'), label: 'More…', icon: Icons.more_horiz_rounded, invoke: () {});
 
 /// Opens a context menu for [spec] at the screen point [anchor] and completes
 /// with the entry chosen, or null if it was closed. [within] is the canvas
@@ -570,7 +574,7 @@ class _ListLayout extends SingleChildLayoutDelegate {
 
   @override
   BoxConstraints getConstraintsForChild(BoxConstraints constraints) =>
-      BoxConstraints.loose(Size(within.width - 16, within.height - 16));
+      BoxConstraints.loose(Size(math.max(0, within.width - 16), math.max(0, within.height - 16)));
 
   @override
   Offset getPositionForChild(Size size, Size child) {

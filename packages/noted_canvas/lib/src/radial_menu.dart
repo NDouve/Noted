@@ -127,6 +127,7 @@ class RadialMenuView extends StatelessWidget {
                   child: _Pill(
                     tapKey: ValueKey('radial-${e.command.id}'),
                     text: e.text,
+                    visual: e.short ?? e.text,
                     size: radialSlotSize,
                     enabled: e.enabled,
                     destructive: e.destructive,
@@ -145,6 +146,8 @@ class RadialMenuView extends StatelessWidget {
               child: _Pill(
                 tapKey: const ValueKey('ring-cancel'),
                 text: 'Cancel',
+                visual: 'Cancel',
+                centred: true,
                 size: radialCancelSize,
                 enabled: true,
                 destructive: false,
@@ -167,6 +170,8 @@ class _Pill extends StatelessWidget {
   const _Pill({
     required this.tapKey,
     required this.text,
+    required this.visual,
+    this.centred = false,
     required this.size,
     required this.enabled,
     required this.destructive,
@@ -178,6 +183,8 @@ class _Pill extends StatelessWidget {
 
   final Key tapKey;
   final String text;
+  final String visual;
+  final bool centred;
   final Size size;
   final bool enabled;
   final bool destructive;
@@ -228,18 +235,16 @@ class _Pill extends StatelessWidget {
               ),
               child: SizedBox.fromSize(
                 size: size,
-                child: Center(
+                child: Align(
+                  alignment: centred ? Alignment.center : Alignment.centerLeft,
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
                     child: Text(
-                      text,
+                      visual,
                       maxLines: 1,
                       softWrap: false,
                       overflow: TextOverflow.ellipsis,
-                      style: type.label.copyWith(
-                        color: fg,
-                        fontWeight: active ? FontWeight.w700 : null,
-                      ),
+                      style: type.label.copyWith(color: fg),
                     ),
                   ),
                 ),
