@@ -219,12 +219,16 @@ final class NotedTemplate {
     return _read(fields, source);
   }
 
+  static final RegExp _plainId = RegExp(r'^[A-Za-z0-9_-]+$');
+
   static NotedTemplate _read(RawObject fields, String? text) {
     final format = fields.integer('format');
     final id = fields.string('templateId');
     if (format == null || id == null || id.isEmpty) {
       throw const TemplateFormatException('malformed template file');
     }
+    // The id names the template's files (`<id>.assets`): one plain name, never a path.
+    if (!_plainId.hasMatch(id)) throw const TemplateFormatException('the template id is not a plain name');
     if (format > templateFormatVersion) throw UnsupportedTemplateFormatException(format);
     final kind = TemplateKind.parse(fields.string('kind'));
     if (kind == null) throw const TemplateFormatException('unknown template kind');

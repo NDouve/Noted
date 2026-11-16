@@ -202,4 +202,12 @@ void main() {
     expect(file.existsSync(), isTrue);
     expect(left.existsSync(), isFalse);
   });
+  test('a template id that is not one plain name is refused', () {
+    final text = NotedTemplate.forPage(name: 'N', page: readPage(pageText('p1'))).write();
+    for (final bad in ['../x', 'a/b', r'a\b', '.', '..', 'x.y']) {
+      final changed = text.replaceFirst(RegExp(r'"templateId"\s*:\s*"[^"]*"'), '"templateId": "${bad.replaceAll(r'\', r'\')}"');
+      expect(() => NotedTemplate.parse(changed), throwsA(isA<TemplateFormatException>()), reason: bad);
+    }
+    expect(NotedTemplate.parse(text).id, isNotEmpty);
+  });
 }

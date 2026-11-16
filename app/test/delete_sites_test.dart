@@ -15,7 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 /// many times it occurs in the file, and why it is not a checked delete.
 typedef Site = (String file, String text, int count, String reason);
 
-const String _unique = 'its own temporary file, a unique or fixed own name';
+const String _unique = 'its own temporary file (a name only this writer makes)';
 const String _call =
     'not a file delete: a call on a store, a transaction or the notebook';
 const String _private = 'an app-private file or folder, not shared storage';
@@ -23,7 +23,9 @@ const String _emptyDir =
     'a non-recursive folder delete: it fails when anything is in it';
 const String _primitive = 'the checked primitive itself';
 const String _landing =
-    'the fixed-name landing temp (known; a unique name is for the area audit)';
+    'the fixed-name <target>.landing.tmp of a non-hash kept file (known; a unique name is for the area audit)';
+const String _tempMixed =
+    'own temporary files: unique names, and the fixed-name <target>.landing.tmp of a non-hash kept file (known)';
 
 const List<Site> deleteSites = [
   ('app/lib/src/ai/ai_link_server.dart', 'file.deleteSync();', 1, _private),
@@ -68,13 +70,7 @@ const List<Site> deleteSites = [
     'app/lib/src/notebook.dart',
     'if (await tmp.exists()) await tmp.delete();',
     4,
-    _unique,
-  ),
-  (
-    'app/lib/src/notebook.dart',
-    'if (await stale.exists()) await stale.delete();',
-    1,
-    _landing,
+    _tempMixed,
   ),
   (
     'app/lib/src/notebook.dart',

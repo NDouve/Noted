@@ -479,10 +479,10 @@ void main() {
       final notices = collect(nb);
       final (t, a) = await appTemplate(nb);
       final text = File('${appTemplates().path}/${t.id}.notedtemplate').readAsStringSync();
-      File('${appTemplates().path}/${t.id} (1).notedtemplate').writeAsStringSync(text);
+      File('${appTemplates().path}/Copy of T.notedtemplate').writeAsStringSync(text);
       final items = (await nb.listTemplates(TemplateKind.page)).items;
       expect(items, hasLength(2));
-      await nb.deleteTemplate(items.firstWhere((i) => !i.path.contains('(1)')));
+      await nb.deleteTemplate(items.firstWhere((i) => !i.path.contains('Copy of')));
       await tick();
       expect(File('${a.path}/$name1').existsSync(), isTrue);
       expect(File('${a.path}/$name2').existsSync(), isTrue);
@@ -508,12 +508,12 @@ void main() {
         expect(File('${pages.path}/$page.assets/$name2').readAsBytesSync(), good2);
       }
 
-      test('written as invalid text during the delete', () async {
+      test('a copy written as invalid text during the delete, named unrelated to the id', () async {
         final nb = make();
         await nb.load();
         final (t, a) = await appTemplate(nb);
         final text = File('${appTemplates().path}/${t.id}.notedtemplate').readAsStringSync();
-        final copy = File('${appTemplates().path}/${t.id} (1).notedtemplate');
+        final copy = File('${appTemplates().path}/Copy of T.notedtemplate');
         final item = (await nb.listTemplates(TemplateKind.page)).items.single;
         nb.templateStepHook = (step) async {
           if (step == 'delete') copy.writeAsStringSync('{ half written');
@@ -522,13 +522,13 @@ void main() {
         await keptThenUsable(nb, t, a, () => copy.writeAsStringSync(text));
       });
 
-      test('a leftover of another delete in its place', () async {
+      test('a leftover of another delete, named unrelated to the id', () async {
         final nb = make();
         await nb.load();
         final (t, a) = await appTemplate(nb);
         final text = File('${appTemplates().path}/${t.id}.notedtemplate').readAsStringSync();
         final item = (await nb.listTemplates(TemplateKind.page)).items.single;
-        final left = File('${appTemplates().path}/${t.id}.notedtemplate.4242-a-b.cas-old');
+        final left = File('${appTemplates().path}/Other.notedtemplate.4242-a-b.cas-old');
         nb.templateStepHook = (step) async {
           if (step == 'delete') left.writeAsStringSync(text);
         };
@@ -537,7 +537,21 @@ void main() {
         // A new Notebook's listing sweeps it back into the template.
         await keptThenUsable(nb, t, a, () {});
         expect(left.existsSync(), isFalse);
-        expect(File('${appTemplates().path}/${t.id}.notedtemplate').readAsStringSync(), text);
+        expect(File('${appTemplates().path}/Other.notedtemplate').readAsStringSync(), text);
+      });
+
+      test('a file named from the id, not a template (the save temp)', () async {
+        final nb = make();
+        await nb.load();
+        final notices = collect(nb);
+        final (t, a) = await appTemplate(nb);
+        final item = (await nb.listTemplates(TemplateKind.page)).items.single;
+        File('${appTemplates().path}/${t.id}.notedtemplate.tmp').writeAsStringSync('half');
+        await nb.deleteTemplate(item);
+        await tick();
+        expect(File('${a.path}/$name1').existsSync(), isTrue);
+        expect(File('${a.path}/$name2').existsSync(), isTrue);
+        expect(notices.single, contains('another copy of the template may need them'));
       });
     });
 
@@ -636,8 +650,22 @@ void main() {
         final (_, a) = await binderTemplate();
         final item = (await nb.listTemplates(TemplateKind.page, binderPath: binder.path)).items.firstWhere((i) => i.binderPath != null);
         crossAt('assetDelete', nth: 2);
-        await expectLater(nb.deleteTemplate(item), refusal('The binder changed; nothing was written.'));
+        final notices = collect(nb);
+        await nb.deleteTemplate(item); // the file is gone: the picker drops it, and the notice says the rest
+        await tick();
+        expect(File(item.path).existsSync(), isFalse);
+        expect(notices.single, 'The template was deleted; the binder changed, so its files were kept.');
         expect(a.listSync().whereType<File>(), hasLength(1), reason: 'one went before the replacement, one stays');
+        await expectUnchanged();
+      });
+
+      test('a template listed before the binder was replaced is not deleted', () async {
+        await binderTemplate();
+        final item = (await nb.listTemplates(TemplateKind.page, binderPath: binder.path)).items.firstWhere((i) => i.binderPath != null);
+        expect(item.binderId, isNotNull);
+        await replaceBinder();
+        await expectLater(nb.deleteTemplate(item), refusal('The binder changed; nothing was written.'));
+        expect(File(item.path).existsSync(), isTrue);
         await expectUnchanged();
       });
 
@@ -662,7 +690,7 @@ void main() {
         var n = 0;
         nb2.templateStepHook = (step) async {
           if (step == 'assetDelete' && ++n == 2) {
-            File('${appTemplates().path}/${t.id} (1).notedtemplate').writeAsStringSync(text);
+            File('${appTemplates().path}/Copy of T.notedtemplate').writeAsStringSync(text);
           }
         };
         await nb2.deleteTemplate(item);
@@ -670,6 +698,53 @@ void main() {
         expect(a.listSync().whereType<File>(), hasLength(1), reason: 'the first went, the rest stays');
         expect(notices.single, contains('another copy of the template may need them'));
       });
+
+      test('the same template synced back to the deleted path between two asset deletes stops the cleanup', () async {
+        final notices = collect(nb);
+        final (t, a) = await appTemplate(nb);
+        final item = (await nb.listTemplates(TemplateKind.page)).items.single;
+        final text = File(item.path).readAsStringSync();
+        var n = 0;
+        nb.templateStepHook = (step) async {
+          if (step == 'assetDelete' && ++n == 2) File(item.path).writeAsStringSync(text);
+        };
+        await nb.deleteTemplate(item);
+        await tick();
+        expect(File(item.path).readAsStringSync(), text, reason: 'the copy is untouched');
+        expect(a.listSync().whereType<File>(), hasLength(1), reason: 'the first went, the rest stays');
+        expect(notices.single, contains('another copy of the template may need them'));
+        expect(t.id, isNotEmpty);
+      });
+    });
+
+    for (final bad in ['../victim', 'a/b', r'..\victim', '.', '..']) {
+      test('a template id that is not a plain name ("$bad") is unreadable and touches nothing outside templates/', () async {
+        final nb = make();
+        await nb.load();
+        final (t, _) = await appTemplate(nb, files: false);
+        final text = File('${appTemplates().path}/${t.id}.notedtemplate').readAsStringSync();
+        final victim = put(Directory('${appTemplates().parent.path}/victim.assets/${t.page.id}'), name1, good1);
+        final evil = File('${appTemplates().path}/evil.notedtemplate')..writeAsStringSync(text.replaceFirst(RegExp(r'"templateId"\s*:\s*"[^"]*"'), '"templateId": ${jsonEncode(bad)}'));
+        expect(evil.readAsStringSync(), contains('"templateId": ${jsonEncode(bad)}'));
+        final listing = await nb.listTemplates(TemplateKind.page);
+        expect(listing.items.map((i) => i.template.id), [t.id]);
+        expect(listing.unreadable.map((u) => base(u.path)), ['evil.notedtemplate']);
+        expect(victim.existsSync(), isTrue);
+      });
+    }
+
+    test('a template whose page id is a path copies nothing from outside its assets folder', () async {
+      final nb = make();
+      await nb.load();
+      final page = NotedPage.create(PageMeta.create(id: '../x', title: 'P', order: 0));
+      final t = NotedTemplate.forPage(name: 'E', page: page);
+      Directory('${appTemplates().path}/${t.id}.assets').createSync(recursive: true);
+      // `<templates>/<id>.assets/../x` is `<templates>/x`.
+      final victim = put(Directory('${appTemplates().path}/x'), name1, good1);
+      File('${appTemplates().path}/${t.id}.notedtemplate').writeAsStringSync(t.write());
+      final made = await nb.createPageFromTemplate(t);
+      expect(Directory('${pages.path}/$made.assets').existsSync(), isFalse, reason: 'nothing was copied from outside');
+      expect(victim.readAsBytesSync(), good1);
     });
 
     test('a pull-only binder lists a leftover as unreadable and does not move it', () async {
@@ -751,7 +826,7 @@ void main() {
     );
 
     Future<void> settle(WidgetTester tester) async {
-      for (var i = 0; i < 20; i++) {
+      for (var i = 0; i < 10; i++) {
         await tester.pump(const Duration(milliseconds: 100));
         await tester.runAsync(() => realIoPause(50));
       }
@@ -878,7 +953,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pumpAndSettle();
       await tapAsync(tester, find.text('New page from template…'));
-      expect(find.text('Alpha template'), findsOneWidget);
+      await untilFound(tester, find.text('Alpha template'));
       await tapAsync(tester, find.text('Alpha template'));
       // No question about where to store it: the default folder is used.
       expect(find.text('Where should this page be stored?'), findsNothing);
@@ -897,16 +972,18 @@ void main() {
       await tester.pumpAndSettle();
       await pageMenu(tester, 'New subpage from template…');
       final delete = find.byTooltip('Delete template');
+      await untilFound(tester, delete);
       await tester.tap(delete);
       await tester.pumpAndSettle();
       await tapAsync(tester, find.text('Delete').last);
-      expect(find.text('There are no templates yet.'), findsOneWidget);
+      await untilFound(tester, find.text('There are no templates yet.'));
       expect(tplFiles(appTemplates()), isEmpty);
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
 
       await real(tester, () => nb.savePageAsTemplate(parent, name: 'Again'));
       await pageMenu(tester, 'New subpage from template…');
+      await untilFound(tester, find.text('Again'));
       await tapAsync(tester, find.text('Again'));
       // Making the page reads and writes files: wait for it.
       for (var i = 0; i < 60 && nb.tree.childrenOf(parent).isEmpty; i++) {

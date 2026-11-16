@@ -458,7 +458,7 @@ class StandaloneFolder {
 
 /// A template found in a templates folder.
 class TemplateItem {
-  const TemplateItem(this.template, this.path, this.binderPath, this.identity);
+  const TemplateItem(this.template, this.path, this.binderPath, this.identity, {this.binderId});
 
   final NotedTemplate template;
 
@@ -471,6 +471,10 @@ class TemplateItem {
 
   /// The binder the template belongs to; null for an app-wide template.
   final String? binderPath;
+
+  /// The id recorded for the binder when the template was listed: a delete is
+  /// refused when the folder holds another binder by then.
+  final String? binderId;
 }
 
 // What a binder's template work started with (see Notebook._templateSnap).
@@ -5325,7 +5329,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final e in entries) {
         switch (e) {
           case ReadableTemplate():
-            if (e.template.kind == kind) items.add(TemplateItem(e.template, e.path, scope, e.identity));
+            if (e.template.kind == kind) items.add(TemplateItem(e.template, e.path, scope, e.identity, binderId: snap.id));
           case UnreadableTemplate():
             bad.add(UnreadableTemplateItem(e.path, e.reason, scope));
         }
@@ -5392,6 +5396,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     '${dir.path}${Platform.pathSeparator}$templateId.assets${Platform.pathSeparator}$pageId',
   );
 
+  static final RegExp _plainName = RegExp(r'^[A-Za-z0-9_-]+$');
+
+  // [_templateAssets] only when the names are one plain name each and it
+  // resolves to `<dir>/<id>.assets/<page id>`: an id read from a template file
+  // is never trusted as a path. Null otherwise.
+  static Directory? _safeTemplateAssets(Directory dir, String templateId, String pageId) {
+    if (!_plainName.hasMatch(templateId) || !_plainName.hasMatch(pageId)) return null;
+    final d = _templateAssets(dir, templateId, pageId);
+    return _key(d.parent.parent.absolute.path) == _key(dir.absolute.path) ? d : null;
+  }
+
   /// Copies the images and files of template page [fromId] into the assets
   /// folder of the new page [toId] in [loc]. The template is looked for in
   /// the binder's templates (if [loc] is a binder) and the app-wide ones.
@@ -5404,8 +5419,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         ?appTemplatesDirectory,
       ];
       for (final d in dirs) {
-        final src = _templateAssets(d, template.id, fromId);
-        if (await src.exists()) {
+        final src = _safeTemplateAssets(d, template.id, fromId);
+        if (src != null && await src.exists()) {
           var sweepSource = true;
           if (binder != null && d.path == _templatesDirFor(binder).path) {
             // A binder that changed since is only read, never swept.
@@ -5470,7 +5485,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final inBinder = item.binderPath;
     if (inBinder != null && _binders.containsKey(inBinder) && _isLocked(inBinder)) throw NotebookException(_lockedMessage(inBinder));
     if (_pullOnly(File(item.path).parent.path)) throw const NotebookException(_pullOnlyMessage);
-    final snap = _templateSnap(inBinder);
+    final now = _templateSnap(inBinder);
+    // What was listed is judged against the binder as it was listed.
+    final snap = inBinder == null ? now : (section: now.section, id: item.binderId);
     return _templateTurn(() => _deleteTemplateNow(item, snap));
   }
 
@@ -5483,7 +5500,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (r.outcome == DeleteOutcome.changed || r.outcome == DeleteOutcome.changedKept) {
         throw const NotebookException('The template changed since it was listed; it was not deleted.');
       }
-      await _cleanTemplateAssets(dir, item, binder, snap);
+      try {
+        await _cleanTemplateAssets(dir, item, binder, snap);
+      } on NotebookException {
+        // The file is gone and the picker drops it; what is left stays.
+        _templateNotice('The template was deleted; the binder changed, so its files were kept.');
+      }
     } on FileSystemException catch (e) {
       throw NotebookException('Could not delete the template: ${e.message}');
     }
@@ -5497,11 +5519,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       'The template was deleted. Its files were kept because another copy of the template may need them.';
 
   // Whether the assets of template [id] may still be needed after its file
-  // [deletedPath] was deleted: another readable template with the id, any
+  // was deleted: another readable template with the id, any
   // template file that can't be read (its id can't be established), a
   // set-aside leftover, or any other file named from the id. A fresh scan, no
   // sweep. Fills [known] with the template files seen.
-  Future<bool> _templateAssetsShared(Directory dir, String id, String deletedPath, Set<String> known) async {
+  Future<bool> _templateAssetsShared(Directory dir, String id, Set<String> known) async {
     for (final e in await TemplateStore(dir).scan()) {
       if (e is UnreadableTemplate) return true;
       if (e is ReadableTemplate) {
@@ -5509,17 +5531,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         known.add(_key(e.path));
       }
     }
-    return _templateSurvivorNow(dir, id, deletedPath, known);
+    return _templateSurvivorNow(dir, id, known);
   }
 
   // The synchronous listing of the folder: a leftover, a file named from the
-  // id (such as `<id>.notedtemplate.tmp`, but not the `<id>.assets` folder or
-  // the deleted file) or a template file that was not there at the scan.
-  bool _templateSurvivorNow(Directory dir, String id, String deletedPath, Set<String> known) {
-    final gone = _key(deletedPath);
+  // id (such as `<id>.notedtemplate.tmp`; folders are not files) or a template
+  // file that was not there at the scan. A file at the deleted path counts too:
+  // a copy synced back under the same name is a survivor.
+  bool _templateSurvivorNow(Directory dir, String id, Set<String> known) {
     try {
       for (final e in dir.listSync(followLinks: false)) {
-        if (e is! File || _key(e.path) == gone) continue;
+        if (e is! File) continue;
         final n = _baseName(e.path);
         if (n.endsWith(asideSuffix) || n.endsWith(verifiedSuffix) || n.startsWith(id)) return true;
         if (n.endsWith(templateExtension) && !known.contains(_key(e.path))) return true;
@@ -5539,9 +5561,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> _cleanTemplateAssets(Directory dir, TemplateItem item, String? binder, _TemplateSnap snap) async {
     final id = item.template.id;
     final assets = Directory('${dir.path}${Platform.pathSeparator}$id.assets');
+    if (!_plainName.hasMatch(id) || _key(assets.parent.absolute.path) != _key(dir.absolute.path)) return;
     if (!await assets.exists()) return;
     final known = <String>{};
-    if (await _templateAssetsShared(dir, id, item.path, known)) {
+    if (await _templateAssetsShared(dir, id, known)) {
       _templateNotice(_assetsKeptShared);
       return;
     }
@@ -5575,7 +5598,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final length = await f.length();
       await templateStepHook?.call('assetDelete');
       _templateGate(binder, snap);
-      if (_templateSurvivorNow(dir, id, item.path, known)) {
+      if (_templateSurvivorNow(dir, id, known)) {
         shared = true;
         break;
       }
@@ -5740,8 +5763,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // the new page ids.
       final templates = appTemplatesDirectory;
       for (var i = 0; templates != null && i < made.pages.length; i++) {
+        final src = _safeTemplateAssets(templates, template.id, template.pages[i].id);
+        if (src == null) continue;
         await _copyDirNotify(
-          _templateAssets(templates, template.id, template.pages[i].id),
+          src,
           Directory('${dir.path}${Platform.pathSeparator}${assetsFolderName(made.pages[i].id)}'),
           'the new binder',
           'the template',
@@ -8583,6 +8608,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           if (copy.damagedKept.isNotEmpty) {
             _postCopyNotices(AttachmentCopy()..damagedKept.addAll(copy.damagedKept), _placeName(loc), 'the recovery folder');
           }
+          if (copy.keptAside.isNotEmpty) {
+            final note = _attachmentsNote(const [], copy.keptAside, _placeName(loc), 'the recovery folder');
+            _templateNotice('${note.substring(0, 1).toUpperCase()}${note.substring(1)}');
+          }
         }
         for (final f in done) {
           if (!await _holdsContent(f.source, f.name, f.target)) {
@@ -8705,8 +8734,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
         await copyAttachmentFile(e, target.path, name, r);
         if (r.verified.any((c) => c.target.path == target.path)) {
-          final stale = File('${target.path}.landing.tmp'); // left by an earlier version
-          if (await stale.exists()) await stale.delete();
+          // A landing temp left by an earlier version, removed only while it
+          // still holds what it held when it was looked at.
+          final stale = '${target.path}.landing.tmp';
+          if (await File(stale).exists()) {
+            await deleteFileIfMatches(stale, identity: await ContentIdentity.ofFile(stale));
+          }
           done.add(_LandedFile(e, name, target));
         } else if (r.stillChanging.contains(target.path)) {
           throw FileSystemException('$name is still changing in the page folder', target.path);
