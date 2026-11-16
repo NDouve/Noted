@@ -76,9 +76,9 @@ void main() {
     );
 
     testWidgets(
-      'File > Page > Rename on A, then B opened: no rename dialog, through the drawer proxy at 900 px',
+      'File > Page > Rename on A, then B opened: no rename dialog, through the drawer proxy at 700 px',
       (t) async {
-        final w = await ShellWorld.open(t, size: const Size(900, 800));
+        final w = await ShellWorld.open(t, size: const Size(700, 800));
         await _open(t, 'File');
         await _openSub(t, 'Page');
         await _chooseThen(t, w, 'app.page.rename', () async {
@@ -100,9 +100,9 @@ void main() {
     );
 
     testWidgets(
-      'File > Page > Rename opens the drawer and the rename at 900 px when nothing changed',
+      'File > Page > Rename opens the drawer and the rename at 700 px when nothing changed',
       (t) async {
-        final w = await ShellWorld.open(t, size: const Size(900, 800));
+        final w = await ShellWorld.open(t, size: const Size(700, 800));
         await _open(t, 'File');
         await _openSub(t, 'Page');
         await _chooseThen(t, w, 'app.page.rename', () async {});
@@ -176,8 +176,8 @@ void main() {
       await w.close(t);
     });
 
-    testWidgets('cover X to cover Y through the drawer proxy at 900 px', (t) async {
-      final w = await ShellWorld.open(t, size: const Size(900, 800));
+    testWidgets('cover X to cover Y through the drawer proxy at 700 px', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(700, 800));
       final x = await w.addBinderWithPage(t, 'X');
       final y = await w.addBinderWithPage(t, 'Y');
       w.nb.showCover(x.path);

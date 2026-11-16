@@ -94,10 +94,13 @@ class _HomeState extends State<Home> {
 
   // The contextual panel, for this session only (it is not saved). Inline from
   // [_panelInlineWidth] wide, shown unless hidden; narrower it is an overlay
-  // that View > Details opens.
+  // that View > Details opens, closed again by a page switch or by widening the
+  // window to the inline width. Desktop only: from there to 720 the tree is
+  // [NotedMetrics.compactTreeWidth] wide.
   static const double _panelInlineWidth = DesignMetrics.detailsBreakpoint;
   bool? _panelChoice;
   bool _overlayOpen = false;
+  String? _overlayPage;
   final ValueNotifier<bool> _panelShown = ValueNotifier<bool>(false);
 
   // Folded rows; kept here so they outlast the narrow-layout drawer.
@@ -471,6 +474,7 @@ class _HomeState extends State<Home> {
         _panelChoice = !(_panelChoice ?? true);
       } else {
         _overlayOpen = !_overlayOpen;
+        _overlayPage = notebook.currentId;
       }
     });
   }
@@ -514,9 +518,9 @@ class _HomeState extends State<Home> {
 
   // The page tree with search and settings; inline, or in the drawer on a
   // narrow window.
-  Widget _sidebar(NotedMetrics m) {
+  Widget _sidebar(NotedMetrics m, {bool compact = false}) {
     return SizedBox(
-      width: m.sidebarWidth,
+      width: compact ? m.compactTreeWidth : m.sidebarWidth,
       child: ColoredBox(
         color: NotedColors.of(context).bgSidebar,
         child: Column(
@@ -705,14 +709,17 @@ class _HomeState extends State<Home> {
         final desktopShell = !isMobilePlatform && !narrow;
         final wide = _wideWindow(context) && !isMobilePlatform;
         final inline = wide && (_panelChoice ?? true);
+        // A page switch or the inline width closes the overlay for good.
+        if (_overlayOpen && (wide || _overlayPage != notebook.currentId)) _overlayOpen = false;
         final overlay = !wide && !isMobilePlatform && _overlayOpen;
+        final compactTree = !isMobilePlatform && !wide;
         _syncPanelShown(inline || overlay);
         _closeDrawerOnChoice();
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (!narrow) ...[
-              _sidebar(m),
+              _sidebar(m, compact: compactTree),
               const VerticalDivider(width: 1),
             ],
             Expanded(

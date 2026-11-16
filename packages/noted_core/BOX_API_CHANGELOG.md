@@ -8,6 +8,8 @@ version.
 
 Versions are listed newest first.
 
+Host-only (not the Box API), run 2026-11-15-02, task 1 step 6 (the 900 px layout): `NotedMetrics.narrowLayoutBelow` (default 1000, the new `defaultNarrowLayoutWidth`, which replaces `narrowLayoutWidth`) is the width under which `isNarrowLayout` is true; `notedThemeData` and `NotedMetrics.forBrightness` take it as `narrowLayoutBelow`. The app passes 720 on desktop and 1000 on a phone or tablet. The `PageCanvas` overlay panel now covers the header and the viewport but not the footer. No module-facing member changed; no version bump.
+
 Host-only (not the Box API), run 2026-11-15-02, task 1 step 5 (toolbar, title and status strip): `PageCanvas.header` (a band between the toolbar and the viewport, left of the side panel) and `PageCanvas.footer` (a strip under the canvas, left of the side panel). No module-facing change, no version bump.
 
 Host-only (not the Box API), run 2026-11-15-02, task 6 (checked deletes, codex area-invariants): `PageStore.delete` is removed (no production caller; the app deletes through `deleteIfUnchanged`). `TemplateStore.delete(path, ContentIdentity)` now returns a `DeleteResult` and deletes through `deleteFileIfMatches` (a changed file is kept). `ReadableTemplate` gains the `identity` (the `ContentIdentity` of the bytes the scan read) as a third constructor argument. `TemplateStore.scan({sweep})` (default false) puts back a crashed delete's `.cas-old` and `.cas-verified` leftovers first; without it they are listed as `UnreadableTemplate`. No module-facing member changed; no version bump.

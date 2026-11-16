@@ -41,6 +41,7 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
     this.contextRingRadius = DesignMetrics.contextRingRadius,
     this.compactTreeWidth = DesignMetrics.compactTreeWidth,
     this.statusHeight = DesignMetrics.statusHeight,
+    this.narrowLayoutBelow = defaultNarrowLayoutWidth,
     this.shadowSelected = DesignShadows.shadowSelectedLight,
     this.shadowPopover = DesignShadows.shadowPopoverLight,
     this.touch = false,
@@ -50,13 +51,15 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
   factory NotedMetrics.forBrightness(
     Brightness brightness, {
     bool touch = false,
+    double narrowLayoutBelow = defaultNarrowLayoutWidth,
   }) => brightness == Brightness.dark
       ? NotedMetrics(
           shadowSelected: DesignShadows.shadowSelectedDark,
           shadowPopover: DesignShadows.shadowPopoverDark,
           touch: touch,
+          narrowLayoutBelow: narrowLayoutBelow,
         )
-      : NotedMetrics(touch: touch);
+      : NotedMetrics(touch: touch, narrowLayoutBelow: narrowLayoutBelow);
 
   /// The theme's, or the token set for its brightness.
   static NotedMetrics of(BuildContext context) {
@@ -96,6 +99,11 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
   final double contextRingRadius;
   final double compactTreeWidth;
   final double statusHeight;
+
+  /// Windows narrower than this (logical px) use the small-screen layout (the
+  /// sidebar is a drawer). The host sets it: 720 on desktop, 1000 on a phone or
+  /// tablet (0178).
+  final double narrowLayoutBelow;
 
   /// Ring outside a selected box (with an accent border).
   final List<BoxShadow> shadowSelected;
@@ -152,6 +160,7 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
     double? contextRingRadius,
     double? compactTreeWidth,
     double? statusHeight,
+    double? narrowLayoutBelow,
     List<BoxShadow>? shadowSelected,
     List<BoxShadow>? shadowPopover,
     bool? touch,
@@ -183,6 +192,7 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
     contextRingRadius: contextRingRadius ?? this.contextRingRadius,
     compactTreeWidth: compactTreeWidth ?? this.compactTreeWidth,
     statusHeight: statusHeight ?? this.statusHeight,
+    narrowLayoutBelow: narrowLayoutBelow ?? this.narrowLayoutBelow,
     shadowSelected: shadowSelected ?? this.shadowSelected,
     shadowPopover: shadowPopover ?? this.shadowPopover,
   );
@@ -219,6 +229,7 @@ class NotedMetrics extends ThemeExtension<NotedMetrics> {
       contextRingRadius: l(contextRingRadius, other.contextRingRadius),
       compactTreeWidth: l(compactTreeWidth, other.compactTreeWidth),
       statusHeight: l(statusHeight, other.statusHeight),
+      narrowLayoutBelow: t < 0.5 ? narrowLayoutBelow : other.narrowLayoutBelow,
       shadowSelected: BoxShadow.lerpList(
         shadowSelected,
         other.shadowSelected,
@@ -418,12 +429,20 @@ TextTheme notedTextTheme(Color color) {
 ///
 /// With [touch] the controls are `touch-target` high and rows 40px (see
 /// `InputModeNotifier`).
-ThemeData notedThemeData(Brightness brightness, {bool touch = false}) {
+ThemeData notedThemeData(
+  Brightness brightness, {
+  bool touch = false,
+  double narrowLayoutBelow = defaultNarrowLayoutWidth,
+}) {
   final scheme = notedColorScheme(brightness);
   final colors = NotedColors.forBrightness(brightness);
   final dark = brightness == Brightness.dark;
   final tokens = dark ? DesignColors.dark : DesignColors.light;
-  final metrics = NotedMetrics.forBrightness(brightness, touch: touch);
+  final metrics = NotedMetrics.forBrightness(
+    brightness,
+    touch: touch,
+    narrowLayoutBelow: narrowLayoutBelow,
+  );
   final type = NotedTypography.withColor(tokens.text);
   ButtonStyle button({
     required Color foreground,
@@ -607,16 +626,17 @@ ButtonStyle notedDestructiveButtonStyle(BuildContext context) {
   return OutlinedButton.styleFrom(foregroundColor: error, iconColor: error);
 }
 
-/// Windows narrower than this (logical px) use the small-screen layout: the
-/// sidebar is a drawer and the toolbar keeps to the More menu, even on touch.
-/// Phones (up to about 930 px wide in landscape) and an iPad in portrait or
-/// split view fall below it; an iPad in landscape (1080 px and more) and
-/// desktop windows keep the desktop layout.
-const double narrowLayoutWidth = 1000;
+/// The default of [NotedMetrics.narrowLayoutBelow]: windows narrower than this
+/// (logical px) use the small-screen layout, the sidebar a drawer and the
+/// toolbar's end share narrow. Phones (up to about 930 px wide in landscape)
+/// and an iPad in portrait or split view fall below it; an iPad in landscape
+/// (1080 px and more) keeps the desktop layout. The app passes 720 on desktop.
+const double defaultNarrowLayoutWidth = 1000;
 
-/// Whether the window is narrower than [narrowLayoutWidth].
+/// Whether the window is narrower than the theme's
+/// [NotedMetrics.narrowLayoutBelow].
 bool isNarrowLayout(BuildContext context) =>
-    MediaQuery.sizeOf(context).width < narrowLayoutWidth;
+    MediaQuery.sizeOf(context).width < NotedMetrics.of(context).narrowLayoutBelow;
 
 /// A toolbar narrower than this (logical px) is compact. The two ends of the
 /// Contextual bar need about 400 px at full size, and on a narrower bar they
