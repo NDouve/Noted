@@ -189,7 +189,12 @@ class AppMenuBar extends StatefulWidget {
     this.contextMenuOpen,
     this.settings,
     this.microsoft,
+    this.showBrand = true,
   });
+
+  /// Whether the bar starts with the brand mark: false where the title bar
+  /// holds it (Windows).
+  final bool showBrand;
 
   final Notebook notebook;
   final AppSettings? settings;
@@ -723,6 +728,13 @@ class AppMenuBarState extends State<AppMenuBar> {
     if (_holding) _exit(restoreFocus: false);
   }
 
+  /// A press outside the window's client area (the title bar): closes the open
+  /// menus and releases the editor hold, as a click-away does.
+  void closeForNativePress() {
+    _closeMenus();
+    _outsidePress();
+  }
+
   // Menu entries -----------------------------------------------------------
 
   _Target _target({String? binderPath}) {
@@ -1219,7 +1231,7 @@ class AppMenuBarState extends State<AppMenuBar> {
       height: menuBarHeight,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceContainerLow,
+          color: theme.colorScheme.surface,
           border: Border(bottom: BorderSide(color: theme.colorScheme.outline)),
         ),
         child: TapRegion(
@@ -1231,9 +1243,12 @@ class AppMenuBarState extends State<AppMenuBar> {
               excluding: _excluding && !_toggleHeld,
               child: Row(
                 children: [
-                  SizedBox(width: m.space3),
-                  BrandMark(showWordmark: wide),
-                  SizedBox(width: m.space3),
+                  if (widget.showBrand) ...[
+                    SizedBox(width: m.space3),
+                    BrandMark(showWordmark: wide),
+                    SizedBox(width: m.space3),
+                  ] else
+                    SizedBox(width: m.space4),
                   for (var i = 0; i < 4; i++) _topMenu(context, i, menus[i]),
                   const Spacer(),
                   if (wide) _detailsToggle(context),

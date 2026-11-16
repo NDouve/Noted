@@ -38,6 +38,8 @@ import 'src/recovery_lock.dart';
 import 'src/recovery_notice.dart';
 import 'src/recovery_store.dart';
 import 'src/save_trouble_bar.dart';
+import 'src/window_channel.dart';
+import 'src/title_bar.dart';
 import 'src/webdav_sync.dart';
 
 /// The box modules compiled into this build (0034, stage 1).
@@ -73,6 +75,27 @@ String? computerName() {
 /// process (the OS lets go of it when the app exits or dies).
 AiRunningLock? appRunningLock;
 
+/// The Windows runner's custom frame, set in [main] (null elsewhere and in
+/// tests): the app draws the title bar when it is set.
+WindowChannel? appWindow;
+
+/// The channel to the Windows runner, on Windows only; null elsewhere, where
+/// the native caption stays. [windows] is for tests.
+WindowChannel? windowChannelForPlatform({bool? windows}) =>
+    (windows ?? (!kIsWeb && Platform.isWindows)) ? WindowChannel() : null;
+
+/// Turns the runner's custom frame on through [channel] and returns it; null
+/// when there is none or the runner can't (the native caption stays).
+Future<WindowChannel?> startCustomFrame({WindowChannel? channel}) async {
+  if (channel == null) return null;
+  try {
+    await channel.enable();
+  } on PlatformException {
+    return null;
+  }
+  return channel;
+}
+
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   // The bundled Inter font is SIL OFL 1.1; its licence ships with it.
@@ -82,6 +105,10 @@ Future<void> main(List<String> args) async {
       await rootBundle.loadString('assets/fonts/Inter/OFL.txt'),
     );
   });
+  // Windows: the custom title bar replaces the native caption; it is turned on
+  // just before the app screen (openWhenOwned), so the plain screens before it
+  // keep the native caption.
+  appWindow = windowChannelForPlatform();
   // On a phone or tablet, finds the app's folders before any default path is
   // read (0129).
   try {
@@ -323,7 +350,9 @@ Future<({AiRunningLock? lock, AiLinkServer? link})> openWhenOwned(
   }
   onOwned?.call();
   final link = lock != null && startLink ? await startAiLink(notebook, dataFolder) : null;
-  show(NotedApp(notebook: notebook, settings: settings, aiLink: link, runningLock: lock, openFiles: openFiles, microsoft: microsoft, sync: sync, webdav: webdav));
+  // The custom frame goes on just before the first frame of the app screen.
+  final window = await startCustomFrame(channel: appWindow);
+  show(NotedApp(notebook: notebook, settings: settings, aiLink: link, runningLock: lock, openFiles: openFiles, microsoft: microsoft, sync: sync, webdav: webdav, window: window));
   // A load that fails or hangs shows its error screen, with Retry.
   await notebook.loadChecked();
   // Only once a load has succeeded (this one, or a later Retry): it adds its
@@ -369,9 +398,12 @@ Future<bool> saveBeforeExit(Notebook notebook) async {
 }
 
 class NotedApp extends StatefulWidget {
-  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock, this.openFiles, this.microsoft, this.sync, this.webdav});
+  const NotedApp({super.key, required this.notebook, this.settings, this.aiLink, this.runningLock, this.openFiles, this.microsoft, this.sync, this.webdav, this.window});
 
   final Notebook notebook;
+
+  /// The runner's custom frame (Windows); the home draws the title bar. Null: none.
+  final WindowChannel? window;
 
   /// The local link for AI writes; stopped (and its file removed) when the
   /// app exits cleanly. Null: none is running.
@@ -474,10 +506,35 @@ class _NotedAppState extends State<NotedApp> {
       theme: buildNotedTheme(Brightness.light, touch: touch),
       darkTheme: buildNotedTheme(Brightness.dark, touch: touch),
       themeMode: _settings.themeMode,
-      builder: (context, child) => OneDriveScope(
-        sync: widget.sync,
-        child: WebDavScope(sync: widget.webdav, child: InputModeScope(child: child!)),
-      ),
+      builder: (context, child) {
+        final app = OneDriveScope(
+          sync: widget.sync,
+          child: WebDavScope(sync: widget.webdav, child: InputModeScope(child: child!)),
+        );
+        final window = widget.window;
+        if (window == null) return app;
+        // The Navigator keeps the whole window, so global and overlay
+        // coordinates agree (popups, the editor's menus). The bar is painted on
+        // top of it; the runner owns those pixels (caption hit codes), so
+        // nothing under it takes a click. The app reserves the top inset:
+        // dialogs and routes use the padding, the home and its drawer a spacer.
+        final media = MediaQuery.of(context);
+        const bar = DesignMetrics.titleBarHeight;
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: MediaQuery(
+                data: media.copyWith(
+                  padding: media.padding.copyWith(top: media.padding.top + bar),
+                  viewPadding: media.viewPadding.copyWith(top: media.viewPadding.top + bar),
+                ),
+                child: app,
+              ),
+            ),
+            Positioned(left: 0, top: 0, right: 0, child: TitleBar(window: window)),
+          ],
+        );
+      },
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
@@ -485,7 +542,7 @@ class _NotedAppState extends State<NotedApp> {
         ...noteLocalizationsDelegates,
       ],
       supportedLocales: const [Locale('en')],
-      home: Home(notebook: widget.notebook, settings: _settings, microsoft: widget.microsoft),
+      home: Home(notebook: widget.notebook, settings: _settings, microsoft: widget.microsoft, window: widget.window),
     );
   }
 }

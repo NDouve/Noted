@@ -11,6 +11,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/menu_bar.dart';
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/window_channel.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_core/noted_core.dart';
@@ -36,6 +37,7 @@ class ShellWorld {
     double dpr = 1,
     bool checked = true,
     ToolbarStyle toolbar = ToolbarStyle.tabs,
+    WindowChannel? window,
   }) async {
     t.view.physicalSize = size * dpr;
     t.view.devicePixelRatio = dpr;
@@ -67,7 +69,7 @@ class ShellWorld {
       profileMarker: File('${dir.path}/binders.json'),
     )..toolbar = toolbar;
     final world = ShellWorld._(dir, nb, settings, first, second);
-    await t.pumpWidget(NotedApp(notebook: nb, settings: settings));
+    await t.pumpWidget(NotedApp(notebook: nb, settings: settings, window: window));
     await world.settle(t);
     return world;
   }

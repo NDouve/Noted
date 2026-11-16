@@ -36,6 +36,7 @@ import 'cloud_sync.dart';
 import 'onedrive_sync.dart';
 import 'webdav_sync.dart' show WebDavScope;
 import 'settings_menu.dart';
+import 'window_channel.dart';
 
 /// The snack bar for an attachment notice. A long one (it names a file and
 /// says where a copy went) stays 20 seconds and can be closed; a short one
@@ -51,7 +52,12 @@ SnackBar attachmentNoticeBar(String message) {
 
 /// Sidebar with the page tree, and the open page's canvas.
 class Home extends StatefulWidget {
-  const Home({super.key, required this.notebook, this.settings, this.search, this.microsoft});
+  const Home({super.key, required this.notebook, this.settings, this.search, this.microsoft, this.window});
+
+  /// The Windows runner's custom frame, when it is on (its title bar is above
+  /// the Navigator): a press on it closes menus, the drawer and Details. Null
+  /// elsewhere.
+  final WindowChannel? window;
 
   final Notebook notebook;
 
@@ -136,6 +142,7 @@ class _HomeState extends State<Home> {
   void initState() {
     super.initState();
     _seenFocusTick = _search.focusTick;
+    widget.window?.onNcPointerDown = _ncPointerDown;
     _search.addListener(_searchChanged);
     _notices = notebook.attachmentNotices.listen(_showNotice);
     _kept = notebook.keptNotices.listen(_showKept);
@@ -332,10 +339,28 @@ class _HomeState extends State<Home> {
 
 
   @override
+  void didUpdateWidget(Home old) {
+    super.didUpdateWidget(old);
+    if (old.window != widget.window) {
+      if (old.window?.onNcPointerDown == _ncPointerDown) old.window?.onNcPointerDown = null;
+      widget.window?.onNcPointerDown = _ncPointerDown;
+    }
+  }
+
+  // The title bar is drawn over the top of the window: content starts below it.
+  Widget _belowTitleBar(Widget child) => widget.window == null
+      ? child
+      : Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [const SizedBox(height: DesignMetrics.titleBarHeight), Expanded(child: child)],
+        );
+
+  @override
   void dispose() {
     for (final s in _syncs.toList()) {
       _unwatch(s);
     }
+    if (widget.window?.onNcPointerDown == _ncPointerDown) widget.window?.onNcPointerDown = null;
     _search.removeListener(_searchChanged);
     _titleHighlight.dispose();
     unawaited(_notices?.cancel());
@@ -443,13 +468,14 @@ class _HomeState extends State<Home> {
                 width: NotedMetrics.of(context).sidebarWidth,
                 shape: const RoundedRectangleBorder(),
                 backgroundColor: NotedColors.of(context).bgSidebar,
-                child: _insetsOnDevice(_sidebar(NotedMetrics.of(context))),
+                child: _belowTitleBar(_insetsOnDevice(_sidebar(NotedMetrics.of(context)))),
               )
             : null,
         body: _insetsOnDevice(
           Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              if (widget.window != null) const SizedBox(height: DesignMetrics.titleBarHeight),
               if (!isMobilePlatform) _menuBar(),
               Expanded(
                 child: Stack(
@@ -467,8 +493,21 @@ class _HomeState extends State<Home> {
     );
   }
 
+  // A press on the title bar (a drag, a button, the window menu): the open
+  // menus, the narrow drawer and the Details overlay close as on a click-away.
+  void _ncPointerDown() {
+    if (!mounted) return;
+    _menu.currentState?.closeForNativePress();
+    if (_scaffold.currentState?.isDrawerOpen ?? false) _scaffold.currentState?.closeDrawer();
+    if (_overlayOpen) setState(() => _overlayOpen = false);
+    // Open popup routes (a canvas context menu or pick list, a popup menu) close
+    // as on a click on their barrier. Dialogs stay: they may hold typed text.
+    Navigator.maybeOf(context)?.popUntil((r) => !(r is PopupRoute && r.barrierDismissible && r is! RawDialogRoute));
+  }
+
   Widget _menuBar() => AppMenuBar(
     key: _menu,
+    showBrand: widget.window == null,
     notebook: notebook,
     settings: widget.settings,
     search: _search,
