@@ -256,6 +256,14 @@ class AppMenuBarState extends State<AppMenuBar> {
   // keyboard entry until the menu closes (pointer opening never clears it).
   bool _excluding = true;
 
+  // The Details toggle was pressed from the keyboard: it stays focusable while
+  // the overlay is up, so closing the overlay can give it the focus back (0178).
+  // Phase 0: it is released once the focus has left it (for the overlay), then
+  // come back to it, then left it again.
+  bool _toggleHeld = false;
+  int _togglePhase = 0;
+  FocusNode? _toggleNode;
+
   // The editor focus hold: while focus is in the bar, on the controller of the
   // page that was open when it started, with the node that had focus then.
   bool _holding = false;
@@ -418,6 +426,23 @@ class AppMenuBarState extends State<AppMenuBar> {
   void _windowLeft() {
     _altArmed = false;
     if (_holding || _isOpen.contains(true)) _exit(restoreFocus: false);
+  }
+
+  // The toggle's focus: held from a keyboard press until the overlay has given it
+  // back and the focus has moved on.
+  void _toggleFocusChanged() {
+    final node = _toggleNode;
+    if (!mounted || !_toggleHeld || node == null) return;
+    final has = node.hasPrimaryFocus;
+    if (_togglePhase == 0 && !has) {
+      _togglePhase = 1;
+    } else if (_togglePhase == 1 && has) {
+      _togglePhase = 2;
+    } else if (_togglePhase == 2 && !has) {
+      _toggleHeld = false;
+      _togglePhase = 0;
+      _rebuild();
+    }
   }
 
   void _barChanged() {
@@ -1119,7 +1144,16 @@ class AppMenuBarState extends State<AppMenuBar> {
             builder: (node) => TextButton(
               key: const ValueKey('details-toggle'),
               focusNode: node,
-              onPressed: widget.onTogglePanel,
+              onPressed: () {
+                // The node belongs to the toggle's ring, which disposes it: no removal.
+                if (_toggleNode != node) _toggleNode = node..addListener(_toggleFocusChanged);
+                // From the keyboard the toggle has the focus: keep it focusable.
+                if (node.hasPrimaryFocus) {
+                  _toggleHeld = true;
+                  _togglePhase = 0;
+                }
+                widget.onTogglePanel();
+              },
               style: _itemStyle(context, bar: true).copyWith(
                 backgroundColor: WidgetStatePropertyAll(open ? scheme.primaryContainer : scheme.surface),
                 side: WidgetStatePropertyAll(BorderSide(color: colors.outlineControl)),
@@ -1151,7 +1185,7 @@ class AppMenuBarState extends State<AppMenuBar> {
           child: FocusScope(
             node: _bar,
             child: ExcludeFocus(
-              excluding: _excluding,
+              excluding: _excluding && !_toggleHeld,
               child: Row(
                 children: [
                   SizedBox(width: m.space3),

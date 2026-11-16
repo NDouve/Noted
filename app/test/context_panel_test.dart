@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/context_panel.dart';
+import 'package:noted/src/menu_bar.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -841,7 +842,7 @@ void main() {
       await w.close(t);
     });
 
-    testWidgets('opened from the keyboard on the toggle, Escape closes it and the canvas gets the focus', (t) async {
+    testWidgets('opened from the keyboard on the toggle, Escape puts the focus back on the toggle', (t) async {
       final w = await ShellWorld.open(t, size: const Size(900, 900));
       bool onToggle() =>
           FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<TextButton>()?.key ==
@@ -860,10 +861,14 @@ void main() {
       await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await _frames(t, 8);
       expect(_panel, findsNothing);
-      // The bar stops taking focus once the overlay's keyboard entry ends, so the
-      // toggle can't take it back: the canvas has it (a known gap against the spec).
+      expect(onToggle(), isTrue, reason: 'focus is back on the toggle (0178)');
+      // Then the bar takes no focus again once the focus has moved on.
+      ExcludeFocus barExclude() => t.widget<ExcludeFocus>(find.descendant(of: find.byType(AppMenuBar), matching: find.byType(ExcludeFocus)).first);
+      expect(barExclude().excluding, isFalse, reason: 'kept open for the toggle meanwhile');
+      await t.sendKeyEvent(LogicalKeyboardKey.tab);
+      await _frames(t, 4);
       expect(onToggle(), isFalse);
-      expect(FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<PageCanvas>(), isNotNull);
+      expect(barExclude().excluding, isTrue);
       await w.close(t);
     });
   });
