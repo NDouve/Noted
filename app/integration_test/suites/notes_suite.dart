@@ -113,8 +113,8 @@ void notesSuite() {
         // 032: typing in a cell.
         await setCellText(s, editor, 0, 0, 'hello');
         expect(snapshotOf(s, id), contains('hello'));
-        // 033: headers while focused.
-        await tapCell(s, editor, 1, 1);
+        // 033: headers while focused. (The right-hand cell lies under the docked Details panel.)
+        await tapCell(s, editor, 1, 0);
         expect(find.byKey(const ValueKey('col-header-A')), findsOneWidget);
         expect(find.byKey(const ValueKey('row-header-1')), findsOneWidget);
         // 034: clicking outside the table hides them.

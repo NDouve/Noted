@@ -135,6 +135,11 @@ void aiSuite() {
           expect(s.nb.ownAiAccess(pageId), AiAccess.guarded);
           await s.tapKey('settings-close');
           await s.flush();
+          // AI4 checks the open editor: re-enter the box.
+          final bounds = s.nb.current!.page.node(box.id)!.bounds!;
+          await t.tapAt(toScreen(t, Offset(bounds.x + 20, bounds.y + aiHeaderHeight + 10)));
+          await s.pump(400);
+          expect(s.nb.current!.editingId, box.id);
 
           // AI4: the first use of the code asks (once per code); Allow; the write shows
           // at once, marked, and is one undo step.
