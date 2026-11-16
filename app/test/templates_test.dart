@@ -6,6 +6,7 @@
 @Timeout(Duration(minutes: 5))
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -743,6 +744,145 @@ void main() {
         await expectUnchanged();
       });
 
+
+
+      // Held edits, tests 37-40 (run 2026-11-16-01, task 3).
+      File binderFile() => File('${binderDir.path}/$binderFileName');
+      void swapUnseen() {
+        binderFile().writeAsStringSync(Binder.create(title: 'Other', id: newId(), color: binderPalette.first).write());
+        atReplace = snapshot(templates);
+      }
+
+      // Runs [op] queued behind a job the test holds at the binder's folder,
+      // with the binder file replaced while it waits.
+      Future<Object?> queuedAtFolder(Future<Object?> Function() op) async {
+        final release = Completer<void>();
+        final holding = nb.folderLocks.run(binderDir, () => release.future);
+        final running = op().then<Object?>((r) => r, onError: (Object e) => e);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        swapUnseen();
+        release.complete();
+        await holding;
+        return running;
+      }
+
+      // Runs [op] queued behind template work the test holds (on the template
+      // chain), with the binder file replaced while it waits.
+      Future<Object?> queuedOnChain(Future<Object?> Function() op) async {
+        final release = Completer<void>();
+        var blocked = false;
+        nb.templateStepHook = (s) async {
+          if (blocked) return;
+          blocked = true;
+          await release.future;
+        };
+        final first = nb.listTemplates(TemplateKind.page, binderPath: binder.path);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        final running = op().then<Object?>((r) => r, onError: (Object e) => e);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        swapUnseen();
+        release.complete();
+        await first;
+        nb.templateStepHook = null;
+        return running;
+      }
+
+      test('37. Save as template queued at the folder across the replacement: refused, nothing written', () async {
+        final r = await queuedAtFolder(() => nb.savePageAsTemplate(inB, name: 'B', inBinder: true));
+        expect(r, isA<NotebookException>().having((e) => e.message, 'message', contains(heldText)));
+        await expectUnchanged();
+        expect(tplFiles(templates), isEmpty);
+      });
+
+      test('37. Save as template with a pending save, the binder file replaced first: the flush holds the folder, nothing written', () async {
+        addNote(nb, 'pending');
+        swapUnseen();
+        await expectLater(nb.savePageAsTemplate(inB, name: 'B', inBinder: true), refusal(heldText));
+        await expectUnchanged();
+        expect(tplFiles(templates), isEmpty);
+      });
+
+      test('37. a replacement after the template file and before its copy: saved without its images and files', () async {
+        put(Directory('${binderDir.path}/$inB.assets'), name1, good1);
+        nb.templateStepHook = (s) async {
+          if (s == 'saveAssets') swapUnseen();
+        };
+        await expectLater(nb.savePageAsTemplate(inB, name: 'B', inBinder: true), refusal('saved without its images and files'));
+        final t = tplFiles(templates);
+        expect(t, hasLength(1));
+        expect(templates.listSync().whereType<Directory>(), isEmpty, reason: 'no assets copied');
+        await expectUnchanged();
+      });
+
+      test('38. a sweeping listing queued at the folder and on the template chain: no sweep, the leftover listed', () async {
+        final (t, _) = await binderTemplate(files: false);
+        final file = File('${templates.path}/${t.id}.notedtemplate');
+        final left = file.renameSync('${file.path}.4242-a-b.cas-old');
+        for (final queued in [queuedAtFolder, queuedOnChain]) {
+          final r = await queued(() => nb.listTemplates(TemplateKind.page, binderPath: binder.path));
+          expect(r, isA<TemplateListing>());
+          expect((r! as TemplateListing).unreadable.map((u) => base(u.path)), contains(base(left.path)));
+          expect(left.existsSync(), isTrue);
+          await expectUnchanged();
+        }
+      });
+
+      test('39. a delete queued at the folder and on the template chain: refused, the template and its files stay', () async {
+        await binderTemplate();
+        final item = (await nb.listTemplates(TemplateKind.page, binderPath: binder.path)).items.firstWhere((i) => i.binderPath != null);
+        final r = await queuedAtFolder(() => nb.deleteTemplate(item));
+        expect(r, isA<NotebookException>());
+        expect(File(item.path).existsSync(), isTrue);
+        await expectUnchanged();
+      });
+
+      test('39. short turns: a save of the folder lands between two asset deletes', () async {
+        final (_, a) = await binderTemplate();
+        final item = (await nb.listTemplates(TemplateKind.page, binderPath: binder.path)).items.firstWhere((i) => i.binderPath != null);
+        var saved = false;
+        var n = 0;
+        nb.templateStepHook = (s) async {
+          if (s == 'assetDelete' && ++n == 2) {
+            // The previous step's turn has ended: a save of the folder lands now.
+            addNote(nb, 'between');
+            await nb.flush().timeout(const Duration(seconds: 5));
+            saved = (await loadPage(nb, inB)).nodes.length == 2;
+          }
+        };
+        await nb.deleteTemplate(item);
+        expect(saved, isTrue);
+        expect(a.existsSync(), isFalse);
+      });
+
+      test('39. a hook that replaces the binder and uses it at every step ends in time', () async {
+        await binderTemplate();
+        final item = (await nb.listTemplates(TemplateKind.page, binderPath: binder.path)).items.firstWhere((i) => i.binderPath != null);
+        nb.templateStepHook = (s) async {
+          if (['delete', 'assetsSweep', 'assetDelete', 'dirDelete'].contains(s)) await replaceBinder();
+        };
+        await nb.deleteTemplate(item).then<void>((_) {}, onError: (_) {}).timeout(const Duration(seconds: 20));
+      });
+
+      test('40. a page from a binder template while the binder is held: its leftover is not swept', () async {
+        final (t, a) = await binderTemplate(files: false);
+        put(a, name1, good1);
+        final left = put(a, '$name2.4242-a-b.cas-old', good2);
+        await replaceBinder(use: false);
+        await expectLater(nb.createPageFromTemplate(t, binderPath: binder.path), throwsA(isA<NotebookException>()));
+        expect(left.existsSync(), isTrue);
+        expect(File('${a.path}/$name2').existsSync(), isFalse);
+        await expectUnchanged();
+      });
+
+      test('40. a hold set while the copy waits on the template chain: nothing is copied into the held folder', () async {
+        final (t, a) = await binderTemplate(files: false);
+        put(a, name1, good1);
+        final before = snapshot(binderDir);
+        final r = await queuedOnChain(() => nb.createPageFromTemplate(t, binderPath: binder.path));
+        expect(r, isA<NotebookException>());
+        final after = snapshot(binderDir)..remove('${Platform.pathSeparator}$binderFileName');
+        expect(after, before..remove('${Platform.pathSeparator}$binderFileName'), reason: 'no page and no files');
+      });
 
       test('a page made from a binder template reads its assets without sweeping after the replacement', () async {
         final (t, a) = await binderTemplate(files: false);
