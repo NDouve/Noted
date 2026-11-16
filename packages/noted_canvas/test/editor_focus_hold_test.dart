@@ -320,7 +320,7 @@ void main() {
   });
 
   group('header and footer', () {
-    testWidgets('the header is under the toolbar and left of the side panel, the footer under both', (t) async {
+    testWidgets('the header and footer are in the canvas column, left of the side panel', (t) async {
       t.view.physicalSize = const Size(1200, 800);
       t.view.devicePixelRatio = 1;
       addTearDown(t.view.reset);
@@ -345,9 +345,10 @@ void main() {
       expect(header.left, 0);
       expect(header.right, 1200 - 264);
       expect(panel.top, CommandToolbar.height);
-      expect(panel.bottom, footer.top);
+      expect(panel.bottom, 800, reason: 'Details runs beside the footer');
       expect(footer.bottom, 800);
-      expect(footer.width, 1200);
+      expect(footer.left, 0);
+      expect(footer.right, header.right);
       // The viewport starts under the header.
       expect(t.getRect(find.byKey(PageCanvas.overlayKey)).top, header.bottom);
     });

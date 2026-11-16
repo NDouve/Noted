@@ -189,7 +189,8 @@ class _HomeState extends State<Home> {
   // Files dropped on the canvas become boxes where they were dropped.
   Future<void> _dropped(DropDoneDetails d) async {
     final canvas = _canvasKey?.currentState;
-    if (canvas == null) return;
+    // Only the viewport takes drops, not the toolbar, the header, the strip or Details.
+    if (canvas == null || !canvas.viewportContains(d.globalPosition)) return;
     final files = <IncomingFile>[];
     for (final f in d.files) {
       try {

@@ -1116,16 +1116,15 @@ class AppMenuBarState extends State<AppMenuBar> {
         child: Semantics(
           toggled: open,
           child: _FocusRing(
-            builder: (node) => TextButton.icon(
+            builder: (node) => TextButton(
               key: const ValueKey('details-toggle'),
               focusNode: node,
               onPressed: widget.onTogglePanel,
-              icon: const Icon(Icons.view_sidebar_rounded),
-              label: const Text('Details'),
               style: _itemStyle(context, bar: true).copyWith(
                 backgroundColor: WidgetStatePropertyAll(open ? scheme.primaryContainer : scheme.surface),
                 side: WidgetStatePropertyAll(BorderSide(color: colors.outlineControl)),
               ),
+              child: const Text('Details'),
             ),
           ),
         ),

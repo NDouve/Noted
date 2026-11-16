@@ -121,6 +121,9 @@ void aiSuite() {
           // AI3: the page is Guarded (the default), which does not matter to
           // its AI box; the page menu offers the three values.
           expect(s.nb.aiAccessFor(pageId).value, AiAccess.guarded);
+          // Details shows the AI box while it is selected: leave it first.
+          s.nb.current!.select(null);
+          await s.pump(300);
           await s.tapKey('panel-app.page.settings');
           await s.tapKey('settings-ai-privileged');
           expect(s.nb.ownAiAccess(pageId), AiAccess.privileged);

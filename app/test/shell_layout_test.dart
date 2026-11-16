@@ -4,8 +4,10 @@
 
 import 'dart:io';
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/app_settings.dart';
@@ -43,15 +45,15 @@ void main() {
       expect(tools.left, rect(t, find.byType(VerticalDivider).first).right);
       expect(tools.right, 1440);
       expect(tools.top, bar.bottom);
-      // Details sits between the toolbar and the status strip.
+      // Details runs from the toolbar to the window bottom; the strip is left of it.
       final p = rect(t, panel);
       final s = rect(t, strip);
       expect(p.top, tools.bottom);
-      expect(p.bottom, s.top);
+      expect(p.bottom, 900, reason: 'Details runs beside the strip');
       expect(s.height, 34);
       expect(s.bottom, 900);
       expect(s.left, tools.left);
-      expect(s.right, 1440);
+      expect(s.right, p.left);
       // The title is in the canvas column: 32 in, 16 down, under the breadcrumb.
       final crumb = rect(t, breadcrumb);
       expect(crumb.left, tools.left + 32);
@@ -108,6 +110,62 @@ void main() {
       final w = await ShellWorld.open(t, size: const Size(1440, 900));
       expect(find.byKey(const ValueKey('status-strip-text')), findsNothing);
       expect(StatusStrip.textFor(w.nb), isNull);
+      await w.close(t);
+    });
+
+    testWidgets('files dropped on the viewport make a box; drops on the header, strip and panel do not', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(1440, 900));
+      final file = File('${w.dir.path}/dropped.pdf')..writeAsBytesSync([1, 2, 3]);
+      final target = t.widget<DropTarget>(find.byType(DropTarget));
+      Future<void> dropAt(Offset at) async {
+        await t.runAsync(() async {
+          target.onDragDone!(DropDoneDetails(files: [DropItemFile(file.path)], localPosition: at, globalPosition: at));
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        });
+        await w.settle(t);
+      }
+
+      int boxes() => w.nb.current!.page.nodes.whereType<BoxRecord>().length;
+      await dropAt(rect(t, strip).center);
+      await dropAt(rect(t, breadcrumb).center);
+      await dropAt(rect(t, panel).center);
+      await dropAt(rect(t, toolbar).center);
+      expect(boxes(), 0);
+      await dropAt(rect(t, find.byKey(PageCanvas.overlayKey)).center);
+      expect(boxes(), 1);
+      await w.close(t);
+    });
+
+    testWidgets('keys typed in the title do not reach the canvas commands', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(1440, 900));
+      await w.addNote(t, 'a', 'one');
+      await w.addNote(t, 'b', 'two', at: const Bounds(100, 300, 300, 40));
+      w.nb.current!.select('a');
+      await t.pump();
+      List<String> order() => w.nb.current!.page.nodes.map((n) => n.id).toList();
+      final before = order();
+      await t.tap(find.byKey(const ValueKey('page-title-field')));
+      await t.pump();
+      expect(t.widget<TextField>(find.byKey(const ValueKey('page-title-field'))).focusNode!.hasFocus, isTrue);
+      // P (Pen), Ctrl+Shift+] (bring to front) and Escape (leave the tool,
+      // then clear the selection) belong to the canvas, not to the title.
+      await t.sendKeyEvent(LogicalKeyboardKey.keyP);
+      await t.pump();
+      expect(w.nb.tools.active, isNull);
+      await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await t.sendKeyEvent(LogicalKeyboardKey.bracketRight);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await t.pump();
+      expect(order(), before);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await t.pump();
+      expect(w.nb.current!.selectedId, 'a');
+      // The field still takes its text.
+      await t.enterText(find.byKey(const ValueKey('page-title-field')), 'Pen');
+      expect(t.widget<TextField>(find.byKey(const ValueKey('page-title-field'))).controller!.text, 'Pen');
       await w.close(t);
     });
 

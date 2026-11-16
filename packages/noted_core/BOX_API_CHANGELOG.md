@@ -8,7 +8,7 @@ version.
 
 Versions are listed newest first.
 
-Host-only (not the Box API), run 2026-11-15-02, task 1 step 5 (toolbar, title and status strip): `PageCanvas.header` (a band between the toolbar and the viewport, left of the side panel) and `PageCanvas.footer` (a strip under the canvas and the side panel). No module-facing change, no version bump.
+Host-only (not the Box API), run 2026-11-15-02, task 1 step 5 (toolbar, title and status strip): `PageCanvas.header` (a band between the toolbar and the viewport, left of the side panel) and `PageCanvas.footer` (a strip under the canvas, left of the side panel). No module-facing change, no version bump.
 
 Host-only (not the Box API), run 2026-11-15-01, task 7 (canvas context menus): `ContextMenuStyle` and `PageCanvas.contextMenuStyle`; `PageCanvasState.contextMenuOpen` (a `ValueListenable<bool>`, true while a context menu is open); `CanvasController.canDelete` (the guard of `delete`, now also the `canvas.delete` predicate); `CanvasTargetGuard` (the canvas half of the command-target guard, shared with the menu bar); `PageCanvasState.pasteFilesAt` and the paste target (`insertFiles`, `pasteFiles` and drops take their controller, page, store and point at their start and check them again before each box, so a page opened meanwhile gets nothing); the pick list's `PickChoice` result with its `more` flag (a row's More button). `canvas.delete` is now enabled only for a selection `delete` would remove. No module-facing member changed; no version bump.
 

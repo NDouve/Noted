@@ -106,8 +106,8 @@ class PageCanvas extends StatefulWidget {
   /// Null shows none.
   final Widget? header;
 
-  /// Host only. A strip under the canvas and [sidePanel], the full width of
-  /// this widget: the host's status. Null shows none.
+  /// Host only. A strip under the canvas, in the canvas column (left of
+  /// [sidePanel]): the host's status. Null shows none.
   final Widget? footer;
 
   /// Host only. A panel drawn over the canvas area (below the toolbar, so the
@@ -1591,10 +1591,16 @@ class PageCanvasState extends State<PageCanvas>
     }
     final command = _commands.resolve(
       event,
-      // The find bar's text field owns the keys like a box's editor does.
-      editing: _c.editingId != null || _findFocus.hasFocus,
+      // The find bar's text field, and any other (the host's page title), own
+      // the keys like a box's editor does.
+      editing: _c.editingId != null || _fieldOwnsKey(),
       readOnly: _readOnly,
     );
+    // Escape in a text field that is not a box's editor (the host's page
+    // title) is the field's own; it never clears the selection.
+    if (command != null && command.id == CanvasCommands.escape && _c.editingId == null && !_findFocus.hasFocus && _fieldOwnsKey()) {
+      return KeyEventResult.ignored;
+    }
     if (command == null) return KeyEventResult.ignored;
     command.run();
     return KeyEventResult.handled;
@@ -1641,21 +1647,21 @@ class PageCanvasState extends State<PageCanvas>
               ],
             ),
           ),
-          ?widget.footer,
         ],
       ),
     );
   }
 
-  // The canvas area under the host's header, if there is one.
+  // The canvas area between the host's header and footer, if it has them.
   Widget _canvasColumn(ColorScheme scheme) {
-    final header = widget.header;
-    if (header == null) return _canvasArea(scheme);
+    final (header, footer) = (widget.header, widget.footer);
+    if (header == null && footer == null) return _canvasArea(scheme);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        header,
+        ?header,
         Expanded(child: _canvasArea(scheme)),
+        ?footer,
       ],
     );
   }
@@ -1733,6 +1739,14 @@ class PageCanvasState extends State<PageCanvas>
     final v = _view;
     if (box is! RenderBox || !box.hasSize || v == null) return null;
     return v.toWorld(box.globalToLocal(global));
+  }
+
+  /// Whether the screen point [global] is over the canvas viewport (not the
+  /// toolbar, the host's header or footer, or a side panel).
+  bool viewportContains(Offset global) {
+    final box = _areaKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return false;
+    return (Offset.zero & box.size).contains(box.globalToLocal(global));
   }
 
   /// Creates boxes for files dropped at the screen point [global].
