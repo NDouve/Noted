@@ -1392,11 +1392,13 @@ class PageCanvasState extends State<PageCanvas>
       spec,
       origin,
       hold ? c : null,
+      area: ValueNotifier(area.localToGlobal(Offset.zero) & area.size),
       selectedAtOpen: c.selectedId,
       editingAtOpen: editing,
     );
     session.holdNow();
     _contextSession = session;
+    _watchContextRect(session);
     _contextClose.value = false;
     if (!_contextDisposed) _contextOpen.value = true;
     unawaited(
@@ -1404,12 +1406,40 @@ class PageCanvasState extends State<PageCanvas>
         context,
         spec: spec,
         anchor: global,
-        within: area.localToGlobal(Offset.zero) & area.size,
-        // A disallowed box always gets the list (Delete only).
-        radial: mouse && !target.off && widget.contextMenuStyle == ContextMenuStyle.radial,
+        within: session.area,
+        // A disallowed box and a read-only page always get the list.
+        radial: mouse && !target.off && !_readOnly && widget.contextMenuStyle == ContextMenuStyle.radial,
         closeSignal: _contextClose,
       ).then((entry) => _contextDone(session, entry)),
     );
+  }
+
+  /// Test hook: how many times the open-menu rect check has run.
+  @visibleForTesting
+  int contextRectChecks = 0;
+
+  /// While [s] is the open menu, runs after each frame: the menu is laid out
+  /// against the canvas rect as it is now (it moves with the toolbar wrapping, a
+  /// bar appearing, a panel), so it is told the new rect. It closes only when
+  /// the canvas is gone. Each run arms the next; nothing is armed once the menu
+  /// ends or the canvas is disposed.
+  void _watchContextRect(_ContextSession s) {
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !identical(_contextSession, s) || _contextClose.value) return;
+      contextRectChecks++;
+      _checkContextRect(s);
+      _watchContextRect(s);
+    });
+  }
+
+  void _checkContextRect(_ContextSession s) {
+    final area = _areaKey.currentContext?.findRenderObject();
+    if (area is! RenderBox || !area.hasSize) {
+      _contextClose.value = true;
+      return;
+    }
+    final rect = area.localToGlobal(Offset.zero) & area.size;
+    if (rect != s.area.value) s.area.value = rect;
   }
 
   void _contextDone(_ContextSession s, ContextEntry? entry) {
@@ -1776,8 +1806,7 @@ class PageCanvasState extends State<PageCanvas>
   Widget _canvasLayout(ColorScheme scheme) {
     return LayoutBuilder(
         builder: (context, constraints) {
-          final size = constraints.biggest;
-          final content = _contentRect();
+          final size = constraints.biggest;          final content = _contentRect();
           final area = _sessionArea;
           final g = CanvasGeometry.compute(
             content: area == null
@@ -2205,7 +2234,10 @@ class _ContextTarget {
 /// One open context menu: its target, entries, the focus to give back, and
 /// the editor focus hold it took (released once).
 class _ContextSession {
-  _ContextSession(this.target, this.spec, this.origin, this._holder, {this.selectedAtOpen, this.editingAtOpen});
+  _ContextSession(this.target, this.spec, this.origin, this._holder, {required this.area, this.selectedAtOpen, this.editingAtOpen});
+
+  /// The canvas rect (global), kept current while the menu is open.
+  final ValueNotifier<Rect> area;
 
   final _ContextTarget target;
   final ContextMenuSpec spec;
