@@ -31,6 +31,9 @@ class NoHashDriver implements RemoteDriver {
   /// Runs after a download, as a local edit during the compare would.
   void Function()? afterDownload;
 
+  /// The version (ETag) each file is listed with; null for none.
+  String? Function(RemoteEntry e)? etagFor;
+
   @override
   String get provider => 'nohash';
   @override
@@ -67,7 +70,7 @@ class NoHashDriver implements RemoteDriver {
             name: e.value.name,
             folder: e.value.folder,
             special: e.value.special,
-            cTag: e.value.cTag,
+            cTag: etagFor == null ? e.value.cTag : etagFor!(e.value),
             size: e.value.size,
             seq: e.value.seq,
           ),
@@ -302,4 +305,72 @@ void main() {
     expect(h.issueText().single, contains('different file'));
     expect((journal()['files'] as Map), isEmpty);
   });
-}
+
+  group('the compare of a known file whose remote changed and whose local file was edited to the same size', () {
+    setUp(() async {
+      h.fake.addFile('Noted/a.canvas', Harness.b('AAA'));
+      await h.round();
+      expect(h.read('a.canvas'), 'AAA');
+      h.write('a.canvas', 'BBB');
+      h.fake.replaceFile('Noted/a.canvas', Harness.b('DDD'));
+    });
+
+    test('a 403 during the compare: listed once, as the refusal, not also as a local change', () async {
+      driver.refuseWith = 403;
+      final r = await h.round();
+      expect(r.error, isNull);
+      expect(h.issueText(), hasLength(1));
+      expect(h.issueText().single, contains('403'));
+      expect(h.read('a.canvas'), 'BBB');
+      expect(h.stateFiles('tmp'), isEmpty);
+    });
+
+    test('RemoteChanged during the compare: nothing listed, nothing applied', () async {
+      driver.changeDuringDownload = true;
+      final r = await h.round();
+      expect(r.error, isNull);
+      expect(h.engine.issues, isEmpty);
+      expect(h.read('a.canvas'), 'BBB');
+      expect(h.stateFiles('tmp'), isEmpty);
+    });
+
+    test('a compare that finds them different lists the local change once', () async {
+      await h.round();
+      expect(h.issueText(), hasLength(1));
+      expect(h.issueText().single, contains('Changed on this device'));
+      expect(h.read('a.canvas'), 'BBB');
+    });
+  });
+
+  group('the compare is remembered by version', () {
+    setUp(() {
+      h.fake.addFile('Noted/a.canvas', Harness.b('AAA'));
+      h.write('a.canvas', 'BBB');
+    });
+
+    test('a file with no ETag is compared again every round', () async {
+      driver.etagFor = (_) => null;
+      for (var i = 1; i <= 3; i++) {
+        await h.round();
+        expect(h.contentRequests(), i);
+      }
+      expect(h.engine.issues, hasIssue('a.canvas'));
+    });
+
+    test('an entry for an older ETag is dropped once a newer one is compared', () async {
+      var tag = 'v1';
+      driver.etagFor = (_) => tag;
+      await h.round();
+      expect(h.contentRequests(), 1);
+      await h.round();
+      expect(h.contentRequests(), 1, reason: 'remembered');
+      tag = 'v2';
+      await h.round();
+      expect(h.contentRequests(), 2);
+      tag = 'v1';
+      await h.round();
+      expect(h.contentRequests(), 3, reason: 'the v1 entry went when v2 was kept');
+      await h.round();
+      expect(h.contentRequests(), 3);
+    });
+  });}

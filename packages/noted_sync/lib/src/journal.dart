@@ -362,20 +362,32 @@ class BlobStore {
 
   Future<bool> has(String sha) => fileFor(sha).exists();
 
-  /// Keeps a copy of [src] under [sha] (the SHA-256 of its bytes).
-  Future<void> put(File src, String sha) async {
-    if (await has(sha)) return;
+  /// Keeps a copy of [src] under [sha] (the SHA-256 of its bytes). The copy
+  /// is read back before it gets its name: when it isn't [sha] (the source
+  /// changed meanwhile) it is dropped and false is returned. True when the
+  /// blob is there.
+  Future<bool> put(File src, String sha) async {
+    if (await has(sha)) return true;
     await dir.create(recursive: true);
     final part = File(
       '${dir.path}${Platform.pathSeparator}$sha.part-${_random.nextInt(1 << 32)}',
     );
-    await src.copy(part.path);
     try {
+      await src.copy(part.path);
+      if ((await ContentIdentity.ofFile(part.path)).sha256 != sha) {
+        await part.delete();
+        return false;
+      }
       await part.rename(fileFor(sha).path);
     } on FileSystemException {
+      try {
+        if (part.existsSync()) await part.delete();
+      } on FileSystemException {
+        // Swept later.
+      }
       if (!await has(sha)) rethrow;
-      await part.delete();
     }
+    return true;
   }
 
   /// Deletes the blob named [sha], if it is there.

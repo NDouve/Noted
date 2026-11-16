@@ -11,6 +11,7 @@ import 'package:http/http.dart' as http;
 import 'clock.dart';
 import 'remote_driver.dart';
 import 'remote_item.dart';
+import 'request_gate.dart';
 import 'types.dart';
 
 export 'remote_driver.dart' show SignedOutException;
@@ -96,7 +97,10 @@ class GraphClient {
     this.timeout = const Duration(seconds: 60),
   }) : origin = origin ?? Uri.parse('https://graph.microsoft.com'),
        _client = client ?? http.Client(),
-       _clock = clock ?? const SystemClock();
+       _gate = RequestGate(
+         clock: clock ?? const SystemClock(),
+         maxInFlight: maxInFlight,
+       );
 
   /// Scheme, host and port of Graph.
   final Uri origin;
@@ -107,15 +111,7 @@ class GraphClient {
 
   final TokenCallback token;
   final http.Client _client;
-  final Clock _clock;
-
-  static const Duration _firstBackoff = Duration(seconds: 2);
-  static const Duration _maxBackoff = Duration(minutes: 5);
-
-  int _inFlight = 0;
-  final List<Completer<void>> _slotWaiters = [];
-  DateTime? _pausedUntil;
-  Duration? _backoff;
+  final RequestGate _gate;
 
   void close() => _client.close();
 
@@ -406,7 +402,7 @@ class GraphClient {
   }) async {
     var refreshed = false;
     for (var attempt = 0; ; attempt++) {
-      await _enter();
+      await _gate.enter();
       try {
         final req = http.Request('GET', uri)..followRedirects = false;
         final withToken = auth && _sameOrigin(uri);
@@ -420,7 +416,7 @@ class GraphClient {
           if (attempt >= maxThrottleRetries) {
             throw GraphThrottled('Still throttled after $attempt retries');
           }
-          _pause(_retryAfter(r.headers['retry-after']));
+          _gate.pause(_gate.retryAfter(r.headers['retry-after']));
           continue;
         }
         if (r.statusCode == 401 && withToken) {
@@ -429,7 +425,7 @@ class GraphClient {
           refreshed = true;
           continue;
         }
-        _backoff = null;
+        _gate.reset();
         return await onResponse(r);
       } on GraphException {
         rethrow;
@@ -441,74 +437,8 @@ class GraphClient {
         // A client or socket error carries the address it was talking to.
         throw GraphTransportException(e);
       } finally {
-        _leave();
+        _gate.leave();
       }
     }
-  }
-
-  Duration? _retryAfter(String? v) {
-    if (v == null) return null;
-    final s = int.tryParse(v.trim());
-    if (s != null) return Duration(seconds: s < 0 ? 0 : s);
-    try {
-      final d = HttpDate.parse(v).difference(_clock.now().toUtc());
-      return d.isNegative ? Duration.zero : d;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// All requests wait: for [wait], or the next step of the back-off.
-  void _pause(Duration? wait) {
-    final Duration d;
-    if (wait != null) {
-      d = wait;
-    } else {
-      final doubled = _backoff == null ? _firstBackoff : _backoff! * 2;
-      _backoff = doubled > _maxBackoff ? _maxBackoff : doubled;
-      d = _backoff!;
-    }
-    final until = _clock.now().add(d);
-    if (_pausedUntil == null || until.isAfter(_pausedUntil!)) {
-      _pausedUntil = until;
-    }
-  }
-
-  Future<void> _waitPause() async {
-    while (true) {
-      final until = _pausedUntil;
-      if (until == null) return;
-      final left = until.difference(_clock.now());
-      if (left <= Duration.zero) {
-        _pausedUntil = null;
-        return;
-      }
-      await _clock.delay(left);
-    }
-  }
-
-  Future<void> _enter() async {
-    while (true) {
-      await _waitPause();
-      if (_inFlight >= maxInFlight) {
-        final c = Completer<void>();
-        _slotWaiters.add(c);
-        await c.future;
-        continue;
-      }
-      _inFlight++;
-      // A pause may have started while this waited; it applies to all.
-      final until = _pausedUntil;
-      if (until != null && until.isAfter(_clock.now())) {
-        _leave();
-        continue;
-      }
-      return;
-    }
-  }
-
-  void _leave() {
-    _inFlight--;
-    if (_slotWaiters.isNotEmpty) _slotWaiters.removeAt(0).complete();
   }
 }
