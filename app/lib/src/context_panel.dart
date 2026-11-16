@@ -11,12 +11,14 @@ import 'app_commands.dart';
 import 'notebook.dart';
 import 'settings_panel.dart';
 
-/// The contextual right panel: what applies to the page, or to the one box
+/// The Details panel (spec §5): what applies to the page, or to the one box
 /// selected (or being edited). Every control is a command of the canvas's live
 /// [registry] (0067), read live; a pointer press on a control takes no focus
 /// (as the toolbar's, 0068), so an open note keeps its caret.
 ///
-/// The canvas has single selection only, so there is no several-boxes state.
+/// States, by precedence: a read-only page (nothing that changes it), a
+/// disallowed box (Delete only), one box, the page. The canvas has single
+/// selection only, so there is no several-boxes state yet.
 class ContextPanel extends StatefulWidget {
   const ContextPanel({
     super.key,
@@ -30,7 +32,7 @@ class ContextPanel extends StatefulWidget {
   final CanvasController controller;
   final CommandRegistry registry;
 
-  /// Shown as a Close button when the panel is an overlay.
+  /// Shown as the header's Close button when given.
   final VoidCallback? onClose;
 
   @override
@@ -38,8 +40,7 @@ class ContextPanel extends StatefulWidget {
 }
 
 class _ContextPanelState extends State<ContextPanel> {
-  // Page settings and Binder settings: the same dialogs as the title row's
-  // button and the menus.
+  // Page settings: the same dialog as the menus.
   late final CommandRegistry _own = CommandRegistry()
     ..registerAll([
       Command(
@@ -48,19 +49,20 @@ class _ContextPanelState extends State<ContextPanel> {
         icon: Icons.tune_rounded,
         invoke: () => showPageSettings(context, widget.notebook, widget.controller.page.id),
       ),
-      Command(
-        id: AppCommands.binderSettings,
-        label: 'Binder settings…',
-        icon: Icons.tune_rounded,
-        enabled: () => _binderPath != null,
-        invoke: () {
-          final path = _binderPath;
-          if (path != null) return showBinderSettings(context, widget.notebook, path);
-        },
-      ),
     ]);
 
+  final GlobalKey _backgroundKey = GlobalKey();
+
   String? get _binderPath => widget.notebook.binderOfPage(widget.controller.page.id);
+
+  String? get _binderName {
+    final path = _binderPath;
+    if (path == null) return null;
+    for (final b in widget.notebook.binders) {
+      if (b.path == path) return b.title;
+    }
+    return null;
+  }
 
   @override
   void dispose() {
@@ -84,47 +86,103 @@ class _ContextPanelState extends State<ContextPanel> {
         ),
         child: Semantics(
           container: true,
-          label: 'Page and box options',
+          label: 'Details',
           child: ListenableBuilder(
             listenable: Listenable.merge([widget.controller, widget.registry, widget.notebook]),
-            // Every control is built (a short list, not a lazy one): Tab reaches
-            // all of them and tests find them.
-            builder: (context, _) => SingleChildScrollView(
-              padding: EdgeInsets.all(m.space4),
-              child: Column(
+            builder: (context, _) {
+              final (title, content) = _state(context);
+              return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  if (widget.onClose != null)
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton(
-                        key: const ValueKey('context-panel-close'),
-                        onPressed: widget.onClose,
-                        child: const Text('Close'),
+                  _header(context, title),
+                  // Every control is built (a short list, not a lazy one): Tab
+                  // reaches all of them and tests find them.
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: EdgeInsets.all(m.space4),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: content,
                       ),
                     ),
-                  ..._content(context),
+                  ),
                 ],
-              ),
-            ),
+              );
+            },
           ),
         ),
       ),
     );
   }
 
-  List<Widget> _content(BuildContext context) {
-    final c = widget.controller;
-    final id = c.editingId ?? c.selectedId;
-    final node = id == null ? null : c.page.node(id);
-    return node == null ? _page(context) : _box(context, node);
+  Widget _header(BuildContext context, String title) {
+    final m = NotedMetrics.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final onClose = widget.onClose;
+    return SizedBox(
+      height: m.detailsHeaderHeight,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: scheme.outline)),
+        ),
+        child: Padding(
+          padding: EdgeInsets.only(left: m.space4, right: m.space2),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  key: const ValueKey('panel-header-title'),
+                  style: NotedTypography.of(context).boxTitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (onClose != null)
+                // A 36 px target at the trailing edge.
+                IconButton(
+                  key: const ValueKey('context-panel-close'),
+                  tooltip: 'Close',
+                  onPressed: onClose,
+                  icon: const Icon(Icons.close_rounded),
+                  iconSize: m.icon,
+                  style: IconButton.styleFrom(
+                    minimumSize: const Size.square(36),
+                    fixedSize: const Size.square(36),
+                    foregroundColor: scheme.onSurfaceVariant,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
-  Widget _heading(BuildContext context, String text) {
+  /// The header title and the body of the state the panel is in.
+  (String, List<Widget>) _state(BuildContext context) {
+    final c = widget.controller;
+    // A read-only page shows the page, whatever is selected.
+    if (c.readOnly || widget.notebook.readOnlyReason != null) {
+      return ('Page', _readOnlyPage(context));
+    }
+    final id = c.editingId ?? c.selectedId;
+    final node = id == null ? null : c.page.node(id);
+    if (node == null) return ('Page', _page(context));
+    final typeId = node is BoxRecord ? node.typeId : null;
+    if (typeId != null && c.disallowedTypes.contains(typeId)) {
+      return ('Box', _disallowedBox(context));
+    }
+    final name = typeId == null ? null : boxTypeSingularName(typeId);
+    return (name == null ? 'Box' : '$name box', _box(context));
+  }
+
+  // A section label (12/16, 600, uppercase).
+  Widget _heading(BuildContext context, String text, {bool first = false}) {
     final m = NotedMetrics.of(context);
     final type = NotedTypography.of(context);
     return Padding(
-      padding: EdgeInsets.only(top: m.space4, bottom: m.space2),
+      padding: EdgeInsets.only(top: first ? 0 : m.space4, bottom: m.space2),
       child: Text(
         text.toUpperCase(),
         style: type.label.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
@@ -132,103 +190,262 @@ class _ContextPanelState extends State<ContextPanel> {
     );
   }
 
+  // An action: 32 px visible in a 36 px row (2 px vertical hit insets),
+  // outlined with `outline-control`; a focused one paints the 2 px accent ring.
   Widget _button(
     BuildContext context,
     Command? command, {
     String? label,
-    bool destructive = false,
-    bool wide = true,
+    bool enabled = true,
+    bool wide = false,
   }) {
     if (command == null) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
-    final checked = command.checked ?? false;
+    final colors = NotedColors.of(context);
     final m = NotedMetrics.of(context);
-    final text = label ?? command.label;
-    final button = OutlinedButton(
-      key: ValueKey('panel-${command.id}'),
-      style: OutlinedButton.styleFrom(
-        alignment: Alignment.centerLeft,
-        foregroundColor: destructive ? scheme.error : scheme.onSurface,
-        backgroundColor: checked ? scheme.primaryContainer : null,
+    final on = enabled && command.enabled;
+    final button = SizedBox(
+      height: 32,
+      child: OutlinedButton(
+        key: ValueKey('panel-${command.id}'),
+        style: OutlinedButton.styleFrom(
+          alignment: Alignment.centerLeft,
+          minimumSize: const Size(0, 32),
+          padding: EdgeInsets.symmetric(horizontal: wide ? m.space2 : m.space3),
+        ).copyWith(side: _side(scheme, colors, on)),
+        onPressed: on ? () => command.run() : null,
+        child: Text(label ?? command.label, overflow: TextOverflow.ellipsis),
       ),
-      onPressed: command.enabled ? () => command.run() : null,
-      child: Text(text, overflow: TextOverflow.ellipsis),
     );
     return Padding(
-      padding: EdgeInsets.only(bottom: m.space1),
+      padding: const EdgeInsets.symmetric(vertical: 2),
       // A press on a Material button takes no focus; Tab still reaches it.
-      child: wide ? SizedBox(width: double.infinity, child: button) : button,
+      child: wide ? SizedBox(width: double.infinity, child: button) : Align(alignment: Alignment.centerLeft, child: button),
+    );
+  }
+
+  WidgetStateProperty<BorderSide> _side(ColorScheme scheme, NotedColors colors, bool on) =>
+      WidgetStateProperty.resolveWith((s) {
+        if (s.contains(WidgetState.focused)) return BorderSide(color: scheme.primary, width: 2);
+        return BorderSide(color: on ? colors.outlineControl : scheme.outline);
+      });
+
+  Widget _title(BuildContext context) {
+    final c = widget.controller;
+    final m = NotedMetrics.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final binder = _binderName;
+    return Padding(
+      padding: EdgeInsets.only(bottom: m.space2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            c.page.meta.title.isEmpty ? 'Untitled' : c.page.meta.title,
+            key: const ValueKey('panel-page-title'),
+            style: NotedTypography.of(context).boxTitle,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          if (binder != null)
+            Text(
+              binder,
+              key: const ValueKey('panel-binder-name'),
+              style: NotedTypography.of(context).small.copyWith(color: scheme.onSurfaceVariant),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+        ],
+      ),
     );
   }
 
   List<Widget> _page(BuildContext context) {
     final r = widget.registry;
-    final c = widget.controller;
-    final m = NotedMetrics.of(context);
-    final type = NotedTypography.of(context);
-    final nb = widget.notebook;
-    final hasIssues = c.issues(disallowedTypes: nb.disallowedBoxTypesFor(c.page.id)).isNotEmpty;
-    final zoom = r[CanvasCommands.zoomReset];
     return [
-      _heading(context, 'Page'),
-      Text(
-        c.page.meta.title.isEmpty ? 'Untitled' : c.page.meta.title,
-        key: const ValueKey('panel-page-title'),
-        style: type.bodyStrong,
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-      ),
-      _heading(context, 'Background'),
-      for (final b in PageBackground.values)
-        _button(context, r[CanvasCommands.pageBackgroundOf(b)], label: pageBackgroundLabel(b)),
-      _heading(context, 'View'),
-      Padding(
-        padding: EdgeInsets.only(bottom: m.space2),
-        child: Text(
-          zoom?.text?.call() ?? '',
-          key: const ValueKey('panel-zoom-readout'),
-          style: type.numeric,
-        ),
-      ),
-      _button(context, r[CanvasCommands.zoomOut]),
-      _button(context, r[CanvasCommands.zoomReset]),
-      _button(context, r[CanvasCommands.zoomIn]),
-      _button(context, r[CanvasCommands.fitAll]),
-      _heading(context, 'Find'),
-      _button(context, r[CanvasCommands.find]),
-      if (hasIssues) _button(context, r['canvas.showIssues']),
-      _heading(context, 'Settings'),
+      _title(context),
+      _heading(context, 'Page background'),
+      _backgroundDropdown(context),
+      SizedBox(height: NotedMetrics.of(context).space2),
       _button(context, _own[AppCommands.pageSettings]),
-      if (_binderPath != null) _button(context, _own[AppCommands.binderSettings]),
+      _button(context, r[CanvasCommands.fitAll]),
     ];
   }
 
-  List<Widget> _box(BuildContext context, CanvasNode node) {
+  // One button showing the checked choice; it opens a Menu-component list of
+  // the four, each running its `canvas.pageBackground.<b>` command.
+  Widget _backgroundDropdown(BuildContext context) {
     final r = widget.registry;
-    final type = NotedTypography.of(context);
     final c = widget.controller;
-    final typeId = node is BoxRecord ? node.typeId : null;
-    final notAllowed = typeId != null && c.disallowedTypes.contains(typeId);
-    final name = typeId == null ? 'Box' : (boxTypeSingularName(typeId) ?? 'Box');
+    final scheme = Theme.of(context).colorScheme;
+    final colors = NotedColors.of(context);
+    final m = NotedMetrics.of(context);
+    final current = c.page.meta.background;
+    final enabled = PageBackground.values.every((b) => r[CanvasCommands.pageBackgroundOf(b)]?.enabled ?? false);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: SizedBox(
+        key: const ValueKey('panel-background-dropdown'),
+        height: 32,
+        child: OutlinedButton(
+          key: _backgroundKey,
+          style: OutlinedButton.styleFrom(
+            alignment: Alignment.centerLeft,
+            minimumSize: const Size(0, 32),
+            padding: EdgeInsets.symmetric(horizontal: m.space3),
+            foregroundColor: scheme.primary,
+            backgroundColor: scheme.primaryContainer,
+          ).copyWith(side: _side(scheme, colors, enabled)),
+          onPressed: enabled ? () => _openBackground(context) : null,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                pageBackgroundLabel(current),
+                key: const ValueKey('panel-background-current'),
+              ),
+              SizedBox(width: m.space2),
+              Icon(Icons.expand_more_rounded, size: m.icon),
+            ],
+        ),
+      ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openBackground(BuildContext context) async {
+    final box = _backgroundKey.currentContext;
+    final target = box?.findRenderObject() as RenderBox?;
+    if (box == null || target == null) return;
+    final r = widget.registry;
+    final overlay = Overlay.of(box).context.findRenderObject()! as RenderBox;
+    final rect = target.localToGlobal(Offset.zero, ancestor: overlay) & target.size;
+    final entries = <PopupMenuEntry<String>>[
+      for (final b in PageBackground.values)
+        if (r[CanvasCommands.pageBackgroundOf(b)] case final cmd?)
+          NotedMenuItem<String>(
+            key: ValueKey('menu-${cmd.id}'),
+            value: cmd.id,
+            label: pageBackgroundLabel(b),
+            leading: MenuCheckMark(checked: cmd.checked ?? false),
+            enabled: cmd.enabled,
+          ),
+    ];
+    // What the choice must still find when it runs: a page opened or a registry
+    // rebuilt while the menu was up means it would change another page.
+    final guard = CanvasTargetGuard(
+      controller: widget.controller,
+      pageId: widget.controller.page.id,
+      registry: r,
+    );
+    final id = await showMenu<String>(
+      context: box,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(rect.left, rect.bottom + 2, rect.width, 0),
+        Offset.zero & overlay.size,
+      ),
+      constraints: BoxConstraints(minWidth: rect.width < 160 ? 160 : rect.width),
+      items: entries,
+    );
+    if (id == null || !mounted) return;
+    if (!guard.holds(widget.controller, widget.controller.page.id, registry: widget.registry)) return;
+    r[id]?.run();
+  }
+
+  List<Widget> _readOnlyPage(BuildContext context) {
+    final r = widget.registry;
+    final m = NotedMetrics.of(context);
+    final type = NotedTypography.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final colors = NotedColors.of(context);
     return [
-      _heading(context, 'Box'),
-      Text(name, key: const ValueKey('panel-box-type'), style: type.bodyStrong),
-      if (notAllowed)
-        Padding(
-          padding: EdgeInsets.only(top: NotedMetrics.of(context).space2),
-          child: Text(
-            'Not allowed on this page',
-            key: const ValueKey('panel-not-allowed'),
-            style: type.small.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+      _title(context),
+      Padding(
+        padding: EdgeInsets.symmetric(vertical: m.space2),
+        child: DecoratedBox(
+          key: const ValueKey('panel-read-only-card'),
+          decoration: BoxDecoration(color: colors.conflictSoft, borderRadius: m.borderMd),
+          child: Padding(
+            padding: EdgeInsets.all(m.space3),
+            child: Semantics(
+              container: true,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Read-only', style: type.bodyStrong.copyWith(color: scheme.onSurface)),
+                  SizedBox(height: m.space1),
+                  Text(
+                    // The banner's reason, as the notebook words it.
+                    widget.notebook.readOnlyReason ?? ReadOnlyBanner.paused,
+                    key: const ValueKey('panel-read-only-reason'),
+                    style: type.small.copyWith(color: scheme.onSurface),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
-      _heading(context, 'Arrange'),
-      _button(context, r[CanvasCommands.bringToFront]),
-      _button(context, r[CanvasCommands.bringForward]),
-      _button(context, r[CanvasCommands.sendBackward]),
-      _button(context, r[CanvasCommands.sendToBack]),
-      _heading(context, 'Delete'),
-      _button(context, r[CanvasCommands.delete], destructive: true),
+      ),
+      SizedBox(height: m.space2),
+      _button(context, r[CanvasCommands.find], label: 'Find on page', wide: false),
+      _button(context, r[CanvasCommands.fitAll], wide: false),
+    ];
+  }
+
+  List<Widget> _disallowedBox(BuildContext context) {
+    // No type data, and nothing but the verified delete path (0166).
+    return [_delete(context)];
+  }
+
+  Widget _delete(BuildContext context) {
+    final r = widget.registry;
+    final scheme = Theme.of(context).colorScheme;
+    final command = r[CanvasCommands.delete];
+    if (command == null) return const SizedBox.shrink();
+    final editing = widget.controller.editingId != null;
+    final on = command.enabled && !editing;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton(
+          key: ValueKey('panel-${command.id}'),
+          style: TextButton.styleFrom(
+            foregroundColor: scheme.error,
+            minimumSize: const Size(0, 32),
+          ),
+          onPressed: on ? () => command.run() : null,
+          child: const Text('Delete box'),
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _box(BuildContext context) {
+    final r = widget.registry;
+    final m = NotedMetrics.of(context);
+    // While the editor owns focus, Arrange and Delete show disabled.
+    final free = widget.controller.editingId == null;
+    Widget cell(String id) => Expanded(child: _button(context, r[id], enabled: free, wide: true));
+    Widget row(String a, String b) => Row(
+      children: [
+        cell(a),
+        SizedBox(width: m.space2),
+        cell(b),
+      ],
+    );
+    return [
+      _heading(context, 'Arrange', first: true),
+      row(CanvasCommands.bringToFront, CanvasCommands.bringForward),
+      row(CanvasCommands.sendToBack, CanvasCommands.sendBackward),
+      Padding(
+        padding: EdgeInsets.symmetric(vertical: m.space2),
+        child: const Divider(key: ValueKey('panel-separator')),
+      ),
+      _delete(context),
     ];
   }
 }

@@ -2346,7 +2346,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0166 — Box types a page disallows are never decoded in merges, edits or undo
 - **Date:** 2026-11-14
-- **Status:** Active (decided by the build team, run 2026-11-14-02); amends 0111 and 0121; Delete of a disallowed box added in run 2026-11-15-01
+- **Status:** Active (decided by the build team, run 2026-11-14-02); amends 0111 and 0121; Delete of a disallowed box added in run 2026-11-15-01; its panel line amended by 0174
 - **Decision:**
   - A box type disallowed on the page, as this device knows it or in the header of any version a merge reads, is merged as a switched-off module's box (0035): it is never decoded. When both sides changed the box, this device's version is kept and the other is recorded in its conflicts. This holds for sync merges, conflict copies, recovery replay and its preview, and AI merge requests.
   - The canvas never decodes such a box: it shows its saved read-only display, and edits, the pen and the eraser leave it unchanged.
@@ -2354,20 +2354,20 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - Deleting such a box, and undoing an add, a delete or a replacement of it, moves its record unchanged and stays available.
   - An AI merge request about such a box is refused, also when the type is disallowed while the request is being built or answered.
   - Code: `CanvasController.disallowedTypes`, pushed by the notebook only.
-  - A disallowed box can be selected for Delete only (run 2026-11-15-01): it can't be edited, moved, resized or restacked, and Undo of the Delete restores its record unchanged. Its menu offers Delete as its only change, plus Boxes here…, which only selects (0168).
+  - A disallowed box can be selected for Delete only (run 2026-11-15-01): it can't be edited, moved, resized or restacked, and Undo of the Delete restores its record unchanged. Its menu offers Delete as its only change, plus Boxes here…, which only selects (0168). *(Amended by 0174: its Details panel is a "Box" header with Delete box only, with no type data and no layering rows.)*
   - **Limits:** a disallowed drawing box shows an empty frame, since drawing boxes have no image snapshot yet (open item).
 - **Rationale:** merges, the AI gate and undo decoded a disallowed box through its live module, which could rewrite its data (Codex invariants review, 2026-11-04, R-2; invariant 2).
 - **Alternatives considered:** dropping a blocked undo step (Undo would skip to older steps); blocking every undo step on such a box (Undo of a Delete would be lost).
 
 ## 0167 — Desktop shell: Light for new profiles, Precision, the menu bar and the contextual panel
 - **Date:** 2026-11-15
-- **Status:** Active (the maintainer's brief of 2026-11-15; the details decided by the build team (PM), run 2026-11-15-01); amends 0058's default theme and 0071's idle box frames in Precision; amended by 0170
+- **Status:** Active (the maintainer's brief of 2026-11-15; the details decided by the build team (PM), run 2026-11-15-01); amends 0058's default theme and 0071's idle box frames in Precision; amended by 0170 and 0174
 - **Decision:**
   - **Default theme:** a new profile, one with neither `settings.json` nor `binders.json`, starts in Light and saves `{"format":1,"theme":"light"}` once. An existing `settings.json` is never written at launch; saved choices, Follow system included, are kept. A profile with `binders.json` but no `settings.json` uses Follow system, as before. A damaged settings file still reads as the defaults of 0058. *(Amended by 0170: a profile with page or binder data in the default pages folder or the built-in binders folder also uses Follow system, and nothing is written; a link there counts as data, as does a folder that can't be listed.)*
   - **Precision:** the dark theme is named Precision. It covers the window, menus, canvas and panel. Its stored value stays `dark`, so saved settings and pages are unchanged. Idle box frames use the new `box-frame` token: 3:1 in Precision; in Light it equals `border-box`, as before (0071). *(Amended by 0170: idle box frames use `border-box` in both themes; the `box-frame` token is retired.)*
   - **Branding:** a compact blue N from the checked-in icon, snapped to device pixels, with a Noted wordmark that is hidden below 600 px. The app icon is unchanged. *(Amended by 0170: the N is the compact path, `M110 330 V74 L270 298 V50` with stroke 56, filled with the master gradient from the `brand-blue-start` and `brand-blue-end` tokens, with no lightness lift.)*
   - **Menu bar:** File, Edit, View and Help, built from the command registry with its live enabled state and current shortcuts. Only commands with handlers appear. Help holds Keyboard shortcuts, and About in builds that have it. On Windows and Linux, F10, a lone Alt and Alt+letter enter the bar; on macOS it is pointer-only for now. A chosen item revalidates its target (the page, the cover, the command) before it runs. While the bar or one of its menus has focus, a note being edited keeps its editor and selection. *(Amended by 0170: 36 px high including its bottom rule; items in the maintainer's spec order, with the items the spec doesn't list after them; View › Theme is Appearance, after Toolbar; Paste is labelled `Paste`.)*
-  - **Contextual panel:** right of the canvas, inline from 1200 px wide and a dismissible overlay below that; its open state is per session. It shows page controls with no box selected and a box's properties and actions with one. The canvas selects one box at a time, so there is no several-box state. *(Amended by 0170: the panel is named Details, 288 px wide, inline from 1120 px, with a 16% scrim (`overlay-scrim`) when it overlays.)*
+  - **Contextual panel:** right of the canvas, inline from 1200 px wide and a dismissible overlay below that; its open state is per session. It shows page controls with no box selected and a box's properties and actions with one. The canvas selects one box at a time, so there is no several-box state. *(Amended by 0170: the panel is named Details, 288 px wide, inline from 1120 px, with a 16% scrim (`overlay-scrim`) when it overlays.)* *(Amended by 0174: its content is the §5 states of the maintainer's UI spec: a 48 px header with a Close ×, no zoom, Find, issues or Binder settings rows, Arrange and Delete disabled while a note is edited, and a read-only state.)*
   - Undo and Redo also take Cmd+Z, Cmd+Shift+Z and Cmd+Y on macOS.
 - **Rationale:** the maintainer's desktop UI brief. Writing the theme only for a new profile keeps every existing device as it was.
 - **Alternatives considered:** Flutter's `MenuBar` widget (it can't take keyboard focus with no menu open, so F10 couldn't focus File); saving the panel's state in `settings.json` (a settings format addition the brief didn't ask for).
@@ -2419,6 +2419,19 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Known limits.** Template folders are not handled: a provider's copy of a `.notedtemplate` shows as another template and nothing is merged or deleted. The MCP server keeps its own `nameIds`; a copy that parses counts for its page id, one that reads but doesn't parse for its header id, and one that can't be read and has an unrecognised name makes every id ambiguous, so it only refuses more, never less (0150). Attachments named like a provider copy are ignored (0133).
 - **Rationale:** 0163 requires every in-scope cloud to merge conflict copies as OneDrive's are. The providers' naming differs, and the original must stay the file the user chose.
 - **Alternatives considered:** a per-provider detector (more code, the same candidate set); excluding chosen files only in the scan (the watcher would still merge into the wrong file); changing the MCP server's `nameIds` now (parked with iCloud).
+
+## 0174 — UI spec follow-up, step 2: the Details panel
+- **Date:** 2026-11-15
+- **Status:** Active (the maintainer's UI spec of 2026-11-15; the details by the build team (PM), run 2026-11-15-02, from the reviewed note `2026-11-15-02-ui-followup`); amends 0167 and 0166
+- **Decision:**
+  - **Frame:** the Details panel has a 48 px header with the state's title and a Close × (a 36 px target at the trailing edge, in the docked panel and the overlay), a 1 px rule below, and a body with 16 px padding that scrolls on its own. Actions are 32 px high in 36 px rows, outlined with `outline-control`, with the 2 px accent ring on focus. Closing the docked panel returns the focus to where it was, or to the canvas.
+  - **Page** (nothing selected), header Page: the title, the binder name if any, a PAGE BACKGROUND dropdown (one button showing the checked choice, opening a menu of Plain, Dots, Graph and Ruled, each its `canvas.pageBackground.<b>` command), Page settings… and Fit all. The zoom, Find, Show page issues and Binder settings… rows are no longer in the panel; they stay in the menu bar and toolbar.
+  - **One box**, header "Note box", "Drawing box" or "<Type> box": an ARRANGE 2×2 grid (Bring to front, Bring forward / Send to back, Send backward), each cell enabled by `canRestack`; a separator; Delete box. Arrange and Delete are disabled while a note's editor owns the focus.
+  - **Disallowed box** on a writable page, header Box: Delete box only, with no type data (0166).
+  - **Read-only page**, header Page: the title, the binder name, a read-only card (`conflict-soft`, with the same reason as the page's banner), Find on page and Fit all. No mutating control is shown at all. This applies whatever is selected.
+  - **Several boxes:** not built yet; the canvas has single selection.
+- **Rationale:** the maintainer's UI spec, §5.
+- **Alternatives considered:** keeping the zoom, Find and settings rows in the panel (the spec moved them); showing disabled mutating rows on a read-only page (the spec shows none).
 
 ---
 

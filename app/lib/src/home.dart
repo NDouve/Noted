@@ -473,6 +473,21 @@ class _HomeState extends State<Home> {
     });
   }
 
+  // The docked panel's × closes it and gives the focus back to where it was
+  // (a note's editor, say), or to the canvas if that is gone.
+  void _closeDockedPanel() {
+    final origin = FocusManager.instance.primaryFocus;
+    _togglePanel();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (origin != null && origin.context?.mounted == true && origin.canRequestFocus) {
+        origin.requestFocus();
+      } else {
+        _canvasKey?.currentState?.focusCanvas();
+      }
+    });
+  }
+
   // The registry the canvas has now. A canvas that went away reports null in
   // the frame after, which can come after the next page's registry: the
   // canvas on screen decides then.
@@ -690,6 +705,7 @@ class _HomeState extends State<Home> {
                                       // The canvas's own controller: the one its registry is for.
                                       controller: _canvasKey?.currentState?.controller ?? current,
                                       registry: registry,
+                                      onClose: _closeDockedPanel,
                                     )
 
                                   : null,
