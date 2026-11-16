@@ -11,8 +11,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
@@ -763,4 +763,454 @@ void main() {
     expect(snapshot(folder)..remove('$sep$binderFileName'), before);
     await stop();
   });
+
+  // A note box holding [text].
+  BoxRecord noteBox(String text, {Bounds at = const Bounds(300, 10, 200, 40)}) {
+    final codec = buildModules().codecs.codecFor('noted.note')!;
+    return commitBox(
+      createBox(codec, at),
+      codec,
+      codec.decode({
+        'document': {
+          'type': 'page',
+          'children': [
+            {
+              'type': 'paragraph',
+              'data': {
+                'delta': [
+                  {'insert': text},
+                ],
+              },
+            },
+          ],
+        },
+      }, 1),
+    );
+  }
+
+  test('15. a conflict-copy merge with the swap before the copy\'s delete: the copy stays, the merge is redone at L', () async {
+    await start();
+    final original = binderFile().readAsStringSync();
+    await nb.createPage(binderPath: section().path); // [pageId] is closed now
+    await nb.flush();
+    final box = noteBox('from the other machine');
+    final copy = File('${folder.path}$sep$pageId-DESKTOP-1.canvas')
+      ..writeAsStringSync(
+        writePage(
+          readPage(pageFile(pageId).readAsStringSync()).insertNode(box),
+        ),
+      );
+    nb.syncHook = (point, path) async {
+      if (point == 'copy-merged') {
+        nb.syncHook = null;
+        swap(_Swap.other);
+      }
+    };
+    await nb.checkFile(copy.path);
+    await nb.afterHoldForTest(folder.path);
+    expect(
+      copy.existsSync(),
+      isTrue,
+      reason: 'the copy is not deleted from a held folder',
+    );
+    expect(section().hold, BinderHold.otherBinder);
+    binderFile().writeAsStringSync(original);
+    await check();
+    await nb.afterHoldForTest(folder.path);
+    await realIoUntil(
+      () => !copy.existsSync() && fileHas(pageId, box.id),
+      'the merge to be redone at L',
+    );
+    await stop();
+  });
+
+  test('16. an Undo whose page file was replaced, with the swap before the -undo- copy is published: not published', () async {
+    await start();
+    final other = await nb.createPage(binderPath: section().path);
+    await nb.open(pageId);
+    await nb.flush();
+    final deleted = await nb.delete(other);
+    // Another device puts a page with the id there meanwhile.
+    pageFile(other).writeAsStringSync(
+      writePage(
+        NotedPage.create(PageMeta.create(id: other, title: 'Newer', order: 5)),
+      ),
+    );
+    var reached = false;
+    nb.syncHook = (point, path) async {
+      if (point == 'undo-copy-before-publish') {
+        reached = true;
+        swap(_Swap.other);
+      }
+    };
+    await nb.undoDelete(deleted).then<void>((_) {}, onError: (_) {});
+    nb.syncHook = null;
+    expect(reached, isTrue);
+    expect(
+      folder.listSync().where((e) => e.path.contains('-undo-')),
+      isEmpty,
+      reason: 'no copy and no temp',
+    );
+    expect(
+      nb.isPendingDelete(deleted),
+      isTrue,
+      reason: 'the deleted page is still held for Undo',
+    );
+    await stop();
+  });
+
+  group('17. kept assets', () {
+    late Directory kept;
+
+    // A kept file of the page's attachments in the recovery folder.
+    void keep() {
+      kept = Directory('${rec.path}$sep${assetsFolderName(pageId)}')
+        ..createSync(recursive: true);
+      File('${kept.path}${sep}a.txt').writeAsStringSync('kept file');
+    }
+
+    test('a swap between landing and the deletes of the kept files: the sources stay', () async {
+      await start();
+      keep();
+      nb.keptLandedHook = (_) async => swap(_Swap.other);
+      await nb.recoverNowForTest();
+      nb.keptLandedHook = null;
+      expect(
+        File('${kept.path}${sep}a.txt').existsSync(),
+        isTrue,
+        reason: 'the kept file is not deleted',
+      );
+      await stop();
+    });
+
+    test('a swap before landing: nothing is copied into the folder', () async {
+      await start();
+      keep();
+      var swapped = false;
+      nb.syncHook = (point, path) async {
+        if (point == 'binder-gate' && !swapped) {
+          swapped = true;
+          swap(_Swap.other);
+        }
+      };
+      await nb.recoverNowForTest();
+      nb.syncHook = null;
+      expect(swapped, isTrue);
+      expect(
+        Directory('${folder.path}$sep${assetsFolderName(pageId)}').existsSync(),
+        isFalse,
+      );
+      expect(File('${kept.path}${sep}a.txt').existsSync(), isTrue);
+      await stop();
+    });
+  });
+
+  group('18. attachment moves', () {
+    test('a delete with the swap before its attachments are set aside: they stay, the page file stays', () async {
+      await start();
+      final other = await nb.createPage(binderPath: section().path);
+      await nb.open(pageId);
+      await nb.flush();
+      final assets = Directory('${folder.path}$sep${assetsFolderName(other)}')
+        ..createSync();
+      File('${assets.path}${sep}a.txt').writeAsStringSync('attached');
+      var swapped = false;
+      nb.syncHook = (point, path) async {
+        if (point == 'binder-gate' && !swapped) {
+          swapped = true;
+          swap(_Swap.other);
+        }
+      };
+      await expectLater(nb.delete(other), throwsA(isA<NotebookException>()));
+      nb.syncHook = null;
+      expect(File('${assets.path}${sep}a.txt').readAsStringSync(), 'attached');
+      expect(pageFile(other).existsSync(), isTrue);
+      await stop();
+    });
+
+    test(
+      'an Undo with the swap before the attachments are put back: not moved',
+      () async {
+        await start();
+        final other = await nb.createPage(binderPath: section().path);
+        await nb.open(pageId);
+        await nb.flush();
+        final assets = Directory('${folder.path}$sep${assetsFolderName(other)}')
+          ..createSync();
+        File('${assets.path}${sep}a.txt').writeAsStringSync('attached');
+        final deleted = await nb.delete(other);
+        expect(assets.existsSync(), isFalse);
+        var swapped = false;
+        nb.syncHook = (point, path) async {
+          if (point == 'binder-gate' && !swapped) {
+            swapped = true;
+            swap(_Swap.other);
+          }
+        };
+        await nb.undoDelete(deleted).then<void>((_) {}, onError: (_) {});
+        nb.syncHook = null;
+        expect(swapped, isTrue);
+        expect(
+          assets.existsSync(),
+          isFalse,
+          reason: 'nothing is moved into the held folder',
+        );
+        expect(pageFile(other).existsSync(), isFalse);
+        await stop();
+      },
+    );
+  });
+
+  test('19. an entry of a folder whose binder file is missing is not re-keyed to where its page is listed now', () async {
+    await start();
+    final original = binderFile().readAsStringSync();
+    final box = addBox();
+    swap(_Swap.missing);
+    await check();
+    expect(kept().single.folder.toLowerCase(), folder.path.toLowerCase());
+    // The page's file in another binder, which lists it now.
+    final elsewhere = await Directory('${root.path}${sep}Second').create();
+    File('${elsewhere.path}$sep$pageId.canvas')
+        .writeAsStringSync(pageFile(pageId).readAsStringSync());
+    final second = await nb.addBinder(elsewhere.path);
+    expect(nb.binderOfPage(pageId), second.path);
+    final there = File('${elsewhere.path}$sep$pageId.canvas')
+        .readAsStringSync();
+    await nb.recoverNowForTest();
+    expect(
+      kept().single.folder.toLowerCase(),
+      folder.path.toLowerCase(),
+      reason: 'not re-keyed',
+    );
+    expect(
+      File('${elsewhere.path}$sep$pageId.canvas').readAsStringSync(),
+      there,
+      reason: 'nothing landed there',
+    );
+    // It lands in its own folder once its binder file is back.
+    await nb.removeBinder(second.path);
+    binderFile().writeAsStringSync(original);
+    await check();
+    await nb.afterHoldForTest(folder.path);
+    await nb.flush();
+    await realIoUntil(
+      () => fileHas(pageId, box) && kept().isEmpty,
+      'the edit to land in its own folder',
+    );
+    await stop();
+  });
+
+  test('23. Use this binder with a cover change of the old binder pending: it asks, then the held edits land', () async {
+    await start();
+    final box = addBox();
+    swap(_Swap.other);
+    await check();
+    await nb.updateBinder(folder.path, title: 'Stale');
+    expect(nb.coverPendingCountForTest(folder.path), 1);
+    await nb.useThisBinder(folder.path);
+    expect(asked.map((a) => a.$1), contains(UserQuestion.discardCoverChanges));
+    expect(nb.coverPendingCountForTest(folder.path), 0);
+    await nb.flush();
+    await realIoUntil(
+      () => fileHas(pageId, box) && kept().isEmpty,
+      'the edits to land',
+    );
+    await stop();
+  });
+
+  test('24. Delete of a copy while the binder file is missing, then Put back: the hold clears and the edits land', () async {
+    await start();
+    final box = addBox();
+    final text = binderFile().readAsStringSync();
+    final keep = File('${folder.path}${sep}noted-binder-DESKTOP-1.json')
+      ..writeAsStringSync(text);
+    final drop = File('${folder.path}${sep}noted-binder-LAPTOP-2.json')
+      ..writeAsStringSync(text);
+    swap(_Swap.missing);
+    await check();
+    await nb.refreshBinderCopies(folder.path);
+    expect(section().hold, BinderHold.missing);
+    expect(await nb.deleteBinderCopy(folder.path, drop.path), isTrue);
+    expect(drop.existsSync(), isFalse);
+    await nb.putBackBinderCopy(folder.path, keep.path);
+    expect(binderFile().readAsStringSync(), text);
+    await nb.checkBinderFile(binderFile().path);
+    await nb.afterHoldForTest(folder.path);
+    await nb.flush();
+    await realIoUntil(
+      () => fileHas(pageId, box) && kept().isEmpty,
+      'the edits to land',
+    );
+    expect(section().hold, isNull);
+    await stop();
+  });
+
+  group('32. the completion hook', () {
+    test('a refused job: its caller gets the error once, nothing extra is logged, the hold\'s work still starts', () async {
+      await start();
+      final other = await nb.createPage(binderPath: section().path);
+      await nb.open(pageId);
+      await nb.flush();
+      final logs = <String>[];
+      final print = debugPrint;
+      debugPrint = (String? m, {int? wrapWidth}) => logs.add(m ?? '');
+      try {
+        swap(_Swap.other);
+        var errors = 0;
+        await nb.delete(other).then<void>((_) {}, onError: (_) => errors++);
+        expect(errors, 1);
+        await nb.afterHoldForTest(folder.path);
+      } finally {
+        debugPrint = print;
+      }
+      expect(logs.where((l) => l.contains('binder hold')), isEmpty);
+      expect(section().hold, BinderHold.otherBinder);
+      expect(section().other?.id, otherBinder.id, reason: 'steps 3 and 4 ran');
+      await stop();
+    });
+
+    test(
+      'the abandoned watcher read starts the hold\'s work right after its read',
+      () async {
+        await start();
+        addBox();
+        final release = Completer<void>();
+        final holding = nb.folderLocks.run(folder, () => release.future);
+        swap(_Swap.other);
+        final checking = check();
+        // The read gives up the lock wait (500 ms) and reads; the hold's work
+        // runs while the test still has the folder.
+        await realIoUntil(
+          () => section().other != null,
+          'steps 3 and 4 after the abandoned read',
+        );
+        expect(kept(), hasLength(1));
+        release.complete();
+        await holding;
+        await checking;
+        await stop();
+      },
+    );
+  });
+
+  test('34. a hold from a user action: the hold\'s own waits at the folder do not show its folder-wait note', () async {
+    root = await Directory.systemTemp.createTemp('noted_held_edits');
+    pages = await Directory('${root.path}${sep}pages').create();
+    folder = await Directory('${root.path}${sep}Work').create();
+    rec = Directory('${root.path}${sep}recovery');
+    asked = [];
+    answer = true;
+    keptNotices = [];
+    disposed = false;
+    nb = Notebook(
+      PageStore(pages),
+      buildModules(),
+      saveDelay: const Duration(minutes: 10),
+      bindersFile: File('${root.path}${sep}binders.json'),
+      recoveryDirectory: rec,
+      folderWaitNote: const Duration(milliseconds: 50),
+    );
+    keptSub = nb.keptNotices.listen(keptNotices.add);
+    await nb.load();
+    final s = await nb.addBinder(folder.path);
+    pageId = await nb.createPage(binderPath: s.path);
+    await nb.flush();
+    final original = binderFile().readAsStringSync();
+    var noted = false;
+    nb.waitingForFolder.addListener(
+      () => noted = noted || nb.waitingForFolder.value,
+    );
+    final release = Completer<void>();
+    var held = false;
+    nb.syncHook = (point, path) async {
+      if (point == 'binder-hold-captured' && !held) {
+        held = true;
+        // The hold's own work waits at the folder, longer than the note's delay.
+        binderFile().writeAsStringSync(original);
+        unawaited(nb.folderLocks.run(folder, () => release.future));
+        unawaited(
+          Future<void>.delayed(
+            const Duration(milliseconds: 300),
+            release.complete,
+          ),
+        );
+        await nb.scanLocationForTest(folder.path);
+      }
+    };
+    swap(_Swap.other);
+    // A user action whose job meets the other binder's file at its turn.
+    await expectLater(
+      nb.createPage(binderPath: s.path),
+      throwsA(isA<NotebookException>()),
+    );
+    await nb.afterHoldForTest(folder.path);
+    expect(held, isTrue);
+    expect(
+      noted,
+      isFalse,
+      reason: 'the note is for the user action\'s own waits',
+    );
+    await stop();
+  });
+
+  test('35. a move out of a binder with the swap before the source attachments are removed: they stay and are named', () async {
+    await start();
+    final other = await nb.createPage(binderPath: section().path);
+    await nb.open(pageId);
+    await nb.flush();
+    final assets = Directory('${folder.path}$sep${assetsFolderName(other)}')
+      ..createSync();
+    File('${assets.path}${sep}a.txt').writeAsStringSync('attached');
+    nb.syncHook = (point, path) async {
+      if (point == 'move-source-deleted') {
+        nb.syncHook = null;
+        swap(_Swap.other);
+      }
+    };
+    Object? error;
+    try {
+      await nb.moveToLocation(other);
+    } on NotebookException catch (e) {
+      error = e;
+    }
+    expect(
+      File('${assets.path}${sep}a.txt').readAsStringSync(),
+      'attached',
+      reason: 'the source attachments stay',
+    );
+    expect(
+      '$error'.isNotEmpty &&
+          error is NotebookException &&
+          error.message.contains('stayed'),
+      isTrue,
+      reason: '$error',
+    );
+    await stop();
+  });
+
+  test(
+    '36. dispose with a request made: it is cleared and no hold work starts',
+    () async {
+      await start();
+      addBox();
+      final swapped = snapshot(folder);
+      var captured = false;
+      nb.syncHook = (point, path) async {
+        if (point == 'binder-hold-set') {
+          disposed = true;
+          nb.dispose();
+        }
+        if (point == 'binder-hold-captured') captured = true;
+      };
+      swap(_Swap.other);
+      final after = snapshot(folder);
+      await check();
+      await nb.afterHoldForTest(folder.path);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(captured, isFalse);
+      expect(snapshot(folder), after);
+      expect(swapped, isNot(after));
+      await stop();
+    },
+  );
 }
