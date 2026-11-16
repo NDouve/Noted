@@ -1520,6 +1520,19 @@ void main() {
       });
     }
 
+    test('(a) with the copy\'s AI access stricter: the redo puts the stricter access back', () async {
+      await start();
+      await withCopy(originalAi: AiAccess.open, shape: (c) => c.withMeta(c.meta.withAiAccess(AiAccess.guarded)));
+      revertAt('copy-merged');
+      await nb.checkFile(copy);
+      expect(onDisk(id).meta.aiAccess, AiAccess.open, reason: 'the old file is back');
+      await recheck();
+      expect(onDisk(id).meta.aiAccess, AiAccess.guarded);
+      expect(ids(), {box.id, extra.id});
+      await recheck();
+      expect(await entries(), isEmpty);
+    });
+
     test('(c) no revert: the entry is retired at the first re-check and the page file is untouched', () async {
       await start();
       await withCopy();
