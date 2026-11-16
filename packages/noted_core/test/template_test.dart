@@ -161,7 +161,53 @@ void main() {
       isEmpty,
     );
 
-    await store.delete(file.path);
+    final listed = entries.whereType<ReadableTemplate>().single;
+    expect((await store.delete(file.path, listed.identity)).deleted, isTrue);
     expect(file.existsSync(), isFalse);
+  });
+
+  test('a delete with a stale identity finds the file changed and leaves it byte for byte', () async {
+    final dir = await Directory.systemTemp.createTemp('noted_tpl');
+    addTearDown(() => dir.delete(recursive: true));
+    final store = TemplateStore(Directory('${dir.path}/templates'));
+    final t = NotedTemplate.forPage(name: 'N', page: readPage(pageText('p1')));
+    final file = await store.save(t);
+    final listed = (await store.scan()).whereType<ReadableTemplate>().single;
+    final changed = '${file.readAsStringSync()} ';
+    file.writeAsStringSync(changed);
+    final r = await store.delete(file.path, listed.identity);
+    expect(r.outcome, DeleteOutcome.changed);
+    expect(file.readAsStringSync(), changed);
+    expect(Directory('${dir.path}/templates').listSync(), hasLength(1), reason: 'nothing left aside');
+  });
+
+  test('scan(sweep: true) puts the leftover of a delete back; scan() lists it as unreadable', () async {
+    final dir = await Directory.systemTemp.createTemp('noted_tpl');
+    addTearDown(() => dir.delete(recursive: true));
+    final templates = Directory('${dir.path}/templates');
+    final store = TemplateStore(templates);
+    final t = NotedTemplate.forPage(name: 'N', page: readPage(pageText('p1')));
+    final file = await store.save(t);
+    final left = File('${file.path}.123-a-b$asideSuffix');
+    file.renameSync(left.path);
+
+    final plain = await store.scan();
+    expect(plain.single, isA<UnreadableTemplate>());
+    expect((plain.single as UnreadableTemplate).reason, contains('left over from a delete'));
+    expect(left.existsSync(), isTrue, reason: 'listing without a sweep moves nothing');
+    expect(file.existsSync(), isFalse);
+
+    final swept = await store.scan(sweep: true);
+    expect(swept.single, isA<ReadableTemplate>());
+    expect(file.existsSync(), isTrue);
+    expect(left.existsSync(), isFalse);
+  });
+  test('a template id that is not one plain name is refused', () {
+    final text = NotedTemplate.forPage(name: 'N', page: readPage(pageText('p1'))).write();
+    for (final bad in ['../x', 'a/b', r'a\b', '.', '..', 'x.y']) {
+      final changed = text.replaceFirst(RegExp(r'"templateId"\s*:\s*"[^"]*"'), '"templateId": "${bad.replaceAll(r'\', r'\')}"');
+      expect(() => NotedTemplate.parse(changed), throwsA(isA<TemplateFormatException>()), reason: bad);
+    }
+    expect(NotedTemplate.parse(text).id, isNotEmpty);
   });
 }

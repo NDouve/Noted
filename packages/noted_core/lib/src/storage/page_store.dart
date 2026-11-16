@@ -329,12 +329,6 @@ class PageStore {
     }
   }
 
-  Future<void> delete(String pageId) async {
-    final f = File(_pathFor(pageId));
-    if (await f.exists()) await f.delete();
-    _paths.remove(pageId);
-  }
-
   /// Deletes the page's file only if it still holds exactly [expectedText]; see
   /// [deleteFileIfUnchanged]. Like [saveIfUnchanged], serialise it with [scan].
   Future<DeleteResult> deleteIfUnchanged(

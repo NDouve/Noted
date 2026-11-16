@@ -135,6 +135,13 @@
 //     `sync:swapAside/redundant` (the binder Put back's copy is deleted
 //     although the binder file was replaced meanwhile).
 //
+// 24. Landing renames over the target (`Notebook._landFiles` copies a hash-named
+//     kept file to a temp name and renames it over the target, as before run
+//     2026-11-15-02, task 6): 0 of the first 16 seeds fail (0 of the 24); the
+//     sequences don't land kept attachments. Caught by the probe "kept
+//     attachments landing over a damaged hash file keep both, live and after a
+//     restart" (the damaged copy is gone).
+//
 // Rows 1-19 were counted again with the layer steps in (`layer:both` adds a
 // box, so the picks after it differ). Sequences of the 24 that fail, each row
 // made again by breaking the same behaviour (rows 14 and 16 at a place that
@@ -344,12 +351,6 @@ class _Chaos extends PageStore {
         await beforePublish?.call();
       },
     );
-  }
-
-  @override
-  Future<void> delete(String pageId) {
-    if (failDelete.contains(pageId)) throw const FileSystemException('source gone');
-    return super.delete(pageId);
   }
 
   @override
@@ -4263,6 +4264,36 @@ void main() {
       // The next start writes the page back.
       await run._opRestart();
       await run.verify('after the recovery', fresh: true);
+    });
+
+    // Run 2026-11-15-02, task 6 part 1: kept attachments landing into a folder
+    // whose hash file is damaged keep both, live and after a restart.
+    test('kept attachments landing over a damaged hash file keep both, live and after a restart', () async {
+      final id = run.model.keys.first;
+      run._giveAssets(id);
+      final assets = Directory(run._assetsPath(id));
+      File('${assets.path}${run.sep}$_goodName').writeAsBytesSync([9, 9, 9]);
+      final kept = Directory('${run.rec.path}${run.sep}${assetsFolderName(id)}')..createSync(recursive: true);
+      File('${kept.path}${run.sep}$_goodName').writeAsBytesSync(_goodBytes);
+
+      void expectBoth(String where) {
+        final names = [for (final e in assets.listSync()) e.path.split(RegExp(r'[\\/]')).last]..sort();
+        final damaged = names.where((n) => n.startsWith('$_goodName.damaged-')).toList();
+        expect(damaged, hasLength(1), reason: '$where: the damaged copy is kept');
+        expect(names, unorderedEquals(['a.txt', _goodName, damaged.single]), reason: where);
+        expect(File('${assets.path}${run.sep}$_goodName').readAsBytesSync(), _goodBytes, reason: '$where: the good copy');
+        expect(File('${assets.path}${run.sep}${damaged.single}').readAsBytesSync(), [9, 9, 9], reason: '$where: the damaged copy');
+        expect(kept.existsSync(), isFalse, reason: '$where: nothing is left in recovery');
+      }
+
+      await run._opRestart();
+      expectBoth('after landing');
+      final fresh = run._make();
+      run._spare.add(fresh);
+      await fresh.load();
+      expectBoth('after a new notebook');
+      await run._opRestart();
+      expectBoth('after another restart');
     });
 
     test('a failed put-back with a recovery entry waiting and attachments that cannot go '

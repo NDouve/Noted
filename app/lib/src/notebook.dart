@@ -458,16 +458,27 @@ class StandaloneFolder {
 
 /// A template found in a templates folder.
 class TemplateItem {
-  const TemplateItem(this.template, this.path, this.binderPath);
+  const TemplateItem(this.template, this.path, this.binderPath, this.identity, {this.binderId});
 
   final NotedTemplate template;
+
+  /// The identity of the bytes that were listed; a delete only removes the
+  /// file while it still holds them.
+  final ContentIdentity identity;
 
   /// The template file.
   final String path;
 
   /// The binder the template belongs to; null for an app-wide template.
   final String? binderPath;
+
+  /// The id recorded for the binder when the template was listed: a delete is
+  /// refused when the folder holds another binder by then.
+  final String? binderId;
 }
+
+// What a binder's template work started with (see Notebook._templateSnap).
+typedef _TemplateSnap = ({BinderSection? section, String? id});
 
 /// A template file that can't be read. It is listed and never touched.
 class UnreadableTemplateItem {
@@ -2733,11 +2744,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// [_copyDir] for a copy that has no rollback of its own (templates): what it
   /// kept aside or left alone is posted to [attachmentNotices], also when it
   /// throws.
-  Future<void> _copyDirNotify(Directory from, Directory to, String targetPlace, String sourcePlace) async {
+  Future<void> _copyDirNotify(
+    Directory from,
+    Directory to,
+    String targetPlace,
+    String sourcePlace, {
+    bool sweepSource = true,
+  }) async {
     final copy = AttachmentCopy();
     try {
       // A pull-only source is only read: its leftovers are not swept (G15).
-      await _copyDir(from, to, into: copy, sweepSource: !_pullOnly(from.path));
+      await _copyDir(from, to, into: copy, sweepSource: sweepSource && !_pullOnly(from.path));
     } finally {
       _postCopyNotices(copy, targetPlace, sourcePlace);
     }
@@ -5236,10 +5253,65 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return d;
   }
 
+  // Template work (the listing and its sweep, Save as template into a binder,
+  // the assets read for a new page, a delete and its cleanup) runs one step
+  // after another, so this device's sweep never takes its own in-flight aside
+  // and a page is never made from an assets folder a delete is emptying.
+  Future<void> _templateChain = Future<void>.value();
+
+  Future<T> _templateTurn<T>(Future<T> Function() job) {
+    final run = _templateChain.then((_) => job());
+    _templateChain = run.then<void>((_) {}, onError: (Object _) {});
+    return run;
+  }
+
+  /// Runs at each binder gate of the template work, named by step ('sweep',
+  /// 'saveTemplate', 'saveAssets', 'copyAssets', 'delete', 'assetsSweep',
+  /// 'assetDelete', 'dirDelete'), just before the gate is checked. For tests.
+  @visibleForTesting
+  Future<void> Function(String step)? templateStepHook;
+
+  // What a binder's template work started with: the section and the id
+  // recorded for its folder.
+  _TemplateSnap _templateSnap(String? binderPath) => binderPath == null
+      ? (section: null, id: null)
+      : (section: _binders[binderPath], id: _binderIds[_key(binderPath)]);
+
+  // Why template work in [binderPath]'s templates folder must not write now,
+  // or null. Synchronous: called right before the step it guards, so today's
+  // binder state is what is written into. The app-wide folder (null) needs no
+  // gate.
+  String? _templateGateProblem(String? binderPath, _TemplateSnap snap) {
+    if (binderPath == null) return null;
+    final s = _binders[binderPath];
+    if (s == null || !identical(s, snap.section) || _binderIds[_key(binderPath)] != snap.id) {
+      return 'The binder changed; nothing was written.';
+    }
+    if (!s.available || _isLocked(binderPath)) return _lockedMessage(binderPath);
+    return null;
+  }
+
+  void _templateGate(String? binderPath, _TemplateSnap snap) {
+    final p = _templateGateProblem(binderPath, snap);
+    if (p != null) throw NotebookException(p);
+  }
+
+  Future<void> _templateStep(String? binderPath, _TemplateSnap snap, String step) async {
+    await templateStepHook?.call(step);
+    _templateGate(binderPath, snap);
+  }
+
   /// The templates of [kind] that can be used in the binder [binderPath]
   /// (null: not in a binder): the binder's own and the app-wide ones. Files
-  /// that can't be read are listed apart and never touched.
-  Future<TemplateListing> listTemplates(TemplateKind kind, {String? binderPath}) async {
+  /// that can't be read are listed apart and never touched. The listing puts
+  /// back what a crashed delete left only where it may write (not in a
+  /// pull-only, locked or replaced binder).
+  Future<TemplateListing> listTemplates(TemplateKind kind, {String? binderPath}) {
+    final snap = _templateSnap(binderPath);
+    return _templateTurn(() => _listTemplatesNow(kind, binderPath, snap));
+  }
+
+  Future<TemplateListing> _listTemplatesNow(TemplateKind kind, String? binderPath, _TemplateSnap snap) async {
     final items = <TemplateItem>[];
     final bad = <UnreadableTemplateItem>[];
     final scopes = <String?>[
@@ -5247,11 +5319,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (appTemplatesDirectory != null) null,
     ];
     for (final scope in scopes) {
-      final entries = await TemplateStore(_templatesDirFor(scope)).scan();
+      final dir = _templatesDirFor(scope);
+      var sweep = _sweepOff == 0 && !_pullOnly(dir.path);
+      if (sweep && scope != null) {
+        await templateStepHook?.call('sweep');
+        sweep = _templateGateProblem(scope, snap) == null;
+      }
+      final entries = await TemplateStore(dir).scan(sweep: sweep);
       for (final e in entries) {
         switch (e) {
           case ReadableTemplate():
-            if (e.template.kind == kind) items.add(TemplateItem(e.template, e.path, scope));
+            if (e.template.kind == kind) items.add(TemplateItem(e.template, e.path, scope, e.identity, binderId: snap.id));
           case UnreadableTemplate():
             bad.add(UnreadableTemplateItem(e.path, e.reason, scope));
         }
@@ -5275,7 +5353,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       throw const NotebookException('Only a page in a binder can be saved to the binder.');
     }
     if (inBinder) _assertWritable(binder!); // the binder's folder is not written when damaged
-    final dir = _templatesDirFor(inBinder ? binder : null);
+    final into = inBinder ? binder : null;
+    final snap = _templateSnap(into);
+    if (into == null) return _savePageAsTemplateNow(pageId, loc, name, null, snap);
+    return _templateTurn(() => _savePageAsTemplateNow(pageId, loc, name, into, snap));
+  }
+
+  Future<NotedTemplate> _savePageAsTemplateNow(
+    String pageId,
+    String loc,
+    String name,
+    String? binder,
+    _TemplateSnap snap,
+  ) async {
+    final dir = _templatesDirFor(binder);
     await flush();
     final page = await _loadPage(_storeOf(loc), pageId);
     final title = page.meta.title.trim();
@@ -5283,7 +5374,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       name: name.trim().isNotEmpty ? name.trim() : (title.isEmpty ? 'Untitled page' : title),
       page: page,
     );
+    await _templateStep(binder, snap, 'saveTemplate');
     await _saveTemplate(dir, template);
+    try {
+      await _templateStep(binder, snap, 'saveAssets');
+    } on NotebookException catch (e) {
+      throw NotebookException('${e.message} The template was saved without its images and files.');
+    }
     await _copyDirNotify(
       _assetsDir(loc, pageId),
       _templateAssets(dir, template.id, pageId),
@@ -5299,21 +5396,42 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     '${dir.path}${Platform.pathSeparator}$templateId.assets${Platform.pathSeparator}$pageId',
   );
 
+  static final RegExp _plainName = RegExp(r'^[A-Za-z0-9_-]+$');
+
+  // [_templateAssets] only when the names are one plain name each and it
+  // resolves to `<dir>/<id>.assets/<page id>`: an id read from a template file
+  // is never trusted as a path. Null otherwise.
+  static Directory? _safeTemplateAssets(Directory dir, String templateId, String pageId) {
+    if (!_plainName.hasMatch(templateId) || !_plainName.hasMatch(pageId)) return null;
+    final d = _templateAssets(dir, templateId, pageId);
+    return _key(d.parent.parent.absolute.path) == _key(dir.absolute.path) ? d : null;
+  }
+
   /// Copies the images and files of template page [fromId] into the assets
   /// folder of the new page [toId] in [loc]. The template is looked for in
   /// the binder's templates (if [loc] is a binder) and the app-wide ones.
-  Future<void> _copyTemplateAssets(NotedTemplate template, String fromId, String loc, String toId) async {
-    final dirs = [
-      if (_binders.containsKey(loc)) _templatesDirFor(loc),
-      ?appTemplatesDirectory,
-    ];
-    for (final d in dirs) {
-      final src = _templateAssets(d, template.id, fromId);
-      if (await src.exists()) {
-        await _copyDirNotify(src, _assetsDir(loc, toId), 'the new page', 'the template');
-        return;
+  Future<void> _copyTemplateAssets(NotedTemplate template, String fromId, String loc, String toId) {
+    final snap = _templateSnap(_binders.containsKey(loc) ? loc : null);
+    return _templateTurn(() async {
+      final binder = _binders.containsKey(loc) ? loc : null;
+      final dirs = [
+        if (binder != null) _templatesDirFor(binder),
+        ?appTemplatesDirectory,
+      ];
+      for (final d in dirs) {
+        final src = _safeTemplateAssets(d, template.id, fromId);
+        if (src != null && await src.exists()) {
+          var sweepSource = true;
+          if (binder != null && d.path == _templatesDirFor(binder).path) {
+            // A binder that changed since is only read, never swept.
+            await templateStepHook?.call('copyAssets');
+            sweepSource = _templateGateProblem(binder, snap) == null;
+          }
+          await _copyDirNotify(src, _assetsDir(loc, toId), 'the new page', 'the template', sweepSource: sweepSource);
+          return;
+        }
       }
-    }
+    });
   }
 
   /// Saves the settings and whole page tree of the binder [path] as an
@@ -5360,19 +5478,164 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  /// Deletes a template file found by [listTemplates].
+  /// Deletes a template file found by [listTemplates], only if it is still the
+  /// file that was listed, then the files of its assets folder that are
+  /// verified attachments, unless another copy of the template may need them.
   Future<void> deleteTemplate(TemplateItem item) async {
     final inBinder = item.binderPath;
     if (inBinder != null && _binders.containsKey(inBinder) && _isLocked(inBinder)) throw NotebookException(_lockedMessage(inBinder));
     if (_pullOnly(File(item.path).parent.path)) throw const NotebookException(_pullOnlyMessage);
+    final now = _templateSnap(inBinder);
+    // What was listed is judged against the binder as it was listed.
+    final snap = inBinder == null ? now : (section: now.section, id: item.binderId);
+    return _templateTurn(() => _deleteTemplateNow(item, snap));
+  }
+
+  Future<void> _deleteTemplateNow(TemplateItem item, _TemplateSnap snap) async {
+    final binder = item.binderPath;
+    final dir = _templatesDirFor(binder);
     try {
-      await TemplateStore(_templatesDirFor(item.binderPath)).delete(item.path);
-      final stem = item.path.endsWith(templateExtension)
-          ? item.path.substring(0, item.path.length - templateExtension.length)
-          : item.path;
-      await _removeDir(Directory('$stem.assets'));
+      await _templateStep(binder, snap, 'delete');
+      final r = await TemplateStore(dir).delete(item.path, item.identity);
+      if (r.outcome == DeleteOutcome.changed || r.outcome == DeleteOutcome.changedKept) {
+        throw const NotebookException('The template changed since it was listed; it was not deleted.');
+      }
+      try {
+        await _cleanTemplateAssets(dir, item, binder, snap);
+      } on NotebookException {
+        // The file is gone and the picker drops it; what is left stays.
+        _templateNotice('The template was deleted; the binder changed, so its files were kept.');
+      }
     } on FileSystemException catch (e) {
       throw NotebookException('Could not delete the template: ${e.message}');
+    }
+  }
+
+  void _templateNotice(String text) {
+    if (!_notices.isClosed) _notices.add(text);
+  }
+
+  static const String _assetsKeptShared =
+      'The template was deleted. Its files were kept because another copy of the template may need them.';
+
+  // Whether the assets of template [id] may still be needed after its file
+  // was deleted: another readable template with the id, any
+  // template file that can't be read (its id can't be established), a
+  // set-aside leftover, or any other file named from the id. A fresh scan, no
+  // sweep. Fills [known] with the stamp (size and modified time) of every
+  // template file, taken before the scan reads them: a file that changes after
+  // that no longer matches its stamp.
+  Future<bool> _templateAssetsShared(Directory dir, String id, Map<String, String> known) async {
+    try {
+      for (final e in dir.listSync(followLinks: false)) {
+        if (e is File && e.path.endsWith(templateExtension)) known[_key(e.path)] = _stamp(e);
+      }
+    } on FileSystemException {
+      return true;
+    }
+    for (final e in await TemplateStore(dir).scan()) {
+      if (e is UnreadableTemplate) return true;
+      if (e is ReadableTemplate && e.template.id == id) return true;
+    }
+    return _templateSurvivorNow(dir, id, known);
+  }
+
+  static String _stamp(File f) {
+    final st = f.statSync();
+    if (st.type != FileSystemEntityType.file) throw const FileSystemException('not a file');
+    return [st.size, st.modified.microsecondsSinceEpoch].join(':');
+  }
+
+  // The synchronous listing of the folder: a leftover, a file named from the
+  // id (such as `<id>.notedtemplate.tmp`; folders are not files), a template
+  // file that was not there at the scan (a copy synced back to the deleted
+  // path included) or one whose stamp changed since, or can't be read now: a
+  // template replaced by a copy of this one is a survivor too.
+  bool _templateSurvivorNow(Directory dir, String id, Map<String, String> known) {
+    try {
+      for (final e in dir.listSync(followLinks: false)) {
+        if (e is! File) continue;
+        final n = _baseName(e.path);
+        if (n.endsWith(asideSuffix) || n.endsWith(verifiedSuffix) || n.startsWith(id)) return true;
+        if (n.endsWith(templateExtension)) {
+          final was = known[_key(e.path)];
+          if (was == null || was != _stamp(e)) return true;
+        }
+      }
+    } on FileSystemException {
+      return true; // can't tell: the assets stay
+    }
+    return false;
+  }
+
+  // Removes `<template id>.assets` after the template file is gone: first the
+  // leftovers of stopped writes are judged as attachments, then each file
+  // named by its hash that still holds it goes through [deleteFileIfMatches]
+  // (anything else stays), then the emptied folders, bottom-up and
+  // non-recursively. Every step passes the binder gate, and every file delete
+  // the survivor check again.
+  Future<void> _cleanTemplateAssets(Directory dir, TemplateItem item, String? binder, _TemplateSnap snap) async {
+    final id = item.template.id;
+    final assets = Directory('${dir.path}${Platform.pathSeparator}$id.assets');
+    if (!_plainName.hasMatch(id) || _key(assets.parent.absolute.path) != _key(dir.absolute.path)) return;
+    if (!await assets.exists()) return;
+    final known = <String, String>{};
+    if (await _templateAssetsShared(dir, id, known)) {
+      _templateNotice(_assetsKeptShared);
+      return;
+    }
+    await _templateStep(binder, snap, 'assetsSweep');
+    final dirs = <Directory>[assets];
+    await sweepAttachmentLeftovers(assets, AttachmentCopy());
+    await for (final e in assets.list(recursive: true, followLinks: false)) {
+      if (e is Directory) dirs.add(e);
+    }
+    for (final d in dirs.skip(1)) {
+      await sweepAttachmentLeftovers(d, AttachmentCopy());
+    }
+    final files = <File>[];
+    await for (final e in assets.list(recursive: true, followLinks: false)) {
+      if (e is File) files.add(e);
+    }
+    final kept = <String>[];
+    var shared = false;
+    String shown(File f) => f.path.substring(assets.path.length + 1);
+    for (final f in files) {
+      final hash = attachmentNameHash(_baseName(f.path));
+      if (hash == null) {
+        kept.add(shown(f));
+        continue;
+      }
+      final check = await checkAttachmentFile(f, hash, 0);
+      if (check.state != AttachmentState.ok) {
+        kept.add(shown(f));
+        continue;
+      }
+      final length = await f.length();
+      await templateStepHook?.call('assetDelete');
+      _templateGate(binder, snap);
+      if (_templateSurvivorNow(dir, id, known)) {
+        shared = true;
+        break;
+      }
+      final r = await deleteFileIfMatches(f.path, identity: ContentIdentity(length, hash));
+      if (!r.deleted && r.outcome != DeleteOutcome.absent) kept.add(shown(f));
+    }
+    if (shared) {
+      _templateNotice(_assetsKeptShared);
+      return;
+    }
+    dirs.sort((a, b) => b.path.length.compareTo(a.path.length)); // the deepest first
+    for (final d in dirs) {
+      await _templateStep(binder, snap, 'dirDelete');
+      try {
+        await d.delete();
+      } on FileSystemException {
+        // Not empty: what is in it is reported above.
+      }
+    }
+    if (kept.isNotEmpty) {
+      _templateNotice('The template was deleted; some of its files were kept: ${kept.join(', ')}.');
     }
   }
 
@@ -5516,8 +5779,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // the new page ids.
       final templates = appTemplatesDirectory;
       for (var i = 0; templates != null && i < made.pages.length; i++) {
+        final src = _safeTemplateAssets(templates, template.id, template.pages[i].id);
+        if (src == null) continue;
         await _copyDirNotify(
-          _templateAssets(templates, template.id, template.pages[i].id),
+          src,
           Directory('${dir.path}${Platform.pathSeparator}${assetsFolderName(made.pages[i].id)}'),
           'the new binder',
           'the template',
@@ -8351,7 +8616,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       try {
         final to = _assetsDir(loc, id);
         final done = <_LandedFile>[];
-        await _landFiles(kept, to, done);
+        final copy = AttachmentCopy();
+        try {
+          await _landFiles(kept, to, done, copy);
+        } finally {
+          // What a landing kept as damaged is said, as a move says it (0132).
+          if (copy.damagedKept.isNotEmpty) {
+            _postCopyNotices(AttachmentCopy()..damagedKept.addAll(copy.damagedKept), _placeName(loc), 'the recovery folder');
+          }
+          if (copy.keptAside.isNotEmpty) {
+            final note = _attachmentsNote(const [], copy.keptAside, _placeName(loc), 'the recovery folder');
+            _templateNotice('${note.substring(0, 1).toUpperCase()}${note.substring(1)}');
+          }
+        }
         for (final f in done) {
           if (!await _holdsContent(f.source, f.name, f.target)) {
             throw FileSystemException('The kept file ${f.name} did not land with its content');
@@ -8415,11 +8692,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   @visibleForTesting
   static void Function()? landBeforePublishHook;
 
-  /// Runs just before a hash-named kept file is renamed into place; it may
-  /// throw to stand in for a failed rename. For tests.
-  @visibleForTesting
-  static void Function()? landHashRenameHook;
-
   /// Runs just before a page put back at its old place during a failed move
   /// is published. For tests.
   @visibleForTesting
@@ -8442,41 +8714,67 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return true;
   }
 
-  // Copies the files of the kept folder [from] into [to]. Each goes to a temp
-  // name in [to], is checked there and renamed into place, so a partly copied
-  // file is never taken for the real one. A target named by its hash that
-  // doesn't hold it is replaced (it is a partial copy); any other name that
-  // differs is someone's file that only shares the name, and is never
-  // replaced. Which names land is [attachmentNameToTake]'s rule (a `<hash>.tmp`
-  // attachment keeps its name; a complete `<hash>.<ext>.tmp` lands without
-  // `.tmp`). Leftover unique temp names of a stopped write
-  // (`<name>.<micros>-<n>.tmp`) are first put back, when complete, under their
-  // own name in [from] and land with the rest; the others stay and keep the
-  // folder. Every file that is in place with verified content is added to
-  // [done].
-  static Future<void> _landFiles(Directory from, Directory to, List<_LandedFile> done) async {
+  // Copies the files of the kept folder [from] into [to]. A target named by
+  // its hash goes through [copyAttachmentFile], the attachment copy's per-file
+  // path: a target that doesn't hold its hash is never replaced, it is kept as
+  // `.damaged-<12 hex>` (0132) and the verified copy is published exclusively;
+  // the outcome is in [r]. Any other name that differs is someone's file that
+  // only shares the name, and is never replaced. Which names land is
+  // [attachmentNameToTake]'s rule (a `<hash>.tmp` attachment keeps its name; a
+  // complete `<hash>.<ext>.tmp` lands without `.tmp`). Leftover unique temp
+  // names of a stopped write (`<name>.<micros>-<n>.tmp`) are first put back,
+  // when complete, under their own name in [from] and land with the rest; the
+  // others stay and keep the folder. Every file that is in place with verified
+  // content is added to [done].
+  static Future<void> _landFiles(Directory from, Directory to, List<_LandedFile> done, AttachmentCopy r) async {
     await to.create(recursive: true);
-    await sweepAttachmentLeftovers(from, AttachmentCopy());
+    await sweepAttachmentLeftovers(from, r);
     await for (final e in from.list()) {
       final raw = _baseName(e.path);
       final sep = Platform.pathSeparator;
       if (e is Directory) {
-        await _landFiles(e, Directory('${to.path}$sep$raw'), done);
+        await _landFiles(e, Directory('${to.path}$sep$raw'), done, r);
         continue;
       }
       if (e is! File) continue;
       final name = await attachmentNameToTake(e, raw);
       if (name == null) continue;
       final target = File('${to.path}$sep$name');
+      final isHash = _hashName.firstMatch(name) != null;
+      final collision = FileSystemException('a different $name is already there; both are kept', target.path);
+      if (isHash) {
+        // The source against its own name first: the copy hashes the source
+        // only when a target exists.
+        if (!await _holdsContent(e, name, e)) {
+          throw FileSystemException('The copy of $name differs from the kept file', e.path);
+        }
+        await copyAttachmentFile(e, target.path, name, r);
+        if (r.verified.any((c) => c.target.path == target.path)) {
+          // A landing temp left by an earlier version goes only while it holds the
+          // source's bytes (length and hash); anything else, or an error, keeps it.
+          try {
+            final stale = '${target.path}.landing.tmp';
+            if (await FileSystemEntity.type(stale, followLinks: false) == FileSystemEntityType.file) {
+              await deleteFileIfMatches(stale, identity: ContentIdentity(await e.length(), _hashName.firstMatch(name)!.group(1)!));
+            }
+          } on FileSystemException {
+            // Only a leftover; the landing goes on.
+          }
+          done.add(_LandedFile(e, name, target));
+        } else if (r.stillChanging.contains(target.path)) {
+          throw FileSystemException('$name is still changing in the page folder', target.path);
+        } else {
+          throw collision;
+        }
+        continue;
+      }
       final tmp = File('${target.path}.landing.tmp');
       if (await _holdsContent(e, name, target)) {
         if (await tmp.exists()) await tmp.delete(); // left by an earlier try
         done.add(_LandedFile(e, name, target));
         continue;
       }
-      final isHash = _hashName.firstMatch(name) != null;
-      final collision = FileSystemException('a different $name is already there; both are kept', target.path);
-      if (!isHash && await FileSystemEntity.type(target.path, followLinks: false) != FileSystemEntityType.notFound) {
+      if (await FileSystemEntity.type(target.path, followLinks: false) != FileSystemEntityType.notFound) {
         throw collision;
       }
       if (await tmp.exists()) await tmp.delete();
@@ -8485,25 +8783,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (!await _holdsContent(e, name, tmp)) {
           throw FileSystemException('The copy of $name differs from the kept file', e.path);
         }
-        if (!isHash) {
-          // Never replaces: a different file that arrived since the check
-          // above stays as it is, and the kept source stays too.
-          if (!await publishExclusive(tmp, target.path, beforeOsCall: landBeforePublishHook)) throw collision;
-        } else {
-          try {
-            landHashRenameHook?.call();
-            await tmp.rename(target.path);
-          } on FileSystemException {
-            // A target that holds its hash is already the file; any other
-            // is a partial copy and goes.
-            if (await _holdsContent(e, name, target)) {
-              await tmp.delete();
-            } else {
-              if (await target.exists()) await target.delete();
-              await tmp.rename(target.path);
-            }
-          }
-        }
+        // Never replaces: a different file that arrived since the check
+        // above stays as it is, and the kept source stays too.
+        if (!await publishExclusive(tmp, target.path, beforeOsCall: landBeforePublishHook)) throw collision;
       } catch (_) {
         try {
           if (await tmp.exists()) await tmp.delete();
