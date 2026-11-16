@@ -3012,71 +3012,9 @@ class _Run {
         _aImg = null;
         _aForeign = false;
       case 'write/heldThenUse':
-        // Held edits: an edit of the open page with its autosave pending and a
-        // delete of another page queued behind a job at the folder, then
-        // another binder's file. Nothing is written to the folder; the live
-        // state equals a fresh launch's; Use this binder lands it all.
-        if (!_canWrite) return;
-        final inA = [for (final e in model.entries) if (e.value.loc == 'a') e.key];
-        if (inA.isEmpty) return;
-        final id = inA.first;
-        await nb.open(id);
-        await nb.flush();
-        _localEdit(model[id]!, nb.current!, addOnly: true);
-        final victim = inA.length > 1 ? inA[1] : null;
-        final release = Completer<void>();
-        final holding = nb.folderLocks.run(dirs['a']!, () => release.future);
-        final deleting = victim == null ? null : nb.delete(victim).then<Object?>((_) => null, onError: (Object e) => e);
-        await Future<void>.delayed(const Duration(milliseconds: 30));
-        final other = Binder.create(id: _newBinderId(), title: 'Held $seed', color: binderPalette[3]);
-        _aFile.writeAsStringSync(other.write());
-        release.complete();
-        await holding;
-        if (deleting != null) {
-          expect(await deleting, isA<NotebookException>(), reason: 'seed $seed: the queued delete is refused');
-        }
-        await nb.checkBinderFile(_aFile.path);
-        await nb.afterHoldForTest(pathA);
-        expect(_sectionA.hold, BinderHold.otherBinder, reason: 'seed $seed: the folder is held');
-        expect(nb.isReadOnlyPage(id), isTrue, reason: 'seed $seed: its pages are read-only');
-        expect(nb.heldPagesFor(pathA), 1, reason: 'seed $seed: the edit is kept');
-        // The held folder's files, and the recovery entries kept for it (a
-        // fresh launch replays the entries of other folders as usual).
-        bool forA(File f) {
-          try {
-            final m = jsonDecode(f.readAsStringSync());
-            return m is Map && m['folder'] is String && _norm(m['folder'] as String) == _norm(pathA);
-          } on Object {
-            return false;
-          }
-        }
-
-        Map<String, String> bytes() => {
-          for (final f in dirs['a']!.listSync(recursive: true).whereType<File>()) f.path: base64Encode(f.readAsBytesSync()),
-          if (rec.existsSync())
-            for (final f in rec.listSync(recursive: true).whereType<File>())
-              if (f.path.endsWith('.entry') && forA(f)) f.path: base64Encode(f.readAsBytesSync()),
-        };
-        final live = bytes();
-        final fresh = _make();
-        _spare.add(fresh);
-        try {
-          await fresh.load();
-          final s = fresh.binders.firstWhere((b) => _norm(b.path) == _norm(pathA));
-          expect(s.hold, BinderHold.otherBinder, reason: 'seed $seed: a fresh launch holds the folder too');
-          expect(fresh.isReadOnlyPage(id), isTrue, reason: 'seed $seed: and lists its pages read-only');
-          expect(fresh.heldPagesFor(pathA), 1, reason: 'seed $seed: and keeps the edit');
-          expect(bytes(), live, reason: 'seed $seed: the folder and recovery are as the live notebook left them');
-        } finally {
-          if (_gone.add(fresh)) fresh.dispose();
-        }
-        await nb.useThisBinder(pathA);
-        _idA = other.id;
-        _aTitle = other.title;
-        _aAi = null;
-        _aImg = null;
-        _aForeign = false;
-        await nb.flush();
+        await _heldStep('other');
+      case final k when k.startsWith('write/held/'):
+        await _heldStep(k.substring('write/held/'.length));
       case 'lockedList':
         await _lockedList(damaged: _brng.nextBool());
       case 'lockedList/locked':
@@ -3108,6 +3046,202 @@ class _Run {
     }
     await verify('binder step $kind');
     kinds.add(kind.startsWith('lockedList') ? 'binder:lockedList' : 'binder:$kind');
+  }
+
+  // Held edits (run 2026-11-16-01, task 3): an edit of the open page in A with
+  // its autosave pending, then A's folder stops holding binder A ([leg]):
+  //   other, freshThenUse: another binder's file (with a delete queued behind
+  //     a job at the folder), then Use this binder (on the live notebook, or on
+  //     a fresh launch);
+  //   damaged, missing: a damaged binder file, or none, then the original back;
+  //   transient: half-written bytes at a save's turn, then the same bytes back
+  //     (no hold: the save is retried);
+  //   queuedScan: a scan queued at the folder with a page-file aside, across
+  //     the swap (no sweep);
+  //   attachments: a damaged attachment and a missing one with a kept copy,
+  //     displayed while held (nothing renamed or put back);
+  //   templateSave, templateSweep, templateDelete: template work queued at the
+  //     folder across the swap (nothing written in `<A>/templates`).
+  // While held, nothing is written to A, and the folder's files (templates
+  // included) and its recovery entries are the same live and after a fresh
+  // launch. Afterwards the edit lands and the model holds.
+  Future<void> _heldStep(String leg) async {
+    if (!_canWrite) return;
+    final inA = [for (final e in model.entries) if (e.value.loc == 'a') e.key];
+    if (inA.isEmpty) return;
+    final dirA = dirs['a']!;
+    final id = inA.first;
+    trace.add('  held: $leg on ${_short(id)}');
+    await nb.open(id);
+    await nb.flush();
+    final original = _aFile.readAsBytesSync();
+    final other = Binder.create(id: _newBinderId(), title: 'Held $seed', color: binderPalette[3]);
+    final templates = Directory('${dirA.path}${sep}templates');
+    final aside = File('${dirA.path}$sep$id.canvas.42-aa-bb$asideSuffix');
+    final made = <File>[];
+    TemplateItem? item;
+    if (leg == 'templateDelete') {
+      await nb.savePageAsTemplate(id, name: 'Held $seed', inBinder: true);
+      item = (await nb.listTemplates(TemplateKind.page, binderPath: pathA)).items.firstWhere((i) => i.binderPath != null);
+    }
+    if (leg == 'templateSweep') {
+      templates.createSync(recursive: true);
+      made.add(File('${templates.path}${sep}x.notedtemplate.4242-a-b$asideSuffix')..writeAsStringSync('left'));
+    }
+    if (leg == 'queuedScan') {
+      aside.writeAsStringSync(File(_pathOf(id)).readAsStringSync());
+      made.add(aside);
+    }
+    final good = utf8.encode('the good file $seed');
+    final another = utf8.encode('another file $seed');
+    final keptName = attachmentFileName(contentHash(good), 'txt');
+    final damagedName = attachmentFileName(contentHash(another), 'txt');
+    final assets = Directory(_assetsPath(id));
+    final hadAssets = assets.existsSync();
+    if (leg == 'attachments') {
+      assets.createSync(recursive: true);
+      made
+        ..add(File('${assets.path}$sep$keptName.kept-1')..writeAsBytesSync(good))
+        ..add(File('${assets.path}$sep$damagedName')..writeAsBytesSync([...another.reversed]));
+    }
+    _localEdit(model[id]!, nb.current!, addOnly: true);
+
+    // Runs [op] queued behind a job the test holds at A, with A's file replaced
+    // by another binder's while it waits.
+    Future<Object?> queued(Future<Object?> Function() op) async {
+      final release = Completer<void>();
+      final holding = nb.folderLocks.run(dirA, () => release.future);
+      final running = op().then<Object?>((r) => r, onError: (Object e) => e);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      _aFile.writeAsStringSync(other.write());
+      release.complete();
+      await holding;
+      return running;
+    }
+
+    switch (leg) {
+      case 'other' || 'freshThenUse' || 'attachments':
+        final victim = inA.length > 1 ? inA[1] : null;
+        final r = await queued(() async => victim == null ? null : await nb.delete(victim));
+        if (victim != null) expect(r, isA<NotebookException>(), reason: 'seed $seed: the queued delete is refused');
+      case 'queuedScan':
+        await queued(() => nb.scanLocationForTest(pathA));
+        expect(aside.existsSync(), isTrue, reason: 'seed $seed: the queued scan swept nothing');
+      case 'templateSave':
+        final r = await queued(() => nb.savePageAsTemplate(id, name: 'Late', inBinder: true));
+        expect(r, isA<NotebookException>(), reason: 'seed $seed: the queued template save is refused');
+      case 'templateSweep':
+        await queued(() => nb.listTemplates(TemplateKind.page, binderPath: pathA));
+        expect(made.single.existsSync(), isTrue, reason: 'seed $seed: the leftover is not swept');
+      case 'templateDelete':
+        final r = await queued(() => nb.deleteTemplate(item!));
+        expect(r, isA<NotebookException>(), reason: 'seed $seed: the queued template delete is refused');
+        expect(File(item!.path).existsSync(), isTrue);
+      case 'damaged':
+        _aFile.writeAsStringSync('{ not json');
+      case 'missing':
+        _aFile.deleteSync();
+      case 'transient':
+        var fired = false;
+        nb.syncHook = (point, path) async {
+          if (point == 'binder-gate' && !fired) {
+            fired = true;
+            _aFile.writeAsStringSync('{"format":1,"binderId":');
+          }
+        };
+        await nb.flush();
+        nb.syncHook = null;
+        _aFile.writeAsBytesSync(original);
+        expect(fired, isTrue, reason: 'seed $seed: the save reached its turn');
+        expect(_sectionA.hold, isNull, reason: 'seed $seed: a half-written file holds nothing');
+        expect(nb.heldPagesFor(pathA), 1, reason: 'seed $seed: the edit is kept');
+        await realIoUntil(() => nb.heldPagesFor(pathA) == 0, 'the retried save to land');
+        return;
+    }
+    await nb.checkBinderFile(_aFile.path);
+    await nb.afterHoldForTest(pathA);
+    final hold = switch (leg) {
+      'damaged' => BinderHold.damaged,
+      'missing' => BinderHold.missing,
+      _ => BinderHold.otherBinder,
+    };
+    expect(_sectionA.hold, hold, reason: 'seed $seed: the folder is held ($leg)');
+    expect(nb.heldPagesFor(pathA), 1, reason: 'seed $seed: the edit is kept');
+    if (leg != 'missing') expect(nb.isReadOnlyPage(id), isTrue, reason: 'seed $seed: its pages are read-only');
+
+    // The folder's files and the recovery entries kept for it, by path.
+    bool forA(File f) {
+      try {
+        final m = jsonDecode(f.readAsStringSync());
+        return m is Map && m['folder'] is String && _norm(m['folder'] as String) == _norm(pathA);
+      } on Object {
+        return false;
+      }
+    }
+
+    Map<String, String> bytes() => {
+      for (final f in dirA.listSync(recursive: true).whereType<File>()) f.path: base64Encode(f.readAsBytesSync()),
+      if (rec.existsSync())
+        for (final f in rec.listSync(recursive: true).whereType<File>())
+          if (f.path.endsWith('.entry') && forA(f)) f.path: base64Encode(f.readAsBytesSync()),
+    };
+    final before = bytes();
+    if (leg == 'attachments') {
+      final store = nb.attachments!;
+      expect((await store.verify(keptName, size: good.length)).state, AttachmentState.syncing);
+      expect((await store.verify(damagedName, size: another.length)).state, AttachmentState.damaged);
+      expect(bytes(), before, reason: 'seed $seed: displaying the held attachments changed nothing');
+    }
+    final live = bytes();
+    final fresh = _make();
+    _spare.add(fresh);
+    try {
+      await fresh.load();
+      final s = fresh.binders.firstWhere((b) => _norm(b.path) == _norm(pathA));
+      expect(s.available, isFalse, reason: 'seed $seed: a fresh launch lists A read-only or unavailable too');
+      if (hold == BinderHold.otherBinder) expect(s.hold, hold, reason: 'seed $seed: and holds it');
+      expect(fresh.heldPagesFor(pathA), 1, reason: 'seed $seed: and keeps the edit');
+      if (leg == 'attachments') {
+        await fresh.open(id);
+        await fresh.attachments!.verify(keptName, size: good.length);
+        await fresh.attachments!.verify(damagedName, size: another.length);
+      }
+      expect(bytes(), live, reason: 'seed $seed: the folder, its templates and its recovery are as the live notebook left them');
+    } finally {
+      if (_gone.add(fresh)) fresh.dispose();
+    }
+
+    // What the leg made goes before the folder is this binder's again.
+    for (final f in made) {
+      if (f.existsSync()) f.deleteSync();
+    }
+    if (leg == 'attachments' && !hadAssets && assets.existsSync() && assets.listSync().isEmpty) assets.deleteSync();
+    if (templates.existsSync()) await _busyRetry(() => templates.delete(recursive: true));
+
+    switch (leg) {
+      case 'damaged' || 'missing':
+        _aFile.writeAsBytesSync(original);
+        await nb.checkBinderFile(_aFile.path);
+        await nb.afterHoldForTest(pathA);
+      case 'freshThenUse':
+        await nb.flush();
+        _drop();
+        nb = _make();
+        _spare.add(nb);
+        await nb.load();
+        await nb.useThisBinder(pathA);
+      default:
+        await nb.useThisBinder(pathA);
+    }
+    if (hold == BinderHold.otherBinder) {
+      _idA = other.id;
+      _aTitle = other.title;
+      _aAi = null;
+      _aImg = null;
+      _aForeign = false;
+    }
+    await nb.flush();
+    await realIoUntil(() => nb.heldPagesFor(pathA) == 0, 'the kept edit to land');
   }
 
   // A launch that can't read binders.json (locked, or damaged), then a retry that
@@ -4747,6 +4881,28 @@ void main() {
         await run._binderStep(force: 'lockedList/$variant');
         await run.verify('after the $variant list', fresh: true);
         expect(run.kinds, contains('binder:lockedList'));
+      });
+    }
+
+    // Run 2026-11-16-01, task 3 (held edits, tests 20 and 42): each leg on its
+    // own; the random walk reaches `write/heldThenUse`.
+    for (final leg in [
+      'other',
+      'freshThenUse',
+      'damaged',
+      'missing',
+      'transient',
+      'queuedScan',
+      'attachments',
+      'templateSave',
+      'templateSweep',
+      'templateDelete',
+    ]) {
+      test('held edits ($leg): nothing is written while held, a fresh launch agrees, and the edit lands', () async {
+        final before = run.kinds.length;
+        await run._binderStep(force: 'write/held/$leg');
+        expect(run.kinds.length, before + 1, reason: 'the step ran');
+        await run.verify('after held edits ($leg)', fresh: true);
       });
     }
 
