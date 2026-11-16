@@ -1836,6 +1836,7 @@ class PageCanvasState extends State<PageCanvas>
               multiTouch: _multiTouchActive,
               inkedBy: _boxIgnores,
               typeName: widget.boxTypeName,
+              toolActive: () => _tools.active != null,
               onGripTap: _focus.requestFocus,
               readOnly: readOnly,
               find: _find,

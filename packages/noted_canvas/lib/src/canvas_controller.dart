@@ -128,7 +128,7 @@ class CanvasController extends ChangeNotifier {
   /// box is being edited (the editor is never closed to make room), and [id]
   /// is a box this device can run on this page. Host only.
   bool canToggleMulti(String id) {
-    if (_disposed || _readOnly || _editingId != null || _gestureId != null) return false;
+    if (_disposed || _readOnly || _editingId != null || isInteracting) return false;
     final box = _page.node(id);
     return box is BoxRecord &&
         !_disallowed.contains(box.typeId) &&

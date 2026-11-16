@@ -584,6 +584,24 @@ void main() {
       expect(c.multiSelection, isEmpty);
     });
 
+    testWidgets('Ctrl+Shift+Space on the chrome forms no set while a tool is active', (t) async {
+      await pump(t);
+      selection.select(pen);
+      await t.pump();
+      for (final id in ['a', 'b']) {
+        Focus.of(t.element(find.byKey(ValueKey('box-chrome-$id')))).requestFocus();
+        await t.pump();
+        await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await t.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await t.sendKeyEvent(LogicalKeyboardKey.space);
+        await t.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await frames(t);
+      }
+      expect(c.multiSelection, isEmpty);
+      expect(c.selectedId, isNull);
+    });
+
     testWidgets('inking with a stylus clears the set', (t) async {
       await pump(t);
       await selectTwo(t);

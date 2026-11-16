@@ -48,10 +48,14 @@ class BoxHost extends StatefulWidget {
     this.multiTouch,
     this.inkedBy,
     this.typeName,
+    this.toolActive,
   });
 
   /// The user-facing name of a box type, for the grip's accessible name.
   final String? Function(String typeId)? typeName;
+
+  /// Whether a canvas tool is picked: the multi-selection key does nothing then.
+  final bool Function()? toolActive;
 
   /// True for a pointer that takes no click on a box here: a pen going to a
   /// tool (over Select), or a resting hand. The box then takes no click from it.
@@ -664,6 +668,7 @@ class _BoxHostState extends State<BoxHost> {
         (mac ? !k.isMetaPressed || k.isControlPressed : !k.isControlPressed || k.isMetaPressed)) {
       return KeyEventResult.ignored;
     }
+    if (widget.toolActive?.call() ?? false) return KeyEventResult.ignored;
     return widget.controller.toggleMulti(widget.node.id)
         ? KeyEventResult.handled
         : KeyEventResult.ignored;
