@@ -191,6 +191,55 @@ void main() {
       },
     );
   }
+
+  // Held edits (run 2026-11-16-01, task 3): the edits of a page in a binder
+  // folder that holds another binder's file, or a damaged one, are saved when
+  // the user chooses Use this binder, or when the file can be read.
+  for (final damaged in [false, true]) {
+    testWidgets('the quit notice for a held folder (${damaged ? 'damaged' : 'another binder'})', (tester) async {
+      final (root, nb) = (await tester.runAsync(() async {
+        final root = await Directory.systemTemp.createTemp('noted_recovery_notice');
+        final work = await Directory('${root.path}/Work').create();
+        final nb = Notebook(
+          PageStore(await Directory('${root.path}/pages').create()),
+          buildModules(),
+          saveDelay: const Duration(hours: 1),
+          bindersFile: File('${root.path}/app/binders.json'),
+          folderCheckInterval: Duration.zero,
+        );
+        await nb.load();
+        final b = await nb.addBinder(work.path);
+        await nb.createPage(binderPath: b.path);
+        await nb.flush();
+        nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+        final file = File('${work.path}/$binderFileName');
+        file.writeAsStringSync(damaged ? '{ not json' : Binder.create(title: 'Other', color: binderPalette[1]).write());
+        await nb.checkBinderFile(file.path);
+        return (root, nb);
+      }))!;
+      final key = GlobalKey<NavigatorState>();
+      await tester.pumpWidget(MaterialApp(navigatorKey: key, home: const SizedBox()));
+      late Future<void> future;
+      await tester.runAsync(() async {
+        future = showRecoveryNoticeOnExit(nb, key);
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      });
+      await tester.pump();
+      await tester.pump();
+      expect(
+        find.text(
+          "1 page couldn't be saved yet. It is kept safely and will be saved "
+          '${damaged ? 'when its binder file can be read' : 'when you choose Use this binder'}.',
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const ValueKey('recovery-exit-ok')));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.runAsync(() => future);
+      await tearDownNotebook(tester, root, nb);
+    });
+  }
 }
 
 /// A notebook whose recovery listing finishes only when told (an unresponsive

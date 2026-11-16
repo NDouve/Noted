@@ -1341,4 +1341,28 @@ void main() {
       await stop();
     });
   });
+
+  test('6. killed after the hold, before the capture: the folder is unchanged and comes back held at launch', () async {
+    await start();
+    addBox();
+    nb.syncHook = (point, path) async {
+      if (point == 'binder-hold-set') {
+        nb.syncHook = null;
+        await keptSub.cancel();
+        nb.dispose(); // as a kill: nothing more runs
+      }
+    };
+    swap(_Swap.other);
+    final swapped = snapshot(folder);
+    await check();
+    expect(snapshot(folder), swapped);
+    nb = make();
+    keptSub = nb.keptNotices.listen(keptNotices.add);
+    await nb.load();
+    expect(section().hold, BinderHold.otherBinder);
+    expect(section().available, isFalse);
+    expect(nb.isReadOnlyPage(pageId), isTrue);
+    expect(snapshot(folder), swapped);
+    await stop();
+  });
 }
