@@ -44,42 +44,111 @@ void main() {
   }
 
   group('targets', () {
-    testWidgets('a right click on empty canvas shows the canvas entries and selects nothing', (t) async {
-      await setUpWorld(t, withStore: true);
+    testWidgets('a right click on empty canvas shows the canvas entries in order and selects nothing', (t) async {
+      await setUpWorld(t, withStore: true, pen: true);
       await w.rightClick(w.at(const Offset(900, 600)));
       expect(w.menu, findsOneWidget);
       expect(w.entries(), [
-        'canvas.context.newNote',
-        'canvas.context.paste',
+        'canvas.select',
+        'noted.drawing.pen',
+        'noted.drawing.eraser',
         'noted.image.insert',
         'noted.file.insert',
+        'canvas.paste',
+        'canvas.find',
+        'canvas.fitAll',
       ]);
-      expect(w.enabled('canvas.context.newNote'), isTrue);
-      expect(w.enabled('canvas.context.paste'), isTrue);
-      expect(w.enabled('noted.image.insert'), isTrue);
+      for (final id in w.entries()) {
+        expect(w.enabled(id), isTrue, reason: id);
+      }
       expect(w.c.selectedId, isNull);
       expect(find.text('Pick overlapping box…'), findsNothing);
-      // No placeholder is shown.
-      expect(find.textContaining('coming later'), findsNothing);
+      // No New note, no AI box, no placeholder.
+      expect(find.text('New note here'), findsNothing);
       expect(find.text('AI box'), findsNothing);
+      expect(find.textContaining('coming later'), findsNothing);
+      // The list draws no icons and separates the three groups.
+      expect(find.descendant(of: w.menu, matching: find.byType(Icon)), findsNothing);
+      expect(find.descendant(of: w.menu, matching: find.byType(Divider)), findsNWidgets(2));
     });
 
+    testWidgets('unregistered module commands are omitted: no drawing module, no Pen or Eraser', (t) async {
+      await setUpWorld(t, withStore: true);
+      await w.rightClick(w.at(const Offset(900, 600)));
+      expect(w.entries(), [
+        'canvas.select',
+        'noted.image.insert',
+        'noted.file.insert',
+        'canvas.paste',
+        'canvas.find',
+        'canvas.fitAll',
+      ]);
+    });
+
+    testWidgets('a conventional list is 248 wide on either target', (t) async {
+      await setUpWorld(t, withStore: true);
+      await w.rightClick(w.at(const Offset(900, 600)));
+      expect(t.getSize(w.menu).width, 248);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await t.pump();
+      await t.pump();
+      await w.rightClick(w.at(const Offset(200, 200)));
+      expect(t.getSize(w.menu).width, 248);
+      expect(find.descendant(of: w.menu, matching: find.byType(Icon)), findsNothing);
+    });
+
+    testWidgets('the empty-canvas list keeps 8 px from the window edge at the bottom right', (t) async {
+      await setUpWorld(t, withStore: true);
+      for (final p in [const Offset(1195, 795), const Offset(1195, 400)]) {
+        await w.rightClick(p);
+        final r = t.getRect(w.menu);
+        expect(r.right, lessThanOrEqualTo(1200 - 8 + 0.01));
+        expect(r.bottom, lessThanOrEqualTo(800 - 8 + 0.01));
+        await t.sendKeyEvent(LogicalKeyboardKey.escape);
+        await t.pump();
+        await t.pump();
+      }
+    });
+
+    testWidgets('Select and type makes no box; the next normal click does', (t) async {
+      await setUpWorld(t, pen: true);
+      w.selection.select(w.pen);
+      await t.pump();
+      await w.rightClick(w.at(const Offset(900, 600)));
+      await w.choose('canvas.select');
+      expect(w.selection.active, isNull);
+      expect(w.c.page.nodes, hasLength(3));
+      await t.tapAt(w.at(const Offset(900, 600)));
+      await t.pumpAndSettle();
+      expect(w.c.page.nodes, hasLength(4));
+    });
+
+    testWidgets('Pen and Eraser from the menu activate their tools', (t) async {
+      await setUpWorld(t, pen: true);
+      await w.rightClick(w.at(const Offset(900, 600)));
+      await w.choose('noted.drawing.pen');
+      expect(w.selection.active, same(w.pen));
+      await w.rightClick(w.at(const Offset(900, 600)));
+      await w.choose('noted.drawing.eraser');
+      expect(w.selection.active, same(w.eraser));
+      expect(w.c.page.nodes, hasLength(3));
+    });
     testWidgets('a right click on a box shows the box entries and selects the box', (t) async {
       await setUpWorld(t, nodes: [tbox('a', 'test.text', ba, 'alpha')]);
       await w.rightClick(w.at(const Offset(200, 200)));
       expect(w.menu, findsOneWidget);
-      expect(w.c.selectedId, 'a');
+      expect(w.c.selectedId, isNull);
       expect(w.entries(), [
         CanvasCommands.bringToFront,
         CanvasCommands.bringForward,
         CanvasCommands.sendBackward,
         CanvasCommands.sendToBack,
-        'canvas.context.boxesHere',
+        'canvas.pickOverlappingBox',
         CanvasCommands.delete,
       ]);
       // One box: nothing to restack, nothing to pick among.
       expect(w.enabled(CanvasCommands.bringToFront), isFalse);
-      expect(w.enabled('canvas.context.boxesHere'), isFalse);
+      expect(w.enabled('canvas.pickOverlappingBox'), isFalse);
       expect(w.enabled(CanvasCommands.delete), isTrue);
       expect(find.text('Delete box'), findsOneWidget);
       // Shortcuts are shown from the commands.
@@ -90,7 +159,7 @@ void main() {
       await setUpWorld(t, nodes: [tbox('a', 'test.text', ba, 'alpha')]);
       await w.rightClick(w.at(const Offset(250, 100 - boxGripHeight / 2)));
       expect(w.entries(), contains(CanvasCommands.delete));
-      expect(w.c.selectedId, 'a');
+      expect(w.c.selectedId, isNull);
       await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await t.pump();
       expect(w.open, isFalse);
@@ -98,15 +167,15 @@ void main() {
       await t.pump();
       await w.rightClick(w.at(const Offset(100 + 300 + 3, 200)));
       expect(w.entries(), contains(CanvasCommands.delete));
-      expect(w.c.selectedId, 'a');
+      expect(w.c.selectedId, isNull);
     });
 
     testWidgets('overlapping boxes: the topmost is the target; Pick overlapping box opens the list; Send to back reorders and Undo restores', (t) async {
       await setUpWorld(t);
       await w.rightClick(w.at(overlapPoint));
-      expect(w.c.selectedId, 'c');
-      expect(w.enabled('canvas.context.boxesHere'), isTrue);
-      await w.choose('canvas.context.boxesHere');
+      expect(w.c.selectedId, isNull);
+      expect(w.enabled('canvas.pickOverlappingBox'), isTrue);
+      await w.choose('canvas.pickOverlappingBox');
       expect(find.byKey(const ValueKey('box-pick-list')), findsOneWidget);
       expect(find.byKey(const ValueKey('pick-row-a')), findsOneWidget);
       expect(find.byKey(const ValueKey('pick-row-b')), findsOneWidget);
@@ -123,8 +192,8 @@ void main() {
     testWidgets('Pick overlapping box is off with one node at the point', (t) async {
       await setUpWorld(t);
       await w.rightClick(w.at(const Offset(120, 120)));
-      expect(w.c.selectedId, 'a');
-      expect(w.enabled('canvas.context.boxesHere'), isFalse);
+      expect(w.c.selectedId, isNull);
+      expect(w.enabled('canvas.pickOverlappingBox'), isFalse);
     });
 
     testWidgets('no page area, no menu: a click outside the canvas area opens nothing', (t) async {
@@ -136,7 +205,7 @@ void main() {
   });
 
   group('boxes that are not plain boxes', () {
-    testWidgets('a disallowed box: heading, and Delete is the only enabled box entry; Undo restores it verbatim', (t) async {
+    testWidgets('a disallowed box: one row, Delete box, no heading; Undo restores it verbatim', (t) async {
       await setUpWorld(
         t,
         nodes: [tbox('y', 'test.text', bb, 'y'), tbox('x', 'test.off', ba, 'saved')],
@@ -144,18 +213,9 @@ void main() {
       );
       final before = w.c.page.node('x')! as BoxRecord;
       await w.rightClick(w.at(const Offset(200, 200)));
-      expect(find.byKey(const ValueKey('context-heading')), findsOneWidget);
-      // Pick overlapping box stays: it only selects (pinned).
-      expect(find.byKey(const ValueKey('context-canvas.context.boxesHere')), findsOneWidget);
-      expect(w.enabled('canvas.context.boxesHere'), isTrue);
-      for (final id in [
-        CanvasCommands.bringToFront,
-        CanvasCommands.bringForward,
-        CanvasCommands.sendBackward,
-        CanvasCommands.sendToBack,
-      ]) {
-        expect(w.enabled(id), isFalse, reason: id);
-      }
+      expect(find.byKey(const ValueKey('context-heading')), findsNothing);
+      expect(w.entries(), [CanvasCommands.delete]);
+      expect(find.text('Delete box'), findsOneWidget);
       expect(w.enabled(CanvasCommands.delete), isTrue);
       await w.choose(CanvasCommands.delete);
       expect(w.c.page.node('x'), isNull);
@@ -166,6 +226,19 @@ void main() {
       expect(after.snapshotText, before.snapshotText);
     });
 
+    testWidgets('a disallowed box in radial mode gives the same single-row list', (t) async {
+      await setUpWorld(
+        t,
+        nodes: [tbox('x', 'test.off', ba, 'saved')],
+        disallowed: {'test.off'},
+        style: ContextMenuStyle.radial,
+      );
+      await w.rightClick(w.at(const Offset(200, 200)));
+      expect(w.ring, findsNothing);
+      expect(w.menu, findsOneWidget);
+      expect(w.entries(), [CanvasCommands.delete]);
+      expect(find.byKey(const ValueKey('context-heading')), findsNothing);
+    });
     testWidgets('the guard cancels when the type becomes allowed or disallowed while the menu is open', (t) async {
       await setUpWorld(
         t,
@@ -197,13 +270,13 @@ void main() {
       );
       await setUpWorld(t, nodes: [alien, foreign, tbox('t', 'test.text', const Bounds(700, 100, 100, 50), 't')]);
       await w.rightClick(w.at(const Offset(130, 130)));
-      expect(w.c.selectedId, 'u');
+      expect(w.c.selectedId, isNull);
       expect(w.enabled(CanvasCommands.delete), isFalse);
       expect(w.enabled(CanvasCommands.bringToFront), isTrue);
       await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await t.pump();
       await w.rightClick(w.at(const Offset(430, 330)));
-      expect(w.c.selectedId, 'g');
+      expect(w.c.selectedId, isNull);
       expect(w.enabled(CanvasCommands.delete), isFalse);
       expect(w.enabled(CanvasCommands.sendToBack), isTrue);
       // The command registry agrees with the menu.
@@ -272,9 +345,9 @@ void main() {
       await w.rebuild(readOnly: true);
       await w.rightClick(w.at(const Offset(720, 120)));
       expect(w.menu, findsOneWidget);
-      // The selection stays on a; the entries are off.
+      // The selection stays on a; only Find on page and Fit all are listed.
       expect(w.c.selectedId, 'a');
-      expect(w.enabled(CanvasCommands.delete), isFalse);
+      expect(w.entries(), [CanvasCommands.find, CanvasCommands.fitAll]);
       await w.rebuild(readOnly: false);
       await t.pump();
       await t.pump();
@@ -300,22 +373,14 @@ void main() {
       expect(other.canUndo, isFalse);
     });
 
-    testWidgets('a selection change between choosing and running cancels the command', (t) async {
+    testWidgets('a selection change between choosing and running is replaced by the target (B2)', (t) async {
       await setUpWorld(t);
       await w.rightClick(w.at(overlapPoint));
       w.state.debugBeforeContextRun = () async => w.c.select('a');
       await w.choose(CanvasCommands.sendToBack);
       await t.pump();
-      expect(w.order, ['a', 'b', 'c']);
-    });
-
-    testWidgets('the point commands are disposed after the run', (t) async {
-      await setUpWorld(t);
-      await w.rightClick(w.at(const Offset(900, 600)));
-      await w.choose('canvas.context.newNote');
-      await t.pump();
-      expect(w.c.page.nodes, hasLength(4));
-      expect(tt.takeException(), isNull);
+      expect(w.order, ['c', 'a', 'b']);
+      expect(w.c.selectedId, 'c');
     });
   });
 
@@ -364,7 +429,7 @@ void main() {
       await t.pump();
       await t.pump();
       expect(w.menu, findsOneWidget);
-      expect(w.entries().first, 'canvas.context.newNote');
+      expect(w.entries().first, 'canvas.select');
       await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await t.pump();
       await t.pump();
@@ -555,7 +620,7 @@ void main() {
       await setUpWorld(t, nodes: [tbox('l', 'test.link', ba, 'a link')]);
       await w.rightClick(w.at(const Offset(200, 200)));
       expect(w.menu, findsOneWidget);
-      expect(w.c.selectedId, 'l');
+      expect(w.c.selectedId, isNull);
       expect(w.c.editingId, isNull);
     });
 
@@ -618,28 +683,50 @@ void main() {
       expect(w.c.editingId, 'e');
     });
 
-    testWidgets('right click on another box demotes the note, with no hold', (t) async {
+    testWidgets('right click on another box holds the editor: Escape leaves the note editing and focused', (t) async {
       await setUpWorld(t, nodes: [tbox('e', 'test.editor', ba, 'note'), tbox('o', 'test.text', const Bounds(700, 100, 100, 50), 'o')]);
       editorNode.requestFocus();
       await t.pump();
       await w.rightClick(w.at(const Offset(720, 120)));
       expect(w.menu, findsOneWidget);
-      expect(w.c.editorFocusHold.count, 0);
-      expect(w.c.selectedId, 'o');
+      expect(w.c.editorFocusHold.count, 1);
+      expect(w.c.selectedId, 'e');
+      expect(w.c.editingId, 'e');
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await t.pump();
-      expect(w.c.editingId, isNull);
+      await t.pump();
+      await t.pump();
+      expect(w.c.editorFocusHold.count, 0);
+      expect(w.c.editingId, 'e');
+      expect(editorNode.hasPrimaryFocus, isTrue);
     });
 
-    testWidgets('a command chosen for another box still runs on it while a note was being edited', (t) async {
+    testWidgets('a command chosen for another box still runs on it and ends the note\'s edit', (t) async {
       await setUpWorld(t, nodes: [tbox('e', 'test.editor', ba, 'note'), tbox('o', 'test.text', const Bounds(700, 100, 100, 50), 'o')]);
       editorNode.requestFocus();
       await t.pump();
       expect(w.c.editingId, 'e');
       await w.rightClick(w.at(const Offset(720, 120)));
-      expect(w.c.selectedId, 'o');
+      expect(w.c.selectedId, 'e');
       await w.choose(CanvasCommands.sendToBack);
       expect(w.order, ['o', 'e']);
       expect(w.c.selectedId, 'o');
+      expect(w.c.editingId, isNull);
+      expect(w.c.editorFocusHold.count, 0);
+    });
+
+    testWidgets('a refused activation gives the edited note its selection and editor back', (t) async {
+      await setUpWorld(t, nodes: [tbox('e', 'test.editor', ba, 'note'), tbox('o', 'test.text', const Bounds(700, 100, 100, 50), 'o')]);
+      editorNode.requestFocus();
+      await t.pump();
+      await w.rightClick(w.at(const Offset(720, 120)));
+      w.state.debugBeforeContextRun = () async => w.c.restack('o', StackMove.back);
+      await w.choose(CanvasCommands.sendToBack);
+      await t.pump();
+      expect(w.order, ['o', 'e']);
+      expect(w.c.selectedId, 'e');
+      expect(w.c.editingId, 'e');
+      expect(editorNode.hasPrimaryFocus, isTrue);
     });
 
     testWidgets('the canvas disposing under an open menu releases the hold', (t) async {
@@ -688,36 +775,12 @@ void main() {
   });
 
   group('point commands', () {
-    testWidgets('New note here creates the note at the point; Undo removes it', (t) async {
-      await setUpWorld(t);
-      final p = w.at(const Offset(900, 600));
-      await w.rightClick(p);
-      await w.choose('canvas.context.newNote');
-      expect(w.c.page.nodes, hasLength(4));
-      final made = w.c.page.nodes.last.bounds!;
-      expect(made.x, closeTo(890, 1));
-      expect(made.y, closeTo(586, 1));
-      expect(w.c.selectedId, w.c.page.nodes.last.id);
-      w.c.undo();
-      expect(w.c.page.nodes, hasLength(3));
-    });
-
-    testWidgets('New note here with the Pen active selects Select and type first', (t) async {
-      await setUpWorld(t, pen: true);
-      w.selection.select(w.pen);
-      await t.pump();
-      await w.rightClick(w.at(const Offset(900, 600)));
-      await w.choose('canvas.context.newNote');
-      expect(w.selection.active, isNull);
-      expect(w.c.page.nodes, hasLength(4));
-    });
-
     testWidgets('Paste places the box at the point', (t) async {
       await setUpWorld(t, withStore: true);
       FileClipboard.read = () async => [IncomingFile('p.dat', Uint8List.fromList([1, 2, 3]))];
       addTearDown(() => FileClipboard.read = () async => const []);
       await w.rightClick(w.at(const Offset(900, 600)));
-      await w.choose('canvas.context.paste');
+      await w.choose('canvas.paste');
       await t.pump();
       final made = w.c.page.nodes.whereType<BoxRecord>().where((b) => b.typeId == 'test.file');
       expect(made, hasLength(1));
@@ -733,7 +796,7 @@ void main() {
       FileClipboard.read = () => release.future;
       addTearDown(() => FileClipboard.read = () async => const []);
       await w.rightClick(w.at(const Offset(900, 600)));
-      await w.choose('canvas.context.paste');
+      await w.choose('canvas.paste');
       await w.rebuild(controller: other);
       release.complete([IncomingFile('p.dat', Uint8List.fromList([1]))]);
       await t.pump();
@@ -845,11 +908,8 @@ void main() {
       await t.tap(find.byKey(const ValueKey('pick-more-x')));
       await t.pumpAndSettle();
       expect(w.menu, findsOneWidget);
-      expect(find.byKey(const ValueKey('context-heading')), findsOneWidget);
-      expect(w.enabled(CanvasCommands.delete), isTrue);
-      expect(w.enabled(CanvasCommands.sendToBack), isFalse);
-      // Pick overlapping box stays enabled: it only selects.
-      expect(w.enabled('canvas.context.boxesHere'), isTrue);
+      expect(find.byKey(const ValueKey('context-heading')), findsNothing);
+      expect(w.entries(), [CanvasCommands.delete]);
     });
   });
 
@@ -866,7 +926,7 @@ void main() {
         await t.pump();
         await t.pump();
         expect(w.menu, findsOneWidget);
-        expect(w.c.selectedId, 'a');
+        expect(w.c.selectedId, isNull);
         expect(w.c.editingId, isNull);
         await t.sendKeyEvent(LogicalKeyboardKey.escape);
         await t.pump();
@@ -903,20 +963,148 @@ void main() {
   });
 
   group('read-only', () {
-    testWidgets('both targets open with the edit entries off and the selection unchanged', (t) async {
-      await setUpWorld(t, readOnly: true, withStore: true);
+    testWidgets('both targets list Find on page and Fit all only; nothing selects on open or choose', (t) async {
+      await setUpWorld(t, readOnly: true, withStore: true, pen: true);
       await w.rightClick(w.at(overlapPoint));
       expect(w.menu, findsOneWidget);
       expect(w.c.selectedId, isNull);
-      expect(w.enabled(CanvasCommands.sendToBack), isFalse);
-      expect(w.enabled(CanvasCommands.delete), isFalse);
-      expect(w.enabled('canvas.context.boxesHere'), isFalse);
+      expect(w.entries(), [CanvasCommands.find, CanvasCommands.fitAll]);
+      await w.choose(CanvasCommands.find);
+      expect(w.c.selectedId, isNull);
+      expect(w.state.isFindOpen, isTrue);
+      w.state.closeFind();
+      await t.pump();
+      await w.rightClick(w.at(const Offset(900, 600)));
+      expect(w.entries(), [CanvasCommands.find, CanvasCommands.fitAll]);
+      await w.choose(CanvasCommands.fitAll);
+      expect(w.c.selectedId, isNull);
+      expect(w.c.canUndo, isFalse);
+    });
+  });
+
+  group('selection on activation, not on open (B2)', () {
+    final far = const Bounds(700, 100, 100, 50);
+
+    testWidgets('(i) right click on B while A is selected: A stays, B\'s rows read B', (t) async {
+      await setUpWorld(t, nodes: [tbox('a', 'test.text', ba, 'alpha'), tbox('b', 'test.text', far, 'bravo')]);
+      w.c.select('a');
+      await t.pump();
+      // B is topmost-last: at the front. A is behind B in the order, so only A can come forward.
+      await w.rightClick(w.at(const Offset(720, 120)));
+      expect(w.c.selectedId, 'a');
+      expect(w.enabled(CanvasCommands.bringToFront), isFalse);
+      expect(w.enabled(CanvasCommands.sendToBack), isTrue);
+      expect(w.c.canRestack('b', StackMove.front), isFalse);
+      expect(w.c.canRestack('a', StackMove.front), isTrue);
+      expect(w.enabled(CanvasCommands.delete), isTrue);
+    });
+
+    testWidgets('(ii) Escape and click-away leave A selected', (t) async {
+      await setUpWorld(t, nodes: [tbox('a', 'test.text', ba, 'alpha'), tbox('b', 'test.text', far, 'bravo')]);
+      w.c.select('a');
+      await t.pump();
+      await w.rightClick(w.at(const Offset(720, 120)));
       await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await t.pump();
       await t.pump();
-      await w.rightClick(w.at(const Offset(900, 600)));
-      expect(w.enabled('canvas.context.newNote'), isFalse);
-      expect(w.enabled('canvas.context.paste'), isFalse);
+      expect(w.open, isFalse);
+      expect(w.c.selectedId, 'a');
+      await w.rightClick(w.at(const Offset(720, 120)));
+      await t.tapAt(const Offset(5, 700));
+      await t.pump();
+      await t.pump();
+      expect(w.open, isFalse);
+      expect(w.c.selectedId, 'a');
+    });
+
+    testWidgets('(iii) choosing Send to back selects B, sends it back; Undo restores the order', (t) async {
+      await setUpWorld(t, nodes: [tbox('a', 'test.text', ba, 'alpha'), tbox('b', 'test.text', far, 'bravo')]);
+      w.c.select('a');
+      await t.pump();
+      await w.rightClick(w.at(const Offset(720, 120)));
+      await w.choose(CanvasCommands.sendToBack);
+      expect(w.c.selectedId, 'b');
+      expect(w.order, ['b', 'a']);
+      w.c.undo();
+      expect(w.order, ['a', 'b']);
+    });
+
+    testWidgets('(iv) B removed between choose and run: nothing runs, A is still selected', (t) async {
+      await setUpWorld(t, nodes: [tbox('a', 'test.text', ba, 'alpha'), tbox('b', 'test.text', far, 'bravo')]);
+      w.c.select('a');
+      await t.pump();
+      await w.rightClick(w.at(const Offset(720, 120)));
+      w.state.debugBeforeContextRun = () async {
+        w.c.applyExternal(w.c.page.removeNode('b'));
+      };
+      await w.choose(CanvasCommands.sendToBack);
+      await t.pump();
+      expect(w.c.selectedId, 'a');
+      expect(w.order, ['a']);
+      expect(w.c.canUndo, isFalse);
+    });
+
+    testWidgets('a refused activation puts the selection back', (t) async {
+      await setUpWorld(t, nodes: [tbox('a', 'test.text', ba, 'alpha'), tbox('b', 'test.text', far, 'bravo')]);
+      w.c.select('a');
+      await t.pump();
+      await w.rightClick(w.at(const Offset(720, 120)));
+      // The order changes while the menu is open: B can no longer go forward.
+      w.state.debugBeforeContextRun = () async => w.c.restack('b', StackMove.back);
+      await w.choose(CanvasCommands.sendToBack);
+      await t.pump();
+      // Already at the back: the live command is off for B, nothing more ran.
+      expect(w.order, ['b', 'a']);
+      expect(w.c.selectedId, 'a');
+    });
+
+    testWidgets('(v) a note being edited, right click B, Escape: the note keeps its editor and selection', (t) async {
+      await setUpWorld(t, nodes: [tbox('e', 'test.editor', ba, 'note'), tbox('o', 'test.text', far, 'o')]);
+      editorNode.requestFocus();
+      await t.pump();
+      expect(w.c.editingId, 'e');
+      await w.rightClick(w.at(const Offset(720, 120)));
+      expect(w.c.selectedId, 'e');
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await t.pump();
+      await t.pump();
+      await t.pump();
+      expect(w.c.selectedId, 'e');
+      expect(w.c.editingId, 'e');
+      expect(editorNode.hasPrimaryFocus, isTrue);
+      expect(w.c.page.nodes, hasLength(2));
+    });
+
+    testWidgets('(vi) a read-only page selects nothing on open or choose', (t) async {
+      await setUpWorld(t, readOnly: true, nodes: [tbox('a', 'test.text', ba, 'alpha')]);
+      await w.rightClick(w.at(const Offset(200, 200)));
+      expect(w.c.selectedId, isNull);
+      await w.choose(CanvasCommands.fitAll);
+      expect(w.c.selectedId, isNull);
+    });
+  });
+
+  group('Pick overlapping box gate (N12)', () {
+    testWidgets('on with the Select tool and three overlapping boxes', (t) async {
+      await setUpWorld(t, pen: true);
+      await w.rightClick(w.at(overlapPoint));
+      expect(w.enabled('canvas.pickOverlappingBox'), isTrue);
+    });
+
+    testWidgets('off with the Pen tool active', (t) async {
+      await setUpWorld(t, pen: true);
+      w.selection.select(w.pen);
+      await t.pump();
+      await w.rightClick(w.at(overlapPoint));
+      expect(w.menu, findsOneWidget);
+      expect(w.enabled('canvas.pickOverlappingBox'), isFalse);
+    });
+
+    testWidgets('off with a link under the point', (t) async {
+      await setUpWorld(t, nodes: [tbox('m', 'test.text', bb, 'm'), tbox('l', 'test.link', ba, 'a link')]);
+      await w.rightClick(w.at(const Offset(200, 200)));
+      expect(w.menu, findsOneWidget);
+      expect(w.enabled('canvas.pickOverlappingBox'), isFalse);
     });
   });
 

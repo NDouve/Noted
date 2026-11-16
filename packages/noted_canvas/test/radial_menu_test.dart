@@ -24,6 +24,7 @@ void main() {
     WidgetTester t, {
     List<CanvasNode>? nodes,
     bool withStore = true,
+    bool pen = true,
     Set<String> disallowed = const {},
     bool readOnly = false,
     Size size = const Size(1200, 800),
@@ -37,6 +38,7 @@ void main() {
     await w.pump(
       nodes: nodes,
       withStore: withStore,
+      pen: pen,
       disallowed: disallowed,
       readOnly: readOnly,
       style: ContextMenuStyle.radial,
@@ -50,17 +52,18 @@ void main() {
       (centreOf(t, ids[0]) + centreOf(t, ids[3])) / 2;
 
   const canvasSlots = [
-    'canvas.context.newNote',
-    'canvas.context.paste',
+    'canvas.select',
+    'noted.drawing.pen',
     'noted.image.insert',
-    'noted.file.insert',
+    'canvas.paste',
+    'canvas.find',
     'canvas.context.more',
   ];
   const boxSlots = [
     CanvasCommands.bringToFront,
     CanvasCommands.delete,
     CanvasCommands.sendToBack,
-    'canvas.context.boxesHere',
+    'canvas.pickOverlappingBox',
     'canvas.context.more',
   ];
 
@@ -80,7 +83,7 @@ void main() {
     await w.rightClick(w.at(overlapPoint));
     expect(w.ring, findsOneWidget);
     expect(w.entries(), unorderedEquals(boxSlots));
-    expect(w.c.selectedId, 'c');
+    expect(w.c.selectedId, isNull);
   });
 
   testWidgets('slots sit 60 degrees apart clockwise from the top, whatever is enabled', (t) async {
@@ -136,7 +139,7 @@ void main() {
     await w.rightClick(w.at(const Offset(600, 300)));
     expect(find.textContaining('coming later'), findsNothing);
     expect(find.text('AI box'), findsNothing);
-    expect(find.text('New note here'), findsOneWidget);
+    expect(find.text('Select and type'), findsOneWidget);
   });
 
   testWidgets('focus starts on the first enabled slot; arrows and Tab go round clockwise and back', (t) async {
@@ -162,11 +165,12 @@ void main() {
     expect(w.focused(), 'More');
   });
 
-  testWidgets('on a read-only page focus starts on More', (t) async {
+  testWidgets('on a read-only page the ring has Find on page and Fit all, focus on Find', (t) async {
     await setUpWorld(t, readOnly: true);
     await w.rightClick(w.at(overlapPoint));
     expect(w.ring, findsOneWidget);
-    expect(w.focused(), 'More');
+    expect(w.entries(), [CanvasCommands.find, CanvasCommands.fitAll]);
+    expect(w.focused(), 'Find on page');
     expect(w.c.selectedId, isNull);
   });
 
@@ -221,7 +225,7 @@ void main() {
     await setUpWorld(t);
     final p = w.at(const Offset(600, 300));
     await w.rightClick(p);
-    final slotAt = centreOf(t, 'canvas.context.newNote');
+    final slotAt = centreOf(t, 'canvas.select');
     final g = await t.startGesture(slotAt, kind: PointerDeviceKind.mouse, buttons: kSecondaryMouseButton);
     await g.up();
     await g.removePointer();
@@ -255,22 +259,16 @@ void main() {
     expect(w.order, ['a', 'b', 'c']);
     expect(w.selection.active, isNull);
   });
-
-  testWidgets('a disallowed box: its heading sits in the middle of the ring or above it', (t) async {
+  testWidgets('a disallowed box gets the Delete-only list, not the ring', (t) async {
     await setUpWorld(
       t,
       nodes: [tbox('x', 'test.off', ba, 'saved')],
       disallowed: {'test.off'},
     );
     await w.rightClick(w.at(const Offset(200, 200)));
-    final heading = find.byKey(const ValueKey('context-heading'));
-    expect(heading, findsOneWidget);
-    final c = ringCentre(t, boxSlots);
-    final h = t.getCenter(heading);
-    final above = h.dy < c.dy - 40;
-    expect((h - c).distance < 30 || above, isTrue);
-    expect(w.enabled(CanvasCommands.delete), isTrue);
-    expect(w.enabled(CanvasCommands.sendToBack), isFalse);
+    expect(w.ring, findsNothing);
+    expect(w.entries(), [CanvasCommands.delete]);
+    expect(find.byKey(const ValueKey('context-heading')), findsNothing);
   });
 
   testWidgets('at text scale 2 near the top edge the ring and its heading stay inside the 8 px margin', (t) async {

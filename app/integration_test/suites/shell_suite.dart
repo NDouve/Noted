@@ -169,8 +169,9 @@ void shellSuite() {
         // Above the second note's grip, over the first note alone.
         await _rightClick(s, toScreen(t, const Offset(300, 103)));
         expect(find.byKey(const ValueKey('context-menu')), findsOneWidget);
-        expect(c.selectedId, a);
+        expect(c.selectedId, isNull, reason: 'opening a menu selects nothing');
         await s.tapKey('context-${CanvasCommands.bringToFront}', settle: 600);
+        expect(c.selectedId, a, reason: 'choosing the entry selected the box');
         expect(_order(c), [b, a]);
         await _top(s, 'Edit');
         await s.tapKey('menu-canvas.undo', settle: 600);
@@ -178,12 +179,15 @@ void shellSuite() {
       });
     });
 
-    testWidgets('C2: right-click empty canvas, New note here, type', (t) async {
+    testWidgets('C2: right-click empty canvas, Select and type, click, type', (t) async {
       await withSession(t, 'contextnew', (s) async {
         final c = s.nb.current!;
         final before = c.page.nodes.length;
         await _rightClick(s, toScreen(t, const Offset(600, 300)));
-        await s.tapKey('context-canvas.context.newNote', settle: 600);
+        // Select and type makes no box; the next normal click does.
+        await s.tapKey('context-canvas.select', settle: 600);
+        await t.tapAt(toScreen(t, const Offset(600, 300)));
+        await s.pump(600);
         expect(c.page.nodes.length, before + 1);
         final id = c.page.nodes.last.id;
         await s.until(() => c.editingId == id, what: 'the new note takes focus');
@@ -203,7 +207,9 @@ void shellSuite() {
         final before = c.page.nodes.length;
         await _rightClick(s, toScreen(t, const Offset(600, 300)));
         expect(find.byKey(const ValueKey('radial-menu')), findsOneWidget);
-        await s.tapKey('radial-canvas.context.newNote', settle: 600);
+        await s.tapKey('radial-canvas.select', settle: 600);
+        await t.tapAt(toScreen(t, const Offset(600, 300)));
+        await s.pump(600);
         expect(c.page.nodes.length, before + 1);
         final id = c.page.nodes.last.id;
         await s.until(() => c.editingId == id, what: 'the new note takes focus');

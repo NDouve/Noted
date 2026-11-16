@@ -139,6 +139,33 @@ void main() {
     await w.close(t);
   });
 
+  testWidgets('the empty-canvas menu with the real modules: the eight entries in order, no AI box', (t) async {
+    final w = await ShellWorld.open(t);
+    final origin = w.canvasOrigin(t);
+    await _rightClick(t, origin + w.canvas(t).view!.toScreen(const Offset(600, 400)));
+    final menu = find.byKey(const ValueKey('context-menu'));
+    expect(menu, findsOneWidget);
+    final ids = [
+      for (final g in t.widgetList<GestureDetector>(find.descendant(of: menu, matching: find.byType(GestureDetector))))
+        if (g.key is ValueKey<String> && (g.key! as ValueKey<String>).value.startsWith('context-'))
+          (g.key! as ValueKey<String>).value.substring('context-'.length),
+    ];
+    expect(ids, [
+      'canvas.select',
+      'noted.drawing.pen',
+      'noted.drawing.eraser',
+      'noted.image.insert',
+      'noted.file.insert',
+      'canvas.paste',
+      'canvas.find',
+      'canvas.fitAll',
+    ]);
+    expect(ids, isNot(contains('noted.ai.insert')));
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await _frames(t);
+    await w.close(t);
+  });
+
   testWidgets('the gear menu has one Radial context menu item', (t) async {
     final w = await ShellWorld.open(t);
     await t.tap(find.byKey(const ValueKey('settings-menu')));

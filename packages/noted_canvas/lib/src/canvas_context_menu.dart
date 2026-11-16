@@ -13,7 +13,6 @@ import 'package:flutter/services.dart';
 import 'canvas_commands.dart';
 import 'commands.dart';
 import 'noted_colors.dart';
-import 'noted_menu.dart' show notedMenuMinWidth;
 import 'noted_theme.dart';
 import 'radial_menu.dart';
 
@@ -36,6 +35,7 @@ class ContextEntry {
     this.destructive = false,
     this.point = false,
     this.more = false,
+    this.onTarget = false,
   });
 
   final Command command;
@@ -49,6 +49,11 @@ class ContextEntry {
 
   /// The ring's More slot: it swaps the ring for the full conventional menu.
   final bool more;
+
+  /// A box entry: [command] only reports whether the action is on for the
+  /// menu's target. Choosing it selects the target, then runs the registry
+  /// command with the same id.
+  final bool onTarget;
 
   String get text => label ?? command.label;
   bool get enabled => more || command.enabled;
@@ -86,45 +91,79 @@ class ContextMenuSpec {
 /// The id of a command made for one context menu.
 String contextPointId(String name) => 'canvas.context.$name';
 
+/// The id of the Pick overlapping box command (a point command of the open
+/// menu: never registered, no shortcut).
+const String contextPickId = 'canvas.pickOverlappingBox';
+
+/// The width of the conventional list.
+const double contextMenuWidth = 248;
+
 /// The entries for a box target. [boxesHere] is the point command that opens
-/// the pick list; the layering and Delete come from [registry]. A disallowed
-/// box (0166) gets its heading; its layering is off by the registry.
+/// the pick list. The arrange rows and Delete are wrapper commands whose
+/// enablement is [enabledFor] (read for the menu's target, not the selection,
+/// and refreshed by [listenable]); choosing one selects the target and runs the
+/// registry command (see [ContextEntry.onTarget]). A disallowed box (0166) gets
+/// Delete only, with no heading.
 ContextMenuSpec boxContextSpec({
   required CommandRegistry registry,
   required Command boxesHere,
   required bool disallowed,
+  required Listenable listenable,
+  required bool Function(String commandId) enabledFor,
 }) {
+  final wrappers = <Command>[];
   ContextEntry? reg(String id, {String? label, bool destructive = false}) {
     final c = registry[id];
-    return c == null ? null : ContextEntry(c, label: label, destructive: destructive);
+    if (c == null) return null;
+    final wrapper = Command(
+      id: id,
+      label: c.label,
+      icon: c.icon,
+      shortcut: c.shortcut,
+      alternateShortcuts: c.alternateShortcuts,
+      listenable: listenable,
+      enabled: () => enabledFor(id),
+      invoke: () {},
+    );
+    wrappers.add(wrapper);
+    return ContextEntry(wrapper, label: label, destructive: destructive, onTarget: true);
   }
 
+  final delete = reg(CanvasCommands.delete, label: 'Delete box', destructive: true);
+  if (disallowed) {
+    return ContextMenuSpec(
+      groups: [
+        [?delete],
+      ],
+      ring: [delete, null, null, null, null, null],
+      points: [boxesHere, ...wrappers],
+    );
+  }
   final front = reg(CanvasCommands.bringToFront);
   final forward = reg(CanvasCommands.bringForward);
   final backward = reg(CanvasCommands.sendBackward);
   final back = reg(CanvasCommands.sendToBack);
-  final delete = reg(CanvasCommands.delete, label: 'Delete box', destructive: true);
   final here = ContextEntry(boxesHere, point: true);
   final more = ContextEntry(_moreCommand(), point: true, more: true);
   return ContextMenuSpec(
-    heading: disallowed ? 'Not allowed on this page' : null,
     groups: [
       [?front, ?forward, ?backward, ?back],
       [here],
       [?delete],
     ],
     ring: [front, delete, back, here, more, null],
-    points: [boxesHere, more.command],
+    points: [boxesHere, more.command, ...wrappers],
   );
 }
 
-/// The entries for the empty canvas. [newNote] and [paste] are point
-/// commands; the inserts come from [registry] and are left out when their
-/// module is off. A placeholder ("coming later") is never shown.
+/// The entries for the empty canvas. [paste] is a point command; the rest come
+/// from [registry] and are left out when their module is off. A placeholder
+/// ("coming later") is never shown. On a [readOnly] page (either target) only
+/// Find on page and Fit all are listed.
 ContextMenuSpec canvasContextSpec({
   required CommandRegistry registry,
-  required Command newNote,
   required Command paste,
+  bool readOnly = false,
   Set<String> hidden = const {},
   Set<String> notAllowed = const {},
 }) {
@@ -136,19 +175,32 @@ ContextMenuSpec canvasContextSpec({
     return ContextEntry(c, label: label != null && !notAllowed.contains(id) ? label : null);
   }
 
+  final find = reg(CanvasCommands.find);
+  final fit = reg(CanvasCommands.fitAll);
+  if (readOnly) {
+    return ContextMenuSpec(
+      groups: [
+        [?find, ?fit],
+      ],
+      ring: [find, fit, null, null, null, null],
+      points: [paste],
+    );
+  }
+  final select = reg(CanvasCommands.select);
+  final pen = reg('noted.drawing.pen');
+  final eraser = reg('noted.drawing.eraser');
   final image = reg('noted.image.insert', label: 'Insert image');
   final file = reg('noted.file.insert', label: 'Insert file');
-  final ai = reg('noted.ai.insert', label: 'AI box');
-  final note = ContextEntry(newNote, point: true);
   final pasteEntry = ContextEntry(paste, point: true);
   final more = ContextEntry(_moreCommand(), point: true, more: true);
   return ContextMenuSpec(
     groups: [
-      [note, pasteEntry],
-      [?image, ?file, ?ai],
+      [?select, ?pen, ?eraser],
+      [?image, ?file, pasteEntry],
+      [?find, ?fit],
     ],
-    ring: [note, pasteEntry, image, file, more, null],
-    points: [newNote, paste, more.command],
+    ring: [select, pen, image, pasteEntry, find, more],
+    points: [paste, more.command],
   );
 }
 
@@ -573,38 +625,8 @@ class _ListView extends StatelessWidget {
         );
       }
     }
-    // The width the widest row needs (the list scrolls, so it can't be
-    // measured by the layout).
-    final scaler = MediaQuery.textScalerOf(context);
-    // Bold text (an accessibility setting) widens the text the Text widget draws.
-    final bold = MediaQuery.boldTextOf(context);
-    double text(String s, TextStyle st) {
-      final p = TextPainter(
-        // The Material the rows sit in gives the base style the text merges with.
-        text: TextSpan(text: s, style: (Theme.of(context).textTheme.bodyMedium ?? const TextStyle()).merge(st).merge(bold ? const TextStyle(fontWeight: FontWeight.bold) : null)),
-        textDirection: TextDirection.ltr,
-        textScaler: scaler,
-        maxLines: 1,
-      )..layout();
-      final w = p.maxIntrinsicWidth.ceilToDouble() + 1;
-      p.dispose();
-      return w;
-    }
-
-    var need = notedMenuMinWidth;
-    for (final e in spec.entries) {
-      final sc = e.point ? null : menuShortcutFor(e.command);
-      need = math.max(
-        need,
-        2 * m.space1 + 20 + m.icon + m.space3 + text(e.text, type.body) +
-            (sc == null ? 0 : m.space4 + text(sc, type.small)) + 2,
-      );
-    }
-    if (spec.heading != null) {
-      need = math.max(need, 2 * m.space1 + 20 + text(spec.heading!, type.small) + 2);
-    }
     return SizedBox(
-      width: math.min(need, MediaQuery.sizeOf(context).width - 16),
+      width: math.min(contextMenuWidth, MediaQuery.sizeOf(context).width - 16),
       child: DecoratedBox(
         key: const ValueKey('context-menu'),
         decoration: BoxDecoration(
@@ -699,8 +721,6 @@ class _Row extends StatelessWidget {
                   padding: EdgeInsets.symmetric(horizontal: 10, vertical: m.space1),
                   child: Row(
                     children: [
-                      Icon(entry.command.icon, size: m.icon, color: fg),
-                      SizedBox(width: m.space3),
                       Expanded(
                         child: Text(
                           entry.text,
