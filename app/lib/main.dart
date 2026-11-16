@@ -39,6 +39,7 @@ import 'src/recovery_notice.dart';
 import 'src/recovery_store.dart';
 import 'src/save_trouble_bar.dart';
 import 'src/window_channel.dart';
+import 'src/title_bar.dart';
 import 'src/webdav_sync.dart';
 
 /// The box modules compiled into this build (0034, stage 1).
@@ -78,13 +79,21 @@ AiRunningLock? appRunningLock;
 /// tests): the app draws the title bar when it is set.
 WindowChannel? appWindow;
 
-/// Turns the runner's custom frame on, on Windows only; null elsewhere, where
-/// the native caption stays. [windows] and [channel] are for tests.
-Future<WindowChannel?> startCustomFrame({bool? windows, WindowChannel? channel}) async {
-  if (!(windows ?? (Platform.isWindows && !kIsWeb))) return null;
-  final w = channel ?? WindowChannel();
-  await w.enable();
-  return w;
+/// The channel to the Windows runner, on Windows only; null elsewhere, where
+/// the native caption stays. [windows] is for tests.
+WindowChannel? windowChannelForPlatform({bool? windows}) =>
+    (windows ?? (!kIsWeb && Platform.isWindows)) ? WindowChannel() : null;
+
+/// Turns the runner's custom frame on through [channel] and returns it; null
+/// when there is none or the runner can't (the native caption stays).
+Future<WindowChannel?> startCustomFrame({WindowChannel? channel}) async {
+  if (channel == null) return null;
+  try {
+    await channel.enable();
+  } on PlatformException {
+    return null;
+  }
+  return channel;
 }
 
 Future<void> main(List<String> args) async {
@@ -96,16 +105,15 @@ Future<void> main(List<String> args) async {
       await rootBundle.loadString('assets/fonts/Inter/OFL.txt'),
     );
   });
-  // Windows: the custom title bar replaces the native caption. On before the
-  // first frame so no caption flashes; the plain screens below turn it off
-  // again, as they have no title bar to drag or close with.
-  final window = appWindow = await startCustomFrame();
+  // Windows: the custom title bar replaces the native caption; it is turned on
+  // just before the app screen (openWhenOwned), so the plain screens before it
+  // keep the native caption.
+  appWindow = windowChannelForPlatform();
   // On a phone or tablet, finds the app's folders before any default path is
   // read (0129).
   try {
     await initDeviceStorage();
   } on Object catch (e) {
-    await window?.enable(false);
     runApp(StorageErrorApp(error: e));
     return;
   }
@@ -115,7 +123,6 @@ Future<void> main(List<String> args) async {
   // reason lets Noted run with recovery refused (state 4 with the cause).
   final recoveryLock = RecoveryLock.besides(defaultRecoveryDirectory(defaultBindersFile()));
   if (recoveryLock.acquireSync() == RecoveryLockResult.heldByOther) {
-    await window?.enable(false);
     runApp(AlreadyOpenApp(hadFiles: args.isNotEmpty));
     return;
   }
@@ -334,11 +341,8 @@ Future<({AiRunningLock? lock, AiLinkServer? link})> openWhenOwned(
     // Held until the app exits: it tells noted_mcp that Noted is running.
     lock = appRunningLock = AiRunningLock(dataFolder);
     if (!lock.acquire(tries: 1)) {
-      // The waiting screen has no title bar: the native caption comes back.
-      await appWindow?.enable(false);
       show(WaitingForLockApp(lock: lock));
       await lock.waitHeld();
-      await appWindow?.enable();
       // Disposed while waiting: never poll, link or load without the lock.
       if (!lock.held) return (lock: lock, link: null);
     }
@@ -346,7 +350,9 @@ Future<({AiRunningLock? lock, AiLinkServer? link})> openWhenOwned(
   }
   onOwned?.call();
   final link = lock != null && startLink ? await startAiLink(notebook, dataFolder) : null;
-  show(NotedApp(notebook: notebook, settings: settings, aiLink: link, runningLock: lock, openFiles: openFiles, microsoft: microsoft, sync: sync, webdav: webdav, window: appWindow));
+  // The custom frame goes on just before the first frame of the app screen.
+  final window = await startCustomFrame(channel: appWindow);
+  show(NotedApp(notebook: notebook, settings: settings, aiLink: link, runningLock: lock, openFiles: openFiles, microsoft: microsoft, sync: sync, webdav: webdav, window: window));
   // A load that fails or hangs shows its error screen, with Retry.
   await notebook.loadChecked();
   // Only once a load has succeeded (this one, or a later Retry): it adds its
@@ -500,10 +506,23 @@ class _NotedAppState extends State<NotedApp> {
       theme: buildNotedTheme(Brightness.light, touch: touch),
       darkTheme: buildNotedTheme(Brightness.dark, touch: touch),
       themeMode: _settings.themeMode,
-      builder: (context, child) => OneDriveScope(
-        sync: widget.sync,
-        child: WebDavScope(sync: widget.webdav, child: InputModeScope(child: child!)),
-      ),
+      builder: (context, child) {
+        final app = OneDriveScope(
+          sync: widget.sync,
+          child: WebDavScope(sync: widget.webdav, child: InputModeScope(child: child!)),
+        );
+        final window = widget.window;
+        if (window == null) return app;
+        // Above the Navigator: routes, dialogs and the drawer lay out below
+        // the bar, so nothing covers the caption.
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TitleBar(window: window),
+            Expanded(child: app),
+          ],
+        );
+      },
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,

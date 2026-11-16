@@ -1231,7 +1231,7 @@ class AppMenuBarState extends State<AppMenuBar> {
       height: menuBarHeight,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceContainerLow,
+          color: theme.colorScheme.surface,
           border: Border(bottom: BorderSide(color: theme.colorScheme.outline)),
         ),
         child: TapRegion(

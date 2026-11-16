@@ -36,7 +36,6 @@ import 'cloud_sync.dart';
 import 'onedrive_sync.dart';
 import 'webdav_sync.dart' show WebDavScope;
 import 'settings_menu.dart';
-import 'title_bar.dart';
 import 'window_channel.dart';
 
 /// The snack bar for an attachment notice. A long one (it names a file and
@@ -55,8 +54,9 @@ SnackBar attachmentNoticeBar(String message) {
 class Home extends StatefulWidget {
   const Home({super.key, required this.notebook, this.settings, this.search, this.microsoft, this.window});
 
-  /// The Windows runner's custom frame, when it is on: the home then draws the
-  /// title bar. Null elsewhere (the native caption stays).
+  /// The Windows runner's custom frame, when it is on (its title bar is above
+  /// the Navigator): a press on it closes menus, the drawer and Details. Null
+  /// elsewhere.
   final WindowChannel? window;
 
   final Notebook notebook;
@@ -142,6 +142,7 @@ class _HomeState extends State<Home> {
   void initState() {
     super.initState();
     _seenFocusTick = _search.focusTick;
+    widget.window?.onNcPointerDown = _ncPointerDown;
     _search.addListener(_searchChanged);
     _notices = notebook.attachmentNotices.listen(_showNotice);
     _kept = notebook.keptNotices.listen(_showKept);
@@ -342,6 +343,7 @@ class _HomeState extends State<Home> {
     for (final s in _syncs.toList()) {
       _unwatch(s);
     }
+    if (widget.window?.onNcPointerDown == _ncPointerDown) widget.window?.onNcPointerDown = null;
     _search.removeListener(_searchChanged);
     _titleHighlight.dispose();
     unawaited(_notices?.cancel());
@@ -456,7 +458,6 @@ class _HomeState extends State<Home> {
           Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (widget.window != null) TitleBar(window: widget.window!, onNcPointerDown: _ncPointerDown),
               if (!isMobilePlatform) _menuBar(),
               Expanded(
                 child: Stack(
