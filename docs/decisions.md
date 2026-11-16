@@ -602,7 +602,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0053 — Cloud conflict-copy files (OneDrive)
 - **Date:** 2026-10-25
-- **Status:** Active; extended by 0120 (landed boxes); deletion of a copy amended by 0124; verification amended by 0132; other providers amended by 0163; conflict-copy names amended by 0171
+- **Status:** Active; extended by 0120 (landed boxes); deletion of a copy amended by 0124 and 0183; verification amended by 0132; other providers amended by 0163; conflict-copy names amended by 0171; the merged header's AI access amended by 0183
 - **Decision:**
   - **Detection:** a file `<stem>-<suffix>.canvas` is a conflict copy when `<stem>.canvas` exists in the same folder and both have the same page id. OneDrive appends `-<COMPUTERNAME>`, then `-<COMPUTERNAME>-<n>`. This naming is *unverified*, so a broader suffix pattern is accepted. *(Amended by 0171: the recognised suffixes now also include Drive for desktop ` (n)`, Nextcloud ` (conflicted copy …)`, older ownCloud `_conflict-…` and Finder-style ` n`, and every combination of suffixes is tried, shortest stem first. A chosen file (0137, 0149) is never a copy and is preferred as the original.)*
   - **Merge**, box by box into the original. There is no common base, so revisions decide:
@@ -610,7 +610,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
     - the copy's `baseRev` is the original's `rev`: take the copy
     - the reverse: keep the original
     - otherwise: keep the original and record the copy in `conflicts` (0051).
-  - Boxes on only one side are kept, and the page header is the original's.
+  - Boxes on only one side are kept, and the page header is the original's, except AI access, which is the stricter of the two (amended by 0183).
   - **Removing the copy:** the merged original is written, read back and verified. Only then is the copy deleted, including when the merge recorded conflicts, because those keep the copy's versions. A failed merge keeps the copy, lists it under "Can't open", and is retried on its next change.
   - Copies found at startup, when a binder opens, or by the watcher all go through the same path. Other providers' naming is not handled yet. *(Amended by 0171: other providers' naming is handled for the cloud names listed there.)*
 - **Rationale:** OneDrive keeps both versions of a file edited on two machines before syncing. Merging per box keeps both without leaving a duplicate page.
@@ -1746,7 +1746,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0124 — Saves, moves and recovery never overwrite or delete what they can't verify
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106; amended by 0127 and 0130; amended by 0131; mobile recovery re-keying amended by 0142); replay's retirement after a landed write amended by 0156
+- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106; amended by 0127 and 0130; amended by 0131; mobile recovery re-keying amended by 0142); replay's retirement after a landed write amended by 0156; a merged conflict copy's retirement amended by 0183
 - **Decision:**
   - **The open page's file (0051):** before every save of the open page, its file is read again, found by path. If it is unreadable, from a newer format, holds a different page, or can't be read for any reason other than not existing, nothing is written: the file stays as it is, the edits go to recovery, and the page becomes read-only with a plain reason and a way out ("Put back a readable version, or open another page"). The block is rechecked by the watcher and the folder timer; when a readable version appears it is merged three-way and the page is editable again, and the block's recovery entry is removed once the merged save reads back. A folder that comes back while the open page waits for it is handled the same way, with or without a recovery entry: a file that is there but unreadable blocks the page, and a missing file puts the page back in place so a file that lands later is merged.
   - **Conflict copies (0053):** a copy is deleted only if its bytes still equal the ones that were merged, and the original is replaced only if it still equals what the merge read. Otherwise the merge is redone, up to five times; then the copy is kept and listed under "Can't open".
@@ -2411,10 +2411,10 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0171 — Conflict-copy names for every in-scope cloud
 - **Date:** 2026-11-15
-- **Status:** Active (the build team (PM), run 2026-11-15-02, from the reviewed note `2026-11-15-01-cloud-parity` §5, under 0163); amends 0053, 0137 and 0149
+- **Status:** Active (the build team (PM), run 2026-11-15-02, from the reviewed note `2026-11-15-01-cloud-parity` §5, under 0163); amends 0053, 0137 and 0149; the merged header's AI access amended by 0183
 - **Decision:**
   - **Names (amends 0053).** A file is also a conflict copy of `<stem>.canvas` (same folder, same page id) when its name adds, before `.canvas`: ` (<n>)` (Drive for desktop), ` (conflicted copy [<words> ]<yyyy-mm-dd> <hhmmss>)` (Nextcloud), `_conflict-<yyyymmdd>-<hhmmss>` (older ownCloud), ` <n>` (Finder-style), or the existing `-<alphanumerics, _ and ->` suffix (OneDrive and Noted's own). These names are *unverified*. Every combination of trailing suffixes is a candidate, shortest stem first, so `<id>-HOST (1).canvas` still finds `<id>.canvas` when `<id>-HOST.canvas` is missing. The table is in `noted_core` `format/conflict_names.dart`, re-exported by `merge/conflict_copy.dart`.
-  - **A chosen file is never a copy (amends 0137, 0149).** A file chosen for its page is excluded from copies. When a copy's candidates include the chosen file with the same id, that file is the original, ahead of a shorter stem: `<id> 2 (1).canvas` merges into a chosen `<id> 2.canvas`, not `<id>.canvas`. The watcher and merge paths pass the chosen file to `PageStore.findConflictOriginal` as an optional preferred path. The choice lives for the session only (0137): after a restart a same-id `<id> 2.canvas` or `<id> (1).canvas` next to its original is merged into it and the original's header (title, background, `aiAccess`) wins, as hyphen names already did.
+  - **A chosen file is never a copy (amends 0137, 0149).** A file chosen for its page is excluded from copies. When a copy's candidates include the chosen file with the same id, that file is the original, ahead of a shorter stem: `<id> 2 (1).canvas` merges into a chosen `<id> 2.canvas`, not `<id>.canvas`. The watcher and merge paths pass the chosen file to `PageStore.findConflictOriginal` as an optional preferred path. The choice lives for the session only (0137): after a restart a same-id `<id> 2.canvas` or `<id> (1).canvas` next to its original is merged into it and the original's header (title, background) wins, as hyphen names already did; its AI access is the stricter of the two (amended by 0183).
   - **Behaviour change (amends 0137, 0149).** A same-id `<id> 2.canvas` or `<id> (1).canvas` next to a listed original is merged (0053), not listed as a duplicate to choose. Opening it from a file association merges it as a copy instead of adopting it. Such names are no longer offered when a duplicate is chosen. Every version is kept.
   - **Known limits.** Template folders are not handled: a provider's copy of a `.notedtemplate` shows as another template and nothing is merged or deleted. The MCP server keeps its own `nameIds`; a copy that parses counts for its page id, one that reads but doesn't parse for its header id, and one that can't be read and has an unrecognised name makes every id ambiguous, so it only refuses more, never less (0150). Attachments named like a provider copy are ignored (0133).
 - **Rationale:** 0163 requires every in-scope cloud to merge conflict copies as OneDrive's are. The providers' naming differs, and the original must stay the file the user chose.
@@ -2585,6 +2585,15 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **A deleted page's attachments folder** that can't be moved to the recovery folder is set aside in place, renamed beside the page, rather than moved (amends 0098 when built).
 - **Rationale:** the maintainer's answers to the questions the two notes raised; recorded so the builds that follow use them.
 - **Alternatives considered:** the options each note listed (for Google Drive, paying for an assessment, or `drive.file` from the start).
+
+## 0183 — A consumed conflict copy is retired only after a re-check; a merge keeps the stricter AI access
+- **Date:** 2026-11-16
+- **Status:** Active (the build team: the AI-access rule by the maintainer's PM chat, 2026-11-16; the retirement by the PM, run 2026-11-16-01, from the reviewed note `2026-11-16-01-copy-retire`); amends 0053, 0124 and 0171
+- **Decision:**
+  - **Retiring a merged copy.** After a conflict copy is merged and verified, the copy is kept as a recovery entry (fresh slot, no base, read back) before it is deleted through the checked delete. The entry is retired only when a later read of the page, under the folder lock, still holds every box of the copy (by rev, a box edited from it, or a recorded conflict version, with the copy's recorded conflicts and landed marker) and AI access at least as strict, apart from boxes this app deleted and AI access this app set since. Otherwise the merge is redone from the entry, at most three rounds, then listed. The re-check waits while the page is open, while a delete can still be undone, and until the copy's own delete has returned; "listed nowhere" is a read of the page's path, not the in-memory listing. A notebook without a recovery folder never retires a copy.
+  - **AI access in a merge.** When a conflict copy or a same-id file is merged into its original, the merged header keeps the original's fields except AI access, which is the stricter of the two: Guarded over Privileged over Open; an absent field ranks lowest below the top of the chain and as Guarded at the top; unknown values read as Guarded; a tie keeps the original's value.
+- **Rationale:** a sync client can put back the pre-merge original after verification, and deleting the copy then lost its boxes (Codex area-data-integrity 2026-11-16 R-1). A merge must not loosen what an AI may read.
+- **Alternatives considered:** keeping the copy as a `-recovered-` page file (rejected: it is itself a conflict-copy name and would be merged and retired again, and synced); storing the mark in the recovery entry (a recovery-format change; the in-memory mark's restart gaps are listed in the note); keeping the original's AI access (the earlier rule).
 
 ---
 
