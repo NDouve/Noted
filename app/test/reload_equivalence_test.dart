@@ -2824,6 +2824,7 @@ class _Run {
       'write/crashAside',
       'write/missingThenBack',
       'write/foreignAfterMissing',
+      'write/heldThenUse',
     ];
     final kind = force ?? order[(seed + _binderStepCount++) % order.length];
     trace.add('binder step: $kind');
@@ -3010,6 +3011,72 @@ class _Run {
         _aAi = null;
         _aImg = null;
         _aForeign = false;
+      case 'write/heldThenUse':
+        // Held edits: an edit of the open page with its autosave pending and a
+        // delete of another page queued behind a job at the folder, then
+        // another binder's file. Nothing is written to the folder; the live
+        // state equals a fresh launch's; Use this binder lands it all.
+        if (!_canWrite) return;
+        final inA = [for (final e in model.entries) if (e.value.loc == 'a') e.key];
+        if (inA.isEmpty) return;
+        final id = inA.first;
+        await nb.open(id);
+        await nb.flush();
+        _localEdit(model[id]!, nb.current!, addOnly: true);
+        final victim = inA.length > 1 ? inA[1] : null;
+        final release = Completer<void>();
+        final holding = nb.folderLocks.run(dirs['a']!, () => release.future);
+        final deleting = victim == null ? null : nb.delete(victim).then<Object?>((_) => null, onError: (Object e) => e);
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        final other = Binder.create(id: _newBinderId(), title: 'Held $seed', color: binderPalette[3]);
+        _aFile.writeAsStringSync(other.write());
+        release.complete();
+        await holding;
+        if (deleting != null) {
+          expect(await deleting, isA<NotebookException>(), reason: 'seed $seed: the queued delete is refused');
+        }
+        await nb.checkBinderFile(_aFile.path);
+        await nb.afterHoldForTest(pathA);
+        expect(_sectionA.hold, BinderHold.otherBinder, reason: 'seed $seed: the folder is held');
+        expect(nb.isReadOnlyPage(id), isTrue, reason: 'seed $seed: its pages are read-only');
+        expect(nb.heldPagesFor(pathA), 1, reason: 'seed $seed: the edit is kept');
+        // The held folder's files, and the recovery entries kept for it (a
+        // fresh launch replays the entries of other folders as usual).
+        bool forA(File f) {
+          try {
+            final m = jsonDecode(f.readAsStringSync());
+            return m is Map && m['folder'] is String && _norm(m['folder'] as String) == _norm(pathA);
+          } on Object {
+            return false;
+          }
+        }
+
+        Map<String, String> bytes() => {
+          for (final f in dirs['a']!.listSync(recursive: true).whereType<File>()) f.path: base64Encode(f.readAsBytesSync()),
+          if (rec.existsSync())
+            for (final f in rec.listSync(recursive: true).whereType<File>())
+              if (f.path.endsWith('.entry') && forA(f)) f.path: base64Encode(f.readAsBytesSync()),
+        };
+        final live = bytes();
+        final fresh = _make();
+        _spare.add(fresh);
+        try {
+          await fresh.load();
+          final s = fresh.binders.firstWhere((b) => _norm(b.path) == _norm(pathA));
+          expect(s.hold, BinderHold.otherBinder, reason: 'seed $seed: a fresh launch holds the folder too');
+          expect(fresh.isReadOnlyPage(id), isTrue, reason: 'seed $seed: and lists its pages read-only');
+          expect(fresh.heldPagesFor(pathA), 1, reason: 'seed $seed: and keeps the edit');
+          expect(bytes(), live, reason: 'seed $seed: the folder and recovery are as the live notebook left them');
+        } finally {
+          if (_gone.add(fresh)) fresh.dispose();
+        }
+        await nb.useThisBinder(pathA);
+        _idA = other.id;
+        _aTitle = other.title;
+        _aAi = null;
+        _aImg = null;
+        _aForeign = false;
+        await nb.flush();
       case 'lockedList':
         await _lockedList(damaged: _brng.nextBool());
       case 'lockedList/locked':
@@ -3445,7 +3512,7 @@ const _expectedKinds = {
   'binder:duplicate/twoRoots', 'binder:openCopy', 'binder:upgrade', 'binder:lockedList', //
   'binder:write/unseenReplace', 'binder:write/refuseOnce', 'binder:write/coverRefusedThenLands', //
   'binder:write/goneAtPublish', 'binder:write/tightenedBehindOtherDelta', 'binder:write/crashAside', //
-  'binder:write/missingThenBack', 'binder:write/foreignAfterMissing', //
+  'binder:write/missingThenBack', 'binder:write/foreignAfterMissing', 'binder:write/heldThenUse', //
   'sync:swapAside/save', 'sync:swapAside/move', 'sync:swapAside/delete', 'sync:swapAside/redundant', //
 };
 
