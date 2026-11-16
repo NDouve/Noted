@@ -1755,6 +1755,92 @@ void main() {
       });
     }
 
+    // Issues the user settles inside the window (0120) stay settled: the
+    // re-check doesn't require them, and a redo doesn't bring them back.
+    BoxRecord withV1(BoxRecord b) => b.withConflict(BoxConflict.other(node: noteBox('v1').toRaw(), at: 5));
+    BoxRecord withMarker(BoxRecord b) => b.withLanded(BoxLanded(at: 5));
+
+    // Opens the page, settles [what] on box [boxId] as the user does, saves and
+    // leaves.
+    Future<void> settleIssue(String what, String boxId) async {
+      final away = nb.currentId!;
+      await nb.open(id);
+      final c = nb.current!;
+      if (what == 'conflict') {
+        expect((c.page.node(boxId)! as BoxRecord).conflicts, isNotEmpty);
+        c.resolveKeepMine(boxId);
+        expect((c.page.node(boxId)! as BoxRecord).conflicts, isEmpty);
+      } else {
+        expect((c.page.node(boxId)! as BoxRecord).landed, isNotNull);
+        c.leaveLanded(boxId);
+      }
+      await nb.flush();
+      await nb.open(away);
+    }
+
+    BoxRecord diskBox(String boxId) => onDisk(id).node(boxId)! as BoxRecord;
+
+    for (final what in ['conflict', 'marker']) {
+      final issue = what == 'conflict' ? 'a recorded conflict resolved' : 'a landed marker dismissed';
+      test('(f) $issue inside the window, no revert: the entry retires and the issue stays settled', () async {
+        await start();
+        await withCopy(
+          shape: (c) => c.replaceNode(what == 'conflict' ? withV1(c.node(box.id)! as BoxRecord) : withMarker(c.node(box.id)! as BoxRecord)),
+        );
+        await nb.checkFile(copy);
+        await settleIssue(what, box.id);
+        await recheck();
+        expect(await entries(), isEmpty, reason: 'held without the settled issue');
+        expect(diskBox(box.id).conflicts, isEmpty);
+        expect(diskBox(box.id).landed, isNull);
+      });
+
+      test('(f) $issue on a box from the copy, then a revert: the box comes back without it', () async {
+        await start();
+        late BoxRecord shaped;
+        await withCopy(
+          shape: (c) {
+            final x = c.node(extra.id)! as BoxRecord;
+            shaped = what == 'conflict' ? withV1(x) : withMarker(x);
+            return c.replaceNode(shaped);
+          },
+        );
+        await nb.checkFile(copy);
+        await settleIssue(what, extra.id);
+        revert();
+        await recheck();
+        expect(ids(), {box.id, extra.id});
+        expect(diskBox(extra.id).rev, shaped.rev);
+        expect(diskBox(extra.id).conflicts, isEmpty);
+        expect(diskBox(extra.id).landed, isNull);
+        await recheck();
+        expect(await entries(), isEmpty);
+      });
+    }
+
+    test('(f) the conflict the merge recorded with the copy\'s version, resolved inside the window: not recorded again', () async {
+      await start();
+      final codec = modules.codecs.codecFor('noted.note')!;
+      late BoxRecord theirs;
+      await withCopy(
+        shape: (c) {
+          theirs = commitBox(c.node(box.id)! as BoxRecord, codec, codec.decode(doc('edited in the copy'), 1));
+          return c.replaceNode(theirs);
+        },
+      );
+      // The original was edited too, from the same version: the merge records the copy's.
+      final mineEdit = commitBox(box, codec, codec.decode(doc('edited here'), 1));
+      File(pathOf(id)).writeAsStringSync(writePage(readPage(before).replaceNode(mineEdit)));
+      await nb.checkFile(pathOf(id));
+      await nb.checkFile(copy);
+      expect(diskBox(box.id).conflicts.single.node, theirs.toRaw());
+      await settleIssue('conflict', box.id);
+      await recheck();
+      expect(await entries(), isEmpty);
+      expect(diskBox(box.id).conflicts, isEmpty);
+      expect(diskBox(box.id).rev, mineEdit.rev);
+    });
+
     test('(f) opened inside the window: editable; a box deleted there stays deleted after a revert', () async {
       await start();
       final more = noteBox('also from the copy', at: const Bounds(400, 100, 200, 40));

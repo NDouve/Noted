@@ -8436,13 +8436,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       return false;
     }
     // What the file must hold, and what a redo merges: the copy without the
-    // nodes this app deleted since, and with the user's own last AI access
+    // nodes this app deleted since and without the conflicts and landed
+    // markers the user settled (0120), and with the user's own last AI access
     // when they changed it (after a revert the disk's is the pre-merge one).
     var redo = e.page;
-    if (m.touched.isNotEmpty) {
+    if (m.touched.isNotEmpty || m.resolved.isNotEmpty || m.dismissed.isNotEmpty) {
       redo = NotedPage.fromParts(redo.top, redo.meta, [
         for (final n in redo.nodes)
-          if (!m.touched.contains(n.id)) n,
+          if (!m.touched.contains(n.id)) ?_settledOf(m, n),
       ]);
     }
     if (m.headerTouched) {
@@ -8523,6 +8524,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final n in base.nodes)
         if (!kept.contains(n.id)) n.id,
     };
+    // Issues the user settled (0120): a recorded version in base's box and
+    // not in mine's, unless mine's box is that version (the user took it), and
+    // a landed marker base's box has and mine's doesn't. Back in mine: no
+    // longer settled.
+    final baseBoxes = {for (final n in base.nodes) if (n is BoxRecord) n.id: n};
+    final settled = <String, List<BoxConflict>>{};
+    final cleared = <String>{};
+    final mineBoxes = [for (final n in mine.nodes) if (n is BoxRecord) n];
+    for (final n in mineBoxes) {
+      final b = baseBoxes[n.id];
+      if (b == null) continue;
+      settled[n.id] = [
+        for (final k in b.conflicts)
+          if (!n.conflicts.contains(k) && !_recordIsVersion(k, n)) k,
+      ];
+      if (b.landed != null && n.landed == null) cleared.add(n.id);
+    }
     final ai = mine.meta.rawAiAccess;
     final header = base.meta.rawAiAccess != ai;
     for (final m in _consumedCopies.values) {
@@ -8530,6 +8548,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       m.touched
         ..removeAll(kept)
         ..addAll(ids);
+      for (final n in mineBoxes) {
+        final r = m.resolved[n.id];
+        if (r != null) r.removeAll(n.conflicts);
+        final s = settled[n.id];
+        if (s != null && s.isNotEmpty) (m.resolved[n.id] ??= {}).addAll(s);
+        if (m.resolved[n.id]?.isEmpty ?? false) m.resolved.remove(n.id);
+        if (n.landed != null) m.dismissed.remove(n.id);
+      }
+      m.dismissed.addAll(cleared);
       if (!header) continue;
       if (ai == m.copyAi) {
         m.headerTouched = false;
@@ -8539,6 +8566,44 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         m.userAi = ai;
       }
     }
+  }
+
+  // Whether the version recorded in [k] is [b]'s own (same rev, or the same
+  // content when either has none): the user took that version.
+  static bool _recordIsVersion(BoxConflict k, BoxRecord b) {
+    final node = k.node;
+    if (node == null || !node.isObject) return false;
+    try {
+      final x = BoxRecord.tryRead(RawObject.parse(node.text), node);
+      if (x == null) return false;
+      if (x.rev != null && b.rev != null) return x.rev == b.rev;
+      return x.typeId == b.typeId && x.data == b.data && x.snapshotText == b.snapshotText;
+    } on FormatException {
+      return false;
+    }
+  }
+
+  // The copy's node [n] as a consumed copy's re-check requires it, without
+  // what the user settled since the merge (0120): null when [n] is itself a
+  // version the user resolved away; otherwise [n] without its resolved
+  // recorded versions and, when dismissed, its landed marker.
+  static CanvasNode? _settledOf(_ConsumedCopy m, CanvasNode n) {
+    if (n is! BoxRecord) return n;
+    final r = m.resolved[n.id];
+    var b = n;
+    if (r != null) {
+      final own = n.toRaw();
+      final bare = n.withConflicts(const []).toRaw();
+      if (r.any((k) => k.node == own || k.node == bare)) return null;
+      if (n.conflicts.any(r.contains)) {
+        b = b.withConflicts([
+          for (final k in n.conflicts)
+            if (!r.contains(k)) k,
+        ]);
+      }
+    }
+    if (m.dismissed.contains(n.id) && b.landed != null) b = b.withoutLanded();
+    return b;
   }
 
   // A delete holding page(s) [d] was let go: their marks are decided by the
@@ -13199,6 +13264,11 @@ class _ConsumedCopy {
   final Set<String> touched = {};
   bool headerTouched = false;
   RawJson? userAi;
+  // The issues the user settled since the merge (0120), by box id: recorded
+  // versions they resolved away, and landed markers they dismissed. A redo
+  // and "held" leave them out, as for [touched].
+  final Map<String, Set<BoxConflict>> resolved = {};
+  final Set<String> dismissed = {};
   Timer? timer;
 }
 
