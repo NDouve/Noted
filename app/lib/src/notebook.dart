@@ -10131,12 +10131,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_pullOnly(dir)) return (verdict: BinderVerdict.none, other: null);
     final r = await _readBinderText(_binderStore(Directory(dir)).file);
     final text = r.text;
-    if (text == null) return (verdict: BinderVerdict.unreadable, other: null);
+    if (text == null) {
+      _recheckLater(dir); // the watcher looks again soon
+      return (verdict: BinderVerdict.unreadable, other: null);
+    }
     try {
       final b = Binder.parse(text);
       if (want != null && b.id != want) return (verdict: BinderVerdict.other, other: b);
       return (verdict: BinderVerdict.own, other: null);
     } on BinderFormatException {
+      _recheckLater(dir);
       return (verdict: BinderVerdict.unreadable, other: null);
     }
   }
