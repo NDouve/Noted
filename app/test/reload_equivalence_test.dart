@@ -142,27 +142,37 @@
 //     attachments landing over a damaged hash file keep both, live and after a
 //     restart" (the damaged copy is gone).
 //
-// Rows 25-29 are for the scripted WebDAV and desktop-folder scenarios (run
+// Rows 25-31 are for the scripted WebDAV and desktop-folder scenarios (run
 // 2026-11-15-02, task 4, step 5), which don't use the seeds. Counts are of the
-// 39 tests of "a WebDAV pull and a reload" (path ids and oc:fileid, 14 kill
+// 41 tests of "a WebDAV pull and a reload" (path ids and oc:fileid, 14 kill
 // rows, 6 copy names and the held removal for each, less the re-path rows of
 // path ids) and the 12 of "a plain desktop folder".
 //
-// 25. `PullEngine._adopt` returns false: 37 of the 39 fail (every kill row and
+// 25. `PullEngine._adopt` returns false: 39 of the 41 fail (every kill row and
 //     copy test fail, since a pull adopts in other places too; it is not
 //     specific to the `published` row).
 //
 // 26. The end of a round doesn't sweep base copies that have no record
-//     (`_blobs.sweep` only when the journal is empty): 37 of the 39 fail, "the
-//     base copies are those the journal records". Not caught: the sweep of
-//     `tmp/` at the start; the engine removes a killed download's temp itself,
-//     so nothing is left in these scenarios (engine_kill_test covers it).
+//     (`_blobs.sweep` only when the journal is empty): 39 of the 41 fail (every
+//     kill row, and the copy tests after the original goes), "the base copies
+//     are those the journal records" (the names are compared with the SHA-256s
+//     of the server's files).
 //
-// 27. The pull adopts a different local file beside the published one (the
-//     `_rowNew` compare taken as equal): both "a kill after a file was
-//     published, then a different file there" tests fail.
+// 27. The start of the engine doesn't sweep `tmp/` (the delete is skipped): 25
+//     of the 41 fail ("no download is left in tmp"). The kill rows plant
+//     `tmp/99.dl`, a name the engine never reuses: a killed download's own temp
+//     is removed by the engine, and after a restart its counter starts again,
+//     so a leftover with a reused name would be overwritten, not swept.
 //
-// 28. `conflictCopyOriginalNames` knows only the hyphen names (the four space
+// 28. A published file and a different local file of the same length (so the
+//     download compare runs) are taken as equal (`_equalsRemote`'s
+//     `remote == ident` is `true`): both "a kill after a file was published,
+//     then a different file there" tests fail.
+//
+// 29. The pull adopts a different local file beside the published one (the
+//     `_rowNew` compare taken as equal): both differing-file tests fail.
+//
+// 30. `conflictCopyOriginalNames` knows only the hyphen names (the four space
 //     and underscore suffixes of section 5 removed): 10 of the 14 WebDAV copy
 //     tests fail (` 2`, ` (1)`, both Nextcloud names and the chained name, for
 //     both kinds of id; `_conflict-` is still found by the hyphen rule), "the
@@ -170,7 +180,7 @@
 //     page), and all 12 desktop-folder tests, "the files in x" (the copy is not
 //     merged and removed).
 //
-// 29. A WebDAV removal is not held for the unusable sibling it became
+// 31. A WebDAV removal is not held for the unusable sibling it became
 //     (`becameUnusable` returns null): the path-id test "a page renamed to an
 //     unusable name is held" fails ("the page is kept"); the oc:fileid one,
 //     which has no removal to hold, does not.
@@ -3375,6 +3385,7 @@ String _davCopyOf(String base, String text) {
   return writePage(readPage(base).insertNode(box));
 }
 
+/// Stands in for the app's WebDAV controller: its after-round calls and its restart.
 /// A pull-only WebDAV folder as the app has it on a tablet: a notebook over a
 /// working copy in a read-only root, a real engine and driver on the noted_sync
 /// tests' fake server, and the calls the controller makes after a round. The
@@ -3567,8 +3578,10 @@ class _DavWorld {
     // One base copy per distinct page content, so a copy a kill left with no record is swept.
     final base = Directory('${state.path}/base');
     expect(
-      base.existsSync() ? base.listSync().length : 0,
-      serverFiles().values.toSet().length,
+      {
+        if (base.existsSync()) for (final e in base.listSync()) e.path.split(RegExp(r'[\\/]')).last,
+      },
+      {for (final t in serverFiles().values) ContentIdentity.ofBytes(utf8.encode(t)).sha256},
       reason: '$when: the base copies are those the journal records',
     );
   }
@@ -4182,6 +4195,7 @@ void main() {
       // aside's final check (it is the core's own delete path).
 
       const steps = [
+        'deltaFetched',
         'mapSaved',
         'downloaded',
         'blobWritten',
@@ -4248,6 +4262,9 @@ void main() {
               }
             }
             expect(killed && reached, isTrue, reason: 'the step $step is reached (rounds: $seen)');
+            // A temp under a name the engine won't reuse: only the start sweep removes it.
+            Directory('${w.state.path}/tmp').createSync(recursive: true);
+            File('${w.state.path}/tmp/99.dl').writeAsStringSync('stray');
             // The process starts again on what the kill left.
             await w.reload();
             for (final e in w.localFiles().entries.where((e) => e.key.endsWith('.canvas'))) {
@@ -4286,7 +4303,11 @@ void main() {
           // Before the next launch the published file was replaced by another.
           final local = File('${w.work.path}/$p5.canvas');
           expect(local.existsSync(), isTrue, reason: 'the file was published');
-          final other = _davPage(p5, 'Five elsewhere', ['five other'], order: 5);
+          // The same length as the published file, so the download compare runs.
+          final published = local.readAsStringSync();
+          final other = published.replaceAll('five a', 'five b');
+          expect(other.length, published.length);
+          expect(other, isNot(published));
           local.writeAsStringSync(other);
           await w.reload();
           await w.round();
