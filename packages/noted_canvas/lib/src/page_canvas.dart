@@ -23,6 +23,7 @@ import 'canvas_controller.dart';
 import 'canvas_tool.dart';
 import 'canvas_view.dart';
 import 'attachment_store.dart';
+import 'command_host.dart';
 import 'command_toolbar.dart';
 import 'find_bar.dart';
 import 'commands.dart';
@@ -1496,7 +1497,7 @@ class PageCanvasState extends State<PageCanvas>
     if (!guard.holds(_c, _c.page.id, registry: _commands)) return;
     if (t.boxId != null && _targetChanged(t)) return;
     if (!entry.onTarget) {
-      await entry.command.run();
+      await _startWithInvocation(t, guard, entry.command.run);
       return;
     }
     // A box entry: select the target, look up the live command (it acts on the
@@ -1518,7 +1519,31 @@ class PageCanvasState extends State<PageCanvas>
     // Choosing an entry for another box ends the edit of the note (0092).
     final editing = _c.editingId;
     if (editing != null && editing != id) _focus.requestFocus();
-    await live.run();
+    await _startWithInvocation(t, guard, live.run);
+  }
+
+  CommandInvocation? _invocation;
+
+  @override
+  CommandInvocation? get invocation => _invocation;
+
+  /// Calls [run] with [invocation] set for the point the menu opened at. Only
+  /// the synchronous start of [run] sees it: it is cleared before the first
+  /// await of the command returns here, and after a throw.
+  Future<Object?> _startWithInvocation(
+    _ContextTarget t,
+    CanvasTargetGuard guard,
+    Future<Object?> Function() run,
+  ) {
+    _invocation = CommandInvocation(
+      t.world,
+      () => mounted && !_readOnly && guard.holds(_c, _c.page.id, registry: _commands),
+    );
+    try {
+      return run();
+    } finally {
+      _invocation = null;
+    }
   }
 
   // Whether the box entry [commandId] is on for the box [id] (its arrange

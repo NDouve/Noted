@@ -24,6 +24,8 @@ class _Target implements CanvasCommandTarget {
   @override
   Offset? get viewCentre => null;
   @override
+  CommandInvocation? get invocation => null;
+  @override
   bool get isReadOnly => false;
   @override
   double get scale => 1;
