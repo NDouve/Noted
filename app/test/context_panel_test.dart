@@ -240,6 +240,45 @@ void main() {
       await w.close(t);
     });
 
+    testWidgets('Arrange cells leave 8 px side padding so Send backward fits at the panel width', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(1400, 800));
+      await w.addNote(t, 'a', 'one');
+      w.nb.current!.select('a');
+      await t.pump();
+      for (final id in [
+        'canvas.bringToFront',
+        'canvas.bringForward',
+        'canvas.sendToBack',
+        'canvas.sendBackward',
+      ]) {
+        // The test font (Ahem) has no real glyph widths, so the room the label
+        // has is checked: a 124 px cell with 8 px side padding.
+        final button = find.byKey(ValueKey('panel-$id'));
+        expect(t.getSize(button).width, 124, reason: id);
+        final padding = t.widget<OutlinedButton>(button).style!.padding!.resolve({});
+        expect(padding, const EdgeInsets.symmetric(horizontal: 8), reason: id);
+      }
+      await w.close(t);
+    });
+
+    testWidgets('the closed dropdown is accent-soft with accent text, and actions are natural width', (
+      t,
+    ) async {
+      final w = await ShellWorld.open(t, size: const Size(1400, 800));
+      final scheme = Theme.of(t.element(find.byType(Scaffold).first)).colorScheme;
+      final button = find.descendant(
+        of: find.byKey(const ValueKey('panel-background-dropdown')),
+        matching: find.byType(OutlinedButton),
+      );
+      final style = t.widget<OutlinedButton>(button).style!;
+      expect(style.backgroundColor!.resolve({}), scheme.primaryContainer);
+      expect(style.foregroundColor!.resolve({}), scheme.primary);
+      final panelWidth = t.getSize(_panel).width;
+      expect(t.getSize(button).width, lessThan(panelWidth / 2));
+      expect(t.getSize(find.byKey(const ValueKey('panel-canvas.fitAll'))).width, lessThan(panelWidth / 2));
+      await w.close(t);
+    });
+
     testWidgets('a Drawing says Drawing box and has the same Arrange grid', (t) async {
       final w = await ShellWorld.open(t, size: const Size(1400, 800));
       final c = w.nb.current!;
@@ -466,6 +505,48 @@ void main() {
       expect(FocusManager.instance.primaryFocus, same(focused), reason: 'focus returned to the editor');
       await _menu(t, 'View', 'app.view.panel');
       expect(_panel, findsOneWidget, reason: 'it opens again');
+      await w.close(t);
+    });
+
+    testWidgets('the docked Close x works from the keyboard and the canvas gets the focus', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(1400, 800));
+      bool onClose() =>
+          FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<IconButton>()?.key ==
+          const ValueKey('context-panel-close');
+
+      for (var i = 0; i < 80 && !onClose(); i++) {
+        await t.sendKeyEvent(LogicalKeyboardKey.tab);
+        await t.pump();
+      }
+      expect(onClose(), isTrue, reason: 'Tab reaches the x');
+      await t.sendKeyEvent(LogicalKeyboardKey.enter);
+      await _frames(t, 4);
+      expect(_panel, findsNothing);
+      final f = FocusManager.instance.primaryFocus;
+      expect(f?.context?.findAncestorWidgetOfExactType<PageCanvas>(), isNotNull, reason: 'the canvas has it');
+      await w.close(t);
+    });
+
+    testWidgets('a page change while the background dropdown is open: picking Graph changes neither page', (
+      t,
+    ) async {
+      final w = await ShellWorld.open(t, size: const Size(1400, 800));
+      final first = w.nb.current!;
+      final before = first.page.meta.background;
+      await t.tap(find.byKey(const ValueKey('panel-background-dropdown')));
+      await _frames(t, 4);
+      await w.openPage(t, w.second);
+      await w.settle(t);
+      final second = w.nb.current!;
+      expect(identical(first, second), isFalse);
+      final secondBefore = second.page.meta.background;
+      final graph = find.byKey(const ValueKey('menu-canvas.pageBackground.graph'));
+      if (graph.evaluate().isNotEmpty) {
+        await t.tap(graph);
+        await _frames(t, 4);
+      }
+      expect(second.page.meta.background, secondBefore);
+      expect(first.page.meta.background, before);
       await w.close(t);
     });
 

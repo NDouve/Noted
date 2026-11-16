@@ -52,7 +52,6 @@ class _ContextPanelState extends State<ContextPanel> {
     ]);
 
   final GlobalKey _backgroundKey = GlobalKey();
-  bool _backgroundOpen = false;
 
   String? get _binderPath => widget.notebook.binderOfPage(widget.controller.page.id);
 
@@ -198,7 +197,7 @@ class _ContextPanelState extends State<ContextPanel> {
     Command? command, {
     String? label,
     bool enabled = true,
-    bool wide = true,
+    bool wide = false,
   }) {
     if (command == null) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
@@ -212,7 +211,7 @@ class _ContextPanelState extends State<ContextPanel> {
         style: OutlinedButton.styleFrom(
           alignment: Alignment.centerLeft,
           minimumSize: const Size(0, 32),
-          padding: EdgeInsets.symmetric(horizontal: m.space3),
+          padding: EdgeInsets.symmetric(horizontal: wide ? m.space2 : m.space3),
         ).copyWith(side: _side(scheme, colors, on)),
         onPressed: on ? () => command.run() : null,
         child: Text(label ?? command.label, overflow: TextOverflow.ellipsis),
@@ -221,7 +220,7 @@ class _ContextPanelState extends State<ContextPanel> {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       // A press on a Material button takes no focus; Tab still reaches it.
-      child: wide ? SizedBox(width: double.infinity, child: button) : button,
+      child: wide ? SizedBox(width: double.infinity, child: button) : Align(alignment: Alignment.centerLeft, child: button),
     );
   }
 
@@ -285,31 +284,33 @@ class _ContextPanelState extends State<ContextPanel> {
     final enabled = PageBackground.values.every((b) => r[CanvasCommands.pageBackgroundOf(b)]?.enabled ?? false);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
-      child: SizedBox(
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: SizedBox(
         key: const ValueKey('panel-background-dropdown'),
         height: 32,
-        width: double.infinity,
         child: OutlinedButton(
           key: _backgroundKey,
           style: OutlinedButton.styleFrom(
             alignment: Alignment.centerLeft,
             minimumSize: const Size(0, 32),
             padding: EdgeInsets.symmetric(horizontal: m.space3),
-            backgroundColor: _backgroundOpen ? scheme.primaryContainer : null,
+            foregroundColor: scheme.primary,
+            backgroundColor: scheme.primaryContainer,
           ).copyWith(side: _side(scheme, colors, enabled)),
           onPressed: enabled ? () => _openBackground(context) : null,
           child: Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Expanded(
-                child: Text(
-                  pageBackgroundLabel(current),
-                  key: const ValueKey('panel-background-current'),
-                  overflow: TextOverflow.ellipsis,
-                ),
+              Text(
+                pageBackgroundLabel(current),
+                key: const ValueKey('panel-background-current'),
               ),
+              SizedBox(width: m.space2),
               Icon(Icons.expand_more_rounded, size: m.icon),
             ],
-          ),
+        ),
+      ),
         ),
       ),
     );
@@ -333,18 +334,25 @@ class _ContextPanelState extends State<ContextPanel> {
             enabled: cmd.enabled,
           ),
     ];
-    setState(() => _backgroundOpen = true);
+    // What the choice must still find when it runs: a page opened or a registry
+    // rebuilt while the menu was up means it would change another page.
+    final guard = CanvasTargetGuard(
+      controller: widget.controller,
+      pageId: widget.controller.page.id,
+      registry: r,
+    );
     final id = await showMenu<String>(
       context: box,
       position: RelativeRect.fromRect(
         Rect.fromLTWH(rect.left, rect.bottom + 2, rect.width, 0),
         Offset.zero & overlay.size,
       ),
-      constraints: BoxConstraints.tightFor(width: rect.width),
+      constraints: BoxConstraints(minWidth: rect.width < 160 ? 160 : rect.width),
       items: entries,
     );
-    if (mounted) setState(() => _backgroundOpen = false);
-    if (id != null && mounted) widget.registry[id]?.run();
+    if (id == null || !mounted) return;
+    if (!guard.holds(widget.controller, widget.controller.page.id, registry: widget.registry)) return;
+    r[id]?.run();
   }
 
   List<Widget> _readOnlyPage(BuildContext context) {
@@ -421,7 +429,7 @@ class _ContextPanelState extends State<ContextPanel> {
     final m = NotedMetrics.of(context);
     // While the editor owns focus, Arrange and Delete show disabled.
     final free = widget.controller.editingId == null;
-    Widget cell(String id) => Expanded(child: _button(context, r[id], enabled: free));
+    Widget cell(String id) => Expanded(child: _button(context, r[id], enabled: free, wide: true));
     Widget row(String a, String b) => Row(
       children: [
         cell(a),

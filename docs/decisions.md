@@ -2429,7 +2429,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **One box**, header "Note box", "Drawing box" or "<Type> box": an ARRANGE 2×2 grid (Bring to front, Bring forward / Send to back, Send backward), each cell enabled by `canRestack`; a separator; Delete box. Arrange and Delete are disabled while a note's editor owns the focus.
   - **Disallowed box** on a writable page, header Box: Delete box only, with no type data (0166).
   - **Read-only page**, header Page: the title, the binder name, a read-only card (`conflict-soft`, with the same reason as the page's banner), Find on page and Fit all. No mutating control is shown at all. This applies whatever is selected.
-  - **Several boxes:** not built yet (step 8).
+  - **Several boxes:** not built yet; the canvas has single selection.
 - **Rationale:** the maintainer's UI spec, §5.
 - **Alternatives considered:** keeping the zoom, Find and settings rows in the panel (the spec moved them); showing disabled mutating rows on a read-only page (the spec shows none).
 
