@@ -27,7 +27,7 @@ void main() {
     opened = [];
   });
 
-  Notebook make({bool watch = false, Duration? check}) {
+  Notebook make({bool watch = false, Duration? check, Directory? recovery}) {
     final nb = Notebook(
       PageStore(pages),
       buildModules(),
@@ -36,6 +36,7 @@ void main() {
       watchFiles: watch,
       watchDebounce: const Duration(milliseconds: 40),
       folderCheckInterval: check ?? Duration.zero,
+      recoveryDirectory: recovery,
     );
     opened.add(nb);
     return nb;
@@ -141,11 +142,11 @@ void main() {
     });
 
     test('while running: pending edits are not written to the folder, and the open page turns read-only', () async {
-      final nb = make();
+      final nb = make(recovery: Directory('${root.path}/recovery'));
       await nb.load();
       final s = await nb.addBinder(folder.path);
       final p = await nb.createPage(binderPath: s.path);
-      nb.current!.createBoxAt(const Bounds(10, 10, 0, 0));
+      final box = nb.current!.createBoxAt(const Bounds(10, 10, 0, 0));
       binderFile().writeAsStringSync('{ not json');
       await nb.checkBinderFile(binderFile().path);
 
@@ -156,6 +157,9 @@ void main() {
       // The edit made before the damage is not written into the folder: it is
       // kept in recovery (held edits).
       expect(readPage(pageFile(folder, p).readAsStringSync()).nodes, isEmpty);
+      final kept = nb.recoveryStoreForTest!.indexEntries.where((e) => e.pageId == p).toList();
+      expect(kept, hasLength(1));
+      expect(kept.single.page.node(box.id), isNotNull, reason: 'the edit is in recovery');
       final after = pageFile(folder, p).readAsBytesSync();
       nb.current!.updateMeta(nb.current!.page.meta.withTitle('Late'));
       await nb.flush();
