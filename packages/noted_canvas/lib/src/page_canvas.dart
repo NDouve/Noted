@@ -631,6 +631,7 @@ class PageCanvasState extends State<PageCanvas>
   @override
   void initState() {
     super.initState();
+    SchedulerBinding.instance.addPersistentFrameCallback((_) => _checkContextRect());
     _c.addListener(_changed);
     _tools.addListener(_toolChanged);
     _find = _makeFind();
@@ -1381,6 +1382,7 @@ class PageCanvasState extends State<PageCanvas>
       spec,
       origin,
       hold ? c : null,
+      area: ValueNotifier(area.localToGlobal(Offset.zero) & area.size),
       selectedAtOpen: c.selectedId,
       editingAtOpen: editing,
     );
@@ -1393,7 +1395,7 @@ class PageCanvasState extends State<PageCanvas>
         context,
         spec: spec,
         anchor: global,
-        within: area.localToGlobal(Offset.zero) & area.size,
+        within: session.area,
         // A disallowed box and a read-only page always get the list.
         radial: mouse && !target.off && !_readOnly && widget.contextMenuStyle == ContextMenuStyle.radial,
         closeSignal: _contextClose,
@@ -1401,30 +1403,19 @@ class PageCanvasState extends State<PageCanvas>
     );
   }
 
-  // The canvas shifts a little after a menu opens (a status row appearing);
-  // only a move or resize of 24 px or more counts.
-  static bool _sameRect(Rect a, Rect b) =>
-      (a.left - b.left).abs() <= 24 && (a.top - b.top).abs() <= 24 && (a.right - b.right).abs() <= 24 && (a.bottom - b.bottom).abs() <= 24;
-
-  /// A menu is placed inside the canvas rect it opened in: when that rect
-  /// changes (the window or a panel resized) the menu closes, as for a cancel.
+  /// Run after every frame: a menu is laid out against the canvas rect as it is
+  /// now (it moves with the toolbar wrapping, a bar appearing, a panel), so the
+  /// open menu is told the new rect. It closes only when the canvas is gone.
   void _checkContextRect() {
     final s = _contextSession;
-    if (s == null || _contextClose.value) return;
-    SchedulerBinding.instance.addPostFrameCallback((_) {
-      final now = _contextSession;
-      if (!mounted || now == null || !identical(now, s) || _contextClose.value) return;
-      final area = _areaKey.currentContext?.findRenderObject();
-      if (area is! RenderBox || !area.hasSize) {
-        _contextClose.value = true;
-        return;
-      }
-      final rect = area.localToGlobal(Offset.zero) & area.size;
-      // The first check after the menu opens is the baseline (the canvas can
-      // still settle then).
-      final base = s.settled ??= rect;
-      if (!_sameRect(rect, base)) _contextClose.value = true;
-    });
+    if (!mounted || s == null || _contextClose.value) return;
+    final area = _areaKey.currentContext?.findRenderObject();
+    if (area is! RenderBox || !area.hasSize) {
+      _contextClose.value = true;
+      return;
+    }
+    final rect = area.localToGlobal(Offset.zero) & area.size;
+    if (rect != s.area.value) s.area.value = rect;
   }
 
   void _contextDone(_ContextSession s, ContextEntry? entry) {
@@ -1617,7 +1608,6 @@ class PageCanvasState extends State<PageCanvas>
 
   @override
   Widget build(BuildContext context) {
-    _checkContextRect();
     assert(
       setEquals(_off, _c.disallowedTypes),
       'The owner of the controller sets controller.disallowedTypes to the '
@@ -1746,9 +1736,7 @@ class PageCanvasState extends State<PageCanvas>
   Widget _canvasLayout(ColorScheme scheme) {
     return LayoutBuilder(
         builder: (context, constraints) {
-          final size = constraints.biggest;
-          _checkContextRect();
-          final content = _contentRect();
+          final size = constraints.biggest;          final content = _contentRect();
           final area = _sessionArea;
           final g = CanvasGeometry.compute(
             content: area == null
@@ -2176,10 +2164,10 @@ class _ContextTarget {
 /// One open context menu: its target, entries, the focus to give back, and
 /// the editor focus hold it took (released once).
 class _ContextSession {
-  _ContextSession(this.target, this.spec, this.origin, this._holder, {this.selectedAtOpen, this.editingAtOpen});
+  _ContextSession(this.target, this.spec, this.origin, this._holder, {required this.area, this.selectedAtOpen, this.editingAtOpen});
 
-  /// The canvas rect (global) seen by the first check after the menu opened.
-  Rect? settled;
+  /// The canvas rect (global), kept current while the menu is open.
+  final ValueNotifier<Rect> area;
 
   final _ContextTarget target;
   final ContextMenuSpec spec;

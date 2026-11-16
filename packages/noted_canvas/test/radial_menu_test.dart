@@ -539,6 +539,65 @@ void main() {
     }
   });
 
+  group('the canvas rect changes under an open menu', () {
+    // A bar appearing above the canvas, or the toolbar wrapping after the input
+    // mode changed, moves the canvas rect without a resize of the window.
+    Rect canvasRect(WidgetTester t) => t.getRect(find.byKey(PageCanvas.overlayKey));
+
+    Future<void> grow(WidgetTester t, double inset) async {
+      w.topInset.value = inset;
+      for (var i = 0; i < 4; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+      }
+    }
+
+    testWidgets('an open ring stays open and re-clamps inside the new rect', (t) async {
+      await setUpWorld(t);
+      final top = canvasRect(t).top;
+      await w.rightClick(Offset(600, top + 10));
+      expect(t.getCenter(cancel).dy, closeTo(top + 8 + 142, 0.01));
+      await grow(t, 60);
+      expect(w.ring, findsOneWidget);
+      final a = canvasRect(t);
+      expect(a.top, closeTo(top + 60, 0.01));
+      expect(t.getCenter(cancel).dy, closeTo(a.top + 8 + 142, 0.01));
+      for (final id in canvasSlots) {
+        expect(t.getRect(w.slot(id)).top, greaterThanOrEqualTo(a.top + 8 - 0.01), reason: id);
+      }
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settle(t);
+      expect(w.open, isFalse);
+    });
+
+    testWidgets('an open list stays open and re-clamps inside the new rect', (t) async {
+      await setUpWorld(t, style: ContextMenuStyle.list);
+      final top = canvasRect(t).top;
+      await w.rightClick(Offset(600, top + 10));
+      expect(t.getRect(w.menu).top, closeTo(top + 10, 0.01));
+      await grow(t, 60);
+      expect(w.menu, findsOneWidget);
+      final a = canvasRect(t);
+      expect(t.getRect(w.menu).top, closeTo(a.top + 8, 0.01));
+      expect(t.getRect(w.menu).bottom, lessThanOrEqualTo(a.bottom - 8 + 0.01));
+      // Back to where it was: the list follows.
+      await grow(t, 0);
+      expect(w.menu, findsOneWidget);
+      expect(t.getRect(w.menu).top, closeTo(top + 10, 0.01));
+    });
+
+    testWidgets('a ring that no longer fits the new rect gives way to the list', (t) async {
+      await setUpWorld(t);
+      await w.rightClick(w.at(const Offset(600, 300)));
+      expect(w.ring, findsOneWidget);
+      await grow(t, 480);
+      await t.pump();
+      expect(w.ring, findsNothing);
+      expect(w.menu, findsOneWidget);
+      final a = canvasRect(t);
+      expect(t.getRect(w.menu).top, greaterThanOrEqualTo(a.top + 8 - 0.01));
+    });
+  });
+
   group('motion', () {
     testWidgets('the ring fades in over 120 ms; reduced motion has no animation', (t) async {
       await setUpWorld(t, animate: true);

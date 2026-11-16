@@ -242,6 +242,8 @@ class World {
   Size size = const Size(1200, 800);
   double textScale = 1;
   ThemeData? theme;
+  /// Space above the canvas, changed under an open menu to move the canvas rect.
+  final ValueNotifier<double> topInset = ValueNotifier(0);
   bool disableAnimations = true;
   bool boldText = false;
   late ModuleRegistry modules;
@@ -308,7 +310,10 @@ class World {
     ),
     home: Builder(
       builder: (context) => Scaffold(
-        body: PageCanvas(
+        body: ValueListenableBuilder<double>(
+          valueListenable: topInset,
+          builder: (context, inset, canvas) => Padding(padding: EdgeInsets.only(top: inset), child: canvas),
+          child: PageCanvas(
           key: key,
           controller: controller ?? c,
           tools: tools ?? selection,
@@ -324,6 +329,7 @@ class World {
               [CanvasCommands.select],
             ],
           ),
+        ),
         ),
       ),
     ),

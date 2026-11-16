@@ -217,7 +217,7 @@ Future<ContextEntry?> showContextMenu(
   BuildContext context, {
   required ContextMenuSpec spec,
   required Offset anchor,
-  required Rect within,
+  required ValueListenable<Rect> within,
   required bool radial,
   required ValueListenable<bool> closeSignal,
 }) {
@@ -245,7 +245,7 @@ class _ContextRoute extends PopupRoute<ContextEntry> {
 
   final ContextMenuSpec spec;
   final Offset anchor;
-  final Rect within;
+  final ValueListenable<Rect> within;
   final bool radial;
   final ValueListenable<bool> closeSignal;
   final bool animate;
@@ -303,7 +303,7 @@ class _ContextPanel extends StatefulWidget {
 
   final ContextMenuSpec spec;
   final Offset anchor;
-  final Rect within;
+  final ValueListenable<Rect> within;
   final bool radial;
   final ValueListenable<bool> closeSignal;
 
@@ -338,7 +338,17 @@ class _ContextPanelState extends State<_ContextPanel> {
   void initState() {
     super.initState();
     widget.closeSignal.addListener(_onSignal);
+    widget.within.addListener(_areaChanged);
     if (widget.closeSignal.value) _onSignal();
+  }
+
+  // The canvas moved or resized under the menu: lay it out again for the new
+  // rect (the ring re-clamps, or gives way to the list).
+  void _areaChanged() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !_gone) setState(() {});
+    });
+    SchedulerBinding.instance.scheduleFrame();
   }
 
   void _onSignal() {
@@ -354,6 +364,7 @@ class _ContextPanelState extends State<_ContextPanel> {
   @override
   void dispose() {
     widget.closeSignal.removeListener(_onSignal);
+    widget.within.removeListener(_areaChanged);
     _focus.dispose();
     super.dispose();
   }
@@ -531,7 +542,7 @@ class _ContextPanelState extends State<_ContextPanel> {
               context,
               slots: widget.spec.ring,
               anchor: widget.anchor,
-              within: widget.within,
+              within: widget.within.value,
               at: _at,
               keyboard: _keyboard,
               onRun: _run,
@@ -554,7 +565,7 @@ class _ContextPanelState extends State<_ContextPanel> {
             return const SizedBox.shrink();
           }
           return CustomSingleChildLayout(
-            delegate: _ListLayout(widget.anchor, widget.within),
+            delegate: _ListLayout(widget.anchor, widget.within.value),
             child: _ListView(
               spec: widget.spec,
               rowKeys: _rowKeys,
