@@ -10,7 +10,9 @@ import 'package:noted_core/noted_core.dart';
 import 'package:noted_sync/noted_sync.dart';
 
 import 'fake_graph.dart';
+import 'fake_webdav.dart';
 import 'helpers.dart';
+import 'remote_fake.dart';
 
 /// Thrown by a test seam to stand for the process being killed there.
 class Killed extends Error {
@@ -20,12 +22,31 @@ class Killed extends Error {
   String toString() => 'Killed at $step';
 }
 
-/// A fake drive, a working copy and a state folder, with engines that can be
-/// rebuilt on the same folders (a restart).
-class Harness {
-  Harness._(this.fake, this.base, this.clock);
+/// Which fake store a harness runs on. The engine tests that don't depend on a
+/// provider run on every kind.
+enum RemoteKind {
+  graph('OneDrive'),
+  davPath('WebDAV, path ids'),
+  davFileId('WebDAV, oc:fileid');
 
-  final FakeGraph fake;
+  const RemoteKind(this.label);
+  final String label;
+}
+
+/// A fake remote store, a working copy and a state folder, with engines that
+/// can be rebuilt on the same folders (a restart).
+class Harness {
+  Harness._(this.remote, this.base, this.clock, this.kind, this.rootName);
+
+  final RemoteFake remote;
+  final RemoteKind kind;
+  final String rootName;
+
+  /// The Graph fake, for the cases that only OneDrive has (delta pages, hashes).
+  FakeGraph get fake => remote as FakeGraph;
+
+  /// The WebDAV fake, for the cases that only WebDAV has.
+  FakeWebDav get dav => remote as FakeWebDav;
   final Directory base;
   final FakeClock clock;
   late final Directory work = Directory('${base.path}/work');
@@ -34,15 +55,36 @@ class Harness {
   late PullEngine engine;
   late String rootId;
 
-  static Future<Harness> create({String rootName = 'Noted'}) async {
-    final fake = await FakeGraph.start();
+  static Future<Harness> create({
+    String rootName = 'Noted',
+    RemoteKind kind = RemoteKind.graph,
+  }) async {
+    final RemoteFake remote = switch (kind) {
+      RemoteKind.graph => await FakeGraph.start(),
+      RemoteKind.davPath => await FakeWebDav.start(ids: FakeDavIds.path),
+      RemoteKind.davFileId => await FakeWebDav.start(ids: FakeDavIds.ocFileId),
+    };
     final base = await Directory.systemTemp.createTemp('engine');
-    final h = Harness._(fake, base, FakeClock());
-    h.rootId = fake.addFolder(rootName);
+    final h = Harness._(remote, base, FakeClock(), kind, rootName);
+    final id = remote.addFolder(rootName);
+    h.rootId = kind == RemoteKind.davPath ? '/' : id;
     await h.work.create();
     h.engine = h.newEngine();
     return h;
   }
+
+  /// The WebDAV driver for the fake's synced folder.
+  WebDavDriver newDavDriver() => WebDavDriver(
+    client: WebDavClient(
+      root: dav.urlOf(rootName),
+      user: FakeWebDav.user,
+      password: dav.password,
+      clock: clock,
+      allowLoopbackHttp: true,
+    ),
+    idKind: kind == RemoteKind.davPath ? DavIdKind.path : DavIdKind.fileId,
+    rootId: rootId,
+  );
 
   GraphClient newGraph() => GraphClient(
     origin: fake.origin,
@@ -61,11 +103,13 @@ class Harness {
         locks: locks,
         driver:
             driver ??
-            GraphDriver(
-              graph: newGraph(),
-              driveId: FakeGraph.driveId,
-              rootItemId: root ?? rootId,
-            ),
+            (kind == RemoteKind.graph
+                ? GraphDriver(
+                    graph: newGraph(),
+                    driveId: FakeGraph.driveId,
+                    rootItemId: root ?? rootId,
+                  )
+                : newDavDriver()),
         clock: clock,
         onStep: onStep,
       );
@@ -92,7 +136,7 @@ class Harness {
   }
 
   Future<void> close() async {
-    await fake.close();
+    await remote.close();
     await base.delete(recursive: true);
   }
 
@@ -127,8 +171,7 @@ class Harness {
   // --- Remote files ---
   static List<int> b(String s) => utf8.encode(s);
 
-  int contentRequests() =>
-      fake.requests.where((r) => r.path.endsWith('/content')).length;
+  int contentRequests() => remote.downloadCount;
 
   List<String> issueText() => [for (final i in engine.issues) '$i'];
 }

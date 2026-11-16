@@ -104,7 +104,11 @@ class RemoteView {
 /// Derives the paths of [map] below [rootId] (G6): two live ids on one path
 /// are settled by the higher arrival sequence, names are checked (G8) and the
 /// mirror filter is applied by name only.
-RemoteView buildView(Map<String, RemoteEntry> map, String rootId) {
+RemoteView buildView(
+  Map<String, RemoteEntry> map,
+  String rootId, {
+  String provider = 'OneDrive',
+}) {
   final kids = <String?, List<RemoteEntry>>{};
   for (final e in map.values) {
     if (e.id == rootId) continue;
@@ -130,7 +134,7 @@ RemoteView buildView(Map<String, RemoteEntry> map, String rootId) {
         issues.add(
           SyncIssue(
             parentPath.isEmpty ? c.name : '$parentPath/${c.name}',
-            'OneDrive sent a name that can\'t be used here',
+            '$provider sent a name that can\'t be used here',
           ),
         );
         skipSubtree(c);

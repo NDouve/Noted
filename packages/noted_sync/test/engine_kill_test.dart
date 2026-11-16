@@ -12,13 +12,32 @@ import 'harness.dart';
 /// A kill at each row of the stage 3 note's table of steps (a test seam
 /// throws), then a new engine on the same folders; and the re-path cases.
 void main() {
+  for (final kind in RemoteKind.values) {
+    group(kind.label, () => _cases(kind));
+  }
+}
+
+/// The cases, on one kind of fake remote store. Those that only OneDrive has
+/// (delta pages, hashes, Graph's errors) run on it alone; those that need an id
+/// to survive a rename don't run on path ids, where a rename is a delete plus a
+/// new file.
+void _cases(RemoteKind kind) {
+  final graph = kind == RemoteKind.graph;
+  final renames = kind != RemoteKind.davPath;
+
+  // A rename must keep the id (not on path ids).
+  void renameGroup(Object description, void Function() body) {
+    if (renames) group(description, body);
+  }
+
+
   late Harness h;
-  setUp(() async => h = await Harness.create());
+  setUp(() async => h = await Harness.create(kind: kind));
   tearDown(() => h.close());
 
   void seedMany(int n) {
     for (var i = 0; i < n; i++) {
-      h.fake.addFile('Noted/p$i.canvas', Harness.b('page $i'));
+      h.remote.addFile('Noted/p$i.canvas', Harness.b('page $i'));
     }
   }
 
@@ -74,7 +93,7 @@ void main() {
       seedMany(3);
       await h.round();
       h.file('p0.canvas').renameSync('${h.path('p0.canvas')}.77-1-2.cas-old');
-      h.fake.replaceFile('Noted/p0.canvas', Harness.b('v2'));
+      h.remote.replaceFile('Noted/p0.canvas', Harness.b('v2'));
       h.restart();
       await h.round();
       expect(h.read('p0.canvas'), 'v2');
@@ -94,19 +113,36 @@ void main() {
       expect(h.read('p0.canvas'), 'page 0');
     });
 
-    test('with a server hash, a new file published, journal old: the file is adopted without a download', () async {
+    test('a new file published, journal old: the file is adopted; with a server hash without a download, else after one', () async {
       seedMany(3);
       await killed('published');
       expect(h.tree(), hasLength(1));
       await h.round();
       expect(h.tree(), hasLength(3));
-      expect(h.contentRequests(), 3);
+      expect(h.engine.issues, isEmpty);
+      expect(h.contentRequests(), graph ? 3 : 4);
+      expect(h.stateFiles('tmp'), isEmpty);
     });
+
+    if (!graph) {
+      test('a new file published, journal old, and a differing local file: listed, not adopted', () async {
+        seedMany(3);
+        await killed('published');
+        // Edited here, to other bytes of the same size, before the next round.
+        h.write('p0.canvas', 'PAGE 0');
+        await h.round();
+        expect(h.read('p0.canvas'), 'PAGE 0');
+        expect(h.engine.issues, hasIssue('p0.canvas'));
+        expect(h.issueText().join('\n'), contains('different file'));
+        expect(h.tree(), hasLength(3));
+        expect(h.stateFiles('tmp'), isEmpty);
+      });
+    }
 
     test('a changed file replaced, journal old: local equals remote and is adopted', () async {
       seedMany(3);
       await h.round();
-      h.fake.replaceFile('Noted/p0.canvas', Harness.b('v2'));
+      h.remote.replaceFile('Noted/p0.canvas', Harness.b('v2'));
       h.killAt('published');
       final r = await h.round();
       expect(r.error, isA<Killed>());
@@ -114,9 +150,10 @@ void main() {
       h.restart();
       final before = h.contentRequests();
       await h.round();
-      expect(h.contentRequests(), before);
+      // Without a server hash, the file is compared by one download.
+      expect(h.contentRequests() - before, graph ? 0 : 1);
       expect(h.engine.issues, isEmpty);
-      h.fake.replaceFile('Noted/p0.canvas', Harness.b('v3'));
+      h.remote.replaceFile('Noted/p0.canvas', Harness.b('v3'));
       await h.round();
       expect(h.read('p0.canvas'), 'v3');
     });
@@ -124,7 +161,7 @@ void main() {
     test('a delete done, journal old: the record is dropped', () async {
       seedMany(12);
       await h.round();
-      h.fake.delete('Noted/p0.canvas');
+      h.remote.delete('Noted/p0.canvas');
       await h.round();
       h.clock.advance(const Duration(seconds: 31));
       h.killAt('deleted');
@@ -143,7 +180,7 @@ void main() {
         seedMany(6);
         await h.round();
         for (var i = 0; i < 4; i++) {
-          h.fake.delete('Noted/p$i.canvas');
+          h.remote.delete('Noted/p$i.canvas');
         }
         await h.roundsWithDelay();
         final q = h.engine.guardQuestion;
@@ -157,13 +194,13 @@ void main() {
     );
 
     test('a tracked folder deleted but not yet untracked is untracked at the next round', () async {
-      h.fake.addFile('Noted/x.canvas', Harness.b('x'));
-      h.fake.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
+      h.remote.addFile('Noted/x.canvas', Harness.b('x'));
+      h.remote.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
       for (var i = 0; i < 10; i++) {
-        h.fake.addFile('Noted/p$i.canvas', Harness.b('$i'));
+        h.remote.addFile('Noted/p$i.canvas', Harness.b('$i'));
       }
       await h.round();
-      h.fake.delete('Noted/B');
+      h.remote.delete('Noted/B');
       await h.round();
       h.clock.advance(const Duration(seconds: 31));
       await h.round();
@@ -172,12 +209,12 @@ void main() {
     });
   });
 
-  group('re-path', () {
+  renameGroup('re-path', () {
     test('a file renamed remotely moves, and the old name goes', () async {
       seedMany(3);
-      h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+      h.remote.addFile('Noted/a.canvas', Harness.b('A'));
       await h.round();
-      h.fake.rename('Noted/a.canvas', 'b.canvas');
+      h.remote.rename('Noted/a.canvas', 'b.canvas');
       final r = await h.round();
       expect(h.read('b.canvas'), 'A');
       expect(h.has('a.canvas'), isFalse);
@@ -187,10 +224,10 @@ void main() {
 
     test('to an occupied target: both stay, listed, and it completes when the target is cleared', () async {
       seedMany(3);
-      h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+      h.remote.addFile('Noted/a.canvas', Harness.b('A'));
       await h.round();
       h.write('b.canvas', 'a file of mine');
-      h.fake.rename('Noted/a.canvas', 'b.canvas');
+      h.remote.rename('Noted/a.canvas', 'b.canvas');
       for (var i = 0; i < 2; i++) {
         await h.round();
         expect(h.read('a.canvas'), 'A');
@@ -205,10 +242,10 @@ void main() {
 
     test('a changed file re-pathed and killed after the delete: the move completes with its base', () async {
       seedMany(3);
-      h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+      h.remote.addFile('Noted/a.canvas', Harness.b('A'));
       await h.round();
       h.write('a.canvas', 'EDITED in Files');
-      h.fake.rename('Noted/a.canvas', 'b.canvas');
+      h.remote.rename('Noted/a.canvas', 'b.canvas');
       await killed('oldDeleted');
       expect(h.has('a.canvas'), isFalse);
       expect(h.read('b.canvas'), 'EDITED in Files');
@@ -223,9 +260,9 @@ void main() {
 
     test('re-path copied, old not yet deleted: both exist until the next round finishes it', () async {
       seedMany(3);
-      h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+      h.remote.addFile('Noted/a.canvas', Harness.b('A'));
       await h.round();
-      h.fake.rename('Noted/a.canvas', 'b.canvas');
+      h.remote.rename('Noted/a.canvas', 'b.canvas');
       await killed('repathCopied');
       expect(h.read('a.canvas'), 'A');
       expect(h.read('b.canvas'), 'A');
@@ -239,9 +276,9 @@ void main() {
     group('killed after moving is written, then a change through Files', () {
       Future<void> setUpKilled() async {
         seedMany(3);
-        h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+        h.remote.addFile('Noted/a.canvas', Harness.b('A'));
         await h.round();
-        h.fake.rename('Noted/a.canvas', 'b.canvas');
+        h.remote.rename('Noted/a.canvas', 'b.canvas');
         await killed('movingWritten');
         expect(journal()['moving'], isNotNull);
         expect(h.read('a.canvas'), 'A');
@@ -290,9 +327,9 @@ void main() {
 
     test('killed after the old file is deleted, with the new one changed through Files: the edit stays; OneDrive has the old bytes, so nothing is restored', () async {
       seedMany(3);
-      h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+      h.remote.addFile('Noted/a.canvas', Harness.b('A'));
       await h.round();
-      h.fake.rename('Noted/a.canvas', 'b.canvas');
+      h.remote.rename('Noted/a.canvas', 'b.canvas');
       await killed('oldDeleted');
       h.write('b.canvas', 'B edited');
       await h.round();
@@ -309,9 +346,9 @@ void main() {
         // or delete. A case-only change keeps the key, so rename to an
         // equal-folding spelling by hand: the engine must not touch the file.
         seedMany(3);
-        h.fake.addFile('Noted/a.canvas', Harness.b('A'));
+        h.remote.addFile('Noted/a.canvas', Harness.b('A'));
         await h.round();
-        h.fake.rename('Noted/a.canvas', 'A.canvas');
+        h.remote.rename('Noted/a.canvas', 'A.canvas');
         await h.round();
         expect(h.read('a.canvas'), 'A');
         expect(
@@ -322,19 +359,19 @@ void main() {
     );
   });
 
-  group('a binder renamed', () {
+  renameGroup('a binder renamed', () {
     void seedBinder() {
       seedMany(10);
-      h.fake.addFile('Noted/B1/noted-binder.json', Harness.b('{"id":"b"}'));
-      h.fake.addFile('Noted/B1/p.canvas', Harness.b('P'));
-      h.fake.addFile('Noted/B1/q.canvas', Harness.b('Q'));
-      h.fake.addFile('Noted/B1/p.assets/a.bin', Harness.b('AAA'));
+      h.remote.addFile('Noted/B1/noted-binder.json', Harness.b('{"id":"b"}'));
+      h.remote.addFile('Noted/B1/p.canvas', Harness.b('P'));
+      h.remote.addFile('Noted/B1/q.canvas', Harness.b('Q'));
+      h.remote.addFile('Noted/B1/p.assets/a.bin', Harness.b('AAA'));
     }
 
     test('part-way: the binder file is moved last, the attachments are copied and their source kept', () async {
       seedBinder();
       await h.round();
-      h.fake.rename('Noted/B1', 'B2');
+      h.remote.rename('Noted/B1', 'B2');
       await killed('oldDeleted');
       expect(h.has('B1/noted-binder.json'), isTrue);
       expect(h.has('B2/noted-binder.json'), isFalse);
@@ -365,8 +402,8 @@ void main() {
       seedBinder();
       await h.round();
       h.write('B2/p.canvas', 'something of mine');
-      h.fake.rename('Noted/B1', 'B2');
-      h.fake.replaceFile('Noted/B2/q.canvas', Harness.b('Q v2'));
+      h.remote.rename('Noted/B1', 'B2');
+      h.remote.replaceFile('Noted/B2/q.canvas', Harness.b('Q v2'));
       await h.round();
       expect(h.has('B1/noted-binder.json'), isTrue);
       expect(h.has('B1/q.canvas'), isTrue);
@@ -389,7 +426,7 @@ void main() {
     test('a target occupied after the check leaves that file behind; the binder file still moves', () async {
       seedBinder();
       await h.round();
-      h.fake.rename('Noted/B1', 'B2');
+      h.remote.rename('Noted/B1', 'B2');
       // Occupy q.canvas's target at the moment the first page is copied.
       var done = false;
       h.engine = h.newEngine(
@@ -417,18 +454,18 @@ void main() {
   group('locks', () {
     test('no network request is made while a folder lock is held', () async {
       seedMany(3);
-      h.fake.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
-      h.fake.addFile('Noted/B/q.canvas', Harness.b('Q'));
+      h.remote.addFile('Noted/B/noted-binder.json', Harness.b('{}'));
+      h.remote.addFile('Noted/B/q.canvas', Harness.b('Q'));
       var violations = 0;
-      h.fake.onRequest = (_) {
+      h.remote.onAnyRequest = () {
         if (h.locks.busyCount != 0) violations++;
       };
       await h.round();
-      h.fake.replaceFile('Noted/p0.canvas', Harness.b('v2'));
-      h.fake.rename('Noted/B', 'C');
+      h.remote.replaceFile('Noted/p0.canvas', Harness.b('v2'));
+      h.remote.rename('Noted/B', 'C');
       await h.round();
       expect(violations, 0);
-      expect(h.fake.requests, isNotEmpty);
+      expect(h.remote.requestCount, isNonZero);
     });
 
     test('the engine serialises on the shared locks: nothing lands while the folder is held', () async {

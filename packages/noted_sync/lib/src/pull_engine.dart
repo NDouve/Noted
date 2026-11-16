@@ -263,12 +263,13 @@ class PullEngine {
       _setStatus(rootGone);
       return;
     }
+    _roundIssues.addAll(fetched.issues);
     _step('deltaFetched');
     j.map = fetched.map;
     j.deltaLink = fetched.cursor;
     j.endpoint = fetched.endpoint;
     j.seq = fetched.seq;
-    final view = buildView(j.map, rootItemId);
+    final view = buildView(j.map, rootItemId, provider: _name);
     if (fetched.resync?.uploadDifferences ?? false) {
       // A path missing remotely is kept and listed, never turned into a delete.
       for (final e in j.files.entries) {
@@ -1025,7 +1026,7 @@ class PullEngine {
         return false;
       }
     }
-    if (pageLike) await _blobs.put(File(abs), ident.sha256);
+    if (pageLike && !await _blobs.put(File(abs), ident.sha256)) return false;
     final st = await File(abs).stat();
     if (before != null &&
         (st.modified != before.modified || st.size != before.size)) {
@@ -1153,7 +1154,15 @@ class PullEngine {
     _changedMeanwhile.remove(d.key);
     final ident = await ContentIdentity.ofFile(tmp.path);
     if (_pageLike(d)) {
-      await _blobs.put(tmp, ident.sha256);
+      if (!await _blobs.put(tmp, ident.sha256)) {
+        try {
+          await tmp.delete();
+        } on FileSystemException {
+          // Swept at the next start.
+        }
+        _issue(rel, 'Couldn\'t keep a copy of the download; trying again next time');
+        return null;
+      }
       _step('blobWritten');
     }
     return _Download(tmp, ident);

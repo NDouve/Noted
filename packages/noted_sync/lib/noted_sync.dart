@@ -15,3 +15,6 @@ export 'src/journal.dart' show JournalUnreadable, RemoteEntry, syncJournalFile;
 export 'src/pull_engine.dart';
 export 'src/remote_tree.dart' show isSafeName;
 export 'src/types.dart';
+export 'src/webdav/webdav_client.dart';
+export 'src/webdav/webdav_driver.dart';
+export 'src/webdav/webdav_xml.dart' show XmlParseException;
