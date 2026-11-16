@@ -10,6 +10,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:noted/src/context_panel.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -279,6 +280,72 @@ void main() {
       await w.close(t);
     });
 
+    testWidgets('the panel State outliving a controller and registry swap: picking Graph runs nothing', (
+      t,
+    ) async {
+      final w = await ShellWorld.open(t, size: const Size(1400, 800));
+      final runs = <String>[];
+      CanvasController make(String id) => CanvasController(
+        NotedPage.create(PageMeta.create(id: id, title: id, order: 0)),
+        w.nb.current!.modules,
+      );
+      CommandRegistry registry(String tag) => CommandRegistry()
+        ..registerAll([
+          for (final b in PageBackground.values)
+            Command(
+              id: CanvasCommands.pageBackgroundOf(b),
+              label: b.name,
+              icon: Icons.grid_on,
+              invoke: () => runs.add('$tag ${b.name}'),
+            ),
+        ]);
+      final a = make('a');
+      final b = make('b');
+      final ra = registry('a');
+      final rb = registry('b');
+      addTearDown(() {
+        a.dispose();
+        b.dispose();
+        ra.dispose();
+        rb.dispose();
+      });
+      late StateSetter swap;
+      var second = false;
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                swap = setState;
+                // One key: the panel's State lives across the swap.
+                return ContextPanel(
+                  key: const ValueKey('swap-panel'),
+                  notebook: w.nb,
+                  controller: second ? b : a,
+                  registry: second ? rb : ra,
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      await t.tap(find.byKey(const ValueKey('panel-background-dropdown')));
+      await _frames(t, 4);
+      swap(() => second = true);
+      await t.pump();
+      await t.tap(find.byKey(const ValueKey('menu-canvas.pageBackground.graph')));
+      await _frames(t, 4);
+      expect(runs, isEmpty, reason: 'neither registry ran the command');
+      // Control: without a swap the pick does run, once.
+      await t.tap(find.byKey(const ValueKey('panel-background-dropdown')));
+      await _frames(t, 4);
+      await t.tap(find.byKey(const ValueKey('menu-canvas.pageBackground.graph')));
+      await _frames(t, 4);
+      expect(runs, ['b graph']);
+      await t.pumpWidget(const SizedBox());
+      await w.close(t);
+    });
+
     testWidgets('a Drawing says Drawing box and has the same Arrange grid', (t) async {
       final w = await ShellWorld.open(t, size: const Size(1400, 800));
       final c = w.nb.current!;
@@ -541,10 +608,9 @@ void main() {
       expect(identical(first, second), isFalse);
       final secondBefore = second.page.meta.background;
       final graph = find.byKey(const ValueKey('menu-canvas.pageBackground.graph'));
-      if (graph.evaluate().isNotEmpty) {
-        await t.tap(graph);
-        await _frames(t, 4);
-      }
+      expect(graph, findsOneWidget);
+      await t.tap(graph);
+      await _frames(t, 4);
       expect(second.page.meta.background, secondBefore);
       expect(first.page.meta.background, before);
       await w.close(t);
