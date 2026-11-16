@@ -4,11 +4,11 @@
 
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart' show TargetPlatform, ValueListenable, defaultTargetPlatform;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:flutter/services.dart' show HardwareKeyboard;
+import 'package:flutter/services.dart' show HardwareKeyboard, KeyDownEvent, KeyEvent, LogicalKeyboardKey;
 import 'package:noted_core/noted_core.dart';
 
 import 'attachment_store.dart';
@@ -47,7 +47,15 @@ class BoxHost extends StatefulWidget {
     this.onIssueTap,
     this.multiTouch,
     this.inkedBy,
+    this.typeName,
+    this.toolActive,
   });
+
+  /// The user-facing name of a box type, for the grip's accessible name.
+  final String? Function(String typeId)? typeName;
+
+  /// Whether a canvas tool is picked: the multi-selection key does nothing then.
+  final bool Function()? toolActive;
 
   /// True for a pointer that takes no click on a box here: a pen going to a
   /// tool (over Select), or a resting hand. The box then takes no click from it.
@@ -135,10 +143,15 @@ class _BoxHostState extends State<BoxHost> {
     widget.multiTouch?.removeListener(_multiTouchChanged);
     widget.controller.editorFocusHeld.removeListener(_holdChanged);
     _contentFocus.dispose();
+    _chromeFocus.dispose();
     super.dispose();
   }
 
   // The box content's focus, read again when a hold on the editor focus ends.
+  bool _chromeFocused = false;
+
+  final FocusNode _chromeFocus =FocusNode(debugLabel: 'BoxHost chrome');
+
   final FocusNode _contentFocus = FocusNode(
     debugLabel: 'BoxHost content',
     canRequestFocus: false,
@@ -279,8 +292,9 @@ class _BoxHostState extends State<BoxHost> {
     final conflicted = node is BoxRecord && node.isConflicted;
     final landed = node is BoxRecord && node.landed != null;
     final frameless = module?.frameStyle == BoxFrameStyle.framelessUntilSelected;
-    final lit = selected || editing;
-    final showGrip = editable && (_hover || lit);
+    final member = c.multiSelection.contains(node.id);
+    final lit = selected || editing || member;
+    final showGrip = editable && (_hover || selected || editing);
     final w = b.width;
     final h = b.height;
 
@@ -445,8 +459,31 @@ class _BoxHostState extends State<BoxHost> {
                 top: 0,
                 width: w,
                 height: boxGripHeight,
-                child: MouseRegion(
+                // The chrome is keyboard reachable: Ctrl+Shift+Space (Cmd+Shift
+                // on macOS) adds the box to the multi-selection or removes it.
+                child: Focus(
+                  focusNode: _chromeFocus,
+                  onKeyEvent: (_, e) => _chromeKey(e),
+                  onFocusChange: (f) => setState(() => _chromeFocused = f),
+                  child: Semantics(
+                  label: node is BoxRecord
+                      ? (widget.typeName?.call(node.typeId) ?? 'Box')
+                      : 'Box',
+                  hint: defaultTargetPlatform == TargetPlatform.macOS
+                      ? 'Command Shift Space adds it to the selection'
+                      : 'Control Shift Space adds it to the selection',
+                  selected: member,
+                  child: MouseRegion(
+                  key: ValueKey('box-chrome-${node.id}'),
                   cursor: SystemMouseCursors.move,
+                  child: DecoratedBox(
+                  key: _chromeFocused ? const ValueKey('box-chrome-focus') : null,
+                  decoration: _chromeFocused
+                      ? BoxDecoration(
+                          border: Border.all(color: scheme.primary, width: 2),
+                          borderRadius: metrics.borderSm,
+                        )
+                      : const BoxDecoration(),
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     dragStartBehavior: DragStartBehavior.down,
@@ -476,14 +513,17 @@ class _BoxHostState extends State<BoxHost> {
                           )
                         : const SizedBox.expand(),
                   ),
+                  ),
+                ),
+                ),
                 ),
               ),
-              _handle(_Edge.left, b),
-              _handle(_Edge.right, b),
-              _handle(_Edge.bottom, b),
-              _handle(_Edge.bottomLeft, b),
-              _handle(_Edge.bottomRight, b),
-              if (lit) ..._handleSquares(b, scheme, metrics),
+              if (!member) _handle(_Edge.left, b),
+              if (!member) _handle(_Edge.right, b),
+              if (!member) _handle(_Edge.bottom, b),
+              if (!member) _handle(_Edge.bottomLeft, b),
+              if (!member) _handle(_Edge.bottomRight, b),
+              if (selected || editing) ..._handleSquares(b, scheme, metrics),
             ],
             // The warning in the box's place: a small red chip on its top
             // edge. It opens that box's issue only.
@@ -617,9 +657,29 @@ class _BoxHostState extends State<BoxHost> {
     );
   }
 
+  // The grip: Ctrl+Shift+Space (Cmd+Shift+Space on macOS).
+  KeyEventResult _chromeKey(KeyEvent e) {
+    final k = HardwareKeyboard.instance;
+    final mac = defaultTargetPlatform == TargetPlatform.macOS;
+    if (e is! KeyDownEvent ||
+        e.logicalKey != LogicalKeyboardKey.space ||
+        !k.isShiftPressed ||
+        k.isAltPressed ||
+        (mac ? !k.isMetaPressed || k.isControlPressed : !k.isControlPressed || k.isMetaPressed)) {
+      return KeyEventResult.ignored;
+    }
+    if (widget.toolActive?.call() ?? false) return KeyEventResult.ignored;
+    return widget.controller.toggleMulti(widget.node.id)
+        ? KeyEventResult.handled
+        : KeyEventResult.ignored;
+  }
+
   void _begin(Offset global) {
     final b = widget.node.bounds;
-    if (b == null || _multiTouchOn) return;
+    // A member of the multi-selection isn't moved.
+    if (b == null || _multiTouchOn || widget.controller.multiSelection.contains(widget.node.id)) {
+      return;
+    }
     _gestureStart = global;
     _gestureBounds = b;
     widget.controller.beginGesture(widget.node.id);

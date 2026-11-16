@@ -552,8 +552,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     FolderLocks? folderLocks,
     this.folderWaitNote = const Duration(seconds: 3),
     List<String> readOnlyRoots = const [],
+    Map<String, String> readOnlyRootNames = const {},
   }) : folderLocks = folderLocks ?? FolderLocks(),
-       _readOnlyRoots = [for (final r in readOnlyRoots) _normalizePath(r)] {
+       _readOnlyRoots = [for (final r in readOnlyRoots) _normalizePath(r)],
+       _readOnlyRootNamesIn = readOnlyRootNames {
     _chain.onDetachedJobEnded = _oldJobEnded;
   }
 
@@ -576,10 +578,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return null;
   }
 
-  static const String _pullOnlyMessage = 'This OneDrive folder is read-only on this device for now.';
+  // The provider's name by read-only root (the path as given); a root that
+  // isn't named here is OneDrive's.
+  final Map<String, String> _readOnlyRootNamesIn;
+  late final Map<String, String> _readOnlyRootNames = {
+    for (final e in _readOnlyRootNamesIn.entries) _key(_normalizePath(e.key)): e.value,
+  };
 
-  /// What every place that refuses a change to a pull-only location says.
-  static const String pullOnlyMessage = _pullOnlyMessage;
+  /// What a refused change to an OneDrive pull-only location says.
+  static const String pullOnlyMessage = 'This OneDrive folder is read-only on this device for now.';
+
+  /// What every place that refuses a change to the pull-only location [loc]
+  /// says: [pullOnlyMessage] with the provider that owns its root.
+  String pullOnlyMessageFor(String loc) {
+    final rk = _readOnlyRootOf(loc);
+    final name = rk == null ? null : _readOnlyRootNames[rk];
+    return name == null ? pullOnlyMessage : 'This $name folder is read-only on this device for now.';
+  }
 
   /// The per-folder lock the notebook's page-file writes and scans run under.
   /// Share one with anything else that writes page files in the same folders.
@@ -1310,7 +1325,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   String _lockedMessage(String loc) {
-    if (_pullOnly(loc)) return _pullOnlyMessage;
+    if (_pullOnly(loc)) return pullOnlyMessageFor(loc);
     final s = _binders[loc];
     if (s != null && s.readOnly) {
       if (s.other != null) return 'This folder now holds another binder, so its pages are read-only.';
@@ -1415,14 +1430,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (f != null) {
       final st = f.store;
       if (!f.available || st == null) {
-        throw NotebookException(_pullOnly(loc) ? _pullOnlyMessage : 'That folder is not available.');
+        throw NotebookException(_pullOnly(loc) ? pullOnlyMessageFor(loc) : 'That folder is not available.');
       }
       return st;
     }
     // A binder whose file can't be read keeps its store, for reading.
     final st = _binders[loc]?.store;
     if (st == null) {
-      throw NotebookException(_pullOnly(loc) ? _pullOnlyMessage : 'That binder is not available.');
+      throw NotebookException(_pullOnly(loc) ? pullOnlyMessageFor(loc) : 'That binder is not available.');
     }
     return st;
   }
@@ -2223,7 +2238,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (id == currentId) return;
     // A page of a binder whose folder is away can't be read.
     if (_binders[_loc[id]]?.missing ?? false) {
-      throw NotebookException(isPullOnlyPage(id) ? _pullOnlyMessage : 'That binder is not available.');
+      throw NotebookException(isPullOnlyPage(id) ? pullOnlyMessageFor(_loc[id]!) : 'That binder is not available.');
     }
     await _closeCurrent();
     await _openFresh(id);
@@ -2969,10 +2984,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         why = _orphanLoc == null
             ? null
             : _pullOnly(_orphanLoc!)
-            ? _pullOnlyMessage
+            ? pullOnlyMessageFor(_orphanLoc!)
             : "This page's folder isn't available, so it is read-only.";
       } else if (_pullOnly(loc)) {
-        why = _pullOnlyMessage;
+        why = pullOnlyMessageFor(loc);
       } else if (_isLocked(loc)) {
         why = _binders[loc]?.readOnly ?? false
             ? (_binders[loc]?.other != null
@@ -4801,7 +4816,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// [NotebookException].
   Future<String> _newBinderFolder(String name) async {
     final root = defaultBinderFolderPath;
-    if (_pullOnly(root)) throw const NotebookException(_pullOnlyMessage);
+    if (_pullOnly(root)) throw NotebookException(pullOnlyMessageFor(root));
     final builtin = settings?.defaultBinderFolder == null || _key(root) == _key(builtinBinderFolderPath);
     try {
       if (builtin) {
@@ -4920,7 +4935,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     // A binder file is never made in a pull-only folder (opening one is fine).
     if (_pullOnly(path) && !await BinderStore(Directory(path)).file.exists()) {
-      throw const NotebookException(_pullOnlyMessage);
+      throw NotebookException(pullOnlyMessageFor(path));
     }
     await flush();
     final r = await _queued(() => _listBinder(path, found: false));
@@ -5136,7 +5151,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final known = _folders.keys.where((f) => _key(f) == _key(path)).firstOrNull;
     if (known != null) {
       if (_folders[known]!.available) return known;
-      throw NotebookException(_pullOnly(known) ? _pullOnlyMessage : 'That folder is not available.');
+      throw NotebookException(_pullOnly(known) ? pullOnlyMessageFor(known) : 'That folder is not available.');
     }
     _refuseWhileHeld();
     await checkStandaloneFolder(path);
@@ -5484,7 +5499,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> deleteTemplate(TemplateItem item) async {
     final inBinder = item.binderPath;
     if (inBinder != null && _binders.containsKey(inBinder) && _isLocked(inBinder)) throw NotebookException(_lockedMessage(inBinder));
-    if (_pullOnly(File(item.path).parent.path)) throw const NotebookException(_pullOnlyMessage);
+    if (_pullOnly(File(item.path).parent.path)) throw NotebookException(pullOnlyMessageFor(File(item.path).parent.path));
     final now = _templateSnap(inBinder);
     // What was listed is judged against the binder as it was listed.
     final snap = inBinder == null ? now : (section: now.section, id: item.binderId);
@@ -5700,7 +5715,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (path == defaultFolderPath || _folders.containsKey(path)) {
       throw const NotebookException('That folder holds the standalone pages.');
     }
-    if (_pullOnly(path)) throw const NotebookException(_pullOnlyMessage);
+    if (_pullOnly(path)) throw NotebookException(pullOnlyMessageFor(path));
     final dir = Directory(path);
     final binders = BinderStore(dir);
     if (_binders.containsKey(path) || await binders.file.exists()) {
@@ -6500,7 +6515,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// over anything.
   Future<void> putBackBinderCopy(String path, String copyPath) async {
     _refuseWhileHeld();
-    if (_pullOnly(path)) throw const NotebookException(_pullOnlyMessage);
+    if (_pullOnly(path)) throw NotebookException(pullOnlyMessageFor(path));
     final s = _binders[path];
     if (s == null) return;
     final row = binderCopyRows(s).where((r) => r.path == copyPath).firstOrNull;
@@ -6606,7 +6621,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// only while it still holds what was listed. Returns false if the user
   /// chose to keep it.
   Future<bool> deleteBinderCopy(String path, String copyPath) async {
-    if (_pullOnly(path)) throw const NotebookException(_pullOnlyMessage);
+    if (_pullOnly(path)) throw NotebookException(pullOnlyMessageFor(path));
     final s = _binders[path];
     if (s == null) return false;
     final row = binderCopyRows(s).where((r) => r.path == copyPath).firstOrNull;
@@ -12427,7 +12442,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (chosen == null) return '';
     final dir = Directory(_normalizePath(chosen));
     // Nothing is made in a pull-only folder.
-    if (_pullOnly(dir.path)) throw const NotebookException(_pullOnlyMessage);
+    if (_pullOnly(dir.path)) throw NotebookException(pullOnlyMessageFor(dir.path));
     final newPageId = newId();
     final copy = page.withMeta(page.meta.withId(newPageId).withPlacement(parentId: null, order: 0));
     final left = <String>[];

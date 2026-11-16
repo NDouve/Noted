@@ -7,7 +7,7 @@ import 'dart:io';
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart' show ValueListenable, listEquals;
 import 'package:flutter/services.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_sync/noted_sync.dart' show GuardQuestion;
@@ -32,7 +32,9 @@ import 'status_strip.dart';
 import 'page_tree_view.dart';
 import 'microsoft_account.dart';
 import 'onedrive_guard_dialog.dart';
+import 'cloud_sync.dart';
 import 'onedrive_sync.dart';
+import 'webdav_sync.dart' show WebDavScope;
 import 'settings_menu.dart';
 import 'title_bar.dart';
 import 'window_channel.dart';
@@ -241,78 +243,95 @@ class _HomeState extends State<Home> {
     if (scaffold != null && scaffold.isDrawerOpen) scaffold.closeDrawer();
   }
 
-  OneDriveSync? _sync;
-  GuardQuestion? _guardShown;
-  Object? _guardSource;
-  GuardQuestion? _guardAnswered;
-  GuardPrompt? _prompt;
+  // The pulls of this build (OneDrive, WebDAV), each asking its own question.
+  List<CloudSync> _syncs = const [];
+  final Map<CloudSync, _GuardState> _guards = {};
+  final Map<CloudSync, VoidCallback> _guardListeners = {};
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final sync = OneDriveScope.maybeOf(context);
-    if (sync == _sync) return;
-    _sync?.removeListener(_guardChanged);
-    _dropPrompt();
-    _sync = sync;
-    sync?.addListener(_guardChanged);
-    _guardChanged();
+    final now = <CloudSync>[?OneDriveScope.maybeOf(context), ?WebDavScope.maybeOf(context)];
+    if (listEquals(now, _syncs)) return;
+    for (final s in _syncs) {
+      if (!now.contains(s)) _unwatch(s);
+    }
+    final before = _syncs;
+    _syncs = now;
+    for (final s in now) {
+      if (before.contains(s)) continue;
+      _guards[s] = _GuardState();
+      void listener() => _guardChanged(s);
+      _guardListeners[s] = listener;
+      s.addListener(listener);
+      _guardChanged(s);
+    }
+  }
+
+  void _unwatch(CloudSync s) {
+    final listener = _guardListeners.remove(s);
+    if (listener != null) s.removeListener(listener);
+    _dropPrompt(s);
+    _guards.remove(s);
   }
 
   // Takes the dialog away, if one is up, without answering it.
-  void _dropPrompt() {
-    _prompt?.close();
-    _prompt = null;
-    _guardShown = null;
-    _guardSource = null;
+  void _dropPrompt(CloudSync s) {
+    final g = _guards[s];
+    if (g == null) return;
+    g.prompt?.close();
+    g.prompt = null;
+    g.shown = null;
+    g.source = null;
   }
 
-  // The OneDrive pull asks once per question, whichever screen is up. One
-  // dialog at a time: it goes when its question changes or goes, and a new
+  // The pulls ask once per question, whichever screen is up. One dialog at a
+  // time for each pull: it goes when its question changes or goes, and a new
   // question gets a new dialog.
-  void _guardChanged() {
-    final sync = _sync;
-    final q = sync?.guardQuestion;
-    final source = sync?.guardSource;
-    if (_prompt != null && (q != _guardShown || !identical(source, _guardSource))) _dropPrompt();
+  void _guardChanged(CloudSync sync) {
+    final g = _guards[sync];
+    if (g == null) return;
+    final q = sync.guardQuestion;
+    final source = sync.guardSource;
+    if (g.prompt != null && (q != g.shown || !identical(source, g.source))) _dropPrompt(sync);
     if (q == null) {
-      _guardShown = null;
-      _guardAnswered = null;
+      g.shown = null;
+      g.answered = null;
       return;
     }
-    if (q == _guardShown || q == _guardAnswered || !mounted) return;
-    _guardShown = q;
-    _guardSource = source;
+    if (q == g.shown || q == g.answered || !mounted) return;
+    g.shown = q;
+    g.source = source;
     // After this frame: the listener can fire while the tree is building.
-    WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_askGuard(q, source)));
+    WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_askGuard(sync, q, source)));
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
-  Future<void> _askGuard(GuardQuestion q, Object? source) async {
-    final sync = _sync;
-    if (!mounted || sync == null || _guardShown != q || !identical(_guardSource, source) || _prompt != null) return;
-    final prompt = showOneDriveGuardDialog(context, q);
-    _prompt = prompt;
+  Future<void> _askGuard(CloudSync sync, GuardQuestion q, Object? source) async {
+    final g = _guards[sync];
+    if (g == null || !mounted || g.shown != q || !identical(g.source, source) || g.prompt != null) return;
+    final prompt = showOneDriveGuardDialog(context, q, provider: sync.providerName);
+    g.prompt = prompt;
     final remove = await prompt.answer;
-    if (!identical(_prompt, prompt)) return; // taken away: its question changed
-    _prompt = null;
+    if (!identical(g.prompt, prompt)) return; // taken away: its question changed
+    g.prompt = null;
     if (remove == null) {
       // Closed without an answer: ask again at the next change.
-      _guardShown = null;
+      g.shown = null;
       return;
     }
     // The answer goes to the pull that asked, and only counts once saved.
     final saved = await sync.answerGuard(q, remove: remove, source: source);
     // Not when a newer question already has its dialog: keep that one.
-    if (_prompt == null) _guardShown = null;
+    if (g.prompt == null) g.shown = null;
     if (saved) {
-      _guardAnswered = q;
+      g.answered = q;
       // A different question that came up meanwhile is asked next.
-      if (mounted) _guardChanged();
+      if (mounted) _guardChanged(sync);
     } else if (mounted) {
       // Not asked again at once: the next change of the pull asks.
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        const SnackBar(content: Text("Your answer couldn't be saved. OneDrive will ask again.")),
+        SnackBar(content: Text("Your answer couldn't be saved. ${sync.providerName} will ask again.")),
       );
     }
   }
@@ -320,7 +339,9 @@ class _HomeState extends State<Home> {
 
   @override
   void dispose() {
-    _sync?.removeListener(_guardChanged);
+    for (final s in _syncs.toList()) {
+      _unwatch(s);
+    }
     _search.removeListener(_searchChanged);
     _titleHighlight.dispose();
     unawaited(_notices?.cancel());
@@ -803,4 +824,12 @@ class _HomeState extends State<Home> {
       },
     );
   }
+}
+
+// What the guard dialog of one pull has shown and been answered.
+class _GuardState {
+  GuardQuestion? shown;
+  Object? source;
+  GuardQuestion? answered;
+  GuardPrompt? prompt;
 }

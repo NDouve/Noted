@@ -268,6 +268,24 @@ const List<Site> deleteSites = [
     1,
     _emptyDir,
   ),
+  (
+    'app/lib/src/webdav_sync.dart',
+    'await store.delete(conn.passwordKey);',
+    1,
+    'not a file: a keychain item of a connection that could not be saved',
+  ),
+  (
+    'app/lib/src/webdav_sync.dart',
+    'await store.delete(c.passwordKey);',
+    1,
+    'not a file: the keychain item of the connection being disconnected',
+  ),
+  (
+    'app/lib/src/webdav_sync.dart',
+    'if (await file.exists()) await file.delete();',
+    1,
+    'the connection file in the app-private state folder; Disconnect forgets it',
+  ),
 ];
 
 const String _ownTemp =
@@ -297,6 +315,12 @@ const List<Site> renameSites = [
   ('app/lib/src/notebook.dart', 'await tmp.rename(f.path);', 1, _ownTemp),
   (
     'app/lib/src/onedrive_sync.dart',
+    'await tmp.rename(file.path);',
+    1,
+    _ownTemp,
+  ),
+  (
+    'app/lib/src/webdav_sync.dart',
     'await tmp.rename(file.path);',
     1,
     _ownTemp,

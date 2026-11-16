@@ -157,6 +157,7 @@ class SpyNotebook extends Notebook {
     super.saveDelay,
     super.bindersFile,
     super.readOnlyRoots,
+    super.readOnlyRootNames,
     super.watchFiles,
     super.folderCheckInterval,
   });

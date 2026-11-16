@@ -209,7 +209,7 @@ class _BinderCoverState extends State<BinderCover> {
                   ),
                   if (pullOnly) ...[
                     Text(
-                      Notebook.pullOnlyMessage,
+                      widget.notebook.pullOnlyMessageFor(widget.path),
                       key: const ValueKey('cover-read-only'),
                       style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                     ),

@@ -176,15 +176,40 @@ String resolveStoredPath(String stored, {bool? windows, String? documents, bool 
   return '$base$sep${a.sublist(n).join(sep)}';
 }
 
+/// The folder that holds one provider's working copies on a device,
+/// `<documents>/Noted/<provider>` (`onedrive`, `webdav`); null on desktop (or
+/// before [initDeviceStorage] has run). Everything under it is read-only on
+/// this device while the sync only pulls (0154).
+Directory? deviceCloudRoot(String provider) {
+  final d = _documents;
+  if (!isMobilePlatform || d == null) return null;
+  return Directory('${d.path}${_sep}Noted$_sep$provider');
+}
+
 /// The folder that holds the OneDrive working copies on a device,
 /// `<documents>/Noted/onedrive`; null on desktop (or before
 /// [initDeviceStorage] has run). Everything under it is read-only on this
 /// device while the sync only pulls (OneDrive sync stage 3, G1).
-Directory? deviceOneDriveRoot() {
-  final d = _documents;
-  if (!isMobilePlatform || d == null) return null;
-  return Directory('${d.path}${_sep}Noted${_sep}onedrive');
-}
+Directory? deviceOneDriveRoot() => deviceCloudRoot('onedrive');
+
+/// The folder that holds the WebDAV working copies on a device,
+/// `<documents>/Noted/webdav`; null on desktop (or before [initDeviceStorage]
+/// has run). Read-only like [deviceOneDriveRoot].
+Directory? deviceWebDavRoot() => deviceCloudRoot('webdav');
+
+/// The working copy of one WebDAV folder, `root/account key/root key`. Both
+/// are SHA-256 (a URL can hold a user name): see [WebDavConnection].
+Directory webDavWorkingCopy(Directory root, String accountKey, String rootKey) =>
+    Directory([root.path, safePathPart(accountKey), safePathPart(rootKey)].join(_sep));
+
+/// The state folder of one WebDAV folder (journal, `tmp/`, `base/`,
+/// `connection.json`): `<support>/webdav/<account key>/<root key>`.
+Directory webDavStateDir(Directory support, String accountKey, String rootKey) =>
+    syncStateDir(support, accountKey, rootKey, provider: 'webdav');
+
+/// The file that remembers a WebDAV connection (never its password), in the
+/// state folder.
+File webDavConnectionFile(Directory stateDir) => File([stateDir.path, 'connection.json'].join(_sep));
 
 /// The working copy of one OneDrive folder, `root/account key/root item
 /// id`. Both parts come from the server, so each goes through

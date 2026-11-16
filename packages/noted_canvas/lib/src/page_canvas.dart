@@ -797,7 +797,10 @@ class PageCanvasState extends State<PageCanvas>
   void _toolChanged() {
     _cancelSession();
     // Picking a tool ends text editing.
-    if (_tools.active != null) _focus.requestFocus();
+    if (_tools.active != null) {
+      _focus.requestFocus();
+      _c.clearMulti();
+    }
     setState(() {});
   }
 
@@ -843,7 +846,7 @@ class PageCanvasState extends State<PageCanvas>
   bool _boxIgnores(PointerEvent e) =>
       _palmPointers.contains(e.pointer) ||
       _inkedBy(e.kind) ||
-      (e is PointerDownEvent && (_mousePicks(e) || _ctrlPrimary(e)));
+      (e is PointerDownEvent && (_mousePicks(e) || _ctrlPrimary(e) || _multiClick(e)));
 
   /// True if the pointer [kind] goes to a tool (and so to no box) here.
   bool _inkedBy(PointerDeviceKind kind) =>
@@ -1252,6 +1255,11 @@ class PageCanvasState extends State<PageCanvas>
     final world = v.toWorld(d.localPosition);
     // A click that lands on a box's chrome or snapshot isn't a canvas click.
     if (nodesAtPoint(_c.page, world).isNotEmpty) return;
+    // A blank click ends a multi-selection first and makes no box.
+    if (_c.multiSelection.isNotEmpty) {
+      _c.clearMulti();
+      return;
+    }
     // Place the box so the caret lands near the click.
     _c.createBoxAt(Bounds(world.dx - 10, world.dy - 14, 0, 0));
   }
@@ -1276,6 +1284,49 @@ class PageCanvasState extends State<PageCanvas>
       HardwareKeyboard.instance.isControlPressed &&
       !HardwareKeyboard.instance.isAltPressed &&
       !HardwareKeyboard.instance.isMetaPressed;
+
+  // Multi-select ------------------------------------------------------------
+
+  /// Whether the multi-select modifiers are held: Ctrl+Shift, or Cmd+Shift on
+  /// macOS (where Ctrl+click is the secondary click), without Alt.
+  bool get _multiChord {
+    final k = HardwareKeyboard.instance;
+    final mac = defaultTargetPlatform == TargetPlatform.macOS;
+    final primary = mac ? k.isMetaPressed && !k.isControlPressed : k.isControlPressed && !k.isMetaPressed;
+    return primary && k.isShiftPressed && !k.isAltPressed;
+  }
+
+  /// Whether the press [e] is a multi-select click that boxes must not take as
+  /// their own: one that toggles a box, or, with a set, the same chord on a link
+  /// (which opens, and leaves the set alone).
+  bool _multiClick(PointerDownEvent e) {
+    if (_multiTarget(e) != null) return true;
+    return _c.multiSelection.isNotEmpty &&
+        e.kind == PointerDeviceKind.mouse &&
+        e.buttons == kPrimaryButton &&
+        _multiChord;
+  }
+
+  /// The box a Ctrl+Shift click (Cmd+Shift on macOS, where Ctrl+click is the
+  /// secondary click) at [e] would add to the multi-selection or remove, or
+  /// null: only a primary mouse press on the topmost box with no link under
+  /// it, with no tool, drag, menu or editor in the way.
+  String? _multiTarget(PointerDownEvent e) {
+    if (e.kind != PointerDeviceKind.mouse || e.buttons != kPrimaryButton || _view == null) {
+      return null;
+    }
+    if (_readOnly || _tools.active != null || _pickOpen || _contextSession != null) return null;
+    if (!_multiChord) return null;
+    final world = pageAtGlobal(e.position);
+    if (world == null) return null;
+    final rows = nodesAtPoint(_c.page, world);
+    if (rows.isEmpty) return null;
+    // A link opens as it does with Ctrl or Cmd alone; nothing toggles.
+    if (_linkAt(rows.first, e.position)) return null;
+    return _c.canToggleMulti(rows.first) ? rows.first : null;
+  }
+
+
 
   bool _targetChanged(_ContextTarget t) {
     final id = t.boxId;
@@ -1396,6 +1447,7 @@ class PageCanvasState extends State<PageCanvas>
       area: ValueNotifier(area.localToGlobal(Offset.zero) & area.size),
       selectedAtOpen: c.selectedId,
       editingAtOpen: editing,
+      multiAtOpen: List.of(c.multiSelection),
     );
     session.holdNow();
     _contextSession = session;
@@ -1509,6 +1561,8 @@ class PageCanvasState extends State<PageCanvas>
     if (live == null || !live.enabled) {
       final prior = s.selectedAtOpen;
       _c.select(prior != null && _c.page.node(prior) != null ? prior : null);
+      // A refused choice leaves the multi-selection as it was.
+      _c.restoreMulti(s.multiAtOpen);
       // The note that was being edited gets its editor back.
       final editing = s.editingAtOpen;
       if (editing != null && _c.page.node(editing) != null && _c.editingId != editing) {
@@ -1766,7 +1820,7 @@ class PageCanvasState extends State<PageCanvas>
   List<Widget>? _hostWidgets;
   int _hostsRevision = 0;
   (int, CanvasController, Offset, bool, PageFind)? _hostsKey;
-  final Map<String, ((CanvasNode, bool, bool, bool), BoxHost)> _hostPerBox = {};
+  final Map<String, ((CanvasNode, bool, bool, bool, bool), BoxHost)> _hostPerBox = {};
 
   List<Widget> _boxHosts(Offset childOrigin, bool readOnly) {
     final key = (_hostsRevision, _c, childOrigin, readOnly, _find);
@@ -1778,10 +1832,10 @@ class PageCanvasState extends State<PageCanvas>
       _hostPerBox.clear();
     }
     _hostsKey = key;
-    final kept = <String, ((CanvasNode, bool, bool, bool), BoxHost)>{};
+    final kept = <String, ((CanvasNode, bool, bool, bool, bool), BoxHost)>{};
     final hosts = <Widget>[];
     for (final node in _c.page.nodes) {
-      final boxKey = (node, _c.selectedId == node.id, _c.editingId == node.id, _c.readOnly);
+      final boxKey = (node, _c.selectedId == node.id, _c.editingId == node.id, _c.readOnly, _c.multiSelection.contains(node.id));
       final old = _hostPerBox[node.id];
       final host = old != null && old.$1 == boxKey
           ? old.$2
@@ -1793,6 +1847,8 @@ class PageCanvasState extends State<PageCanvas>
               scaleOf: () => scale,
               multiTouch: _multiTouchActive,
               inkedBy: _boxIgnores,
+              typeName: widget.boxTypeName,
+              toolActive: () => _tools.active != null,
               onGripTap: _focus.requestFocus,
               readOnly: readOnly,
               find: _find,
@@ -1971,6 +2027,15 @@ class PageCanvasState extends State<PageCanvas>
                                 ..blocked = (() => _upWasPalm || _multiTouch)
                                 ..onPick = _openPickList,
                             ),
+                        _MultiClaim:
+                            GestureRecognizerFactoryWithHandlers<_MultiClaim>(
+                              _MultiClaim.new,
+                              (r) => r
+                                ..target = _multiTarget
+                                ..onToggle = ((id) {
+                                  if (_c.toggleMulti(id)) _focus.requestFocus();
+                                }),
+                            ),
                         _ContextClaim:
                             GestureRecognizerFactoryWithHandlers<_ContextClaim>(
                               _ContextClaim.new,
@@ -2053,6 +2118,25 @@ class PageCanvasState extends State<PageCanvas>
                   ),
                 ),
               ),
+              // The multi-selection's count, announced when it changes.
+              Positioned(
+                left: 0,
+                top: 0,
+                child: ListenableBuilder(
+                  listenable: _c,
+                  builder: (context, _) {
+                    final n = _c.multiSelection.length;
+                    return n < 2
+                        ? const SizedBox.shrink()
+                        : Semantics(
+                            container: true,
+                            liveRegion: true,
+                            label: '$n boxes selected',
+                            child: const SizedBox(width: 1, height: 1),
+                          );
+                  },
+                ),
+              ),
               // The find bar, top right under the toolbar.
               Positioned(
                 top: NotedMetrics.of(context).space2,
@@ -2123,6 +2207,47 @@ class _PenClaim extends OneSequenceGestureRecognizer {
 
   @override
   String get debugDescription => 'pen claim';
+}
+
+/// Takes a Ctrl+Shift click (Cmd+Shift on macOS) on a box at once, so no box
+/// sees a click, a drag or a caret from it, and adds or removes that box on
+/// the release (unless the pointer moved past [kTouchSlop]).
+class _MultiClaim extends OneSequenceGestureRecognizer {
+  _MultiClaim() : super(supportedDevices: {PointerDeviceKind.mouse});
+
+  String? Function(PointerDownEvent e) target = (_) => null;
+  void Function(String id) onToggle = (_) {};
+
+  final Map<int, (String, Offset)> _downs = {};
+
+  @override
+  void addAllowedPointer(PointerDownEvent event) {
+    final id = target(event);
+    if (id == null) return;
+    _downs[event.pointer] = (id, event.position);
+    startTrackingPointer(event.pointer, event.transform);
+    resolvePointer(event.pointer, GestureDisposition.accepted);
+  }
+
+  @override
+  void handleEvent(PointerEvent event) {
+    final down = _downs[event.pointer];
+    if (down == null) return;
+    if (event is PointerUpEvent) {
+      _downs.remove(event.pointer);
+      stopTrackingPointer(event.pointer);
+      if ((event.position - down.$2).distance <= kTouchSlop) onToggle(down.$1);
+    } else if (event is PointerCancelEvent) {
+      _downs.remove(event.pointer);
+      stopTrackingPointer(event.pointer);
+    }
+  }
+
+  @override
+  void didStopTrackingLastPointer(int pointer) {}
+
+  @override
+  String get debugDescription => 'multi-select claim';
 }
 
 /// What a [_PickClaim] knows of one pointer.
@@ -2271,7 +2396,11 @@ class _ContextTarget {
 /// One open context menu: its target, entries, the focus to give back, and
 /// the editor focus hold it took (released once).
 class _ContextSession {
-  _ContextSession(this.target, this.spec, this.origin, this._holder, {required this.area, this.selectedAtOpen, this.editingAtOpen});
+  _ContextSession(this.target, this.spec, this.origin, this._holder, {required this.area, this.selectedAtOpen, this.editingAtOpen, this.multiAtOpen = const []});
+
+  /// The multi-selection when the menu opened: put back when a chosen entry is
+  /// refused.
+  final List<String> multiAtOpen;
 
   /// The canvas rect (global), kept current while the menu is open.
   final ValueNotifier<Rect> area;
@@ -2561,10 +2690,16 @@ class _PickOverlayPainter extends CustomPainter {
       );
     }
 
-    final selected = _canvas._c.selectedId;
-    final sb = selected == null || selected == lit ? null : page.node(selected)?.bounds;
-    if (sb != null) {
-      final i = page.indexOf(selected!);
+    // A selected box, or a member of the multi-selection (2 px), that another
+    // box covers keeps its outline on top.
+    final ids = [
+      if (_canvas._c.selectedId case final s?) (s, 1.0),
+      for (final m in _canvas._c.multiSelection) (m, 2.0),
+    ];
+    for (final (id, width) in ids) {
+      final sb = id == lit ? null : page.node(id)?.bounds;
+      if (sb == null) continue;
+      final i = page.indexOf(id);
       var covered = false;
       for (var j = i + 1; j < page.nodes.length && !covered; j++) {
         final o = page.nodes[j].bounds;
@@ -2575,7 +2710,7 @@ class _PickOverlayPainter extends CustomPainter {
           screen(sb),
           Paint()
             ..style = PaintingStyle.stroke
-            ..strokeWidth = 1
+            ..strokeWidth = width
             ..color = scheme.primary,
         );
       }

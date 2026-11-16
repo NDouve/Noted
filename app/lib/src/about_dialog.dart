@@ -11,13 +11,17 @@ import 'package:noted_canvas/noted_canvas.dart' show NotedMetrics;
 import 'microsoft_account.dart';
 import 'onedrive_section.dart';
 import 'onedrive_sync.dart' show OneDriveScope;
+import 'webdav_section.dart';
+import 'webdav_sync.dart' show WebDavScope;
 
 /// Taps on the about line that uncover the Microsoft account entry.
 const int aboutTapsToReveal = 5;
 
 /// "About Noted", with the preview Microsoft sign-in hidden behind five taps
-/// on the first line. Only offered in a build that has a client id.
-Future<void> showAboutNoted(BuildContext context, MicrosoftAccount microsoft) =>
+/// on the first line. Offered in a build that has a client id, or a WebDAV
+/// controller (the WebDAV section then shows without the reveal if Microsoft
+/// is absent).
+Future<void> showAboutNoted(BuildContext context, MicrosoftAccount? microsoft) =>
     showDialog<void>(
       context: context,
       builder: (context) => AboutNotedDialog(microsoft: microsoft),
@@ -26,7 +30,8 @@ Future<void> showAboutNoted(BuildContext context, MicrosoftAccount microsoft) =>
 class AboutNotedDialog extends StatefulWidget {
   const AboutNotedDialog({super.key, required this.microsoft});
 
-  final MicrosoftAccount microsoft;
+  /// Null in a build without a client id: only the WebDAV section can show.
+  final MicrosoftAccount? microsoft;
 
   @override
   State<AboutNotedDialog> createState() => _AboutNotedDialogState();
@@ -36,7 +41,7 @@ class _AboutNotedDialogState extends State<AboutNotedDialog> {
   int _taps = 0;
 
   void _tap() {
-    if (++_taps >= aboutTapsToReveal) widget.microsoft.reveal();
+    if (++_taps >= aboutTapsToReveal) widget.microsoft?.reveal();
   }
 
   @override
@@ -47,26 +52,31 @@ class _AboutNotedDialogState extends State<AboutNotedDialog> {
       content: SizedBox(
         width: 380,
         child: ListenableBuilder(
-          listenable: widget.microsoft,
-          builder: (context, _) => Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              GestureDetector(
-                key: const ValueKey('about-line'),
-                behavior: HitTestBehavior.opaque,
-                onTap: _tap,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Text(
-                    'Noted, an open-source notebook',
-                    style: text.bodyMedium,
+          listenable: Listenable.merge([?widget.microsoft]),
+          builder: (context, _) => SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                GestureDetector(
+                  key: const ValueKey('about-line'),
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _tap,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      'Noted, an open-source notebook',
+                      style: text.bodyMedium,
+                    ),
                   ),
                 ),
-              ),
-              if (widget.microsoft.revealed)
-                _MicrosoftSection(microsoft: widget.microsoft),
-            ],
+                if (widget.microsoft?.revealed ?? false)
+                  _MicrosoftSection(microsoft: widget.microsoft!),
+                // Mobile builds only: the controller is null elsewhere.
+                if (WebDavScope.maybeOf(context) != null && (widget.microsoft?.revealed ?? true))
+                  WebDavSection(sync: WebDavScope.maybeOf(context)!),
+              ],
+            ),
           ),
         ),
       ),
@@ -83,7 +93,6 @@ class _AboutNotedDialogState extends State<AboutNotedDialog> {
 
 class _MicrosoftSection extends StatelessWidget {
   const _MicrosoftSection({required this.microsoft});
-
   final MicrosoftAccount microsoft;
 
   @override

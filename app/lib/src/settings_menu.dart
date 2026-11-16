@@ -20,6 +20,7 @@ import 'app_commands.dart';
 import 'app_settings.dart';
 import 'microsoft_account.dart';
 import 'notebook.dart';
+import 'webdav_sync.dart' show WebDavScope;
 
 /// The gear at the bottom of the sidebar: a menu to choose the theme, the
 /// toolbar and the default folders for new pages and binders.
@@ -50,8 +51,8 @@ class SettingsMenu extends StatelessWidget {
           tooltip: 'Settings',
           icon: const Icon(Icons.settings_rounded),
           onSelected: (id) {
-            if (id == _aboutId && microsoft != null) {
-              unawaited(showAboutNoted(context, microsoft!));
+            if (id == _aboutId) {
+              unawaited(showAboutNoted(context, microsoft));
               return;
             }
             final theme = themeCommands(settings);
@@ -124,7 +125,7 @@ class SettingsMenu extends StatelessWidget {
                   icon: Icons.folder_open_rounded,
                 ),
               ],
-              if (microsoft != null) ...[
+              if (microsoft != null || WebDavScope.maybeOf(context) != null) ...[
                 const NotedMenuDivider(),
                 const NotedMenuItem<String>(
                   key: ValueKey('settings-about'),
