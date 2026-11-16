@@ -1509,6 +1509,23 @@ class PageCanvasState extends State<PageCanvas>
   /// Whether the focused thing is a text field of its own (a sticky label, an
   /// image caption, the title, the find bar): it keeps Shift+F10 and the Menu
   /// key.
+  final GlobalKey _headerKey = GlobalKey();
+
+  // Whether the focus is inside the host's header (its page title).
+  bool _headerOwnsFocus() {
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    if (ctx == null) return false;
+    var inside = false;
+    ctx.visitAncestorElements((e) {
+      if (e.widget.key == _headerKey) {
+        inside = true;
+        return false;
+      }
+      return true;
+    });
+    return inside;
+  }
+
   bool _fieldOwnsKey() {
     if (_findFocus.hasFocus) return true;
     final ctx = FocusManager.instance.primaryFocus?.context;
@@ -1596,9 +1613,9 @@ class PageCanvasState extends State<PageCanvas>
       editing: _c.editingId != null || _fieldOwnsKey(),
       readOnly: _readOnly,
     );
-    // Escape in a text field that is not a box's editor (the host's page
-    // title) is the field's own; it never clears the selection.
-    if (command != null && command.id == CanvasCommands.escape && _c.editingId == null && !_findFocus.hasFocus && _fieldOwnsKey()) {
+    // Escape in the host's own header (its page title) is the field's;
+    // it never clears the selection. A box's own fields still reach the canvas.
+    if (command != null && command.id == CanvasCommands.escape && _c.editingId == null && _headerOwnsFocus()) {
       return KeyEventResult.ignored;
     }
     if (command == null) return KeyEventResult.ignored;
@@ -1659,7 +1676,7 @@ class PageCanvasState extends State<PageCanvas>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        ?header,
+        if (header != null) KeyedSubtree(key: _headerKey, child: header),
         Expanded(child: _canvasArea(scheme)),
         ?footer,
       ],
