@@ -797,7 +797,10 @@ class PageCanvasState extends State<PageCanvas>
   void _toolChanged() {
     _cancelSession();
     // Picking a tool ends text editing.
-    if (_tools.active != null) _focus.requestFocus();
+    if (_tools.active != null) {
+      _focus.requestFocus();
+      _c.clearMulti();
+    }
     setState(() {});
   }
 
@@ -1444,6 +1447,7 @@ class PageCanvasState extends State<PageCanvas>
       area: ValueNotifier(area.localToGlobal(Offset.zero) & area.size),
       selectedAtOpen: c.selectedId,
       editingAtOpen: editing,
+      multiAtOpen: List.of(c.multiSelection),
     );
     session.holdNow();
     _contextSession = session;
@@ -1557,6 +1561,8 @@ class PageCanvasState extends State<PageCanvas>
     if (live == null || !live.enabled) {
       final prior = s.selectedAtOpen;
       _c.select(prior != null && _c.page.node(prior) != null ? prior : null);
+      // A refused choice leaves the multi-selection as it was.
+      _c.restoreMulti(s.multiAtOpen);
       // The note that was being edited gets its editor back.
       final editing = s.editingAtOpen;
       if (editing != null && _c.page.node(editing) != null && _c.editingId != editing) {
@@ -1829,6 +1835,7 @@ class PageCanvasState extends State<PageCanvas>
               scaleOf: () => scale,
               multiTouch: _multiTouchActive,
               inkedBy: _boxIgnores,
+              typeName: widget.boxTypeName,
               onGripTap: _focus.requestFocus,
               readOnly: readOnly,
               find: _find,
@@ -2376,7 +2383,11 @@ class _ContextTarget {
 /// One open context menu: its target, entries, the focus to give back, and
 /// the editor focus hold it took (released once).
 class _ContextSession {
-  _ContextSession(this.target, this.spec, this.origin, this._holder, {required this.area, this.selectedAtOpen, this.editingAtOpen});
+  _ContextSession(this.target, this.spec, this.origin, this._holder, {required this.area, this.selectedAtOpen, this.editingAtOpen, this.multiAtOpen = const []});
+
+  /// The multi-selection when the menu opened: put back when a chosen entry is
+  /// refused.
+  final List<String> multiAtOpen;
 
   /// The canvas rect (global), kept current while the menu is open.
   final ValueNotifier<Rect> area;

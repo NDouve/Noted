@@ -47,7 +47,11 @@ class BoxHost extends StatefulWidget {
     this.onIssueTap,
     this.multiTouch,
     this.inkedBy,
+    this.typeName,
   });
+
+  /// The user-facing name of a box type, for the grip's accessible name.
+  final String? Function(String typeId)? typeName;
 
   /// True for a pointer that takes no click on a box here: a pen going to a
   /// tool (over Select), or a resting hand. The box then takes no click from it.
@@ -140,7 +144,9 @@ class _BoxHostState extends State<BoxHost> {
   }
 
   // The box content's focus, read again when a hold on the editor focus ends.
-  final FocusNode _chromeFocus = FocusNode(debugLabel: 'BoxHost chrome');
+  bool _chromeFocused = false;
+
+  final FocusNode _chromeFocus =FocusNode(debugLabel: 'BoxHost chrome');
 
   final FocusNode _contentFocus = FocusNode(
     debugLabel: 'BoxHost content',
@@ -454,13 +460,26 @@ class _BoxHostState extends State<BoxHost> {
                 child: Focus(
                   focusNode: _chromeFocus,
                   onKeyEvent: (_, e) => _chromeKey(e),
+                  onFocusChange: (f) => setState(() => _chromeFocused = f),
                   child: Semantics(
-                  label: 'Box',
-                  hint: 'Control Shift Space adds it to the selection',
+                  label: node is BoxRecord
+                      ? (widget.typeName?.call(node.typeId) ?? 'Box')
+                      : 'Box',
+                  hint: defaultTargetPlatform == TargetPlatform.macOS
+                      ? 'Command Shift Space adds it to the selection'
+                      : 'Control Shift Space adds it to the selection',
                   selected: member,
                   child: MouseRegion(
                   key: ValueKey('box-chrome-${node.id}'),
                   cursor: SystemMouseCursors.move,
+                  child: DecoratedBox(
+                  key: _chromeFocused ? const ValueKey('box-chrome-focus') : null,
+                  decoration: _chromeFocused
+                      ? BoxDecoration(
+                          border: Border.all(color: scheme.primary, width: 2),
+                          borderRadius: metrics.borderSm,
+                        )
+                      : const BoxDecoration(),
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     dragStartBehavior: DragStartBehavior.down,
@@ -489,6 +508,7 @@ class _BoxHostState extends State<BoxHost> {
                             ),
                           )
                         : const SizedBox.expand(),
+                  ),
                   ),
                 ),
                 ),

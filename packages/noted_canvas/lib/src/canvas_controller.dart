@@ -142,7 +142,7 @@ class CanvasController extends ChangeNotifier {
     if (!canToggleMulti(id)) return false;
     final members = _multi.isNotEmpty
         ? [..._multi]
-        : [?_selectedId];
+        : [if (_selectedId case final s? when canToggleMulti(s)) s];
     if (!members.remove(id)) members.add(id);
     _setMulti(members);
     return true;
@@ -153,6 +153,18 @@ class CanvasController extends ChangeNotifier {
     if (_multi.isEmpty) return;
     _multi.clear();
     _notify();
+  }
+
+  /// Puts back a multi-selection that [ids] held, for a menu choice that was
+  /// refused. Ids that are gone or not allowed are dropped; nothing changes
+  /// while a box is being edited or if fewer than two remain. Host only.
+  void restoreMulti(List<String> ids) {
+    if (_disposed || _readOnly || _editingId != null) return;
+    final kept = [
+      for (final id in ids)
+        if (canToggleMulti(id)) id,
+    ];
+    if (kept.length >= 2) _setMulti(kept);
   }
 
   // Keeps the rule that the set holds none or two or more boxes: one box left
@@ -459,7 +471,10 @@ class CanvasController extends ChangeNotifier {
   /// A tool session started or ended. While one is running, page bounds
   /// stay fixed (0016). Ignored on a read-only controller.
   void beginToolSession() {
-    if (!_readOnly) _toolSessions++;
+    if (_readOnly) return;
+    _toolSessions++;
+    // A tool at work (inking included) ends a multi-selection.
+    clearMulti();
   }
 
   void endToolSession() {

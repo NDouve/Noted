@@ -233,7 +233,7 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
       icon: Icons.content_paste_rounded,
       shortcut: _key(LogicalKeyboardKey.keyV, ctrl: true),
       alternateShortcuts: const [SingleActivator(LogicalKeyboardKey.keyV, meta: true)],
-      enabled: () => !t.isReadOnly && c.multiSelection.length < 2 && t.attachments != null,
+      enabled: () => !t.isReadOnly && t.attachments != null,
       listenable: c,
       invoke: t.pasteFiles,
     ),

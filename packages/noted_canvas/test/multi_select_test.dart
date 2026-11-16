@@ -13,6 +13,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'context_menu_world.dart' show TStore;
+
 class _Codec extends BoxCodec<String> {
   const _Codec(this.typeId);
   @override
@@ -123,6 +125,8 @@ void main() {
   late List<NotedPage> saved;
   late CanvasToolSelection selection;
   late CommandRegistry registry;
+  TStore? store;
+  late _Pen pen;
   late ModuleRegistry modules;
   var off = <String>{};
 
@@ -137,7 +141,7 @@ void main() {
         controller: controller ?? c,
         tools: selection,
         readOnly: readOnly,
-        attachments: null,
+        attachments: store,
         disallowedTypes: off,
         onCommandsChanged: (r) {
           if (r != null) registry = r;
@@ -154,16 +158,23 @@ void main() {
     ),
   );
 
-  Future<void> pump(WidgetTester t, {List<CanvasNode>? nodes, bool readOnly = false}) async {
+  Future<void> pump(
+    WidgetTester t, {
+    List<CanvasNode>? nodes,
+    bool readOnly = false,
+    bool withStore = false,
+  }) async {
+    store = withStore ? TStore() : null;
     t.view.physicalSize = const Size(1200, 800);
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
     linkOpens = 0;
     off = {};
+    pen = _Pen();
     saved = [];
     modules = ModuleRegistry()
       ..register(const _Module('test.text'), isDefault: true)
-      ..register(const _Module('test.draw', 'draw'))
+      ..register(_DrawModule([pen]))
       ..register(const _Module('test.link', 'link'))
       ..register(const _Module('test.edit', 'edit'));
     c = CanvasController(_page(nodes ?? _nodes()), modules, onChanged: saved.add);
@@ -541,6 +552,110 @@ void main() {
     });
   });
 
+  group('review follow-ups', () {
+    testWidgets('a selected box that is disallowed does not join the set', (t) async {
+      await pump(t);
+      c.select('c');
+      off = {'test.draw'};
+      c.disallowedTypes = off;
+      await t.pumpWidget(buildApp(t));
+      expect(c.selectedId, 'c');
+      expect(c.toggleMulti('a'), isTrue);
+      expect(c.multiSelection, isEmpty);
+      expect(c.selectedId, 'a');
+      expect(c.toggleMulti('b'), isTrue);
+      expect(c.multiSelection, ['a', 'b']);
+    });
+
+    testWidgets('paste stays on with two selected', (t) async {
+      await pump(t, withStore: true);
+      expect(registry[CanvasCommands.paste]!.enabled, isTrue);
+      await selectTwo(t);
+      expect(c.multiSelection, hasLength(2));
+      expect(registry[CanvasCommands.paste]!.enabled, isTrue);
+      expect(registry[CanvasCommands.delete]!.enabled, isFalse);
+    });
+
+    testWidgets('picking a drawing tool clears the set', (t) async {
+      await pump(t);
+      await selectTwo(t);
+      selection.select(pen);
+      await t.pump();
+      expect(c.multiSelection, isEmpty);
+    });
+
+    testWidgets('inking with a stylus clears the set', (t) async {
+      await pump(t);
+      await selectTwo(t);
+      final g = await t.startGesture(at(t, const Offset(1000, 600)), kind: PointerDeviceKind.stylus);
+      await g.up();
+      await g.removePointer();
+      await frames(t);
+      expect(c.multiSelection, isEmpty);
+    });
+
+    testWidgets('a refused menu choice leaves the set as it was', (t) async {
+      await pump(t);
+      await selectTwo(t);
+      final g = await t.startGesture(
+        at(t, _inside(_a)),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await g.up();
+      await g.removePointer();
+      await frames(t);
+      // By the time the entry runs, 'a' is already in front: the entry is off.
+      state(t).debugBeforeContextRun = () async => c.restack('a', StackMove.front);
+      await t.tap(find.byKey(const ValueKey('context-${CanvasCommands.bringToFront}')));
+      await frames(t, 6);
+      expect(c.multiSelection, ['a', 'b']);
+      expect(c.selectedId, isNull);
+    });
+
+    testWidgets('Escape with a single selection clears it', (t) async {
+      await pump(t);
+      await selectTwo(t);
+      await toggle(t, _b);
+      expect(c.selectedId, 'a');
+      expect(c.multiSelection, isEmpty);
+      await key(t, LogicalKeyboardKey.escape);
+      expect(c.selectedId, isNull);
+      await selectTwo(t);
+      await key(t, LogicalKeyboardKey.escape);
+      expect(c.multiSelection, isEmpty);
+      expect(c.selectedId, isNull);
+    });
+
+    testWidgets('the focused chrome shows a ring and is named by the box type', (t) async {
+      final handle = t.ensureSemantics();
+      await pump(t);
+      expect(find.byKey(const ValueKey('box-chrome-focus')), findsNothing);
+      Focus.of(t.element(find.byKey(const ValueKey('box-chrome-a')))).requestFocus();
+      await t.pump();
+      await frames(t);
+      expect(find.byKey(const ValueKey('box-chrome-focus')), findsOneWidget);
+      final node = t.getSemantics(find.byKey(const ValueKey('box-chrome-a')));
+      expect(node.label, 'Note');
+      expect(node.hint, contains('Control Shift Space'));
+      handle.dispose();
+    });
+
+    testWidgets('on macOS the chrome hint says Command', (t) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      final handle = t.ensureSemantics();
+      try {
+        await pump(t);
+        final node = t.getSemantics(find.byKey(const ValueKey('box-chrome-a')));
+        expect(node.hint, contains('Command Shift Space'));
+        await t.pumpWidget(const SizedBox());
+      } finally {
+        handle.dispose();
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+  });
+
   group('keyboard', () {
     testWidgets('Ctrl+Shift+Space on the focused chrome toggles, and the count is announced', (t) async {
       final handle = t.ensureSemantics();
@@ -571,4 +686,35 @@ void main() {
       handle.dispose();
     });
   });
+}
+
+/// A pen for a stylus.
+class _Pen extends CanvasTool {
+  @override
+  String get id => 'test.pen';
+  @override
+  StylusRole get stylusRole => StylusRole.pen;
+  @override
+  String get label => 'Pen';
+  @override
+  IconData get icon => Icons.edit;
+  @override
+  ToolSession? start(ToolContext context, ToolPointer pointer) => _PenSession();
+}
+
+class _PenSession extends ToolSession {
+  @override
+  void update(ToolPointer pointer) {}
+  @override
+  void end() {}
+  @override
+  void cancel() {}
+  @override
+  void paint(Canvas canvas, double scale) {}
+}
+
+class _DrawModule extends _Module {
+  _DrawModule(this.tools) : super('test.draw', 'draw');
+  @override
+  final List<CanvasTool> tools;
 }
