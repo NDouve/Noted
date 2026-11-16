@@ -1394,8 +1394,8 @@ class PageCanvasState extends State<PageCanvas>
         spec: spec,
         anchor: global,
         within: area.localToGlobal(Offset.zero) & area.size,
-        // A disallowed box always gets the list (Delete only).
-        radial: mouse && !target.off && widget.contextMenuStyle == ContextMenuStyle.radial,
+        // A disallowed box and a read-only page always get the list.
+        radial: mouse && !target.off && !_readOnly && widget.contextMenuStyle == ContextMenuStyle.radial,
         closeSignal: _contextClose,
       ).then((entry) => _contextDone(session, entry)),
     );

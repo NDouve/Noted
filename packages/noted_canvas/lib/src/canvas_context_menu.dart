@@ -64,7 +64,6 @@ class ContextMenuSpec {
   ContextMenuSpec({
     required this.groups,
     required this.ring,
-    this.heading,
     this.points = const [],
   });
 
@@ -72,10 +71,8 @@ class ContextMenuSpec {
   final List<List<ContextEntry>> groups;
 
   /// The ring's six slots clockwise from the top; null is an empty slot.
+  /// Delete is only in the list (the ring's More).
   final List<ContextEntry?> ring;
-
-  /// A line above the entries ("Not allowed on this page").
-  final String? heading;
 
   /// The commands made for this menu, disposed when it is done with.
   final List<Command> points;
@@ -151,7 +148,7 @@ ContextMenuSpec boxContextSpec({
       [here],
       [?delete],
     ],
-    ring: [front, delete, back, here, more, null],
+    ring: [front, forward, backward, back, here, more],
     points: [boxesHere, more.command, ...wrappers],
   );
 }
@@ -320,8 +317,12 @@ class _ContextPanelState extends State<_ContextPanel> {
   bool _gone = false;
   late bool _ring = widget.radial;
 
-  /// The row or slot the keyboard (or the pointer) is on, and whether the
-  /// keyboard put it there (the focus outline shows for the keyboard only).
+  /// The list was opened by the ring's More: Escape goes back to the ring.
+  bool _fromMore = false;
+
+  /// The row (list) or slot (ring, [radialCancel] for Cancel) the keyboard or
+  /// the pointer is on, and whether the keyboard put it there (the focus
+  /// outline shows for the keyboard only).
   int? _at;
   bool _keyboard = true;
   bool _started = false;
@@ -358,17 +359,29 @@ class _ContextPanelState extends State<_ContextPanel> {
     Navigator.of(context).pop<ContextEntry>(entry);
   }
 
-  /// The entries the keyboard moves over, in order: the list's rows, or the
-  /// ring's slots clockwise (their indexes in the ring).
-  List<ContextEntry> get _stops => _ring
-      ? [for (final e in widget.spec.ring) ?e]
-      : _flat;
+  /// The entry at [i]: a list row or a ring slot (null: blank or Cancel).
+  ContextEntry? _entryAt(int i) {
+    if (_ring) {
+      return i >= 0 && i < widget.spec.ring.length ? widget.spec.ring[i] : null;
+    }
+    final flat = _flat;
+    return i >= 0 && i < flat.length ? flat[i] : null;
+  }
+
+  /// The indexes the keyboard can land on: enabled rows, or enabled slots.
+  List<int> get _enabledStops {
+    if (_ring) {
+      return [for (final (i, e) in widget.spec.ring.indexed) if (e != null && e.enabled) i];
+    }
+    return [for (final (i, e) in _flat.indexed) if (e.enabled) i];
+  }
 
   void _run(ContextEntry e) {
     if (_gone || _closing || !e.enabled) return;
     if (e.more) {
       setState(() {
         _ring = false;
+        _fromMore = true;
         _at = null;
         _keyboard = true;
         _started = false;
@@ -378,13 +391,28 @@ class _ContextPanelState extends State<_ContextPanel> {
     _close(e);
   }
 
-  void _step(int dir) {
-    final stops = _stops;
-    final on = [for (final (i, e) in stops.indexed) if (e.enabled) i];
+  /// Escape from the list that More opened goes back to More on the ring.
+  void _backToRing() {
+    final more = widget.spec.ring.indexWhere((e) => e != null && e.more);
+    setState(() {
+      _ring = true;
+      _fromMore = false;
+      _at = more < 0 ? radialCancel : more;
+      _keyboard = true;
+      _started = true;
+    });
+  }
+
+  void _step(int dir, {bool tab = false}) {
+    final on = _enabledStops;
+    // Tab has Cancel in its cycle; the arrows go round the slots only.
+    if (_ring && tab) on.insert(0, radialCancel);
     if (on.isEmpty) return;
     final at = _at;
     int next;
-    if (at == null) {
+    if (_ring && !tab && at == radialCancel) {
+      next = dir > 0 ? on.first : on.last;
+    } else if (at == null) {
       next = dir > 0 ? on.first : on.last;
     } else {
       final i = on.indexOf(at);
@@ -421,11 +449,14 @@ class _ContextPanelState extends State<_ContextPanel> {
   KeyEventResult _onKey(FocusNode node, KeyEvent e) {
     if (e is KeyUpEvent || _gone) return KeyEventResult.ignored;
     final key = e.logicalKey;
-    final stops = _stops;
     if (key == LogicalKeyboardKey.escape) {
-      _close();
+      if (_fromMore && !_ring) {
+        _backToRing();
+      } else {
+        _close();
+      }
     } else if (key == LogicalKeyboardKey.tab) {
-      _step(HardwareKeyboard.instance.isShiftPressed ? -1 : 1);
+      _step(HardwareKeyboard.instance.isShiftPressed ? -1 : 1, tab: true);
     } else if (key == LogicalKeyboardKey.arrowDown ||
         key == LogicalKeyboardKey.arrowRight && _ring) {
       _step(1);
@@ -433,14 +464,20 @@ class _ContextPanelState extends State<_ContextPanel> {
         key == LogicalKeyboardKey.arrowLeft && _ring) {
       _step(-1);
     } else if (key == LogicalKeyboardKey.home && !_ring) {
-      _jump(stops.indexWhere((s) => s.enabled));
+      final on = _enabledStops;
+      _jump(on.isEmpty ? -1 : on.first);
     } else if (key == LogicalKeyboardKey.end && !_ring) {
-      _jump(stops.lastIndexWhere((s) => s.enabled));
+      final on = _enabledStops;
+      _jump(on.isEmpty ? -1 : on.last);
     } else if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter ||
         key == LogicalKeyboardKey.space) {
       final at = _at;
-      if (at != null && at < stops.length) _run(stops[at]);
+      if (at == radialCancel && _ring) {
+        _close();
+      } else if (at != null && _entryAt(at) != null) {
+        _run(_entryAt(at)!);
+      }
     } else {
       // Every other key is taken: nothing on the canvas acts while a menu is
       // open (a letter would switch the tool, Delete would remove the box).
@@ -459,15 +496,19 @@ class _ContextPanelState extends State<_ContextPanel> {
       child: _Rebuild(
         listenable: widget.spec.listenable,
         builder: (context, _) {
-          // Focus starts on the first enabled entry (for the ring: the first
-          // enabled slot clockwise from the top).
+          // Focus starts on the first enabled row; on the ring, on Cancel.
           if (!_started) {
             _started = true;
-            final i = _stops.indexWhere((s) => s.enabled);
-            _at = i < 0 ? null : i;
+            final on = _enabledStops;
+            _at = _ring
+                ? radialCancel
+                : on.isEmpty
+                ? null
+                : on.first;
           }
           final at = _at;
-          if (at != null && at < _stops.length && !_stops[at].enabled) {
+          final atEntry = at == null ? null : _entryAt(at);
+          if (atEntry != null && !atEntry.enabled) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted && _at == at) setState(() => _at = null);
             });
@@ -476,14 +517,14 @@ class _ContextPanelState extends State<_ContextPanel> {
             final ring = RadialMenuView.maybe(
               context,
               slots: widget.spec.ring,
-              heading: widget.spec.heading,
               anchor: widget.anchor,
               within: widget.within,
-              at: _at == null ? null : _slotOf(_at!),
+              at: _at,
               keyboard: _keyboard,
               onRun: _run,
+              onCancel: _close,
               onHover: (slot) => setState(() {
-                _at = _stopOf(slot);
+                _at = slot;
                 _keyboard = false;
               }),
             );
@@ -500,7 +541,7 @@ class _ContextPanelState extends State<_ContextPanel> {
             return const SizedBox.shrink();
           }
           return CustomSingleChildLayout(
-            delegate: _ListLayout(widget.anchor),
+            delegate: _ListLayout(widget.anchor, widget.within),
             child: _ListView(
               spec: widget.spec,
               rowKeys: _rowKeys,
@@ -517,50 +558,36 @@ class _ContextPanelState extends State<_ContextPanel> {
       ),
     );
   }
-
-  // Index into the ring's slots of the stop [stop] (stops skip empty slots).
-  int _slotOf(int stop) {
-    var n = -1;
-    for (final (slot, e) in widget.spec.ring.indexed) {
-      if (e != null) n++;
-      if (n == stop) return slot;
-    }
-    return 0;
-  }
-
-  int? _stopOf(int slot) {
-    if (widget.spec.ring[slot] == null) return null;
-    return widget.spec.ring.take(slot).where((e) => e != null).length;
-  }
 }
 
-/// Places the menu at the anchor, flipped left or up to stay inside the window
-/// with an 8 px margin.
+/// Places the menu at the anchor, flipped left or up to stay inside the canvas
+/// rect [within] (global) with an 8 px margin.
 class _ListLayout extends SingleChildLayoutDelegate {
-  const _ListLayout(this.anchor);
+  const _ListLayout(this.anchor, this.within);
 
   final Offset anchor;
+  final Rect within;
 
   @override
   BoxConstraints getConstraintsForChild(BoxConstraints constraints) =>
-      BoxConstraints.loose(Size(constraints.maxWidth - 16, constraints.maxHeight - 16));
+      BoxConstraints.loose(Size(within.width - 16, within.height - 16));
 
   @override
   Offset getPositionForChild(Size size, Size child) {
-    double place(double a, double extent, double room) {
-      var v = a + extent + 8 > room ? a - extent : a;
-      v = math.min(v, room - extent - 8);
-      return math.max(v, 8);
+    double place(double a, double extent, double lo, double hi) {
+      var v = a + extent + 8 > hi ? a - extent : a;
+      v = math.min(v, hi - extent - 8);
+      return math.max(v, lo + 8);
     }
 
     return Offset(
-      place(anchor.dx, child.width, size.width),
-      place(anchor.dy, child.height, size.height),
+      place(anchor.dx, child.width, within.left, within.right),
+      place(anchor.dy, child.height, within.top, within.bottom),
     );
   }
 
   @override
-  bool shouldRelayout(_ListLayout old) => old.anchor != anchor;
+  bool shouldRelayout(_ListLayout old) => old.anchor != anchor || old.within != within;
 }
 
 class _ListView extends StatelessWidget {
@@ -584,18 +611,8 @@ class _ListView extends StatelessWidget {
   Widget build(BuildContext context) {
     final m = NotedMetrics.of(context);
     final scheme = Theme.of(context).colorScheme;
-    final type = NotedTypography.of(context);
     var index = 0;
     final children = <Widget>[
-      if (spec.heading != null)
-        Padding(
-          key: const ValueKey('context-heading'),
-          padding: EdgeInsets.symmetric(horizontal: 10, vertical: m.space1),
-          child: Text(
-            spec.heading!,
-            style: type.small.copyWith(color: scheme.onSurfaceVariant),
-          ),
-        ),
     ];
     var first = true;
     for (final group in spec.groups) {
@@ -626,7 +643,7 @@ class _ListView extends StatelessWidget {
       }
     }
     return SizedBox(
-      width: math.min(contextMenuWidth, MediaQuery.sizeOf(context).width - 16),
+      width: contextMenuWidth,
       child: DecoratedBox(
         key: const ValueKey('context-menu'),
         decoration: BoxDecoration(
@@ -681,12 +698,14 @@ class _Row extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final type = NotedTypography.of(context);
     final on = entry.enabled;
+    final active = lit && on;
     final fg = !on
         ? colors.textDisabled
+        : active
+        ? scheme.primary
         : entry.destructive
         ? scheme.error
         : scheme.onSurface;
-    final shortcut = entry.point ? null : menuShortcutFor(entry.command);
     return Semantics(
       button: true,
       role: SemanticsRole.menuItem,
@@ -712,31 +731,20 @@ class _Row extends StatelessWidget {
             child: DecoratedBox(
               key: outlined ? const ValueKey('context-focus') : null,
               decoration: BoxDecoration(
-                color: lit && on ? colors.surfaceHover : Colors.transparent,
+                color: active ? scheme.primaryContainer : Colors.transparent,
                 borderRadius: m.borderMd,
               ),
               child: ConstrainedBox(
                 constraints: BoxConstraints(minHeight: m.rowSize),
                 child: Padding(
                   padding: EdgeInsets.symmetric(horizontal: 10, vertical: m.space1),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          entry.text,
-                          style: type.body.copyWith(color: fg),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      if (shortcut != null) ...[
-                        SizedBox(width: m.space4),
-                        Text(
-                          shortcut,
-                          key: const ValueKey('menu-shortcut'),
-                          style: type.small.copyWith(color: on ? scheme.onSurfaceVariant : fg),
-                        ),
-                      ],
-                    ],
+                  child: Text(
+                    entry.text,
+                    style: type.body.copyWith(
+                      color: fg,
+                      fontWeight: active ? FontWeight.w700 : null,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ),
