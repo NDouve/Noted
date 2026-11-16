@@ -68,6 +68,13 @@ class RemoteChanged extends RemoteException {
   RemoteChanged(super.message);
 }
 
+/// The download's length is not the listed one although the version is the
+/// same (or can't be told apart). Not a version change: the engine counts it
+/// like a checksum mismatch (0177), so three in a row pause.
+class RemoteSizeMismatch extends RemoteChanged {
+  RemoteSizeMismatch(super.message);
+}
+
 /// What a driver can do, as far as the engine cares.
 class RemoteCaps {
   const RemoteCaps({required this.serverHash, required this.fullListing});

@@ -330,7 +330,7 @@ class WebDavClient {
         final length = r.contentLength;
         if (length != null && length != size) {
           await _abandon(r);
-          throw RemoteChanged('The size moved during the download');
+          throw RemoteSizeMismatch('The size differs from the listing');
         }
         var written = 0;
         var over = false;
@@ -356,7 +356,7 @@ class WebDavClient {
           } on FileSystemException {
             // The engine removes its temp too.
           }
-          throw RemoteChanged('The size moved during the download');
+          throw RemoteSizeMismatch('The size differs from the listing');
         }
         return (got, at);
       },

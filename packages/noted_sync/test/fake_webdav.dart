@@ -149,6 +149,9 @@ class FakeWebDav implements RemoteFake {
   /// Files listed with no `getcontentlength`.
   bool omitLengths = false;
 
+  /// Added to every listed `getcontentlength` (the listing lies about size).
+  int listedLengthExtra = 0;
+
   /// Paths (relative to the top) whose id properties are left out.
   final Set<String> noIdFor = {};
 
@@ -649,7 +652,7 @@ class FakeWebDav implements RemoteFake {
         '{$davNs}getcontentlength',
         n.folder || omitLengths
             ? null
-            : '<${p}getcontentlength>${n.bytes.length}</${p}getcontentlength>',
+            : '<${p}getcontentlength>${n.bytes.length + listedLengthExtra}</${p}getcontentlength>',
       );
       prop(
         '{$davNs}getlastmodified',

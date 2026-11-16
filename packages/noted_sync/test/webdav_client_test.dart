@@ -490,10 +490,26 @@ void main() {
             size: n3.size + 1,
             dest: dest(),
           ),
-          throwsA(isA<RemoteChanged>()),
+          throwsA(isA<RemoteSizeMismatch>()),
         );
       },
     );
+
+    test('a version change is RemoteChanged, not a size mismatch', () async {
+      dav.addFile('Noted/a.canvas', b('hello'));
+      final n = await listed();
+      dav.replaceFile('Noted/a.canvas', b('hello, longer'));
+      await expectLater(
+        client().download(n.url, etag: n.etag!, size: n.size, dest: dest()),
+        throwsA(
+          isA<RemoteChanged>().having(
+            (e) => e is RemoteSizeMismatch,
+            'is a size mismatch',
+            isFalse,
+          ),
+        ),
+      );
+    });
 
     test('a body shorter than the length it announced: RemoteChanged, not a short file', () async {
       dav.addFile('Noted/a.canvas', b('hello'));
@@ -509,7 +525,7 @@ void main() {
       );
       await expectLater(
         c.download(n.url, etag: n.etag!, size: 5, dest: dest()),
-        throwsA(isA<RemoteChanged>()),
+        throwsA(isA<RemoteSizeMismatch>()),
       );
     });
 

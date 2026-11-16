@@ -1103,10 +1103,21 @@ class PullEngine {
     return c != null && c >= 400 && c < 500 && c != 401 && c != 429;
   }
 
+  /// Counts a download that failed its checksum or length, and lists it.
+  void _countMismatch(DesiredFile d, String rel) {
+    final n = (_journal!.mismatches[d.key] ?? 0) + 1;
+    _journal!.mismatches[d.key] = n;
+    _issue(
+      rel,
+      n >= 3
+          ? 'The download keeps failing $_name\'s checksum; not applied'
+          : 'The download failed $_name\'s checksum; trying again next time',
+    );
+  }
+
   /// Downloads and checks one item. Null (with an issue listed) when it can't
   /// be applied.
   Future<_Download?> _download(DesiredFile d, String rel) async {
-    final j = _journal!;
     if (!_hasHash(d.item)) {
       _issue(rel, '$_name sent no checksum; not applied');
       return null;
@@ -1119,6 +1130,12 @@ class PullEngine {
         if (tmp.existsSync()) tmp.deleteSync();
       } on FileSystemException {
         // Swept at the next start.
+      }
+      // A length that differs under the same version counts like a checksum
+      // mismatch (0177); a moved version doesn't.
+      if (e is RemoteSizeMismatch) {
+        _countMismatch(d, rel);
+        return null;
       }
       if (e is RemoteChanged) {
         _changedMeanwhileIssue(d, rel);
@@ -1141,14 +1158,7 @@ class PullEngine {
       } on FileSystemException {
         // Swept at the next start.
       }
-      final n = (j.mismatches[d.key] ?? 0) + 1;
-      j.mismatches[d.key] = n;
-      _issue(
-        rel,
-        n >= 3
-            ? 'The download keeps failing $_name\'s checksum; not applied'
-            : 'The download failed $_name\'s checksum; trying again next time',
-      );
+      _countMismatch(d, rel);
       return null;
     }
     _changedMeanwhile.remove(d.key);

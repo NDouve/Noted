@@ -696,6 +696,23 @@ void _engineCases(RemoteKind kind) {
     expect(h.tree(), hasLength(3));
   });
 
+  test('a length that keeps differing from the listing pauses after three rounds', () async {
+    h.remote.addFile('Noted/a.canvas', Harness.b('AAA'));
+    h.dav.listedLengthExtra = 1;
+    for (var i = 0; i < 3; i++) {
+      expect(h.engine.status.state, isNot(SyncState.paused), reason: '$i');
+      await h.round();
+      expect(h.has('a.canvas'), isFalse);
+      expect(h.stateFiles('tmp'), isEmpty);
+    }
+    expect(h.engine.status.state, SyncState.paused);
+    expect(h.engine.status.reason, contains('checksum'));
+    h.dav.listedLengthExtra = 0;
+    await h.round();
+    expect(h.read('a.canvas'), 'AAA');
+    expect(h.engine.status.state, SyncState.idle);
+  });
+
   test('a listing that is cut short never reads as deletions', () async {
     seedMany(10);
     await h.round();
