@@ -1575,14 +1575,28 @@ class _Run {
   }
 
   // The save fails, the failure goes away, the user leaves: the last save lands.
-  Future<String?> _editFailLeave(String id, String other) async {
+  //
+  // [holdDrop] holds the landing save inside its aside's final re-check (the
+  // verified aside is on disk under its drop name) for longer than
+  // leaveSaveLimit, as a slow Windows disk did (CI run 43852543771, seed 18).
+  Future<String?> _editFailLeave(String id, String other, {bool holdDrop = false}) async {
     final st = storeOf(model[id]!.loc);
     await _openEdit(id);
     st.publishFailures = 500;
     await nb.flush();
     st.publishFailures = 0;
+    if (holdDrop) {
+      final gate = Completer<void>();
+      st.beforeFinalCheckOnce = (_) => gate.future;
+      Timer(const Duration(milliseconds: 700), gate.complete);
+    }
     await nb.open(other);
+    if (holdDrop) expect(nb.isBusy(id), isTrue, reason: 'the save on leaving was left running');
+    // The save on leaving can outlast leaveSaveLimit and be left running (by
+    // design, as in `_editStallLeave`); the files are final only once it ends.
+    await _until(() => !nb.isBusy(id), 'the save left behind to end');
     await nb.flush();
+    await _until(() => nb.recoveryStoreForTest!.indexEntries.isEmpty, 'the entry to be retired');
     return 'edit:failIoLeave';
   }
 
@@ -1666,6 +1680,7 @@ class _Run {
     File(rec.path).deleteSync();
     st.publishFailures = 0;
     await nb.retrySave();
+    await _until(() => !nb.isBusy(id), 'the save left behind to end');
     expect(nb.trouble.isTrouble, isFalse);
     return 'edit:failBothCancelLeave';
   }
@@ -4695,6 +4710,16 @@ void main() {
         await run._verifyDisk('after leaving');
       });
     }
+
+    // CI run 43852543771 (Windows, seed 18): the save on leaving outlasted
+    // leaveSaveLimit while its verified aside was still on disk, and the disk
+    // check ran then. The step waits for the save left behind to end.
+    test('edit:failIoLeave waits for a save on leaving that outlasts the limit', () async {
+      final id = run.model.keys.first;
+      final other = run.model.keys.last;
+      expect(await run._editFailLeave(id, other, holdDrop: true), 'edit:failIoLeave');
+      await run._verifyDisk('after leaving');
+    });
 
     // Run 2026-11-04-02, R-1 (area-data-integrity-2): Move attachments to
     // folder with the good copy unwritable keeps the embedded data, and puts
