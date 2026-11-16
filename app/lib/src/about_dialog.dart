@@ -17,10 +17,10 @@ import 'webdav_sync.dart' show WebDavScope;
 /// Taps on the about line that uncover the Microsoft account entry.
 const int aboutTapsToReveal = 5;
 
+/// "About Noted", with the preview Microsoft sign-in hidden behind five taps
 /// on the first line. Offered in a build that has a client id, or a WebDAV
-/// connection (the WebDAV section then shows without the reveal if Microsoft
+/// controller (the WebDAV section then shows without the reveal if Microsoft
 /// is absent).
-/// on the first line. Only offered in a build that has a client id.
 Future<void> showAboutNoted(BuildContext context, MicrosoftAccount? microsoft) =>
     showDialog<void>(
       context: context,

@@ -300,6 +300,7 @@ class WebDavSync extends CloudSync {
   bool _unreadable = false;
   bool _signedOut = false;
   bool _busy = false;
+  WebDavConnection? _runnerFor;
   bool _disconnecting = false;
 
   static const String _busyMessage =
@@ -309,6 +310,10 @@ class WebDavSync extends CloudSync {
 
   /// A connect or disconnect is running.
   bool get busy => _busy;
+
+  // A question is not shown while nothing may be sent (a refused password).
+  @override
+  GuardQuestion? get guardQuestion => canPoll ? super.guardQuestion : null;
 
   // A guard answer runs a round: none while the password is refused or the
   // connection is paused.
@@ -573,6 +578,11 @@ class WebDavSync extends CloudSync {
     if (disposed || !loaded) return;
     if (!_scanned) await _scan();
     final c = _conn;
+    // A runner of a connection that is gone or being removed is dropped.
+    if (runner != null &&
+        (c == null || _disconnecting || !identical(_runnerFor, c))) {
+      teardownRunner();
+    }
     if (c != null && !_unreadable && !_disconnecting && runner == null) {
       await _restore(c);
       if (runner != null) wantPoll = true;
@@ -649,13 +659,14 @@ class WebDavSync extends CloudSync {
       return;
     }
     // A Disconnect while the password was read: nothing more is started.
-    if (!identical(_conn, c) || disposed) return;
+    if (!identical(_conn, c) || _disconnecting || disposed) return;
     _password = pw;
     final stateDir = webDavStateDir(support, c.accountKey, c.rootKey);
     final dir = webDavWorkingCopy(workingRoot, c.accountKey, c.rootKey);
     if (!await prepareFolder(dir, stateDir)) return;
-    if (!identical(_conn, c) || disposed) return;
+    if (!identical(_conn, c) || _disconnecting || disposed) return;
     try {
+      _runnerFor = c;
       attachRunner(
         runnerFactory(
           workingCopy: dir,

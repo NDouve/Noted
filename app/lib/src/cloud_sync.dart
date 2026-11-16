@@ -422,13 +422,15 @@ abstract class CloudSync extends ChangeNotifier with WidgetsBindingObserver {
       await _current;
     }
     final runner = _runner;
-    if (runner == null || _disposed) return false;
+    if (runner == null || _disposed || !canPoll) return false;
     if (source != null && !identical(source, runner)) return false;
     var saved = false;
     await _begin(() async {
       RoundResult? result;
       try {
         try {
+          // A round just before may have been refused (a 401): nothing is sent.
+          if (!canPoll || !identical(_runner, runner)) return;
           result = await runner.answerGuard(q, remove: remove);
           saved = true;
         } finally {

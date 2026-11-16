@@ -40,8 +40,10 @@ class SpyTokenStore implements TokenStore {
   @override
   Future<String?> read(String key) async {
     log.add('store.read');
+    // The value is taken when the read starts, as a real store's would be.
+    final value = await inner.read(key);
     await readGate;
-    return inner.read(key);
+    return value;
   }
 
   @override
@@ -119,6 +121,7 @@ class WebDavWorld {
     String? connectionText,
     String? password = 'app-password',
     bool pageInFolder = false,
+    bool savedElsewhere = false,
     Duration pollOpen = cloudPollOpen,
     Duration pollIdle = cloudPollIdle,
     DateTime Function()? now,
@@ -134,7 +137,7 @@ class WebDavWorld {
       f.addFolder('Noted');
     }
     if (saveConnection || connectionText != null) {
-      final url = server
+      final url = server && !savedElsewhere
           ? normalizeWebDavUrl(w.fake!.urlOf('Noted'))
           : webDavNoServerUrl;
       final conn = WebDavConnection(

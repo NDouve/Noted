@@ -156,6 +156,7 @@ void main() {
       String? connectionText,
       String? password = 'app-password',
       bool pageInFolder = false,
+      bool savedElsewhere = false,
     }) async {
       await t.runAsync(() async {
         w = await WebDavWorld.create(
@@ -164,6 +165,7 @@ void main() {
           connectionText: connectionText,
           password: password,
           pageInFolder: pageInFolder,
+          savedElsewhere: savedElsewhere,
         );
       });
     }
@@ -830,6 +832,102 @@ void main() {
     });
 
     group('disconnect and connect never overlap', () {
+      sTest(
+        'a restore that read the password before a Disconnect starts nothing, and the next connect gets one runner',
+        (t) async {
+          await build(
+            t,
+            server: true,
+            saveConnection: true,
+            savedElsewhere: true,
+          );
+          final results = await t.runAsync(() async {
+            final gate = Completer<void>();
+            w.store.readGate = gate.future;
+            final started = w.sync.start();
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+            expect(await w.sync.disconnect(), isNull);
+            final login = await w.sync.checkLogin(
+              address: address(),
+              user: FakeWebDav.user,
+              password: w.fake!.password,
+            );
+            // The connect waits for the held restore; release it.
+            final connecting = w.sync.connect(
+              login,
+              const ChosenRoot(
+                driveId: webDavPickerDriveId,
+                itemId: 'Noted',
+                path: 'Noted',
+              ),
+            );
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+            gate.complete();
+            final r = await connecting;
+            await started;
+            login.close();
+            return r;
+          });
+          await t.pump();
+          expect(results, isNull);
+          expect(
+            w.built.length,
+            1,
+            reason: 'one runner, for the new connection',
+          );
+          expect(w.built.single.url, w.sync.connection!.url);
+          expect(w.built.single.url, isNot(webDavNoServerUrl));
+        },
+      );
+
+      sTest(
+        'a guard answer queued behind a round that is refused sends nothing',
+        (t) async {
+          await build(t, saveConnection: true);
+          final q = GuardQuestion(['a.canvas']);
+          w.runner.guardQuestion = q;
+          await start(t);
+          final rounds = w.runner.rounds;
+          final result = await t.runAsync(() async {
+            final hold = Completer<void>();
+            w.runner.hold = hold;
+            w.runner.next = () {
+              w.runner.status = const SyncStatus(SyncState.signedOut);
+              return RoundResult();
+            };
+            final round = w.sync.checkNow();
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+            final answer = w.sync.answerGuard(
+              q,
+              remove: true,
+              source: w.sync.guardSource,
+            );
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+            hold.complete();
+            await round;
+            return answer;
+          });
+          expect(result, isFalse);
+          expect(w.runner.answers, isEmpty);
+          expect(
+            w.runner.rounds,
+            rounds + 1,
+            reason: 'only the round that was refused',
+          );
+        },
+      );
+
+      sTest('a guard question is not shown while the password is refused', (
+        t,
+      ) async {
+        await build(t, saveConnection: true);
+        w.runner.guardQuestion = GuardQuestion(['a.canvas']);
+        await start(t);
+        expect(w.sync.guardQuestion, isNotNull);
+        w.runner.status = const SyncStatus(SyncState.signedOut);
+        expect(w.sync.guardQuestion, isNull);
+      });
+
       sTest('a guard answer while signed out runs no round', (t) async {
         await build(t, saveConnection: true);
         final q = GuardQuestion(['a.canvas']);
