@@ -11,6 +11,8 @@ import 'package:noted/src/notebook_search.dart';
 import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'support/busy_retry.dart';
+
 const _codec = NoteCodec();
 
 NoteData noteData(List<String> lines) => NoteData({
@@ -344,7 +346,9 @@ void main() {
       expect(hitIds(s).toSet(), {'p1', 'b1'});
       expect(s.notSearched, isEmpty);
 
-      binderDir.renameSync(away.path);
+      // The watching notebook may be reading a file in the folder (the binder
+      // file at a job's turn): Windows refuses the rename for that moment.
+      await busyRetry(() async => binderDir.renameSync(away.path));
       await until(() => nb.binders.single.missing);
       await s.ensureReady();
       await s.setText('word');
@@ -353,7 +357,7 @@ void main() {
       expect(s.notSearched.single.reason, contains('not found'));
       expect(s.index.containsPage('b1'), isFalse);
 
-      away.renameSync(binderDir.path);
+      await busyRetry(() async => away.renameSync(binderDir.path));
       await until(() => nb.binders.single.available);
       await until(() => s.index.containsPage('b1'));
       await s.setText('word');
