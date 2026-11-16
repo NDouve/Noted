@@ -101,6 +101,12 @@ abstract class CloudSync extends ChangeNotifier with WidgetsBindingObserver {
   @protected
   bool get canPoll;
 
+  /// Whether a guard answer may go to the runner now. OneDrive saves an answer
+  /// while signed out (it is applied after sign-in); WebDAV sends nothing while
+  /// its password is refused.
+  @protected
+  bool get canAnswerGuard => true;
+
   /// The reason nothing runs (signed out, a choice that can't be read), as a
   /// status line; null when nothing blocks.
   @protected
@@ -422,7 +428,7 @@ abstract class CloudSync extends ChangeNotifier with WidgetsBindingObserver {
       await _current;
     }
     final runner = _runner;
-    if (runner == null || _disposed || !canPoll) return false;
+    if (runner == null || _disposed || !canAnswerGuard) return false;
     if (source != null && !identical(source, runner)) return false;
     var saved = false;
     await _begin(() async {
@@ -430,7 +436,7 @@ abstract class CloudSync extends ChangeNotifier with WidgetsBindingObserver {
       try {
         try {
           // A round just before may have been refused (a 401): nothing is sent.
-          if (!canPoll || !identical(_runner, runner)) return;
+          if (!canAnswerGuard || !identical(_runner, runner)) return;
           result = await runner.answerGuard(q, remove: remove);
           saved = true;
         } finally {

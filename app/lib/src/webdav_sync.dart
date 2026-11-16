@@ -315,6 +315,9 @@ class WebDavSync extends CloudSync {
   @override
   GuardQuestion? get guardQuestion => canPoll ? super.guardQuestion : null;
 
+  @override
+  bool get canAnswerGuard => canPoll;
+
   // A guard answer runs a round: none while the password is refused or the
   // connection is paused.
   @override
