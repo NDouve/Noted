@@ -9640,7 +9640,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final done = <_LandedFile>[];
         final copy = AttachmentCopy();
         // A held binder folder gets nothing (checked at the folder's turn).
-        if (!await _binderGate(loc) || _isLocked(loc)) continue;
+        if (!await _binderGate(loc) || _isLocked(loc)) {
+          // Refused for now (the binder file unreadable a moment): tried again.
+          if (!_isLocked(loc)) retry = true;
+          continue;
+        }
         try {
           await _landFiles(kept, to, done, copy);
         } finally {
