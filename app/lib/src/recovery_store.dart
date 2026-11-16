@@ -543,6 +543,8 @@ class RecoveryStore {
   /// With [replaceable] (generation hashes), a slot that holds anything else
   /// is not replaced: a [RecoveryRefused] is thrown and the slot is left as it
   /// is, even if the index doesn't list it (a file put there from outside).
+  /// A slot holding one of the generations in [passOver] is passed over, as
+  /// with [freshSlot]: the write goes to another slot and leaves it alone.
   Future<RecoveryEntry> write({
     required String folder,
     required NotedPage page,
@@ -550,6 +552,7 @@ class RecoveryStore {
     required DateTime time,
     Set<String>? replaceable,
     bool freshSlot = false,
+    Set<String> passOver = const {},
   }) => _serial(
     (tx) => _writeNow(
       folder: folder,
@@ -558,6 +561,7 @@ class RecoveryStore {
       time: time,
       replaceable: replaceable,
       freshSlot: freshSlot,
+      passOver: passOver,
       tx: tx,
     ),
   );
@@ -569,6 +573,7 @@ class RecoveryStore {
     required DateTime time,
     Set<String>? replaceable,
     bool freshSlot = false,
+    Set<String> passOver = const {},
     RecoveryTx? tx,
   }) async {
     await hook?.call('write');
@@ -596,7 +601,9 @@ class RecoveryStore {
       if (freshSlot) continue;
       final e = await _peek(f);
       if (e != null && e.key == key && e.id == page.id) {
-        selectedGen = _generationOf(e.folder, e.time, e.base, e.text);
+        final gen = _generationOf(e.folder, e.time, e.base, e.text);
+        if (passOver.contains(gen)) continue;
+        selectedGen = gen;
         replacedGen = selectedGen;
         if (replaceable != null && !replaceable.contains(selectedGen)) {
           throw const RecoveryRefused('the recovery folder holds an entry for this page that Noted did not write');
@@ -1189,6 +1196,7 @@ class RecoveryTx {
     required DateTime time,
     Set<String>? replaceable,
     bool freshSlot = false,
+    Set<String> passOver = const {},
   }) => store._writeNow(
     folder: folder,
     page: page,
@@ -1196,6 +1204,7 @@ class RecoveryTx {
     time: time,
     replaceable: replaceable,
     freshSlot: freshSlot,
+    passOver: passOver,
     tx: this,
   );
 
