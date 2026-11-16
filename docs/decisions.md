@@ -1062,10 +1062,10 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0084 — Instant new pages and binders
 - **Date:** 2026-10-26
-- **Status:** Active (supersedes the prompt when creating a top-level standalone page in 0056, and "New binder asks for a folder" in 0049; extends 0038); extended by 0087 (binders from templates)
+- **Status:** Active (supersedes the prompt when creating a top-level standalone page in 0056, and "New binder asks for a folder" in 0049; extends 0038); extended by 0087 (binders from templates); amended by 0176
 - **Decision:**
   - **New page:** the + next to Pages, the "New page" menu item and Ctrl+N (a registry command that also works while a note or the title is being edited) create the page at once in the default page folder.
-    - The page opens with the caret in its title, which is an inline field above the canvas. Enter or leaving the field renames the page.
+    - The page opens with the caret in its title, which is an inline field above the canvas. *(Amended by 0176: in the desktop shell the field is at the top of the canvas column, under the breadcrumb.)* Enter or leaving the field renames the page.
     - There is no dialog. New page from template keeps its template picker and uses the default folder.
     - Subpages keep their parent's location, and pages in a binder stay in the binder.
   - **Default folders:** "Default page folder" and "Default binder folder" are in the gear menu, stored per device in `settings.json` as `"defaultPageFolder"` and `"defaultBinderFolder"`.
@@ -2361,12 +2361,12 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0167 — Desktop shell: Light for new profiles, Precision, the menu bar and the contextual panel
 - **Date:** 2026-11-15
-- **Status:** Active (the maintainer's brief of 2026-11-15; the details decided by the build team (PM), run 2026-11-15-01); amends 0058's default theme and 0071's idle box frames in Precision; amended by 0170 and 0174
+- **Status:** Active (the maintainer's brief of 2026-11-15; the details decided by the build team (PM), run 2026-11-15-01); amends 0058's default theme and 0071's idle box frames in Precision; amended by 0170, 0174 and 0176
 - **Decision:**
   - **Default theme:** a new profile, one with neither `settings.json` nor `binders.json`, starts in Light and saves `{"format":1,"theme":"light"}` once. An existing `settings.json` is never written at launch; saved choices, Follow system included, are kept. A profile with `binders.json` but no `settings.json` uses Follow system, as before. A damaged settings file still reads as the defaults of 0058. *(Amended by 0170: a profile with page or binder data in the default pages folder or the built-in binders folder also uses Follow system, and nothing is written; a link there counts as data, as does a folder that can't be listed.)*
   - **Precision:** the dark theme is named Precision. It covers the window, menus, canvas and panel. Its stored value stays `dark`, so saved settings and pages are unchanged. Idle box frames use the new `box-frame` token: 3:1 in Precision; in Light it equals `border-box`, as before (0071). *(Amended by 0170: idle box frames use `border-box` in both themes; the `box-frame` token is retired.)*
   - **Branding:** a compact blue N from the checked-in icon, snapped to device pixels, with a Noted wordmark that is hidden below 600 px. The app icon is unchanged. *(Amended by 0170: the N is the compact path, `M110 330 V74 L270 298 V50` with stroke 56, filled with the master gradient from the `brand-blue-start` and `brand-blue-end` tokens, with no lightness lift.)*
-  - **Menu bar:** File, Edit, View and Help, built from the command registry with its live enabled state and current shortcuts. Only commands with handlers appear. Help holds Keyboard shortcuts, and About in builds that have it. On Windows and Linux, F10, a lone Alt and Alt+letter enter the bar; on macOS it is pointer-only for now. A chosen item revalidates its target (the page, the cover, the command) before it runs. While the bar or one of its menus has focus, a note being edited keeps its editor and selection. *(Amended by 0170: 36 px high including its bottom rule; items in the maintainer's spec order, with the items the spec doesn't list after them; View › Theme is Appearance, after Toolbar; Paste is labelled `Paste`.)*
+  - **Menu bar:** File, Edit, View and Help, built from the command registry with its live enabled state and current shortcuts. Only commands with handlers appear. Help holds Keyboard shortcuts, and About in builds that have it. On Windows and Linux, F10, a lone Alt and Alt+letter enter the bar; on macOS it is pointer-only for now. A chosen item revalidates its target (the page, the cover, the command) before it runs. While the bar or one of its menus has focus, a note being edited keeps its editor and selection. *(Amended by 0170: 36 px high including its bottom rule; items in the maintainer's spec order, with the items the spec doesn't list after them; View › Theme is Appearance, after Toolbar; Paste is labelled `Paste`.)* *(Amended by 0176: the Details toggle is a button at the right end of the bar, bound to the same state as View › Details.)*
   - **Contextual panel:** right of the canvas, inline from 1200 px wide and a dismissible overlay below that; its open state is per session. It shows page controls with no box selected and a box's properties and actions with one. The canvas selects one box at a time, so there is no several-box state. *(Amended by 0170: the panel is named Details, 288 px wide, inline from 1120 px, with a 16% scrim (`overlay-scrim`) when it overlays.)* *(Amended by 0174: its content is the §5 states of the maintainer's UI spec: a 48 px header with a Close ×, no zoom, Find, issues or Binder settings rows, Arrange and Delete disabled while a note is edited, and a read-only state.)*
   - Undo and Redo also take Cmd+Z, Cmd+Shift+Z and Cmd+Y on macOS.
 - **Rationale:** the maintainer's desktop UI brief. Writing the theme only for a new profile keeps every existing device as it was.
@@ -2447,6 +2447,19 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Several boxes:** not built yet; the canvas has single selection.
 - **Rationale:** the maintainer's UI spec, §5.
 - **Alternatives considered:** keeping the zoom, Find and settings rows in the panel (the spec moved them); showing disabled mutating rows on a read-only page (the spec shows none).
+
+## 0176 — UI spec follow-up, step 5: toolbar, title and status strip
+- **Date:** 2026-11-15
+- **Status:** Active (the maintainer's UI spec of 2026-11-15; the details by the build team (PM), run 2026-11-15-02, from the reviewed note `2026-11-15-02-ui-followup`); amends 0084 and 0167
+- **Decision:**
+  - **Vertical order, desktop shell:** the menu bar; under it, the tree on the left at full height and, to its right, the toolbar from the tree to the window edge, above both canvas and Details; then the canvas column and Details; then the status strip. This is the shell of `!isMobilePlatform` windows that are not narrow (`isNarrowLayout`).
+  - **Title in the canvas:** a header band on `bg-canvas` at the top of the canvas column, left of Details, holds the breadcrumb ("Binder / Page", or "Pages / Page" for a standalone page; `small`, `text-muted`, plain text) at a 32 px left and 16 px top inset, then the page title field (`page-title`), still editable and renaming as before. The save-trouble bar and the read-only banner are full-width bands of the canvas column under the title. The old title row and its page-settings button are gone there; Page settings stays in Details and File › Page.
+  - **Status strip:** 34 px high under the canvas column and Details, `surface` with a top `border`, `small` text at a 16 px inset. It shows only state the notebook already has: a short save-trouble line, else "Read-only: <reason>", else nothing. There is no "saved" state (D6).
+  - **Details toggle:** a button at the right end of the menu bar, 16 px from the window edge, bound to the same state as View › Details: `surface` when closed, `accent-soft` when open, outlined with `outline-control`.
+  - **Mobile and narrow desktop windows** keep the header row unchanged: the drawer button, the title field and the page-settings button, with the banners above the canvas. They have no breadcrumb or status strip.
+  - Host-only: `PageCanvas.header` and `PageCanvas.footer` (`noted_canvas`); no Box API, format or module change.
+- **Rationale:** the maintainer's UI spec (§1): chrome rows above the canvas, the title as page content, and a reserved status row.
+- **Alternatives considered:** a "Page saved" label (the notebook has no signal to back it); showing the new layout on mobile (it has no menu bar or Details, so the header row is its only route to the tree and Page settings).
 
 ---
 
