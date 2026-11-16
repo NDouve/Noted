@@ -1049,6 +1049,10 @@ void main() {
       if (error != null) throw error!;
     }
 
+    // Waits on the test clock, which [run] advances: the app's retries and lock
+    // waits are test-clock timers, and a real-time limit shrinks under load.
+    Future<void> until(bool Function() done, String what) => fakeUntil(done, what);
+
     Future<void> drain(WidgetTester t) async {
       for (var i = 0; i < 400 && nb.unsavedDescription != null; i++) {
         await t.pump(const Duration(milliseconds: 25));
@@ -1243,6 +1247,9 @@ void main() {
       }
       await t.runAsync(stop);
     }
+
+    // Waits on the test clock, which [run] advances (see group 22).
+    Future<void> until(bool Function() done, String what) => fakeUntil(done, what);
 
     testWidgets('a pending cover change at quit: one try, then the question; Cancel keeps Noted open; Leave quits', (t) async {
       await begin(t);
