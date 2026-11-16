@@ -1591,10 +1591,12 @@ class _Run {
       Timer(const Duration(milliseconds: 700), gate.complete);
     }
     await nb.open(other);
+    if (holdDrop) expect(nb.isBusy(id), isTrue, reason: 'the save on leaving was left running');
     // The save on leaving can outlast leaveSaveLimit and be left running (by
     // design, as in `_editStallLeave`); the files are final only once it ends.
     await _until(() => !nb.isBusy(id), 'the save left behind to end');
     await nb.flush();
+    await _until(() => nb.recoveryStoreForTest!.indexEntries.isEmpty, 'the entry to be retired');
     return 'edit:failIoLeave';
   }
 
@@ -1678,6 +1680,7 @@ class _Run {
     File(rec.path).deleteSync();
     st.publishFailures = 0;
     await nb.retrySave();
+    await _until(() => !nb.isBusy(id), 'the save left behind to end');
     expect(nb.trouble.isTrouble, isFalse);
     return 'edit:failBothCancelLeave';
   }
