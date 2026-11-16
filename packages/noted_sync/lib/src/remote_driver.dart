@@ -98,6 +98,7 @@ class RemoteFetch {
     required this.endpoint,
     required this.seq,
     this.resync,
+    this.issues = const [],
   });
 
   final Map<String, RemoteEntry> map;
@@ -107,6 +108,10 @@ class RemoteFetch {
   final String endpoint;
   final int seq;
   final RemoteResync? resync;
+
+  /// Things the driver skipped while listing (an address outside the folder):
+  /// listed to the user, nothing else.
+  final List<SyncIssue> issues;
 }
 
 /// One remote store the pull engine reads from. Content-blind: it moves
