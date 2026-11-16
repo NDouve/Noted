@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:collection' show UnmodifiableListView;
+
 import 'package:flutter/foundation.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -53,6 +55,7 @@ class CanvasController extends ChangeNotifier {
   final PageHistory _history = PageHistory();
   NotedPage _page;
   String? _selectedId;
+  final List<String> _multi = [];
   String? _editingId;
   String? _autofocusId;
   String? _gestureId;
@@ -87,6 +90,7 @@ class CanvasController extends ChangeNotifier {
   set disallowedTypes(Set<String> value) {
     if (_disposed || setEquals(_disallowed, value)) return;
     _disallowed = Set.unmodifiable(value);
+    _pruneMulti();
     _notify();
   }
 
@@ -105,12 +109,80 @@ class CanvasController extends ChangeNotifier {
       _autofocusId = null;
       _gestureId = null;
       _gestureStart = null;
+      _multi.clear();
     }
     _notify();
   }
 
   /// The box with the selection frame.
   String? get selectedId => _selectedId;
+
+  /// The boxes selected together, in the order they were added: empty, or two
+  /// or more (one box is [selectedId]). Transient: never saved, not in Undo.
+  /// While two or more are selected [selectedId] is null and the commands that
+  /// change a selected box are off. Read-only for modules; the host changes it
+  /// with [toggleMulti] and [clearMulti].
+  List<String> get multiSelection => UnmodifiableListView(_multi);
+
+  /// Whether [toggleMulti] would act on box [id]: the page can be changed, no
+  /// box is being edited (the editor is never closed to make room), and [id]
+  /// is a box this device can run on this page. Host only.
+  bool canToggleMulti(String id) {
+    if (_disposed || _readOnly || _editingId != null || _gestureId != null) return false;
+    final box = _page.node(id);
+    return box is BoxRecord &&
+        !_disallowed.contains(box.typeId) &&
+        modules.codecs.codecFor(box.typeId) != null;
+  }
+
+  /// Adds box [id] to the multi-selection, or removes it. The selected box, if
+  /// any, joins first. Refused (false, nothing changes) when [canToggleMulti]
+  /// is false. Host only.
+  bool toggleMulti(String id) {
+    if (!canToggleMulti(id)) return false;
+    final members = _multi.isNotEmpty
+        ? [..._multi]
+        : [?_selectedId];
+    if (!members.remove(id)) members.add(id);
+    _setMulti(members);
+    return true;
+  }
+
+  /// Empties the multi-selection. Host only.
+  void clearMulti() {
+    if (_multi.isEmpty) return;
+    _multi.clear();
+    _notify();
+  }
+
+  // Keeps the rule that the set holds none or two or more boxes: one box left
+  // is the ordinary selection.
+  void _setMulti(List<String> members) {
+    _multi.clear();
+    if (members.length >= 2) {
+      _multi.addAll(members);
+      _selectedId = null;
+    } else {
+      _selectedId = members.isEmpty ? null : members.single;
+    }
+    _notify();
+  }
+
+  // Drops ids that are gone or no longer allowed. Does not notify.
+  void _pruneMulti() {
+    if (_multi.isEmpty) return;
+    final kept = [
+      for (final id in _multi)
+        if (_page.node(id) case final BoxRecord b when !_disallowed.contains(b.typeId)) id,
+    ];
+    if (kept.length == _multi.length) return;
+    _multi.clear();
+    if (kept.length >= 2) {
+      _multi.addAll(kept);
+    } else if (kept.length == 1) {
+      _selectedId = kept.single;
+    }
+  }
 
   /// The box whose editor has keyboard focus.
   String? get editingId => _editingId;
@@ -143,14 +215,17 @@ class CanvasController extends ChangeNotifier {
     );
     _history.record(PageChange.added(box.id));
     _selectedId = box.id;
+    _multi.clear();
     _autofocusId = box.id;
     _set(_page.insertNode(box));
     return box;
   }
 
+  /// Selects box [id] alone (or nothing), which also ends a multi-selection.
   void select(String? id) {
-    if (_selectedId == id) return;
+    if (_selectedId == id && _multi.isEmpty) return;
     _selectedId = id;
+    _multi.clear();
     _notify();
   }
 
@@ -161,6 +236,7 @@ class CanvasController extends ChangeNotifier {
     if (focused) {
       _editingId = id;
       _selectedId = id;
+      _multi.clear();
       _notify();
       return;
     }
@@ -223,6 +299,7 @@ class CanvasController extends ChangeNotifier {
     _gestureStartFixed = box.fixedHeight;
     _gestureFixesHeight = false;
     _selectedId = id;
+    _multi.clear();
     _notify();
   }
 
@@ -291,6 +368,7 @@ class CanvasController extends ChangeNotifier {
     _history.record(PageChange.added(box.id));
     if (autofocus) {
       _selectedId = box.id;
+      _multi.clear();
       _autofocusId = box.id;
     }
     _set(_page.insertNode(box));
@@ -453,6 +531,7 @@ class CanvasController extends ChangeNotifier {
     if (_editingId != null && _page.node(_editingId!) == null) {
       _editingId = null;
     }
+    _pruneMulti();
     if (save && !_readOnly) onChanged?.call(_page);
     _notify();
   }
@@ -586,6 +665,7 @@ class CanvasController extends ChangeNotifier {
     if (_editingId != null && _page.node(_editingId!) == null) {
       _editingId = null;
     }
+    _pruneMulti();
     onChanged?.call(_page);
     _notify();
   }

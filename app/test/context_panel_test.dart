@@ -367,6 +367,51 @@ void main() {
       await w.close(t);
     });
 
+    testWidgets('several boxes: count, types in selection order, Clear selection', (t) async {
+      final w = await ShellWorld.open(t, size: const Size(1400, 800));
+      final c = w.nb.current!;
+      await w.addNote(t, 'a', 'hello');
+      await w.addNote(t, 'n', 'again', at: const Bounds(100, 300, 300, 40));
+      c.insertBox(
+        BoxRecord.create(
+          id: 'd',
+          typeId: 'noted.drawing',
+          dataVersion: 1,
+          bounds: const Bounds(500, 100, 200, 100),
+          data: RawJson.parse('{}'),
+          snapshotText: '',
+          rev: 'r',
+        ),
+      );
+      c.select('a');
+      c.toggleMulti('d');
+      c.toggleMulti('n');
+      await t.pump();
+      String title() => t.widget<Text>(find.byKey(const ValueKey('panel-header-title'))).data!;
+      expect(c.multiSelection, ['a', 'd', 'n']);
+      expect(title(), '3 boxes selected');
+      expect(t.widget<Text>(find.byKey(const ValueKey('panel-several-types'))).data, 'Note · Drawing');
+      // Nothing that changes a box is offered; the page's own rows are gone.
+      expect(find.byKey(const ValueKey('panel-canvas.sendToBack')), findsNothing);
+      expect(find.byKey(const ValueKey('panel-canvas.delete')), findsNothing);
+      expect(find.byKey(const ValueKey('panel-background-dropdown')), findsNothing);
+      // Drawing first: its label leads.
+      c.clearMulti();
+      c.select('d');
+      c.toggleMulti('a');
+      await t.pump();
+      expect(title(), '2 boxes selected');
+      expect(t.widget<Text>(find.byKey(const ValueKey('panel-several-types'))).data, 'Drawing · Note');
+      final before = c.page;
+      await t.tap(find.byKey(const ValueKey('panel-app.clearSelection')));
+      await t.pump();
+      expect(c.multiSelection, isEmpty);
+      expect(c.selectedId, isNull);
+      expect(title(), 'Page');
+      expect(identical(c.page, before), isTrue);
+      await w.close(t);
+    });
+
     testWidgets('a disallowed box: header Box, Delete box only, no type data', (t) async {
       final w = await ShellWorld.open(t, size: const Size(1400, 800));
       final b = await w.addBinderWithPage(t, 'Work', open: true);

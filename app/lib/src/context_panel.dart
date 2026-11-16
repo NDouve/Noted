@@ -17,8 +17,8 @@ import 'settings_panel.dart';
 /// (as the toolbar's, 0068), so an open note keeps its caret.
 ///
 /// States, by precedence: a read-only page (nothing that changes it), a
-/// disallowed box (Delete only), one box, the page. The canvas has single
-/// selection only, so there is no several-boxes state yet.
+/// disallowed box (Delete only), several boxes (their types and Clear
+/// selection), one box, the page.
 class ContextPanel extends StatefulWidget {
   const ContextPanel({
     super.key,
@@ -48,6 +48,16 @@ class _ContextPanelState extends State<ContextPanel> {
         label: 'Page settings…',
         icon: Icons.tune_rounded,
         invoke: () => showPageSettings(context, widget.notebook, widget.controller.page.id),
+      ),
+      Command(
+        id: _clearSelection,
+        label: 'Clear selection',
+        icon: Icons.deselect_rounded,
+        invoke: () {
+          widget.controller
+            ..clearMulti()
+            ..select(null);
+        },
       ),
     ]);
 
@@ -165,6 +175,9 @@ class _ContextPanelState extends State<ContextPanel> {
     // A read-only page shows the page, whatever is selected.
     if (c.readOnly || widget.notebook.readOnlyReason != null) {
       return ('Page', _readOnlyPage(context));
+    }
+    if (c.multiSelection.length >= 2) {
+      return ('${c.multiSelection.length} boxes selected', _several(context));
     }
     final id = c.editingId ?? c.selectedId;
     final node = id == null ? null : c.page.node(id);
@@ -394,6 +407,32 @@ class _ContextPanelState extends State<ContextPanel> {
       _button(context, r[CanvasCommands.fitAll], wide: false),
     ];
   }
+
+  // Several boxes: the types in the order they were selected, and the way out.
+  // Nothing here changes the page.
+  List<Widget> _several(BuildContext context) {
+    final c = widget.controller;
+    final m = NotedMetrics.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final names = <String>[];
+    for (final id in c.multiSelection) {
+      final node = c.page.node(id);
+      if (node is! BoxRecord) continue;
+      final name = boxTypeSingularName(node.typeId) ?? node.typeId;
+      if (!names.contains(name)) names.add(name);
+    }
+    return [
+      Text(
+        names.join(' · '),
+        key: const ValueKey('panel-several-types'),
+        style: NotedTypography.of(context).small.copyWith(color: scheme.onSurfaceVariant),
+      ),
+      SizedBox(height: m.space2),
+      _button(context, _own[_clearSelection]),
+    ];
+  }
+
+  static const String _clearSelection = 'app.clearSelection';
 
   List<Widget> _disallowedBox(BuildContext context) {
     // No type data, and nothing but the verified delete path (0166).
