@@ -152,6 +152,9 @@ class FakeWebDav implements RemoteFake {
   /// Paths (relative to the top) whose id properties are left out.
   final Set<String> noIdFor = {};
 
+  /// Folders (relative to the top) whose listing is an empty multistatus.
+  final Set<String> emptyListings = {};
+
   /// Hrefs of files that a listing names although they aren't in the folder\n  /// (above it, or on another host).
   final List<String> strayHrefs = [];
 
@@ -563,6 +566,16 @@ class FakeWebDav implements RemoteFake {
     final self = lookup(rel);
     if (self == null) {
       req.response.statusCode = 404;
+      await req.response.close();
+      return;
+    }
+    if (emptyListings.contains(rel)) {
+      final bytes = utf8.encode(
+        '<?xml version="1.0" encoding="utf-8"?><d:multistatus xmlns:d="DAV:"/>',
+      );
+      req.response.statusCode = 207;
+      req.response.contentLength = bytes.length;
+      req.response.add(bytes);
       await req.response.close();
       return;
     }

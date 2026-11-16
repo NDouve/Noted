@@ -275,6 +275,13 @@ class WebDavClient {
         if (!self.folder) throw RemoteNotFound('This is not a folder');
         nodes.add(self);
         seen.add('');
+      } else {
+        // Every folder must describe itself (its own address, a 2xx status, a
+        // collection): an empty reply is not an empty folder.
+        final self = f.self;
+        if (self == null || !self.folder) {
+          throw WebDavIncomplete('The server did not describe a folder');
+        }
       }
       for (final c in f.children) {
         if (!seen.add(c.pathId)) continue;

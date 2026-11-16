@@ -902,6 +902,26 @@ void _engineCases(RemoteKind kind) {
     );
   }
 
+  test('a folder that answers an empty listing is incomplete, not empty: nothing is removed', () async {
+    seedMany(10);
+    h.remote.addFile('Noted/templates/S/a.canvas', Harness.b('A'));
+    await h.round();
+    expect(h.read('templates/S/a.canvas'), 'A');
+    h.dav.emptyListings.add('Noted/templates/S');
+    for (var i = 0; i < 3; i++) {
+      h.clock.advance(const Duration(seconds: 31));
+      final r = await h.round();
+      expect(r.error, isA<WebDavIncomplete>());
+      expect(h.engine.status.state, SyncState.paused);
+    }
+    expect(h.read('templates/S/a.canvas'), 'A');
+    // A real answer again: still there, and nothing was lost.
+    h.dav.emptyListings.clear();
+    await h.roundsWithDelay();
+    expect(h.read('templates/S/a.canvas'), 'A');
+    expect(h.engine.issues, isEmpty);
+  });
+
   test(
     'a file renamed to an unusable name keeps its local copy and is listed',
     () async {
