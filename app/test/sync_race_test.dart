@@ -1726,6 +1726,35 @@ void main() {
       });
     }
 
+    // Another device deletes the page: the chosen file goes, and a later
+    // folder check confirms it (_confirmGoneChosen).
+    for (final back in [false, true]) {
+      test('another device\'s delete confirmed: ${back ? 'sync put the old file back first: the entry stays and the re-check merges' : 'no file: the entry is retired'}', () async {
+        await start();
+        await withCopy();
+        await nb.checkFile(copy);
+        // Make the page's file a chosen one: it arrives unlisted and is adopted.
+        final aside = File('${root.path}$sep$id.canvas');
+        File(pathOf(id)).renameSync(aside.path);
+        await nb.checkFile(pathOf(id));
+        aside.renameSync(pathOf(id));
+        await nb.adoptUnlistedPageFile(pathOf(id), id);
+        expect(await entries(), hasLength(1));
+        File(pathOf(id)).deleteSync();
+        await nb.checkFile(pathOf(id)); // seen missing once
+        if (back) revert();
+        await nb.checkFolders(); // the confirming check
+        if (back) {
+          expect(await entries(), hasLength(1), reason: 'the file is back: the confirmation does not retire it');
+          await recheck();
+          expect(ids(), {box.id, extra.id});
+        } else {
+          await until(() async => (await entries()).isEmpty, 'the re-check after the confirmation');
+          expect(File(pathOf(id)).existsSync(), isFalse);
+        }
+      });
+    }
+
     test('(f) opened inside the window: editable; a box deleted there stays deleted after a revert', () async {
       await start();
       final more = noteBox('also from the copy', at: const Bounds(400, 100, 200, 40));
