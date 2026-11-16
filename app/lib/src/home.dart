@@ -500,9 +500,9 @@ class _HomeState extends State<Home> {
     _menu.currentState?.closeForNativePress();
     if (_scaffold.currentState?.isDrawerOpen ?? false) _scaffold.currentState?.closeDrawer();
     if (_overlayOpen) setState(() => _overlayOpen = false);
-    // Open popup routes (a canvas context menu or pick list, a popup menu, a
-    // dismissible dialog) close as on a click on their barrier.
-    Navigator.maybeOf(context)?.popUntil((r) => !(r is PopupRoute && r.barrierDismissible));
+    // Open popup routes (a canvas context menu or pick list, a popup menu) close
+    // as on a click on their barrier. Dialogs stay: they may hold typed text.
+    Navigator.maybeOf(context)?.popUntil((r) => !(r is PopupRoute && r.barrierDismissible && r is! RawDialogRoute));
   }
 
   Widget _menuBar() => AppMenuBar(

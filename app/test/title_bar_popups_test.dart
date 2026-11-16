@@ -6,6 +6,8 @@
 // origin, so global anchors must become overlay-local, and a press on the
 // title bar closes open popup routes.
 
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -142,6 +144,25 @@ void main() {
     await fromNative('ncPointerDown');
     await frames(t);
     expect(find.byKey(const ValueKey('context-menu')), findsNothing);
+    await w.close(t);
+  });
+
+  testWidgets('a press on the title bar leaves a dialog and its typed text alone', (t) async {
+    final w = await ShellWorld.open(t, window: window);
+    unawaited(
+      showDialog<void>(
+        context: t.element(find.byType(Scaffold).first),
+        builder: (_) => const AlertDialog(content: TextField(key: ValueKey('typed'))),
+      ),
+    );
+    await t.pumpAndSettle();
+    await t.enterText(find.byKey(const ValueKey('typed')), 'My title');
+    await fromNative('ncPointerDown');
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('typed')), findsOneWidget);
+    expect(find.text('My title'), findsOneWidget);
+    Navigator.of(t.element(find.byKey(const ValueKey('typed')))).pop();
+    await t.pumpAndSettle();
     await w.close(t);
   });
 
