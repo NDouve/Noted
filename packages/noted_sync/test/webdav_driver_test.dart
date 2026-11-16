@@ -923,6 +923,35 @@ void _engineCases(RemoteKind kind) {
   });
 
   test(
+    'an unusable name that is not a page does not hold back a real removal',
+    () async {
+      seedMany(30);
+      h.remote.addFile('Noted/templates/gone.canvas', Harness.b('G'));
+      h.remote.addFile('Noted/icon', Harness.b(''));
+      h.remote.addFile('Noted/meeting', Harness.b('x'));
+      h.remote.addFile('Noted/templates/D/x.canvas', Harness.b('X'));
+      h.dav.nodes.values.firstWhere((n) => n.name == 'icon').name = 'Icon\r';
+      h.dav.nodes.values.firstWhere((n) => n.name == 'meeting').name =
+          'Meeting 10:30.txt';
+      // Beside the page and the folder that go: unusable names of other kinds.
+      h.remote.addFile('Noted/templates/odd', Harness.b('GGGGG'));
+      h.dav.nodes.values.firstWhere((n) => n.name == 'odd').name = 'Icon\r';
+      await h.round();
+      expect(h.read('p0.canvas'), 'page 0');
+      h.remote.delete('Noted/p0.canvas');
+      h.remote.delete('Noted/templates/D');
+      h.remote.delete('Noted/templates/gone.canvas');
+      await h.roundsWithDelay();
+      await h.roundsWithDelay();
+      expect(h.has('p0.canvas'), isFalse);
+      expect(h.has('templates/D/x.canvas'), isFalse);
+      expect(h.has('templates/gone.canvas'), isFalse);
+      expect(h.read('p1.canvas'), 'page 1');
+      expect(h.issueText().join('\n'), isNot(contains('kept here while')));
+    },
+  );
+
+  test(
     'a file renamed to an unusable name keeps its local copy and is listed',
     () async {
       seedMany(10);

@@ -7,7 +7,10 @@ import 'dart:io';
 import '../journal.dart';
 import '../remote_driver.dart';
 import '../remote_item.dart';
-import '../remote_tree.dart' show isSafeName;
+
+import 'package:noted_core/noted_core.dart' show binderFileName;
+
+import '../remote_tree.dart' show foldKey, isSafeName;
 import '../types.dart';
 import 'webdav_client.dart';
 
@@ -219,13 +222,41 @@ class WebDavDriver implements RemoteDriver {
     // folder is gone or the vanished folder is back.
     final carriedIssues = <SyncIssue>[];
     if (idKind == DavIdKind.path) {
-      // A folder or a file: the first unusable name in each parent.
-      final unusableIn = <String, String>{};
+      // The unusable entries in each parent.
+      final unusableIn = <String, List<RemoteEntry>>{};
       for (final e in entries.values) {
         if (e.parent != null && !isSafeName(e.name)) {
-          unusableIn.putIfAbsent(e.parent!, () => e.name);
+          (unusableIn[e.parent!] ??= []).add(e);
         }
       }
+
+      // The unusable sibling that [gone] may have become: a folder for a
+      // folder; for a file, a file of the same size whose name the mirror
+      // would keep (a page, a binder file, or anything in a templates or
+      // attachments folder). Any other unusable name (`Icon\r`, a name with a
+      // colon) holds nothing back.
+      RemoteEntry? becameUnusable(RemoteEntry gone, RemoteEntry parent) {
+        final sib = unusableIn[parent.id];
+        if (sib == null) return null;
+        final parts = parent.id
+            .split('/')
+            .map(Uri.decodeComponent)
+            .map(foldKey);
+        final inKept = parts.any(
+          (s) => s == 'templates' || s.endsWith('.assets'),
+        );
+        for (final u in sib) {
+          if (gone.folder) {
+            if (u.folder) return u;
+            continue;
+          }
+          if (u.folder || u.size != gone.size) continue;
+          final n = foldKey(u.name);
+          if (inKept || n.endsWith('.canvas') || n == binderFileName) return u;
+        }
+        return null;
+      }
+
       final kept = <String>{};
       var more = true;
       while (more) {
@@ -234,7 +265,7 @@ class WebDavDriver implements RemoteDriver {
           if (entries.containsKey(e.id) || e.parent == null) continue;
           final p = entries[e.parent];
           if (p == null) continue;
-          final sibling = unusableIn[p.id];
+          final sibling = becameUnusable(e, p)?.name;
           if (sibling != null || kept.contains(p.id)) {
             if (sibling != null && !kept.contains(p.id)) {
               final path = e.id.split('/').map(Uri.decodeComponent).join('/');
