@@ -79,7 +79,7 @@ class WebDavConnection {
     if (root is! String || root.isEmpty || path is! String) return null;
     final uri = Uri.tryParse(u);
     if (uri == null ||
-        !uri.hasScheme ||
+        uri.scheme != 'https' ||
         uri.host.isEmpty ||
         normalizeWebDavUrl(uri) != u) {
       return null;
@@ -323,7 +323,12 @@ class WebDavSync extends CloudSync {
 
   @override
   bool get canPoll =>
-      _conn != null && !_unreadable && !_signedOut && _password != null;
+      _conn != null &&
+      !_unreadable &&
+      !_signedOut &&
+      _password != null &&
+      // A refused password is not sent again: only a new connect resumes.
+      runner?.status.state != SyncState.signedOut;
 
   @override
   String get signedOutLine =>
@@ -575,18 +580,25 @@ class WebDavSync extends CloudSync {
       _signedOut = true;
       return;
     }
+    // A Disconnect while the password was read: nothing more is started.
+    if (!identical(_conn, c) || disposed) return;
     _password = pw;
     final stateDir = webDavStateDir(support, c.accountKey, c.rootKey);
     final dir = webDavWorkingCopy(workingRoot, c.accountKey, c.rootKey);
     if (!await prepareFolder(dir, stateDir)) return;
-    attachRunner(
-      runnerFactory(
-        workingCopy: dir,
-        stateDir: stateDir,
-        connection: c,
-        password: pw,
-      ),
-    );
+    if (!identical(_conn, c) || disposed) return;
+    try {
+      attachRunner(
+        runnerFactory(
+          workingCopy: dir,
+          stateDir: stateDir,
+          connection: c,
+          password: pw,
+        ),
+      );
+    } on Object {
+      problem = "the sync couldn't be started";
+    }
   }
 }
 

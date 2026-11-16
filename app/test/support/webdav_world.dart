@@ -31,9 +31,13 @@ class SpyTokenStore implements TokenStore {
   /// Called before every write.
   void Function()? onWrite;
 
+  /// While set, a read waits for it (made in the real zone).
+  Future<void>? readGate;
+
   @override
-  Future<String?> read(String key) {
+  Future<String?> read(String key) async {
     log.add('store.read');
+    await readGate;
     return inner.read(key);
   }
 
@@ -85,6 +89,9 @@ class WebDavWorld {
   /// What the keychain step says; counted in [keychainCalls].
   Future<bool> Function() keychain = () async => true;
   int keychainCalls = 0;
+
+  /// While true, building a runner throws.
+  bool failRunner = false;
 
   /// What the controller built its runners with.
   final List<WebDavConnection> built = [];
@@ -183,6 +190,7 @@ class WebDavWorld {
             required connection,
             required password,
           }) {
+            if (w.failRunner) throw StateError('no runner');
             w.built.add(connection);
             w.builtPasswords.add(password);
             if (!realRunner) return w.runner;

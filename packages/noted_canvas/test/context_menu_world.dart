@@ -55,6 +55,36 @@ class FileGate {
 
 FileGate fileGate = FileGate();
 
+/// What the fake insert commands saw and wait for: like the image and file
+/// modules, they read `invocation`, wait for a picker, then insert.
+class PickGate {
+  final List<Completer<List<IncomingFile>>> pickers = [];
+  final List<CommandInvocation?> seen = [];
+  CommandInvocation? afterAwait;
+  bool armed = false;
+  bool throwSync = false;
+}
+
+PickGate pickGate = PickGate();
+
+Future<void> _insert(CommandHost host) {
+  if (pickGate.throwSync) throw StateError('the command failed at its start');
+  return _pick(host);
+}
+
+Future<void> _pick(CommandHost host) async {
+  final gate = pickGate;
+  if (!gate.armed) return;
+  final inv = host.invocation;
+  gate.seen.add(inv);
+  final picker = Completer<List<IncomingFile>>();
+  gate.pickers.add(picker);
+  final files = await picker.future;
+  gate.afterAwait = host.invocation;
+  if (inv != null && !inv.isCurrent) return;
+  await host.insertFiles(files, at: inv?.anchor);
+}
+
 class TModule extends BoxModule<String> {
   const TModule(this.id, [this.kind = '']);
   final String id;
@@ -72,7 +102,7 @@ class TModule extends BoxModule<String> {
             icon: Icons.image_rounded,
             enabled: () => host.attachments != null && !host.controller.readOnly,
             listenable: host.controller,
-            invoke: () {},
+            invoke: () => _insert(host),
           ),
           Command(
             id: 'noted.file.insert',
@@ -80,7 +110,7 @@ class TModule extends BoxModule<String> {
             icon: Icons.attach_file_rounded,
             enabled: () => host.attachments != null && !host.controller.readOnly,
             listenable: host.controller,
-            invoke: () {},
+            invoke: () => _insert(host),
           ),
         ]
       : const [];
@@ -242,6 +272,8 @@ class World {
   Size size = const Size(1200, 800);
   double textScale = 1;
   ThemeData? theme;
+  /// Space above the canvas, changed under an open menu to move the canvas rect.
+  final ValueNotifier<double> topInset = ValueNotifier(0);
   bool disableAnimations = true;
   bool boldText = false;
   late ModuleRegistry modules;
@@ -264,6 +296,7 @@ class World {
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
     fileGate = FileGate();
+    pickGate = PickGate();
     editorSecondaryTaps = 0;
     saved = [];
     this.pen = TPen('noted.drawing.pen', StylusRole.pen);
@@ -308,7 +341,10 @@ class World {
     ),
     home: Builder(
       builder: (context) => Scaffold(
-        body: PageCanvas(
+        body: ValueListenableBuilder<double>(
+          valueListenable: topInset,
+          builder: (context, inset, canvas) => Padding(padding: EdgeInsets.only(top: inset), child: canvas),
+          child: PageCanvas(
           key: key,
           controller: controller ?? c,
           tools: tools ?? selection,
@@ -324,6 +360,7 @@ class World {
               [CanvasCommands.select],
             ],
           ),
+        ),
         ),
       ),
     ),

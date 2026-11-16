@@ -312,4 +312,37 @@ void main() {
     }
     await w.close(t);
   });
+
+  testWidgets('with the Details panel docked, More near the canvas right edge opens the list inside the canvas; the next ring opens', (t) async {
+    final w = await ShellWorld.open(t, size: const Size(1500, 900));
+    w.settings.contextMenu = ContextMenuStyle.radial;
+    await t.pump();
+    expect(find.byKey(const ValueKey('context-panel')), findsOneWidget);
+    final canvasRect = t.getRect(find.byKey(const ValueKey('page-canvas-area')).evaluate().isEmpty
+        ? find.byType(PageCanvas)
+        : find.byKey(const ValueKey('page-canvas-area')));
+    for (final dx in [950.0, 1050.0, 1100.0]) {
+      final p = Offset(dx, canvasRect.top + 300);
+      await _rightClick(t, p);
+      expect(find.byKey(const ValueKey('radial-menu')), findsOneWidget, reason: '$dx');
+      if (dx == 1050) {
+        await t.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+        await t.sendKeyEvent(LogicalKeyboardKey.enter);
+      } else {
+        await t.tap(find.byKey(const ValueKey('radial-canvas.context.more')));
+      }
+      await _frames(t);
+      final menu = find.byKey(const ValueKey('context-menu'));
+      expect(menu, findsOneWidget, reason: '$dx');
+      final r = t.getRect(menu);
+      expect(r.right, lessThanOrEqualTo(canvasRect.right - 8 + 0.01), reason: '$dx');
+      expect(r.left, greaterThanOrEqualTo(canvasRect.left + 8 - 0.01), reason: '$dx');
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t);
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(t);
+      expect(find.byKey(const ValueKey('radial-menu')), findsNothing);
+    }
+    await w.close(t);
+  });
 }

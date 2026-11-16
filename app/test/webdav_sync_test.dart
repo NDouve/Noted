@@ -8,6 +8,7 @@
 // files and the fake WebDAV server are real, so the world is built inside
 // `runAsync`.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -115,6 +116,7 @@ void main() {
           'url': 'https://dav.example.test/dav/Notes',
         }, // not in its one form
         {...good, 'url': 'not an address'},
+        {...good, 'url': 'http://dav.example.test/dav/Notes/'}, // not https
         {...good}..remove('path'),
       ]) {
         expect(WebDavConnection.fromJson(bad), isNull, reason: '$bad');
@@ -426,12 +428,12 @@ void main() {
           expect(w.store.inner.values, {conn.passwordKey: 'app-password'});
           final text = file.readAsStringSync();
           expect(text, isNot(contains('app-password')));
-          final saved = WebDavConnection.fromJson(jsonDecode(text))!;
-          expect(saved.url, conn.url);
-          expect(saved.user, 'alice');
-          expect(saved.idKind, DavIdKind.path);
-          expect(saved.rootId, '/');
-          expect(saved.path, 'Noted');
+          final saved = jsonDecode(text) as Map<String, Object?>;
+          expect(saved['url'], conn.url);
+          expect(saved['user'], 'alice');
+          expect(saved['idKind'], 'path');
+          expect(saved['rootId'], '/');
+          expect(saved['path'], 'Noted');
           expect(File('${file.path}.tmp').existsSync(), isFalse);
           expect(w.sync.connection!.path, 'Noted');
           expect(w.sync.canConnect, isFalse);
@@ -752,6 +754,80 @@ void main() {
       });
     });
 
+    group('refusals and races', () {
+      sTest(
+        'after a 401 nothing is sent again on the next ticks, Check now or a resume',
+        (t) async {
+          await build(t, saveConnection: true);
+          await start(t);
+          w.runner.status = const SyncStatus(SyncState.signedOut);
+          await foregroundAgain(t);
+          final base = w.runner.rounds;
+          await t.pump(const Duration(minutes: 30));
+          await t.runAsync(() => w.sync.checkNow());
+          await foregroundAgain(t);
+          expect(
+            w.runner.rounds,
+            base,
+            reason: 'the refused password is not sent again',
+          );
+          expect(
+            w.sync.statusLine,
+            startsWith('Paused: WebDAV refused the password'),
+          );
+        },
+      );
+
+      sTest('a Disconnect while the password is read starts nothing', (
+        t,
+      ) async {
+        await build(t, saveConnection: true);
+        await t.runAsync(() async {
+          final gate = Completer<void>();
+          w.store.readGate = gate.future;
+          final started = w.sync.start();
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          final gone = w.sync.disconnect();
+          gate.complete();
+          await Future.wait([started, gone]);
+        });
+        await t.pump();
+        expect(w.built, isEmpty);
+        expect(w.sync.connection, isNull);
+        expect(w.nb.standaloneFolders, isEmpty);
+        expect(w.runner.rounds, 0);
+      });
+
+      sTest('a connection saved with http is unreadable', (t) async {
+        await build(
+          t,
+          saveConnection: true,
+          connectionText: jsonEncode(
+            _conn(url: 'http://dav.example.test/dav/Notes/').toJson(),
+          ),
+        );
+        await start(t);
+        expect(w.sync.connectionUnreadable, isTrue);
+        expect(w.built, isEmpty);
+      });
+
+      sTest(
+        'a runner that cannot be built pauses with a plain line, and Check now tries again',
+        (t) async {
+          await build(t, saveConnection: true);
+          w.failRunner = true;
+          await t.runAsync(() => w.sync.start()); // must not throw
+          await t.pump();
+          expect(w.sync.statusLine, "Paused: the sync couldn't be started");
+          expect(w.runner.rounds, 0);
+          w.failRunner = false;
+          await t.runAsync(() => w.sync.checkNow());
+          await settle(t);
+          expect(w.built.length, 1);
+          expect(w.runner.rounds, 1);
+        },
+      );
+    });
     group('disconnecting', () {
       sTest(
         'forgets the password and the connection file, keeps the folder and the journal, and stops polling',

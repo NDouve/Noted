@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/ai/ai_access_service.dart';
+import 'package:noted/src/app_commands.dart';
 import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_tree_view.dart';
@@ -509,7 +510,8 @@ void main() {
       await t.pumpWidget(MaterialApp(home: Home(notebook: nb)));
       await t.pump();
       await t.pump();
-      await t.tap(find.byTooltip('Page settings'));
+      // The title row's button is gone on the desktop shell: Details has it.
+      await t.tap(find.byKey(ValueKey('panel-${AppCommands.pageSettings}')));
       await t.pumpAndSettle();
       expect(find.text('Page settings'), findsWidgets);
       expect(find.byKey(const ValueKey('settings-panel')), findsOneWidget);

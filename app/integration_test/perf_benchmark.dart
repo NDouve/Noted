@@ -343,8 +343,8 @@ void main() {
       // and a trackpad pinch both end in: `zoomAt`). No key events: the key
       // simulator does not work in profile builds.
       final pointer = TestPointer(7, PointerDeviceKind.mouse);
-      final viewport = t.getSize(find.byType(PageCanvas));
-      final mid = Offset(viewport.width / 2, (viewport.height - toolbarHeight(t)) / 2);
+      final viewport = t.getSize(find.byKey(PageCanvas.overlayKey));
+      final mid = Offset(viewport.width / 2, viewport.height / 2);
       await t.sendEventToBinding(pointer.hover(viewportPoint(t, mid)));
       await s.pump(200);
 

@@ -64,6 +64,8 @@ class _WebDavSectionState extends State<WebDavSection> {
       if (error == null && picked != null && mounted) _password.clear();
     } on WebDavLoginException catch (e) {
       error = e.message;
+    } on Object catch (e) {
+      error = explainWebDavError(e);
     } finally {
       login?.close();
     }

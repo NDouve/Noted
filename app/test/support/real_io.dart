@@ -31,3 +31,18 @@ Future<void> realIoUntil(
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
 }
+
+/// Test-clock time until [done], polled every 10 ms, for a widget test whose
+/// caller pumps the clock while real IO runs between pumps. Fails after
+/// [limit] of test-clock time, which does not shrink on a loaded machine.
+Future<void> fakeUntil(
+  bool Function() done,
+  String what, {
+  Duration limit = const Duration(seconds: 10),
+}) async {
+  const step = Duration(milliseconds: 10);
+  for (var waited = Duration.zero; !done(); waited += step) {
+    if (waited >= limit) fail('timed out waiting for $what');
+    await Future<void>.delayed(step);
+  }
+}

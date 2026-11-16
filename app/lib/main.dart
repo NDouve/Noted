@@ -130,13 +130,18 @@ Future<void> main(List<String> args) async {
     webdav: webdav,
     args: args,
     // The clean-up can write settings.json: not before the lock.
-    onOwned: () {
-      unawaited(cleaner.cleanKeychainOnce());
-      if (microsoft != null) unawaited(microsoft.start(settings: settings, cleaner: cleaner));
-    },
+    onOwned: () => startOwned(cleaner: cleaner, microsoft: microsoft, settings: settings),
   );
   // After the first frame, so the window can show the questions.
   WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(notebook.askPendingAiApprovals()));
+}
+
+/// What starts once Noted owns its data (from `openWhenOwned`'s `onOwned`): the
+/// keychain clean-up step (N6), whether or not Microsoft is configured, then
+/// Microsoft's restore, which waits for the same step.
+void startOwned({required KeychainCleaner cleaner, MicrosoftAccount? microsoft, required AppSettings settings}) {
+  unawaited(cleaner.cleanKeychainOnce());
+  if (microsoft != null) unawaited(microsoft.start(settings: settings, cleaner: cleaner));
 }
 
 /// Shown instead of the app when another Noted process already owns the

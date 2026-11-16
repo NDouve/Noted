@@ -28,6 +28,7 @@ import 'save_trouble.dart' show KeptNotice, TroubleKind;
 import 'save_trouble_bar.dart';
 import 'search_panel.dart';
 import 'settings_panel.dart';
+import 'status_strip.dart';
 import 'page_tree_view.dart';
 import 'microsoft_account.dart';
 import 'onedrive_guard_dialog.dart';
@@ -190,7 +191,8 @@ class _HomeState extends State<Home> {
   // Files dropped on the canvas become boxes where they were dropped.
   Future<void> _dropped(DropDoneDetails d) async {
     final canvas = _canvasKey?.currentState;
-    if (canvas == null) return;
+    // Only the viewport takes drops, not the toolbar, the header, the strip or Details.
+    if (canvas == null || !canvas.viewportContains(d.globalPosition)) return;
     final files = <IncomingFile>[];
     for (final f in d.files) {
       try {
@@ -613,6 +615,106 @@ class _HomeState extends State<Home> {
         )
       : child;
 
+  Widget _titleField(CanvasController current) => PageTitleField(
+    key: ValueKey('title-${current.page.id}'),
+    notebook: notebook,
+    pageId: current.page.id,
+    highlight: _titleHighlight,
+  );
+
+  // The save trouble and read-only bands of a page.
+  List<Widget> _pageBands() => [
+    if (notebook.trouble.isTrouble) SaveTroubleBar(notebook: notebook),
+    if (notebook.readOnlyReason != null && notebook.trouble.kind != TroubleKind.preview)
+      ReadOnlyBanner(key: const ValueKey('read-only-banner'), reason: notebook.readOnlyReason!),
+  ];
+
+  // "Binder / Page", or "Pages / Page" for a standalone page.
+  String _breadcrumb(String pageId) {
+    final folder = notebook.binderOfPage(pageId);
+    final binder = folder == null ? null : notebook.binders.where((b) => b.path == folder).firstOrNull;
+    return '${binder?.title ?? 'Pages'} / ${notebook.current?.page.meta.title ?? ''}';
+  }
+
+  // The desktop shell's band over the canvas: the breadcrumb and the title on
+  // the canvas colour, then the notices as full-width bands (ui-spec §1).
+  Widget _canvasHeader(CanvasController current, NotedMetrics m) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      key: const ValueKey('canvas-header'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ColoredBox(
+          color: scheme.surfaceContainerLowest,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(m.space8, m.space4, m.space8, m.space2),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _breadcrumb(current.page.id),
+                  key: const ValueKey('breadcrumb'),
+                  style: NotedTypography.of(context).small.copyWith(color: scheme.onSurfaceVariant),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                SizedBox(height: m.space3),
+                _titleField(current),
+              ],
+            ),
+          ),
+        ),
+        ..._pageBands(),
+      ],
+    );
+  }
+
+  Widget _pageCanvas(
+    CanvasController current, {
+    required bool inline,
+    required bool overlay,
+    bool desktopShell = false,
+  }) {
+    final canvas = PageCanvas(
+      key: _keyFor(current.page.id),
+      attachments: notebook.attachments,
+      disallowedTypes: notebook.disallowedBoxTypesFor(current.page.id),
+      controller: current,
+      tools: notebook.tools,
+      readOnly: notebook.readOnlyReason != null,
+      findRequests: _findRequests,
+      issueSilence: _issueSilence,
+      boxTypeName: boxTypeSingularName,
+      aiMerge: notebook.aiMerge,
+      extraCommands: () => [searchCommand(_search)],
+      toolbar: (widget.settings?.toolbar ?? ToolbarStyle.tabs).layout,
+      contextMenuStyle: widget.settings?.contextMenu ?? ContextMenuStyle.list,
+      onCommandsChanged: isMobilePlatform ? null : _canvasCommandsChanged,
+      header: desktopShell ? _canvasHeader(current, NotedMetrics.of(context)) : null,
+      footer: desktopShell ? StatusStrip(notebook: notebook) : null,
+      overlayPanel: overlay
+          ? (context, registry) => ContextPanelOverlay(
+              notebook: notebook,
+              controller: _canvasKey?.currentState?.controller ?? current,
+              registry: registry,
+              onClose: _togglePanel,
+              focusCanvas: () => _canvasKey?.currentState?.focusCanvas(),
+            )
+          : null,
+      sidePanel: inline
+          ? (context, registry) => ContextPanel(
+              key: const ValueKey('context-panel-inline'),
+              notebook: notebook,
+              // The canvas's own controller: the one its registry is for.
+              controller: _canvasKey?.currentState?.controller ?? current,
+              registry: registry,
+              onClose: _closeDockedPanel,
+            )
+          : null,
+    );
+    return _droppable(canvas);
+  }
+
   Widget _body() {
     return ListenableBuilder(
       // The settings choose the toolbar; a change applies at once.
@@ -621,6 +723,7 @@ class _HomeState extends State<Home> {
         final current = notebook.current;
         final m = NotedMetrics.of(context);
         final narrow = isNarrowLayout(context);
+        final desktopShell = !isMobilePlatform && !narrow;
         final wide = _wideWindow(context) && !isMobilePlatform;
         final inline = wide && (_panelChoice ?? true);
         final overlay = !wide && !isMobilePlatform && _overlayOpen;
@@ -655,6 +758,8 @@ class _HomeState extends State<Home> {
                               onRetry: () => unawaited(notebook.loadChecked()),
                             ),
                     )
+                  : desktopShell
+                  ? _pageCanvas(current, inline: inline, overlay: overlay, desktopShell: true)
                   : Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -663,14 +768,7 @@ class _HomeState extends State<Home> {
                           child: Row(
                             children: [
                               if (narrow) _menuButton(m),
-                              Expanded(
-                                child: PageTitleField(
-                                  key: ValueKey('title-${current.page.id}'),
-                                  notebook: notebook,
-                                  pageId: current.page.id,
-                                  highlight: _titleHighlight,
-                                ),
-                              ),
+                              Expanded(child: _titleField(current)),
                               IconButton(
                                 key: const ValueKey('page-settings'),
                                 tooltip: 'Page settings',
@@ -683,60 +781,8 @@ class _HomeState extends State<Home> {
                           ),
                         ),
                         const Divider(height: 1),
-                        if (notebook.trouble.isTrouble) SaveTroubleBar(notebook: notebook),
-                        if (notebook.readOnlyReason != null && notebook.trouble.kind != TroubleKind.preview)
-                          ReadOnlyBanner(
-                            key: const ValueKey('read-only-banner'),
-                            reason: notebook.readOnlyReason!,
-                          ),
-                        Expanded(
-                          child: Stack(
-                            children: [
-                              Positioned.fill(
-                                child: _droppable(
-                            PageCanvas(
-                              key: _keyFor(current.page.id),
-                              attachments: notebook.attachments,
-                              disallowedTypes: notebook.disallowedBoxTypesFor(current.page.id),
-                              controller: current,
-                              tools: notebook.tools,
-                              readOnly: notebook.readOnlyReason != null,
-                              findRequests: _findRequests,
-                              issueSilence: _issueSilence,
-                              boxTypeName: boxTypeSingularName,
-                              aiMerge: notebook.aiMerge,
-                              extraCommands: () => [searchCommand(_search)],
-                              toolbar: (widget.settings?.toolbar ?? ToolbarStyle.tabs).layout,
-                              contextMenuStyle: widget.settings?.contextMenu ?? ContextMenuStyle.list,
-                              onCommandsChanged: isMobilePlatform ? null : _canvasCommandsChanged,
-                              overlayPanel: overlay
-                                  ? (context, registry) => ContextPanelOverlay(
-                                      notebook: notebook,
-                                      controller: _canvasKey?.currentState?.controller ?? current,
-                                      registry: registry,
-                                      onClose: _togglePanel,
-                                      focusCanvas: () => _canvasKey?.currentState?.focusCanvas(),
-                                    )
-                                  : null,
-                              sidePanel: inline
-
-                                  ? (context, registry) => ContextPanel(
-                                      key: const ValueKey('context-panel-inline'),
-                                      notebook: notebook,
-                                      // The canvas's own controller: the one its registry is for.
-                                      controller: _canvasKey?.currentState?.controller ?? current,
-                                      registry: registry,
-                                      onClose: _closeDockedPanel,
-                                    )
-
-                                  : null,
-                            ),
-                          ),
-                              ),
-                            ],
-                          ),
-                        ),
-
+                        ..._pageBands(),
+                        Expanded(child: _pageCanvas(current, inline: inline, overlay: overlay)),
                       ],
                     ),
             ),

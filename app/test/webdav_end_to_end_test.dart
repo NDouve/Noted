@@ -204,6 +204,13 @@ void main() {
         File('${working.path}/$_pageId.canvas').readAsStringSync(),
         contains('second version'),
       );
+      // The refused password is not sent again: no request follows on Check now.
+      final sent = fake.requests.length;
+      await t.runAsync(() async {
+        await sync.checkNow();
+        await realIoPause(100);
+      });
+      expect(fake.requests.length, sent);
       expect(nb.pageTitleOf(_pageId), 'From WebDAV');
 
       await t.pumpWidget(const SizedBox());

@@ -19,7 +19,7 @@ const int aboutTapsToReveal = 5;
 
 /// "About Noted", with the preview Microsoft sign-in hidden behind five taps
 /// on the first line. Only offered in a build that has a client id.
-Future<void> showAboutNoted(BuildContext context, MicrosoftAccount microsoft) =>
+Future<void> showAboutNoted(BuildContext context, MicrosoftAccount? microsoft) =>
     showDialog<void>(
       context: context,
       builder: (context) => AboutNotedDialog(microsoft: microsoft),
@@ -28,7 +28,8 @@ Future<void> showAboutNoted(BuildContext context, MicrosoftAccount microsoft) =>
 class AboutNotedDialog extends StatefulWidget {
   const AboutNotedDialog({super.key, required this.microsoft});
 
-  final MicrosoftAccount microsoft;
+  /// Null in a build without a client id: only the WebDAV section can show.
+  final MicrosoftAccount? microsoft;
 
   @override
   State<AboutNotedDialog> createState() => _AboutNotedDialogState();
@@ -38,7 +39,7 @@ class _AboutNotedDialogState extends State<AboutNotedDialog> {
   int _taps = 0;
 
   void _tap() {
-    if (++_taps >= aboutTapsToReveal) widget.microsoft.reveal();
+    if (++_taps >= aboutTapsToReveal) widget.microsoft?.reveal();
   }
 
   @override
@@ -49,7 +50,7 @@ class _AboutNotedDialogState extends State<AboutNotedDialog> {
       content: SizedBox(
         width: 380,
         child: ListenableBuilder(
-          listenable: widget.microsoft,
+          listenable: Listenable.merge([?widget.microsoft]),
           builder: (context, _) => SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -67,10 +68,10 @@ class _AboutNotedDialogState extends State<AboutNotedDialog> {
                     ),
                   ),
                 ),
-                if (widget.microsoft.revealed)
-                  _MicrosoftSection(microsoft: widget.microsoft),
+                if (widget.microsoft?.revealed ?? false)
+                  _MicrosoftSection(microsoft: widget.microsoft!),
                 // Mobile builds only: the controller is null elsewhere.
-                if (widget.microsoft.revealed && WebDavScope.maybeOf(context) != null)
+                if (WebDavScope.maybeOf(context) != null && (widget.microsoft?.revealed ?? true))
                   WebDavSection(sync: WebDavScope.maybeOf(context)!),
               ],
             ),
@@ -90,7 +91,6 @@ class _AboutNotedDialogState extends State<AboutNotedDialog> {
 
 class _MicrosoftSection extends StatelessWidget {
   const _MicrosoftSection({required this.microsoft});
-
   final MicrosoftAccount microsoft;
 
   @override

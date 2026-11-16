@@ -121,7 +121,14 @@ void aiSuite() {
           // AI3: the page is Guarded (the default), which does not matter to
           // its AI box; the page menu offers the three values.
           expect(s.nb.aiAccessFor(pageId).value, AiAccess.guarded);
-          await s.tapKey('page-settings');
+          // Details shows the AI box while it is edited or selected: leave the
+          // editor, clear the selection, and check the page state is showing.
+          await s.key(LogicalKeyboardKey.escape);
+          s.nb.current!.select(null);
+          await s.pump(300);
+          expect(s.nb.current!.editingId, isNull);
+          expect(find.byKey(const ValueKey('panel-app.page.settings')), findsOneWidget);
+          await s.tapKey('panel-app.page.settings');
           await s.tapKey('settings-ai-privileged');
           expect(s.nb.ownAiAccess(pageId), AiAccess.privileged);
           await s.tapKey('settings-ai-guarded');

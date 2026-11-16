@@ -1102,6 +1102,36 @@ class AppMenuBarState extends State<AppMenuBar> {
     );
   }
 
+  // The Details toggle at the bar's right end, bound to the same state as
+  // View > Details: `surface` when closed, `accent-soft` when open, outlined
+  // with `outline-control`.
+  Widget _detailsToggle(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final colors = NotedColors.of(context);
+    final m = NotedMetrics.of(context);
+    return ValueListenableBuilder<bool>(
+      valueListenable: widget.panelShown,
+      builder: (context, open, _) => Padding(
+        padding: EdgeInsets.only(right: m.space4),
+        child: Semantics(
+          toggled: open,
+          child: _FocusRing(
+            builder: (node) => TextButton(
+              key: const ValueKey('details-toggle'),
+              focusNode: node,
+              onPressed: widget.onTogglePanel,
+              style: _itemStyle(context, bar: true).copyWith(
+                backgroundColor: WidgetStatePropertyAll(open ? scheme.primaryContainer : scheme.surface),
+                side: WidgetStatePropertyAll(BorderSide(color: colors.outlineControl)),
+              ),
+              child: const Text('Details'),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1128,6 +1158,8 @@ class AppMenuBarState extends State<AppMenuBar> {
                   BrandMark(showWordmark: wide),
                   SizedBox(width: m.space3),
                   for (var i = 0; i < 4; i++) _topMenu(context, i, menus[i]),
+                  const Spacer(),
+                  if (wide) _detailsToggle(context),
                 ],
               ),
             ),

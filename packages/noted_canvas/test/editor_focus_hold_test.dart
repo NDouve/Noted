@@ -7,6 +7,7 @@
 // hold ends. Also the host-only PageCanvas parameters of the UI shell.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
@@ -316,6 +317,83 @@ void main() {
         1200,
         reason: 'the toolbar keeps its full width',
       );
+    });
+  });
+
+  group('header and footer', () {
+    testWidgets('the header and footer are in the canvas column, left of the side panel', (t) async {
+      t.view.physicalSize = const Size(1200, 800);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      final c = CanvasController(emptyPage(), modules);
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PageCanvas(
+              controller: c,
+              header: const SizedBox(key: ValueKey('header'), height: 70),
+              footer: const SizedBox(key: ValueKey('footer'), height: 34),
+              sidePanel: (context, registry) => const SizedBox(key: ValueKey('panel'), width: 264),
+            ),
+          ),
+        ),
+      );
+      await t.pump();
+      final header = t.getRect(find.byKey(const ValueKey('header')));
+      final footer = t.getRect(find.byKey(const ValueKey('footer')));
+      final panel = t.getRect(find.byKey(const ValueKey('panel')));
+      expect(header.top, CommandToolbar.height);
+      expect(header.left, 0);
+      expect(header.right, 1200 - 264);
+      expect(panel.top, CommandToolbar.height);
+      expect(panel.bottom, 800, reason: 'Details runs beside the footer');
+      expect(footer.bottom, 800);
+      expect(footer.left, 0);
+      expect(footer.right, header.right);
+      // The viewport starts under the header.
+      expect(t.getRect(find.byKey(PageCanvas.overlayKey)).top, header.bottom);
+    });
+  });
+
+  group('Escape in a text field', () {
+    testWidgets('in the header it is the field\'s; in another field it still reaches the canvas', (t) async {
+      t.view.physicalSize = const Size(1200, 800);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      final box = BoxRecord.create(
+        id: 'b',
+        typeId: 'test.text',
+        dataVersion: 1,
+        bounds: const Bounds(10, 10, 100, 40),
+        data: RawJson.encode('x'),
+        snapshotText: 'x',
+        rev: 'r',
+      );
+      final c = CanvasController(emptyPage().insertNode(box), modules);
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PageCanvas(
+              controller: c,
+              header: const TextField(key: ValueKey('title')),
+              sidePanel: (context, registry) =>
+                  const SizedBox(width: 264, child: TextField(key: ValueKey('other'))),
+            ),
+          ),
+        ),
+      );
+      await t.pump();
+      c.select('b');
+      await t.tap(find.byKey(const ValueKey('title')));
+      await t.pump();
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await t.pump();
+      expect(c.selectedId, 'b', reason: 'Escape in the header field leaves the selection');
+      await t.tap(find.byKey(const ValueKey('other')));
+      await t.pump();
+      await t.sendKeyEvent(LogicalKeyboardKey.escape);
+      await t.pump();
+      expect(c.selectedId, isNull, reason: 'another field still lets Escape reach the canvas');
     });
   });
 }

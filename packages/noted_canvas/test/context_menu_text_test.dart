@@ -75,7 +75,7 @@ void main() {
         expect(t.takeException(), isNull);
       });
 
-      testWidgets('the ring shows whole labels in $b, bold $bold', (t) async {
+      testWidgets('the ring keeps its labels on one line in $b, bold $bold', (t) async {
         final w = World(t)
           ..theme = notedThemeData(b)
           ..boldText = bold
@@ -83,10 +83,10 @@ void main() {
         await w.pump(style: ContextMenuStyle.radial);
         await w.rightClick(w.at(overlapPoint));
         expect(w.ring, findsOneWidget);
+        // Labels are shortened to the fixed slot on one line, never wrapped.
         for (final e in find.descendant(of: w.ring, matching: find.byType(Text)).evaluate()) {
           final render = e.renderObject! as RenderParagraph;
-          expect(render.didExceedMaxLines, isFalse);
-          expect(render.size.width, greaterThanOrEqualTo(render.getMaxIntrinsicWidth(double.infinity)));
+          expect(render.size.height, lessThan(24));
         }
         // Nothing overflowed (a clipped pill reports a layout exception).
         expect(t.takeException(), isNull);

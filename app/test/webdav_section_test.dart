@@ -10,6 +10,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/webdav_section.dart';
+import 'package:noted/src/webdav_sync.dart';
 import 'package:noted_sync/noted_sync.dart' show SyncIssue;
 
 import '../../packages/noted_sync/test/fake_webdav.dart';
@@ -227,4 +228,76 @@ void main() {
     expect(find.text('a/b.canvas'), findsOneWidget);
     expect(find.text('A different file is already here'), findsOneWidget);
   });
+
+  testWidgets(
+    'an unexpected failure while connecting is shown in plain words and the form is usable again',
+    (t) async {
+      await t.runAsync(() async {
+        w = await WebDavWorld.create();
+        await w.sync.start();
+      });
+      final failing = _FailingSync(w);
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(child: WebDavSection(sync: failing)),
+          ),
+        ),
+      );
+      await t.enterText(
+        find.byKey(const ValueKey('dav-address')),
+        'https://dav.example.test/',
+      );
+      await t.enterText(find.byKey(const ValueKey('dav-user')), 'alice');
+      await t.enterText(find.byKey(const ValueKey('dav-password')), 'x');
+      await t.tap(find.byKey(const ValueKey('dav-connect')));
+      await until(
+        t,
+        () => find.byKey(const ValueKey('dav-error')).evaluate().isNotEmpty,
+        'the error',
+      );
+      expect(
+        t.widget<Text>(find.byKey(const ValueKey('dav-error'))).data,
+        "WebDAV couldn't be used.",
+      );
+      expect(
+        t
+            .widget<FilledButton>(find.byKey(const ValueKey('dav-connect')))
+            .onPressed,
+        isNotNull,
+      );
+      await t.pumpWidget(const SizedBox());
+      failing.dispose();
+      await t.runAsync(() async {
+        w.nb.dispose();
+        await w.top.delete(recursive: true);
+      });
+    },
+  );
+}
+
+// A controller whose first checks throw something no one planned for.
+class _FailingSync extends WebDavSync {
+  _FailingSync(WebDavWorld w)
+    : super(
+        notebook: w.nb,
+        workingRoot: w.workingRoot,
+        support: w.support,
+        store: w.store,
+        keychainReady: () async => true,
+        clientFactory: loopbackClient,
+        runnerFactory: ({
+          required workingCopy,
+          required stateDir,
+          required connection,
+          required password,
+        }) => w.runner,
+      );
+
+  @override
+  Future<WebDavLogin> checkLogin({
+    required String address,
+    required String user,
+    required String password,
+  }) => throw StateError('unplanned');
 }

@@ -151,8 +151,9 @@ void main() {
       expect(w.enabled('canvas.pickOverlappingBox'), isFalse);
       expect(w.enabled(CanvasCommands.delete), isTrue);
       expect(find.text('Delete box'), findsOneWidget);
-      // Shortcuts are shown from the commands.
-      expect(find.text('Delete'), findsOneWidget);
+      // The list shows no shortcut hints (the menu bar does).
+      expect(find.byKey(const ValueKey('menu-shortcut')), findsNothing);
+      expect(find.text('Delete'), findsNothing);
     });
 
     testWidgets('on a box\'s grip and on a resize handle the target is the box', (t) async {

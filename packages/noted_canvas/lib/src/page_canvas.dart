@@ -23,6 +23,7 @@ import 'canvas_controller.dart';
 import 'canvas_tool.dart';
 import 'canvas_view.dart';
 import 'attachment_store.dart';
+import 'command_host.dart';
 import 'command_toolbar.dart';
 import 'find_bar.dart';
 import 'commands.dart';
@@ -79,6 +80,8 @@ class PageCanvas extends StatefulWidget {
     this.onCommandsChanged,
     this.sidePanel,
     this.overlayPanel,
+    this.header,
+    this.footer,
     this.contextMenuStyle = ContextMenuStyle.list,
   });
 
@@ -98,6 +101,15 @@ class PageCanvas extends StatefulWidget {
   /// Host only. A panel built with this canvas's live registry, shown right of
   /// the canvas and below the toolbar; null shows none.
   final Widget Function(BuildContext context, CommandRegistry registry)? sidePanel;
+
+  /// Host only. A band between the toolbar and the canvas viewport, in the
+  /// canvas column (left of [sidePanel]): the host's page title and notices.
+  /// Null shows none.
+  final Widget? header;
+
+  /// Host only. A strip under the canvas, in the canvas column (left of
+  /// [sidePanel]): the host's status. Null shows none.
+  final Widget? footer;
 
   /// Host only. A panel drawn over the canvas area (below the toolbar, so the
   /// toolbar stays uncovered), built with the canvas's live registry; null shows
@@ -1381,11 +1393,13 @@ class PageCanvasState extends State<PageCanvas>
       spec,
       origin,
       hold ? c : null,
+      area: ValueNotifier(area.localToGlobal(Offset.zero) & area.size),
       selectedAtOpen: c.selectedId,
       editingAtOpen: editing,
     );
     session.holdNow();
     _contextSession = session;
+    _watchContextRect(session);
     _contextClose.value = false;
     if (!_contextDisposed) _contextOpen.value = true;
     unawaited(
@@ -1393,12 +1407,40 @@ class PageCanvasState extends State<PageCanvas>
         context,
         spec: spec,
         anchor: global,
-        within: area.localToGlobal(Offset.zero) & area.size,
-        // A disallowed box always gets the list (Delete only).
-        radial: mouse && !target.off && widget.contextMenuStyle == ContextMenuStyle.radial,
+        within: session.area,
+        // A disallowed box and a read-only page always get the list.
+        radial: mouse && !target.off && !_readOnly && widget.contextMenuStyle == ContextMenuStyle.radial,
         closeSignal: _contextClose,
       ).then((entry) => _contextDone(session, entry)),
     );
+  }
+
+  /// Test hook: how many times the open-menu rect check has run.
+  @visibleForTesting
+  int contextRectChecks = 0;
+
+  /// While [s] is the open menu, runs after each frame: the menu is laid out
+  /// against the canvas rect as it is now (it moves with the toolbar wrapping, a
+  /// bar appearing, a panel), so it is told the new rect. It closes only when
+  /// the canvas is gone. Each run arms the next; nothing is armed once the menu
+  /// ends or the canvas is disposed.
+  void _watchContextRect(_ContextSession s) {
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !identical(_contextSession, s) || _contextClose.value) return;
+      contextRectChecks++;
+      _checkContextRect(s);
+      _watchContextRect(s);
+    });
+  }
+
+  void _checkContextRect(_ContextSession s) {
+    final area = _areaKey.currentContext?.findRenderObject();
+    if (area is! RenderBox || !area.hasSize) {
+      _contextClose.value = true;
+      return;
+    }
+    final rect = area.localToGlobal(Offset.zero) & area.size;
+    if (rect != s.area.value) s.area.value = rect;
   }
 
   void _contextDone(_ContextSession s, ContextEntry? entry) {
@@ -1455,7 +1497,7 @@ class PageCanvasState extends State<PageCanvas>
     if (!guard.holds(_c, _c.page.id, registry: _commands)) return;
     if (t.boxId != null && _targetChanged(t)) return;
     if (!entry.onTarget) {
-      await entry.command.run();
+      await _startWithInvocation(t, guard, entry.command.run);
       return;
     }
     // A box entry: select the target, look up the live command (it acts on the
@@ -1477,7 +1519,31 @@ class PageCanvasState extends State<PageCanvas>
     // Choosing an entry for another box ends the edit of the note (0092).
     final editing = _c.editingId;
     if (editing != null && editing != id) _focus.requestFocus();
-    await live.run();
+    await _startWithInvocation(t, guard, live.run);
+  }
+
+  CommandInvocation? _invocation;
+
+  @override
+  CommandInvocation? get invocation => _invocation;
+
+  /// Calls [run] with [invocation] set for the point the menu opened at. Only
+  /// the synchronous start of [run] sees it: it is cleared before the first
+  /// await of the command returns here, and after a throw.
+  Future<Object?> _startWithInvocation(
+    _ContextTarget t,
+    CanvasTargetGuard guard,
+    Future<Object?> Function() run,
+  ) {
+    _invocation = CommandInvocation(
+      t.world,
+      () => mounted && !_readOnly && guard.holds(_c, _c.page.id, registry: _commands),
+    );
+    try {
+      return run();
+    } finally {
+      _invocation = null;
+    }
   }
 
   // Whether the box entry [commandId] is on for the box [id] (its arrange
@@ -1498,6 +1564,23 @@ class PageCanvasState extends State<PageCanvas>
   /// Whether the focused thing is a text field of its own (a sticky label, an
   /// image caption, the title, the find bar): it keeps Shift+F10 and the Menu
   /// key.
+  final GlobalKey _headerKey = GlobalKey();
+
+  // Whether the focus is inside the host's header (its page title).
+  bool _headerOwnsFocus() {
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    if (ctx == null) return false;
+    var inside = false;
+    ctx.visitAncestorElements((e) {
+      if (e.widget.key == _headerKey) {
+        inside = true;
+        return false;
+      }
+      return true;
+    });
+    return inside;
+  }
+
   bool _fieldOwnsKey() {
     if (_findFocus.hasFocus) return true;
     final ctx = FocusManager.instance.primaryFocus?.context;
@@ -1580,10 +1663,16 @@ class PageCanvasState extends State<PageCanvas>
     }
     final command = _commands.resolve(
       event,
-      // The find bar's text field owns the keys like a box's editor does.
-      editing: _c.editingId != null || _findFocus.hasFocus,
+      // The find bar's text field, and any other (the host's page title), own
+      // the keys like a box's editor does.
+      editing: _c.editingId != null || _fieldOwnsKey(),
       readOnly: _readOnly,
     );
+    // Escape in the host's own header (its page title) is the field's;
+    // it never clears the selection. A box's own fields still reach the canvas.
+    if (command != null && command.id == CanvasCommands.escape && _c.editingId == null && _headerOwnsFocus()) {
+      return KeyEventResult.ignored;
+    }
     if (command == null) return KeyEventResult.ignored;
     command.run();
     return KeyEventResult.handled;
@@ -1617,12 +1706,12 @@ class PageCanvasState extends State<PageCanvas>
               fit: StackFit.expand,
               children: [
                 if (widget.sidePanel == null)
-                  _canvasArea(scheme)
+                  _canvasColumn(scheme)
                 else
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Expanded(child: _canvasArea(scheme)),
+                      Expanded(child: _canvasColumn(scheme)),
                       widget.sidePanel!(context, _commands),
                     ],
                   ),
@@ -1630,10 +1719,22 @@ class PageCanvasState extends State<PageCanvas>
               ],
             ),
           ),
-
-
         ],
       ),
+    );
+  }
+
+  // The canvas area between the host's header and footer, if it has them.
+  Widget _canvasColumn(ColorScheme scheme) {
+    final (header, footer) = (widget.header, widget.footer);
+    if (header == null && footer == null) return _canvasArea(scheme);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (header != null) KeyedSubtree(key: _headerKey, child: header),
+        Expanded(child: _canvasArea(scheme)),
+        ?footer,
+      ],
     );
   }
 
@@ -1712,6 +1813,17 @@ class PageCanvasState extends State<PageCanvas>
     return v.toWorld(box.globalToLocal(global));
   }
 
+  /// Whether the screen point [global] is over the canvas viewport (not the
+  /// toolbar, the host's header or footer, or a side panel), and no overlay
+  /// panel (with its scrim) is open.
+  bool viewportContains(Offset global) {
+    final box = _areaKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return false;
+    // The overlay panel and its scrim cover the whole canvas area.
+    if (widget.overlayPanel != null) return false;
+    return (Offset.zero & box.size).contains(box.globalToLocal(global));
+  }
+
   /// Creates boxes for files dropped at the screen point [global].
   Future<void> dropFiles(List<IncomingFile> files, Offset global) =>
       insertFiles(files, at: pageAtGlobal(global));
@@ -1719,8 +1831,7 @@ class PageCanvasState extends State<PageCanvas>
   Widget _canvasLayout(ColorScheme scheme) {
     return LayoutBuilder(
         builder: (context, constraints) {
-          final size = constraints.biggest;
-          final content = _contentRect();
+          final size = constraints.biggest;          final content = _contentRect();
           final area = _sessionArea;
           final g = CanvasGeometry.compute(
             content: area == null
@@ -2148,7 +2259,10 @@ class _ContextTarget {
 /// One open context menu: its target, entries, the focus to give back, and
 /// the editor focus hold it took (released once).
 class _ContextSession {
-  _ContextSession(this.target, this.spec, this.origin, this._holder, {this.selectedAtOpen, this.editingAtOpen});
+  _ContextSession(this.target, this.spec, this.origin, this._holder, {required this.area, this.selectedAtOpen, this.editingAtOpen});
+
+  /// The canvas rect (global), kept current while the menu is open.
+  final ValueNotifier<Rect> area;
 
   final _ContextTarget target;
   final ContextMenuSpec spec;
