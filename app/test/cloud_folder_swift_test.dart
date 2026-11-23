@@ -107,10 +107,21 @@ void main() {
       'resolveVersion',
       'startDownloading',
       'changed',
+      'failed',
     ]) {
       expect(text, contains('//   $m'), reason: m);
     }
-    expect(text, isNot(contains('removeOtherVersions(')));
+    final code = text
+        .split('\n')
+        .where((l) => !l.trim().startsWith('//'))
+        .join('\n');
+    expect(code, isNot(contains('removeOtherVersionsOfItem')));
+    // isResolved is assigned in one place only.
+    expect(RegExp(r'\.isResolved\s*=[^=]').allMatches(code), hasLength(1));
+    expect(
+      code.substring(code.indexOf('func resolveVersion')),
+      contains('.isResolved = true'),
+    );
   });
 
   for (final dir in ['ios', 'macos']) {
@@ -148,6 +159,19 @@ void main() {
           '<key>com.apple.security.files.bookmarks.app-scope</key>\n\t<true/>',
         ),
       );
+    });
+  }
+
+  for (final f in [
+    'ios/Runner/AppDelegate.swift',
+    'macos/Runner/MainFlutterWindow.swift',
+  ]) {
+    test('$f creates the CloudFolder', () {
+      final code = _read(f)
+          .split('\n')
+          .where((l) => !l.trim().startsWith('//'))
+          .join('\n');
+      expect(code, contains('CloudFolder(messenger:'));
     });
   }
 }

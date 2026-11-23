@@ -17,46 +17,64 @@
 //                                   started and kept (as after resolve).
 //                                   macOS answers "not implemented".
 //   bookmark({path})                -> bookmark (macOS: security-scoped).
-//   resolve({bookmark})             -> {path, stale}. Starts access and starts
-//                                   presenting the folder (events below).
-//                                   Dart renews a stale bookmark with
-//                                   bookmark(path) only if the path is the same.
+//   resolve({bookmark})             -> {path, stale, access}. path is the real path
+//                                   (symlinks resolved, standardized). Starts
+//                                   access and presenting (events below); access
+//                                   is what startAccessingSecurityScopedResource
+//                                   returned, and stopAccess stops it only when
+//                                   it was true. Dart renews a stale bookmark
+//                                   with bookmark(path) only if the path is the
+//                                   same.
 //   isUbiquitous({path})            -> bool (isUbiquitousItemKey; never stored).
 //   stopAccess({path})              -> null. Stops access and presenting.
 //   reset()                         -> null. Releases every coordination hold.
 //   coordinate({id, intents})       -> null at once. id is an int; intents is a
 //                                   list of {path, kind}, kind one of "write",
-//                                   "move", "delete". The answer is one event,
-//                                   go or pending (below). Dart then sends
+//                                   "move", "delete". The answer is one event:
+//                                   go, pending or failed (below). Dart then sends
 //                                   done({id}), or cancel({id}) after its
 //                                   timeout. A hold ends on done, cancel, reset
 //                                   or engine detach. A hold over 60 s is
 //                                   logged (NSLog) and kept.
 //   done({id}), cancel({id})        -> null. Unknown ids are ignored.
-//   versions({path})                -> [{id, tmpPath}], one per unresolved
-//                                   conflict version. tmpPath is an exclusively
-//                                   created `.<name>.noted-version-<16 hex>.tmp`
-//                                   in the target's folder; it holds a copy of
-//                                   the version made with a coordinated read of
-//                                   the version and a coordinated write of the
+//   versions({path})                -> one entry per unresolved conflict version:
+//                                   {id, tmpPath}, or {id, error} with no tmpPath
+//                                   for a version that could not be copied (or
+//                                   timed out after 60 s). tmpPath is an
+//                                   exclusively created
+//                                   `.<name>.noted-version-<16 hex>.tmp` in the
+//                                   target's folder; it holds a copy of the
+//                                   version made with a coordinated read of the
+//                                   version and a coordinated write of the
 //                                   folder. id is an opaque string.
-//   resolveVersion({path, id})      -> null. Sets isResolved on that version. A
-//                                   version that is no longer unresolved is
-//                                   already done, so this succeeds. Never
+//   resolveVersion({path, id})      -> bool: true if a matching unresolved
+//                                   version was found and its isResolved set
+//                                   (inside a coordinated write of the item);
+//                                   false if none matched. Never
 //                                   removeOtherVersions.
 //   startDownloading({path})        -> null (startDownloadingUbiquitousItem).
 //
 // Swift -> Dart (invokeMethod, always from the main thread, never awaited)
 //   go({id})                        the coordination block has started.
+//   failed({id})                    the coordination was cancelled or failed
+//                                   before its block started; nothing is held.
+//                                   (Also sent for an id Dart already
+//                                   cancelled; Dart ignores unknown ids.)
 //   pending({id, paths})            a move or delete intent names files that
 //                                   have unresolved versions (paths: those
 //                                   files). The block is released at once.
 //   changed({path, to?})            the presenter saw a change. `to` is set for
 //                                   presentedSubitem(at:didMoveTo:): path is the
-//                                   old path and to the new one.
+//                                   old path and to the new one. A call that
+//                                   spans two roots is made with the presenter of
+//                                   the longest root matching its first path, so
+//                                   the other root may echo changed events for
+//                                   Dart's own writes; Dart ignores its echoes.
 //
-// Dart waits up to 60 s for go or pending; a coordination that fails to start
-// sends neither, and Dart's timeout reports it as busy.
+// Holds are released on cancel, done, reset, and when the app terminates or the
+// CloudFolder is deallocated (there is no FlutterPlugin detach hook here).
+// Root paths are normalized (resolvingSymlinksInPath, standardizedFileURL) on
+// both sides of every lookup.
 
 import Foundation
 
@@ -135,7 +153,7 @@ final class CloudFolder: NSObject {
   private let channel: FlutterMethodChannel
   private let lock = NSLock()
   private var holds: [Int: CoordinationHold] = [:]
-  private var roots: [String: (url: URL, presenter: FolderPresenter)] = [:]
+  private var roots: [String: (url: URL, presenter: FolderPresenter, started: Bool)] = [:]
   private var terminateObserver: NSObjectProtocol?
   #if os(iOS)
   private var pickerDelegate: FolderPickerDelegate?
@@ -166,7 +184,7 @@ final class CloudFolder: NSObject {
     detach()
   }
 
-  /// Engine detach or app termination: no Dart code is writing now, so every
+  /// App termination or deallocation: no Dart code is writing now, so every
   /// hold is released. Presenters are removed.
   func detach() {
     channel.setMethodCallHandler(nil)
@@ -241,8 +259,10 @@ final class CloudFolder: NSObject {
       guard let path = args["path"] as? String, let id = args["id"] as? String else {
         return bad(result, "path, id")
       }
-      resolveVersion(path: path, id: id)
-      result(nil)
+      DispatchQueue.global(qos: .userInitiated).async {
+        let ok = self.resolveVersion(path: path, id: id)
+        DispatchQueue.main.async { result(ok) }
+      }
     case "startDownloading":
       guard let path = args["path"] as? String else { return bad(result, "path") }
       do {
@@ -285,18 +305,25 @@ final class CloudFolder: NSObject {
   }
 
   /// Starts access to `url` and presents it. The first call for a path wins.
-  private func present(_ url: URL) {
+  @discardableResult
+  private func present(_ url: URL) -> Bool {
+    let key = CloudFolder.normalize(url.path)
     lock.lock()
     defer { lock.unlock() }
-    if roots[url.path] != nil { return }
-    _ = url.startAccessingSecurityScopedResource()
+    if let existing = roots[key] { return existing.started }
+    let started = url.startAccessingSecurityScopedResource()
     let presenter = FolderPresenter(url: url) { [weak self] path, to in
       var args: [String: Any] = ["path": path]
       if let to = to { args["to"] = to }
       self?.send("changed", args)
     }
     NSFileCoordinator.addFilePresenter(presenter)
-    roots[url.path] = (url, presenter)
+    roots[key] = (url, presenter, started)
+    return started
+  }
+
+  private static func normalize(_ path: String) -> String {
+    return URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
   }
 
   private func resolve(_ b64: String) throws -> [String: Any] {
@@ -313,17 +340,17 @@ final class CloudFolder: NSObject {
     let url = try URL(
       resolvingBookmarkData: data, options: options, relativeTo: nil,
       bookmarkDataIsStale: &stale)
-    present(url)
-    return ["path": url.path, "stale": stale]
+    let access = present(url)
+    return ["path": CloudFolder.normalize(url.path), "stale": stale, "access": access]
   }
 
   private func stopAccess(_ path: String) {
     lock.lock()
-    let root = roots.removeValue(forKey: path)
+    let root = roots.removeValue(forKey: CloudFolder.normalize(path))
     lock.unlock()
     guard let root = root else { return }
     NSFileCoordinator.removeFilePresenter(root.presenter)
-    root.url.stopAccessingSecurityScopedResource()
+    if root.started { root.url.stopAccessingSecurityScopedResource() }
   }
 
   #if os(iOS)
@@ -352,7 +379,7 @@ final class CloudFolder: NSObject {
       do {
         let bookmark = try self.makeBookmark(url)
         self.present(url)  // takes its own access before ours ends
-        result(["path": url.path, "bookmark": bookmark])
+        result(["path": CloudFolder.normalize(url.path), "bookmark": bookmark])
       } catch {
         result(FlutterError(code: "bookmark", message: error.localizedDescription, details: nil))
       }
@@ -388,6 +415,7 @@ final class CloudFolder: NSObject {
   private func releaseAllHolds() {
     lock.lock()
     let all = Array(holds.values)
+    holds.removeAll()
     lock.unlock()
     for h in all {
       h.coordinator?.cancel()
@@ -398,12 +426,14 @@ final class CloudFolder: NSObject {
   /// The presenter of the registered root that contains `path`, so our own
   /// writes don't call our presenter back.
   private func presenter(containing path: String) -> FolderPresenter? {
+    let path = CloudFolder.normalize(path)
     lock.lock()
     defer { lock.unlock() }
-    for (root, entry) in roots where path == root || path.hasPrefix(root + "/") {
-      return entry.presenter
+    var best: String?
+    for root in roots.keys where path == root || path.hasPrefix(root + "/") {
+      if best == nil || root.count > best!.count { best = root }
     }
-    return nil
+    return best.flatMap { roots[$0]?.presenter }
   }
 
   private func coordinate(id: Int, intents: [(path: String, kind: String)]) {
@@ -439,10 +469,13 @@ final class CloudFolder: NSObject {
       guard let self = self else { return }
       defer {
         self.lock.lock()
-        self.holds.removeValue(forKey: id)
+        if self.holds[id] === hold { self.holds.removeValue(forKey: id) }
         self.lock.unlock()
       }
-      if error != nil { return }  // cancelled or failed: Dart's timeout reports it
+      if error != nil {  // cancelled or failed before the block started
+        self.send("failed", ["id": id])
+        return
+      }
 
       // R5.8: a move or delete never starts on a file with unresolved versions.
       var pending: [String] = []
@@ -493,17 +526,23 @@ final class CloudFolder: NSObject {
     guard let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) else { return [] }
     var out: [[String: Any]] = []
     for version in versions {
-      guard let id = versionId(version),
-        let tmp = copyVersion(version, of: url)
-      else { continue }
-      out.append(["id": id, "tmpPath": tmp])
+      guard let id = versionId(version) else {
+        out.append(["id": "", "error": "The version has no identifier."])
+        continue
+      }
+      let copy = copyVersion(version, of: url)
+      if let tmp = copy.path {
+        out.append(["id": id, "tmpPath": tmp])
+      } else {
+        out.append(["id": id, "error": copy.error ?? "The copy failed."])
+      }
     }
     return out
   }
 
   /// Copies one version into an exclusively created temp beside `target`, with
   /// a coordinated read of the version and a coordinated write of the folder.
-  private func copyVersion(_ version: NSFileVersion, of target: URL) -> String? {
+  private func copyVersion(_ version: NSFileVersion, of target: URL) -> (path: String?, error: String?) {
     let folder = target.deletingLastPathComponent()
     let name = target.lastPathComponent
     let coordinator = NSFileCoordinator(filePresenter: presenter(containing: target.path))
@@ -511,14 +550,31 @@ final class CloudFolder: NSObject {
     let write = NSFileAccessIntent.writingIntent(with: folder, options: [])
     let queue = OperationQueue()
     let done = DispatchSemaphore(value: 0)
+    let box = NSLock()
+    var abandoned = false
     var tmpPath: String?
     coordinator.coordinate(with: [read, write], queue: queue) { error in
       defer { done.signal() }
       if error != nil { return }
-      tmpPath = CloudFolder.exclusiveCopy(from: read.url, toFolder: write.url, name: name)
+      box.lock()
+      let skip = abandoned
+      box.unlock()
+      if skip { return }
+      let made = CloudFolder.exclusiveCopy(from: read.url, toFolder: write.url, name: name)
+      box.lock()
+      tmpPath = made
+      box.unlock()
     }
-    done.wait()
-    return tmpPath
+    if done.wait(timeout: .now() + 60) == .timedOut {
+      box.lock()
+      abandoned = true
+      box.unlock()
+      coordinator.cancel()
+      return (nil, "Timed out waiting for coordination.")
+    }
+    box.lock()
+    defer { box.unlock() }
+    return (tmpPath, tmpPath == nil ? "The copy failed." : nil)
   }
 
   private static func exclusiveCopy(from source: URL, toFolder folder: URL, name: String) -> String? {
@@ -546,16 +602,26 @@ final class CloudFolder: NSObject {
     return nil
   }
 
-  private func resolveVersion(path: String, id: String) {
+  /// Runs on a background queue, inside a coordinated write of the item.
+  private func resolveVersion(path: String, id: String) -> Bool {
     let url = URL(fileURLWithPath: path)
-    guard let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) else { return }
+    let coordinator = NSFileCoordinator(filePresenter: presenter(containing: path))
     let wanted = decodeIdentifier(id)
-    for version in versions {
-      var same = versionId(version) == id
-      if !same, let wanted = wanted {
-        same = (version.persistentIdentifier as AnyObject).isEqual(wanted)
+    var found = false
+    var coordError: NSError?
+    coordinator.coordinate(writingItemAt: url, options: [], error: &coordError) { itemURL in
+      guard let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: itemURL) else { return }
+      for version in versions {
+        var same = self.versionId(version) == id
+        if !same, let wanted = wanted {
+          same = (version.persistentIdentifier as AnyObject).isEqual(wanted)
+        }
+        if same {
+          version.isResolved = true
+          found = true
+        }
       }
-      if same { version.isResolved = true }
     }
+    return found
   }
 }
