@@ -1524,9 +1524,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // nothing typed meanwhile can fall between the save and recovery.
   int _leaving = 0;
   bool _disposed = false;
-  // Keys of files [_checkFile] found different from what this app last wrote
-  // or read (or gone); [checkFile] takes its own file's key after its check.
-  final Set<String> _foreignKeys = {};
   Timer? _folderTimer;
   // The default folder disappeared while the app was running.
   bool _defaultGone = false;
@@ -9074,12 +9071,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return found;
   }
 
-  // A change of a page's file by someone else takes its parked marks out of
-  // parked, once per mark, for one more round. [marks] were parked when the
-  // change was announced: this app's own write (the redo's, just before it
-  // parked) is no change.
-  void _unparkConsumed(List<_ConsumedCopy> marks) {
-    for (final m in marks) {
+  // A check that finds the file at [path] gone or different from what this app
+  // last wrote or read takes the parked marks of its page out of parked, once
+  // per mark, for one more round. The redo's own write is known before it
+  // parks, so it is no change; a difference seen after is one.
+  void _unparkConsumed(String path) {
+    for (final m in _parkedAt(path)) {
       if (!m.parked || m.unparked || !identical(_consumedCopies[m.gen], m)) continue;
       m.parked = false;
       m.unparked = true;
@@ -10599,14 +10596,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// file was deleted the page stays as it is and the next save writes it
   /// again.
   Future<void> checkFile(String path) {
-    final parked = _parkedAt(path);
     final job = _checking.then((_) async {
       await _chain.idle; // let writes in flight land first
       if (_disposed) return;
-      final key = _key(path);
-      _foreignKeys.remove(key);
       await _checkFile(path);
-      if (_foreignKeys.remove(key) && parked.isNotEmpty) _unparkConsumed(parked);
     }).catchError((Object e) {
       debugPrint('Checking $path failed: $e');
     });
@@ -11235,7 +11228,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final cp = _current;
         if (cp != null && cp.page.id == openId) _pageChanged(cp.page);
       }
-      _foreignKeys.add(key);
+      _unparkConsumed(path);
       _fileGone(loc, key, path);
       return false;
     }
@@ -11249,7 +11242,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     if (_known[key] == text && !wasBlocked) return false;
-    _foreignKeys.add(key);
+    _unparkConsumed(path);
     final previous = _known[key];
     _known[key] = text;
     final NotedPage page;

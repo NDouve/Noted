@@ -1801,12 +1801,26 @@ void main() {
       final event = nb.checkFile(pathOf(id));
       await recheck(); // the third round parks the mark while the check waits
       await until(() => nb.consumedCopiesForTest.values.any((p) => p), 'the mark to be parked');
-      revert();
+      // The file is as the redo that parked wrote it: nothing changed after the park.
       gate.complete();
       await event;
       await recheck();
       await Future<void>.delayed(const Duration(milliseconds: 500));
-      expect(writes, 3, reason: 'the event is older than the park');
+      expect(writes, 3, reason: 'no change after the park');
+    }, timeout: const Timeout(Duration(minutes: 1)));
+
+    test('(e) sync replaces the file and a direct check sees it first: the later event does not lose the round', () async {
+      final writes = await park();
+      revert(); // sync's replacement
+      await nb.checkFileInChainForTest(pathOf(id)); // a save's check sees it first
+      await nb.checkFile(pathOf(id)); // the watcher's job reads a match with what is known
+      await recheck();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(writes(), 4);
+      await foreign(pathOf(id));
+      await recheck();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(writes(), 4, reason: 'once per mark');
     }, timeout: const Timeout(Duration(minutes: 1)));
 
     test('(e) moved to another folder while parked: the old folder\'s file does not unpark, the new one\'s does', () async {
