@@ -353,27 +353,18 @@ void main() {
     });
 
     test('a move in progress is not failed by a landing merge: changed, and the move completes', () async {
-      Notebook.legacyPageCopyForTest = true; // the copy-and-delete behaviour, until the copy path replaces it
-      addTearDown(() => Notebook.legacyPageCopyForTest = false);
       await start();
       final folder = await Directory.systemTemp.createTemp('noted_merge_remote_mv');
       extra.add(folder);
-      late HookStore dest;
-      nb.dispose();
-      nb = Notebook(
-        store = HookStore(dir),
-        modules,
-        saveDelay: const Duration(hours: 1),
-        storeFactory: (d) => d.path == dir.path ? PageStore(d) : (dest = HookStore(d)),
-      );
-      await nb.load();
       final section = await nb.addBinder(folder.path);
       final id = nb.currentId!;
       await nb.createPage();
       await nb.flush();
       final base = readPage(textOf(id));
       final stall = Completer<void>();
-      dest.stallSaveNew = stall;
+      nb.syncHook = (point, path) async {
+        if (point == 'move-before-rename') await stall.future;
+      };
       final move = nb.moveToLocation(id, binderPath: section.path);
       await pump();
       final before = textOf(id);

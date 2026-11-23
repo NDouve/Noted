@@ -156,9 +156,9 @@ void main() {
       expect(has(extra, x), isTrue);
     });
 
-    test('a failed verification keeps the sources and removes the copies', () async {
-      Notebook.legacyPageCopyForTest = true; // the copy-and-delete behaviour, until the copy path replaces it
-      addTearDown(() => Notebook.legacyPageCopyForTest = false);
+    test('a copy that fails verification keeps the sources and removes the copies', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       // Writes to the extra folder: creating x is #1, then the move's two copies.
       final nb = make(factory: (d) => CorruptingStore(d, corruptAt: 3));
       await nb.load();

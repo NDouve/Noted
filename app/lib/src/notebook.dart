@@ -231,6 +231,70 @@ class PagesNotRestoredException extends NotebookException {
   final DeletedPages deleted;
 }
 
+/// A page tree that a move copied instead of renaming (another drive or
+/// cloud), with the originals it kept. [Notebook.deleteOriginals] deletes
+/// them, each only while it is unchanged and its copy still holds what the
+/// move put there. Held in memory only.
+class CopiedMove {
+  CopiedMove._(this.fromLoc, this.toLoc);
+
+  final String fromLoc;
+  final String toLoc;
+  final List<_CopiedPage> _pages = [];
+  String _message = '';
+  bool _running = false;
+
+  /// How many pages still have an original to delete.
+  int get pending => _pages.where((p) => !p.finished).length;
+
+  // What each copy should still hold: D's page text once the placement is
+  // written (the root is the only page that is placed).
+  Future<void> _recordCopyText(PageStore to) async {
+    final root = _pages.firstOrNull;
+    if (root == null) return;
+    try {
+      root.copyText = await to.readText(root.id);
+    } on Object {
+      // The text the copy was published with stays: a changed copy keeps the original.
+    }
+  }
+}
+
+class _CopiedPage {
+  _CopiedPage(this.id, this.title, this.sourcePath, this.sourceText, this.copyText, this.files);
+
+  final String id;
+  final String title;
+  final String sourcePath;
+
+  // The text of the original as it was copied.
+  final String sourceText;
+
+  // What the copy should still hold.
+  String copyText;
+  final List<_CopiedFile> files;
+  bool pageGone = false;
+
+  bool get finished => pageGone && files.every((f) => f.gone);
+}
+
+class _CopiedFile {
+  _CopiedFile(this.source, this.target, this.identity);
+
+  final String source;
+  final String target;
+  final ContentIdentity identity;
+  bool gone = false;
+}
+
+/// A move that copied: the pages are at the target, their originals are kept
+/// until [Notebook.deleteOriginals] runs for [move].
+class OriginalsKeptException extends NotebookException {
+  const OriginalsKeptException(super.message, this.move) : super(needsAction: true);
+
+  final CopiedMove move;
+}
+
 /// Leaving a page was cancelled by the user: nothing was changed.
 class LeaveCancelled extends NotebookException {
   const LeaveCancelled() : super('Nothing was changed.');
@@ -3495,14 +3559,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return parts.join(' Also, ');
   }
 
-  /// Makes [_moveDir] skip the rename, as a move across drives does.
+  /// Makes a move skip the rename, as a move across drives does: a page move
+  /// copies and keeps the originals, and [_moveDir] copies.
   @visibleForTesting
   static bool forceCopyMoveForTest = false;
 
-  /// Makes a page move copy and delete, as it did before moves were renames
-  /// (the tests of that behaviour; the copy path replaces it).
+  /// Pages whose rename answers "another drive or cloud" (`cannotRename`) in a
+  /// move, as if their folders were on different volumes.
   @visibleForTesting
-  static bool legacyPageCopyForTest = false;
+  static Set<String> cannotRenamePagesForTest = {};
 
   static Future<void> _removeDir(Directory d) async {
     try {
@@ -4731,17 +4796,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  /// Whether the file of [page] in [store] exists and holds exactly the page
-  /// as it was copied (read back). Any failure to read counts as not intact.
-  Future<bool> _sourceIntact(PageStore store, NotedPage page, [String? copiedText]) async {
-    try {
-      final now = await store.readText(page.id);
-      return now == writePage(page) || now == copiedText;
-    } on Object {
-      return false;
-    }
-  }
-
   // A move by rename ------------------------------------------------------------
 
   /// How long each lock of a move's pair is waited for before the pair is let
@@ -4805,7 +4859,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // `moveExclusive`, `busy` tried three times. A link, a name that is taken and
   // a file that won't move stay. Emptied folders are removed (never one that
   // holds anything). Returns the paths left at [from].
-  Future<List<String>> _moveFilesOneByOne(Directory from, Directory to) async {
+  Future<List<String>> _moveFilesOneByOne(Directory from, Directory to, {List<DamagedKept>? kept}) async {
     final left = <String>[];
     Future<void> walk(Directory s, Directory d) async {
       final List<FileSystemEntity> entries;
@@ -4831,13 +4885,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             try {
               d.createSync(recursive: true);
               for (var i = 0; i < 3; i++) {
-                r = moveExclusive(e.path, target);
+                r = await moveExclusive(e.path, target);
                 if (r != MoveOutcome.busy) break;
                 await Future<void>.delayed(const Duration(milliseconds: 50));
               }
             } on FileSystemException {
               r = MoveOutcome.busy;
             }
+            if (r == MoveOutcome.targetExists && kept != null) r = await _takenHashName(e.path, target, kept);
             if (r != MoveOutcome.moved) left.add(e.path);
           default:
             left.add(e.path); // a link or junction is never followed
@@ -4854,10 +4909,56 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return left;
   }
 
+  // A file of the source folder whose hash name is taken at the target (2c). The
+  // source's file is moved in only if it holds its name's hash and the target's
+  // file is damaged: that one is renamed to `<name>.damaged-<12 hex>` (never
+  // deleted), hashed there, and the source's file takes the freed name. A
+  // placeholder is never hashed. Anything else leaves both files and answers
+  // `targetExists`. [kept] gets what was set aside.
+  Future<MoveOutcome> _takenHashName(String src, String dst, List<DamagedKept> kept) async {
+    try {
+      final name = dst.split(RegExp(r'[\\/]')).last;
+      final hash = attachmentNameHash(name);
+      if (hash == null) return MoveOutcome.targetExists;
+      if (placeholderState(src) == PlaceholderState.placeholder || placeholderState(dst) == PlaceholderState.placeholder) {
+        return MoveOutcome.targetExists;
+      }
+      if (FileSystemEntity.typeSync(dst, followLinks: false) != FileSystemEntityType.file) return MoveOutcome.targetExists;
+      final srcLength = File(src).lengthSync();
+      final mine = await checkAttachmentFile(File(src), hash, 0);
+      if (mine.state != AttachmentState.ok) return MoveOutcome.targetExists;
+      final theirs = await checkAttachmentFile(File(dst), hash, 0);
+      final found = theirs.found;
+      if (theirs.state != AttachmentState.damaged || found == null) return MoveOutcome.targetExists;
+      final folder = File(dst).parent.path;
+      final aside = damagedCopyName(name, found.sha256);
+      final asidePath = '$folder${Platform.pathSeparator}$aside';
+      if (await moveExclusive(dst, asidePath) != MoveOutcome.moved) return MoveOutcome.targetExists;
+      // What was set aside is what was checked; if not, it goes back when it can.
+      if (await ContentIdentity.ofFile(asidePath) != found) {
+        await moveExclusive(asidePath, dst);
+        return MoveOutcome.targetExists;
+      }
+      final r = await moveExclusive(src, dst);
+      final k = DamagedKept(folder: folder, name: name, aside: aside, incomplete: found.length < srcLength);
+      k.replaced = r == MoveOutcome.moved;
+      kept.add(k);
+      return r;
+    } on FileSystemException {
+      return MoveOutcome.targetExists;
+    }
+  }
+
   // Moves page [p]'s images and files folder from [fromLoc] to [toLoc]: the
   // folder is renamed, or, when that isn't `moved`, moved file by file. Returns
   // the paths left behind.
-  Future<List<String>> _moveAssetsByRename(String p, String fromLoc, String toLoc, {bool hook = false}) async {
+  Future<List<String>> _moveAssetsByRename(
+    String p,
+    String fromLoc,
+    String toLoc, {
+    bool hook = false,
+    List<DamagedKept>? kept,
+  }) async {
     final src = _assetsDir(fromLoc, p), dst = _assetsDir(toLoc, p);
     if (FileSystemEntity.typeSync(src.path, followLinks: false) == FileSystemEntityType.notFound) return const [];
     if (hook) await syncHook?.call('move-before-assets', src.path);
@@ -4865,7 +4966,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     var r = MoveOutcome.busy;
     try {
       for (var i = 0; i < 3; i++) {
-        r = moveExclusive(src.path, dst.path);
+        r = await moveExclusive(src.path, dst.path);
         if (r != MoveOutcome.busy) break;
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
@@ -4873,16 +4974,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       r = MoveOutcome.busy;
     }
     if (r == MoveOutcome.moved) return const [];
-    return _moveFilesOneByOne(src, dst);
+    return _moveFilesOneByOne(src, dst, kept: kept);
   }
 
   // Gives page [p]'s file in [st] the path [to] (a rename that never replaces),
   // and the store its new path. False when that name is taken or won't move.
-  bool _renameStoreFile(PageStore st, String p, String to) {
+  Future<bool> _renameStoreFile(PageStore st, String p, String to) async {
     final cur = st.pathFor(p);
     if (_key(cur) == _key(to)) return true;
     try {
-      if (moveExclusive(cur, to) != MoveOutcome.moved) return false;
+      if (await moveExclusive(cur, to) != MoveOutcome.moved) return false;
     } on FileSystemException {
       return false;
     }
@@ -4916,13 +5017,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       origNames[p] = _folderName(oldPath);
     } else if (origNames[p] case final want? when _folderName(oldPath) != want) {
       // A chosen file goes back under its own name.
-      if (!_renameStoreFile(fromStore, p, '${fromStore.directory.path}$sep$want')) return _RenameOne.taken;
+      if (!await _renameStoreFile(fromStore, p, '${fromStore.directory.path}$sep$want')) return _RenameOne.taken;
     }
     if (forward) await syncHook?.call('move-before-rename', fromStore.directory.path);
+    if (forward && cannotRenamePagesForTest.contains(p)) return _RenameOne.cannot;
     var r = MoveOutcome.busy;
     try {
       for (var i = 0; i < 3; i++) {
-        r = fromStore.moveTo(p, toStore);
+        r = await fromStore.moveTo(p, toStore);
         if (r != MoveOutcome.busy) break;
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
@@ -4942,7 +5044,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (forward) {
       // A chosen file arrives as the page's own file name when that is free (0149).
       final own = '${toStore.directory.path}$sep$p${PageStore.extension}';
-      if (_key(toStore.pathFor(p)) != _key(own) && _renameStoreFile(toStore, p, own)) toStore.unadopt(p);
+      if (_key(toStore.pathFor(p)) != _key(own) && await _renameStoreFile(toStore, p, own)) toStore.unadopt(p);
       atDest.add(p);
     } else {
       atDest.remove(p);
@@ -4970,7 +5072,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _emitDeleted(oldPath);
     if (match && knownText != null) _emitPublished(newPath, _identityOf(() => knownText), () => knownText);
     // 2c: its images and files.
-    final left = await _moveAssetsByRename(p, fromLoc, toLoc, hook: forward);
+    final damaged = <DamagedKept>[];
+    final left = await _moveAssetsByRename(p, fromLoc, toLoc, hook: forward, kept: damaged);
+    if (damaged.isNotEmpty) {
+      final all = AttachmentCopy()..damagedKept.addAll(damaged);
+      notes.addAll(_copyNotices(all, _placeName(toLoc), _placeName(fromLoc)));
+    }
     if (left.isNotEmpty) {
       notes.add(
         '${left.length == 1 ? 'One file' : '${left.length} files'} of "${_titleOrUntitled(_metas[p]?.title ?? '')}" '
@@ -5135,12 +5242,345 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (next != null) _metas[root] = next.meta;
   }
 
+  // The copy path (rule 4): [ids] (the page, then its subpages) are copied to
+  // [toLoc], each published exclusively and read back, with its images and
+  // files. Nothing at [fromLoc] is changed or deleted: the originals stay,
+  // listed as duplicates, until [deleteOriginals]. A failure removes only what
+  // this copy published, and throws a NotebookException; the sources are then
+  // as they were.
+  Future<CopiedMove> _copyAcross(
+    List<String> ids, {
+    required String fromLoc,
+    required String toLoc,
+    required PageStore fromStore,
+    required PageStore toStore,
+    required String? parentId,
+    required int rootOrder,
+    required List<_Rekey> rekeys,
+  }) async {
+    String nameOf(String p) => '"${_titleOrUntitled(_metas[p]?.title ?? '')}"';
+    // Every page is read before anything is written: one that can't be read (a
+    // file that isn't downloaded) refuses the copy.
+    final copiedText = <String>[];
+    final originals = <NotedPage>[];
+    final sourcePaths = <String>[];
+    for (final p in ids) {
+      try {
+        final before = await fromStore.readText(p);
+        if (readPage(before).id != p) {
+          throw const NotebookException('This page could not be moved: it holds a different page.');
+        }
+        final page = await fromStore.load(p);
+        if (await fromStore.readText(p) != before) {
+          throw const NotebookException('A page changed while it was being read, so nothing was moved.');
+        }
+        copiedText.add(before);
+        originals.add(page);
+        sourcePaths.add(fromStore.pathFor(p));
+      } on FileSystemException catch (e) {
+        throw NotebookException(
+          '${nameOf(p)} is not downloaded yet, so it can not be copied to ${_placeName(toLoc)}. '
+          'Open it once to download it, then try again.${_osReason(e)}',
+        );
+      }
+    }
+    // Only the moved page's parent and order change; its subpages keep theirs.
+    final moved = [
+      for (var i = 0; i < originals.length; i++)
+        i == 0
+            ? originals[i].withMeta(originals[i].meta.withPlacement(parentId: parentId, order: rootOrder))
+            : originals[i],
+    ];
+    // Only what this copy published: a page file it created (never one that was
+    // already there) and the attachment files and folders it created.
+    final written = <String>[];
+    final writtenText = <String, String>{};
+    final copies = <String, AttachmentCopy>{};
+    final keptCopies = <String>[];
+    // Removes only what this copy published, and only while it still holds
+    // exactly that: a file that changed since is kept and reported.
+    Future<void> removeCopies() async {
+      for (final w in written) {
+        try {
+          final r = await _deleteIfUnchanged(toLoc, w, writtenText[w]!);
+          if (!r.deleted && r.outcome != DeleteOutcome.absent) keptCopies.add('page file of $w');
+        } on Object catch (e) {
+          debugPrint('Removing copy of page $w failed: $e');
+          keptCopies.add('page file of $w');
+        }
+        if (!await _mayRemoveIn(toLoc) || !await removeCreated(copies[w])) keptCopies.add('attachments of $w');
+      }
+    }
+
+    String keptFilesNote() {
+      final all = AttachmentCopy();
+      for (final c in copies.values) {
+        all.damagedKept.addAll(c.damagedKept);
+        all.stillChanging.addAll(c.stillChanging);
+      }
+      final lines = _copyNotices(all, _placeName(toLoc), _placeName(fromLoc));
+      return lines.isEmpty ? '' : ' ${lines.join(' ')}';
+    }
+
+    NotebookException withKept(NotebookException e) {
+      final note =
+          (keptCopies.isEmpty
+              ? ''
+              : ' Some of the copies made for the move in ${_placeName(toLoc)} were kept, because they '
+                    'changed after they were made or could not be checked; you can delete what you do '
+                    'not need.') +
+          keptFilesNote();
+      return note.isEmpty ? e : NotebookException('${e.message}$note', needsAction: true);
+    }
+
+    final identities = <String, ContentIdentity>{}; // by copy path
+    try {
+      for (final p in moved) {
+        if (!await _writeNew(toLoc, p)) {
+          throw NotebookException(
+            '${_placeName(toLoc)} already has a file for this page, so it was not moved. The '
+            'existing file was left as it is, and the page stays where it was. Move or delete '
+            'the file in ${_placeName(toLoc)} if you want to move the page there.',
+            needsAction: true,
+          );
+        }
+        written.add(p.id);
+        writtenText[p.id] = writePage(p);
+        if (await toStore.readText(p.id) != writePage(p)) {
+          throw const NotebookException('A page was not copied correctly, so nothing was moved.');
+        }
+        // Its images and files go with it, unless the target was held since its
+        // page file was written (checked with no await before the copy).
+        if (_isLocked(toLoc)) throw NotebookException(_lockedMessage(toLoc));
+        final c = copies[p.id] = AttachmentCopy();
+        await _copyDir(
+          _assetsDir(fromLoc, p.id),
+          _assetsDir(toLoc, p.id),
+          into: c,
+          // A held source folder is only read: its leftovers are not swept.
+          sweepSource: !_isLocked(fromLoc),
+        );
+        for (final f in c.verified) {
+          identities[f.target.path] = await ContentIdentity.ofFile(f.target.path);
+        }
+      }
+      // Kept changes go with their pages (the new key is written and read back).
+      rekeys.addAll(await _rekeyBegin(ids, fromStore, toStore, fromLoc, toLoc));
+    } on Object catch (e) {
+      await removeCopies();
+      if (e is NotebookException) throw withKept(e);
+      debugPrint('Copying the page to its new place failed: $e');
+      throw withKept(NotebookException('Could not move the page.${_osReason(e)}'));
+    }
+    await syncHook?.call('move-rekeyed', toStore.directory.path);
+
+    // The copies are the pages now; each original stays, listed as a duplicate.
+    final result = CopiedMove._(fromLoc, toLoc);
+    for (var i = 0; i < ids.length; i++) {
+      final p = ids[i];
+      final oldKey = _key(sourcePaths[i]);
+      _known.remove(oldKey);
+      _pathId.remove(oldKey);
+      _metas[p] = moved[i].meta;
+      _loc[p] = toLoc;
+      _knownUnreadable(fromLoc, oldKey, sourcePaths[i], 'duplicate page id $p');
+      result._pages.add(
+        _CopiedPage(
+          p,
+          _titleOrUntitled(originals[i].meta.title),
+          sourcePaths[i],
+          copiedText[i],
+          writtenText[p]!,
+          [
+            for (final f in copies[p]?.verified ?? const <CopiedFile>[])
+              _CopiedFile(f.source.path, f.target.path, identities[f.target.path]!),
+          ],
+        ),
+      );
+    }
+    final all = [for (final c in copies.values) c];
+    final differing = [for (final c in all) ...c.differing];
+    final keptAside = [for (final c in all) ...c.keptAside];
+    final damagedKept = [for (final c in all) ...c.damagedKept];
+    final stillChanging = [for (final c in all) ...c.stillChanging];
+    final attachmentsNote = differing.isEmpty && keptAside.isEmpty && damagedKept.isEmpty && stillChanging.isEmpty
+        ? ''
+        : ' ${_attachmentsNote(differing, keptAside, _placeName(toLoc), _placeName(fromLoc), damagedKept: damagedKept, stillChanging: stillChanging)}';
+    final n = ids.length;
+    result._message =
+        '${n == 1 ? 'The page was' : '$n pages were'} copied to ${_placeName(toLoc)}, not moved: it is on another '
+        'drive or in another cloud, where a file can not be renamed. The original${n == 1 ? '' : 's'} stay in '
+        '${_placeName(fromLoc)} until you choose Delete the original.$attachmentsNote';
+    return result;
+  }
+
+  /// Deletes the originals a copy-path move kept (B2): page by page, the page
+  /// file and then its images and files, each only while it is unchanged and
+  /// its copy still holds what the move put there, checked at the moment of
+  /// deleting. Throws a [NotebookException] saying what was kept; returns what
+  /// was done when everything went.
+  Future<String> deleteOriginals(CopiedMove move) => _asUser(() => _deleteOriginals(move));
+
+  Future<String> _deleteOriginals(CopiedMove move) async {
+    if (move._running) throw const NotebookException('The originals are already being deleted.');
+    move._running = true;
+    try {
+      final from = _placeName(move.fromLoc), to = _placeName(move.toLoc);
+      final Directory fromDir, toDir;
+      try {
+        fromDir = _storeOf(move.fromLoc).directory;
+        toDir = _storeOf(move.toLoc).directory;
+      } on NotebookException catch (e) {
+        throw NotebookException('The originals were kept. ${e.message}', needsAction: true);
+      }
+      final pending = [
+        for (final p in move._pages)
+          if (!p.finished) p,
+      ];
+      if (pending.isEmpty) return 'The originals were already deleted.';
+      final kept = <String>[];
+      var deleted = 0;
+      for (var i = 0; i < pending.length; i++) {
+        try {
+          final why = await _underPair(fromDir, toDir, () => _deleteOneOriginal(move, pending[i]));
+          if (why == null) {
+            deleted++;
+          } else {
+            kept.add(why);
+          }
+        } on _LockTimeout catch (e) {
+          final left = pending.length - i;
+          final folder = FolderLocks.keyOf(Directory(e.path)) == FolderLocks.keyOf(toDir) ? to : from;
+          kept.add('$folder is busy, so $left original${left == 1 ? ' was' : 's were'} kept.');
+          break;
+        } on NotebookException catch (e) {
+          kept.add(e.message);
+        }
+      }
+      if (kept.isEmpty) return deleted == 1 ? 'The original was deleted.' : 'The originals were deleted.';
+      throw NotebookException(
+        '${deleted == 0 ? '' : 'Deleted $deleted of ${pending.length}. '}${kept.join(' ')}',
+        needsAction: true,
+      );
+    } finally {
+      move._running = false;
+    }
+  }
+
+  // One page's original and its files' (inside both folders' locks). Null when
+  // all of them are gone; otherwise why something was kept.
+  Future<String?> _deleteOneOriginal(CopiedMove m, _CopiedPage pg) async {
+    _assertWritable(m.fromLoc);
+    _assertWritable(m.toLoc);
+    final from = _placeName(m.fromLoc), to = _placeName(m.toLoc);
+    final dStore = _storeOf(m.toLoc);
+    final name = '"${pg.title}"';
+    final why = <String>[];
+    // Which check kept the original last (a closure's answer can't be thrown).
+    var copyProblem = '';
+
+    // True only while [target] (the copy) is a file that holds what the move
+    // put there. It catches every error (a throw would leave the original under
+    // its drop name) and never hydrates a copy that isn't downloaded.
+    bool copyHolds(String target, bool Function(String) holds) {
+      try {
+        if (placeholderState(target) == PlaceholderState.placeholder) {
+          copyProblem = "The copy in $to isn't downloaded";
+          return false;
+        }
+        if (FileSystemEntity.typeSync(target, followLinks: false) != FileSystemEntityType.file || !holds(target)) {
+          copyProblem = 'The copy in $to has changed since the move';
+          return false;
+        }
+        return true;
+      } on Object {
+        copyProblem = 'The copy in $to could not be read';
+        return false;
+      }
+    }
+
+    if (!pg.pageGone) {
+      final src = pg.sourcePath;
+      if (FileSystemEntity.typeSync(src, followLinks: false) == FileSystemEntityType.notFound) {
+        pg.pageGone = true;
+      } else {
+        await syncHook?.call('originals-before-delete', src);
+        final want = utf8.encode(pg.copyText);
+        copyProblem = '';
+        final DeleteResult r;
+        try {
+          r = await deleteFileIfMatches(
+            src,
+            bytes: utf8.encode(pg.sourceText),
+            stillRedundant: () => copyHolds(dStore.pathFor(pg.id), (d) => listEquals(File(d).readAsBytesSync(), want)),
+            beforeFinalCheck: (path) async => syncHook?.call('originals-before-final-check', path),
+          );
+        } on Object catch (e) {
+          debugPrint('Deleting the original of page ${pg.id} failed: $e');
+          return '$name: the original in $from could not be deleted, so it was kept.${_osReason(e)}';
+        }
+        if (r.deleted || r.outcome == DeleteOutcome.absent) {
+          pg.pageGone = true;
+        } else if (copyProblem.isNotEmpty) {
+          return '$copyProblem, so the original of $name in $from was kept.';
+        } else {
+          return '$name changed in $from since the move, so its original was kept'
+              '${r.keptPath == null ? '' : ' (a newer version is at ${r.keptPath})'}.';
+        }
+      }
+      // The original is gone: it is no longer a duplicate.
+      final key = _key(src);
+      _known.remove(key);
+      _pathId.remove(key);
+      _dropUnreadable(m.fromLoc, src);
+      _emitDeleted(src);
+    }
+    for (final f in pg.files) {
+      if (f.gone) continue;
+      if (FileSystemEntity.typeSync(f.source, followLinks: false) == FileSystemEntityType.notFound) {
+        f.gone = true;
+        continue;
+      }
+      copyProblem = '';
+      try {
+        final r = await deleteFileIfMatches(
+          f.source,
+          identity: f.identity,
+          stillRedundant: () => copyHolds(f.target, (d) => ContentIdentity.ofFileSync(d) == f.identity),
+        );
+        if (r.deleted || r.outcome == DeleteOutcome.absent) {
+          f.gone = true;
+        } else {
+          why.add(copyProblem.isNotEmpty ? copyProblem : 'a file changed in $from since the move');
+        }
+      } on Object catch (e) {
+        debugPrint('Deleting the original ${f.source} failed: $e');
+        why.add('a file in $from could not be deleted${_osReason(e)}');
+      }
+    }
+    await _pruneEmptyDirs(_assetsDir(m.fromLoc, pg.id));
+    if (why.isEmpty) return null;
+    return 'The page file of $name was deleted in $from, but ${why.toSet().join('; ')}, so '
+        '${why.length == 1 ? 'one image or file was' : '${why.length} images and files were'} kept.';
+  }
+
+  // Removes [d] and the empty folders under it. Never a folder that holds a file.
+  static Future<void> _pruneEmptyDirs(Directory d) async {
+    if (FileSystemEntity.typeSync(d.path, followLinks: false) != FileSystemEntityType.directory) return;
+    try {
+      for (final e in d.listSync(followLinks: false)) {
+        if (e is Directory) await _pruneEmptyDirs(e);
+      }
+      if (d.listSync(followLinks: false).isEmpty) d.deleteSync();
+    } on FileSystemException {
+      // Something is in it, or in use: it stays.
+    }
+  }
+
   /// Moves [id] and its subpages to another location: each page file is
-  /// written to the target folder and read back to check it, and only when
-  /// all of them check out are the source files deleted. On any failure the
-  /// target files are removed again and the sources stay as they were. If a
-  /// source can't be deleted and an already deleted one can't be put back, that
-  /// page keeps its copy at the target and the error names the partial result.
+  /// renamed (never replacing a file), page by page. Where it can't be renamed
+  /// (another drive or cloud) the pages are copied and the originals kept, and
+  /// the message offers [deleteOriginals]. A taken name stays, reported.
   Future<void> _moveAcross(String id, String toLoc, {String? parentId, int? index}) async {
     final fromLoc = _loc[id]!;
     _assertWritable(fromLoc);
@@ -5190,576 +5630,106 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     NotebookException? notice; // the move worked; there is something to tell
     String? attachmentsNote;
     var movedFully = false; // the pages are at the target; only placing is left
-    var renameMove = !forceCopyMoveForTest && !legacyPageCopyForTest; // false once the copy runs
+    var renameMove = true; // false once the copy runs
     try {
-      if (!forceCopyMoveForTest && !legacyPageCopyForTest) {
-        if (FolderLocks.keyOf(fromStore.directory) == FolderLocks.keyOf(toStore.directory)) {
-          throw const NotebookException('These are the same folder.');
-        }
-        // Step 0, 1: what is checked is memory and file metadata; no page file
-        // is read (P).
-        try {
-          await _landChain;
-        } on Object {
-          // A failed landing is reported by its own retry.
-        }
-        for (final p in ids) {
-          final path = fromStore.pathFor(p);
-          if (_pathId[_key(path)] != p || _loc[p] != fromLoc) {
-            throw NotebookException(
-              '"${_titleOrUntitled(_metas[p]?.title ?? '')}" is not listed at its file in ${_placeName(fromLoc)}, so nothing was moved.',
-            );
-          }
-          // A chosen file (0149) that isn't the file last scanned, read or saved
-          // may be damaged or held as another page's: it isn't moved.
-          if (this.unreadable.any((u) => _key(u.path) == _key(path)) ||
-              (_adoptedFiles[p] != null && _fileStamps[_key(path)] != fileStamp(path))) {
-            throw NotebookException(
-              '"${_titleOrUntitled(_metas[p]?.title ?? '')}" is listed as unreadable in ${_placeName(fromLoc)}, so nothing was moved.',
-            );
-          }
-          if (fileStamp(path) == null) {
-            throw NotebookException(
-              'The file of "${_titleOrUntitled(_metas[p]?.title ?? '')}" is missing from ${_placeName(fromLoc)}, so nothing was moved.',
-            );
-          }
-        }
-        final rootOrder = _treeOf(toLoc).nextOrder(parentId);
-        rekeys.addAll(await _rekeyBegin(ids, fromStore, toStore, fromLoc, toLoc));
-        await syncHook?.call('move-rekeyed', toStore.directory.path);
-        final notes = <String>[];
-        if (await _renameTree(
-          ids,
-          fromLoc: fromLoc,
-          toLoc: toLoc,
-          fromStore: fromStore,
-          toStore: toStore,
-          atDest: atDest,
-          notes: notes,
-        )) {
-          // Step 3: the root's place. A failure leaves the pages where they are.
-          _touch(fromLoc);
-          _touch(toLoc);
-          _rebuildTree();
-          movedFully = true;
-          String? placeFailed;
-          try {
-            await _placeRoot(toLoc, id, parentId, rootOrder);
-          } on Object catch (e) {
-            debugPrint('Placing the moved page failed: $e');
-            placeFailed = 'it could not be put at that position.${e is NotebookException ? '' : _osReason(e)}';
-          }
-          _rebuildTree();
-          if (placeFailed != null) notes.add(placeFailed);
-          notice = notes.isEmpty ? null : NotebookException('The page was moved, but ${notes.join(' ')}', needsAction: true);
-          if (index != null && placeFailed == null) await move(id, parentId: parentId, index: index);
-          if (notice != null) throw notice;
-          return;
-        }
-        renameMove = false;
-        // The first page can't be renamed (another drive or cloud): the copy
-        // below (to be replaced by the keep-the-original copy path).
-        await _settleRekeys(rekeys, const {});
+      if (FolderLocks.keyOf(fromStore.directory) == FolderLocks.keyOf(toStore.directory)) {
+        throw const NotebookException('These are the same folder.');
       }
-      // The text of each source as it was copied: the generation that must
-      // still be there when the source is deleted.
-      final copiedText = <String>[];
-      final originals = <NotedPage>[];
+      // Step 0, 1: what is checked is memory and file metadata; no page file
+      // is read (P).
+      try {
+        await _landChain;
+      } on Object {
+        // A failed landing is reported by its own retry.
+      }
       for (final p in ids) {
-        final before = await fromStore.readText(p);
-        if (readPage(before).id != p) {
-          throw const NotebookException('This page could not be moved: it holds a different page.');
-        }
-        final page = await fromStore.load(p);
-        if (await fromStore.readText(p) != before) {
-          throw const NotebookException('A page changed while it was being read, so nothing was moved.');
-        }
-        copiedText.add(before);
-        originals.add(page);
-      }
-      // Only the moved page's parent and order change; its subpages keep
-      // theirs.
-      final moved = [
-        for (var i = 0; i < originals.length; i++)
-          i == 0
-              ? originals[i].withMeta(
-                  originals[i].meta.withPlacement(
-                    parentId: parentId,
-                    order: _treeOf(toLoc).nextOrder(parentId),
-                  ),
-                )
-              : originals[i],
-      ];
-
-      // Only what this move published: a page file it created (never one that
-      // was already there) and the attachment files and folders it created.
-      final written = <String>[];
-      final writtenText = <String, String>{}; // the file text published, by page
-      final copies = <String, AttachmentCopy>{}; // the attachments copied, by page
-      // Copies a rollback kept because they are no longer what this move
-      // published (or could not be checked): never deleted (0124).
-      final keptCopies = <String>[];
-      // Removes only what this move published, and only while it still holds
-      // exactly that: a destination file or attachment that changed since is
-      // kept and reported (see keptCopiesNote).
-      Future<void> removeCopies() async {
-        for (final w in written) {
-          try {
-            final r = await _deleteIfUnchanged(toLoc, w, writtenText[w]!);
-            if (!r.deleted && r.outcome != DeleteOutcome.absent) keptCopies.add('page file of $w');
-          } on Object catch (e) {
-            debugPrint('Removing copy of page $w failed: $e');
-            keptCopies.add('page file of $w');
-          }
-          if (!await _mayRemoveIn(toLoc) || !await removeCreated(copies[w])) keptCopies.add('attachments of $w');
-        }
-      }
-
-      // Damaged or incomplete files this move set aside in the target, and files
-      // it left alone because they were changing: said however the move ends, so
-      // a kept `.damaged-` file is always named.
-      String keptFilesNote() {
-        final all = AttachmentCopy();
-        for (final c in copies.values) {
-          all.damagedKept.addAll(c.damagedKept);
-          all.stillChanging.addAll(c.stillChanging);
-        }
-        final lines = _copyNotices(all, _placeName(toLoc), _placeName(fromLoc));
-        return lines.isEmpty ? '' : ' ${lines.join(' ')}';
-      }
-
-      String keptCopiesNote() =>
-          (keptCopies.isEmpty
-              ? ''
-              : ' Some of the copies made for the move in ${_placeName(toLoc)} were kept, because they '
-                    'changed after they were made or could not be checked; you can delete what you do '
-                    'not need.') +
-          keptFilesNote();
-      NotebookException withKept(NotebookException e) {
-        final note = keptCopiesNote();
-        return note.isEmpty ? e : NotebookException('${e.message}$note', needsAction: true);
-      }
-
-      try {
-        for (final p in moved) {
-          if (!await _writeNew(toLoc, p)) {
-            throw NotebookException(
-              '${_placeName(toLoc)} already has a file for this page, so it was not moved. The '
-              'existing file was left as it is, and the page stays where it was. Move or delete '
-              'the file in ${_placeName(toLoc)} if you want to move the page there.',
-              needsAction: true,
-            );
-          }
-          written.add(p.id);
-          writtenText[p.id] = writePage(p);
-          final readBack = await toStore.readText(p.id);
-          if (readBack != writePage(p)) {
-            throw const NotebookException(
-              'A page was not copied correctly, so nothing was moved.',
-            );
-          }
-          // Its images and files go with it, unless the target was held since
-          // its page file was written (checked with no await before the copy).
-          if (_isLocked(toLoc)) throw NotebookException(_lockedMessage(toLoc));
-          await _copyDir(
-            _assetsDir(fromLoc, p.id),
-            _assetsDir(toLoc, p.id),
-            into: copies[p.id] = AttachmentCopy(),
-            // A held source folder is only read: its leftovers are not swept.
-            sweepSource: !_isLocked(fromLoc),
+        final path = fromStore.pathFor(p);
+        if (_pathId[_key(path)] != p || _loc[p] != fromLoc) {
+          throw NotebookException(
+            '"${_titleOrUntitled(_metas[p]?.title ?? '')}" is not listed at its file in ${_placeName(fromLoc)}, so nothing was moved.',
           );
         }
-      } on Object catch (e) {
-        await removeCopies();
-        if (e is NotebookException) throw withKept(e);
-        debugPrint('Copying the page to its new place failed: $e');
-        throw withKept(NotebookException('Could not move the page.${_osReason(e)}'));
+        // A chosen file (0149) that isn't the file last scanned, read or saved
+        // may be damaged or held as another page's: it isn't moved.
+        if (unreadable.any((u) => _key(u.path) == _key(path)) ||
+            (_adoptedFiles[p] != null && _fileStamps[_key(path)] != fileStamp(path))) {
+          throw NotebookException(
+            '"${_titleOrUntitled(_metas[p]?.title ?? '')}" is listed as unreadable in ${_placeName(fromLoc)}, so nothing was moved.',
+          );
+        }
+        if (fileStamp(path) == null) {
+          throw NotebookException(
+            'The file of "${_titleOrUntitled(_metas[p]?.title ?? '')}" is missing from ${_placeName(fromLoc)}, so nothing was moved.',
+          );
+        }
       }
-
-      // Kept changes go with their pages: the new key is written (and read
-      // back) before the stale-source check and before any source is deleted;
-      // the old key stays until each page has settled (build note 9).
-      try {
-        rekeys.addAll(await _rekeyBegin(ids, fromStore, toStore, fromLoc, toLoc));
-      } on NotebookException catch (e) {
-        await removeCopies();
-        throw withKept(e);
-      }
+      final rootOrder = _treeOf(toLoc).nextOrder(parentId);
+      rekeys.addAll(await _rekeyBegin(ids, fromStore, toStore, fromLoc, toLoc));
       await syncHook?.call('move-rekeyed', toStore.directory.path);
-      // Every source is checked before any is deleted. One that changed (or
-      // can't be read) since it was copied stops the move: nothing is deleted,
-      // and this move's own verified copies are dropped. A source that is gone
-      // (its folder is still there) is different: its copy is then the only
-      // one of the page and is never dropped, so the check does not stop the
-      // move; the delete step below handles every page, vanished or not, and
-      // reports what really happened.
-      final stale = <int>[];
-      final unreadable = <int>[];
-      final vanished = <int>{};
-      for (var i = 0; i < ids.length; i++) {
+      final notes = <String>[];
+      if (!forceCopyMoveForTest && await _renameTree(
+        ids,
+        fromLoc: fromLoc,
+        toLoc: toLoc,
+        fromStore: fromStore,
+        toStore: toStore,
+        atDest: atDest,
+        notes: notes,
+      )) {
+        // Step 3: the root's place. A failure leaves the pages where they are.
+        _touch(fromLoc);
+        _touch(toLoc);
+        _rebuildTree();
+        movedFully = true;
+        String? placeFailed;
         try {
-          if (await fromStore.readText(ids[i]) != copiedText[i]) stale.add(i);
-        } on Object {
-          // Gone only if the folder itself is still there; a missing folder or
-          // drive can't be told from a missing page, so it stops the move.
-          if (fromStore.directory.existsSync() &&
-              FileSystemEntity.typeSync(fromStore.pathFor(ids[i]), followLinks: false) ==
-                  FileSystemEntityType.notFound) {
-            vanished.add(i);
-          } else {
-            unreadable.add(i);
-          }
+          await _placeRoot(toLoc, id, parentId, rootOrder);
+        } on Object catch (e) {
+          debugPrint('Placing the moved page failed: $e');
+          placeFailed = 'it could not be put at that position.${e is NotebookException ? '' : _osReason(e)}';
         }
-      }
-      if (!fromStore.directory.existsSync() && unreadable.isNotEmpty) {
-        // The folder itself is gone (moved away, a drive that left): nothing
-        // there can be checked or removed, and the copies are then the only
-        // ones. They are kept, and the pages count as being in the target.
-        for (final p in moved) {
-          // The source files are gone from the app's view, as after a delete.
-          final key = _key(fromStore.pathFor(p.id));
-          _known.remove(key);
-          _pathId.remove(key);
-          _conflicts.remove(p.id);
-          _metas[p.id] = p.meta;
-          _loc[p.id] = toLoc;
-        }
-        atDest.addAll(ids); // after the new key is read back, in the settlement
-        _touch(fromLoc);
-        _touch(toLoc);
         _rebuildTree();
-        final src = _placeName(fromLoc);
-        final withAssets = [for (final p in ids) if (copies[p]?.sourceExisted ?? false) p];
-        final stayed = [for (final c in copies.values) ...c.differing];
-        throw NotebookException(
-          '$src is not available right now, so the old ${ids.length == 1 ? 'file' : 'files'} could not be '
-          'checked or removed. The ${ids.length == 1 ? 'page was' : 'pages were'} copied to '
-          '${_placeName(toLoc)} and kept there'
-          '${withAssets.isEmpty ? '' : ', with ${withAssets.length == 1 ? 'its attachments' : 'the attachments of ${withAssets.length} pages'}'}'
-          '${stayed.isEmpty ? '' : ' (${stayed.length == 1 ? 'one attachment file' : '${stayed.length} attachment files'} '
-              'could not be copied because ${_placeName(toLoc)} already has different ones)'}. '
-          'If $src comes back with the old ${ids.length == 1 ? 'page' : 'pages'}, delete the '
-          '${ids.length == 1 ? 'one' : 'ones'} you do not need.'
-          '${keptFilesNote()}',
-          needsAction: true,
-        );
+        if (placeFailed != null) notes.add(placeFailed);
+        notice = notes.isEmpty ? null : NotebookException('The page was moved, but ${notes.join(' ')}', needsAction: true);
+        if (index != null && placeFailed == null) await move(id, parentId: parentId, index: index);
+        if (notice != null) throw notice;
+        return;
       }
-      if (vanished.isEmpty && (stale.isNotEmpty || unreadable.isNotEmpty)) {
-        await removeCopies();
-        String label(int i) {
-          final t = originals[i].meta.title.trim();
-          return '"${t.isEmpty ? 'Untitled' : t}"';
-        }
-
-        final source = _placeName(fromLoc);
-        String list(List<int> l) => l.map(label).join(', ');
-        String it(List<int> l) => l.length == 1 ? 'it' : 'them';
-        throw NotebookException(
-          [
-            'Nothing was moved.',
-            if (stale.isNotEmpty)
-              '${list(stale)} ${stale.length == 1 ? 'has' : 'have'} a newer version in $source, so '
-                  '${stale.length == 1 ? 'it was' : 'they were'} left there and the copy made for the move was dropped.',
-            if (unreadable.isNotEmpty)
-              '${list(unreadable)} could not be read in $source to check ${it(unreadable)}, so '
-                  '${unreadable.length == 1 ? 'it stays' : 'they stay'} where '
-                  '${unreadable.length == 1 ? 'it was' : 'they were'}.',
-            if (!stale.contains(0) && !unreadable.contains(0)) '${label(0)} stayed where it was.',
-          ].join(' ') + keptCopiesNote(),
-          needsAction: true,
-        );
-      }
-
-      // Test seam: after every source was checked, before the first is deleted.
-      await syncHook?.call('move-before-source-delete', fromStore.directory.path);
-      final removed = <int>[];
-      final changedNow = <int>{}; // found changed by the compare-and-delete
-      try {
-        for (var i = 0; i < ids.length; i++) {
-          // Only the generation that was copied is deleted: the file is set
-          // aside, compared and only then removed, so a version that arrives
-          // after the check above is kept (and the classification below
-          // reports it).
-          final r = await _deleteIfUnchanged(fromLoc, ids[i], copiedText[i]);
-          if (r.outcome == DeleteOutcome.absent) {
-            vanished.add(i); // never restored: it was removed by someone else
-            continue;
-          }
-          if (!r.deleted) {
-            changedNow.add(i);
-            throw const NotebookException('A page changed during the move.');
-          }
-          removed.add(i);
-        }
-      } on Object catch (e) {
-        // Classify each page by what is at its source now. The source file is
-        // never written over: a page we deleted is put back only if nothing
-        // exists at its path.
-        //  intact: the source holds exactly what was copied; the copy goes.
-        //  gone:   no source and none can be put back; the copy is the page.
-        //  both:   a source exists but can't be verified or differs (an
-        //          external edit, another line ending, a locked file); both
-        //          stay and nothing about the page changes.
-        // A page's chosen file keeps its own name: the store dropped the path
-        // of a file it deleted, so the checks and the restore below would
-        // otherwise look at `<id>.canvas`, which may be another file.
-        for (final p in ids) {
-          final c = _adoptedFiles[p];
-          if (c != null && _key(File(c).parent.path) == _key(fromStore.directory.path)) fromStore.adopt(p, c);
-        }
-        final intact = <int>[];
-        final gone = <int>[];
-        final both = <int>[];
-        // changed: a newer version arrived after the check; it stays, and this
-        // move's own copy of the older one is dropped.
-        final changed = <int>[];
-        final appeared = <int>{}; // a file appeared at the old path during the restore
-        Future<bool> absent(int i) async =>
-            await FileSystemEntity.type(fromStore.pathFor(ids[i])) == FileSystemEntityType.notFound;
-        for (var i = 0; i < ids.length; i++) {
-          if (await _sourceIntact(fromStore, originals[i], copiedText[i])) {
-            intact.add(i);
-            continue;
-          }
-          if (removed.contains(i) && await absent(i)) {
-            // An exclusive save: the page is published only if nothing is at
-            // its path at that moment, so a file that appears in the meantime
-            // is never written over (the page is then in both places).
-            try {
-              if (!await _restoreText(fromLoc, originals[i], copiedText[i], beforePublish: restoreBeforePublishHook)) {
-                appeared.add(i);
-                debugPrint('Restoring page ${ids[i]}: a file appeared at its old path, keeping both');
-              }
-            } on Object catch (e2) {
-              debugPrint('Restoring page ${ids[i]} failed: $e2');
-            }
-            if (await _sourceIntact(fromStore, originals[i], copiedText[i])) {
-              intact.add(i);
-              continue;
-            }
-          }
-          if (await absent(i)) {
-            gone.add(i);
-          } else if (changedNow.contains(i)) {
-            changed.add(i);
-          } else {
-            both.add(i);
-          }
-        }
-        // Remove the copy of an intact page: the page file and its attachments
-        // each get their own try, and a failure keeps that page in both places.
-        final copyLeft = <int, String>{};
-        for (final i in [...intact, ...changed]) {
-          try {
-            // Only the file this move published, and only while it still holds
-            // exactly that: a copy that changed since is kept, and reported.
-            final r = await _deleteIfUnchanged(toLoc, ids[i], writtenText[ids[i]]!);
-            if (!r.deleted && r.outcome != DeleteOutcome.absent) {
-              debugPrint('The copy of page ${ids[i]} changed after the move made it, keeping it');
-              copyLeft[i] = 'the page file';
-            }
-          } on Object catch (e2) {
-            debugPrint('Removing copy of page ${ids[i]} failed: $e2');
-            copyLeft[i] = 'the page file';
-          }
-          // Only what this move copied, never an attachments folder (or a file
-          // in it) that was at the target before.
-          if (!await _mayRemoveIn(toLoc) || !await removeCreated(copies[ids[i]])) {
-            debugPrint('Removing the attachments of page ${ids[i]} at the target failed');
-            copyLeft[i] = copyLeft.containsKey(i) ? 'the page file and its attachments' : 'its attachments';
-          }
-        }
-        if (gone.isEmpty && both.isEmpty && changed.isEmpty && copyLeft.isEmpty) {
-          debugPrint('Removing the old page files failed: $e');
-          throw withKept(NotebookException('Could not remove the old files, so nothing was moved.${_osReason(e)}'));
-        }
-        // Only a page with no source moves. A page whose parent ended up in
-        // the other location goes to the top level of its own (0059).
-        final movedIdx = gone.toSet();
-        atDest.addAll([for (final i in movedIdx) ids[i]]);
-        final idIndex = {for (var i = 0; i < ids.length; i++) ids[i]: i};
-        for (final i in movedIdx) {
-          _metas[ids[i]] = moved[i].meta;
-          _loc[ids[i]] = toLoc;
-        }
-        // Standalone folders share one tree: a page whose parent is in the
-        // other folder keeps it. A page kept in both places is not changed
-        // at all, so the tree and its file agree.
-        final shareTree = _isStandaloneLoc(fromLoc) && _isStandaloneLoc(toLoc);
-        for (var i = 0; i < ids.length && !shareTree; i++) {
-          if (both.contains(i) || changed.contains(i)) continue;
-          final parent = moved[i].meta.parentId;
-          final pi = parent == null ? null : idIndex[parent];
-          if (pi == null || movedIdx.contains(i) == movedIdx.contains(pi)) continue;
-          final loc = movedIdx.contains(i) ? toLoc : fromLoc;
-          final fixed = moved[i].withMeta(
-            moved[i].meta.withPlacement(parentId: null, order: _treeOf(loc).nextOrder(null)),
-          );
-          // Saved too, unless the file is one whose content wasn't verified.
-          if (movedIdx.contains(i) || intact.contains(i)) {
-            try {
-              // Over exactly the text that was verified there, checked at the
-              // moment of replacing; a file that changed since stays as it is.
-              final known = movedIdx.contains(i)
-                  ? {writtenText[ids[i]]}
-                  : {copiedText[i], writePage(originals[i])};
-              final now = await _storeOf(loc).readText(ids[i]);
-              if (known.contains(now) && await _writeIfUnchanged(loc, fixed, now)) {
-                _metas[ids[i]] = fixed.meta; // only when it landed
-              } else {
-                debugPrint('Moving page ${ids[i]} to the top level: its file changed, left as it is');
-              }
-            } on Object catch (e2) {
-              debugPrint('Moving page ${ids[i]} to the top level failed: $e2');
-            }
-          }
-        }
-        _touch(fromLoc);
-        _touch(toLoc);
-        _rebuildTree();
-        String titleOf(int i) {
-          final t = originals[i].meta.title.trim();
-          return t.isEmpty ? 'Untitled' : t;
-        }
-
-        String place(String loc) => _binders[loc]?.title ?? (loc == _standalone ? 'Pages' : loc);
-        final target = place(toLoc);
-        final source = place(fromLoc);
-        // Pages with the same title are told apart by their parent or place.
-        final titleCount = <String, int>{};
-        for (var i = 0; i < ids.length; i++) {
-          titleCount.update(titleOf(i), (n) => n + 1, ifAbsent: () => 1);
-        }
-        String name(int i) {
-          final t = titleOf(i);
-          if (titleCount[t]! < 2) return '"$t"';
-          final parent = originals[i].meta.parentId;
-          final pi = parent == null ? null : idIndex[parent];
-          return pi != null
-              ? '"$t" (subpage of "${titleOf(pi)}")'
-              : '"$t" (top level of $source)';
-        }
-
-        String names(Iterable<int> l) => l.map(name).join(', ');
-        debugPrint('The move was only partly done: $e');
-        final parts = <String>[];
-        if (gone.isNotEmpty) {
-          final goneGone = gone.where(vanished.contains).toList();
-          final goneOther = gone.where((i) => !vanished.contains(i)).toList();
-          if (goneGone.isNotEmpty) {
-            parts.add(
-              '${names(goneGone)} ${goneGone.length == 1 ? 'was' : 'were'} no longer in $source, so '
-              '${goneGone.length == 1 ? 'it is' : 'they are'} kept in $target.',
-            );
-          }
-          if (goneOther.isNotEmpty) {
-            parts.add(
-              '${names(goneOther)} ${goneOther.length == 1 ? 'is' : 'are'} now in $target; the old '
-              '${goneOther.length == 1 ? 'file' : 'files'} could not be put back.',
-            );
-          }
-        }
-        final appearedIdx = both.where(appeared.contains).toList();
-        final bothOther = both.where((i) => !appeared.contains(i)).toList();
-        if (appearedIdx.isNotEmpty) {
-          parts.add(
-            'Another file appeared at the old place of ${names(appearedIdx)} in $source, so it was '
-            'left alone; the page ${appearedIdx.length == 1 ? 'is' : 'pages are'} in $target. One of the two '
-            'will show under "Can\'t open" until you delete the other.',
-          );
-        }
-        if (bothOther.isNotEmpty) {
-          parts.add(
-            '${names(bothOther)} ${bothOther.length == 1 ? 'is' : 'are'} kept in both places. The old '
-            '${bothOther.length == 1 ? 'file' : 'files'} in $source could not be checked or '
-            '${bothOther.length == 1 ? 'has' : 'have'} changed, so nothing was deleted; the '
-            '${bothOther.length == 1 ? 'copy is' : 'copies are'} in $target. One of the two will show '
-            'under "Can\'t open" until you delete the other.',
-          );
-        }
-        if (copyLeft.isNotEmpty) {
-          parts.add(
-            [
-              for (final en in copyLeft.entries)
-                if (en.value == 'its attachments')
-                  '${name(en.key)} stayed where it was, but a leftover attachments folder remains '
-                      'in $target. You can delete it.'
-                else
-                  'The copy of ${name(en.key)} in $target (${en.value}) could not be removed, so it '
-                      'is kept in both places. One of the two will show under "Can\'t open" until '
-                      'you delete the other.',
-            ].join(' '),
-          );
-        }
-        final changedOk = changed.where((i) => !copyLeft.containsKey(i)).toList();
-        if (changedOk.isNotEmpty) {
-          parts.add(
-            '${names(changedOk)} ${changedOk.length == 1 ? 'was' : 'were'} not moved: a newer version of '
-            '${changedOk.length == 1 ? 'it' : 'them'} is in $source, so ${changedOk.length == 1 ? 'it was' : 'they were'} '
-            'left there and the copy made for the move was dropped.',
-          );
-        }
-        final stayed = intact.where((i) => !copyLeft.containsKey(i)).toList();
-        if (stayed.isNotEmpty) {
-          parts.add('${names(stayed)} stayed where ${stayed.length == 1 ? 'it was' : 'they were'}.');
-        }
-        throw NotebookException(
-          '${gone.isEmpty && both.isEmpty && copyLeft.isEmpty ? 'The page was not moved.' : 'The move was only partly done.'} '
-          '${parts.join(' ')}${keptFilesNote()}',
-          needsAction: both.isNotEmpty || copyLeft.isNotEmpty || changed.isNotEmpty,
-        );
-      }
+      renameMove = false;
+      // The first page can't be renamed (another drive or cloud): the move
+      // copies, and the originals stay until the user deletes them (rule 4).
+      await _settleRekeys(rekeys, const {});
+      rekeys.clear();
+      final copy = await _copyAcross(
+        ids,
+        fromLoc: fromLoc,
+        toLoc: toLoc,
+        fromStore: fromStore,
+        toStore: toStore,
+        parentId: parentId,
+        rootOrder: _treeOf(toLoc).nextOrder(parentId),
+        rekeys: rekeys,
+      );
       atDest.addAll(ids);
-      await syncHook?.call('move-source-deleted', fromStore.directory.path);
-      // Only the attachment files that were copied and verified go from the
-      // source; a file that arrived there after the copy, or whose target
-      // differs, stays.
-      // A source folder that is held by then keeps them, and they are named.
-      final keptSources = <String>[];
-      for (final id in ids) {
-        final copy = copies[id];
-        if (copy == null) continue;
-        if (await _mayRemoveIn(fromLoc)) {
-          await removeVerifiedSources(copy, _assetsDir(fromLoc, id));
-        } else if (copy.verified.isNotEmpty) {
-          keptSources.add(_titleOrUntitled(_metas[id]?.title ?? ''));
-        }
-      }
-      // Files that stayed because the target holds something else.
-      final differing = [for (final c in copies.values) ...c.differing];
-      final keptAside = [for (final c in copies.values) ...c.keptAside];
-      final damagedKept = [for (final c in copies.values) ...c.damagedKept];
-      final stillChanging = [for (final c in copies.values) ...c.stillChanging];
-      attachmentsNote = differing.isEmpty && keptAside.isEmpty && damagedKept.isEmpty && stillChanging.isEmpty
-          ? null
-          : _attachmentsNote(
-              differing,
-              keptAside,
-              _placeName(toLoc),
-              _placeName(fromLoc),
-              damagedKept: damagedKept,
-              stillChanging: stillChanging,
-            );
-      if (keptSources.isNotEmpty) {
-        final kept = 'the images and files of ${keptSources.map((t) => '"$t"').join(', ')} also stayed in '
-            '${_placeName(fromLoc)}, because its binder changed.';
-        attachmentsNote = attachmentsNote == null ? kept : '$attachmentsNote ${kept[0].toUpperCase()}${kept.substring(1)}';
-      }
-
-      for (final p in moved) {
-        _metas[p.id] = p.meta;
-        _loc[p.id] = toLoc;
-      }
       _touch(fromLoc);
       _touch(toLoc);
       _rebuildTree();
       movedFully = true;
-      // Said together with a failed placement, so neither hides the other.
-      notice = attachmentsNote == null
-          ? null
-          : NotebookException('The page was moved, but $attachmentsNote', needsAction: true);
-      if (index != null) await move(id, parentId: parentId, index: index);
-      if (notice != null) throw notice;
+      String? placeFailed;
+      if (index != null) {
+        try {
+          await move(id, parentId: parentId, index: index);
+        } on Object catch (e) {
+          debugPrint('Placing the copied page failed: $e');
+          placeFailed = 'it could not be put at that position.${e is NotebookException ? '' : _osReason(e)}';
+        }
+      }
+      await copy._recordCopyText(toStore);
+      notice = OriginalsKeptException(
+        '${copy._message}${placeFailed == null ? '' : ' Also, $placeFailed'}',
+        copy,
+      );
+      throw notice;
     } on Object catch (e) {
       // Only a NotebookException leaves here, so the user always sees a message.
       if (e is! NotebookException) debugPrint('Moving the page failed: $e');

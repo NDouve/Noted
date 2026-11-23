@@ -34,6 +34,12 @@ const List<Site> deleteSites = [
     1,
     'a folder emptied by a move, removed without recursive: never a file',
   ),
+  (
+    'app/lib/src/notebook.dart',
+    'if (d.listSync(followLinks: false).isEmpty) d.deleteSync();',
+    1,
+    'a folder emptied by Delete the original, removed without recursive: never a file',
+  ),
   ('app/lib/src/ai/ai_link_server.dart', 'file.deleteSync();', 1, _private),
   ('app/lib/src/app_commands.dart', 'invoke: () => a.delete(p),', 1, _call),
   (

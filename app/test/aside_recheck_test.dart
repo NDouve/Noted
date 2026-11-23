@@ -111,8 +111,6 @@ Future<void> until(
 }
 
 void main() {
-  setUpAll(() => Notebook.legacyPageCopyForTest = true); // copy-and-delete behaviour, until the copy path replaces it
-  tearDownAll(() => Notebook.legacyPageCopyForTest = false);
   late Directory root;
   late Directory dir;
   late Directory elsewhere;
@@ -205,8 +203,10 @@ void main() {
   }
 
   for (final atCheck in [false, true]) {
-    test('10. page move: a swapped source is kept, the move is refused and the copy rolled back '
-        '(${atCheck ? 're-check' : 'aside'})', () async {
+    test('10. delete the original: a source swapped by another device is kept '
+        '(${atCheck ? 're-check' : 'before the delete'})', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path keeps the original
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final id = nb.currentId!;
       final box = noteBox('base');
       await busyRetry(() => PageStore(dir).save(onDisk(id).insertNode(box)));
@@ -219,26 +219,31 @@ void main() {
       final theirs = onDisk(id).insertNode(extra);
       Future<void> swap(String path) async =>
           File(path).writeAsStringSync(writePage(theirs));
-      if (atCheck) {
-        store.beforeFinalCheckOnce = swap;
-      } else {
-        store.beforeAsideDeleteOnce = swap;
-      }
-      Object? error;
+      nb.syncHook = (point, path) async {
+        if (point == (atCheck ? 'originals-before-final-check' : 'originals-before-delete')) {
+          await swap(path);
+        }
+      };
+      OriginalsKeptException? kept;
       try {
         await nb.moveToFolder(id, elsewhere.path);
-      } on Object catch (e) {
-        error = e;
+      } on OriginalsKeptException catch (e) {
+        kept = e;
       }
-      expect(error, isNotNull, reason: 'the move is refused');
+      expect(kept, isNotNull, reason: 'the move copied and kept the original');
+      expect(File('${elsewhere.path}$sep$id.canvas').existsSync(), isTrue);
+      await expectLater(
+        nb.deleteOriginals(kept!.move),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('was kept'))),
+      );
       expect(nodeIds(onDisk(id)), {
         box.id,
         extra.id,
       }, reason: 'the swapped version stays at the source');
       expect(
-        elsewhere.listSync(),
-        isEmpty,
-        reason: 'the destination copy was rolled back',
+        nodeIds(readPage(File('${elsewhere.path}$sep$id.canvas').readAsStringSync())),
+        {box.id},
+        reason: 'the copy is untouched',
       );
       expect(names().where((n) => n.contains('.cas-')), isEmpty);
     });

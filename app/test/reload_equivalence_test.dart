@@ -939,15 +939,15 @@ class _Run {
   //  - `save`: the open page's save, the swap lands at the aside's name (or at
   //    its re-check); the other device's box is merged from the conflict copy
   //    the save reports.
-  //  - `move`, `delete`: the swap lands in the source's aside; the move is
-  //    refused and the delete keeps the page, with the other device's box.
+  //  - `delete`: the swap lands in the source's aside; the
+  //    delete keeps the page, with the other device's box. (A move renames: there is no aside; `move:syncAtSource` is its counterpart.)
   //  - `redundant`: a binder's Put back, the binder file replaced by another
   //    version of the same binder while the copy is re-checked; the copy is
   //    kept, and a second Put back (the file removed again) lands it.
 
   late final Random _srng = Random(seed * 47 + 19); // when and how an aside is rewritten (_swapStep)
   static final Map<String, int> _swapTried = {};
-  static const _swapVariants = ['save', 'move', 'delete', 'redundant'];
+  static const _swapVariants = ['save', 'delete', 'redundant'];
 
   Future<void> _swapStep(int n) async {
     final sorted = [..._swapVariants]..shuffle(_srng);
@@ -998,28 +998,6 @@ class _Run {
         }
         await nb.flush();
         expect(fired, isTrue, reason: 'the sync writer never got its turn');
-        m.boxes[y.id] = _val(y);
-      case 'move':
-        final others = _locs.where((l) => l != m.loc).toList();
-        final to = others[_srng.nextInt(others.length)];
-        if (_standaloneLeft([id], to: to) < 1) return null;
-        await nb.flush();
-        final y = _newBox(_text('sync'));
-        final theirs = _disk(id).insertNode(y);
-        final hook = swapWith(theirs, () => fired = true);
-        if (atCheck) {
-          st.beforeFinalCheckOnce = hook;
-        } else {
-          st.beforeAsideDeleteOnce = hook;
-        }
-        Object? error;
-        try {
-          await _moveTo(id, to);
-        } on Object catch (e) {
-          error = e;
-        }
-        expect(fired, isTrue, reason: 'the sync writer never got its turn');
-        expect(error, isNotNull, reason: 'the move should have been refused');
         m.boxes[y.id] = _val(y);
       case 'delete':
         if (_standaloneLeft([id], to: null) < 1) return null;
@@ -1901,20 +1879,28 @@ class _Run {
     final fromDir = dirs[from]!;
     var movedOk = true;
     Object? error;
+    final taken = <File>[];
+    void Function()? restoreRename;
     switch (variant) {
       case 'move:withEntryCrash':
-        // The process dies after the source files are gone and before the old
-        // key is deleted: both keys are on disk at the next start.
+        // The process dies after the last page's file was renamed and before
+        // the root is placed and the old key is deleted: all the files are at
+        // the target, and both keys are on disk at the next start.
+        var renamed = 0;
         nb.syncHook = (p, _) async {
-          if (p != 'move-source-deleted') return;
+          if (p != 'move-after-rename' || ++renamed < subtree.length) return;
           _gone.add(nb);
           nb.dispose();
-          throw StateError('crash after the source delete');
+          throw StateError('crash after the rename');
         };
       case 'move:withEntrySourceDeleteFails':
+        // The last page's name is taken at the target: the move fails there
+        // and the pages renamed before it go back.
         movedOk = false;
-        storeOf(from).failDelete.add(subtree.last);
-        nb.syncHook = (p, _) async {
+        restoreRename = _atRename(subtree.length, () => taken.add(_takeName(to, subtree.last)));
+        final rename = nb.syncHook;
+        nb.syncHook = (p, path) async {
+          await rename?.call(p, path);
           if (p != 'move-rekeyed') return;
           // The new key exists before any source is deleted (build note 9).
           final rs = nb.recoveryStoreForTest!;
@@ -1922,15 +1908,18 @@ class _Run {
           expect(rs.entriesFor(fromDir.path, pid), hasLength(1), reason: 'and the old one stays');
         };
       case 'move:withEntryPartialRollback':
-        // The first page cannot be put back after its source is deleted, and
-        // the last page's source cannot be deleted: the first page ends at the
-        // target, the last stays.
+        // The last page's name is taken at the target, and the first page's
+        // old name is taken at the source by the time it should go back: the
+        // first page ends at the target, the others stay.
         movedOk = false;
-        storeOf(from).failDelete.add(subtree.last);
-        storeOf(from).failNew.add(subtree.first);
+        restoreRename = _atRename(subtree.length, () {
+          taken.add(_takeName(to, subtree.last));
+          taken.add(_takeName(from, subtree.first));
+        });
       case 'move:withEntryFolderGone':
-        // The source folder goes away after the copies are made: its pages
-        // count as moved.
+        // The source folder goes away before the first rename: the move is
+        // refused with nothing done.
+        movedOk = false;
         nb.syncHook = (p, _) async {
           if (p != 'move-rekeyed') return;
           await _busyRetry(() async => fromDir.renameSync('${fromDir.path}-away'));
@@ -1951,28 +1940,31 @@ class _Run {
     } on Object catch (e) {
       error = e;
     }
+    restoreRename?.call();
     nb.syncHook = null;
-    storeOf(from).failDelete.clear();
-    storeOf(from).failNew.clear();
+    for (final f in taken) {
+      if (f.existsSync()) f.deleteSync();
+      await nb.checkFile(f.path);
+    }
+    if (taken.isNotEmpty) await nb.checkFolders();
     nb.recoveryStoreForTest?.hook = null;
     if (variant == 'move:withEntryFolderGone') {
-      // The folder comes back; the old files the user would delete are removed.
+      // The folder comes back.
       await _busyRetry(() async => Directory('${fromDir.path}-away').renameSync(fromDir.path));
-      for (final p in subtree) {
-        final f = File('${fromDir.path}$sep$p.canvas');
-        if (f.existsSync()) f.deleteSync();
-      }
+      await nb.checkFolders();
     }
+    final shareTree = (from == 'pages' || from == 'x') && (to == 'pages' || to == 'x');
     if (variant == 'move:withEntryCrash') {
       expect(error, isNotNull);
-      // Both keys are on disk; the next start settles them.
+      // Both keys are on disk; the next start settles them. The files are all
+      // at the target and the root was not placed yet: its file still names
+      // its old parent (a binder lists it at its top level meanwhile).
       nb = _make();
       _spare.add(nb);
       await nb.load();
       for (final p in subtree) {
         model[p]!.loc = to;
       }
-      m.parent = null;
       return variant;
     }
     if (variant == 'move:withEntryPartialRollback') {
@@ -1986,13 +1978,13 @@ class _Run {
       for (final p in subtree.skip(1)) {
         model[p]!.loc = from;
       }
-      final shareTree = (from == 'pages' || from == 'x') && (to == 'pages' || to == 'x');
       if (!shareTree) {
         for (final p in subtree.skip(1)) {
           final par = model[p]!.parent;
           if (par != null && model[par]!.loc != model[p]!.loc) model[p]!.parent = null;
         }
-      }    } else if (!movedOk) {
+      }
+    } else if (!movedOk) {
       expect(error, isNotNull, reason: 'the move should have been refused');
     } else {
       expect(error, anyOf(isNull, isA<NotebookException>()), reason: 'the move failed: $error');
@@ -2003,8 +1995,8 @@ class _Run {
     }
     await _replayAll();
     if (variant == 'move:withEntrySettleFails' || variant == 'move:withEntryFolderGone') {
-      // A leftover key is settled by the next start.
-      if (variant == 'move:withEntrySettleFails') await _opRestart();
+      // A leftover key is settled by the next start; after the folder was away the pages are read afresh.
+      await _opRestart();
     }
     return y2 == null && entryIds.isNotEmpty ? variant : variant;
   }
@@ -2331,6 +2323,35 @@ class _Run {
     };
   }
 
+  // At the [n]th rename of a move (`move-before-rename`, once per page, in
+  // order), runs [act]; the page is renamed after it. [after] runs when the
+  // hook has fired and is cleared.
+  void Function() _atRename(int n, void Function() act) {
+    final prev = nb.syncHook;
+    var calls = 0;
+    var fired = false;
+    nb.syncHook = (point, path) async {
+      await prev?.call(point, path);
+      if (point != 'move-before-rename') return;
+      if (++calls == n) {
+        fired = true;
+        act();
+      }
+    };
+    return () {
+      nb.syncHook = prev;
+      if (!fired) trace.add('  (the move was refused before rename number $n)');
+    };
+  }
+
+  // A file in [loc] under page [id]'s name: the name is taken there, as when
+  // sync has put another file in its place. Returns the file, for its removal.
+  File _takeName(String loc, String id) {
+    final f = File('${dirs[loc]!.path}$sep$id.canvas');
+    f.writeAsStringSync('taken');
+    return f;
+  }
+
   Future<void> _opMove() async {
     final variant = _pick([
       'plain',
@@ -2338,7 +2359,7 @@ class _Run {
       'plain',
       'pendingEdit',
       'failDestination',
-      'failSourceDelete',
+      'failDestination',
       'syncAtSource',
     ]);
     // A fault on the last page of a subtree is the one that needs a rollback.
@@ -2346,53 +2367,39 @@ class _Run {
       for (final e in model.entries)
         if (e.value.parent != null) e.value.parent!,
     ];
-    final fails = variant == 'failDestination' || variant == 'failSourceDelete';
+    final fails = variant == 'failDestination';
     final id = fails && parents.isNotEmpty ? parents[rng.nextInt(parents.length)] : _pickPage();
     final m = model[id]!;
     final to = _pick(_locs.where((l) => l != m.loc).toList());
     trace.add('move ${_short(id)} ${m.loc} -> $to: $variant');
     _kind = 'move:$variant';
-    final from = m.loc;
     final subtree = _subtree(id);
     if (_standaloneLeft(subtree, to: to) < 1) {
       _kind = null;
       return; // a notebook always keeps a standalone page
     }
     var mustFail = false;
-    void Function()? syncRestore;
+    void Function()? restoreHook;
+    File? taken;
     switch (variant) {
       case 'pendingEdit':
         // An edit not saved yet goes with the page.
         await nb.open(id);
         _localEdit(m, nb.current!);
       case 'failDestination':
-        storeOf(to).failNew.add(subtree.last);
-        mustFail = true;
-      case 'failSourceDelete':
-        storeOf(from).failDelete.add(subtree.last);
+        // The last page's name is taken at the target when its turn comes: the
+        // move fails there, and the pages renamed before it go back.
+        restoreHook = _atRename(subtree.length, () => taken = _takeName(to, subtree.last));
         mustFail = true;
       case 'syncAtSource':
-        // A newer version lands on the source after the move read it.
+        // A newer version lands on the source after the move checked it and
+        // before its page is renamed: the page moves as it is, and is read at
+        // the target.
         final y = _newBox(_text('sync'));
-        // Written by the sync writer after every source was checked and before
-        // the first is deleted: from a seam of the notebook, outside the guarded
-        // delete, so breaking the guard does not remove the competing write.
         await nb.flush();
         final base = _disk(id);
-        final prev = nb.syncHook;
-        var fired = false;
-        nb.syncHook = (point, path) async {
-          await prev?.call(point, path);
-          if (point != 'move-before-source-delete' || fired) return;
-          fired = true;
-          _externalWriteSync(id, base.insertNode(y));
-        };
-        syncRestore = () {
-          nb.syncHook = prev;
-          expect(fired, isTrue, reason: 'the sync writer never got its turn');
-        };
+        restoreHook = _atRename(1, () => _externalWriteSync(id, base.insertNode(y)));
         m.boxes[y.id] = _val(y);
-        mustFail = true;
     }
     Object? error;
     var moved = false;
@@ -2401,9 +2408,12 @@ class _Run {
     } on Object catch (e) {
       error = e;
     }
-    storeOf(to).failNew.clear();
-    storeOf(from).failDelete.clear();
-    syncRestore?.call();
+    restoreHook?.call();
+    if (taken != null && taken!.existsSync()) {
+      taken!.deleteSync();
+      await nb.checkFile(taken!.path);
+      await nb.checkFolders();
+    }
     if (mustFail) {
       expect(error, isNotNull, reason: 'the move should have been refused');
       return; // everything stays where it was
@@ -3607,7 +3617,7 @@ class _Run {
     expect(recov.entries, isEmpty, reason: '$where: recovery entries are pending');
     expect(recov.problems, isEmpty, reason: '$where: recovery problems');
     expect(nb.recoveryDamaged, isEmpty, reason: '$where: recovery damage');
-    expect(nb.unreadable, isEmpty, reason: '$where: unreadable files');
+    expect(nb.unreadable.map((u) => '${u.path} ${u.reason}').toList(), isEmpty, reason: '$where: unreadable files');
     for (final b in nb.binders) {
       expect(b.unreadable, isEmpty, reason: '$where: unreadable files in ${b.path}');
     }
@@ -3691,7 +3701,7 @@ const _expectedKinds = {
   'external', 'rename:plain', 'rename:syncAtPublish', 'rename:syncBeforeWrite',
   'conflict:plain', 'conflict:replacedMidMerge', 'conflict:originalChanged',
   'conflict:stealPublish', 'conflict:scan', 'conflict:revertedAfterVerify', 'conflict:revertedRestart', //
-  'move:plain', 'move:pendingEdit', 'move:failDestination', 'move:failSourceDelete',
+  'move:plain', 'move:pendingEdit', 'move:failDestination',
   'move:syncAtSource', //
   'delete:undo', 'delete:keep', 'delete:syncAtDelete', 'delete:failDelete', //
   'delete:failUndo:retry', 'delete:failUndo:quit', 'delete:failRollback:kill', //
@@ -3704,7 +3714,7 @@ const _expectedKinds = {
   'binder:write/unseenReplace', 'binder:write/refuseOnce', 'binder:write/coverRefusedThenLands', //
   'binder:write/goneAtPublish', 'binder:write/tightenedBehindOtherDelta', 'binder:write/crashAside', //
   'binder:write/missingThenBack', 'binder:write/foreignAfterMissing', 'binder:write/heldThenUse', //
-  'sync:swapAside/save', 'sync:swapAside/move', 'sync:swapAside/delete', 'sync:swapAside/redundant', //
+  'sync:swapAside/save', 'sync:swapAside/delete', 'sync:swapAside/redundant', //
 };
 
 final Set<String> _seen = {};
@@ -3964,8 +3974,6 @@ class _DavWorld {
 void main() {
   // These scenarios model a move as copy-and-delete. Moves are renames now, with
   // their own kinds (stage D); until then this file keeps the copy behaviour.
-  setUpAll(() => Notebook.legacyPageCopyForTest = true);
-  tearDownAll(() => Notebook.legacyPageCopyForTest = false);
 
   Future<void> sequence(int seed) async {
     _started++;
@@ -4972,21 +4980,20 @@ void main() {
     // that is damaged or short is kept as .damaged-<hex>, in every outcome, and
     // the good copy takes its name. After a reload the page, the hash file and
     // each .damaged- file are as the model says.
-    test('a move into folders holding a damaged and a short hash file keeps both aside, also after a rollback', () async {
+    test('a move into folders holding a damaged and a short hash file keeps both aside', () async {
       String pageIn(String loc) => run.model.entries.firstWhere((e) => e.value.loc == loc).key;
       final p1 = pageIn('a'); // damaged destination, moved to b
       final p2 = pageIn('x'); // short destination, moved to a
-      final p3 = pageIn('b'); // damaged destination, forced into rollback (to a)
       final damaged = Uint8List.fromList(List.filled(_goodBytes.length, 5));
       final short = Uint8List.fromList([1, 2]);
-      for (final id in [p1, p2, p3]) {
+      for (final id in [p1, p2]) {
         run._giveAssets(id, hashFile: true);
       }
       run._seedDestination('b', p1, damaged);
       run._seedDestination('a', p2, short);
-      run._seedDestination('a', p3, damaged);
 
-      // p1 and p2 move, and the user is told about each kept file.
+      // Each page is renamed, its hash file takes the name of the damaged one
+      // (2c's damaged-target branch), and the user is told about each kept file.
       for (final (id, to, old) in [(p1, 'b', damaged), (p2, 'a', short)]) {
         Object? error;
         try {
@@ -5000,35 +5007,13 @@ void main() {
         run.asides[run._asidePath(to, id, old)] = old;
       }
 
-      // p3: the source page changes after its copy was made, so the move is
-      // rolled back; the good copy this move made goes, the aside stays.
-      final y = run._newBox('synced while moving');
-      final base = run._disk(p3);
-      var fired = false;
-      run.nb.syncHook = (point, _) async {
-        if (point != 'move-rekeyed' || fired) return;
-        fired = true;
-        run._externalWriteSync(p3, base.insertNode(y));
-      };
-      Object? error;
-      try {
-        await run._moveTo(p3, 'a');
-      } on Object catch (e) {
-        error = e;
-      }
-      run.nb.syncHook = null;
-      expect(fired, isTrue);
-      expect(error, isA<NotebookException>());
-      expect((error! as NotebookException).message, allOf(contains('Nothing was moved'), contains('.damaged-')));
-      run.model[p3]!.boxes[y.id] = _val(y);
-      run.leftFolders.add(('a', p3));
-      run.asides[run._asidePath('a', p3, damaged)] = damaged;
-
       await run.verify('after the moves', fresh: true);
       await run._opRestart();
       await run.verify('after a reload', fresh: true);
-      expect(File(run._hashPath(p3)).existsSync(), isTrue, reason: 'the source is untouched');
-      expect(File(run._hashPathIn('a', p3)).existsSync(), isFalse, reason: 'this move\'s good copy was removed');
+      for (final (id, to) in [(p1, 'b'), (p2, 'a')]) {
+        expect(File(run._hashPathIn(to, id)).existsSync(), isTrue, reason: 'the good file took the name');
+        expect(File(run._hashPathIn(to == 'b' ? 'a' : 'x', id)).existsSync(), isFalse, reason: 'and left the source');
+      }
     });
 
     // The same for undo: the set-aside folder goes back into a folder that holds

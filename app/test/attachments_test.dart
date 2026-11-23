@@ -11,23 +11,9 @@ import 'package:noted/main.dart';
 import 'package:noted/src/attachment_copy.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_attachments.dart';
-import 'package:noted/src/recovery_store.dart';
 import 'package:noted_box_attachments/noted_box_attachments.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
-
-/// A store that runs a hook whenever a page's text is read.
-class _HookedStore extends PageStore {
-  _HookedStore(super.directory);
-
-  void Function()? onRead;
-
-  @override
-  Future<String> readText(String pageId) {
-    onRead?.call();
-    return super.readText(pageId);
-  }
-}
 
 /// A store whose page [failId] can't be written (and from then on its folder is
 /// [unwritable]), so Undo of that page fails.
@@ -90,8 +76,6 @@ class _DeleteHookStore extends PageStore {
 // folder and its life with the page (move, template, delete, undo,
 // recovery).
 void main() {
-  setUpAll(() => Notebook.legacyPageCopyForTest = true); // copy-and-delete behaviour, until the copy path replaces it
-  tearDownAll(() => Notebook.legacyPageCopyForTest = false);
   late Directory root;
   late Directory pages;
   late Directory extra;
@@ -368,6 +352,8 @@ void main() {
 
     // A page with its file box (a hash-named attachment) and a note.txt of its own.
     Future<(Notebook, String, BinderSection)> pageWithNotes({PageStore? store}) async {
+      Notebook.forceCopyMoveForTest = true; // these tests are about the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final nb = make(store: store);
       await nb.load();
       final a = await nb.createPage();
@@ -379,6 +365,8 @@ void main() {
     }
 
     test('a different file already at the destination is kept, the original stays, and it is reported', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final (nb, a, binder) = await pageWithNotes();
       final clash = File('${assets(extra, a).path}/notes.txt')..createSync(recursive: true);
       clash.writeAsBytesSync([1, 2, 3]);
@@ -390,7 +378,7 @@ void main() {
               .having(
                 (e) => e.message,
                 'message',
-                allOf(contains('The page was moved'), contains('"notes.txt"'), contains('the original stays'), contains('Elsewhere')),
+                allOf(contains('The page was copied'), contains('"notes.txt"'), contains('the original stays'), contains('Elsewhere')),
               )
               .having((e) => e.needsAction, 'needsAction', isTrue),
         ),
@@ -398,7 +386,7 @@ void main() {
       expect(clash.readAsBytesSync(), [1, 2, 3], reason: 'the existing file is not trusted or replaced');
       expect(File('${assets(pages, a).path}/notes.txt').readAsStringSync(), 'mine', reason: 'the original is not deleted');
       expect(asset(extra, a).readAsBytesSync(), bytes, reason: 'the file that did copy moved');
-      expect(asset(pages, a).existsSync(), isFalse);
+      expect(asset(pages, a).existsSync(), isTrue);
       expect(File('${extra.path}/$a.canvas').existsSync(), isTrue, reason: 'the page itself moved');
       expect(extra.listSync(recursive: true).where((f) => f.path.endsWith('.tmp')), isEmpty);
     });
@@ -415,6 +403,16 @@ void main() {
       for (final e in d.listSync())
         if (e is File && isDamagedCopyName(nameOf(e.path))) e,
     ];
+
+    // Moves the page on the copy path and returns what the move kept.
+    Future<CopiedMove> copiedMove(Notebook nb, String a, BinderSection binder) async {
+      try {
+        await nb.moveToLocation(a, binderPath: binder.path);
+      } on OriginalsKeptException catch (e) {
+        return e.move;
+      }
+      fail('the move should have copied the page and kept the original');
+    }
 
     // Moves the page and returns the note the user is given (the move is made).
     Future<String> movedWithNote(Notebook nb, String a, BinderSection binder) async {
@@ -441,7 +439,7 @@ void main() {
       expect(
         note,
         allOf(
-          startsWith('The page was moved'),
+          startsWith('The page was copied'),
           contains('damaged copy of "$hash.txt"'),
           contains('"$aside"'),
           contains('the good copy was used'),
@@ -451,7 +449,7 @@ void main() {
       final kept = damagedFiles(assets(extra, a));
       expect(kept.map((f) => nameOf(f.path)), [aside]);
       expect(kept.single.readAsBytesSync(), damagedBytes, reason: 'the old bytes are never lost');
-      expect(assets(pages, a).existsSync(), isFalse, reason: 'the verified source is removed');
+      expect(assets(pages, a).existsSync(), isTrue, reason: 'the original stays until Delete the original');
     });
 
     test('a stable shorter destination file is kept as an incomplete copy, the good copy takes its name', () async {
@@ -462,7 +460,7 @@ void main() {
       expect(note, allOf(contains('incomplete copy of "$hash.txt"'), contains('"$aside"')));
       expect(asset(extra, a).readAsBytesSync(), bytes);
       expect(File('${assets(extra, a).path}/$aside').readAsBytesSync(), shortBytes);
-      expect(assets(pages, a).existsSync(), isFalse);
+      expect(assets(pages, a).existsSync(), isTrue);
     });
 
     for (final unreadable in [false, true]) {
@@ -503,7 +501,7 @@ void main() {
         expect(note, allOf(contains('"$hash.txt"'), contains('"$aside"')));
         if (same) {
           expect(asset(extra, a).readAsBytesSync(), bytes);
-          expect(assets(pages, a).existsSync(), isFalse, reason: 'verified: the source goes');
+          expect(assets(pages, a).existsSync(), isTrue, reason: 'the original stays');
         } else {
           expect(note, contains('different file'));
           expect(asset(extra, a).readAsBytesSync(), [9, 9], reason: 'what arrived is kept as it is');
@@ -574,20 +572,17 @@ void main() {
       expect(asset(extra, a).readAsBytesSync(), bytes);
       expect(damagedFiles(assets(extra, a)).map((f) => nameOf(f.path)), [nameOf(aside.path)]);
       expect(aside.readAsBytesSync(), damagedBytes);
-      expect(assets(pages, a).existsSync(), isFalse);
+      expect(assets(pages, a).existsSync(), isTrue);
     });
 
     test('a rollback after a later failure removes this move\'s good copy and keeps the aside, which the message names', () async {
-      final store = _HookedStore(pages);
-      final (nb, a, binder) = await pageWithNotes(store: store);
+      final (nb, a, binder) = await pageWithNotes();
       seedDestination(a, damagedBytes);
-      var fired = false;
-      store.onRead = () {
-        if (fired || !File('${assets(extra, a).path}/notes.txt').existsSync()) return;
-        fired = true;
-        final page = File('${pages.path}/$a.canvas');
-        page.writeAsStringSync(page.readAsStringSync().replaceFirst('"title":"', '"title":"Synced '));
-      };
+      final sub = await nb.createPage(parentId: a);
+      await nb.flush();
+      // The subpage's file is already at the destination, so its copy fails
+      // after the page's was made.
+      File('${pages.path}/$sub.canvas').copySync('${extra.path}/$sub.canvas');
       final aside = damagedCopyName('$hash.txt', contentHash(damagedBytes));
       await expectLater(
         nb.moveToLocation(a, binderPath: binder.path),
@@ -596,7 +591,7 @@ void main() {
             (e) => e.message,
             'message',
             allOf(
-              contains('Nothing was moved'),
+              contains('already has a file'),
               contains('damaged copy of "$hash.txt"'),
               contains('"$aside"'),
               contains("the good copy wasn't put in its place"),
@@ -605,7 +600,6 @@ void main() {
           ),
         ),
       );
-      expect(fired, isTrue);
       expect(asset(extra, a).existsSync(), isFalse, reason: 'the good copy this move published is removed');
       expect(File('${assets(extra, a).path}/$aside').readAsBytesSync(), damagedBytes, reason: 'the aside stays');
       expect(asset(pages, a).readAsBytesSync(), bytes);
@@ -928,6 +922,8 @@ void main() {
     });
 
     test('a source file that can\'t be read during the copy is the move\'s own failure: it rolls back and does not blame the destination', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final (nb, a, binder) = await pageWithNotes();
       seedDestination(a, damagedBytes);
       final locked = asset(pages, a).openSync();
@@ -952,40 +948,6 @@ void main() {
       }
       expect(asset(pages, a).readAsBytesSync(), bytes);
     }, skip: Platform.isWindows ? null : 'needs a mandatory file lock (Windows)');
-
-    test('the old files could not be removed after a damaged destination was set aside: the message names the aside', () async {
-      final store = _DeleteHookStore(pages);
-      final (nb, a, binder) = await pageWithNotes(store: store);
-      seedDestination(a, damagedBytes);
-      store.beforeDeleteOnce = () => throw const FileSystemException('source gone');
-      final note = await movedWithNote(nb, a, binder);
-      expect(note, allOf(contains('Could not remove the old files'), contains('damaged copy of "$hash.txt"'), contains('.damaged-')));
-      expect(File('${assets(extra, a).path}/${damagedCopyName('$hash.txt', contentHash(damagedBytes))}').readAsBytesSync(), damagedBytes);
-    });
-
-    test('a failure writing the kept changes after a damaged destination was set aside: the message names the aside', () async {
-      final (nb, a, binder) = await pageWithNotes();
-      seedDestination(a, damagedBytes);
-      // A kept edit of the page moves with it; writing its new copy fails.
-      final text = File('${pages.path}/$a.canvas').readAsStringSync();
-      final disk = readPage(text);
-      await RecoveryStore(rec).write(
-        folder: pages.path,
-        page: disk.withMeta(disk.meta.withTitle('an unsaved edit')),
-        baseText: text,
-        time: DateTime.now(),
-      );
-      await nb.refreshRecoveryIndexForTest();
-      var fired = false;
-      nb.recoveryStoreForTest!.hook = (point) async {
-        if (point != 'write') return;
-        fired = true;
-        throw const FileSystemException('disk full');
-      };
-      final note = await movedWithNote(nb, a, binder);
-      expect(fired, isTrue);
-      expect(note, allOf(contains('Nothing was moved'), contains('damaged copy of "$hash.txt"'), contains('.damaged-')));
-    });
 
     test('9d: a page that changed while deleting, put back into a folder with a changing file, keeps its trash folder through expiry', () async {
       Notebook.forceCopyMoveForTest = true;
@@ -1033,6 +995,8 @@ void main() {
     });
 
     test('a folder or other non-file at the destination is never trusted', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final (nb, a, binder) = await pageWithNotes();
       Directory('${assets(extra, a).path}/notes.txt').createSync(recursive: true);
       await expectLater(
@@ -1044,17 +1008,21 @@ void main() {
     });
 
     test('a volume without hard links: the target is created exclusively and filled', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       attachmentPublishHook = (tmp, target) async => throw const FileSystemException('no hard links');
       addTearDown(() => attachmentPublishHook = null);
       final (nb, a, binder) = await pageWithNotes();
-      expect(await nb.moveToLocation(a, binderPath: binder.path), isTrue);
+      await copiedMove(nb, a, binder);
       expect(asset(extra, a).readAsBytesSync(), bytes);
       expect(File('${assets(extra, a).path}/notes.txt').readAsStringSync(), 'mine');
-      expect(assets(pages, a).existsSync(), isFalse);
+      expect(assets(pages, a).existsSync(), isTrue);
       expect(extra.listSync(recursive: true).where((f) => f.path.endsWith('.tmp')), isEmpty);
     });
 
     test('without hard links, a file that appears at the target meanwhile is never written over', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       attachmentPublishHook = (tmp, target) async => throw const FileSystemException('no hard links');
       attachmentBeforePublishHook = (target) async {
         if (target.endsWith('notes.txt')) File(target).writeAsStringSync('arrived first');
@@ -1087,88 +1055,46 @@ void main() {
       expect(File('${assets(pages, a).path}/${plain.fileName}').readAsBytesSync(), bytes);
     });
 
-    test('a source attachment that changed after it was copied is kept', () async {
-      final store = _HookedStore(pages);
-      final (nb, a, binder) = await pageWithNotes(store: store);
+    test('Delete the original keeps an attachment that changed since the move, and deletes the rest', () async {
+      final (nb, a, binder) = await pageWithNotes();
       final notes = File('${assets(pages, a).path}/notes.txt');
-      store.onRead = () {
-        if (File('${assets(extra, a).path}/notes.txt').existsSync() && notes.readAsStringSync() == 'mine') {
-          notes.writeAsStringSync('mine, then edited');
-        }
-      };
-      expect(await nb.moveToLocation(a, binderPath: binder.path), isTrue);
-      store.onRead = null;
+      final kept = await copiedMove(nb, a, binder);
+      expect(notes.readAsStringSync(), 'mine', reason: 'the original stays after the move');
+      notes.writeAsStringSync('mine, then edited');
+      await expectLater(
+        nb.deleteOriginals(kept),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('was kept'))),
+      );
       expect(notes.readAsStringSync(), 'mine, then edited', reason: 'no longer what was copied');
       expect(asset(pages, a).existsSync(), isFalse, reason: 'the unchanged file is removed');
+      expect(File('${pages.path}/$a.canvas').existsSync(), isFalse, reason: 'the page file was unchanged');
+      expect(File('${assets(extra, a).path}/notes.txt').readAsStringSync(), 'mine', reason: 'the copy is untouched');
     });
 
-    test('a source that changed just before it was set aside is put back as it is, with no aside file left', () async {
+    test('Delete the original keeps the originals when the copy of an attachment changed', () async {
       final (nb, a, binder) = await pageWithNotes();
-      attachmentBeforeRemoveHook = (src) async {
-        if (src.path.endsWith('notes.txt')) src.writeAsStringSync('changed at the last moment');
-      };
-      addTearDown(() => attachmentBeforeRemoveHook = null);
-      expect(await nb.moveToLocation(a, binderPath: binder.path), isTrue);
-      expect(File('${assets(pages, a).path}/notes.txt').readAsStringSync(), 'changed at the last moment');
-      expect(assets(pages, a).listSync().where((f) => f.path.endsWith('.tmp')), isEmpty);
-    });
-
-    test('a file that takes the source path while it is set aside is never deleted, nothing is left over', () async {
-      final (nb, a, binder) = await pageWithNotes();
-      attachmentAfterAsideHook = (source) {
-        if (!source.path.endsWith('notes.txt')) return;
-        // A sync client puts a new file at the source path while the old one is set aside.
-        source.writeAsStringSync('arrived');
-      };
-      addTearDown(() => attachmentAfterAsideHook = null);
-      expect(await nb.moveToLocation(a, binderPath: binder.path), isTrue);
-      expect(File('${assets(pages, a).path}/notes.txt').readAsStringSync(), 'arrived');
-      expect(File('${assets(extra, a).path}/notes.txt').readAsStringSync(), 'mine');
-      final left = assets(pages, a).listSync().whereType<File>().where((f) => f.path.contains('.cas-')).toList();
-      expect(left, isEmpty, reason: 'the verified set-aside original is deleted, not kept');
-    });
-
-    test('a source that changes as it is set aside, with a new file at its path before it is put back: both stay and it is reported', () async {
-      final (nb, a, binder) = await pageWithNotes();
-      attachmentMoveAsideHook = (source) {
-        if (source.path.endsWith('notes.txt')) source.writeAsStringSync('changed at the last moment');
-      };
-      attachmentBeforeRestoreHook = (source) {
-        // The set-aside file no longer matches; a new file takes its path.
-        if (source.path.endsWith('notes.txt')) source.writeAsStringSync('arrived');
-      };
-      addTearDown(() {
-        attachmentMoveAsideHook = null;
-        attachmentBeforeRestoreHook = null;
-      });
+      final kept = await copiedMove(nb, a, binder);
+      File('${assets(extra, a).path}/notes.txt').writeAsStringSync('edited at the destination');
       await expectLater(
-        nb.moveToLocation(a, binderPath: binder.path),
-        throwsA(
-          isA<NotebookException>().having(
-            (e) => e.message,
-            'message',
-            allOf(contains('The page was moved'), contains('leftover temporary file')),
-          ),
-        ),
+        nb.deleteOriginals(kept),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('changed since the move'))),
       );
-      expect(File('${assets(pages, a).path}/notes.txt').readAsStringSync(), 'arrived');
-      final left = assets(pages, a).listSync().whereType<File>().where((f) => f.path.contains('.cas-')).toList();
-      expect(left.map((f) => f.readAsStringSync()), ['changed at the last moment'], reason: 'the changed original is kept');
+      expect(File('${assets(pages, a).path}/notes.txt').readAsStringSync(), 'mine');
+      expect(asset(pages, a).existsSync(), isFalse, reason: 'the other original goes: its copy is as it was');
     });
 
-    test('R-1: an attachment that changed at the destination is kept when the move is rolled back', () async {
-      final store = _HookedStore(pages);
-      final (nb, a, binder) = await pageWithNotes(store: store);
-      var fired = false;
-      store.onRead = () {
-        final copied = File('${assets(extra, a).path}/notes.txt');
-        if (fired || !copied.existsSync()) return;
-        fired = true;
-        // The copy is made. A sync client changes the copied attachment, and the
-        // source page changes too, so the move is rolled back.
-        copied.writeAsStringSync('changed at the destination');
-        final page = File('${pages.path}/$a.canvas');
-        page.writeAsStringSync(page.readAsStringSync().replaceFirst('"title":"', '"title":"Synced '));
+    test('R-1: an attachment that changed at the destination is kept when a later page fails and the copy is rolled back', () async {
+      final (nb, a, binder) = await pageWithNotes();
+      final sub = await nb.createPage(parentId: a);
+      await nb.flush();
+      // The subpage's file is already at the destination, so its copy fails
+      // after the page's was made.
+      File('${pages.path}/$sub.canvas').copySync('${extra.path}/$sub.canvas');
+      var publishes = 0;
+      nb.syncHook = (point, path) async {
+        if (point == 'new-before-publish' && ++publishes == 2) {
+          File('${assets(extra, a).path}/notes.txt').writeAsStringSync('changed at the destination');
+        }
       };
       await expectLater(
         nb.moveToLocation(a, binderPath: binder.path),
@@ -1176,17 +1102,20 @@ void main() {
           isA<NotebookException>().having(
             (e) => e.message,
             'message',
-            allOf(contains('Nothing was moved'), contains('were kept')),
+            allOf(contains('already has a file'), contains('were kept')),
           ),
         ),
       );
-      expect(fired, isTrue);
+      expect(publishes, 2);
       expect(File('${assets(extra, a).path}/notes.txt').readAsStringSync(), 'changed at the destination');
       expect(File('${assets(pages, a).path}/notes.txt').readAsStringSync(), 'mine');
       expect(File('${extra.path}/$a.canvas').existsSync(), isFalse, reason: 'the unchanged page copy goes');
+      expect(File('${pages.path}/$a.canvas').existsSync(), isTrue, reason: 'the original never moves');
     });
 
     test('leftover unique temporary files in the source: a complete one is put back, an incomplete one is kept and reported', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final (nb, a, binder) = await pageWithNotes();
       final done = Uint8List.fromList(utf8.encode('finished but never renamed'));
       final h = contentHash(done);
@@ -1203,30 +1132,36 @@ void main() {
     });
 
     test('a complete <hash>.<ext>.tmp (an unfinished write) in the source lands as <hash>.<ext>', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final (nb, a, binder) = await pageWithNotes();
       final other = Uint8List.fromList(utf8.encode('stopped before its rename'));
       final h = contentHash(other);
       File('${assets(pages, a).path}/$h.txt.tmp').writeAsBytesSync(other);
       File('${assets(pages, a).path}/0000.tmp').writeAsBytesSync([1]); // not a hash name: skipped
-      expect(await nb.moveToLocation(a, binderPath: binder.path), isTrue);
+      await copiedMove(nb, a, binder);
       expect(File('${assets(extra, a).path}/$h.txt').readAsBytesSync(), other);
       expect(File('${assets(extra, a).path}/0000.tmp').existsSync(), isFalse);
-      expect(File('${assets(pages, a).path}/$h.txt.tmp').existsSync(), isFalse, reason: 'verified, so removed');
+      expect(File('${assets(pages, a).path}/$h.txt.tmp').existsSync(), isTrue, reason: 'the original stays until Delete the original');
     });
 
     test('an attachment called report.tmp (<hash>.tmp) keeps its name through a move', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final (nb, a, binder) = await pageWithNotes();
       final report = Uint8List.fromList(utf8.encode('a real file named report.tmp'));
       final name = attachmentFileName(contentHash(report), 'tmp');
       expect(name.endsWith('.tmp'), isTrue);
       File('${assets(pages, a).path}/$name').writeAsBytesSync(report);
-      expect(await nb.moveToLocation(a, binderPath: binder.path), isTrue);
+      await copiedMove(nb, a, binder);
       expect(File('${assets(extra, a).path}/$name').readAsBytesSync(), report);
       expect(File('${assets(extra, a).path}/${contentHash(report)}').existsSync(), isFalse, reason: 'never renamed');
-      expect(File('${assets(pages, a).path}/$name').existsSync(), isFalse);
+      expect(File('${assets(pages, a).path}/$name').existsSync(), isTrue);
     });
 
     test('a broken hash-named target is replaced only when the source holds the hash', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final (nb, a, binder) = await pageWithNotes();
       // The source file does not hold the hash in its name either.
       asset(pages, a).writeAsBytesSync([5, 5]);
@@ -1241,7 +1176,9 @@ void main() {
       expect(asset(pages, a).readAsBytesSync(), [5, 5]);
     });
 
-    test('a destination file with the same bytes (an earlier interrupted move) is trusted and the original goes', () async {
+    test('a destination file with the same bytes (an earlier interrupted move) is trusted; Delete the original then removes the original', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final nb = make();
       await nb.load();
       final a = await nb.createPage();
@@ -1251,26 +1188,25 @@ void main() {
       asset(extra, a)
         ..createSync(recursive: true)
         ..writeAsBytesSync(bytes);
-      expect(await nb.moveToLocation(a, binderPath: binder.path), isTrue);
+      final kept = await copiedMove(nb, a, binder);
+      expect(assets(pages, a).existsSync(), isTrue, reason: 'the original stays after the move');
+      expect(await nb.deleteOriginals(kept), contains('deleted'));
       expect(assets(pages, a).existsSync(), isFalse);
       expect(asset(extra, a).readAsBytesSync(), bytes);
     });
 
-    test('a file that reached the source after the copy survives the move', () async {
-      final store = _HookedStore(pages);
-      final nb = make(store: store);
+    test('a file that reached the source after the copy survives Delete the original', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
+      final nb = make();
       await nb.load();
       final a = await nb.createPage();
       await nb.open(a);
       await attach(nb);
       final binder = await nb.addBinder(extra.path);
-      final arrived = File('${assets(pages, a).path}/arrived-later.txt');
-      // The page's text is read again after the attachments were copied.
-      store.onRead = () {
-        if (asset(extra, a).existsSync() && !arrived.existsSync()) arrived.writeAsStringSync('synced in');
-      };
-      expect(await nb.moveToLocation(a, binderPath: binder.path), isTrue);
-      store.onRead = null;
+      final kept = await copiedMove(nb, a, binder);
+      final arrived = File('${assets(pages, a).path}/arrived-later.txt')..writeAsStringSync('synced in');
+      await nb.deleteOriginals(kept);
       expect(arrived.readAsStringSync(), 'synced in', reason: 'not part of what was copied, so not deleted');
       expect(File('${assets(extra, a).path}/arrived-later.txt').existsSync(), isFalse);
       expect(asset(pages, a).existsSync(), isFalse, reason: 'the copied and verified file is removed');

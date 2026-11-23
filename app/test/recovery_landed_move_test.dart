@@ -355,9 +355,9 @@ void main() {
       expect(nb.landedTextCount, 0);
     });
 
-    test('a rolled-back move leaves a combined entry at the target: it is merged back into the source', () async {
-      Notebook.legacyPageCopyForTest = true; // the copy-and-delete behaviour, until the copy path replaces it
-      addTearDown(() => Notebook.legacyPageCopyForTest = false);
+    test('a copy that fails leaves a combined entry at the target: it is merged back into the source', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final p = await makePage();
       final nb = await landedUnsettled(p.id, p.baseText);
       await targetEntry(p.baseText, p.xs[0]);

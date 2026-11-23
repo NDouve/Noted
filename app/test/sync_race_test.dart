@@ -1844,11 +1844,12 @@ void main() {
       await nb.checkFile(pathOf(id));
       await recheck();
       await Future<void>.delayed(const Duration(milliseconds: 500));
-      expect(writes(), 3, reason: 'the old folder is not the page\'s file now');
+      // The move's own placement write to the page's file in the new folder is a change of its file: it unparks the mark, once.
+      expect(writes(), 4, reason: 'one round after the move, at the new file of the page; the old folder is not its file');
       await foreign('${extraDir.path}$sep$id.canvas');
       await recheck();
       await Future<void>.delayed(const Duration(milliseconds: 500));
-      expect(writes(), 4);
+      expect(writes(), 4, reason: 'once per mark');
       await foreign('${extraDir.path}$sep$id.canvas');
       await recheck();
       await Future<void>.delayed(const Duration(milliseconds: 500));

@@ -338,9 +338,9 @@ void main() {
       expect(File(pagePath(first)).existsSync(), isTrue);
     });
 
-    test('a move that fails and rolls back emits its publish and delete pair', () async {
-      Notebook.legacyPageCopyForTest = true; // the copy-and-delete behaviour, until the copy path replaces it
-      addTearDown(() => Notebook.legacyPageCopyForTest = false);
+    test('a copying move that fails and rolls back emits its publish and delete pair', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       await start();
       late FailingStore dest;
       nb.dispose();
@@ -356,10 +356,11 @@ void main() {
       nb.localChanges.listen(events.add);
       final section = await nb.addBinder(folder.path);
       final id = nb.currentId!;
-      await nb.createPage();
+      final sub = await nb.createPage(parentId: id);
       await nb.flush();
+      // The subpage's file is at the target already, so its copy fails after the page's was made.
+      File(pagePath(sub)).copySync(pagePath(sub, folder));
       await take();
-      source.failDeletes = true; // the source can't be removed: the move rolls back
       try {
         await nb.moveToLocation(id, binderPath: section.path);
       } on NotebookException {
