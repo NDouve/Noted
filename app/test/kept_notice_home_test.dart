@@ -105,6 +105,16 @@ void main() {
     await finish(tester);
   });
 
+  testWidgets('an edit that lands while the notice is still sliding in takes it down once it shows', (tester) async {
+    await start(tester);
+    // No pump for the slide-in: the notice is not visible yet.
+    await land();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byKey(const ValueKey('kept-notice')), findsNothing);
+    await finish(tester);
+  });
+
   testWidgets('another snackbar that replaced the notice stays when the edit lands', (tester) async {
     await start(tester);
     await tester.pump(const Duration(milliseconds: 400));

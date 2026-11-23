@@ -139,8 +139,7 @@ class _HomeState extends State<Home> {
   StreamSubscription<KeptNotice>? _kept;
   StreamSubscription<String>? _keptCleared;
   String? _keptShownFor;
-  bool _keptVisible = false;
-  ScaffoldFeatureController<SnackBar, SnackBarClosedReason>? _keptBar;
+  _KeptBar? _keptBar;
 
   @override
   void initState() {
@@ -173,35 +172,39 @@ class _HomeState extends State<Home> {
     if (messenger == null) return;
     messenger.hideCurrentSnackBar();
     _keptShownFor = n.pageId;
-    _keptVisible = false;
+    final kept = _KeptBar();
     final bar = messenger.showSnackBar(
-      keptNoticeBar(n, () => unawaited(_showKeptPage(n.pageId)), onVisible: () {
-        if (_keptBar != null) _keptVisible = true;
-      }),
+      keptNoticeBar(
+        n,
+        () => unawaited(_showKeptPage(n.pageId)),
+        onVisible: () {
+          kept.visible = true;
+          // The edit landed while it was still sliding in or queued.
+          if (kept.landed) kept.controller?.close();
+        },
+      ),
     );
-    _keptBar = bar;
+    kept.controller = bar;
+    _keptBar = kept;
     // However it closes (time, X, Show, replaced), it is no longer ours.
     unawaited(
       bar.closed.then((_) {
-        if (identical(_keptBar, bar)) {
+        if (identical(_keptBar, kept)) {
           _keptBar = null;
           _keptShownFor = null;
-          _keptVisible = false;
         }
       }),
     );
   }
 
   // The edits of [pageId] landed: its kept notice no longer holds. Only that
-  // notice is taken down, and only while it is the one showing.
+  // notice is taken down: now if it is showing, else as soon as it shows.
   void _hideKept(String pageId) {
-    final bar = _keptBar;
-    if (bar == null || _keptShownFor != pageId) return;
-    final showing = _keptVisible;
-    _keptBar = null;
+    final kept = _keptBar;
+    if (kept == null || _keptShownFor != pageId) return;
     _keptShownFor = null;
-    _keptVisible = false;
-    if (showing) bar.close();
+    kept.landed = true;
+    if (kept.visible) kept.controller?.close();
   }
 
   Future<void> _showKeptPage(String id) async {
@@ -890,4 +893,11 @@ class _GuardState {
   Object? source;
   GuardQuestion? answered;
   GuardPrompt? prompt;
+}
+
+// The kept-edits snackbar on screen (or queued), and what became of it.
+class _KeptBar {
+  ScaffoldFeatureController<SnackBar, SnackBarClosedReason>? controller;
+  bool visible = false;
+  bool landed = false;
 }

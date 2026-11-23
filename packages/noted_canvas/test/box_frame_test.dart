@@ -303,7 +303,7 @@ void main() {
         t,
       ) async {
         const reason =
-            'This folder now holds another binder, so this page is read-only. Your unsaved changes are kept and are saved here if you choose Use this binder.';
+            'This folder now holds another binder, so this page is read-only. Your unsaved changes are kept and are saved in this folder if you choose Use this binder.';
         Future<Size> reasonSize(double width) async {
           t.view.physicalSize = Size(width, 600);
           t.view.devicePixelRatio = 1;
