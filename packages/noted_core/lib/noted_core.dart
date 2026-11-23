@@ -47,7 +47,7 @@ export 'src/storage/exclusive_move.dart'
     hide debugMoveStrategy, MoveStrategy, moveExclusiveUncoordinated;
 export 'src/storage/exclusive_publish.dart'
     hide checkWindowsName, publishExclusiveUncoordinated, windowsPath;
-export 'src/storage/file_stamp.dart' show FileStamp, fileStamp;
+export 'src/storage/file_stamp.dart' show FileStamp, fileStamp, noFileStampsForTest;
 export 'src/storage/folder_locks.dart';
 export 'src/storage/local_change.dart';
 export 'src/storage/page_store.dart';

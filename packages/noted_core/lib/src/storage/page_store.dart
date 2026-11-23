@@ -70,6 +70,11 @@ class PageStore {
   Map<String, String> _released = const {};
   static int _tmpCounter = 0;
 
+  /// Called with the path of every page file this store reads: a scan, [load],
+  /// [readText] and the read inside [saveIfUnchanged]. A seam for tests that
+  /// count reads; production code leaves it null.
+  static void Function(String path)? fileReadObserver;
+
   /// The adopted files (page id to path) that the last [scan] read as a valid
   /// page holding another id. They are not ranked for the id they were adopted
   /// for; the choice stays in the store until [unadopt], so the caller decides.
@@ -119,6 +124,7 @@ class PageStore {
       if (f is! File || !f.path.endsWith(extension)) continue;
       try {
         final before = stamps ? fileStamp(f.path) : null;
+        fileReadObserver?.call(f.path);
         final page = readPage(await f.readAsString());
         read[_name(f.path)] = (f.path, page);
         if (stamps) {
@@ -250,13 +256,17 @@ class PageStore {
   /// Reads the page's file. Throws [PageFormatException] if the file holds a
   /// different page, so one page's content is never served under another id.
   Future<NotedPage> load(String pageId) async {
+    fileReadObserver?.call(_pathFor(pageId));
     final page = readPage(await File(_pathFor(pageId)).readAsString());
     if (page.id != pageId) throw const PageFormatException('the page file holds a different page');
     return page;
   }
 
   /// The text of the page's file, as stored.
-  Future<String> readText(String pageId) => File(_pathFor(pageId)).readAsString();
+  Future<String> readText(String pageId) {
+    fileReadObserver?.call(_pathFor(pageId));
+    return File(_pathFor(pageId)).readAsString();
+  }
 
   /// Writes [page] atomically: to a temporary file first, then renamed over
   /// the old file, so a crash mid-write never leaves a half-written page.
@@ -357,7 +367,10 @@ class PageStore {
         path,
         expected,
         beforeMoveAside: beforeMoveAside,
-        afterRead: afterRead,
+        afterRead: () {
+          fileReadObserver?.call(path);
+          afterRead?.call();
+        },
         beforePublish: () {
           beforePublish?.call();
           if (onPublishStamp != null) stamp = fileStamp(tmp.path);

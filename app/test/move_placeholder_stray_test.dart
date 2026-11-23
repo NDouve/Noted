@@ -38,11 +38,13 @@ void main() {
     extra = await Directory('${root.path}/Elsewhere').create();
     opened = [];
     reads = [];
+    PageStore.fileReadObserver = reads.add; // every read of a page file, anywhere
     hook = null;
     Notebook.pairLockLimit = const Duration(milliseconds: 150);
     Notebook.pairRetryDelay = const Duration(milliseconds: 10);
   });
   tearDown(() async {
+    PageStore.fileReadObserver = null;
     Notebook.pairLockLimit = const Duration(seconds: 5);
     Notebook.pairRetryDelay = const Duration(milliseconds: 500);
     Notebook.placeholderMarksForTest = {};
@@ -65,7 +67,6 @@ void main() {
       bindersFile: File('${root.path}/app/binders.json'),
     );
     nb.syncHook = (point, path) async {
-      if (point == 'check-read') reads.add(path);
       await hook?.call(point, path);
     };
     opened.add(nb);

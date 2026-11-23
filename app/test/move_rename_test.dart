@@ -29,11 +29,13 @@ void main() {
     extra = await Directory('${root.path}/Elsewhere').create();
     opened = [];
     reads = [];
+    PageStore.fileReadObserver = reads.add; // every read of a page file, anywhere
     hook = null;
     Notebook.pairLockLimit = const Duration(milliseconds: 150);
     Notebook.pairRetryDelay = const Duration(milliseconds: 10);
   });
   tearDown(() async {
+    PageStore.fileReadObserver = null;
     Notebook.pairLockLimit = const Duration(seconds: 5);
     Notebook.pairRetryDelay = const Duration(milliseconds: 500);
     for (final nb in opened) {
@@ -51,7 +53,6 @@ void main() {
       bindersFile: File('${root.path}/app/binders.json'),
     );
     nb.syncHook = (point, path) async {
-      if (point == 'check-read') reads.add(path);
       await hook?.call(point, path);
     };
     opened.add(nb);
@@ -92,8 +93,9 @@ void main() {
     expect(text(extra, ca), sub);
     expect(readPage(text(extra, a)).meta.parentId, x);
     expect(nb.tree.descendantsOf(x), [a, ca]);
-    // Step 4's checks of both ends skip a stamped page.
-    expect(reads, isEmpty);
+    // Only the root is read, by its placement (the header is in the file): the
+    // subpage is stamped, so no check of it reads it either.
+    expect(reads.where((r) => !r.endsWith('$a.canvas')), isEmpty, reason: 'rule P: $reads');
   });
 
   test('the images and files folder is renamed with its page', () async {

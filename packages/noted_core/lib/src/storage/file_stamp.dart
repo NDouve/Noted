@@ -51,6 +51,10 @@ final class FileStamp {
   String toString() => 'FileStamp($volume, $fileId, $size, $modifiedNs)';
 }
 
+/// A test seam: true makes [fileStamp] answer null for every path, as on a platform
+/// that can't give a stamp.
+bool noFileStampsForTest = false;
+
 /// The stamp of the file or folder at [path] (a link is stamped, not followed),
 /// from metadata only; no data access and no write call.
 ///
@@ -59,6 +63,7 @@ final class FileStamp {
 /// example no file id on FAT, or a 32-bit ABI): a null stamp only means "read
 /// it".
 FileStamp? fileStamp(String path) {
+  if (noFileStampsForTest) return null;
   try {
     return rawFileInfo(path)?.stamp;
   } catch (_) {
