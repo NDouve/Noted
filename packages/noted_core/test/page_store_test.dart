@@ -308,7 +308,7 @@ void main() {
       await from.save(page('p1', 'One'));
       final bytes = File(from.pathFor('p1')).readAsBytesSync();
       final oldPath = from.pathFor('p1');
-      expect(from.moveTo('p1', to), MoveOutcome.moved);
+      expect(await from.moveTo('p1', to), MoveOutcome.moved);
       expect(File(oldPath).existsSync(), isFalse);
       expect(File(to.pathFor('p1')).readAsBytesSync(), bytes);
       expect(File(to.pathFor('p1')).parent.path, other.path);
@@ -319,7 +319,7 @@ void main() {
       final from = PageStore(dir), to = PageStore(other);
       await from.save(page('p1'));
       final before = fileStamp(from.pathFor('p1'));
-      from.moveTo('p1', to);
+      await from.moveTo('p1', to);
       expect(fileStamp(to.pathFor('p1')), before);
     });
 
@@ -328,7 +328,7 @@ void main() {
       final text = writePage(page('p1'));
       File('${dir.path}/chosen.canvas').writeAsStringSync(text);
       from.adopt('p1', '${dir.path}/chosen.canvas');
-      expect(from.moveTo('p1', to), MoveOutcome.moved);
+      expect(await from.moveTo('p1', to), MoveOutcome.moved);
       // The chosen name travels with the file.
       expect(File('${other.path}/chosen.canvas').existsSync(), isTrue);
       expect(to.pathFor('p1'), '${other.path}${Platform.pathSeparator}chosen.canvas');
@@ -346,7 +346,7 @@ void main() {
       to.adopt('p1', '${other.path}/mine.canvas');
       await from.save(page('p1', 'Source'));
       // The target holds p1 under another name, so p1.canvas is free there.
-      expect(from.moveTo('p1', to), MoveOutcome.moved);
+      expect(await from.moveTo('p1', to), MoveOutcome.moved);
       expect(to.pathFor('p1'), '${other.path}${Platform.pathSeparator}p1.canvas');
       // Unadopted: a scan lists both files and ranks them, not the old choice.
       final scanned = await to.scan();
@@ -360,7 +360,7 @@ void main() {
       await to.save(page('p1', 'Target'));
       final src = File(from.pathFor('p1')).readAsBytesSync();
       final dst = File(to.pathFor('p1')).readAsBytesSync();
-      expect(from.moveTo('p1', to), MoveOutcome.targetExists);
+      expect(await from.moveTo('p1', to), MoveOutcome.targetExists);
       expect(File(from.pathFor('p1')).readAsBytesSync(), src);
       expect(File(to.pathFor('p1')).readAsBytesSync(), dst);
       expect((await from.load('p1')).meta.title, 'Source');
@@ -369,14 +369,14 @@ void main() {
     test('a target made at the call is not replaced', () async {
       final from = PageStore(dir), to = PageStore(other);
       await from.save(page('p1', 'Source'));
-      final outcome = from.moveTo('p1', to, beforeOsCall: () => File('${other.path}/p1.canvas').writeAsStringSync('theirs'));
+      final outcome = await from.moveTo('p1', to, beforeOsCall: () => File('${other.path}/p1.canvas').writeAsStringSync('theirs'));
       expect(outcome, MoveOutcome.targetExists);
       expect(File('${other.path}/p1.canvas').readAsStringSync(), 'theirs');
       expect((await from.load('p1')).meta.title, 'Source');
     });
 
-    test('a missing source file throws', () {
-      expect(() => PageStore(dir).moveTo('nope', PageStore(other)), throwsA(isA<FileSystemException>()));
+    test('a missing source file throws', () async {
+      await expectLater(() => PageStore(dir).moveTo('nope', PageStore(other)), throwsA(isA<FileSystemException>()));
     });
   });
 

@@ -6,6 +6,8 @@ import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
+import 'coordination.dart';
+
 /// Moves the finished file [tmp] to [target] only if nothing is at [target]
 /// at the moment of publishing. There is no check-then-rename window: the
 /// operating system makes the decision atomically.
@@ -34,14 +36,38 @@ import 'dart:io';
 /// Windows: `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`, on `\\?\` paths
 /// so long paths work. Linux, macOS, iOS, Android: `link(tmp, target)` (fails
 /// with EEXIST), then `unlink(tmp)`.
+///
+/// Under a registered coordinator (`coordination.dart`) the call runs inside
+/// it, naming the folders as writes and [tmp] as a move; a [StorageBusy] means
+/// nothing was written. With none registered it runs directly.
 Future<bool> publishExclusive(
   File tmp,
   String target, {
   void Function()? beforeOsCall,
-}) async => publishExclusiveSync(tmp, target, beforeOsCall: beforeOsCall);
+}) {
+  String folder(String p) => folderOf(p);
+  final targetFolder = folder(target), sourceFolder = folder(tmp.path);
+  return coordinated(
+    CoordinatedWrite([
+      CoordinationIntent(targetFolder, CoordinationKind.write),
+      if (sourceFolder != targetFolder)
+        CoordinationIntent(sourceFolder, CoordinationKind.write),
+      CoordinationIntent(tmp.path, CoordinationKind.move),
+    ]),
+    () => publishExclusiveUncoordinated(tmp, target, beforeOsCall: beforeOsCall),
+  );
+}
 
-/// The synchronous form of [publishExclusive].
-bool publishExclusiveSync(
+/// [publishExclusive] without the coordination hook, for the primitives that
+/// are already inside their one coordinated call. Not exported by the
+/// package's libraries.
+Future<bool> publishExclusiveUncoordinated(
+  File tmp,
+  String target, {
+  void Function()? beforeOsCall,
+}) async => _publishExclusiveSync(tmp, target, beforeOsCall: beforeOsCall);
+
+bool _publishExclusiveSync(
   File tmp,
   String target, {
   void Function()? beforeOsCall,

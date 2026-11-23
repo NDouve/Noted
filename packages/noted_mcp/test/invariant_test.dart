@@ -80,10 +80,11 @@ void main() {
 
   test('of Noted\'s own code only the read-only core and the server itself are reachable', () {
     const allowedCore = {'ai', 'binder', 'format', 'json', 'model', 'search', 'tree'};
-    // The storage files: the exclusive publisher and the checked drop (dart:io only) the narrow writer uses.
+    // The storage files: the exclusive publisher, the checked drop and the coordination hook (dart:async and dart:io only; empty in the server) the narrow writer uses.
     const storage = {
       'package:noted_core/src/storage/exclusive_publish.dart',
       'package:noted_core/src/storage/drop_verified.dart',
+      'package:noted_core/src/storage/coordination.dart',
     };
     final bad = [
       for (final lib in graph)
@@ -326,6 +327,20 @@ void main() {
     // The binder file writer lives in the full core only.
     expect(sources.keys, isNot(contains('package:noted_core/src/binder/binder_store.dart')));
     expect(sources.keys, contains('package:noted_core/src/binder/binder.dart'));
+  });
+
+  test('the coordination hook stays empty in the server: only coordination.dart names a coordinator', () {
+    const coordination = 'package:noted_core/src/storage/coordination.dart';
+    final sources = notedSources();
+    expect(sources.keys, contains(coordination));
+    final bad = [
+      for (final e in sources.entries)
+        if (e.key != coordination &&
+            (RegExp(r'\bregisterCoordinator\b').hasMatch(e.value) ||
+                RegExp(r'\b(implements|extends|with)\s+(\w+\s*,\s*)*StorageCoordinator\b').hasMatch(e.value)))
+          e.key,
+    ];
+    expect(bad, isEmpty);
   });
 
   test('the gate is the only user of the running lock (run 2026-11-06-02)', () {
