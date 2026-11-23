@@ -477,6 +477,17 @@ class _Chaos extends PageStore {
 }
 
 /// What the model knows of one page.
+/// An original a copy-path move kept at [path] in [loc]: listed as a duplicate of
+/// page [id], holding [text].
+class _Dup {
+  _Dup(this.id, this.loc, this.path, this.text);
+
+  final String id;
+  final String loc;
+  final String path;
+  final String text;
+}
+
 class _MPage {
   _MPage(this.loc, {this.parent});
 
@@ -647,6 +658,11 @@ class _Run {
   final Map<String, List<int>> asides = {};
   final Set<(String, String)> leftFolders = {};
   final Set<Notebook> _gone = {};
+
+  /// The originals a copy-path move kept, each listed as a duplicate of its page
+  /// (what the move does where a page can't be renamed). A step that makes one
+  /// ends by removing it, as the user's Delete the original does.
+  final List<_Dup> _dups = [];
   void _drop() {
     if (_gone.add(nb)) nb.dispose();
   }
@@ -2379,6 +2395,20 @@ class _Run {
       _kind = null;
       return; // a notebook always keeps a standalone page
     }
+    // Some moves are by copy (a generator of its own, so the choices of the steps
+    // stay the ones they were).
+    if (variant == 'plain' && subtree.every((p) => model[p]!.assetText == null) && _kcrng.nextInt(3) == 0) {
+      final copyVariant = const [
+        'copyKeepsOriginal',
+        'copyCrash',
+        'deleteOriginalCopyChanged',
+        'deleteOriginalCrash',
+      ][_kcrng.nextInt(4)];
+      _kind = 'move:$copyVariant';
+      trace.add('  by copy: $copyVariant');
+      await _opMoveCopy(copyVariant, id, to, subtree);
+      return;
+    }
     var mustFail = false;
     void Function()? restoreHook;
     File? taken;
@@ -2425,6 +2455,144 @@ class _Run {
       model[p]!.loc = to;
     }
     m.parent = null;
+  }
+
+  // ---- a move by copy (a page kept in both places) ------------------------------
+
+  /// After a copy-path move, or a crash in it or in Delete the original: which
+  /// file of each page of [subtree] the notebook lists as the page and which, if
+  /// both are there, as its duplicate. Sets the model's places and [_dups].
+  void _readBoth(List<String> subtree, String from, String to) {
+    _dups.clear();
+    final listedDup = {
+      for (final u in [...nb.unreadable, for (final b in nb.binders) ...b.unreadable])
+        if (u.reason.startsWith('duplicate page id')) _norm(u.path),
+    };
+    for (final p in subtree) {
+      final atFrom = File(_pathOf(p, from)).existsSync();
+      final atTo = File(_pathOf(p, to)).existsSync();
+      expect(atFrom || atTo, isTrue, reason: 'page ${_short(p)} is in neither place');
+      var winner = atTo ? to : from;
+      if (atFrom && atTo) {
+        final fromDup = listedDup.contains(_norm(_pathOf(p, from)));
+        final toDup = listedDup.contains(_norm(_pathOf(p, to)));
+        expect(fromDup != toDup, isTrue, reason: 'exactly one of the two files of ${_short(p)} is listed as the duplicate');
+        winner = fromDup ? to : from;
+        final dupLoc = fromDup ? from : to;
+        _dups.add(_Dup(p, dupLoc, _pathOf(p, dupLoc), File(_pathOf(p, dupLoc)).readAsStringSync()));
+      }
+      model[p]!.loc = winner;
+    }
+    // The copy was put at the top level of its place; an original keeps its parent.
+    final root = subtree.first;
+    model[root]!.parent = _disk(root).meta.parentId;
+  }
+
+  /// The user's removal of what a step left in both places.
+  Future<void> _removeDups() async {
+    for (final d in _dups) {
+      File(d.path).deleteSync();
+      await nb.checkFile(d.path);
+    }
+    _dups.clear();
+    await nb.checkFolders();
+  }
+
+  Future<void> _restartAfterCrash() async {
+    nb = _make();
+    _spare.add(nb);
+    await nb.load();
+  }
+
+  /// A move that can't rename: the pages are copied, the originals kept as
+  /// duplicates, and the step ends in what [variant] says (see `_expectedKinds`).
+  Future<void> _opMoveCopy(String variant, String id, String to, List<String> subtree) async {
+    final from = model[id]!.loc;
+    await nb.flush();
+    final crashAtCopy = variant == 'copyCrash';
+    var rekeyed = 0;
+    if (crashAtCopy) {
+      // The second `move-rekeyed` is after every copy was written.
+      nb.syncHook = (point, _) async {
+        if (point != 'move-rekeyed' || ++rekeyed < 2) return;
+        _gone.add(nb);
+        nb.dispose();
+        throw StateError('crash after the copy');
+      };
+    }
+    CopiedMove? kept;
+    Object? error;
+    Notebook.forceCopyMoveForTest = true;
+    try {
+      await _moveTo(id, to);
+    } on OriginalsKeptException catch (e) {
+      kept = e.move;
+      error = e;
+    } on Object catch (e) {
+      error = e;
+    } finally {
+      Notebook.forceCopyMoveForTest = false;
+    }
+    if (crashAtCopy) {
+      expect(error, isNotNull, reason: 'the process died in the copy');
+      await _restartAfterCrash();
+      // Every copy was written and nothing was deleted: both places hold every page.
+      _readBoth(subtree, from, to);
+      expect(_dups, hasLength(subtree.length));
+      await verify('after the crash in a copy (seed $seed)', fresh: true);
+      await _removeDups();
+      return;
+    }
+    expect(kept, isNotNull, reason: 'the move should have copied and kept the originals: $error');
+    nb.syncHook = null;
+    _readBoth(subtree, from, to);
+    expect(_dups, hasLength(subtree.length), reason: 'every original is kept');
+    expect(model[id]!.loc, to, reason: 'the copy is the page');
+    switch (variant) {
+      case 'copyKeepsOriginal':
+        await verify('after a copy that keeps the originals (seed $seed)', fresh: true);
+        await nb.deleteOriginals(kept!);
+        _dups.clear();
+      case 'deleteOriginalCopyChanged':
+        // The root's copy changes (another device); its original is kept.
+        final y = _newBox(_text('copy edit'));
+        _externalWriteSync(id, _disk(id).insertNode(y));
+        model[id]!.boxes[y.id] = _val(y);
+        await nb.checkFile(_pathOf(id));
+        Object? refused;
+        try {
+          await nb.deleteOriginals(kept!);
+        } on NotebookException catch (e) {
+          refused = e;
+        }
+        expect(refused, isNotNull, reason: 'a changed copy keeps its original');
+        _dups.removeWhere((d) => !File(d.path).existsSync());
+        expect(_dups.map((d) => d.id), contains(id), reason: 'the original of the changed copy stays');
+        await verify('after Delete the original with a changed copy (seed $seed)', fresh: true);
+        await _removeDups();
+      case 'deleteOriginalCrash':
+        // The process dies before the n-th original is deleted.
+        final at = subtree.length >= 2 ? 2 : 1;
+        var n = 0;
+        nb.syncHook = (point, _) async {
+          if (point != 'originals-before-delete' || ++n < at) return;
+          _gone.add(nb);
+          nb.dispose();
+          throw StateError('crash while deleting the originals');
+        };
+        Object? crashed;
+        try {
+          await nb.deleteOriginals(kept!);
+        } on Object catch (e) {
+          crashed = e;
+        }
+        expect(crashed, isNotNull, reason: 'the process died while deleting');
+        await _restartAfterCrash();
+        _readBoth(subtree, from, to);
+        expect(_dups.length, lessThanOrEqualTo(subtree.length - (at - 1)), reason: 'the originals before the crash are gone');
+        await verify('after a crash in Delete the original (seed $seed)', fresh: true);
+        await _removeDups();
+    }
   }
 
   // ---- delete, with undo ------------------------------------------------------
@@ -2772,6 +2940,7 @@ class _Run {
   late final Random _yrng = Random(seed * 43 + 17); // when a box is restacked (_layerStep)
   late final Random _urng = Random(seed * 17 + 3); // which Undos fail (_opDelete)
   late final Random _rrng = Random(seed * 19 + 5); // which failed deletes are followed by a kill (_opDelete)
+  late final Random _kcrng = Random(seed * 23 + 7); // which moves take the copy path, and how (_opMove)
   late final Random _crng = Random(seed * 23 + 29); // which conflict copies get the old file put back (_opCopy)
   int _binderStepCount = 0;
   int _binderCounter = 0;
@@ -3576,6 +3745,8 @@ class _Run {
         if (loc == 'a' || loc == 'b') binderFileName,
         for (final e in model.entries)
           if (e.value.loc == loc) '${e.key}.canvas',
+        for (final d in _dups)
+          if (d.loc == loc) '${d.id}.canvas',
         for (final e in model.entries)
           if (e.value.loc == loc && e.value.assetText != null) assetsFolderName(e.key),
         for (final (l, id) in leftFolders)
@@ -3586,6 +3757,9 @@ class _Run {
     }
     for (final e in asides.entries) {
       expect(File(e.key).readAsBytesSync(), e.value, reason: '$where: the kept file ${e.key}');
+    }
+    for (final d in _dups) {
+      expect(File(d.path).readAsStringSync(), d.text, reason: '$where: the kept original of ${_short(d.id)} in ${d.loc}');
     }
     for (final e in model.entries) {
       final id = e.key;
@@ -3618,9 +3792,22 @@ class _Run {
     expect(recov.entries, isEmpty, reason: '$where: recovery entries are pending');
     expect(recov.problems, isEmpty, reason: '$where: recovery problems');
     expect(nb.recoveryDamaged, isEmpty, reason: '$where: recovery damage');
-    expect(nb.unreadable.map((u) => '${u.path} ${u.reason}').toList(), isEmpty, reason: '$where: unreadable files');
+    // Only the originals a copy-path move kept are listed, as duplicates.
+    Set<String> dupsIn(Set<String> locs) => {
+      for (final d in _dups)
+        if (locs.contains(d.loc)) '${_norm(d.path)} duplicate page id ${d.id}',
+    };
+    expect(
+      {for (final u in nb.unreadable) '${_norm(u.path)} ${u.reason}'},
+      dupsIn({'pages', 'x'}),
+      reason: '$where: unreadable files',
+    );
     for (final b in nb.binders) {
-      expect(b.unreadable, isEmpty, reason: '$where: unreadable files in ${b.path}');
+      expect(
+        {for (final u in b.unreadable) '${_norm(u.path)} ${u.reason}'},
+        dupsIn({_norm(b.path) == _norm(pathA) ? 'a' : (_norm(b.path) == _norm(pathB) ? 'b' : '?')}),
+        reason: '$where: unreadable files in ${b.path}',
+      );
     }
     expect(nb.unsavedDescription, isNull, reason: '$where: unsaved work');
     final c = nb.current;
@@ -3658,11 +3845,21 @@ class _Run {
           reason: '$where: a fresh notebook does not list ${_short(e.key)}',
         );
         final want = e.value.loc == 'a' ? pathA : (e.value.loc == 'b' ? pathB : null);
-        expect(other.binderOfPage(e.key), want, reason: '$where: fresh binder of ${_short(e.key)}');
+        // A page kept in both places is the one of them a scan lists first.
+        if (!_dups.any((d) => d.id == e.key)) {
+          expect(other.binderOfPage(e.key), want, reason: '$where: fresh binder of ${_short(e.key)}');
+        }
         await other.open(e.key);
+        // A page kept in both places is the one of the two files a scan lists first:
+        // a fresh notebook may show the kept original instead of the copy.
+        final shown = _boxesOf(other.current!.page, '$where: fresh ${_short(e.key)}', conflicts: e.value.conflicts);
+        final kept = [
+          for (final d in _dups)
+            if (d.id == e.key) _boxesOf(readPage(d.text), '$where: the kept original of ${_short(e.key)}', conflicts: e.value.conflicts),
+        ];
         expect(
-          _boxesOf(other.current!.page, '$where: fresh ${_short(e.key)}', conflicts: e.value.conflicts),
-          e.value.boxes,
+          shown,
+          anyOf([equals(e.value.boxes), ...kept.map(equals)]),
           reason: '$where: a fresh notebook shows page ${_short(e.key)} differently',
         );
         expect(other.current!.page.meta.title, e.value.title);
@@ -3704,6 +3901,7 @@ const _expectedKinds = {
   'conflict:stealPublish', 'conflict:scan', 'conflict:revertedAfterVerify', 'conflict:revertedRestart', //
   'move:plain', 'move:pendingEdit', 'move:failDestination',
   'move:syncAtSource', //
+  'move:copyKeepsOriginal', 'move:copyCrash', 'move:deleteOriginalCopyChanged', 'move:deleteOriginalCrash', //
   'delete:undo', 'delete:keep', 'delete:syncAtDelete', 'delete:failDelete', //
   'delete:failUndo:retry', 'delete:failUndo:quit', 'delete:failRollback:kill', //
   'vanish:live/plain', 'vanish:restart/plain', 'vanish:live/syncWhileAway',
@@ -3973,8 +4171,9 @@ class _DavWorld {
 }
 
 void main() {
-  // These scenarios model a move as copy-and-delete. Moves are renames now, with
-  // their own kinds (stage D); until then this file keeps the copy behaviour.
+  // A move is a rename (the sequences' `move:*` kinds); where a rename can't be
+  // done it copies and keeps the originals, which the `move:copy*` and
+  // `move:deleteOriginal*` kinds model as a page kept in both places (`_dups`).
 
   Future<void> sequence(int seed) async {
     _started++;

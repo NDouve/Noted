@@ -280,6 +280,36 @@ void main() {
   });
 
   group('the real read count', () {
+    test('a check of a page being moved reads nothing: the pages are busy until the move ends', () async {
+      final w = await scanned();
+      final seen = <String>[];
+      var before = 0;
+      Future<void>? checks;
+      hook = (point, path) async {
+        if (point == 'move-after-rename' && checks == null) {
+          // A watcher's check of the page just renamed, queued behind the move's lock.
+          before = reads.length;
+          touch('${extra.path}/${w.b}.canvas'); // its stamp differs: only being busy keeps a check from reading it
+          checks = Future.wait([w.nb.checkFile('${extra.path}/${w.b}.canvas'), w.nb.checkFile('${pages.path}/${w.b}.canvas')]);
+        } else if (point == 'move-before-rename' && checks != null && seen.isEmpty) {
+          // The second page's turn: the queued checks have run by now.
+          seen.addAll(reads.skip(before).where((r) => r.endsWith('${w.b}.canvas')));
+          seen.add('looked');
+        }
+      };
+      expect(await w.nb.move(w.b, parentId: w.x), isTrue);
+      expect(seen, ['looked'], reason: 'the watchers checks of a busy page read nothing');
+    });
+
+    test('the open page that is moved is reopened at its new place', () async {
+      final w = await scanned();
+      await w.nb.open(w.b);
+      expect(await w.nb.move(w.b, parentId: w.x), isTrue);
+      expect(w.nb.currentId, w.b);
+      expect(w.nb.current!.page.meta.parentId, w.x);
+      expect(has(extra, w.b) && !has(pages, w.b), isTrue);
+    });
+
     test('a stamped subpage is not read by a move, anywhere', () async {
       final w = await scanned();
       expect(await w.nb.move(w.b, parentId: w.x), isTrue);
