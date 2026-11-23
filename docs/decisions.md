@@ -2589,7 +2589,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0183 — A consumed conflict copy is retired only after a re-check; a merge keeps the stricter AI access
 - **Date:** 2026-11-16
-- **Status:** Active (the build team: the AI-access rule by the maintainer's PM chat, 2026-11-16; the retirement by the PM, run 2026-11-16-01, from the reviewed note `2026-11-16-01-copy-retire`); amends 0053, 0124 and 0171
+- **Status:** Active (the build team: the AI-access rule by the maintainer's PM chat, 2026-11-16; the retirement by the PM, run 2026-11-16-01, from the reviewed note `2026-11-16-01-copy-retire`); amends 0053, 0124 and 0171; unparking a parked retirement amended by 0187
 - **Decision:**
   - **Retiring a merged copy.** After a conflict copy is merged and verified, the copy is kept as a recovery entry (fresh slot, no base, read back) before it is deleted through the checked delete. The entry is retired only when a later read of the page, under the folder lock, still holds every box of the copy (by rev, a box edited from it, or a recorded conflict version, with the copy's recorded conflicts and landed marker) and AI access at least as strict as the copy's, or as the user's own choice since the merge. Boxes this app deleted, conflicts the user resolved by keeping their own version, and landed markers they dismissed, since the merge are left out. Otherwise the merge is redone from the entry, three rounds, then listed, with one more round after the next change to the file. The re-check waits while the page is open, while a delete can still be undone, and until the copy's own delete has returned; "listed nowhere" is a read of the page's path, not the in-memory listing. A notebook without a recovery folder never retires a copy.
   - **AI access in a merge.** When a conflict copy or a same-id file is merged into its original, the merged header keeps the original's fields except AI access, which is the stricter of the two: Guarded over Privileged over Open; an absent field ranks lowest below the top of the chain and as Guarded at the top; unknown values read as Guarded; a tie keeps the original's value.
@@ -2598,7 +2598,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0184 — Held edits: a binder folder that stops holding this binder is read-only before anything is written
 - **Date:** 2026-11-16
-- **Status:** Active (the build team (PM), run 2026-11-16-01, from the reviewed note `2026-11-15-01-held-edits` revision 3.5; amends 0165)
+- **Status:** Active (the build team (PM), run 2026-11-16-01, from the reviewed note `2026-11-15-01-held-edits` revision 3.5; amends 0165); "What the user sees" amended by 0188
 - **Decision:**
   - **Rule.** When a binder folder is seen to hold another binder's file, a damaged binder file or no binder file, it is marked unwritable before anything else. Every job that writes or deletes in a binder folder checks the binder file inside the folder lock, at the start of its own turn. The open page's unsaved edits go to recovery (0070, 0137), never into that folder. Nothing in the folder is written or deleted by this change, and recovery entries are removed only by settling (0156).
   - **The hold.** `BinderSection.hold` is `otherBinder`, `damaged` or `missing`, in memory only; while it is set the binder counts as locked, so the checks made before a job waits for the lock refuse too. It is set by the watcher's read of the binder file under the folder lock (an aside of the file being replaced, with no file, sets nothing), or by a job's gate when the file holds another binder's id; a missing or unreadable file at a job's gate refuses that job only and leaves the verdict to the watcher. It is cleared by a locked read of this binder's own readable id, by Use this binder or by Remove binder. Use this binder is offered as soon as the hold is set.
@@ -2613,7 +2613,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0185 — The MCP server re-checks its aside before removing it
 - **Date:** 2026-11-16
-- **Status:** Active (the maintainer, 2026-11-16, option (a) of run 2026-11-15-02's question; built in run 2026-11-16-01); amends 0131 and 0172; the coordination hook built in run 2026-11-22-01, registered by nothing yet; the dataless check not built
+- **Status:** Active (the maintainer, 2026-11-16, option (a) of run 2026-11-15-02's question; built in run 2026-11-16-01); amends 0131 and 0172; the coordination hook built in run 2026-11-22-01 (0189), registered by nothing yet; the dataless check not built
 - **Decision:**
   - **One checked drop.** The re-check before a verified aside is removed is one shared file importing `dart:io` only, `packages/noted_core/lib/src/storage/drop_verified.dart`, used by the app's checked delete and by the MCP server's closed writer.
   - **The server's aside.** After a successful publish the server removes its aside only after re-checking it: moved to a fresh `.cas-verified` name, read again and compared by bytes with the page's previous bytes, with its size and time unchanged across the read. A file in doubt stays for Noted's sweep, which keeps it as a conflict copy, and the answer is still `done`.
@@ -2635,9 +2635,39 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Stray attachments folder.** An attachments folder left in a location without its page (another device's move arriving in pieces) is moved to the page's location when it has been quiet for 30 s, nothing in its location may be the page, the page is listed only at its new place and isn't busy, both folders are on one volume, writable and unheld, and it isn't a set-aside; otherwise it stays and, on another volume, is reported.
   - **Primitives (amends 0127, 0139 and 0149).** `moveExclusive` is in its own file, outside the MCP server's import graph; `file_stamp.dart` only reads; `publishExclusive` keeps its behaviour; it and the other checked primitives now run through the coordination hook of 0185, which does nothing while no coordinator is registered. The damaged-destination rule is per file and the damaged file is renamed aside, never deleted; a placeholder at the destination is never hashed. A move carries a file by its name without reading it; a file that holds another page by then is classified at the destination.
   - Host-only additions (`moveExclusive`, `FileStamp` and `fileStamp`, `PageStore.moveTo`, `scan(stamps:)`, `onPublishStamp`, `ContentIdentity.ofFileSync`), recorded in `BOX_API_CHANGELOG.md`; no file format or dependency change.
-  - **Known limits:** a kill between the set-aside and the page's own delete leaves the page with its attachments set aside until the user moves them (nothing is deleted); a restore of the page in another location, or still in the cloud, isn't seen by the expiry; a set-aside kept by three runs of the check stays under its name for good, and a page that comes back after that gets no restore; the stray-folder move may churn while another device's move arrives; an Undo that falls back to the root's folder doesn't say so.
+  - **Known limits:** a kill between the set-aside and the page's own delete leaves the page with its attachments set aside until the user moves them (nothing is deleted); a restore of the page in another location, or still in the cloud, isn't seen by the expiry; a set-aside kept by three runs of the check stays under its name for good, and a page that comes back after that gets no restore; the stray-folder move may churn while another device's move arrives; an Undo that falls back to the root's folder doesn't say so; a page refreshed without a stamped read (a merge that needed no save) leaves its file unstamped, so the stray-folder move in that location waits until the page is next read or saved, or the next launch.
 - **Rationale:** a copy-then-delete move and a recursive delete of a deleted page's folder could delete the only copy of a page or its attachments when a sync client changed them mid-operation (Codex design-review 2026-11-16 R-1 and area-data-integrity 2026-11-09 R-1). A rename moves the one copy and never deletes it.
 - **Alternatives considered:** keeping copy-then-delete with a stronger source check (still deletes the only copy if the check races a writer); deleting set-asides by folder (the earlier rule); reading every page file at each check (rejected for the cost on large folders; stamps decide when to read).
+
+## 0187 — A parked conflict-copy retirement is unparked by a change to the page's own stored file
+- **Date:** 2026-11-23
+- **Status:** Active (the build team (PM), run 2026-11-22-01, from the accepted Codex run-diff-2 2026-11-16 R-1); amends 0183
+- **Decision:** A retirement that 0183 parked after its three rounds is unparked by the first observed change, from outside Noted, to the page's own stored file: the path the page is stored at in its location, whatever its name (a chosen or non-canonical filename included), not `<page id>.canvas`. Noted's own reads and saves of that file record its text, so they don't count as a change.
+- **Rationale:** a page stored under another name never unparked its entry, so a later reversion of the merge was never redone.
+- **Alternatives considered:** unparking on any change in the page's folder (unrelated files would use up the extra round).
+
+## 0188 — Held edits: the kept notice ends when the edit lands, and says what the banner says
+- **Date:** 2026-11-23
+- **Status:** Active (the build team (PM), run 2026-11-22-01, from reviewer-ui items 1–7 of run 2026-11-16-01); amends 0184's "What the user sees"
+- **Decision:**
+  - The kept-edits bar closes when the edit it reports has landed (Use this binder, the binder file readable again, or a discard), and after the last replay of the folder's entries; a bar shown after the edit already landed closes once it has been seen.
+  - The bar and the read-only banner make the same promise. Another binder: "…Your unsaved changes are kept and are saved in this folder if you choose Use this binder."
+  - The read-only banner spans the page's width. The sidebar's kept line uses the secondary text colour rather than the disabled one, with more space above it when it stands alone, and a sync pause reason is written in lower case after its label.
+- **Rationale:** the bar stayed after the edit had landed, and its promise differed from the banner's.
+- **Alternatives considered:** dropping the bar and keeping only the banner (the bar is the only notice when the page isn't open).
+
+## 0189 — iCloud Drive groundwork: the coordination hook on every write site, and the Apple folder channel
+- **Date:** 2026-11-23
+- **Status:** Active (the build team (PM), run 2026-11-22-01, steps 1, 2 and 4 of the reviewed note `2026-11-15-01-cloud-parity` revision 5.4, under 0182 and 0185); the dataless check and the driver (steps 3, 5, 6 and 7) are not built
+- **Decision:**
+  - **The hook.** `noted_core/lib/src/storage/coordination.dart` adds `coordinated()` and `StorageBusy` (a refusal, with reason `coordination`, `dataless` or `versionsPending`). Every checked primitive (`publishExclusive`, `replaceIfUnchanged`, the checked deletes, `sweepAsideFiles`, `moveExclusive`) runs its file operations through it, naming each file it reads, writes, moves or deletes; `sweepAsideFiles` names each leftover it consumes as a move. With no coordinator registered it runs the operation directly. Nothing registers one yet.
+  - **Every write site** in the app and `noted_core` that creates, writes or removes a file or folder in a storage location goes through the hook (folder creates and removes through `createFolderCoordinated` and `removeFolderCoordinated`), or is a temp or outside the storage roots. Four creates are not yet coordinated (the binder folder in `BinderStore.create`, the pull engine's, the cloud sign-in folder and the storage probe); a test fails if a coordinator is registered while any remains.
+  - **A refusal is never a failure to fall back from.** Every handler around a primitive or coordinated call catches `StorageBusy` before `FileSystemException` and rethrows it or takes the site's busy path; no copy, create, recovery or direct write runs on it. A refused expiry delete counts as a kept run; a refused binder update returns at once as in use.
+  - **`PageStore.save`** (an unchecked write) is removed; `TemplateStore.save` publishes a unique temp with `publishExclusive`. Host-only, in `BOX_API_CHANGELOG.md`.
+  - **Apple.** The method channel `noted/cloud_folder` (`go`, `pending`, `failed`, `done`, `cancel`, `reset`) runs one `NSFileCoordinator` per call, in `CloudFolder.swift` on iOS and macOS, with the iCloud entitlements; the app doesn't call it yet.
+  - The MCP server registers no coordinator; `invariant_test` checks entries (1) and (3) of 0185.
+- **Rationale:** iCloud Drive requires coordinated access, and a refusal must never turn into an uncoordinated write; building the hook first lets the driver register a coordinator without touching each site again.
+- **Alternatives considered:** coordinating only inside the driver (every direct write elsewhere would bypass it).
 
 ---
 
