@@ -328,7 +328,6 @@ final List<Site> renameSites = [
     1,
     _rename,
   ),
-  ('app/lib/src/notebook.dart', 'await from.rename(to.path);', 1, _move),
   ('app/lib/src/notebook.dart', 'await tmp.rename(f.path);', 1, _ownTemp),
   (
     'app/lib/src/onedrive_sync.dart',

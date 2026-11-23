@@ -2024,6 +2024,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> load() async {
     try {
       await _load();
+      await _strayCheck(); // O: a folder left behind by a move that stopped
     } finally {
       // A load that stopped before the list was read leaves it locked; one
       // that stopped after leaves it pending, until a load succeeds.
@@ -3405,29 +3406,72 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// stay), a source that still holds files after the verified ones were
   /// removed. A complete move returns what the copy did. The notices
   /// ([damagedKept], [stillChanging]) are for the caller to post.
-  static Future<AttachmentCopy> _moveDir(Directory from, Directory to, {required bool fromTrash}) async {
+  Future<AttachmentCopy> _moveDir(Directory from, Directory to, {required bool fromTrash}) async {
     final copy = AttachmentCopy();
     if (!await from.exists()) return copy;
     await to.parent.create(recursive: true);
-    try {
-      if (forceCopyMoveForTest) throw const FileSystemException('forced');
-      await from.rename(to.path);
-    } on FileSystemException {
+    var cannotRename = forceCopyMoveForTest;
+    if (!cannotRename) {
+      // One volume: the folder is renamed, or moved file by file (2c's rule,
+      // H), under both lock folders (L) or the one lock when they are the
+      // same. Nothing is copied or deleted.
+      final hydrated = await _hydrateFolder(from, to.path);
+      final damaged = <DamagedKept>[];
       try {
-        await _copyDir(from, to, into: copy);
-        if (copy.differing.isNotEmpty || copy.stillChanging.isNotEmpty) {
-          throw _IncompleteAttachments(copy, false, to.path);
+        final r = await _underPair(
+          _lockDirOfAssets(from),
+          _lockDirOfAssets(to),
+          () => _moveFolder(from, to, kept: damaged, hydrated: hydrated, stopOnCannot: true),
+          gate: false, // the caller took the gate (`_gateMove`) at its turn
+        );
+        copy.damagedKept.addAll(damaged);
+        if (r.outcome == MoveOutcome.cannotRename) {
+          cannotRename = true;
+        } else {
+          var leftover = false;
+          for (final l in r.left) {
+            final target = '${to.path}${l.substring(from.path.length)}';
+            if (FileSystemEntity.typeSync(target, followLinks: false) == FileSystemEntityType.notFound) {
+              leftover = true;
+            } else {
+              copy.differing.add(l);
+            }
+          }
+          if (copy.differing.isNotEmpty) throw _IncompleteAttachments(copy, false, to.path);
+          if (fromTrash && leftover) throw _IncompleteAttachments(copy, true, to.path);
+          return copy;
         }
-        await removeVerifiedSources(copy, from);
-        if (fromTrash && await _holdsFile(from)) throw _IncompleteAttachments(copy, true, to.path);
-      } on _IncompleteAttachments {
-        rethrow;
-      } on FileSystemException catch (e) {
-        // Carries what was done so far (a file set aside stays reported).
-        throw _IncompleteAttachments(copy, false, to.path, cause: e);
+      } on _LockTimeout catch (e) {
+        throw FileSystemException('The folder is busy; try again', e.path);
       }
     }
+    // Another drive or cloud: the copy path (the delete set-aside is stage C).
+    try {
+      await _copyDir(from, to, into: copy);
+      if (copy.differing.isNotEmpty || copy.stillChanging.isNotEmpty) {
+        throw _IncompleteAttachments(copy, false, to.path);
+      }
+      await removeVerifiedSources(copy, from);
+      if (fromTrash && await _holdsFile(from)) throw _IncompleteAttachments(copy, true, to.path);
+    } on _IncompleteAttachments {
+      rethrow;
+    } on FileSystemException catch (e) {
+      // Carries what was done so far (a file set aside stays reported).
+      throw _IncompleteAttachments(copy, false, to.path, cause: e);
+    }
     return copy;
+  }
+
+  // The folder whose lock covers an attachments folder (L): the recovery
+  // folder or `deleted-attachments` when it is in one, otherwise the page
+  // folder that holds it.
+  Directory _lockDirOfAssets(Directory d) {
+    final k = _key(d.path);
+    bool within(String root) => k.startsWith(_key(root).endsWith('/') ? _key(root) : '${_key(root)}/');
+    if (within(_deletedAssetsDir.path)) return _deletedAssetsDir;
+    final rec = _recovery;
+    if (rec != null && within(rec.directory.path)) return rec.directory;
+    return d.parent;
   }
 
   static Future<bool> _holdsFile(Directory d) async {
@@ -3568,6 +3612,87 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// move, as if their folders were on different volumes.
   @visibleForTesting
   static Set<String> cannotRenamePagesForTest = {};
+
+  /// Files that read as placeholders (not downloaded), marked by their stamp so
+  /// a mark follows the file across a rename. A seam: there is no placeholder
+  /// provider in tests.
+  @visibleForTesting
+  static Set<FileStamp> placeholderMarksForTest = {};
+
+  /// Marked files that can't be downloaded: reading one fails, and its mark
+  /// stays. Reading any other marked file clears its mark (it hydrated).
+  @visibleForTesting
+  static Set<FileStamp> unhydratableForTest = {};
+
+  /// Replaces `syncRootOf` (H): which sync root a path is in.
+  @visibleForTesting
+  static SyncRoot? Function(String path)? syncRootOfForTest;
+
+  // Whether [path] is a cloud placeholder (H). The seam's marks count first.
+  static bool _isPlaceholder(String path) {
+    if (placeholderMarksForTest.isNotEmpty) {
+      final s = fileStamp(path);
+      if (s != null && placeholderMarksForTest.contains(s)) return true;
+    }
+    return placeholderState(path) == PlaceholderState.placeholder;
+  }
+
+  // Whether [a] and [b] are in one sync root (H): a placeholder moves by
+  // rename only then. Anything not known to be one root is not one.
+  static bool _sameSyncRoot(String a, String b) {
+    final of = syncRootOfForTest ?? syncRootOf;
+    final ra = of(a), rb = of(b);
+    return ra != null && ra == rb;
+  }
+
+  // Downloads the placeholder at [path] by reading it. True when it is no
+  // longer one.
+  static Future<bool> _hydrate(String path) async {
+    try {
+      final s = fileStamp(path);
+      if (s != null && unhydratableForTest.contains(s)) return false;
+      await File(path).openRead().drain<void>();
+      if (placeholderMarksForTest.isNotEmpty && s != null) placeholderMarksForTest.remove(s);
+    } on FileSystemException {
+      return false;
+    }
+    return !_isPlaceholder(path);
+  }
+
+  // Attachments of [dir] that are placeholders, hydrated by reading before the
+  // move's locks, when [other] is not in the same sync root (H). Returns the
+  // files that were tried: under the lock, one that is still a placeholder
+  // stays where it is. Nothing is read within one root.
+  static Future<Set<String>> _hydrateFolder(Directory dir, String other) async {
+    final tried = <String>{};
+    if (!dir.existsSync() || _sameSyncRoot(dir.path, other)) return tried;
+    final List<FileSystemEntity> all;
+    try {
+      all = dir.listSync(recursive: true, followLinks: false);
+    } on FileSystemException {
+      return tried;
+    }
+    for (final e in all) {
+      if (e is! File || !_isPlaceholder(e.path)) continue;
+      tried.add(e.path);
+      await _hydrate(e.path);
+    }
+    return tried;
+  }
+
+  // The paths of the files in [dir], for a coordinated folder move (they are
+  // checked with it), or none when the folder isn't under a registered root.
+  static List<String> _alsoMovedFor(Directory dir) {
+    try {
+      if (!underCoordination([dir.path])) return const [];
+      return [
+        for (final e in dir.listSync(recursive: true, followLinks: false))
+          if (e is File) e.path,
+      ];
+    } on FileSystemException {
+      return const [];
+    }
+  }
 
   static Future<void> _removeDir(Directory d) async {
     try {
@@ -4810,7 +4935,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // [job] under [dir]'s lock, waited for at most [pairLockLimit]: past that the
   // queued job is cancelled (it returns at once if it ever starts) and the
   // caller gets a [_LockTimeout].
-  Future<T> _lockLimited<T>(Directory dir, Future<T> Function() job) {
+  Future<T> _lockLimited<T>(Directory dir, Future<T> Function() job, {bool gate = true}) {
     final out = Completer<T>();
     var state = 0; // 0 waiting, 1 started, 2 cancelled
     final timer = Timer(pairLockLimit, () {
@@ -4823,7 +4948,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       state = 1;
       timer.cancel();
       return job();
-    }).then<void>(
+    }, gate: gate).then<void>(
       (v) {
         if (!out.isCompleted) out.complete(v);
       },
@@ -4840,14 +4965,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // lock is waited for at most [pairLockLimit]; on a timeout everything held is
   // let go and the pair is tried again after [pairRetryDelay], [tries] times in
   // all. Throws the last [_LockTimeout].
-  Future<T> _underPair<T>(Directory a, Directory b, Future<T> Function() job, {int tries = 2}) async {
+  Future<T> _underPair<T>(Directory a, Directory b, Future<T> Function() job, {int tries = 2, bool gate = true}) async {
     final ka = FolderLocks.keyOf(a), kb = FolderLocks.keyOf(b);
-    if (ka == kb) return _lockLimited(a, job);
+    if (ka == kb) return _lockLimited(a, job, gate: gate);
     final first = ka.compareTo(kb) < 0 ? a : b;
     final second = identical(first, a) ? b : a;
     for (var i = 1; ; i++) {
       try {
-        return await _lockLimited(first, () => _lockLimited(second, job));
+        return await _lockLimited(first, () => _lockLimited(second, job, gate: gate), gate: gate);
       } on _LockTimeout {
         if (i >= tries || _disposed) rethrow;
         await Future<void>.delayed(pairRetryDelay);
@@ -4859,7 +4984,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // `moveExclusive`, `busy` tried three times. A link, a name that is taken and
   // a file that won't move stay. Emptied folders are removed (never one that
   // holds anything). Returns the paths left at [from].
-  Future<List<String>> _moveFilesOneByOne(Directory from, Directory to, {List<DamagedKept>? kept}) async {
+  Future<List<String>> _moveFilesOneByOne(
+    Directory from,
+    Directory to, {
+    List<DamagedKept>? kept,
+    Set<String> hydrated = const {},
+  }) async {
     final left = <String>[];
     Future<void> walk(Directory s, Directory d) async {
       final List<FileSystemEntity> entries;
@@ -4881,6 +5011,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               await walk(Directory(e.path), Directory(target));
             }
           case FileSystemEntityType.file:
+            // Hydration was tried and the file is still not downloaded (H): it
+            // stays at the source.
+            if (hydrated.contains(e.path) && _isPlaceholder(e.path)) {
+              left.add(e.path);
+              continue;
+            }
             var r = MoveOutcome.busy;
             try {
               d.createSync(recursive: true);
@@ -4920,7 +5056,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final name = dst.split(RegExp(r'[\\/]')).last;
       final hash = attachmentNameHash(name);
       if (hash == null) return MoveOutcome.targetExists;
-      if (placeholderState(src) == PlaceholderState.placeholder || placeholderState(dst) == PlaceholderState.placeholder) {
+      if (_isPlaceholder(src) || _isPlaceholder(dst)) {
         return MoveOutcome.targetExists;
       }
       if (FileSystemEntity.typeSync(dst, followLinks: false) != FileSystemEntityType.file) return MoveOutcome.targetExists;
@@ -4933,6 +5069,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final folder = File(dst).parent.path;
       final aside = damagedCopyName(name, found.sha256);
       final asidePath = '$folder${Platform.pathSeparator}$aside';
+      await syncHook?.call('move-before-aside', dst);
       if (await moveExclusive(dst, asidePath) != MoveOutcome.moved) return MoveOutcome.targetExists;
       // What was set aside is what was checked; if not, it goes back when it can.
       if (await ContentIdentity.ofFile(asidePath) != found) {
@@ -4951,30 +5088,222 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Moves page [p]'s images and files folder from [fromLoc] to [toLoc]: the
   // folder is renamed, or, when that isn't `moved`, moved file by file. Returns
-  // the paths left behind.
+  // the paths left behind. [hydrated] are the files hydration was tried on (H).
   Future<List<String>> _moveAssetsByRename(
     String p,
     String fromLoc,
     String toLoc, {
     bool hook = false,
     List<DamagedKept>? kept,
+    Set<String> hydrated = const {},
   }) async {
     final src = _assetsDir(fromLoc, p), dst = _assetsDir(toLoc, p);
     if (FileSystemEntity.typeSync(src.path, followLinks: false) == FileSystemEntityType.notFound) return const [];
     if (hook) await syncHook?.call('move-before-assets', src.path);
     if (FileSystemEntity.typeSync(src.path, followLinks: false) != FileSystemEntityType.directory) return [src.path];
+    return (await _moveFolder(src, dst, kept: kept, hydrated: hydrated)).left;
+  }
+
+  // Renames the folder [src] to [dst]; when that isn't `moved`, moves it file by
+  // file (2c's rule). A folder that holds a file hydration was tried on and
+  // that is still not downloaded isn't renamed whole (the file stays, H).
+  // With [stopOnCannot], `cannotRename` is answered as it is, for a caller
+  // that copies; otherwise the files left at [src] are listed.
+  Future<({MoveOutcome outcome, List<String> left})> _moveFolder(
+    Directory src,
+    Directory dst, {
+    List<DamagedKept>? kept,
+    Set<String> hydrated = const {},
+    bool stopOnCannot = false,
+  }) async {
     var r = MoveOutcome.busy;
-    try {
-      for (var i = 0; i < 3; i++) {
-        r = await moveExclusive(src.path, dst.path);
-        if (r != MoveOutcome.busy) break;
-        await Future<void>.delayed(const Duration(milliseconds: 50));
+    if (hydrated.any((h) => File(h).existsSync() && _isPlaceholder(h))) {
+      r = MoveOutcome.targetExists;
+    } else {
+      try {
+        final also = _alsoMovedFor(src);
+        for (var i = 0; i < 3; i++) {
+          r = await moveExclusive(src.path, dst.path, alsoMoved: also);
+          if (r != MoveOutcome.busy) break;
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+      } on FileSystemException {
+        r = MoveOutcome.busy;
       }
-    } on FileSystemException {
-      r = MoveOutcome.busy;
     }
-    if (r == MoveOutcome.moved) return const [];
-    return _moveFilesOneByOne(src, dst, kept: kept);
+    if (r == MoveOutcome.moved) return (outcome: r, left: const <String>[]);
+    if (stopOnCannot && r == MoveOutcome.cannotRename) return (outcome: r, left: [src.path]);
+    return (outcome: r, left: await _moveFilesOneByOne(src, dst, kept: kept, hydrated: hydrated));
+  }
+
+  // O. Stray attachments folders ------------------------------------------------
+
+  /// How long a stray folder must be unchanged before it is moved (O).
+  @visibleForTesting
+  static Duration strayQuiet = const Duration(seconds: 30);
+
+  // The listing signature of a stray folder at its last look, and since when it
+  // has been the same.
+  final Map<String, ({String sig, DateTime since})> _strayWatch = {};
+  // Folders already reported as declined or unfinished (said once).
+  final Set<String> _strayReported = {};
+
+  // The locations a stray folder can be in or move to.
+  Iterable<String> get _strayLocs sync* {
+    yield _standalone;
+    for (final b in _binders.values) {
+      yield b.path;
+    }
+    for (final f in _folders.values) {
+      yield f.path;
+    }
+  }
+
+  bool _inTrashRecord(String p) =>
+      (_lastDeleted?._assets.containsKey(p) ?? false) || _held.any((h) => h._assets.containsKey(p));
+
+  // Runs O over every location: at load and in each folder check. Never throws.
+  Future<void> _strayCheck() async {
+    try {
+      for (final s in _strayLocs.toList()) {
+        if (_disposed) return;
+        await _strayCheckLoc(s);
+      }
+    } on Object catch (e) {
+      debugPrint('Checking for stray attachments folders failed: $e');
+    }
+  }
+
+  Future<void> _strayCheckLoc(String s) async {
+    if (_isLocked(s)) return;
+    final Directory sDir;
+    final List<FileSystemEntity> entries;
+    try {
+      sDir = _storeOf(s).directory;
+      entries = sDir.listSync(followLinks: false);
+    } on Object {
+      return;
+    }
+    final names = [for (final e in entries) _baseName(e.path)];
+    for (final e in entries) {
+      if (_disposed) return;
+      if (e is! Directory) continue;
+      final name = _baseName(e.path);
+      // Only `<p>.assets`: a set-aside `<p>.deleted-<hex>.assets` is never O's.
+      if (!name.endsWith('.assets') || name.contains('.deleted-')) continue;
+      final p = name.substring(0, name.length - '.assets'.length);
+      final d = _loc[p];
+      if (d == null || d == s) continue;
+      await _strayOne(p, s, d, sDir, e, names);
+    }
+  }
+
+  // Whether something in [sDir] counts as page [p] by 0150's rule: a file whose
+  // name carries the id (a chosen or conflict-copy name, an iCloud stub), a file
+  // listed as [p], or an unreadable file. Anything uncertain counts.
+  bool _strayCountsAsPage(String p, Directory sDir, List<String> names) {
+    final pl = p.toLowerCase();
+    for (final n in names) {
+      final nl = n.toLowerCase();
+      if (nl.endsWith('.assets')) continue;
+      if (nl.contains(pl)) return true;
+    }
+    final sk = _key(sDir.path);
+    for (final en in _pathId.entries) {
+      if (en.value == p && _key(File(en.key).parent.path) == sk) return true;
+    }
+    return unreadable.any((u) => _key(File(u.path).parent.path) == sk);
+  }
+
+  String _strayListing(Directory dir) {
+    try {
+      final b = StringBuffer();
+      final all = dir.listSync(recursive: true, followLinks: false)..sort((a, b) => a.path.compareTo(b.path));
+      for (final e in all) {
+        final st = e.statSync();
+        b.write('${e.path}|${st.size}|${st.modified.microsecondsSinceEpoch};');
+      }
+      return b.toString();
+    } on FileSystemException {
+      return '?${now().microsecondsSinceEpoch}'; // can't tell: never quiet
+    }
+  }
+
+  void _strayReport(String key, String p, String s, String why) {
+    if (!_strayReported.add(key) || _notices.isClosed) return;
+    _notices.add(
+      'The images and files folder of "${_titleOrUntitled(_metas[p]?.title ?? '')}" stayed in ${_placeName(s)}: $why.',
+    );
+  }
+
+  Future<void> _strayOne(String p, String s, String d, Directory sDir, Directory folder, List<String> names) async {
+    final key = _key(folder.path);
+    // Not stray while the page is also listed at S.
+    final sk = _key(sDir.path);
+    if (_pathId.entries.any((en) => en.value == p && _key(File(en.key).parent.path) == sk)) return;
+    // Transient: left for a later check.
+    if (_busy.containsKey(p) || _inTrashRecord(p) || _isLocked(s) || _isLocked(d)) return;
+    final Directory dDir;
+    try {
+      dDir = _storeOf(d).directory;
+    } on Object {
+      return;
+    }
+    if (_pullOnly(s) || _pullOnly(d)) {
+      _strayReport(key, p, s, 'a folder is read-only here');
+      return;
+    }
+    final sv = fileStamp(sDir.path)?.volume, dv = fileStamp(dDir.path)?.volume;
+    if (sv != null && dv != null && sv != dv) {
+      _strayReport(key, p, s, 'the page is on another drive');
+      return;
+    }
+    if (_strayCountsAsPage(p, sDir, names)) {
+      _strayReport(key, p, s, 'a file there may still be the page');
+      return;
+    }
+    // Quiet: nothing in the folder changed for [strayQuiet].
+    final sig = _strayListing(folder);
+    final t = now();
+    final seen = _strayWatch[key];
+    if (seen == null || seen.sig != sig) {
+      _strayWatch[key] = (sig: sig, since: t);
+      return;
+    }
+    if (t.difference(seen.since) < strayQuiet) return;
+    final dst = _assetsDir(d, p);
+    final hydrated = await _hydrateFolder(folder, dst.path);
+    final damaged = <DamagedKept>[];
+    List<String> left;
+    try {
+      left = await _underPair(sDir, dDir, () async {
+        // Everything is checked again inside the locks.
+        if (_busy.containsKey(p) || _loc[p] != d || _isLocked(s) || _isLocked(d)) return const <String>[];
+        List<String> namesNow;
+        try {
+          namesNow = [for (final e in sDir.listSync(followLinks: false)) _baseName(e.path)];
+        } on FileSystemException {
+          return const <String>[];
+        }
+        if (_strayCountsAsPage(p, sDir, namesNow) || !folder.existsSync()) return const <String>[];
+        return (await _moveFolder(folder, dst, kept: damaged, hydrated: hydrated)).left;
+      });
+    } on _LockTimeout {
+      return; // busy: tried again at the next check
+    }
+    _strayWatch.remove(key);
+    if (damaged.isNotEmpty) {
+      _postCopyNotices(AttachmentCopy()..damagedKept.addAll(damaged), _placeName(d), _placeName(s));
+    }
+    if (left.isNotEmpty) {
+      _strayReport(
+        key,
+        p,
+        s,
+        '${left.length == 1 ? 'one file' : '${left.length} files'} could not be moved (a name was taken in ${_placeName(d)}, or a file was in use or a link)',
+      );
+    }
+    _attachments?.filesChanged();
   }
 
   // Gives page [p]'s file in [st] the path [to] (a rename that never replaces),
@@ -5004,6 +5333,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     required List<String> notes,
     required Set<String> atDest,
     required Map<String, String> origNames,
+    Set<String> hydrated = const {},
   }) async {
     _assertWritable(fromLoc);
     _assertWritable(toLoc);
@@ -5021,6 +5351,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     if (forward) await syncHook?.call('move-before-rename', fromStore.directory.path);
     if (forward && cannotRenamePagesForTest.contains(p)) return _RenameOne.cannot;
+    // A placeholder moves by rename only within one sync root (H): outside it,
+    // a dataless file could lose its only copy.
+    if (forward && _isPlaceholder(oldPath) && !_sameSyncRoot(fromStore.directory.path, toStore.directory.path)) {
+      return _RenameOne.cannot;
+    }
     var r = MoveOutcome.busy;
     try {
       for (var i = 0; i < 3; i++) {
@@ -5073,7 +5408,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (match && knownText != null) _emitPublished(newPath, _identityOf(() => knownText), () => knownText);
     // 2c: its images and files.
     final damaged = <DamagedKept>[];
-    final left = await _moveAssetsByRename(p, fromLoc, toLoc, hook: forward, kept: damaged);
+    final left = await _moveAssetsByRename(p, fromLoc, toLoc, hook: forward, kept: damaged, hydrated: hydrated);
     if (damaged.isNotEmpty) {
       final all = AttachmentCopy()..damagedKept.addAll(damaged);
       notes.addAll(_copyNotices(all, _placeName(toLoc), _placeName(fromLoc)));
@@ -5101,6 +5436,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     required PageStore toStore,
     required Set<String> atDest,
     required List<String> notes,
+    Set<String> hydrated = const {},
   }) async {
     final origNames = <String, String>{};
     final fromDir = fromStore.directory, toDir = toStore.directory;
@@ -5123,6 +5459,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             notes: notes,
             atDest: atDest,
             origNames: origNames,
+            hydrated: hydrated,
           ),
         );
         switch (r) {
@@ -5167,6 +5504,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             notes: notes,
             atDest: atDest,
             origNames: origNames,
+            hydrated: hydrated,
           ),
           tries: 3,
         );
@@ -5230,7 +5568,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // the placement fails (the page stays where it was put).
   Future<void> _placeRoot(String toLoc, String root, String? parentId, int order) async {
     final path = _storeOf(toLoc).pathFor(root);
-    if (placeholderState(path) == PlaceholderState.placeholder) {
+    if (_isPlaceholder(path)) {
       _heldPlacement[root] = (parentId: parentId, order: order);
       return;
     }
@@ -5484,7 +5822,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // its drop name) and never hydrates a copy that isn't downloaded.
     bool copyHolds(String target, bool Function(String) holds) {
       try {
-        if (placeholderState(target) == PlaceholderState.placeholder) {
+        if (_isPlaceholder(target)) {
           copyProblem = "The copy in $to isn't downloaded";
           return false;
         }
@@ -5667,7 +6005,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       rekeys.addAll(await _rekeyBegin(ids, fromStore, toStore, fromLoc, toLoc));
       await syncHook?.call('move-rekeyed', toStore.directory.path);
       final notes = <String>[];
-      if (!forceCopyMoveForTest && await _renameTree(
+      // H: attachments that are placeholders are downloaded before the locks
+      // when the folders aren't in one sync root; within one root nothing is
+      // read. A page that is a placeholder across roots takes the copy path
+      // (path decision, step 0).
+      final sameRoot = _sameSyncRoot(fromStore.directory.path, toStore.directory.path);
+      final hydrated = <String>{};
+      if (!sameRoot) {
+        for (final p in ids) {
+          hydrated.addAll(await _hydrateFolder(_assetsDir(fromLoc, p), toStore.directory.path));
+        }
+      }
+      final pageCopy = !sameRoot && ids.any((p) => _isPlaceholder(fromStore.pathFor(p)));
+      if (!forceCopyMoveForTest && !pageCopy && await _renameTree(
         ids,
         fromLoc: fromLoc,
         toLoc: toLoc,
@@ -5675,6 +6025,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         toStore: toStore,
         atDest: atDest,
         notes: notes,
+        hydrated: hydrated,
       )) {
         // Step 3: the root's place. A failure leaves the pages where they are.
         _touch(fromLoc);
@@ -5690,7 +6041,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
         _rebuildTree();
         if (placeFailed != null) notes.add(placeFailed);
-        notice = notes.isEmpty ? null : NotebookException('The page was moved, but ${notes.join(' ')}', needsAction: true);
+        // A note that starts with a capital is a sentence of its own; one that
+        // doesn't ("it could not be put at that position") continues "but".
+        final first = notes.isEmpty ? '' : notes.first;
+        notice = notes.isEmpty
+            ? null
+            : NotebookException(
+                'The page was moved${RegExp(r'^[a-z]').hasMatch(first) ? ', but' : '.'} ${notes.join(' ')}',
+                needsAction: true,
+              );
         if (index != null && placeFailed == null) await move(id, parentId: parentId, index: index);
         if (notice != null) throw notice;
         return;
@@ -13311,6 +13670,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await _landKeptAssets(rec);
       if (!_disposed) notifyListeners();
     }
+    if (!_disposed) await _strayCheck(); // O
   }
 
   // Whether the folder [dir] holds a binder file, or an aside of one that a
