@@ -1027,7 +1027,7 @@ void main() {
     await check();
     expect(
       keptNotices.where((n) => n.pageId == pageId).map((n) => n.promise),
-      ['Your changes are kept and are saved here if you choose Use this binder.'],
+      ['Your changes are kept and are saved in this folder if you choose Use this binder.'],
     );
     await nb.useThisBinder(folder.path);
     await nb.flush();

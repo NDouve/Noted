@@ -139,6 +139,7 @@ class _HomeState extends State<Home> {
   StreamSubscription<KeptNotice>? _kept;
   StreamSubscription<String>? _keptCleared;
   String? _keptShownFor;
+  bool _keptVisible = false;
   ScaffoldFeatureController<SnackBar, SnackBarClosedReason>? _keptBar;
 
   @override
@@ -169,17 +170,38 @@ class _HomeState extends State<Home> {
   void _showKept(KeptNotice n) {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.maybeOf(context);
-    messenger?.hideCurrentSnackBar();
+    if (messenger == null) return;
+    messenger.hideCurrentSnackBar();
     _keptShownFor = n.pageId;
-    _keptBar = messenger?.showSnackBar(keptNoticeBar(n, () => unawaited(_showKeptPage(n.pageId))));
+    _keptVisible = false;
+    final bar = messenger.showSnackBar(
+      keptNoticeBar(n, () => unawaited(_showKeptPage(n.pageId)), onVisible: () {
+        if (_keptBar != null) _keptVisible = true;
+      }),
+    );
+    _keptBar = bar;
+    // However it closes (time, X, Show, replaced), it is no longer ours.
+    unawaited(
+      bar.closed.then((_) {
+        if (identical(_keptBar, bar)) {
+          _keptBar = null;
+          _keptShownFor = null;
+          _keptVisible = false;
+        }
+      }),
+    );
   }
 
-  // The edits of [pageId] landed: its kept notice no longer holds.
+  // The edits of [pageId] landed: its kept notice no longer holds. Only that
+  // notice is taken down, and only while it is the one showing.
   void _hideKept(String pageId) {
-    if (_keptShownFor != pageId) return;
-    _keptShownFor = null;
-    _keptBar?.close();
+    final bar = _keptBar;
+    if (bar == null || _keptShownFor != pageId) return;
+    final showing = _keptVisible;
     _keptBar = null;
+    _keptShownFor = null;
+    _keptVisible = false;
+    if (showing) bar.close();
   }
 
   Future<void> _showKeptPage(String id) async {

@@ -209,7 +209,7 @@ class PullEngine {
     }
     return SyncStatus(
       SyncState.paused,
-      'Unexpected problem (${e.runtimeType})',
+      'unexpected problem (${e.runtimeType})',
     );
   }
 
@@ -230,7 +230,7 @@ class PullEngine {
   Future<void> _round() async {
     _roundIssues = [];
     if (!await workingCopy.exists()) {
-      throw _PauseRound('The $_name folder is missing on this device');
+      throw _PauseRound('the $_name folder is missing on this device');
     }
     await _start();
     final j = _journal!;

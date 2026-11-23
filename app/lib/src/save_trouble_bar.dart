@@ -286,7 +286,8 @@ Future<bool> showTroubleQuestion(
 
 /// The notice shown for about 30 seconds after leaving a page whose edits went
 /// to recovery.
-SnackBar keptNoticeBar(KeptNotice n, VoidCallback show) => SnackBar(
+SnackBar keptNoticeBar(KeptNotice n, VoidCallback show, {VoidCallback? onVisible}) => SnackBar(
+  onVisible: onVisible,
   key: const ValueKey('kept-notice'),
   duration: const Duration(seconds: 30),
   showCloseIcon: true,

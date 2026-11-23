@@ -162,11 +162,11 @@ void main() {
           pageId: 'p',
           title: 'T',
           reason: 'its folder now holds another binder',
-          promise: 'Your changes are kept and are saved here if you choose Use this binder.',
+          promise: 'Your changes are kept and are saved in this folder if you choose Use this binder.',
         ),
       ),
       'Couldn\'t save "T" (its folder now holds another binder). '
-      'Your changes are kept and are saved here if you choose Use this binder.',
+      'Your changes are kept and are saved in this folder if you choose Use this binder.',
     );
     expect(
       textOf(const KeptNotice(pageId: 'p', title: 'T', reason: 'it is locked')),

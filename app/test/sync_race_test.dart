@@ -1648,6 +1648,11 @@ void main() {
       await until(parked, 'the mark to be parked');
       expect(writes, 3);
       expect(nb.recoveryProblems.join('\n'), contains('Sync keeps putting back an older version'));
+      final line = nb.recoveryDamaged.map((d) => d.reason).singleWhere((r) => r.startsWith('Sync keeps'));
+      expect(line, matches(RegExp(r'^Sync keeps putting back an older version of .+\. The merged copy is kept in recovery\.$')));
+      expect(nb.recoveryDamaged.map((d) => d.reason).join('\n'), isNot(contains("can't finish")));
+      // The clause the preview shows keeps its wording.
+      expect(nb.recoveryProblems.any((p) => p.contains('; the merged copy is kept in recovery')), isTrue);
       await Future<void>.delayed(const Duration(seconds: 1));
       expect(writes, 3, reason: 'no fourth round while parked');
       await foreign(pathOf(id)); // a change of the file

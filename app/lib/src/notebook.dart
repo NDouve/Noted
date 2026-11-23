@@ -1173,7 +1173,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Entries that were read but couldn't be applied, by the entry's path
   // without extension and its time (a newer generation in the same file starts
   // clean): the path and why. Cleared once the entry is replayed (0077).
-  final Map<String, ({String path, String why, bool kept})> _replayProblems = {};
+  final Map<String, ({String path, String why, String? line})> _replayProblems = {};
 
   // Pages whose recovered edits landed and were retired, but whose file was
   // then changed so that it can no longer be read as the page (the edits are
@@ -1234,7 +1234,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// entries that couldn't be applied and kept files that couldn't be landed.
   List<UnreadablePage> get recoveryOwnDamaged => [
     for (final p in _replayProblems.values)
-      UnreadablePage(p.path, p.kept ? p.why : "Recovery can't finish: ${p.why}${p.why.endsWith(')') ? '' : '.'}"),
+      UnreadablePage(p.path, p.line ?? "Recovery can't finish: ${p.why}${p.why.endsWith(')') ? '' : '.'}"),
     for (final p in _landedProblems.values) UnreadablePage(p.path, '${p.why}.'),
     for (final p in _keptProblems.entries) UnreadablePage(p.key, p.value),
   ];
@@ -1760,7 +1760,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // What is promised for edits kept in a folder held for [h], in the banner's
   // words; null where there is no such promise.
   static String? _heldPromise(BinderHold h) => switch (h) {
-    BinderHold.otherBinder => 'Your changes are kept and are saved here if you choose Use this binder.',
+    BinderHold.otherBinder => 'Your changes are kept and are saved in this folder if you choose Use this binder.',
     BinderHold.damaged => 'Your changes are kept until it can be read.',
     BinderHold.missing => null,
   };
@@ -1793,7 +1793,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           : "This binder's file can't be read, so this page is read-only.";
     }
     return kept
-        ? 'This folder now holds another binder, so this page is read-only. Your unsaved changes are kept and are saved here if you choose Use this binder.'
+        ? 'This folder now holds another binder, so this page is read-only. Your unsaved changes are kept and are saved in this folder if you choose Use this binder.'
         : 'This folder now holds another binder, so this page is read-only.';
   }
 
@@ -8799,12 +8799,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (await _recoverEntry(rec, e, loc)) {
         _replayProblems.remove(key);
         _replayHardFailure.remove(e.pageId);
-        _clearKeptNotice(e.pageId);
+        // The notice goes once the last kept entry of the page has replayed.
+        if (!rec.entriesOfPage(e.pageId).any((x) => x.gen != e.gen && isKeptEdit(x) && !rec.isLanded(x.gen))) {
+          _clearKeptNotice(e.pageId);
+        }
         return true;
       }
     } on _ReplayFailure catch (ex) {
       debugPrint('Recovered page ${e.pageId} not accepted: ${ex.detail ?? ex.why}');
-      _replayProblems[key] = (path: path, why: ex.why, kept: false);
+      _replayProblems[key] = (path: path, why: ex.why, line: null);
       if (!ex.transient) _replayHardFailure.add(e.pageId);
     } on Object catch (ex) {
       // A write failure; the reading failures are _ReplayFailures above.
@@ -8814,7 +8817,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         why:
             'the edits kept for "${_titleOrUntitled(e.page.meta.title)}" could not be saved into '
             'the page file${_osReason(ex)}',
-        kept: false,
+        line: null,
       );
     }
     return false;
@@ -9060,8 +9063,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       m.timer = null;
       _replayProblems[_entryKey(e)] = (
         path: _entryPath(e),
-        why: 'Sync keeps putting back an older version of $label. The merged copy is kept in recovery.',
-        kept: true,
+        why: 'Sync keeps putting back an older version of $label; the merged copy is kept in recovery',
+        // The sidebar says it as two sentences, with no "can't finish": it is kept.
+        line: 'Sync keeps putting back an older version of $label. The merged copy is kept in recovery.',
       );
     } else {
       _armConsumed(m);
@@ -13636,6 +13640,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final e in p.entries) {
       _replayProblems.remove(_entryKey(e));
     }
+    _clearKeptNotice(p.id);
     await _refreshPreview();
   }
 
@@ -13720,6 +13725,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           }
         });
         s.own.clear();
+        _clearKeptNotice(id);
       }
     } on Object catch (e) {
       _free(id, _busyDiscarding);

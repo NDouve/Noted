@@ -387,7 +387,7 @@ class WebDavDriver implements RemoteDriver {
     final url = urlOf(entry.id);
     final tag = entry.cTag;
     if (url == null) throw RemoteNotFound('Not found');
-    if (tag == null) throw RemoteException('The file has no version');
+    if (tag == null) throw RemoteException('the file has no version');
     await client.download(url, etag: tag, size: entry.size, dest: dest);
   }
 }
