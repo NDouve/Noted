@@ -1277,6 +1277,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  // A moved page whose text was never read: published, with no identity.
+  void _emitPublishedUnread(String path) {
+    if (!_feedLive) return;
+    try {
+      _changes.add(LocalChange(LocalChangeKind.published, path));
+    } on Object {
+      // The feed is advisory.
+    }
+  }
+
+  // Tells the read observer of a page file about to be read; returns [path].
+  static String _obs(String path) {
+    PageStore.fileReadObserver?.call(path);
+    return path;
+  }
+
   void _emitDeleted(String path) {
     if (!_feedLive) return;
     try {
@@ -2849,7 +2865,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     try {
       unchanged = _locationOf(path) == loc &&
           identical(_storeOf(loc), st) &&
-          File(path).readAsStringSync() == text;
+          File(_obs(path)).readAsStringSync() == text;
     } on Object {
       unchanged = false;
     }
@@ -6051,6 +6067,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _emitDeleted(oldPath);
     if (match && knownText != null) {
       _emitPublished(newPath, _identityOf(() => knownText), () => knownText);
+    } else if (match) {
+      // Stamped but never read: not read now either (rule P), so the event
+      // carries no identity (0148: the consumer rereads).
+      _emitPublishedUnread(newPath);
     } else {
       // The identity comes from the read that step 4 makes of the file (a
       // rollback publishes the source the same way).
@@ -6517,7 +6537,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           r = await deleteFileIfMatches(
             src,
             bytes: utf8.encode(pg.sourceText),
-            stillRedundant: () => copyHolds(dStore.pathFor(pg.id), (d) => listEquals(File(d).readAsBytesSync(), want)),
+            stillRedundant: () => copyHolds(dStore.pathFor(pg.id), (d) => listEquals(File(_obs(d)).readAsBytesSync(), want)),
             beforeFinalCheck: (path) async => syncHook?.call('originals-before-final-check', path),
           );
         } on Object catch (e) {
@@ -10945,7 +10965,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       var time = DateTime.now().millisecondsSinceEpoch;
       if (await file.exists()) {
         try {
-          theirsText = utf8.decode(await file.readAsBytes());
+          theirsText = utf8.decode(await File(_obs(file.path)).readAsBytes());
           time = (await file.lastModified()).millisecondsSinceEpoch;
         } on FormatException catch (ex) {
           throw _ReplayFailure("the saved file of $label isn't a valid page file", detail: '$ex');
@@ -11095,7 +11115,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           if (!absent) {
             // The store reports text that isn't UTF-8 as a failed read too.
             try {
-              utf8.decode(await File(path).readAsBytes());
+              utf8.decode(await File(_obs(path)).readAsBytes());
             } on FormatException {
               invalid = 'not valid UTF-8 text';
               readError = null;
@@ -12807,21 +12827,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       //
       // A file whose stamp is the one last classified is not read (rule P, S): the
       // open page's file and a blocked page are always read.
-      Future<({String text, int time, FileStamp? stamp, bool skip, bool owed})> read() => _readUnderFolderLock(file.parent, () async {
+      Future<({String text, int time, FileStamp? stamp, bool skip})> read() => _readUnderFolderLock(file.parent, () async {
         final before = fileStamp(path);
         if (!isOpen && _diskBlockId == null && before != null && _fileStamps[key] == before) {
-          // A moved page owed a publication (0148) is read once, after the move,
-          // for its identity only (and only with a listener); it isn't otherwise
-          // looked at.
-          String? owed;
-          if (_movePublish.contains(key) && _feedLive) {
-            try {
-              owed = await file.readAsString();
-            } on Object {
-              owed = null; // the feed is advisory
-            }
-          }
-          return (text: owed ?? '', time: 0, stamp: before, skip: true, owed: owed != null);
+          return (text: '', time: 0, stamp: before, skip: true);
         }
         if (before != null) await syncHook?.call('check-read', path);
         if (before != null || file.existsSync()) PageStore.fileReadObserver?.call(path);
@@ -12829,14 +12838,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final t = (await file.lastModified()).millisecondsSinceEpoch;
         // Unchanged across the read, and not a link (a link is read through).
         final stable = before != null && before == fileStamp(path) && !FileSystemEntity.isLinkSync(path);
-        return (text: s, time: t, stamp: stable ? before : null, skip: false, owed: false);
+        return (text: s, time: t, stamp: stable ? before : null, skip: false);
       });
 
       final got = isOpen ? await _whileBusy(read) : await read();
-      if (got.skip) {
-        if (got.owed && _movePublish.remove(key)) _emitPublished(path, null, () => got.text);
-        return false;
-      }
+      if (got.skip) return false;
       if (_pathId[key] case final moving? when _busy[moving] == _busyMoving) return false;
       text = got.text;
       time = got.time;
@@ -13198,7 +13204,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // before its original): the page is handed to the original, not evicted.
       NotedPage? op;
       try {
-        op = readPage(await File(original).readAsString());
+        op = readPage(await File(_obs(original)).readAsString());
       } on Object {
         op = null;
       }
@@ -13398,7 +13404,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await syncHook?.call('copy-merged', copyPath);
     final String current;
     try {
-      current = await File(copyPath).readAsString();
+      current = await File(_obs(copyPath)).readAsString();
     } on FileSystemException {
       if (await FileSystemEntity.type(copyPath) == FileSystemEntityType.notFound) return;
       rethrow;
@@ -13477,7 +13483,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // refuses reads or holds unreadable text may be back, held by sync.
       var present = false;
       try {
-        back = readPage(await File(path).readAsString());
+        back = readPage(await File(_obs(path)).readAsString());
         if (back.id != id) back = null;
       } on PathNotFoundException {
         back = null;
@@ -13547,7 +13553,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (conflictCopyOriginalNames(name).isNotEmpty) {
           NotedPage? page;
           try {
-            page = readPage(await File(u.path).readAsString());
+            page = readPage(await File(_obs(u.path)).readAsString());
           } on Object {
             page = null;
           }
@@ -13565,7 +13571,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       {
         final NotedPage page;
         try {
-          page = readPage(await File(u.path).readAsString());
+          page = readPage(await File(_obs(u.path)).readAsString());
         } on Object {
           continue;
         }
@@ -14168,7 +14174,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final cached = _candidateReads[path];
       if (cached != null && cached.size == size && cached.time == time) return cached.read;
       await _binderSeam('candidate-read', path);
-      final bytes = await File(path).readAsBytes();
+      final bytes = await File(_obs(path)).readAsBytes();
       _Candidate result;
       try {
         final binder = Binder.parse(utf8.decode(bytes));
@@ -14569,7 +14575,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // like _checkFile does.
   Future<String> _whyUnreadable(String path, String id) async {
     try {
-      final page = readPage(utf8.decode(await File(path).readAsBytes()));
+      final page = readPage(utf8.decode(await File(_obs(path)).readAsBytes()));
       return page.id != id ? 'it holds a different page' : "it isn't a page this version of Noted can read";
     } on UnsupportedPageFormatException {
       return 'it is from a newer version of Noted';

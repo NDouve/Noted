@@ -96,6 +96,8 @@ void main() {
       final came = seen.indexWhere((c) => c.kind == LocalChangeKind.published && c.path.endsWith('$id.canvas') && c.path.startsWith(extra.path));
       expect(gone, isNonNegative, reason: 'deleted($id): $seen');
       expect(came, greaterThan(gone), reason: 'published($id) after it: $seen');
+      // The scanned-only subpage was never read: its event has no identity.
+      if (id == ca) expect(seen[came].identity, isNull, reason: 'unread, so no identity');
     }
     expect(has(extra, a) && has(extra, ca), isTrue);
     expect(has(pages, a) || has(pages, ca), isFalse);
