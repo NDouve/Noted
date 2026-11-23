@@ -111,6 +111,8 @@ Future<void> until(
 }
 
 void main() {
+  setUpAll(() => Notebook.legacyPageCopyForTest = true); // copy-and-delete behaviour, until the copy path replaces it
+  tearDownAll(() => Notebook.legacyPageCopyForTest = false);
   late Directory root;
   late Directory dir;
   late Directory elsewhere;

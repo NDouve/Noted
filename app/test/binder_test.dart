@@ -200,6 +200,8 @@ class FlakyStore extends PageStore {
 }
 
 void main() {
+  setUpAll(() => Notebook.legacyPageCopyForTest = true); // copy-and-delete behaviour, until the copy path replaces it
+  tearDownAll(() => Notebook.legacyPageCopyForTest = false);
   late Directory root;
   late Directory pages; // standalone pages
   late Directory folder; // a binder folder

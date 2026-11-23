@@ -203,6 +203,10 @@ class _LockTimeout implements Exception {
   final String path;
 }
 
+class _SkipRecheck implements Exception {
+  const _SkipRecheck();
+}
+
 /// How one page's rename ended (see [Notebook._renameOnePage]).
 enum _RenameOne { renamed, taken, busy, cannot }
 
@@ -5186,6 +5190,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     NotebookException? notice; // the move worked; there is something to tell
     String? attachmentsNote;
     var movedFully = false; // the pages are at the target; only placing is left
+    var renameMove = !forceCopyMoveForTest && !legacyPageCopyForTest; // false once the copy runs
     try {
       if (!forceCopyMoveForTest && !legacyPageCopyForTest) {
         if (FolderLocks.keyOf(fromStore.directory) == FolderLocks.keyOf(toStore.directory)) {
@@ -5251,6 +5256,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           if (notice != null) throw notice;
           return;
         }
+        renameMove = false;
         // The first page can't be renamed (another drive or cloud): the copy
         // below (to be replaced by the keep-the-original copy path).
         await _settleRekeys(rekeys, const {});
@@ -5791,6 +5797,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Step 4: whatever the watchers held back while the pages were busy is
       // looked at now, at both ends. A moved page with a carried stamp isn't read.
       try {
+        if (!renameMove) throw const _SkipRecheck();
         for (final path in [
           ...sourcePaths,
           for (final p in ids)
@@ -5799,6 +5806,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           if (_disposed) break;
           await checkFile(path);
         }
+      } on _SkipRecheck {
+        // The copy keeps its own bookkeeping.
       } on Object catch (e) {
         debugPrint('Checking the moved pages failed: $e');
       }

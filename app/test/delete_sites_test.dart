@@ -28,6 +28,12 @@ const String _tempMixed =
     'own temporary files: unique names, and the fixed-name <target>.landing.tmp of a non-hash kept file (known)';
 
 const List<Site> deleteSites = [
+  (
+    'app/lib/src/notebook.dart',
+    's.deleteSync(); // an empty folder only',
+    1,
+    'a folder emptied by a move, removed without recursive: never a file',
+  ),
   ('app/lib/src/ai/ai_link_server.dart', 'file.deleteSync();', 1, _private),
   ('app/lib/src/app_commands.dart', 'invoke: () => a.delete(p),', 1, _call),
   (

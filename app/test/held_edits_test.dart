@@ -26,6 +26,8 @@ import 'support/real_io.dart';
 enum _Swap { other, damaged, missing }
 
 void main() {
+  setUpAll(() => Notebook.legacyPageCopyForTest = true); // copy-and-delete behaviour, until the copy path replaces it
+  tearDownAll(() => Notebook.legacyPageCopyForTest = false);
   final sep = Platform.pathSeparator;
   late Directory root;
   late Directory pages;

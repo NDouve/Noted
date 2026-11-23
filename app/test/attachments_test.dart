@@ -90,6 +90,8 @@ class _DeleteHookStore extends PageStore {
 // folder and its life with the page (move, template, delete, undo,
 // recovery).
 void main() {
+  setUpAll(() => Notebook.legacyPageCopyForTest = true); // copy-and-delete behaviour, until the copy path replaces it
+  tearDownAll(() => Notebook.legacyPageCopyForTest = false);
   late Directory root;
   late Directory pages;
   late Directory extra;
