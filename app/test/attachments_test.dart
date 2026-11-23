@@ -1158,6 +1158,18 @@ void main() {
       expect(log.any((l) => l.contains('The folder is busy; not removing')), isTrue);
     });
 
+    test('put with recovery on: a refused create of the assets folder is busy, and nothing goes to recovery or the page folder (C2)', () async {
+      final nb = make();
+      await nb.load();
+      final a = nb.currentId!;
+      final c = ScriptedCoordinator()..refuse = (w) => isOneWriteOn(w, pages.path);
+      registerScripted(root, c);
+      await expectLater(nb.attachments!.put(bytes, extension: 'txt'), throwsA(isA<StorageBusy>()));
+      expect(c.calls.where((w) => isOneWriteOn(w, pages.path)), hasLength(1), reason: 'no second try in the recovery folder');
+      expect(Directory('${pages.path}/$a.assets').existsSync(), isFalse);
+      expect(Directory('${rec.path}/$a.assets').existsSync(), isFalse, reason: 'a refusal is not "the folder is away"');
+    });
+
     test('a file added while the folder is away is kept for recovery and lands with the page', () async {
       final nb = make(saveDelay: const Duration(hours: 1));
       await nb.load();

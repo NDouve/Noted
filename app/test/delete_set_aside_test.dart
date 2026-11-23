@@ -243,6 +243,8 @@ void main() {
       addTearDown(() => unregisterCoordinator(root.path));
       final deleted = await nb.delete(a);
       expect(refuser.calls.where((w) => w.intents.single.path.endsWith('deleted-attachments')), isNotEmpty);
+      await quiet();
+      expect(notices.any((n) => n.contains('could not be set aside')), isTrue, reason: 'said as busy: it stays in the page\'s folder');
       expect(inPlace(a), isEmpty, reason: 'no rename beside the page either: the folder was busy');
       expect(trashDir().existsSync() ? trashDir().listSync() : const [], isEmpty);
       expect(live(a, 1).readAsBytesSync(), bytesOf(1), reason: 'the folder stays as <p>.assets, untouched');

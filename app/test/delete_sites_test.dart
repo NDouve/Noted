@@ -550,7 +550,7 @@ const List<Site> writeSites = [
 /// `removeFolderCoordinated`) and `TemplateStore.save`. `moveExclusive` is not
 /// here: it answers `MoveOutcome.busy` itself and never throws a StorageBusy.
 final RegExp _coordinatedCall = RegExp(
-  r'\b(publishExclusive|replaceIfUnchanged|deleteFileIfUnchanged|deleteFileIfMatches|sweepAsideFiles|coordinated|\w+Coordinated|TemplateStore\([^)]*\)\.save)\(',
+  r'\b(publishExclusive|replaceIfUnchanged|deleteFileIfUnchanged|deleteFileIfMatches|sweepAsideFiles|coordinated|\w+Coordinated|TemplateStore\([^)]*\)\.save|_mutateIn|into)\(',
 );
 
 /// The 1-based line of each `try` in [source] whose body calls a storage
@@ -733,6 +733,7 @@ void main() {
   group('every FileSystemException handler around a storage call catches StorageBusy first (C2)', () {
     for (final file in [
       'app/lib/src/attachment_copy.dart',
+      'app/lib/src/page_attachments.dart',
       'packages/noted_core/lib/src/template/template.dart',
       'app/lib/src/notebook.dart',
     ]) {

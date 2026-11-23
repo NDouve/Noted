@@ -289,6 +289,11 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
       bool wrote;
       try {
         wrote = await _mutateIn(d, () => writeNewAttachmentFile(target, bytes, hash));
+      } on StorageBusy {
+        if (damagedKeptAs != null) {
+          notify('A damaged copy of a file in this page\'s folder was kept as "$damagedKeptAs".');
+        }
+        rethrow;
       } on FileSystemException {
         if (damagedKeptAs != null) {
           notify('A damaged copy of a file in this page\'s folder was kept as "$damagedKeptAs".');
@@ -327,6 +332,10 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
       }
       await into(folder);
       _startWatching();
+    } on StorageBusy {
+      // The folder's coordination refused: nothing was written, and a refusal
+      // is not "the folder is away", so nothing goes to recovery either (C2).
+      rethrow;
     } on FileSystemException catch (e) {
       final r = recoveryFolder;
       if (!allowRecovery || r == null) rethrow;
