@@ -11668,6 +11668,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     Future<({bool open, String? failure})> closedBranch() async {
       if (openHere()) return (open: true, failure: null);
       final text = await File(originalPath).readAsString();
+      _noteDiskText(originalPath, text);
       final original = readPage(text);
       final top = _topOfChain(loc, original);
       final merged = mergeConflictCopy(

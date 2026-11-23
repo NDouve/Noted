@@ -1831,7 +1831,7 @@ void main() {
       await recheck();
       await Future<void>.delayed(const Duration(milliseconds: 500));
       expect(writes(), 4);
-      await nb.checkFile(pathOf(id));
+      await foreign(pathOf(id));
       await recheck();
       await Future<void>.delayed(const Duration(milliseconds: 500));
       expect(writes(), 4, reason: 'once per mark');
