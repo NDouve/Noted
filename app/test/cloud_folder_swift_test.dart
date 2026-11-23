@@ -174,4 +174,22 @@ void main() {
       expect(code, contains('CloudFolder(messenger:'));
     });
   }
+
+  test('the coordinate accessor compares each intent URL before go', () {
+    final code = _read(ios)
+        .split('\n')
+        .where((l) => !l.trim().startsWith('//'))
+        .join('\n');
+    final accessor = code.substring(
+      code.indexOf('coordinator.coordinate(with: accessIntents'),
+    );
+    final compare = accessor.indexOf(
+      'CloudFolder.normalize(intent.url.path) != CloudFolder.normalize(intents[i].path)',
+    );
+    final moved = accessor.indexOf('"reason": "moved"');
+    final go = accessor.indexOf('self.send("go"');
+    expect(compare, greaterThan(-1));
+    expect(moved, greaterThan(compare));
+    expect(go, greaterThan(moved));
+  });
 }

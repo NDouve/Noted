@@ -66,6 +66,14 @@
 //                                   before its block started; nothing is held.
 //                                   (Also sent for an id Dart already
 //                                   cancelled; Dart ignores unknown ids.)
+//   failed({id, reason: "moved", paths})
+//                                   an item named by an intent was at another
+//                                   path when the block started (it moved while
+//                                   the call waited). paths are the requested
+//                                   paths whose URL changed. Nothing is held
+//                                   and no go is sent; Dart treats it as
+//                                   StorageBusy (coordination) and retries after
+//                                   the folder's next check.
 //   pending({id, paths})            a move or delete intent names files that
 //                                   have unresolved versions (paths: those
 //                                   files). The block is released at once.
@@ -505,6 +513,18 @@ final class CloudFolder: NSObject {
       }
       if error != nil {  // cancelled or failed before the block started
         self.send("failed", ["id": id])
+        return
+      }
+
+      // An item that moved while we waited: the intents no longer name what Dart
+      // asked for, so go would let its write run on the wrong path.
+      var moved: [String] = []
+      for (i, intent) in accessIntents.enumerated()
+      where CloudFolder.normalize(intent.url.path) != CloudFolder.normalize(intents[i].path) {
+        moved.append(intents[i].path)
+      }
+      if !moved.isEmpty {
+        self.send("failed", ["id": id, "reason": "moved", "paths": moved])
         return
       }
 
