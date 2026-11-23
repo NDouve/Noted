@@ -281,6 +281,7 @@ import '../../packages/noted_sync/test/fake_webdav.dart';
 import '../../packages/noted_sync/test/helpers.dart' show FakeClock;
 import 'support/binder_seams.dart';
 import 'support/real_io.dart' show realIoUntil;
+import 'support/page_save.dart';
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -394,11 +395,10 @@ class _Chaos extends PageStore {
     throw const FileSystemException('disk error');
   }
 
-  @override
   Future<void> save(NotedPage page) {
     saves++;
     _fire();
-    return super.save(page);
+    return savePageDirect(this, page);
   }
 
   void _fire() {

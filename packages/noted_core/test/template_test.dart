@@ -6,6 +6,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/coordination_support.dart';
 
 const String oddData = '{ "z":1.0,"a" :[1e2,  -0.0], "s":"\\u00e9" }';
 
@@ -202,6 +203,79 @@ void main() {
     expect(file.existsSync(), isTrue);
     expect(left.existsSync(), isFalse);
   });
+
+  group('TemplateStore.save and the folder coordination (N4, C2)', () {
+    late Directory dir;
+    late Directory templates;
+    late NotedTemplate t;
+    late RecordingCoordinator c;
+
+    setUp(() async {
+      dir = await Directory.systemTemp.createTemp('noted_tpl');
+      templates = Directory('${dir.path}/templates');
+      t = NotedTemplate.forPage(name: 'N', page: readPage(pageText('p1')));
+      c = RecordingCoordinator();
+    });
+    tearDown(() async {
+      unregisterCoordinator(dir.resolveSymbolicLinksSync());
+      await dir.delete(recursive: true);
+    });
+    void register() => registerCoordinator(dir.resolveSymbolicLinksSync(), c);
+
+    test('a taken name is refused and the file is left byte for byte', () async {
+      final store = TemplateStore(templates);
+      templates.createSync();
+      final taken = store.fileFor(t.id)..writeAsStringSync('somebody else wrote this');
+      await expectLater(store.save(t), throwsA(isA<FileSystemException>()));
+      expect(taken.readAsStringSync(), 'somebody else wrote this');
+      expect(templates.listSync(), hasLength(1), reason: 'no temporary file left');
+    });
+
+    test('a name taken after the check is refused: it is published, never renamed over', () async {
+      final store = TemplateStore(templates);
+      register();
+      c.beforeBody = (w) async {
+        // The publish call (it names the source as a move): a sync client
+        // lands another file at the name just before it.
+        if (w.intents.any((i) => i.kind == CoordinationKind.move)) {
+          store.fileFor(t.id).writeAsStringSync('arrived first');
+        }
+      };
+      await expectLater(store.save(t), throwsA(isA<FileSystemException>()));
+      expect(store.fileFor(t.id).readAsStringSync(), 'arrived first');
+      expect(templates.listSync(), hasLength(1), reason: 'the temporary file is removed');
+    });
+
+    test('creates the folder and publishes through the coordinator', () async {
+      final store = TemplateStore(templates);
+      register();
+      final file = await store.save(t);
+      expect(file.existsSync(), isTrue);
+      expect(
+        c.calls.first.intents.single,
+        CoordinationIntent(templates.path, CoordinationKind.write),
+        reason: 'the create is one write on the folder',
+      );
+      expect(c.calls.length, 2, reason: 'the create, then the publish');
+    });
+
+    test('a refused create is a StorageBusy: nothing is made and nothing is written another way', () async {
+      final store = TemplateStore(templates);
+      register();
+      c.refuse = StorageBusy(StorageBusyReason.coordination, [templates.path]);
+      await expectLater(store.save(t), throwsA(isA<StorageBusy>()));
+      expect(templates.existsSync(), isFalse);
+      expect(dir.listSync(), isEmpty);
+    });
+
+    test('a refused publish is a StorageBusy: no template file and no temporary file', () async {
+      final store = TemplateStore(templates);
+      registerCoordinator(dir.resolveSymbolicLinksSync(), _RefuseMoves());
+      await expectLater(store.save(t), throwsA(isA<StorageBusy>()));
+      expect(store.fileFor(t.id).existsSync(), isFalse);
+      expect(templates.listSync(), isEmpty, reason: 'the temporary file is removed');
+    });
+  });
   test('a template id that is not one plain name is refused', () {
     final text = NotedTemplate.forPage(name: 'N', page: readPage(pageText('p1'))).write();
     for (final bad in ['../x', 'a/b', r'a\b', '.', '..', 'x.y']) {
@@ -210,4 +284,15 @@ void main() {
     }
     expect(NotedTemplate.parse(text).id, isNotEmpty);
   });
+}
+
+/// Refuses every call that moves a file, and runs the others.
+class _RefuseMoves implements StorageCoordinator {
+  @override
+  Future<T> coordinate<T>(CoordinatedWrite write, Future<T> Function() body) async {
+    if (write.intents.any((i) => i.kind == CoordinationKind.move)) {
+      throw StorageBusy(StorageBusyReason.coordination, [write.intents.first.path]);
+    }
+    return body();
+  }
 }

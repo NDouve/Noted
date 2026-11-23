@@ -8,6 +8,7 @@ import 'dart:io';
 import '../format/page_format.dart';
 import '../merge/conflict_copy.dart';
 import '../model/page.dart';
+import 'coordination.dart';
 import 'exclusive_move.dart';
 import 'exclusive_publish.dart';
 import 'file_stamp.dart';
@@ -107,7 +108,16 @@ class PageStore {
     bool stamps = false,
     void Function(String path)? afterFileRead,
   }) async {
-    if (createFolder) await directory.create(recursive: true);
+    if (createFolder && !await directory.exists()) {
+      // One coordinated write on the folder that holds it (N4); a folder that
+      // is there costs no call.
+      await coordinated(
+        CoordinatedWrite([CoordinationIntent(folderOf(directory.path), CoordinationKind.write)]),
+        () async {
+          await directory.create(recursive: true);
+        },
+      );
+    }
     // Put back what a crashed or failed replace left under a set-aside name
     // (see [sweepAsideFiles]); one that can't be moved yet is listed below.
     if (sweep) await sweepAsideFiles(directory, extension: extension);
@@ -266,16 +276,6 @@ class PageStore {
   Future<String> readText(String pageId) {
     fileReadObserver?.call(_pathFor(pageId));
     return File(_pathFor(pageId)).readAsString();
-  }
-
-  /// Writes [page] atomically: to a temporary file first, then renamed over
-  /// the old file, so a crash mid-write never leaves a half-written page.
-  Future<void> save(NotedPage page) async {
-    final path = _pathFor(page.id);
-    final tmp = File('$path.tmp');
-    await tmp.writeAsString(writePage(page), flush: true);
-    await tmp.rename(path);
-    _paths[page.id] = path;
   }
 
   /// Writes [page] as a new file, and only if no file is at its path at the

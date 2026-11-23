@@ -12,6 +12,7 @@ import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/page_save.dart';
 
 void main() {
   late Directory root;

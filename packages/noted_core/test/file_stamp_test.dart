@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
 import 'package:noted_core/src/storage/file_stamp.dart' show lstatSymbolFor;
+import 'support/page_save.dart';
 
 void main() {
   late Directory dir;

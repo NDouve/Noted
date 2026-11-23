@@ -7,6 +7,7 @@ import 'dart:io';
 
 import '../ai/ai_access.dart';
 import '../model/box_types.dart';
+import '../storage/coordination.dart';
 import '../storage/exclusive_publish.dart';
 import '../storage/replace_if_unchanged.dart';
 import 'binder.dart';
@@ -417,6 +418,10 @@ class BinderStore {
           beforeFinalCheck: beforeFinalCheck,
           afterFinalRead: afterFinalRead,
         );
+      } on StorageBusy {
+        // The folder's coordination refused: nothing was written. Not "in use
+        // by another program", and not tried again here (C2).
+        return BinderRefused(BinderRefusal.inUse, 'The folder is busy; try again', kept: kept);
       } on FileSystemException catch (e) {
         if (!_isWritable(f.path)) {
           return BinderRefused(BinderRefusal.readOnly, 'The binder file is read-only', kept: kept);
@@ -534,6 +539,9 @@ class BinderStore {
       final bool published;
       try {
         published = await publishExclusive(tmp, file.path);
+      } on StorageBusy {
+        // A refusal is not a drive that can't publish safely (C2).
+        rethrow;
       } on FileSystemException catch (e) {
         throw FileSystemException(
           "This folder's drive can't create a binder safely",

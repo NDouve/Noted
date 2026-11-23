@@ -21,6 +21,8 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/busy_retry.dart';
+import 'support/page_save.dart';
+import 'support/scripted_coordinator.dart';
 
 Map<String, Object?> doc(String text) => {
   'document': {
@@ -1509,6 +1511,22 @@ void main() {
         expect(heldNotes(nb).single, startsWith(lockedNote));
         expect(heldNotes(nb).single, contains('disk full'));
         await refused(() => nb.addBinder(at('other/B2')));
+      });
+
+      test('a publish the folder refuses (StorageBusy) deletes its temp, keeps the hold and says the folder is busy (C2)', () async {
+        final (nb, hooks, now) = await deleted();
+        final c = ScriptedCoordinator()
+          ..refuse = (w) => w.intents.any((i) => i.kind == CoordinationKind.move && i.path.contains('binders.json'));
+        registerScripted(root, c);
+        expect(await nb.retrySettings(), isFalse);
+        nb.now = () => now().add(const Duration(seconds: 31));
+        expect(await nb.retrySettings(), isFalse);
+        expect(hooks.count('settings-publish'), 1, reason: 'the hook fired');
+        expect(c.calls.any((w) => w.intents.any((i) => i.kind == CoordinationKind.move)), isTrue);
+        expect(tmpFiles(), isEmpty);
+        expect(settingsFile().existsSync(), isFalse, reason: 'no list was written another way');
+        expect(nb.settingsHoldForTest, 'locked');
+        expect(heldNotes(nb).single, allOf(startsWith(lockedNote), contains('the folder is busy. Try again.')));
       });
 
       test('not found once, then a valid file reappears: it is adopted and no empty list is written', () async {

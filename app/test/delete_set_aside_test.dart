@@ -233,6 +233,42 @@ void main() {
       await reloadAgrees(nb, listed: {keep});
     });
 
+    test('delete:createRefused: a refused create of the folder for the rename (N4, C2) is busy: nothing moves, nothing is copied', () async {
+      final (nb, a, keep) = await world();
+      // The create of `deleted-attachments/<id>` is one write on `deleted-attachments`.
+      final refuser = _Refuser(
+        (w) => w.intents.length == 1 && w.intents.single.kind == CoordinationKind.write && w.intents.single.path.endsWith('deleted-attachments'),
+      );
+      registerCoordinator(root.path, refuser);
+      addTearDown(() => unregisterCoordinator(root.path));
+      final deleted = await nb.delete(a);
+      expect(refuser.calls.where((w) => w.intents.single.path.endsWith('deleted-attachments')), isNotEmpty);
+      await quiet();
+      expect(notices.any((n) => n.contains('could not be set aside')), isTrue, reason: 'said as busy: it stays in the page\'s folder');
+      expect(inPlace(a), isEmpty, reason: 'no rename beside the page either: the folder was busy');
+      expect(trashDir().existsSync() ? trashDir().listSync() : const [], isEmpty);
+      expect(live(a, 1).readAsBytesSync(), bytesOf(1), reason: 'the folder stays as <p>.assets, untouched');
+      nb.discardDeleted(deleted);
+      await quiet();
+      expect(live(a, 1).existsSync(), isTrue, reason: 'no record, so the expiry deletes nothing there');
+      await reloadAgrees(nb, listed: {keep});
+    });
+
+    test('delete:expiryRefused: a refused delete in the expiry counts as kept, never done: the run stops and no file is lost (R5.16, C2)', () async {
+      final (nb, a, keep) = await world(files: 2);
+      final deleted = await nb.delete(a);
+      expect(trashFiles(), hasLength(2));
+      var seen = 0;
+      final refuser = _Refuser((w) => w.intents.any((i) => i.kind == CoordinationKind.delete && i.path.contains('deleted-attachments')) && ++seen == 1);
+      registerCoordinator(root.path, refuser);
+      addTearDown(() => unregisterCoordinator(root.path));
+      nb.discardDeleted(deleted);
+      await quiet();
+      expect(seen, greaterThanOrEqualTo(1));
+      expect(trashFiles(), hasLength(2), reason: 'kept: the refused run ends at once, the other file is not deleted either');
+      await reloadAgrees(nb, listed: {keep});
+    });
+
     test('delete:inPlaceUndo: Undo renames it back', () async {
       Notebook.forceCopyMoveForTest = true;
       final (nb, a, keep) = await world(files: 2);
@@ -989,11 +1025,14 @@ void main() {
     test('nothing in notebook.dart removes a folder recursively but _removeDir, called only by the delete rollback', () {
       final text = File('lib/src/notebook.dart').readAsStringSync().replaceAll('\r\n', '\n');
       final lines = text.split('\n');
-      // A line that deletes with `recursive: true`: the only one is inside
-      // `_removeDir`, the exempt helper.
+      // A line that deletes with `recursive: true` (directly, or through the
+      // coordinated folder remove): the only one is inside `_removeDir`, the
+      // exempt helper.
       final recursive = [
         for (var i = 0; i < lines.length; i++)
-          if (RegExp(r'recursive:\s*true').hasMatch(lines[i]) && lines[i].contains('delete')) i,
+          if (RegExp(r'recursive:\s*true').hasMatch(lines[i]) &&
+              (lines[i].contains('delete') || lines[i].contains('removeFolderCoordinated')))
+            i,
       ];
       final helper = lines.indexWhere((l) => l.contains('static Future<void> _removeDir('));
       expect(helper, greaterThanOrEqualTo(0));
@@ -1004,7 +1043,11 @@ void main() {
         for (final l in lines)
           if (l.contains('_removeDir(') && !l.contains('static Future<void> _removeDir(')) l.trim(),
       ];
-      expect(calls, ['if (stash.isEmpty && keepTrash.isEmpty) await _removeDir(trash);']);
+      // (and the test seam that lets a test call it)
+      expect(calls, [
+        'static Future<void> removeDirForTest(Directory d) => _removeDir(d);',
+        'if (stash.isEmpty && keepTrash.isEmpty) await _removeDir(trash);',
+      ]);
       expect(text.contains('_removeSetAside'), isFalse);
       expect(text.contains('removeVerifiedSources'), isFalse, reason: 'no copy-then-delete');
     });

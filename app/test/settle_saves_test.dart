@@ -11,6 +11,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/settle_saves.dart';
+import 'support/page_save.dart';
 
 void main() {
   late Directory root;
@@ -124,9 +125,8 @@ class _StuckStore extends PageStore {
 
   Future<void>? hold;
 
-  @override
   Future<void> save(NotedPage page) async {
     await hold;
-    await super.save(page);
+    await savePageDirect(this, page);
   }
 }

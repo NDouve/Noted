@@ -18,6 +18,7 @@ import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/page_save.dart';
 
 Map<String, Object?> doc(String text) => {
   'document': {
@@ -134,11 +135,10 @@ class CountingStore extends PageStore {
     f?.call();
   }
 
-  @override
   Future<void> save(NotedPage page) {
     saves++;
     _fire();
-    return super.save(page);
+    return savePageDirect(this, page);
   }
 
   @override
@@ -2888,6 +2888,30 @@ void main() {
       final error = await startDelete();
       expect(error, isA<PagesNotRestoredException>());
       expect((error! as NotebookException).message, contains('a copy could not be saved'));
+    });
+
+    test('8c: the copy is refused as busy (StorageBusy): one try, not eight names; the page is held (C2)', () async {
+      await start(withRecovery: false);
+      parent = nb.currentId!;
+      mine = nb.current!.createBoxAt(const Bounds(10, 10, 0, 0));
+      child = await nb.createPage(parentId: parent);
+      await nb.createPage();
+      await nb.flush();
+      counting.failDelete.add(child);
+      final theirs = writePage(
+        onDisk(parent).removeNode(mine.id).insertNode(noteBox('theirs', at: const Bounds(400, 10, 200, 40))),
+      );
+      counting.onFailDelete = () => File(pathOf(parent)).writeAsStringSync(theirs);
+      var tries = 0;
+      nb.syncHook = (point, path) async {
+        if (point == 'undo-copy-before-publish') {
+          tries++;
+          throw StorageBusy(StorageBusyReason.coordination, [path]);
+        }
+      };
+      final error = await startDelete();
+      expect(error, isA<PagesNotRestoredException>());
+      expect(tries, 1, reason: 'a refusal is not a taken name: the next name is not tried');
     });
 
     test('13: the copy beside a different file threw: the version is in the file after replay', () async {

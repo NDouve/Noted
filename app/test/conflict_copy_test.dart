@@ -12,6 +12,7 @@ import 'package:noted/src/recovery_store.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/busy_retry.dart';
+import 'support/page_save.dart';
 
 Map<String, Object?> doc(String text) => {
   'document': {
@@ -36,9 +37,8 @@ class FlakyStore extends PageStore {
   bool dropSaves = false;
   bool failReads = false;
 
-  @override
   Future<void> save(NotedPage page) async {
-    if (!dropSaves) await super.save(page);
+    if (!dropSaves) await savePageDirect(this, page);
   }
 
   @override

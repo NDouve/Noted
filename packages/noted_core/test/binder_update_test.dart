@@ -11,6 +11,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/coordination_support.dart';
 
 class _CountingStore extends BinderStore {
   _CountingStore(super.directory, {super.tries});
@@ -71,6 +72,37 @@ void main() {
     expect(await store.create(original), BinderCreated.created);
   });
   tearDown(() async => dir.delete(recursive: true));
+
+  group('a refused coordination (C2)', () {
+    late RecordingCoordinator c;
+    setUp(() {
+      c = RecordingCoordinator();
+      registerCoordinator(dir.resolveSymbolicLinksSync(), c);
+    });
+    tearDown(() => unregisterCoordinator(dir.resolveSymbolicLinksSync()));
+
+    test('an update is refused at once as busy: one call, no retry, the file untouched', () async {
+      final before = text();
+      c.refuse = StorageBusy(StorageBusyReason.coordination, [dir.path]);
+      final r = await store.update(title('New'));
+      expect(r, isA<BinderRefused>());
+      expect((r as BinderRefused).kind, BinderRefusal.inUse);
+      expect(r.reason, contains('busy'));
+      expect(c.calls, hasLength(1), reason: 'not tried again');
+      expect(text(), before);
+      expect(tmps().length, lessThanOrEqualTo(1), reason: 'at most the update\'s own kept temp');
+    });
+
+    test('a create is refused as StorageBusy, not as a drive that can not publish', () async {
+      final fresh = await Directory.systemTemp.createTemp('noted_binder_create');
+      addTearDown(() => fresh.delete(recursive: true));
+      registerCoordinator(fresh.resolveSymbolicLinksSync(), c);
+      addTearDown(() => unregisterCoordinator(fresh.resolveSymbolicLinksSync()));
+      c.refuse = StorageBusy(StorageBusyReason.coordination, [fresh.path]);
+      await expectLater(BinderStore(fresh).create(original), throwsA(isA<StorageBusy>()));
+      expect(File('${fresh.path}/$binderFileName').existsSync(), isFalse);
+    });
+  });
 
   test('1. an unseen replacement survives', () async {
     other();

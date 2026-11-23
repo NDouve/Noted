@@ -18,6 +18,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/real_io.dart';
 import 'support/settle_saves.dart';
+import 'support/page_save.dart';
 
 const _codec = NoteCodec();
 

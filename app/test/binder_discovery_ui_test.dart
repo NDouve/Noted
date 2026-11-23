@@ -19,6 +19,7 @@ import 'package:noted/src/settings_panel.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/real_io.dart';
+import 'support/page_save.dart';
 
 void main() {
   late Directory root;

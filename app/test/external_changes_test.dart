@@ -11,6 +11,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted/src/page_tree_view.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/page_save.dart';
 
 Map<String, Object?> doc(String text) => {
   'document': {

@@ -21,7 +21,6 @@ import 'support/settle_saves.dart';
 class _FailingStore extends PageStore {
   _FailingStore(super.directory);
 
-  @override
   Future<void> save(NotedPage page) async {
     throw const FileSystemException('disk full');
   }

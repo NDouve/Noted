@@ -13,6 +13,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/coordination_support.dart';
+import 'support/page_save.dart';
 
 /// A file whose next [stat] throws when [fail] says so (a sync client holding
 /// it for a moment); everything the library calls is forwarded.

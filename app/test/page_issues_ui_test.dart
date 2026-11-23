@@ -19,6 +19,7 @@ import 'package:noted_core/noted_core.dart';
 import 'search_ui_test.dart' show noteBox, notePage;
 import 'support/real_io.dart';
 import 'support/settle_saves.dart';
+import 'support/page_save.dart';
 
 void main() {
   late Directory root;
