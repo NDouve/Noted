@@ -10587,7 +10587,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _unparkConsumed(path);
     final job = _checking.then((_) async {
       await _chain.idle; // let writes in flight land first
-      if (!_disposed) await _checkFile(path);
+      if (_disposed) return;
+      await _checkFile(path);
+      // The check may have moved the page's stored path to this file (a rename
+      // by sync, or a move): look again at the path as it is now.
+      _unparkConsumed(path);
     }).catchError((Object e) {
       debugPrint('Checking $path failed: $e');
     });

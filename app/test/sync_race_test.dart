@@ -1658,7 +1658,7 @@ void main() {
         await start(retire: const Duration(milliseconds: 300));
         await withCopy();
         await nb.checkFile(copy);
-        final chosen = '${dir.path}${sep}my-notes.canvas';
+        final chosen = '${dir.path}${sep}renamed.canvas';
         File(pathOf(id)).renameSync(chosen);
         await nb.checkFile(pathOf(id)); // seen missing
         await nb.checkFile(chosen);
@@ -1698,6 +1698,55 @@ void main() {
         expect(writes, 4, reason: 'once per mark');
       }, timeout: const Timeout(Duration(minutes: 1)));
     }
+
+    // Parks the mark: sync puts the old file back at every re-check, wherever
+    // the page's file is at that moment. [writes] counts the rounds.
+    Future<int Function()> park() async {
+      await start(retire: const Duration(milliseconds: 300));
+      await withCopy();
+      await nb.checkFile(copy);
+      var writes = 0;
+      final hook = nb.syncHook;
+      nb.syncHook = (p, path) async {
+        await hook?.call(p, path);
+        if (p != 'copy-recheck') return;
+        writes++;
+        File(path).writeAsStringSync(before);
+      };
+      await recheck();
+      await recheck();
+      await recheck();
+      await until(() => nb.consumedCopiesForTest.values.any((p) => p), 'the mark to be parked');
+      expect(writes, 3);
+      return () => writes;
+    }
+
+    test('(e) an event path that differs in letter case and separators unparks (Windows)', () async {
+      final writes = await park();
+      final other = id.toUpperCase();
+      await nb.checkFile('${dir.path.replaceAll(r'\', '/')}/$other.CANVAS');
+      await recheck();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(writes(), 4);
+    }, skip: !Platform.isWindows, timeout: const Timeout(Duration(minutes: 1)));
+
+    test('(e) moved to another folder while parked: the old folder\'s file does not unpark, the new one\'s does', () async {
+      final writes = await park();
+      final extraDir = await Directory('${root.path}${sep}extra').create();
+      expect(await nb.moveToFolder(id, extraDir.path), isTrue);
+      await nb.checkFile(pathOf(id));
+      await recheck();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(writes(), 3, reason: 'the old folder is not the page\'s file now');
+      await nb.checkFile('${extraDir.path}$sep$id.canvas');
+      await recheck();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(writes(), 4);
+      await nb.checkFile('${extraDir.path}$sep$id.canvas');
+      await recheck();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(writes(), 4, reason: 'once per mark');
+    }, timeout: const Timeout(Duration(minutes: 1)));
 
     test('(f) a box from the copy moved inside the window: a revert brings it back in the copy\'s version', () async {
       await start();
