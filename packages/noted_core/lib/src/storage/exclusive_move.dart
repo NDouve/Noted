@@ -44,6 +44,8 @@ enum MoveStrategy {
 }
 
 /// A test seam: forces the way [moveExclusive] renames. Null in production.
+/// Not exported by `noted_core.dart`; tests import this file. (No
+/// `@visibleForTesting`: `package:meta` is not a dependency of this package.)
 MoveStrategy? debugMoveStrategy;
 
 /// Moves the file or folder [from] to [to] only if nothing is at [to] at the
@@ -171,11 +173,8 @@ typedef _LastErrorD = int Function();
 
 int _moveWindows(String from, String to, void Function()? hook) {
   final k32 = DynamicLibrary.open('kernel32.dll');
-  // Leaf calls, so the error code can't change between the two.
-  final move = k32.lookupFunction<_MoveFileExC, _MoveFileExD>(
-    'MoveFileExW',
-    isLeaf: true,
-  );
+  // The move is a normal call; the error reader is a leaf call, read right after.
+  final move = k32.lookupFunction<_MoveFileExC, _MoveFileExD>('MoveFileExW');
   final lastError = k32.lookupFunction<_LastErrorC, _LastErrorD>(
     'GetLastError',
     isLeaf: true,
@@ -227,7 +226,7 @@ const int _atFdCwd = -100;
 const int _renameNoReplace = 1;
 const int _renameExcl = 4;
 
-// Resolved before the call, so only the read runs between the call and errno.
+// Resolved before the call; the read of errno is inline right after the call.
 _ErrnoD _errnoReader(DynamicLibrary libc) {
   final name = Platform.isMacOS || Platform.isIOS
       ? '__error'
@@ -237,24 +236,17 @@ _ErrnoD _errnoReader(DynamicLibrary libc) {
   return libc.lookupFunction<_ErrnoC, _ErrnoD>(name, isLeaf: true);
 }
 
-int _failure(_ErrnoD errno) {
-  final e = errno().value;
-  return e == 0 ? _unknownError : e;
-}
-
 int _moveApple(String from, String to, void Function()? hook) {
   final libc = DynamicLibrary.process();
-  final rename = libc.lookupFunction<_RenameXC, _RenameXD>(
-    'renamex_np',
-    isLeaf: true,
-  );
+  final rename = libc.lookupFunction<_RenameXC, _RenameXD>('renamex_np');
   final errno = _errnoReader(libc);
   final a = allocCString(from);
   final b = allocCString(to);
   try {
     hook?.call();
     if (rename(a, b, _renameExcl) == 0) return 0;
-    return _failure(errno);
+    final e = errno().value;
+    return e == 0 ? _unknownError : e;
   } finally {
     freeNative(a);
     freeNative(b);
@@ -278,24 +270,20 @@ int _moveLinux(
   final b = allocCString(to);
   try {
     if (hasCall && forced != MoveStrategy.linuxSyscall) {
-      final rename = libc.lookupFunction<_Rename2C, _Rename2D>(
-        'renameat2',
-        isLeaf: true,
-      );
+      final rename = libc.lookupFunction<_Rename2C, _Rename2D>('renameat2');
       hook?.call();
       if (rename(_atFdCwd, a, _atFdCwd, b, _renameNoReplace) == 0) return 0;
-      return _failure(errno);
+      final e = errno().value;
+      return e == 0 ? _unknownError : e;
     }
-    final syscall = libc.lookupFunction<_SyscallC, _SyscallD>(
-      'syscall',
-      isLeaf: true,
-    );
+    final syscall = libc.lookupFunction<_SyscallC, _SyscallD>('syscall');
     final number = _sysRenameat2();
     hook?.call();
     if (syscall(number, _atFdCwd, a, _atFdCwd, b, _renameNoReplace) == 0) {
       return 0;
     }
-    return _failure(errno);
+    final e = errno().value;
+    return e == 0 ? _unknownError : e;
   } finally {
     freeNative(a);
     freeNative(b);

@@ -199,15 +199,23 @@ const int _openFlags = 0x00200000 | 0x02000000;
 const int _fileBasicInfo = 0;
 const int _fileStandardInfo = 1;
 const int _fileIdInfo = 18;
+const int _fileAttributeTagInfo = 9;
 const int _attrDirectory = 0x10;
 const int _attrReparse = 0x400;
+// Only these two reparse tags are links; Cloud Files placeholders are not.
+const int _tagSymlink = 0xA000000C;
+const int _tagMountPoint = 0xA0000003;
 const int _attrOffline = 0x1000;
 const int _attrRecallOnOpen = 0x40000;
 const int _attrRecallOnDataAccess = 0x400000;
 
 // Offsets in one buffer: FILE_BASIC_INFO (40), FILE_STANDARD_INFO (24),
-// FILE_ID_INFO (24).
-const int _basicAt = 0, _standardAt = 40, _idAt = 64, _winBufSize = 88;
+// FILE_ID_INFO (24), FILE_ATTRIBUTE_TAG_INFO (8).
+const int _basicAt = 0,
+    _standardAt = 40,
+    _idAt = 64,
+    _tagAt = 88,
+    _winBufSize = 96;
 
 // 100 ns ticks from 1601 to the Unix epoch.
 const int _unixEpochTicks = 116444736000000000;
@@ -236,6 +244,16 @@ RawFileInfo? _winInfo(String path) {
       final attrs = d.getUint32(_basicAt + 32, Endian.little);
       final write = d.getInt64(_basicAt + 16, Endian.little);
       final size = d.getInt64(_standardAt + 8, Endian.little);
+      var isLink = false;
+      if (attrs & _attrReparse != 0) {
+        // A failed tag read counts as a link (the cautious case).
+        isLink =
+            _getInfo(h, _fileAttributeTagInfo, (buf + _tagAt).cast(), 8) == 0 ||
+            switch (d.getUint32(_tagAt + 4, Endian.little)) {
+              _tagSymlink || _tagMountPoint => true,
+              _ => false,
+            };
+      }
       FileStamp? stamp;
       if (idOk) {
         final volume = d.getInt64(_idAt, Endian.little);
@@ -253,7 +271,7 @@ RawFileInfo? _winInfo(String path) {
       return RawFileInfo(
         stamp: stamp,
         isDirectory: attrs & _attrDirectory != 0,
-        isLink: attrs & _attrReparse != 0,
+        isLink: isLink,
         placeholder:
             attrs &
                 (_attrOffline | _attrRecallOnOpen | _attrRecallOnDataAccess) !=
@@ -329,6 +347,36 @@ const _apple = _StatLayout(
   flags: 116,
 );
 
+/// The libc symbol that reads `struct stat` in the layout this file uses for
+/// [abi], or null for an ABI this file does not know. A seam for tests.
+///
+/// On x86-64 macOS the plain `lstat` is the 32-bit-inode version, so the
+/// 64-bit-inode one is named; on the other Apple ABIs plain `lstat` is it.
+String? lstatSymbolFor(Abi abi) {
+  switch (abi) {
+    case Abi.macosX64:
+      return r'lstat$INODE64';
+    case Abi.macosArm64:
+      return 'lstat';
+    case Abi.iosArm64:
+      return 'lstat';
+    case Abi.iosX64:
+      return 'lstat';
+    case Abi.linuxX64:
+      return 'lstat';
+    case Abi.linuxArm64:
+      return 'lstat';
+    case Abi.linuxRiscv64:
+      return 'lstat';
+    case Abi.androidX64:
+      return 'lstat';
+    case Abi.androidArm64:
+      return 'lstat';
+    default:
+      return null;
+  }
+}
+
 _StatLayout? _layout() {
   final abi = Abi.current();
   if (abi == Abi.linuxX64 || abi == Abi.androidX64) return _linuxX64;
@@ -355,8 +403,11 @@ RawFileInfo? _posixInfo(String path) {
     return null;
   }
   final layout = _layout();
-  if (layout == null) return null;
-  final lstat = _libc.lookupFunction<_LstatC, _LstatD>('lstat', isLeaf: true);
+  final symbol = lstatSymbolFor(Abi.current());
+  if (layout == null || symbol == null) return null;
+  // A failed lookup throws; fileStamp and placeholderState turn that into null
+  // and `unknown`.
+  final lstat = _libc.lookupFunction<_LstatC, _LstatD>(symbol, isLeaf: true);
   final p = allocCString(path);
   final buf = allocNative(256);
   try {

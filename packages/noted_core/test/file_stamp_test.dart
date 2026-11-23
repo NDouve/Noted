@@ -2,10 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:ffi' show Abi;
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/src/storage/file_stamp.dart' show lstatSymbolFor;
 
 void main() {
   late Directory dir;
@@ -79,6 +81,33 @@ void main() {
     });
   });
 
+  group('lstatSymbolFor', () {
+    test(r'macOS x86-64 reads the 64-bit-inode lstat; the other Apple ABIs and Linux the plain one', () {
+      expect(lstatSymbolFor(Abi.macosX64), r'lstat$INODE64');
+      for (final abi in [
+        Abi.macosArm64,
+        Abi.iosArm64,
+        Abi.iosX64,
+        Abi.linuxX64,
+        Abi.linuxArm64,
+        Abi.linuxRiscv64,
+        Abi.androidX64,
+        Abi.androidArm64,
+      ]) {
+        expect(lstatSymbolFor(abi), 'lstat', reason: '$abi');
+      }
+    });
+
+    test(
+      'an ABI the stat layouts do not cover has no symbol (a null stamp)',
+      () {
+        expect(lstatSymbolFor(Abi.linuxArm), isNull);
+        expect(lstatSymbolFor(Abi.linuxIA32), isNull);
+        expect(lstatSymbolFor(Abi.windowsX64), isNull);
+      },
+    );
+  });
+
   group('ContentIdentity.ofFileSync', () {
     test('equals ofFile, for small, empty and multi-chunk files', () async {
       for (final size in [0, 1, 65536, 65537, 200000]) {
@@ -129,6 +158,18 @@ void main() {
       );
       expect(entries.whereType<ReadablePage>().single.stamp, isNull);
     });
+
+    test(
+      'a page file that is a link gets no stamp (the read follows it)',
+      () async {
+        if (Platform.isWindows) return; // links need privileges there
+        final real = File(p('real.txt'))
+          ..writeAsStringSync(writePage(page('p1')));
+        Link(p('p1.canvas')).createSync(real.path);
+        final entries = await PageStore(dir).scan(stamps: true);
+        expect(entries.whereType<ReadablePage>().single.stamp, isNull);
+      },
+    );
 
     test('a conflict copy is not stamped as a page', () async {
       final text = writePage(page('p1'));

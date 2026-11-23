@@ -124,7 +124,8 @@ class PageStore {
         if (stamps) {
           afterFileRead?.call(f.path);
           final after = fileStamp(f.path);
-          if (before != null && before == after) stamped[f.path] = before;
+          // A link is read through, so the link's own stamp says nothing.
+          if (before != null && before == after && rawFileInfo(f.path)?.isLink == false) stamped[f.path] = before;
         }
       } on PageFormatException catch (e) {
         entries.add(UnreadablePage(f.path, e.message));
@@ -408,7 +409,9 @@ class PageStore {
   /// [moveExclusive]: it never replaces a file and never deletes one, and it
   /// never reads the file. The source's path and adoption are dropped on
   /// [MoveOutcome.moved], and [to] then reads and writes the page at the new
-  /// path. Other outcomes change nothing. Throws as [moveExclusive] does, and a
+  /// path; an adoption [to] holds for this page that names another file is
+  /// dropped (the moved file is not adopted there, a scan ranks it). Other
+  /// outcomes change nothing. Throws as [moveExclusive] does, and a
   /// [FileSystemException] if the source file is missing.
   ///
   /// The caller serialises it with scans and saves of both folders.
@@ -421,6 +424,8 @@ class PageStore {
       _paths.remove(pageId);
       _adopted.remove(pageId);
       to._paths[pageId] = target;
+      // A choice recorded in [to] for this id, of another file, no longer holds.
+      if (to._adopted[pageId] != target) to._adopted.remove(pageId);
     }
     return outcome;
   }

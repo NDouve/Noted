@@ -7,6 +7,8 @@ import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/src/storage/exclusive_move.dart'
+    show MoveStrategy, debugMoveStrategy;
 
 void main() {
   late Directory dir;
@@ -216,15 +218,35 @@ void main() {
       expect(File(p('dst/x')).readAsStringSync(), 'x');
     });
 
-    test('a present target is not replaced, a folder included', () {
+    // These make the target in the hook, after moveExclusive's own check, so
+    // only the fallback's lstat stands between the rename and a replace.
+    test('a file target present at the call is not replaced', () {
       File(p('a.bin')).writeAsBytesSync([1]);
-      File(p('b.bin')).writeAsBytesSync([2]);
-      expect(moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.targetExists);
+      expect(
+        moveExclusive(
+          p('a.bin'),
+          p('b.bin'),
+          beforeOsCall: () => File(p('b.bin')).writeAsBytesSync([2]),
+        ),
+        MoveOutcome.targetExists,
+      );
       expect(File(p('b.bin')).readAsBytesSync(), [2]);
+      expect(File(p('a.bin')).readAsBytesSync(), [1]);
+    });
+
+    test('a folder target present at the call is not replaced', () {
       Directory(p('src')).createSync();
-      Directory(p('dst')).createSync();
-      expect(moveExclusive(p('src'), p('dst')), MoveOutcome.targetExists);
-      expect(Directory(p('src')).existsSync(), isTrue);
+      File(p('src/x')).writeAsStringSync('x');
+      expect(
+        moveExclusive(
+          p('src'),
+          p('dst'),
+          beforeOsCall: () => Directory(p('dst')).createSync(),
+        ),
+        MoveOutcome.targetExists,
+      );
+      expect(File(p('src/x')).readAsStringSync(), 'x');
+      expect(Directory(p('dst')).listSync(), isEmpty);
     });
 
     test(

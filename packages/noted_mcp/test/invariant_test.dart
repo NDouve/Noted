@@ -54,6 +54,7 @@ void main() {
 
   test('the page mover and the file stamp are unreachable from the executable (they rename and stamp files)', () {
     expect(graph, isNot(contains('package:noted_core/src/storage/exclusive_move.dart')));
+    expect(graph, isNot(contains('package:noted_core/src/storage/file_stamp.dart')));
   });
 
   test('the walk sees the server and the read-only core', () {
