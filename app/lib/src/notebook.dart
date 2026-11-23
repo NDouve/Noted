@@ -9053,9 +9053,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // parked, once per mark, for one more round.
   void _unparkConsumed(String path) {
     if (_consumedCopies.isEmpty) return;
-    final name = _baseName(path);
+    final key = _key(path);
     for (final m in _consumedCopies.values) {
-      if (!m.parked || m.unparked || name != '${m.pageId}${PageStore.extension}') continue;
+      if (!m.parked || m.unparked) continue;
+      // The page's actual file (a chosen or renamed one too), in its folder.
+      final at = _loc[m.pageId];
+      if (at == null) continue;
+      final String file;
+      try {
+        file = _storeOf(at).pathFor(m.pageId);
+      } on NotebookException {
+        continue;
+      }
+      if (_key(file) != key) continue;
       m.parked = false;
       m.unparked = true;
       _armConsumed(m, _consumedWait(m));

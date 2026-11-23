@@ -1651,6 +1651,54 @@ void main() {
       expect(await entries(), hasLength(1));
     }, timeout: const Timeout(Duration(minutes: 1)));
 
+    // The page's file is a chosen one with another name; a change of that file
+    // unparks the mark, a file of the page's canonical name elsewhere doesn't.
+    for (final elsewhere in [false, true]) {
+      test('(e) a page with a chosen file name: ${elsewhere ? 'a same-named file in another folder' : 'a change of its file'} ${elsewhere ? 'does not unpark' : 'unparks once'}', () async {
+        await start(retire: const Duration(milliseconds: 300));
+        await withCopy();
+        await nb.checkFile(copy);
+        final chosen = '${dir.path}${sep}my-notes.canvas';
+        File(pathOf(id)).renameSync(chosen);
+        await nb.checkFile(pathOf(id)); // seen missing
+        await nb.checkFile(chosen);
+        await nb.adoptUnlistedPageFile(chosen, id);
+        var writes = 0;
+        final hook = nb.syncHook;
+        nb.syncHook = (p, path) async {
+          await hook?.call(p, path);
+          if (p != 'copy-recheck') return;
+          writes++;
+          File(chosen).writeAsStringSync(before);
+        };
+        bool parked() => nb.consumedCopiesForTest.values.any((p) => p);
+        await recheck();
+        await recheck();
+        await recheck();
+        await until(parked, 'the mark to be parked');
+        expect(writes, 3);
+        final other = Directory('${dir.path}${sep}elsewhere')..createSync();
+        if (elsewhere) {
+          for (final n in ['$id.canvas', 'my-notes.canvas']) {
+            final f = File('${other.path}$sep$n')..writeAsStringSync(before);
+            await nb.checkFile(f.path);
+          }
+        } else {
+          await nb.checkFile(chosen);
+        }
+        await recheck();
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        expect(writes, elsewhere ? 3 : 4);
+        await nb.checkFile(chosen);
+        await recheck();
+        // The page's own file now changes: one more round, once per mark.
+        expect(writes, 4);
+        await nb.checkFile(chosen);
+        await recheck();
+        expect(writes, 4, reason: 'once per mark');
+      }, timeout: const Timeout(Duration(minutes: 1)));
+    }
+
     test('(f) a box from the copy moved inside the window: a revert brings it back in the copy\'s version', () async {
       await start();
       await withCopy();
