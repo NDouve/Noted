@@ -1823,6 +1823,20 @@ void main() {
       expect(writes(), 4, reason: 'once per mark');
     }, timeout: const Timeout(Duration(minutes: 1)));
 
+    test('(e) sync replaces the file and a closed-page update reads it first: the later event does not lose the round', () async {
+      final writes = await park();
+      revert(); // sync's replacement, before the watcher's check
+      await nb.setAiAccess(id, AiAccess.open); // a closed page: _updateClosedPageNow
+      await nb.checkFile(pathOf(id));
+      await recheck();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(writes(), 4);
+      await nb.checkFile(pathOf(id));
+      await recheck();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(writes(), 4, reason: 'once per mark');
+    }, timeout: const Timeout(Duration(minutes: 1)));
+
     test('(e) moved to another folder while parked: the old folder\'s file does not unpark, the new one\'s does', () async {
       final writes = await park();
       final extraDir = await Directory('${root.path}${sep}extra').create();

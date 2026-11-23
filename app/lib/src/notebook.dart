@@ -9071,6 +9071,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return found;
   }
 
+  // [text] was just read from the page file at [path]: when it is not what this
+  // app last wrote or read, someone else changed the file, and its parked marks
+  // get their extra round (see [_unparkConsumed]). Called before [_known] is
+  // updated or the file is written over.
+  void _noteDiskText(String path, String text) {
+    if (_consumedCopies.isEmpty || _known[_key(path)] == text) return;
+    _unparkConsumed(path);
+  }
+
   // A check that finds the file at [path] gone or different from what this app
   // last wrote or read takes the parked marks of its page out of parked, once
   // per mark, for one more round. The redo's own write is known before it
@@ -9979,6 +9988,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final st = _storeOf(loc);
     for (var attempt = 0; attempt < _maxWriteTries; attempt++) {
       final text = await st.readText(id);
+      _noteDiskText(st.pathFor(id), text);
       await syncHook?.call('closed-update-read', st.pathFor(id));
       final read = readPage(text);
       if (read.id != id) {
@@ -10376,6 +10386,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         return const RemoteMergeResult.refused('the page file can not be read');
       }
       if (mine.id != id) return const RemoteMergeResult.refused('the page file holds another page');
+      _noteDiskText(path, text);
       final merged = mergePage(basePage, mine, remotePage, _mergeCodecs(id, [basePage, mine, remotePage]), theirsTime: time).page;
       if (writePage(merged) == text) {
         // Nothing to write, but the file may have been replaced since the
@@ -12962,6 +12973,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (_current == c) await _blockOpen(loc, _key(path), 'it holds a different page', id);
         return (ran: false, theirs: null);
       }
+      _noteDiskText(path, text);
       _known[_key(path)] = text;
       if (_current == c) _mergeOpen(page, text, time);
       return (ran: true, theirs: page);
@@ -13398,6 +13410,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Sets up the page [id] (read as [text]) for editing.
   void _installEditable(String id, String loc, PageStore st, String text, NotedPage page) {
+    _noteDiskText(st.pathFor(id), text);
     _known[_key(st.pathFor(id))] = text;
     _base = page;
     _metas[id] = page.meta;
@@ -13437,7 +13450,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final sortedEntries = [...entries]..sort((a, b) => a.time.compareTo(b.time));
     // With no readable file, the newest entry's page stands in for it.
     final shown = page ?? sortedEntries.last.page;
-    if (text != null) _known[_key(st.pathFor(id))] = text;
+    if (text != null) {
+      _noteDiskText(st.pathFor(id), text);
+      _known[_key(st.pathFor(id))] = text;
+    }
     _base = page;
     _metas[id] = shown.meta;
     var merged = shown;
