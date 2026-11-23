@@ -52,6 +52,10 @@ void main() {
     expect(ffiImporters, {'package:noted_core/src/storage/exclusive_publish.dart'});
   });
 
+  test('the page mover and the file stamp are unreachable from the executable (they rename and stamp files)', () {
+    expect(graph, isNot(contains('package:noted_core/src/storage/exclusive_move.dart')));
+  });
+
   test('the walk sees the server and the read-only core', () {
     expect(graph, contains('package:noted_mcp/noted_mcp.dart'));
     expect(graph, contains('package:noted_core/noted_core_read.dart'));
