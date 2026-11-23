@@ -1524,6 +1524,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // nothing typed meanwhile can fall between the save and recovery.
   int _leaving = 0;
   bool _disposed = false;
+  // Set by [_checkFile] when the file differs from what this app last wrote or
+  // read (or is gone); [checkFile] reads it after the check.
+  bool _foreignChange = false;
   Timer? _folderTimer;
   // The default folder disappeared while the app was running.
   bool _defaultGone = false;
@@ -9049,11 +9052,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return false;
   }
 
-  // A change of the file at [path] takes a parked mark of its page out of
-  // parked, once per mark, for one more round.
-  void _unparkConsumed(String path) {
-    if (_consumedCopies.isEmpty) return;
+  // The marks parked now whose page's file is at [path]: a change of that file
+  // is theirs to take out of parked (see [_unparkConsumed]).
+  List<_ConsumedCopy> _parkedAt(String path) {
+    if (_consumedCopies.isEmpty) return const [];
     final key = _key(path);
+    final found = <_ConsumedCopy>[];
     for (final m in _consumedCopies.values) {
       if (!m.parked || m.unparked) continue;
       // The page's actual file (a chosen or renamed one too), in its folder.
@@ -9065,7 +9069,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       } on NotebookException {
         continue;
       }
-      if (_key(file) != key) continue;
+      if (_key(file) == key) found.add(m);
+    }
+    return found;
+  }
+
+  // A change of a page's file by someone else takes its parked marks out of
+  // parked, once per mark, for one more round. [marks] were parked when the
+  // change was announced: this app's own write (the redo's, just before it
+  // parked) is no change.
+  void _unparkConsumed(List<_ConsumedCopy> marks) {
+    for (final m in marks) {
+      if (!m.parked || m.unparked || !identical(_consumedCopies[m.gen], m)) continue;
       m.parked = false;
       m.unparked = true;
       _armConsumed(m, _consumedWait(m));
@@ -10584,14 +10599,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// file was deleted the page stays as it is and the next save writes it
   /// again.
   Future<void> checkFile(String path) {
-    _unparkConsumed(path);
+    final parked = _parkedAt(path);
     final job = _checking.then((_) async {
       await _chain.idle; // let writes in flight land first
       if (_disposed) return;
+      _foreignChange = false;
       await _checkFile(path);
-      // The check may have moved the page's stored path to this file (a rename
-      // by sync, or a move): look again at the path as it is now.
-      _unparkConsumed(path);
+      if (_foreignChange && parked.isNotEmpty) _unparkConsumed(parked);
     }).catchError((Object e) {
       debugPrint('Checking $path failed: $e');
     });
@@ -11220,6 +11234,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final cp = _current;
         if (cp != null && cp.page.id == openId) _pageChanged(cp.page);
       }
+      _foreignChange = true;
       _fileGone(loc, key, path);
       return false;
     }
@@ -11233,6 +11248,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     if (_known[key] == text && !wasBlocked) return false;
+    _foreignChange = true;
     final previous = _known[key];
     _known[key] = text;
     final NotedPage page;

@@ -1461,6 +1461,14 @@ void main() {
     // A sync client puts back the file it fetched before the merge.
     void revert([String? at]) => File(at ?? pathOf(id)).writeAsStringSync(before);
 
+    // Someone else changes the file at [path] (sync puts the old one back), and
+    // its event arrives.
+    Future<void> foreign(String path) async {
+      revert(path);
+      await nb.checkFile(path);
+    }
+// Someone else changes the file at [path] (sync puts the old one back), and    // its event arrives.    Future<void> foreign(String path) async {      File(path).writeAsStringSync(before);      await nb.checkFile(path);    }
+
     // Reverts the original at the hook [point], once (or [every] time).
     void revertAt(String point, {bool every = false}) {
       var fired = false;
@@ -1643,9 +1651,9 @@ void main() {
       expect(nb.recoveryProblems.join('\n'), contains('Sync keeps putting back an older version'));
       await Future<void>.delayed(const Duration(seconds: 1));
       expect(writes, 3, reason: 'no fourth round while parked');
-      await nb.checkFile(pathOf(id)); // a change of the file
+      await foreign(pathOf(id)); // a change of the file
       await until(() => writes == 4 && parked(), 'the fourth round');
-      await nb.checkFile(pathOf(id));
+      await foreign(pathOf(id));
       await Future<void>.delayed(const Duration(seconds: 1));
       expect(writes, 4, reason: 'parked until a restart');
       expect(await entries(), hasLength(1));
@@ -1679,21 +1687,21 @@ void main() {
         expect(writes, 3);
         final other = Directory('${dir.path}${sep}elsewhere')..createSync();
         if (elsewhere) {
-          for (final n in ['$id.canvas', 'my-notes.canvas']) {
+          for (final n in ['$id.canvas', 'renamed.canvas']) {
             final f = File('${other.path}$sep$n')..writeAsStringSync(before);
             await nb.checkFile(f.path);
           }
         } else {
-          await nb.checkFile(chosen);
+          await foreign(chosen);
         }
         await recheck();
         await Future<void>.delayed(const Duration(milliseconds: 500));
         expect(writes, elsewhere ? 3 : 4);
-        await nb.checkFile(chosen);
+        await foreign(chosen);
         await recheck();
         // The page's own file now changes: one more round, once per mark.
         expect(writes, 4);
-        await nb.checkFile(chosen);
+        await foreign(chosen);
         await recheck();
         expect(writes, 4, reason: 'once per mark');
       }, timeout: const Timeout(Duration(minutes: 1)));
@@ -1724,11 +1732,28 @@ void main() {
     test('(e) an event path that differs in letter case and separators unparks (Windows)', () async {
       final writes = await park();
       final other = id.toUpperCase();
-      await nb.checkFile('${dir.path.replaceAll(r'\', '/')}/$other.CANVAS');
+      revert(); // someone else's change
+      await nb.checkFile('${dir.path.replaceAll(r'\', '/')}/$other.canvas');
       await recheck();
       await Future<void>.delayed(const Duration(milliseconds: 500));
       expect(writes(), 4);
     }, skip: !Platform.isWindows, timeout: const Timeout(Duration(minutes: 1)));
+
+    test('(e) the event of the redo\'s own write does not unpark; a foreign change does, once', () async {
+      final writes = await park();
+      await nb.checkFile(pathOf(id)); // the file is as the last redo wrote it
+      await recheck();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(writes(), 3, reason: 'no extra round on our own write');
+      await foreign(pathOf(id));
+      await recheck();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(writes(), 4);
+      await foreign(pathOf(id));
+      await recheck();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(writes(), 4, reason: 'once per mark');
+    }, timeout: const Timeout(Duration(minutes: 1)));
 
     test('(e) moved to another folder while parked: the old folder\'s file does not unpark, the new one\'s does', () async {
       final writes = await park();
@@ -1738,11 +1763,11 @@ void main() {
       await recheck();
       await Future<void>.delayed(const Duration(milliseconds: 500));
       expect(writes(), 3, reason: 'the old folder is not the page\'s file now');
-      await nb.checkFile('${extraDir.path}$sep$id.canvas');
+      await foreign('${extraDir.path}$sep$id.canvas');
       await recheck();
       await Future<void>.delayed(const Duration(milliseconds: 500));
       expect(writes(), 4);
-      await nb.checkFile('${extraDir.path}$sep$id.canvas');
+      await foreign('${extraDir.path}$sep$id.canvas');
       await recheck();
       await Future<void>.delayed(const Duration(milliseconds: 500));
       expect(writes(), 4, reason: 'once per mark');
