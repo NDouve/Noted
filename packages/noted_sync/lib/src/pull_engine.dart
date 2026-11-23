@@ -579,7 +579,8 @@ class PullEngine {
     return false;
   }
 
-  /// Under the locks of both paths (the new folder's first, when they differ),
+  /// Under the locks of both paths (in [FolderLocks.keyOf] order, when they
+  /// differ: the order a move of the app takes them in),
   /// deletes the old file only if the new one still holds [identity]. Null
   /// when the new one changed: nothing is deleted.
   Future<DeleteResult?> _deleteChecked(
@@ -599,7 +600,10 @@ class PullEngine {
     if (FolderLocks.keyOf(oldDir) == FolderLocks.keyOf(newDir)) {
       return locks.run(oldDir, job);
     }
-    return locks.run(newDir, () => locks.run(oldDir, job));
+    final oldFirst = FolderLocks.keyOf(oldDir).compareTo(FolderLocks.keyOf(newDir)) < 0;
+    final first = oldFirst ? oldDir : newDir;
+    final second = oldFirst ? newDir : oldDir;
+    return locks.run(first, () => locks.run(second, job));
   }
 
   // --- Applying ------------------------------------------------------------
