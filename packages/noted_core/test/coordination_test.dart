@@ -8,6 +8,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'package:noted_core/src/storage/coordination.dart' show folderOf, underCoordination;
+
 import 'support/coordination_support.dart';
 
 void main() {
@@ -91,8 +93,19 @@ void main() {
 
     test('a delete that puts the file back is still one call', () async {
       File(a('f.bin')).writeAsBytesSync([1]);
-      final r = await deleteFileIfMatches(a('f.bin'), bytes: [9]);
+      var restored = false;
+      final r = await deleteFileIfMatches(
+        a('f.bin'),
+        bytes: [1],
+        // The file changes after the first check, so it is moved aside,
+        // compared, found different and put back.
+        beforeMoveAside: () => File(a('f.bin')).writeAsBytesSync([9]),
+        beforeRestore: () => restored = true,
+      );
       expect(r.outcome, DeleteOutcome.changed);
+      expect(restored, isTrue);
+      expect(File(a('f.bin')).readAsBytesSync(), [9]);
+      expect(Directory(rootA.path).listSync(), hasLength(1));
       expect(c.calls, hasLength(1));
     });
 
@@ -197,6 +210,53 @@ void main() {
       expect(c.calls, isEmpty);
     });
 
+    test('with nothing registered, coordinated asks the file system nothing', () async {
+      unregisterCoordinator(realA);
+      var asked = 0;
+      final r = await IOOverrides.runZoned(
+        () => coordinated(CoordinatedWrite([w(a('f'))]), () async => 7),
+        fseGetTypeSync: (path, follow) {
+          asked++;
+          return FileSystemEntityType.notFound;
+        },
+        getCurrentDirectory: () {
+          asked++;
+          return Directory(rootA.path);
+        },
+        createDirectory: (path) {
+          asked++;
+          throw StateError('no directory call expected');
+        },
+      );
+      expect(r, 7);
+      expect(asked, 0);
+      expect(underCoordination([a('f')]), isFalse);
+      expect(asked, 0);
+    });
+
+    test('a nested coordinated call fails the recording coordinator', () async {
+      await expectLater(
+        coordinated(
+          CoordinatedWrite([w(a('f'))]),
+          () => coordinated(CoordinatedWrite([w(a('g'))]), () async => 1),
+        ),
+        throwsA(isA<StorageBusy>()),
+      );
+    });
+
+    test('folderOf is text-only, and keeps a drive root', () {
+      if (!Platform.isWindows) {
+        expect(folderOf('/a/b'), '/a');
+        expect(folderOf('/a'), '/');
+        expect(folderOf('a'), '.');
+        return;
+      }
+      expect(folderOf(r'C:\a\b'), r'C:\a');
+      expect(folderOf(r'C:\a'), r'C:\');
+      expect(folderOf(r'C:\'), r'C:\');
+      expect(folderOf('a'), '.');
+    });
+
     test('a second, different coordinator is a StateError; the same is fine', () {
       expect(() => registerCoordinator(realB, RecordingCoordinator()), throwsStateError);
       registerCoordinator(realB, c);
@@ -249,6 +309,53 @@ void main() {
       await expectLater(deleteFileIfUnchanged(a('f.canvas'), 'old'.codeUnits), throwsA(isA<StorageBusy>()));
       expect(File(a('f.canvas')).readAsStringSync(), 'old');
       expect(Directory(rootA.path).listSync().map((e) => e.path.split(sep).last).toSet(), {'f.canvas', 't.tmp'});
+    });
+
+    test('a StorageBusy from the coordinator after the body ran is not StorageBusy', () async {
+      final late = _LateRefusal();
+      unregisterCoordinator(realA);
+      registerCoordinator(realA, late);
+      final tmp = File(a('t.tmp'))..writeAsStringSync('x');
+      Object? error;
+      try {
+        await publishExclusive(tmp, a('f.canvas'));
+      } catch (e) {
+        error = e;
+      }
+      expect(File(a('f.canvas')).existsSync(), isTrue, reason: 'the body wrote');
+      expect(error, isA<FileSystemException>());
+      expect(error, isNot(isA<StorageBusy>()));
+    });
+
+    test('a StorageBusy the body itself throws stays one', () async {
+      final busy = StorageBusy(StorageBusyReason.dataless, [a('f')]);
+      await expectLater(
+        coordinated(CoordinatedWrite([w(a('f'))]), () async => throw busy),
+        throwsA(same(busy)),
+      );
+    });
+
+    test('sweepAsideFiles: a coordinator failing after the body started keeps what was consumed', () async {
+      final late = _LateRefusal();
+      unregisterCoordinator(realA);
+      registerCoordinator(realA, late);
+      File(a('p.canvas.1-2-3$asideSuffix')).writeAsStringSync('one');
+      final out = await sweepAsideFiles(rootA);
+      expect(out, [a('p.canvas')]);
+    });
+
+    test('sweepAsideFiles: outside every root it lists once and calls no coordinator', () async {
+      File(o('p.canvas.1-2-3$asideSuffix')).writeAsStringSync('one');
+      File(o('q.canvas.1-2-3$asideSuffix')).writeAsStringSync('two');
+      final seen = <String>[];
+      final out = await sweepAsideFiles(outside, only: (n) {
+        seen.add(n);
+        return n == 'p.canvas';
+      });
+      expect(out, [o('p.canvas')]);
+      expect(seen..sort(), ['p.canvas', 'q.canvas']);
+      expect(c.calls, isEmpty);
+      expect(File(o('q.canvas.1-2-3$asideSuffix')).existsSync(), isTrue);
     });
 
     test('moveExclusive: busy for every reason, nothing moved', () async {
@@ -371,6 +478,15 @@ void main() {
       expect(primitivesInIsolateWork('x() => Isolate.run(() => moveExclusiveUncoordinated(a, b));'), isEmpty);
     });
   });
+}
+
+/// Runs the body, then fails with a StorageBusy of its own.
+class _LateRefusal implements StorageCoordinator {
+  @override
+  Future<T> coordinate<T>(CoordinatedWrite write, Future<T> Function() body) async {
+    await body();
+    throw StorageBusy(StorageBusyReason.coordination, [for (final i in write.intents) i.path]);
+  }
 }
 
 /// A coordinator that holds the call until [open], then offers the body.

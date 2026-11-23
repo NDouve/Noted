@@ -393,23 +393,43 @@ Future<List<String>> sweepAsideFiles(
 }) async {
   final out = <String>[];
   if (!await directory.exists()) return out;
+  // Nothing registered, or the folder is under no registered root: one
+  // listing and one pass, as before the hook existed.
+  if (!underCoordination([directory.path])) {
+    await _sweepNamed(directory, extension, null, only, out, () {});
+    return out;
+  }
   // Listed first (metadata only); the coordinated call is made only if a
   // leftover will be consumed.
   final named = await _listLeftovers(directory, extension, only);
   if (named.isEmpty) return out;
+  var started = false;
   try {
-    return await coordinated(
+    await coordinated(
       CoordinatedWrite([
         CoordinationIntent(directory.path, CoordinationKind.write),
         for (final f in named) CoordinationIntent(f.path, CoordinationKind.move),
       ]),
-      () => _sweepNamed(directory, extension, {for (final f in named) f.path}),
+      () => _sweepNamed(
+        directory,
+        extension,
+        {for (final f in named) f.path},
+        null,
+        out,
+        () => started = true,
+      ),
     );
   } on StorageBusy {
-    // Refused (versions pending, or no answer): nothing was consumed. The
-    // leftover is listed by the scan like any file it couldn't handle.
-    return out;
+    // Refused before the body started: nothing was consumed. After it
+    // started, [out] holds what was consumed so far. Either way the leftover
+    // is listed by the scan like any file it couldn't handle.
+    if (!started) out.clear();
+  } on FileSystemException {
+    // The coordinator failed after the body started (it is no longer a
+    // StorageBusy): keep what was consumed; a scan must not throw for it.
+    if (!started) rethrow;
   }
+  return out;
 }
 
 /// The leftovers of [directory] a sweep would consume now.
@@ -446,23 +466,28 @@ Future<List<File>> _listLeftovers(
   return (name: targetName, verified: verified);
 }
 
-/// The sweep's body, inside its one coordinated call: lists again and handles
-/// only the leftovers [named] in the call's intents; one that appeared since
-/// waits for the next sweep.
-Future<List<String>> _sweepNamed(
+/// The sweep's body. Inside a coordinated call it lists again and handles only
+/// the leftovers [named] in the call's intents (one that appeared since waits
+/// for the next sweep); with [named] null it handles every leftover [only]
+/// accepts. Results go to [out], so a stop part way keeps what was consumed.
+Future<void> _sweepNamed(
   Directory directory,
   String extension,
-  Set<String> named,
+  Set<String>? named,
+  bool Function(String targetName)? only,
+  List<String> out,
+  void Function() onStart,
 ) async {
-  final out = <String>[];
+  onStart();
   final sep = Platform.pathSeparator;
   final leftovers = <File>[];
   await for (final f in directory.list(followLinks: false)) {
-    if (f is File && named.contains(f.path)) leftovers.add(f);
+    if (f is File && (named == null || named.contains(f.path))) leftovers.add(f);
   }
   for (final f in leftovers) {
     final t = _leftoverTarget(f.path, extension);
     if (t == null) continue;
+    if (named == null && only != null && !only(t.name)) continue;
     final targetName = t.name;
     final verified = t.verified;
     final dir = f.parent.path;
@@ -475,11 +500,12 @@ Future<List<String>> _sweepNamed(
       // be the only durable copy of the version it holds (0128).
       final kept = await _keepAsConflictCopy(f, '$dir$sep$targetName', verified ? 'conflict' : 'recovered');
       if (kept != null) out.add(kept);
+    } on StorageBusy {
+      return; // stop; what was consumed so far is in [out]
     } on FileSystemException {
       // Locked for now; the next scan tries again. It stays under its name.
     }
   }
-  return out;
 }
 
 /// Whether [f] holds exactly [bytes] or has the content [identity] (give one).

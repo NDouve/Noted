@@ -126,23 +126,30 @@ Future<T> coordinated<T>(
   Future<T> Function() body,
 ) async {
   final c = _coordinator;
-  if (c == null || _roots.isEmpty || !_anyUnderRoot(write)) return body();
+  if (c == null || _roots.isEmpty) return body();
+  if (!_anyUnderRoot([for (final i in write.intents) i.path])) return body();
   final paths = [for (final i in write.intents) i.path];
   var started = false;
   var abandoned = false;
+  Object? bodyError;
   final timedOut = Completer<void>();
   final timer = Timer(coordinationStartTimeout, () {
     if (started) return;
     abandoned = true;
     timedOut.complete();
   });
-  Future<T> guarded() {
+  Future<T> guarded() async {
     if (abandoned) {
       throw StorageBusy(StorageBusyReason.coordination, paths);
     }
     started = true;
     timer.cancel();
-    return body();
+    try {
+      return await body();
+    } catch (e) {
+      bodyError = e;
+      rethrow;
+    }
   }
 
   try {
@@ -156,8 +163,15 @@ Future<T> coordinated<T>(
         ),
       ),
     ]);
-  } on StorageBusy {
-    rethrow;
+  } on StorageBusy catch (e) {
+    if (!started || identical(e, bodyError)) rethrow;
+    // The coordinator, not the body, refused after the body ran: the call may
+    // have written, so this must not read as "nothing written".
+    throw FileSystemException(
+      'The coordinator failed after the call ran; it may have written: '
+      '${e.message}',
+      paths.isEmpty ? null : paths.first,
+    );
   } catch (e) {
     if (started) rethrow;
     throw StorageBusy(
@@ -170,9 +184,17 @@ Future<T> coordinated<T>(
   }
 }
 
-bool _anyUnderRoot(CoordinatedWrite write) {
-  for (final i in write.intents) {
-    final p = _trim(_real(_absolute(i.path)));
+/// Whether a coordinated call on [paths] would go to a coordinator: one is
+/// registered and a path is under a registered root. With nothing registered
+/// it makes no system call.
+bool underCoordination(Iterable<String> paths) {
+  if (_coordinator == null || _roots.isEmpty) return false;
+  return _anyUnderRoot(paths);
+}
+
+bool _anyUnderRoot(Iterable<String> paths) {
+  for (final path in paths) {
+    final p = _trim(_real(_absolute(path)));
     for (final r in _roots) {
       if (_under(p, r)) return true;
     }
@@ -194,6 +216,10 @@ String _trim(String p) {
   var end = p.length;
   while (end > 1 && _isSep(p.codeUnitAt(end - 1))) {
     end--;
+  }
+  // "X:" alone means the current folder of the drive: keep "X:\\".
+  if (Platform.isWindows && end == 2 && p.length > 2 && p.codeUnitAt(1) == 0x3A) {
+    end = 3;
   }
   return end == p.length ? p : p.substring(0, end);
 }

@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -22,11 +23,18 @@ class RecordingCoordinator implements StorageCoordinator {
     CoordinatedWrite write,
     Future<T> Function() body,
   ) async {
+    // A call made from inside another call's body is a nested hook: the
+    // primitives must reach each other only through uncoordinated forms.
+    if (Zone.current[#notedCoordinating] == true) {
+      throw StateError('re-entrant coordinated call: $write');
+    }
     calls.add(write);
     final r = refuse;
     if (r != null) throw r;
-    await beforeBody?.call(write);
-    return body();
+    return runZoned(() async {
+      await beforeBody?.call(write);
+      return body();
+    }, zoneValues: {#notedCoordinating: true});
   }
 }
 

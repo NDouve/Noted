@@ -333,12 +333,16 @@ void main() {
     const coordination = 'package:noted_core/src/storage/coordination.dart';
     final sources = notedSources();
     expect(sources.keys, contains(coordination));
+    // Any mention: prefixed, generic or aliased forms are caught too.
+    final names = RegExp('registerCoordinator|StorageCoordinator', caseSensitive: false);
+    expect(names.hasMatch('class A implements StorageCoordinator {}'), isTrue);
+    expect(names.hasMatch('class A extends x.StorageCoordinator<int> {}'), isTrue);
+    expect(names.hasMatch('registerCoordinator(root, c);'), isTrue);
+    expect(names.hasMatch('final StorageCoordinator? c;'), isTrue);
+    expect(names.hasMatch('coordinated(write, body)'), isFalse);
     final bad = [
       for (final e in sources.entries)
-        if (e.key != coordination &&
-            (RegExp(r'\bregisterCoordinator\b').hasMatch(e.value) ||
-                RegExp(r'\b(implements|extends|with)\s+(\w+\s*,\s*)*StorageCoordinator\b').hasMatch(e.value)))
-          e.key,
+        if (e.key != coordination && names.hasMatch(e.value)) e.key,
     ];
     expect(bad, isEmpty);
   });
