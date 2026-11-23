@@ -85,7 +85,18 @@ void main() {
     final (nb, a, ca, x) = await scanned();
     final sub = text(pages, ca);
     final stampBefore = fileStamp('${pages.path}/$ca.canvas');
+    final seen = <LocalChange>[];
+    final feed = nb.localChanges.listen(seen.add);
+    addTearDown(feed.cancel);
     expect(await nb.move(a, parentId: x), isTrue);
+    await Future<void>.delayed(Duration.zero);
+    // Every page that left the source arrived: deleted, then published.
+    for (final id in [a, ca]) {
+      final gone = seen.indexWhere((c) => c.kind == LocalChangeKind.deleted && c.path.endsWith('$id.canvas') && c.path.startsWith(pages.path));
+      final came = seen.indexWhere((c) => c.kind == LocalChangeKind.published && c.path.endsWith('$id.canvas') && c.path.startsWith(extra.path));
+      expect(gone, isNonNegative, reason: 'deleted($id): $seen');
+      expect(came, greaterThan(gone), reason: 'published($id) after it: $seen');
+    }
     expect(has(extra, a) && has(extra, ca), isTrue);
     expect(has(pages, a) || has(pages, ca), isFalse);
     // The same file: a rename keeps its stamp, and its bytes.

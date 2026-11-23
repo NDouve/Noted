@@ -5259,7 +5259,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (nl.endsWith(PageStore.extension)) {
           final key = _key(e.path);
           final s = others[key];
-          if (s == null || _fileStamps[key] != s) return no(key: key);
+          // The disk's stamp now too: a sync client may have replaced the file
+          // since the snapshot.
+          if (s == null || _fileStamps[key] != s || fileStamp(e.path) != s) return no(key: key);
           final id = _pathId[key];
           if (id == null || id == p) return no(key: key);
         }
@@ -12805,10 +12807,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       //
       // A file whose stamp is the one last classified is not read (rule P, S): the
       // open page's file and a blocked page are always read.
-      Future<({String text, int time, FileStamp? stamp, bool skip})> read() => _readUnderFolderLock(file.parent, () async {
+      Future<({String text, int time, FileStamp? stamp, bool skip, bool owed})> read() => _readUnderFolderLock(file.parent, () async {
         final before = fileStamp(path);
         if (!isOpen && _diskBlockId == null && before != null && _fileStamps[key] == before) {
-          return (text: '', time: 0, stamp: before, skip: true);
+          // A moved page owed a publication (0148) is read once, after the move,
+          // for its identity only (and only with a listener); it isn't otherwise
+          // looked at.
+          String? owed;
+          if (_movePublish.contains(key) && _feedLive) {
+            try {
+              owed = await file.readAsString();
+            } on Object {
+              owed = null; // the feed is advisory
+            }
+          }
+          return (text: owed ?? '', time: 0, stamp: before, skip: true, owed: owed != null);
         }
         if (before != null) await syncHook?.call('check-read', path);
         if (before != null || file.existsSync()) PageStore.fileReadObserver?.call(path);
@@ -12816,11 +12829,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final t = (await file.lastModified()).millisecondsSinceEpoch;
         // Unchanged across the read, and not a link (a link is read through).
         final stable = before != null && before == fileStamp(path) && !FileSystemEntity.isLinkSync(path);
-        return (text: s, time: t, stamp: stable ? before : null, skip: false);
+        return (text: s, time: t, stamp: stable ? before : null, skip: false, owed: false);
       });
 
       final got = isOpen ? await _whileBusy(read) : await read();
-      if (got.skip) return false;
+      if (got.skip) {
+        if (got.owed && _movePublish.remove(key)) _emitPublished(path, null, () => got.text);
+        return false;
+      }
       if (_pathId[key] case final moving? when _busy[moving] == _busyMoving) return false;
       text = got.text;
       time = got.time;

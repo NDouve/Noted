@@ -569,6 +569,24 @@ void main() {
       File('${pages.path}/$other.canvas').setLastModifiedSync(DateTime.now().add(const Duration(hours: 2)));
     }));
 
+    test('another page\'s file replaced after the snapshot, at the final check, by one holding the page', () async {
+      final (nb, a, _) = await world();
+      final other = await nb.createPage();
+      await nb.flush();
+      final held = File('${pages.path}/$a.canvas').readAsStringSync();
+      final deleted = await nb.delete(a);
+      hook = (point, path) async {
+        if (point != 'expiry-final-check') return;
+        final f = File('${pages.path}/$other.canvas');
+        f.writeAsStringSync(held);
+        f.setLastModifiedSync(DateTime.now().add(const Duration(hours: 3)));
+      };
+      nb.discardDeleted(deleted);
+      await quiet();
+      hook = null;
+      expect(trashFiles(), hasLength(1), reason: 'the replaced file may be the deleted page: kept');
+    });
+
     test('an iCloud stub', () => keeps('a stub', (a, _) {
       File('${pages.path}/.something.canvas.icloud').writeAsStringSync('');
     }));
