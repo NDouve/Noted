@@ -681,6 +681,17 @@ void main() {
       expect(trashFiles(), isEmpty);
       await reloadAgrees(nb, listed: {...idsOf(nb)});
     });
+
+    test('a subpage whose own folder was removed from Noted after the delete is restored into the root\'s folder', () async {
+      final (nb, a, sub) = await splitTree();
+      final deleted = await nb.delete(a);
+      await nb.removeStandaloneFolder(extra.path);
+      await nb.undoDelete(deleted);
+      expect(File('${pages.path}/$a.canvas').existsSync(), isTrue);
+      expect(File('${pages.path}/$sub.canvas').existsSync(), isTrue, reason: 'both go back into the root\'s folder');
+      expect(File('${extra.path}/$sub.canvas').existsSync(), isFalse);
+      expect(idsOf(nb), containsAll([a, sub]));
+    });
   });
 
   group('review fixes: the restore, busy, the quit limit, the notices, the runs', () {
@@ -723,6 +734,42 @@ void main() {
         expect(aside, hasLength(1), reason: 'the files stay in the set-aside');
         expect(notices.where((n) => n.contains('could not be put back')), isEmpty, reason: 'a refused turn is not a failure to put back');
         // The hold ends: the next check finds the record still pending and restores.
+        bf.writeAsStringSync(own);
+        await nb.checkBinderFile(bf.path);
+        await nb.checkFile('${folder.path}/$a.canvas');
+        await until(() => live(a, 1, folder).existsSync(), what: 'the restore once the folder is not held');
+      });
+    }
+
+    for (final inPlaceSet in [true, false]) {
+      test('a restore refused by the gate inside its own turn counts as kept and is tried again (${inPlaceSet ? 'in place' : 'deleted-attachments'})', () async {
+        Notebook.forceCopyMoveForTest = inPlaceSet;
+        final nb = make();
+        await nb.load();
+        final folder = await Directory('${root.path}/Work').create();
+        final s = await nb.addBinder(folder.path);
+        final a = await nb.createPage(binderPath: s.path);
+        await nb.createPage(binderPath: s.path);
+        await nb.flush();
+        giveAssets(a, 1, dir: folder);
+        final text = File('${folder.path}/$a.canvas').readAsStringSync();
+        final bf = File('${folder.path}/$binderFileName');
+        final own = bf.readAsStringSync();
+        final deleted = await nb.delete(a);
+        File('${folder.path}/$a.canvas').writeAsStringSync(text); // the page is back
+        nb.discardDeleted(deleted);
+        await quiet();
+        // The caller's gate passes; another binder's file arrives before the turn.
+        hook = (point, path) async {
+          if (point != 'move-dir-before-lock') return;
+          hook = null;
+          bf.writeAsStringSync(Binder.create(title: 'Other', color: binderPalette[2]).write());
+        };
+        await nb.checkFile('${folder.path}/$a.canvas');
+        await quiet();
+        hook = null;
+        expect(live(a, 1, folder).existsSync(), isFalse, reason: 'nothing was put back into the held folder');
+        expect(notices.where((n) => n.contains('could not be put back')), isEmpty, reason: 'a refused turn is not a failure to put back');
         bf.writeAsStringSync(own);
         await nb.checkBinderFile(bf.path);
         await nb.checkFile('${folder.path}/$a.canvas');

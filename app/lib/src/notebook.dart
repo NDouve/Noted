@@ -205,6 +205,12 @@ class _LockTimeout implements Exception {
 }
 
 /// A folder move that waited for a lock and gave up: nothing was moved.
+/// The in-turn gate (0184) refused a move: nothing moved, and a restore keeps
+/// its record to try again.
+class _GateRefused extends FileSystemException {
+  const _GateRefused(super.message, String super.path);
+}
+
 class _FolderBusy extends FileSystemException {
   const _FolderBusy(String path) : super('The folder is busy; try again', path);
 }
@@ -3547,10 +3553,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         throw _FolderBusy(e.path);
       } on _BinderUnreadableNow catch (e) {
         if (!fromTrash) _pruneEmptyFolder(to.parent);
-        throw FileSystemException(e.message, from.parent.path);
+        throw _GateRefused(e.message, from.parent.path);
       } on BinderHeldException catch (e) {
         if (!fromTrash) _pruneEmptyFolder(to.parent);
-        throw FileSystemException(e.message, from.parent.path);
+        throw _GateRefused(e.message, from.parent.path);
       }
     }
     // Another drive or cloud. A set-aside is not copied: the caller sets the
@@ -4740,13 +4746,25 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  // The folder page [id] of [d] goes back to: its own, or the root's where its
+  // own is no longer there (removed from Noted) or can't be written to.
+  String _undoLoc(DeletedPages d, String id) {
+    final own = d._locationOfPage(id);
+    if (own == d._location) return own;
+    try {
+      _assertWritable(own);
+      _storeOf(own);
+      return own;
+    } on NotebookException {
+      return d._location;
+    }
+  }
+
   Future<void> _undoDeleteNow(DeletedPages deleted) async {
     final wasHeld = _held.contains(deleted);
     try {
-      for (final l in {deleted._location, for (final p in deleted.pages) deleted._locationOfPage(p.id)}) {
-        _assertWritable(l);
-        _storeOf(l);
-      }
+      _assertWritable(deleted._location);
+      _storeOf(deleted._location);
     } on NotebookException catch (e) {
       throw _hold(deleted, e.message); // still only in memory: Undo can be tried again
     }
@@ -4755,9 +4773,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final leftIds = <String>[];
     for (final MapEntry(key: id, value: dir) in deleted._assets.entries) {
       try {
-        await _gateMove(deleted._locationOfPage(id));
+        await _gateMove(_undoLoc(deleted, id));
         _postCopyNotices(
-          await _moveDir(dir, _assetsDir(deleted._locationOfPage(id), id), fromTrash: true),
+          await _moveDir(dir, _assetsDir(_undoLoc(deleted, id), id), fromTrash: true),
           'the page',
           'the folder of deleted pages',
         );
@@ -4804,7 +4822,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final title = _titleOrUntitled(page.meta.title);
       var wrote = false;
       try {
-        wrote = await _writeNew(deleted._locationOfPage(page.id), page);
+        wrote = await _writeNew(_undoLoc(deleted, page.id), page);
       } on Object catch (e) {
         debugPrint('Restoring page ${page.id} failed: $e');
         failedWrite.add(title); // still only in memory
@@ -4812,14 +4830,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       if (wrote) {
         _metas[page.id] = page.meta;
-        _loc[page.id] = deleted._locationOfPage(page.id);
+        _loc[page.id] = _undoLoc(deleted, page.id);
         deleted._restored.add(page.id);
         continue;
       }
       PageStore st;
       String? copy;
       try {
-        st = _storeOf(deleted._locationOfPage(page.id));
+        st = _storeOf(_undoLoc(deleted, page.id));
         copy = await _publishConflictCopy(st, page);
       } on Object catch (e) {
         debugPrint('Saving restored page ${page.id} beside its file failed: $e');
@@ -4842,7 +4860,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     final reopenFailed = <String>[];
     try {
-      for (final l in {deleted._location, for (final p in deleted.pages) deleted._locationOfPage(p.id)}) {
+      for (final l in {deleted._location, for (final p in deleted.pages) _undoLoc(deleted, p.id)}) {
         _touch(l);
       }
       _rebuildTree();
@@ -5012,9 +5030,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on _LockTimeout catch (e) {
       throw _FolderBusy(e.path);
     } on _BinderUnreadableNow catch (e) {
-      throw FileSystemException(e.message, dir.parent.path);
+      throw _GateRefused(e.message, dir.parent.path);
     } on BinderHeldException catch (e) {
-      throw FileSystemException(e.message, dir.parent.path);
+      throw _GateRefused(e.message, dir.parent.path);
     }
   }
 
@@ -5311,6 +5329,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       return true;
     } on NotebookException {
       return false; // read-only, pull-only or held: kept
+    } on _GateRefused {
+      return false; // 0184's gate refused the turn: kept, tried again
     } on _FolderBusy {
       return false; // a lock wasn't got in time, nothing moved: kept, tried again
     } on Object catch (e) {
@@ -15612,8 +15632,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (d._copied.contains(page.id) || d._restored.contains(page.id)) continue;
         String? copy;
         try {
-          _assertWritable(d._locationOfPage(page.id)); // a read-only place gets no file
-          final st = _storeOf(d._locationOfPage(page.id));
+          _assertWritable(_undoLoc(d, page.id)); // a read-only place gets no file
+          final st = _storeOf(_undoLoc(d, page.id));
           // A copy that lands after the time limit still counts as made.
           final write = d._copying[page.id] ??= () async {
             try {
