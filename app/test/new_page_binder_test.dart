@@ -258,6 +258,8 @@ void main() {
     });
 
     test('a failed move keeps the sources and leaves nothing in the target', () async {
+      Notebook.legacyPageCopyForTest = true; // the copy-and-delete behaviour, until the copy path replaces it
+      addTearDown(() => Notebook.legacyPageCopyForTest = false);
       final nb = make(
         settings: makeSettings(),
         factory: (d) => norm(d.path) == norm(extra.path) ? _FailingStore(d) : PageStore(d),

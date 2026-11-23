@@ -339,6 +339,8 @@ void main() {
     });
 
     test('a move that fails and rolls back emits its publish and delete pair', () async {
+      Notebook.legacyPageCopyForTest = true; // the copy-and-delete behaviour, until the copy path replaces it
+      addTearDown(() => Notebook.legacyPageCopyForTest = false);
       await start();
       late FailingStore dest;
       nb.dispose();

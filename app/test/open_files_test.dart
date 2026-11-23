@@ -1017,6 +1017,8 @@ void main() {
         });
 
         test('7b a move that rolls back puts the chosen file back under its own name', () async {
+      Notebook.legacyPageCopyForTest = true; // the copy-and-delete behaviour, until the copy path replaces it
+      addTearDown(() => Notebook.legacyPageCopyForTest = false);
           final dir = await Directory('${root.path}/Elsewhere').create();
           final bDir = await Directory('${root.path}/Bnd').create();
           final other = make('other');
@@ -1324,6 +1326,8 @@ void main() {
         });
 
         test('a move that frees the page rechecks its chosen file: the replaced file lets the other one in', () async {
+      Notebook.legacyPageCopyForTest = true; // the copy-and-delete behaviour, until the copy path replaces it
+      addTearDown(() => Notebook.legacyPageCopyForTest = false);
           final dir = await Directory('${root.path}/Elsewhere').create();
           final s = await setup(dir, dir);
           final y = await foreignPage();

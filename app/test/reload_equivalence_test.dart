@@ -3962,6 +3962,11 @@ class _DavWorld {
 }
 
 void main() {
+  // These scenarios model a move as copy-and-delete. Moves are renames now, with
+  // their own kinds (stage D); until then this file keeps the copy behaviour.
+  setUpAll(() => Notebook.legacyPageCopyForTest = true);
+  tearDownAll(() => Notebook.legacyPageCopyForTest = false);
+
   Future<void> sequence(int seed) async {
     _started++;
     final run = _Run(seed);

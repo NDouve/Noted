@@ -353,6 +353,8 @@ void main() {
     });
 
     test('a move in progress is not failed by a landing merge: changed, and the move completes', () async {
+      Notebook.legacyPageCopyForTest = true; // the copy-and-delete behaviour, until the copy path replaces it
+      addTearDown(() => Notebook.legacyPageCopyForTest = false);
       await start();
       final folder = await Directory.systemTemp.createTemp('noted_merge_remote_mv');
       extra.add(folder);

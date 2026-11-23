@@ -197,6 +197,15 @@ class _TrackedMap extends MapBase<String, String> {
 
 // A kept entry written under a move's target folder, paired with the old one
 // until the page has settled.
+/// A lock of a move's pair that wasn't got in time (see [Notebook._underPair]).
+class _LockTimeout implements Exception {
+  const _LockTimeout(this.path);
+  final String path;
+}
+
+/// How one page's rename ended (see [Notebook._renameOnePage]).
+enum _RenameOne { renamed, taken, busy, cannot }
+
 class _Rekey {
   _Rekey(this.id, this.old, this.freshGen, this.preexisting);
 
@@ -1406,6 +1415,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // file's `_known` or `_pathId` entry drops it (see [_TrackedMap]); it is set
   // after those, where a scan, a read or Noted's own publish says so.
   final Map<String, FileStamp> _fileStamps = {};
+  // The place of a moved root that wasn't downloaded, written when it is next
+  // opened (N8). Lost at quit.
+  final Map<String, ({String? parentId, int order})> _heldPlacement = {};
   // Pages with a conflicted box (0020).
   final Set<String> _conflicts = {};
   // The exact text last written or read for each binder file (by the key of
@@ -2728,6 +2740,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<void> open(String id) async {
+    await _applyHeldPlacement(id);
     try {
       await _open(id);
     } on LeaveCancelled {
@@ -2736,6 +2749,27 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Only once the page is open: a failed open leaves the notice for the next
     // look.
     if (_landedProblems.remove(id) != null) notifyListeners();
+  }
+
+  // N8: the place a moved root was given while it wasn't downloaded, written
+  // now that it is opened. A failure only logs; the page opens where it is.
+  Future<void> _applyHeldPlacement(String id) async {
+    final held = _heldPlacement.remove(id);
+    final loc = _loc[id];
+    if (held == null || loc == null || id == currentId) return;
+    try {
+      final next = await _updateClosedPage(
+        loc,
+        id,
+        (page) => page.withMeta(page.meta.withPlacement(parentId: held.parentId, order: held.order)),
+      );
+      if (next != null) {
+        _metas[id] = next.meta;
+        _rebuildTree();
+      }
+    } on Object catch (e) {
+      debugPrint('Placing page $id when it was opened failed: $e');
+    }
   }
 
   Future<void> _open(String id) async {
@@ -3460,6 +3494,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// Makes [_moveDir] skip the rename, as a move across drives does.
   @visibleForTesting
   static bool forceCopyMoveForTest = false;
+
+  /// Makes a page move copy and delete, as it did before moves were renames
+  /// (the tests of that behaviour; the copy path replaces it).
+  @visibleForTesting
+  static bool legacyPageCopyForTest = false;
 
   static Future<void> _removeDir(Directory d) async {
     try {
@@ -4699,6 +4738,399 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  // A move by rename ------------------------------------------------------------
+
+  /// How long each lock of a move's pair is waited for before the pair is let
+  /// go and tried again (L). Tests shorten it.
+  @visibleForTesting
+  static Duration pairLockLimit = const Duration(seconds: 5);
+
+  /// The wait before a pair is tried again.
+  @visibleForTesting
+  static Duration pairRetryDelay = const Duration(milliseconds: 500);
+
+  // [job] under [dir]'s lock, waited for at most [pairLockLimit]: past that the
+  // queued job is cancelled (it returns at once if it ever starts) and the
+  // caller gets a [_LockTimeout].
+  Future<T> _lockLimited<T>(Directory dir, Future<T> Function() job) {
+    final out = Completer<T>();
+    var state = 0; // 0 waiting, 1 started, 2 cancelled
+    final timer = Timer(pairLockLimit, () {
+      if (state != 0) return;
+      state = 2;
+      out.completeError(_LockTimeout(dir.path));
+    });
+    _lockRun<T>(dir, () async {
+      if (state == 2) throw const _LockTimeout('');
+      state = 1;
+      timer.cancel();
+      return job();
+    }).then<void>(
+      (v) {
+        if (!out.isCompleted) out.complete(v);
+      },
+      onError: (Object e, StackTrace s) {
+        timer.cancel();
+        if (!out.isCompleted) out.completeError(e, s);
+      },
+    );
+    return out.future;
+  }
+
+  // [job] under the locks of [a] and [b]: both, in [FolderLocks.keyOf] order,
+  // when the keys differ (L), or the one lock when they are equal (X2). Each
+  // lock is waited for at most [pairLockLimit]; on a timeout everything held is
+  // let go and the pair is tried again after [pairRetryDelay], [tries] times in
+  // all. Throws the last [_LockTimeout].
+  Future<T> _underPair<T>(Directory a, Directory b, Future<T> Function() job, {int tries = 2}) async {
+    final ka = FolderLocks.keyOf(a), kb = FolderLocks.keyOf(b);
+    if (ka == kb) return _lockLimited(a, job);
+    final first = ka.compareTo(kb) < 0 ? a : b;
+    final second = identical(first, a) ? b : a;
+    for (var i = 1; ; i++) {
+      try {
+        return await _lockLimited(first, () => _lockLimited(second, job));
+      } on _LockTimeout {
+        if (i >= tries || _disposed) rethrow;
+        await Future<void>.delayed(pairRetryDelay);
+      }
+    }
+  }
+
+  // Moves the files under [from] to [to] one at a time (2c): each with
+  // `moveExclusive`, `busy` tried three times. A link, a name that is taken and
+  // a file that won't move stay. Emptied folders are removed (never one that
+  // holds anything). Returns the paths left at [from].
+  Future<List<String>> _moveFilesOneByOne(Directory from, Directory to) async {
+    final left = <String>[];
+    Future<void> walk(Directory s, Directory d) async {
+      final List<FileSystemEntity> entries;
+      try {
+        entries = s.listSync(followLinks: false);
+      } on FileSystemException {
+        left.add(s.path);
+        return;
+      }
+      for (final e in entries) {
+        final name = e.path.split(RegExp(r'[\\/]')).last;
+        final target = '${d.path}${Platform.pathSeparator}$name';
+        switch (FileSystemEntity.typeSync(e.path, followLinks: false)) {
+          case FileSystemEntityType.directory:
+            final there = FileSystemEntity.typeSync(target, followLinks: false);
+            if (there != FileSystemEntityType.notFound && there != FileSystemEntityType.directory) {
+              left.add(e.path);
+            } else {
+              await walk(Directory(e.path), Directory(target));
+            }
+          case FileSystemEntityType.file:
+            var r = MoveOutcome.busy;
+            try {
+              d.createSync(recursive: true);
+              for (var i = 0; i < 3; i++) {
+                r = moveExclusive(e.path, target);
+                if (r != MoveOutcome.busy) break;
+                await Future<void>.delayed(const Duration(milliseconds: 50));
+              }
+            } on FileSystemException {
+              r = MoveOutcome.busy;
+            }
+            if (r != MoveOutcome.moved) left.add(e.path);
+          default:
+            left.add(e.path); // a link or junction is never followed
+        }
+      }
+      try {
+        s.deleteSync(); // an empty folder only
+      } on FileSystemException {
+        // Not empty: files stayed.
+      }
+    }
+
+    await walk(from, to);
+    return left;
+  }
+
+  // Moves page [p]'s images and files folder from [fromLoc] to [toLoc]: the
+  // folder is renamed, or, when that isn't `moved`, moved file by file. Returns
+  // the paths left behind.
+  Future<List<String>> _moveAssetsByRename(String p, String fromLoc, String toLoc, {bool hook = false}) async {
+    final src = _assetsDir(fromLoc, p), dst = _assetsDir(toLoc, p);
+    if (FileSystemEntity.typeSync(src.path, followLinks: false) == FileSystemEntityType.notFound) return const [];
+    if (hook) await syncHook?.call('move-before-assets', src.path);
+    if (FileSystemEntity.typeSync(src.path, followLinks: false) != FileSystemEntityType.directory) return [src.path];
+    var r = MoveOutcome.busy;
+    try {
+      for (var i = 0; i < 3; i++) {
+        r = moveExclusive(src.path, dst.path);
+        if (r != MoveOutcome.busy) break;
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    } on FileSystemException {
+      r = MoveOutcome.busy;
+    }
+    if (r == MoveOutcome.moved) return const [];
+    return _moveFilesOneByOne(src, dst);
+  }
+
+  // Gives page [p]'s file in [st] the path [to] (a rename that never replaces),
+  // and the store its new path. False when that name is taken or won't move.
+  bool _renameStoreFile(PageStore st, String p, String to) {
+    final cur = st.pathFor(p);
+    if (_key(cur) == _key(to)) return true;
+    try {
+      if (moveExclusive(cur, to) != MoveOutcome.moved) return false;
+    } on FileSystemException {
+      return false;
+    }
+    st.adopt(p, to);
+    return true;
+  }
+
+  // One page's rename, inside both folders' locks (2a to 2d). [forward] is the
+  // move itself; otherwise it is the rollback's return of the page. Never
+  // reads the page file. What stays behind is added to [notes].
+  Future<_RenameOne> _renameOnePage(
+    String p, {
+    required PageStore fromStore,
+    required PageStore toStore,
+    required String fromLoc,
+    required String toLoc,
+    required bool forward,
+    required List<String> notes,
+    required Set<String> atDest,
+    required Map<String, String> origNames,
+  }) async {
+    _assertWritable(fromLoc);
+    _assertWritable(toLoc);
+    if (!fromStore.directory.existsSync() || !toStore.directory.existsSync()) {
+      throw NotebookException('${_placeName(forward ? fromLoc : toLoc)} is not available right now.');
+    }
+    final oldPath = fromStore.pathFor(p);
+    final oldKey = _key(oldPath);
+    final sep = Platform.pathSeparator;
+    if (forward) {
+      origNames[p] = _folderName(oldPath);
+    } else if (origNames[p] case final want? when _folderName(oldPath) != want) {
+      // A chosen file goes back under its own name.
+      if (!_renameStoreFile(fromStore, p, '${fromStore.directory.path}$sep$want')) return _RenameOne.taken;
+    }
+    if (forward) await syncHook?.call('move-before-rename', fromStore.directory.path);
+    var r = MoveOutcome.busy;
+    try {
+      for (var i = 0; i < 3; i++) {
+        r = fromStore.moveTo(p, toStore);
+        if (r != MoveOutcome.busy) break;
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    } on FileSystemException catch (e) {
+      throw NotebookException('The page file could not be found or moved.${_osReason(e)}');
+    }
+    switch (r) {
+      case MoveOutcome.targetExists:
+        return _RenameOne.taken;
+      case MoveOutcome.busy:
+        return _RenameOne.busy;
+      case MoveOutcome.cannotRename:
+        return _RenameOne.cannot;
+      case MoveOutcome.moved:
+        break;
+    }
+    if (forward) {
+      // A chosen file arrives as the page's own file name when that is free (0149).
+      final own = '${toStore.directory.path}$sep$p${PageStore.extension}';
+      if (_key(toStore.pathFor(p)) != _key(own) && _renameStoreFile(toStore, p, own)) toStore.unadopt(p);
+      atDest.add(p);
+    } else {
+      atDest.remove(p);
+      // The store the file left forgot its chosen name; the file is back.
+      final c = _adoptedFiles[p];
+      if (c != null && _key(File(c).parent.path) == _key(toStore.directory.path)) toStore.adopt(p, c);
+    }
+    if (forward) await syncHook?.call('move-after-rename', toStore.directory.path);
+    // 2b: the stamp the page had is compared with the moved file's. A match is
+    // the file last classified, carried as it is; anything else changed since
+    // and is read by the check after the move.
+    final newPath = toStore.pathFor(p);
+    final newKey = _key(newPath);
+    final carried = _fileStamps[oldKey];
+    final knownText = _known[oldKey];
+    final nowStamp = fileStamp(newPath);
+    final match = carried != null && nowStamp != null && carried == nowStamp;
+    // 2d: the bookkeeping, still inside the locks.
+    _known.remove(oldKey);
+    _pathId.remove(oldKey);
+    _pathId[newKey] = p;
+    if (match && knownText != null) _known[newKey] = knownText;
+    _recordStamp(newKey, match ? nowStamp : null);
+    _loc[p] = toLoc;
+    _emitDeleted(oldPath);
+    if (match && knownText != null) _emitPublished(newPath, _identityOf(() => knownText), () => knownText);
+    // 2c: its images and files.
+    final left = await _moveAssetsByRename(p, fromLoc, toLoc, hook: forward);
+    if (left.isNotEmpty) {
+      notes.add(
+        '${left.length == 1 ? 'One file' : '${left.length} files'} of "${_titleOrUntitled(_metas[p]?.title ?? '')}" '
+        'stayed in ${_placeName(fromLoc)} (a name was taken there, or a file was in use or a link).',
+      );
+    }
+    return _RenameOne.renamed;
+  }
+
+  // Moves [ids] (the page, then its subpages) from [fromLoc] to [toLoc] by
+  // rename, page by page, each in both folders' locks. False when the first
+  // page can't be renamed (another drive or cloud): nothing was moved, and the
+  // caller copies. A failure puts the moved pages back; one that can't go back
+  // stays at the target. Throws a NotebookException for every other end that
+  // isn't a full move. [atDest] ends with the pages at the target.
+  Future<bool> _renameTree(
+    List<String> ids, {
+    required String fromLoc,
+    required String toLoc,
+    required PageStore fromStore,
+    required PageStore toStore,
+    required Set<String> atDest,
+    required List<String> notes,
+  }) async {
+    final origNames = <String, String>{};
+    final fromDir = fromStore.directory, toDir = toStore.directory;
+    String? failure;
+    var wantCopy = false;
+    for (var k = 0; k < ids.length && failure == null; k++) {
+      final p = ids[k];
+      final name = '"${_titleOrUntitled(_metas[p]?.title ?? '')}"';
+      try {
+        final r = await _underPair(
+          fromDir,
+          toDir,
+          () => _renameOnePage(
+            p,
+            fromStore: fromStore,
+            toStore: toStore,
+            fromLoc: fromLoc,
+            toLoc: toLoc,
+            forward: true,
+            notes: notes,
+            atDest: atDest,
+            origNames: origNames,
+          ),
+        );
+        switch (r) {
+          case _RenameOne.renamed:
+            break;
+          case _RenameOne.cannot:
+            if (k == 0) return false;
+            failure = '$name can not be renamed into ${_placeName(toLoc)}.';
+            wantCopy = true;
+          case _RenameOne.taken:
+            failure =
+                '${_placeName(toLoc)} already has a file for $name, so it was not moved. The existing file '
+                'was left as it is. Move or delete the file in ${_placeName(toLoc)} if you want to move the page there.';
+          case _RenameOne.busy:
+            failure = 'The file of $name is in use by another program, so it was not moved.';
+        }
+      } on _LockTimeout catch (e) {
+        failure = '${_placeName(FolderLocks.keyOf(Directory(e.path)) == FolderLocks.keyOf(toDir) ? toLoc : fromLoc)} is busy; try again.';
+      } on NotebookException catch (e) {
+        failure = e.message;
+      }
+    }
+    if (failure == null) return true;
+    // Put the moved pages back, last first.
+    final stayed = <String>[];
+    final order = [for (final p in ids.reversed) if (atDest.contains(p)) p];
+    var stalled = false;
+    for (var i = 0; i < order.length; i++) {
+      final p = order[i];
+      var back = _RenameOne.busy;
+      try {
+        back = await _underPair(
+          toDir,
+          fromDir,
+          () => _renameOnePage(
+            p,
+            fromStore: toStore,
+            toStore: fromStore,
+            fromLoc: toLoc,
+            toLoc: fromLoc,
+            forward: false,
+            notes: notes,
+            atDest: atDest,
+            origNames: origNames,
+          ),
+          tries: 3,
+        );
+      } on _LockTimeout {
+        stalled = true;
+      } on NotebookException catch (e) {
+        notes.add(e.message);
+      }
+      if (back != _RenameOne.renamed) stayed.add(p);
+      if (stalled) {
+        stayed.addAll(order.skip(i + 1));
+        if (!stayed.contains(p)) stayed.add(p);
+        break;
+      }
+    }
+    if (stayed.isEmpty && wantCopy) return false;
+    final tail = StringBuffer();
+    if (stayed.isEmpty) {
+      tail.write(order.isEmpty ? ' Nothing was moved.' : ' The pages moved before it were put back.');
+    } else {
+      tail.write(
+        ' ${stayed.length == 1 ? '1 page stayed' : '${stayed.length} pages stayed'} in ${_placeName(toLoc)}'
+        '${stalled ? ': ${_placeName(fromLoc)} was busy' : ''}.',
+      );
+      await _placeStranded(ids, stayed.toSet(), fromLoc, toLoc);
+    }
+    _touch(fromLoc);
+    _touch(toLoc);
+    _rebuildTree();
+    throw NotebookException(
+      '$failure$tail${notes.isEmpty ? '' : ' ${notes.join(' ')}'}',
+      needsAction: stayed.isNotEmpty || notes.isNotEmpty,
+    );
+  }
+
+  // After a rollback that left pages at the target: a page whose parent is in
+  // the other location goes to the top level of its own (0124). Standalone
+  // folders share one tree and keep theirs. A write that fails only logs.
+  Future<void> _placeStranded(List<String> ids, Set<String> stayed, String fromLoc, String toLoc) async {
+    if (_isStandaloneLoc(fromLoc) && _isStandaloneLoc(toLoc)) return;
+    for (final id in ids) {
+      final parent = _metas[id]?.parentId;
+      if (parent == null || !ids.contains(parent) || stayed.contains(id) == stayed.contains(parent)) continue;
+      final loc = stayed.contains(id) ? toLoc : fromLoc;
+      try {
+        final next = await _updateClosedPage(
+          loc,
+          id,
+          (page) => page.withMeta(page.meta.withPlacement(parentId: null, order: _treeOf(loc).nextOrder(null))),
+        );
+        if (next != null) _metas[id] = next.meta;
+      } on Object catch (e) {
+        debugPrint('Placing page $id at the top level failed: $e');
+      }
+    }
+  }
+
+  // Step 3: the root's place under [parentId]. The write reads the root (the
+  // header is in the file); a page that isn't downloaded is not read: its
+  // placement is held until it is opened (N8). Throws a NotebookException when
+  // the placement fails (the page stays where it was put).
+  Future<void> _placeRoot(String toLoc, String root, String? parentId, int order) async {
+    final path = _storeOf(toLoc).pathFor(root);
+    if (placeholderState(path) == PlaceholderState.placeholder) {
+      _heldPlacement[root] = (parentId: parentId, order: order);
+      return;
+    }
+    final next = await _updateClosedPage(
+      toLoc,
+      root,
+      (page) => page.withMeta(page.meta.withPlacement(parentId: parentId, order: order)),
+    );
+    if (next != null) _metas[root] = next.meta;
+  }
+
   /// Moves [id] and its subpages to another location: each page file is
   /// written to the target folder and read back to check it, and only when
   /// all of them check out are the source files deleted. On any failure the
@@ -4734,6 +5166,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     );
     final rekeys = <_Rekey>[];
     final atDest = <String>{}; // pages that ended at the target
+    // The files as they were named at the source, for step 4's checks.
+    final sourcePaths = [for (final p in ids) fromStore.pathFor(p)];
     // Closing or flushing writes pending edits, so the copies read below are
     // current.
     try {
@@ -4753,6 +5187,74 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     String? attachmentsNote;
     var movedFully = false; // the pages are at the target; only placing is left
     try {
+      if (!forceCopyMoveForTest && !legacyPageCopyForTest) {
+        if (FolderLocks.keyOf(fromStore.directory) == FolderLocks.keyOf(toStore.directory)) {
+          throw const NotebookException('These are the same folder.');
+        }
+        // Step 0, 1: what is checked is memory and file metadata; no page file
+        // is read (P).
+        try {
+          await _landChain;
+        } on Object {
+          // A failed landing is reported by its own retry.
+        }
+        for (final p in ids) {
+          final path = fromStore.pathFor(p);
+          if (_pathId[_key(path)] != p || _loc[p] != fromLoc) {
+            throw NotebookException(
+              '"${_titleOrUntitled(_metas[p]?.title ?? '')}" is not listed at its file in ${_placeName(fromLoc)}, so nothing was moved.',
+            );
+          }
+          // A chosen file (0149) that isn't the file last scanned, read or saved
+          // may be damaged or held as another page's: it isn't moved.
+          if (this.unreadable.any((u) => _key(u.path) == _key(path)) ||
+              (_adoptedFiles[p] != null && _fileStamps[_key(path)] != fileStamp(path))) {
+            throw NotebookException(
+              '"${_titleOrUntitled(_metas[p]?.title ?? '')}" is listed as unreadable in ${_placeName(fromLoc)}, so nothing was moved.',
+            );
+          }
+          if (fileStamp(path) == null) {
+            throw NotebookException(
+              'The file of "${_titleOrUntitled(_metas[p]?.title ?? '')}" is missing from ${_placeName(fromLoc)}, so nothing was moved.',
+            );
+          }
+        }
+        final rootOrder = _treeOf(toLoc).nextOrder(parentId);
+        rekeys.addAll(await _rekeyBegin(ids, fromStore, toStore, fromLoc, toLoc));
+        await syncHook?.call('move-rekeyed', toStore.directory.path);
+        final notes = <String>[];
+        if (await _renameTree(
+          ids,
+          fromLoc: fromLoc,
+          toLoc: toLoc,
+          fromStore: fromStore,
+          toStore: toStore,
+          atDest: atDest,
+          notes: notes,
+        )) {
+          // Step 3: the root's place. A failure leaves the pages where they are.
+          _touch(fromLoc);
+          _touch(toLoc);
+          _rebuildTree();
+          movedFully = true;
+          String? placeFailed;
+          try {
+            await _placeRoot(toLoc, id, parentId, rootOrder);
+          } on Object catch (e) {
+            debugPrint('Placing the moved page failed: $e');
+            placeFailed = 'it could not be put at that position.${e is NotebookException ? '' : _osReason(e)}';
+          }
+          _rebuildTree();
+          if (placeFailed != null) notes.add(placeFailed);
+          notice = notes.isEmpty ? null : NotebookException('The page was moved, but ${notes.join(' ')}', needsAction: true);
+          if (index != null && placeFailed == null) await move(id, parentId: parentId, index: index);
+          if (notice != null) throw notice;
+          return;
+        }
+        // The first page can't be renamed (another drive or cloud): the copy
+        // below (to be replaced by the keep-the-original copy path).
+        await _settleRekeys(rekeys, const {});
+      }
       // The text of each source as it was copied: the generation that must
       // still be there when the source is deleted.
       final copiedText = <String>[];
@@ -5285,6 +5787,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await _settleRekeys(rekeys, atDest);
       for (final p in ids) {
         _free(p, _busyMoving);
+      }
+      // Step 4: whatever the watchers held back while the pages were busy is
+      // looked at now, at both ends. A moved page with a carried stamp isn't read.
+      try {
+        for (final path in [
+          ...sourcePaths,
+          for (final p in ids)
+            if (_loc[p] case final l?) _storeOf(l).pathFor(p),
+        ]) {
+          if (_disposed) break;
+          await checkFile(path);
+        }
+      } on Object catch (e) {
+        debugPrint('Checking the moved pages failed: $e');
       }
       if (reopen != null && _current == null && _loc.containsKey(reopen)) {
         try {
@@ -9695,6 +10211,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         unmatched[kept] = id;
         continue;
       }
+      if (_busy.containsKey(id)) continue; // moving, deleting or replaying: landed at a later check (R5)
       if (_isLocked(loc) || (onlyLoc != null && loc != onlyLoc)) continue;
       try {
         final to = _assetsDir(loc, id);
@@ -11206,6 +11723,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (loc == null) return false;
     await syncHook?.call('check-start', path);
     final key = _key(path);
+    // A page being moved is looked at again when the move ends (2d).
+    if (_pathId[key] case final moving? when _busy[moving] == _busyMoving) return false;
     final file = File(path);
     final openId = _current?.page.id;
     // Decided by path, not by _pathId: that entry is dropped when the file is
@@ -11231,7 +11750,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (!isOpen && _diskBlockId == null && before != null && _fileStamps[key] == before) {
           return (text: '', time: 0, stamp: before, skip: true);
         }
-        await syncHook?.call('check-read', path);
+        if (before != null) await syncHook?.call('check-read', path);
         final s = await file.readAsString();
         final t = (await file.lastModified()).millisecondsSinceEpoch;
         // Unchanged across the read, and not a link (a link is read through).
@@ -11241,6 +11760,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
       final got = isOpen ? await _whileBusy(read) : await read();
       if (got.skip) return false;
+      if (_pathId[key] case final moving? when _busy[moving] == _busyMoving) return false;
       text = got.text;
       time = got.time;
       readStamp = got.stamp;
@@ -11298,6 +11818,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     var saveAfterMerge = false;
     try {
       page = readPage(text);
+      if (_heldPlacement.remove(page.id) != null) {
+        _notices.add('"${_titleOrUntitled(page.meta.title)}" was changed elsewhere, so it was not placed.');
+      }
     } on PageFormatException catch (e) {
       if (isOpen) {
         // Keep the last readable text as the merge base for recovery.
