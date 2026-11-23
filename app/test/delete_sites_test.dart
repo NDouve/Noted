@@ -68,12 +68,6 @@ const List<Site> deleteSites = [
   ),
   (
     'app/lib/src/attachment_copy.dart',
-    'if (await d.list().isEmpty) await d.delete();',
-    1,
-    _emptyDir,
-  ),
-  (
-    'app/lib/src/attachment_copy.dart',
     'await Directory(p).delete();',
     1,
     _emptyDir,
@@ -94,7 +88,19 @@ const List<Site> deleteSites = [
     'app/lib/src/notebook.dart',
     'if (await d.exists()) await d.delete(recursive: true);',
     1,
-    'the deleted-attachments folder under the app folder (_removeDir), not shared storage',
+    'the emptied trash folder of a failed delete rollback (_removeDir, exempt by name); no expiry path removes a set-aside recursively',
+  ),
+  (
+    'app/lib/src/notebook.dart',
+    'd.deleteSync();',
+    1,
+    'the expiry prunes an emptied set-aside folder without recursive: never a file',
+  ),
+  (
+    'app/lib/src/notebook.dart',
+    'rec.dir.parent.deleteSync();',
+    1,
+    'the expiry prunes the emptied trash folder of a set-aside without recursive: never a file',
   ),
   (
     'app/lib/src/notebook.dart',

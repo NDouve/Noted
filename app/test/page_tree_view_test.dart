@@ -4,6 +4,7 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -425,7 +426,7 @@ void main() {
     await start(tester, appDir: appDir);
     await tester.runAsync(() async {
       final assets = await Directory('${dir.path}/${assetsFolderName(b)}').create();
-      await File('${assets.path}/x.bin').writeAsBytes([1, 2, 3]);
+      await File('${assets.path}/${attachmentFileName(contentHash(Uint8List.fromList([1, 2, 3])), 'bin')}').writeAsBytes([1, 2, 3]);
     });
     await rightClick(tester, b);
     await tester.tap(find.text('Delete'));

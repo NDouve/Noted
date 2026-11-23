@@ -1249,7 +1249,7 @@ void main() {
       File('${assets.path}${sep}f.bin').writeAsBytesSync(bytes);
       final d1 = await nb.delete(id);
       expect(assets.existsSync(), isFalse, reason: 'set aside');
-      Notebook.forceCopyMoveForTest = true;
+      Notebook.forcePutBackCannotRenameForTest = true;
       final reached = Completer<void>();
       final release = Completer<void>();
       attachmentBeforePublishHook = (target) async {
@@ -1258,7 +1258,7 @@ void main() {
         await release.future;
       };
       addTearDown(() {
-        Notebook.forceCopyMoveForTest = false;
+        Notebook.forcePutBackCannotRenameForTest = false;
         attachmentBeforePublishHook = null;
         if (!release.isCompleted) release.complete();
       });
@@ -2637,8 +2637,8 @@ void main() {
       }
 
       test('1, 4 ($how): the page stuck and the attachment put-back stalled: the next launch has the page', () async {
-        Notebook.forceCopyMoveForTest = true;
-        addTearDown(() => Notebook.forceCopyMoveForTest = false);
+        Notebook.forcePutBackCannotRenameForTest = true;
+        addTearDown(() => Notebook.forcePutBackCannotRenameForTest = false);
         await tree();
         giveAssets([1, 2, 3]);
         final text = File(pathOf(parent)).readAsStringSync();
@@ -2661,8 +2661,8 @@ void main() {
       });
 
       test('1, 4 ($how): the attachments being handed to recovery: the next launch has the page', () async {
-        Notebook.forceCopyMoveForTest = true;
-        addTearDown(() => Notebook.forceCopyMoveForTest = false);
+        Notebook.forcePutBackCannotRenameForTest = true;
+        addTearDown(() => Notebook.forcePutBackCannotRenameForTest = false);
         await tree();
         giveAssets([1, 2, 3]);
         final text = File(pathOf(parent)).readAsStringSync();
@@ -3080,8 +3080,8 @@ void main() {
     });
 
     test('4: quit without recovery, the put-back stalled: asks and names the page, staying keeps it', () async {
-      Notebook.forceCopyMoveForTest = true;
-      addTearDown(() => Notebook.forceCopyMoveForTest = false);
+      Notebook.forcePutBackCannotRenameForTest = true;
+      addTearDown(() => Notebook.forcePutBackCannotRenameForTest = false);
       await start(withRecovery: false);
       parent = nb.currentId!;
       await nb.rename(parent, 'Rollback parent');

@@ -5226,8 +5226,6 @@ void main() {
       final second = Uint8List.fromList(List.generate(60, (i) => 200 - i));
       final secondName = attachmentFileName(contentHash(second), 'bin');
       File('${run._assetsPath(id)}${run.sep}$secondName').writeAsBytesSync(second);
-      Notebook.forceCopyMoveForTest = true;
-      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final deleted = await run.nb.delete(id);
       final trash = Directory('${run.root.path}${run.sep}app${run.sep}deleted-attachments');
       final inTrash = trash.listSync(recursive: true).whereType<File>().singleWhere((f) => f.path.endsWith(secondName));

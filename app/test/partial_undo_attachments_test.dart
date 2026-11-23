@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
@@ -115,7 +116,10 @@ void main() {
   test('a delete without a partial Undo is still removed completely', () async {
     final id = await nb.createPage();
     final assets = await Directory('${pages.path}/${assetsFolderName(id)}').create();
-    await File('${assets.path}/x.bin').writeAsBytes([1]);
+    // An attachment's name is its content hash, which is its identity for the
+    // expiry (0098).
+    final name = attachmentFileName(contentHash(Uint8List.fromList([1])), 'bin');
+    await File('${assets.path}/$name').writeAsBytes([1]);
     await nb.delete(id);
     final trash = Directory('${app.path}/deleted-attachments');
     expect(trash.listSync(recursive: true).whereType<File>(), isNotEmpty);
