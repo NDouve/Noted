@@ -78,6 +78,18 @@ void _cases(RemoteKind kind) {
       expect(h.issueText().join('\n'), contains('noted-binder.json'));
     });
 
+    test('a delete\'s in-place set-aside folder is not mirrored (N12)', () async {
+      h.remote.addFile('Noted/a.canvas', Harness.b('A'));
+      h.remote.addFile('Noted/a.assets/img.png', Harness.b('IMG'));
+      h.remote.addFile('Noted/a.deleted-0123456789ab.assets/img.png', Harness.b('IMG'));
+      h.remote.addFile('Noted/B1/noted-binder.json', Harness.b('{}'));
+      h.remote.addFile('Noted/B1/b.canvas', Harness.b('B'));
+      h.remote.addFile('Noted/B1/b.deleted-0123456789ab.assets/x.bin', Harness.b('X'));
+      final r = await h.round();
+      expect(r.error, isNull);
+      expect(h.tree(), ['B1/b.canvas', 'B1/noted-binder.json', 'a.assets/img.png', 'a.canvas']);
+    });
+
     test('a quiet poll downloads nothing and changes nothing', () async {
       seedMany(3);
       await h.round();
