@@ -207,6 +207,9 @@ class _LockTimeout implements Exception {
 /// How one page's rename ended (see [Notebook._renameOnePage]).
 enum _RenameOne { renamed, taken, busy, cannot }
 
+/// How one run of a set-aside's expiry ended (see [Notebook._expireRecord]).
+enum _Expiry { done, restored, kept, stopped }
+
 class _Rekey {
   _Rekey(this.id, this.old, this.freshGen, this.preexisting);
 
@@ -309,10 +312,63 @@ class FolderUnavailableException extends NotebookException {
   const FolderUnavailableException() : super('That folder was not found.');
 }
 
+/// A set-aside folder of a deleted page: in `deleted-attachments`, or in place
+/// beside the page (`<id>.deleted-<12 hex>.assets`). The expiry removes its
+/// files one by one against [identities], never the folder as a whole.
+class _AsideRecord {
+  _AsideRecord({
+    required this.pageId,
+    required this.title,
+    required this.loc,
+    required this.dir,
+    required this.inPlace,
+    required this.identities,
+  });
+
+  final String pageId;
+  final String title;
+
+  /// The page's location (its folder's lock is the expiry's).
+  final String loc;
+  final Directory dir;
+  final bool inPlace;
+
+  /// Each file's identity when the folder was set aside, by path relative to
+  /// [dir] with `/`; null for a file that has none (a placeholder, a name that
+  /// is not a hash).
+  final Map<String, ContentIdentity?> identities;
+
+  /// Runs of the expiry that kept the folder because the page may be back.
+  int keptRuns = 0;
+  bool reported = false;
+  bool running = false;
+
+  /// `<id>.deleted-<12 hex>` for an in-place folder (N10).
+  String? get stem {
+    if (!inPlace) return null;
+    final n = dir.path.split(RegExp(r'[/]')).last;
+    return n.substring(0, n.length - '.assets'.length);
+  }
+}
+
+/// The folder can't be renamed to where it was asked to go (another drive or a
+/// cloud file system that refuses it).
+class _CannotRename extends FileSystemException {
+  const _CannotRename(String path) : super('The folder can not be renamed there', path);
+}
+
 /// Pages removed by one delete, held in full so the delete can be undone.
 class DeletedPages {
-  DeletedPages._(this.pages, this.openId, this._location, this._assets, {this.keptNote, Set<String>? keepTrash})
-    : _keepTrash = {...?keepTrash};
+  DeletedPages._(
+    this.pages,
+    this.openId,
+    this._location,
+    this._assets, {
+    this.keptNote,
+    Set<String>? keepTrash,
+    Map<String, _AsideRecord>? records,
+  }) : _keepTrash = {...?keepTrash},
+       _records = records ?? {};
 
   /// What to tell the user when pages were not deleted because their files
   /// changed after they were read (they stay as they are), or null.
@@ -329,6 +385,10 @@ class DeletedPages {
   // Each deleted page's assets folder, set aside until the delete is undone
   // (moved back) or forgotten (removed).
   final Map<String, Directory> _assets;
+
+  // What the expiry needs of each set-aside folder, by page id: where it is,
+  // whether it is in place, and each file's identity at delete time.
+  final Map<String, _AsideRecord> _records;
 
   // Set-aside folders (their own paths) that could not be put back whole and
   // that the user was told about: a discard never removes them, nor the shared
@@ -1996,7 +2056,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (last == null) return;
     _lastDeleted = null;
     if (_undoing.containsKey(last)) return; // its Undo is copying from the set-aside
-    await _removeSetAside(last);
+    await _expireDeleted(last, deadline: now().add(expiryQuitLimit));
     await _retireConsumedOfDeleted(last);
   }
 
@@ -3405,19 +3465,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  /// Moves [from] to [to]: a rename, or a copy and delete across drives.
+  /// Moves [from] to [to] by rename (2c's rule, H), never copying and deleting.
   ///
   /// It fails ([_IncompleteAttachments], carrying what was done) on every
   /// incomplete move: a destination file that differs or is still changing, or,
   /// with [fromTrash] (a set-aside folder being put back, where nothing should
-  /// stay), a source that still holds files after the verified ones were
-  /// removed. A complete move returns what the copy did. The notices
-  /// ([damagedKept], [stillChanging]) are for the caller to post.
+  /// stay), files that were left behind. Where the answer is `cannotRename`, a
+  /// set-aside throws [_CannotRename] with nothing moved, and a put-back copies,
+  /// keeps the source and throws [_IncompleteAttachments] (leftover). A complete
+  /// move returns what it did. The notices ([damagedKept], [stillChanging])
+  /// are for the caller to post.
   Future<AttachmentCopy> _moveDir(Directory from, Directory to, {required bool fromTrash}) async {
     final copy = AttachmentCopy();
     if (!await from.exists()) return copy;
     await to.parent.create(recursive: true);
-    var cannotRename = forceCopyMoveForTest;
+    var cannotRename = fromTrash ? forcePutBackCannotRenameForTest : forceCopyMoveForTest;
     if (!cannotRename) {
       // One volume: the folder is renamed, or moved file by file (2c's rule,
       // H), under both lock folders (L) or the one lock when they are the
@@ -3452,21 +3514,26 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         throw FileSystemException('The folder is busy; try again', e.path);
       }
     }
-    // Another drive or cloud: the copy path (the delete set-aside is stage C).
+    // Another drive or cloud. A set-aside is not copied: the caller sets the
+    // folder aside in place. A put-back (Undo, the delete rollback, the
+    // recovery hand-off) copies and keeps the folder it copied from, which the
+    // caller keeps (`keepTrash`) and reports. Nothing is deleted.
+    if (!fromTrash) throw _CannotRename(from.path);
     try {
       await _copyDir(from, to, into: copy);
-      if (copy.differing.isNotEmpty || copy.stillChanging.isNotEmpty) {
-        throw _IncompleteAttachments(copy, false, to.path);
-      }
-      await removeVerifiedSources(copy, from);
-      if (fromTrash && await _holdsFile(from)) throw _IncompleteAttachments(copy, true, to.path);
-    } on _IncompleteAttachments {
-      rethrow;
     } on FileSystemException catch (e) {
       // Carries what was done so far (a file set aside stays reported).
       throw _IncompleteAttachments(copy, false, to.path, cause: e);
     }
-    return copy;
+    throw _IncompleteAttachments(
+      copy,
+      true,
+      to.path,
+      cause: FileSystemException(
+        'the folders are on different drives, so the files were copied and the originals were kept',
+        from.path,
+      ),
+    );
   }
 
   // The folder whose lock covers an attachments folder (L): the recovery
@@ -3479,18 +3546,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final rec = _recovery;
     if (rec != null && within(rec.directory.path)) return rec.directory;
     return d.parent;
-  }
-
-  static Future<bool> _holdsFile(Directory d) async {
-    if (!await d.exists()) return false;
-    try {
-      await for (final e in d.list(recursive: true, followLinks: false)) {
-        if (e is! Directory) return true;
-      }
-    } on FileSystemException {
-      return true; // can't tell: treated as not empty
-    }
-    return false;
   }
 
   /// The notices for what a copy kept or left alone (see [_moveDir]).
@@ -3611,9 +3666,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   /// Makes a move skip the rename, as a move across drives does: a page move
-  /// copies and keeps the originals, and [_moveDir] copies.
+  /// copies and keeps the originals, and a delete's set-aside (via [_moveDir])
+  /// answers `cannotRename`, so the folder is set aside in place.
   @visibleForTesting
   static bool forceCopyMoveForTest = false;
+
+  /// Makes a put-back from a set-aside (Undo, the delete rollback, the recovery
+  /// hand-off) answer `cannotRename`, as if the two folders were on different
+  /// drives: it copies, keeps the set-aside folder and reports.
+  @visibleForTesting
+  static bool forcePutBackCannotRenameForTest = false;
 
   /// Pages whose rename answers "another drive or cloud" (`cannotRename`) in a
   /// move, as if their folders were on different volumes.
@@ -3982,21 +4044,56 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (previous != null) discardDeleted(previous);
     // Each page's assets folder is set aside, so undo can bring it back.
     final stash = <String, Directory>{};
+    final records = <String, _AsideRecord>{};
     final trash = Directory('${_deletedAssetsDir.path}${Platform.pathSeparator}${newId()}');
-    for (final p in ids) {
+    for (var i = 0; i < ids.length; i++) {
+      final p = ids[i];
       final dir = _assetsDir(loc, p);
       if (!await dir.exists()) continue;
-      final to = Directory('${trash.path}${Platform.pathSeparator}${assetsFolderName(p)}');
-      try {
-        await _gateMove(loc);
-        _postCopyNotices(await _moveDir(dir, to, fromTrash: false), 'the folder of deleted pages', 'the page');
-        stash[p] = to;
-      } on FileSystemException catch (e) {
-        debugPrint('Setting aside ${dir.path} failed: $e');
-        if (e is _IncompleteAttachments) _postIncomplete(e, 'the folder of deleted pages', 'the page');
-        // Whatever was moved is what Undo restores; files that stayed in the
-        // page folder stay there.
-        if (await to.exists()) stash[p] = to;
+      final title = pages[i].meta.title;
+      final seen = _asideIdentities(dir);
+      _AsideRecord record(Directory at, {required bool inPlace}) =>
+          records[p] = _AsideRecord(pageId: p, title: title, loc: loc, dir: at, inPlace: inPlace, identities: seen.identities);
+      var inPlace = seen.placeholders; // not downloaded files: never moved out, never read
+      if (!inPlace) {
+        final to = Directory('${trash.path}${Platform.pathSeparator}${assetsFolderName(p)}');
+        try {
+          await _gateMove(loc);
+          _postCopyNotices(await _moveDir(dir, to, fromTrash: false), 'the folder of deleted pages', 'the page');
+          stash[p] = to;
+          record(to, inPlace: false);
+        } on _CannotRename {
+          inPlace = true; // another drive or cloud: renamed beside the page instead
+        } on FileSystemException catch (e) {
+          debugPrint('Setting aside ${dir.path} failed: $e');
+          if (e is _IncompleteAttachments) _postIncomplete(e, 'the folder of deleted pages', 'the page');
+          // Whatever was moved is what Undo restores; files that stayed in the
+          // page folder stay there.
+          if (await to.exists()) {
+            stash[p] = to;
+            record(to, inPlace: false);
+          }
+        }
+      }
+      if (inPlace) {
+        try {
+          await _gateMove(loc);
+          final aside = await _setAsideInPlace(dir);
+          if (aside == null) {
+            // Not renamed: the folder stays as `<id>.assets`, with no record, so
+            // nothing ever removes files from it.
+            if (!_notices.isClosed) {
+              _notices.add(
+                'The images and files of "${_titleOrUntitled(title)}" could not be set aside, so they stay in the page\'s folder.',
+              );
+            }
+          } else {
+            stash[p] = aside;
+            record(aside, inPlace: true);
+          }
+        } on FileSystemException catch (e) {
+          debugPrint('Setting aside ${dir.path} in place failed: $e');
+        }
       }
     }
     final keptIds = <String>{}; // changed since they were read: not deleted
@@ -4244,6 +4341,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
                 if (stash.containsKey(ids[i])) ids[i]: stash[ids[i]]!,
             },
             keepTrash: keepTrash,
+            records: records,
           );
           _held.add(held);
           heldCause =
@@ -4343,6 +4441,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       loc,
       stash,
       keepTrash: keepTrash,
+      records: records,
       keptNote: keptIds.isEmpty
           ? null
           : '${keptIds.length == 1 ? 'A page was' : '${keptIds.length} pages were'} changed on '
@@ -4617,6 +4716,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final MapEntry(key: id, value: dir) in deleted._assets.entries) {
         if (leftIds.contains(id)) continue;
         deleted._keepTrash.remove(dir.path);
+        // The trash folder that held it goes if it is empty; an in-place
+        // folder's parent is the page's folder, never touched.
+        if (deleted._records[id]?.inPlace ?? false) continue;
         try {
           if (await dir.parent.exists() && await dir.parent.list().isEmpty) await dir.parent.delete();
         } on FileSystemException catch (e) {
@@ -4761,23 +4863,404 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return null;
   }
 
-  // Removes the folders [d] set aside, except those Undo could not restore.
-  Future<void> _removeSetAside(DeletedPages d) {
-    final sep = Platform.pathSeparator;
-    String parentOf(String p) => p.substring(0, p.lastIndexOf(sep));
-    final keptParents = {for (final k in d._keepTrash) parentOf(k)};
-    return Future.wait([
-      for (final dir in d._assets.values)
-        if (!d._keepTrash.contains(dir.path)) _removeDir(keptParents.contains(dir.parent.path) ? dir : dir.parent),
-    ]);
+  // The delete set-aside and its expiry ---------------------------------------
+
+  // --- expiry begin (no path here removes a set-aside recursively) ---
+
+  /// How long the expiry of a quit may run, checked between files (0152, 0155).
+  @visibleForTesting
+  static Duration expiryQuitLimit = const Duration(seconds: 5);
+
+  /// How many runs that keep a set-aside (the page may be back) are made before
+  /// its record is dropped and the folder stays.
+  static const int _expiryKeptLimit = 3;
+
+  // Set-asides kept by an expiry run, to be tried again after the next check
+  // of their location's files.
+  final List<_AsideRecord> _asidePending = [];
+
+  // Each file of [dir] (path relative to it, with `/`) and the identity it is
+  // known by: an attachment's name is its content hash (0098), so no hash runs.
+  // A placeholder, or a name that is no hash, has none. [placeholders]: some file
+  // is not downloaded (it is never read).
+  ({Map<String, ContentIdentity?> identities, bool placeholders}) _asideIdentities(Directory dir) {
+    final out = <String, ContentIdentity?>{};
+    var placeholders = false;
+    void walk(Directory d, String rel) {
+      final List<FileSystemEntity> entries;
+      try {
+        entries = d.listSync(followLinks: false);
+      } on FileSystemException {
+        return;
+      }
+      for (final e in entries) {
+        final name = _baseName(e.path);
+        final r = rel.isEmpty ? name : '$rel/$name';
+        switch (FileSystemEntity.typeSync(e.path, followLinks: false)) {
+          case FileSystemEntityType.directory:
+            walk(Directory(e.path), r);
+          case FileSystemEntityType.file:
+            if (_isPlaceholder(e.path)) {
+              placeholders = true;
+              out[r] = null;
+              continue;
+            }
+            final hash = attachmentNameHash(name);
+            ContentIdentity? id;
+            try {
+              id = hash == null ? null : ContentIdentity(File(e.path).lengthSync(), hash);
+            } on FileSystemException {
+              id = null;
+            }
+            out[r] = id;
+          default:
+            break; // a link is never followed, and has no identity
+        }
+      }
+    }
+
+    walk(dir, '');
+    return (identities: out, placeholders: placeholders);
   }
 
-  /// Drops the in-memory copy of [deleted] (its snackbar went away).
+  static String _hex12() {
+    final r = Random.secure();
+    return [for (var i = 0; i < 6; i++) r.nextInt(256).toRadixString(16).padLeft(2, '0')].join();
+  }
+
+  // Renames `<loc>/<p>.assets` to `<loc>/<p>.deleted-<12 hex>.assets` under the
+  // folder's one lock (X2). Null when the rename isn't `moved` (nothing moved).
+  // Under a registered coordination root the folder's files are passed along.
+  Future<Directory?> _setAsideInPlace(Directory dir) async {
+    final name = _baseName(dir.path);
+    final stem = name.substring(0, name.length - '.assets'.length);
+    final target = Directory('${dir.parent.path}${Platform.pathSeparator}$stem.deleted-${_hex12()}.assets');
+    try {
+      final r = await _underPair(dir.parent, dir.parent, () async {
+        final also = _alsoMovedFor(dir);
+        var o = MoveOutcome.busy;
+        for (var i = 0; i < 3; i++) {
+          o = await moveExclusive(dir.path, target.path, alsoMoved: also);
+          if (o != MoveOutcome.busy) break;
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        return o;
+      }, gate: false);
+      return r == MoveOutcome.moved ? target : null;
+    } on _LockTimeout catch (e) {
+      throw FileSystemException('The folder is busy; try again', e.path);
+    }
+  }
+
+  // Whether page [p] is listed in any location.
+  bool _listedAnywhere(String p) => _loc.containsKey(p);
+
+  // Expires what [d] set aside (the delete can no longer be undone). With a
+  // [deadline] (a quit) it stops between files once that has passed.
+  Future<void> _expireDeleted(DeletedPages d, {DateTime? deadline}) async {
+    for (final MapEntry(key: p, value: dir) in d._assets.entries.toList()) {
+      if (d._keepTrash.contains(dir.path)) continue; // Undo could not put it back whole
+      final rec = d._records[p];
+      if (rec == null) continue;
+      try {
+        if (await _expireRecord(rec, deadline: deadline) == _Expiry.stopped) return;
+      } on Object catch (e) {
+        debugPrint('Expiring the set-aside folder ${dir.path} failed: $e');
+      }
+    }
+  }
+
+  // One run of the expiry of [rec]: per file, `deleteFileIfMatches` against the
+  // identity recorded at delete time, with [_stillRedundant] right before each
+  // unlink. A refused check or turn keeps the folder and its record, and the run
+  // is made again after the next check of the location (at most
+  // [_expiryKeptLimit] kept runs). A page that is listed again gets its folder
+  // back as Undo would put it.
+  Future<_Expiry> _expireRecord(_AsideRecord rec, {DateTime? deadline}) async {
+    if (rec.running) return _Expiry.kept;
+    rec.running = true;
+    try {
+      final r = await _expireRecordNow(rec, deadline);
+      if (r == _Expiry.kept) {
+        if (++rec.keptRuns >= _expiryKeptLimit) {
+          _asidePending.remove(rec);
+          debugPrint('The set-aside ${rec.dir.path} is kept: the page may be back.');
+        } else if (!_asidePending.contains(rec)) {
+          _asidePending.add(rec);
+        }
+      } else if (r != _Expiry.stopped) {
+        _asidePending.remove(rec);
+      }
+      return r;
+    } finally {
+      rec.running = false;
+    }
+  }
+
+  // One turn of [job] under [locDir]'s lock (0184's gate in it). With a deadline
+  // the wait for the lock ends at it ([_LockTimeout]).
+  Future<T> _expiryTurn<T>(Directory locDir, DateTime? deadline, Future<T> Function() job) {
+    if (deadline == null) return _lockRun(locDir, job);
+    var left = deadline.difference(now());
+    if (left > expiryQuitLimit) left = expiryQuitLimit;
+    if (left <= Duration.zero) throw const _LockTimeout('');
+    return _lockLimited(locDir, job, limit: left);
+  }
+
+  Future<_Expiry> _expireRecordNow(_AsideRecord rec, DateTime? deadline) async {
+    final p = rec.pageId;
+    if (_disposed) return _Expiry.kept;
+    if (_listedAnywhere(p)) return await _restoreSetAside(rec) ? _Expiry.restored : _Expiry.kept;
+    if (_busy.containsKey(p)) return _Expiry.kept;
+    final Directory locDir;
+    try {
+      if (_pullOnly(rec.loc)) return _Expiry.kept; // never written here
+      locDir = _storeOf(rec.loc).directory;
+    } on Object {
+      return _Expiry.kept;
+    }
+    if (!rec.dir.existsSync()) return _Expiry.done;
+    // What a crashed or interrupted delete left aside goes back first.
+    try {
+      await sweepAsideFiles(rec.dir, extension: '');
+    } on Object catch (e) {
+      debugPrint('Sweeping ${rec.dir.path} failed: $e');
+    }
+    final List<File> files;
+    try {
+      files = [for (final e in rec.dir.listSync(recursive: true, followLinks: false)) if (e is File) e];
+    } on FileSystemException {
+      return _Expiry.kept;
+    }
+    // The location's page files, stamped once for this run under its lock.
+    final Map<String, FileStamp> others;
+    try {
+      others = await _expiryTurn(locDir, deadline, () async => _otherPageFiles(locDir, p));
+    } on _LockTimeout {
+      return _Expiry.stopped;
+    } on NotebookException {
+      return _Expiry.kept;
+    }
+    var unknown = 0;
+    var changed = 0;
+    for (final f in files) {
+      if (deadline != null && !now().isBefore(deadline)) return _Expiry.stopped;
+      if (!f.existsSync()) continue;
+      final rel = f.path.substring(rec.dir.path.length + 1).replaceAll(r'\', '/');
+      if (!rec.identities.containsKey(rel)) {
+        changed++; // new since the folder was set aside
+        continue;
+      }
+      final id = rec.identities[rel];
+      if (id == null) {
+        unknown++; // a placeholder, or a name that is no hash: kept
+        continue;
+      }
+      var refused = false;
+      try {
+        await syncHook?.call('expiry-file', f.path);
+        final res = await _expiryTurn(locDir, deadline, () async {
+          _assertWritable(rec.loc);
+          return deleteFileIfMatches(
+            f.path,
+            identity: id,
+            stillRedundant: () {
+              var ok = false;
+              try {
+                ok = _stillRedundant(rec, locDir, others);
+              } on Object {
+                ok = false;
+              }
+              if (!ok) refused = true;
+              return ok;
+            },
+            beforeFinalCheck: (path) async => syncHook?.call('expiry-final-check', path),
+          );
+        });
+        if (!res.deleted && res.outcome != DeleteOutcome.absent) changed++;
+      } on _LockTimeout {
+        return _Expiry.stopped;
+      } on NotebookException {
+        return _Expiry.kept; // the gate (0184) or a read-only folder refused this turn
+      } on FileSystemException catch (e) {
+        debugPrint('Removing ${f.path} from the set-aside failed: $e');
+        changed++;
+      }
+      if (refused) return _Expiry.kept;
+    }
+    // Empty folders go, never one that holds anything.
+    try {
+      await _expiryTurn(locDir, deadline, () async => _pruneSetAside(rec));
+    } on _LockTimeout {
+      return _Expiry.stopped;
+    } on NotebookException {
+      return _Expiry.kept;
+    }
+    if (rec.dir.existsSync() && !rec.reported && (unknown > 0 || changed > 0) && !_notices.isClosed) {
+      rec.reported = true;
+      _notices.add(
+        'Some images and files of "${_titleOrUntitled(rec.title)}" were not removed: they changed or are not downloaded. '
+        'They are in ${rec.dir.path}.',
+      );
+    }
+    return _Expiry.done;
+  }
+
+  // The `.canvas` files of [locDir] that are known to be another page's: their
+  // stamp is the one last classified, they aren't placeholders, and they are
+  // listed as another page. Metadata only (rule P); a failing listing gives
+  // none, so every file counts as the page.
+  Map<String, FileStamp> _otherPageFiles(Directory locDir, String p) {
+    final out = <String, FileStamp>{};
+    try {
+      for (final e in locDir.listSync(followLinks: false)) {
+        if (e is! File || !e.path.toLowerCase().endsWith(PageStore.extension)) continue;
+        final key = _key(e.path);
+        final s = fileStamp(e.path);
+        final id = _pathId[key];
+        if (s != null && id != null && id != p && _fileStamps[key] == s && !_isPlaceholder(e.path)) out[key] = s;
+      }
+    } on FileSystemException {
+      return {};
+    }
+    return out;
+  }
+
+  // Synchronous, right before each unlink: whether the files of [rec] are still
+  // redundant, that is page [p] is gone. No listed page is [p] or the folder's
+  // stem (N10), [p] isn't busy, and the location's names show no file that may be
+  // [p]: a name 0150 ties to it (its id), a stub, and any `.canvas` file that
+  // isn't known to be another page (new, changed, unstamped, a placeholder, an
+  // unreadable one) count as [p]. A listing that fails counts too. Reads no file.
+  bool _stillRedundant(_AsideRecord rec, Directory locDir, Map<String, FileStamp> others) {
+    final p = rec.pageId;
+    if (_disposed || _busy.containsKey(p) || _listedAnywhere(p)) return false;
+    final stem = rec.stem;
+    if (stem != null && _listedAnywhere(stem)) return false;
+    final pl = p.toLowerCase();
+    try {
+      for (final e in locDir.listSync(followLinks: false)) {
+        if (e is Directory) continue;
+        final name = _baseName(e.path);
+        final nl = name.toLowerCase();
+        if (nl.contains(pl) || nl.endsWith('.icloud')) return false;
+        if (nl.endsWith(PageStore.extension)) {
+          final key = _key(e.path);
+          final s = others[key];
+          if (s == null || _fileStamps[key] != s) return false;
+          final id = _pathId[key];
+          if (id == null || id == p) return false;
+        }
+      }
+    } on FileSystemException {
+      return false;
+    }
+    return true;
+  }
+
+  // Removes the empty folders of [rec] (non-recursively, deepest first) and, for
+  // a folder in `deleted-attachments`, its own empty parent.
+  void _pruneSetAside(_AsideRecord rec) {
+    void prune(Directory d) {
+      final List<FileSystemEntity> entries;
+      try {
+        entries = d.listSync(followLinks: false);
+      } on FileSystemException {
+        return;
+      }
+      for (final e in entries) {
+        if (e is Directory && FileSystemEntity.typeSync(e.path, followLinks: false) == FileSystemEntityType.directory) {
+          prune(e);
+        }
+      }
+      try {
+        d.deleteSync();
+      } on FileSystemException {
+        // Not empty: files stayed.
+      }
+    }
+
+    prune(rec.dir);
+    if (!rec.inPlace) {
+      try {
+        rec.dir.parent.deleteSync();
+      } on FileSystemException {
+        // Other folders are in it.
+      }
+    }
+  }
+
+  // Puts [rec]'s folder back as Undo does (the page is listed again): into the
+  // folder of the page's location (under L when the keys differ), or file by file
+  // into a taken name. Leftovers are reported and the record ends (kept from the
+  // expiry). False when the restore was refused: it counts as kept.
+  Future<bool> _restoreSetAside(_AsideRecord rec) async {
+    final p = rec.pageId;
+    final loc = _loc[p];
+    if (loc == null) return false;
+    try {
+      _assertWritable(loc);
+      _storeOf(loc);
+      if (!rec.dir.existsSync()) return true;
+      try {
+        await sweepAsideFiles(rec.dir, extension: '');
+      } on Object catch (e) {
+        debugPrint('Sweeping ${rec.dir.path} failed: $e');
+      }
+      await _gateMove(loc);
+      _postCopyNotices(
+        await _moveDir(rec.dir, _assetsDir(loc, p), fromTrash: true),
+        'the page',
+        rec.inPlace ? 'the page\'s folder' : 'the folder of deleted pages',
+      );
+      if (!rec.inPlace) _pruneSetAside(rec);
+      return true;
+    } on NotebookException {
+      return false; // read-only, pull-only or held: kept
+    } on Object catch (e) {
+      debugPrint('Putting back the set-aside ${rec.dir.path} failed: $e');
+      if (e is FileSystemException) {
+        _postKept(e, rec.dir, 'the page', rec.inPlace ? 'the page\'s folder' : 'the folder of deleted pages');
+      }
+      return true; // what is left stays under its name, kept from the expiry
+    }
+  }
+
+  // After a check of a page file: the set-asides kept by an expiry run for its
+  // location are tried again, each as its own job (never inside a job that holds
+  // the folder's lock: [FolderLocks] isn't re-entrant).
+  void _expiryAfterCheck(String path) {
+    if (_asidePending.isEmpty || _disposed) return;
+    final loc = _locationOf(path);
+    if (loc == null) return;
+    final due = [
+      for (final r in _asidePending)
+        if (r.loc == loc && !r.running) r,
+    ];
+    if (due.isEmpty) return;
+    unawaited(
+      Future<void>(() async {
+        for (final r in due) {
+          if (_disposed) return;
+          try {
+            await _expireRecord(r);
+          } on Object catch (e) {
+            debugPrint('Expiring ${r.dir.path} again failed: $e');
+          }
+        }
+      }),
+    );
+  }
+
+  // --- expiry end ---
+
+  /// Drops the in-memory copy of [deleted] (its snack bar went away): its
+  /// set-aside folders are emptied by the expiry.
   void discardDeleted(DeletedPages deleted) {
     if (identical(_lastDeleted, deleted)) _lastDeleted = null;
     if (_undoing.containsKey(deleted)) return; // its Undo is copying from the set-aside
     _held.remove(deleted);
-    unawaited(_removeSetAside(deleted));
+    unawaited(_expireDeleted(deleted).catchError((Object e) => debugPrint('Expiring a delete failed: $e')));
     _letGoConsumed(deleted);
   }
 
@@ -4944,10 +5427,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // [job] under [dir]'s lock, waited for at most [pairLockLimit]: past that the
   // queued job is cancelled (it returns at once if it ever starts) and the
   // caller gets a [_LockTimeout].
-  Future<T> _lockLimited<T>(Directory dir, Future<T> Function() job, {bool gate = true}) {
+  Future<T> _lockLimited<T>(Directory dir, Future<T> Function() job, {bool gate = true, Duration? limit}) {
     final out = Completer<T>();
     var state = 0; // 0 waiting, 1 started, 2 cancelled
-    final timer = Timer(pairLockLimit, () {
+    final timer = Timer(limit ?? pairLockLimit, () {
       if (state != 0) return;
       state = 2;
       out.completeError(_LockTimeout(dir.path));
@@ -12168,6 +12651,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// page (damaged, a newer format, or a read error that isn't "missing"): the
   /// open page is then read-only and must not be saved over it.
   Future<bool> _checkFile(String path) async {
+    try {
+      return await _checkFileNow(path);
+    } finally {
+      _expiryAfterCheck(path);
+    }
+  }
+
+  Future<bool> _checkFileNow(String path) async {
     if (!path.endsWith(PageStore.extension)) return false;
     final loc = _locationOf(path);
     if (loc == null) return false;
