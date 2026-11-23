@@ -228,6 +228,24 @@
 //     14-16) fail, and only those: "the re-check merged the kept copy again".
 //     `revertedRestart` doesn't catch it (the replay at the start has no mark).
 //
+// Rows 34-37 are for the rename-based move and the delete set-aside (run
+// 2026-11-22-01, task 2, stage D; the scripted kinds of `_xStep`, each run on its
+// own with `--dart-define=RELOAD_X=<kind>`):
+//
+// 34. The expiry without its check (`stillRedundant` always true in
+//     `_expireRecordNow`): `delete:restoredBeforeWatcherExpiry` ("nothing was
+//     deleted: the page may be back"), `delete:expiryKeptThenRestored`,
+//     `delete:restoredMidExpiry` and `delete:expiryListingFails` fail.
+//     `delete:expiryHeld` doesn't (it is the gate's).
+// 35. The scan without stamps (`stamps: false` in the notebook's scan):
+//     `check:stampSkip` and `move:renameScannedDehydrated` fail (reads of pages
+//     that were not to be read).
+// 36. 0184's gate skipped (`_gated` does not read the binder file):
+//     `move:heldMidMove` and `delete:expiryHeld` fail; `move:strayDeclined:held`
+//     doesn't (it is O's own `_isLocked`).
+// 37. `_landKeptAssetsNow` without its busy skip (R5): the unit test in
+//     `move_review_leftovers_test.dart` fails.
+//
 // Wait for watchers: none is used. The notebook runs with `watchFiles` off,
 // and the steps call `checkFile` and `checkFolders` themselves, the way the
 // watcher would, so a step is over when its calls return. Folder renames and
@@ -269,7 +287,7 @@ import 'support/real_io.dart' show realIoUntil;
 
 /// The seeds that run in the normal suite. Each is one sequence of [_steps].
 const List<int> _seeds = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, //
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, //
 ];
 
 const int _steps = 10;
@@ -482,6 +500,8 @@ class _Chaos extends PageStore {
 class _Dup {
   _Dup(this.id, this.loc, this.path, this.text);
 
+  String get name => path.split(RegExp(r'[\\/]')).last;
+
   final String id;
   final String loc;
   final String path;
@@ -496,6 +516,14 @@ class _MPage {
   String title = 'Untitled page';
   String? assetText; // the one file in the page's attachments folder, if any
   bool hashFile = false; // and a hash-named file beside it (_goodName)
+
+  /// The exact files of the page's attachments folder in its place (name to
+  /// bytes), for the scripted move and delete kinds (`_xDo`); empty: none.
+  final Map<String, List<int>> files = {};
+
+  /// A folder of the page's attachments left in a place the page is not in,
+  /// with its exact files: place to name to bytes.
+  final Map<String, Map<String, List<int>>> left = {};
   final Map<String, _BoxVal> boxes = {};
 
   /// The box types the page's own header disallows, as the model knows them.
@@ -837,8 +865,20 @@ class _Run {
       await _step(n);
     } on TestFailure catch (e) {
       if ((e.message ?? '').contains('trace of seed')) rethrow;
-      throw TestFailure('${e.message}\n--- trace of seed $seed ---\n${trace.join('\n')}');
+      throw TestFailure('${e.message}\n${_failureNote()}');
+    } on Object {
+      debugPrint(_failureNote());
+      rethrow;
     }
+  }
+
+  /// What an error that is not a failed expectation leaves for the reader: the
+  /// trace and where the model has each page.
+  String _failureNote() {
+    final pages = [
+      for (final e in model.entries) '${_short(e.key)} ${e.value.loc} parent ${e.value.parent == null ? '-' : _short(e.value.parent!)}',
+    ];
+    return '--- trace of seed $seed ---\n${trace.join('\n')}\n--- model ---\n${pages.join('\n')}';
   }
 
   Future<void> _step(int n) async {
@@ -894,6 +934,9 @@ class _Run {
     // The old file is put back after a conflict copy's merge (own generator,
     // after the others).
     if (_crng.nextInt(100) < 20) await _revertedCopyStep(n);
+    // The rename-based move, its crashes, the stray folder, the delete set-aside and
+    // the stamp shortcut: scripted scenarios, drawn by a generator of their own.
+    if (_xrng.nextInt(100) < 45) await _xStep(n);
   }
 
   /// The step `recover:overwrittenAfterLanding` after step [n], on pages picked
@@ -1559,7 +1602,8 @@ class _Run {
     final end = DateTime.now().add(const Duration(seconds: 10));
     while (!done()) {
       if (DateTime.now().isAfter(end)) {
-        fail('seed $seed: timed out waiting for ${what is String Function() ? what() : what}');
+        final left = nb.recoveryStoreForTest?.indexEntries.map((e) => '${_short(e.pageId)}@${_xName(e.folder)}').toList();
+        fail('seed $seed: timed out waiting for ${what is String Function() ? what() : what} (entries left: $left; held ${[for (final b in nb.binders) "${_xName(b.path)}:${nb.holdOfFolder(b.path)}"]})');
       }
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
@@ -2942,6 +2986,9 @@ class _Run {
   late final Random _rrng = Random(seed * 19 + 5); // which failed deletes are followed by a kill (_opDelete)
   late final Random _kcrng = Random(seed * 23 + 7); // which moves take the copy path, and how (_opMove)
   late final Random _crng = Random(seed * 23 + 29); // which conflict copies get the old file put back (_opCopy)
+  late final Random _xrng = Random(seed * 53 + 29); // the scripted move and delete kinds (_xStep)
+  final Set<(String, String)> _extra = {}; // other names the scripted kinds leave in a place (place, name)
+  int _xCounter = 0;
   int _binderStepCount = 0;
   int _binderCounter = 0;
   late String _idA;
@@ -3138,7 +3185,7 @@ class _Run {
         _aAi = Binder.parse(_aFile.readAsStringSync()).aiAccess;
         expect(_aAi, v == AiAccess.guarded ? anyOf(v, isNull) : v);
       case 'write/tightenedBehindOtherDelta':
-        if (!_canWrite) return;
+        if (!_canWrite || !model.values.any((m) => m.loc == 'a')) return; // (the check below needs a page in A)
         if ((_aAi ?? AiAccess.guarded) == AiAccess.guarded) {
           await nb.setBinderAiAccess(pathA, AiAccess.open);
           _aAi = AiAccess.open;
@@ -3746,11 +3793,15 @@ class _Run {
         for (final e in model.entries)
           if (e.value.loc == loc) '${e.key}.canvas',
         for (final d in _dups)
-          if (d.loc == loc) '${d.id}.canvas',
+          if (d.loc == loc) d.name,
         for (final e in model.entries)
-          if (e.value.loc == loc && e.value.assetText != null) assetsFolderName(e.key),
+          if (e.value.loc == loc && (e.value.assetText != null || e.value.files.isNotEmpty)) assetsFolderName(e.key),
+        for (final e in model.entries)
+          if (e.value.left.containsKey(loc)) assetsFolderName(e.key),
         for (final (l, id) in leftFolders)
           if (l == loc) assetsFolderName(id),
+        for (final (l, name) in _extra)
+          if (l == loc) name,
       };
       final actual = <String>{for (final f in d.listSync()) f.path.split(RegExp(r'[\\/]')).last};
       expect(actual, expected, reason: '$where: the files in $loc');
@@ -3774,6 +3825,10 @@ class _Run {
           m.assetText,
           reason: '$where: the attachment of page ${_short(id)}',
         );
+      }
+      if (m.files.isNotEmpty) _expectFolderFiles('$where: the attachments of ${_short(id)} in ${m.loc}', _assetsPath(id), m.files);
+      for (final l in m.left.entries) {
+        _expectFolderFiles('$where: the attachments of ${_short(id)} left in ${l.key}', _assetsPath(id, l.key), l.value);
       }
       expect(
         _boxesOf(page, '$where: ${_short(id)} on disk', conflicts: m.conflicts),
@@ -3883,6 +3938,1298 @@ class _Run {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The rename-based move, the stray folder, the stamp shortcut and the delete
+// set-aside (run 2026-11-22-01, task 2, stage D)
+//
+// Scripted scenarios the walk draws after its own steps (`_Run._xStep`, a
+// generator of its own, the least tried kind first). Each builds what it needs
+// in the model (a page tree, hash-named attachments), makes the move or delete
+// with a fault at the moment its kind names, and the step ends by comparing the
+// files, the live notebook and a fresh notebook with the model (`verify`).
+// Attachments are removed again at the end of a scenario, so the other steps
+// never see them. `--dart-define=RELOAD_X=<kind>` runs one kind at every step.
+
+final Map<String, int> _xTried = {};
+const String _xOnly = String.fromEnvironment('RELOAD_X');
+const String _xSkip = String.fromEnvironment('RELOAD_XSKIP'); // kinds not to run (comma separated)
+
+const _xKinds = [
+  'move:renameDehydrated', 'move:renameScannedDehydrated', 'move:renameSourceChangedUnread', //
+  'move:renameSourceReplaced', 'move:renameCrashAfterRoot', 'move:renameCrashMidTree', //
+  'move:renameStandaloneCrash', 'move:renameAssetsTargetExists', 'move:damagedTargetReplaced', //
+  'move:damagedCrash', 'move:renameRollback', 'move:watcherMidMove', 'move:rollbackStalled', //
+  'move:strayDeclined:recent', 'move:strayDeclined:changing', 'move:strayDeclined:mayBePage', //
+  'move:strayDeclined:setAside', 'move:strayDeclined:held', //
+  'move:heldMidMove', 'move:heldMidMove:deleteOriginal', //
+  'check:stampSkip', 'check:stampChangedByOther', //
+  'delete:inPlaceRenamed', 'delete:inPlaceUndo', 'delete:inPlaceKilled', 'delete:inPlaceRollback', //
+  'delete:crossVolumePutBackKeepsTrash', 'delete:restoredBeforeWatcherExpiry', //
+  'delete:restoredBeforeWatcherQuit', 'delete:trashRestoredBeforeWatcherExpiry', //
+  'delete:trashRestoredBeforeWatcherQuit', 'delete:restoredMidExpiry', 'delete:expiryKeptThenRestored', //
+  'delete:expiryHeld', 'delete:expiryListingFails', //
+];
+
+String _xName(String path) => path.split(RegExp(r'[\\/]')).last;
+
+/// The folder at [path] holds exactly [files] (name to bytes).
+void _expectFolderFiles(String where, String path, Map<String, List<int>> files) {
+  final d = Directory(path);
+  expect(d.existsSync(), isTrue, reason: '$where: the folder is there');
+  final entries = d.listSync(followLinks: false);
+  expect({for (final e in entries) _xName(e.path)}, files.keys.toSet(), reason: '$where: the files');
+  for (final e in files.entries) {
+    expect(File('$path${Platform.pathSeparator}${e.key}').readAsBytesSync(), e.value, reason: '$where: ${e.key}');
+  }
+}
+
+extension _XSteps on _Run {
+  Future<void> _xStep(int n) async {
+    final sorted = [..._xKinds]..shuffle(_xrng);
+    sorted.sort((a, b) => (_xTried[a] ?? 0).compareTo(_xTried[b] ?? 0));
+    for (final k in _xOnly.isEmpty ? sorted : [_xOnly]) {
+      if (_xSkip.split(',').contains(k)) continue;
+      trace.add('x $k');
+      String? ran;
+      try {
+        ran = await _xDo(k);
+      } finally {
+        _xReset();
+      }
+      if (ran == null) continue;
+      _xTried[k] = (_xTried[k] ?? 0) + 1;
+      trace.add('  ($ran done)');
+      await _settle();
+      await verify('step $n ($ran)', fresh: true);
+      kinds.add(ran);
+      return;
+    }
+  }
+
+  void _xReset() {
+    PageStore.fileReadObserver = null;
+    Notebook.placeholderMarksForTest = {};
+    Notebook.unhydratableForTest = {};
+    Notebook.syncRootOfForTest = null;
+    Notebook.forceCopyMoveForTest = false;
+    Notebook.forcePutBackCannotRenameForTest = false;
+    Notebook.pairLockLimit = const Duration(seconds: 5);
+    Notebook.pairRetryDelay = const Duration(milliseconds: 500);
+    nb.syncHook = null;
+    nb.now = DateTime.now;
+    for (final s in _stores.values) {
+      s.failDelete.clear();
+    }
+  }
+
+  Future<String?> _xDo(String kind) async {
+    switch (kind) {
+      case 'move:renameDehydrated':
+        return _xDehydrated(kind, scanned: false);
+      case 'move:renameScannedDehydrated':
+        return _xDehydrated(kind, scanned: true);
+      case 'move:renameSourceChangedUnread':
+        return _xSourceChanged(kind);
+      case 'move:renameSourceReplaced':
+        return _xSourceReplaced(kind);
+      case 'move:renameCrashAfterRoot':
+      case 'move:renameCrashMidTree':
+      case 'move:renameStandaloneCrash':
+        return _xCrash(kind);
+      case 'move:renameAssetsTargetExists':
+        return _xTaken(kind);
+      case 'move:damagedTargetReplaced':
+      case 'move:damagedCrash':
+        return _xDamaged(kind);
+      case 'move:renameRollback':
+        return _xRollback(kind);
+      case 'move:watcherMidMove':
+        return _xWatcher(kind);
+      case 'move:rollbackStalled':
+        return _xStalled(kind);
+      case 'move:heldMidMove':
+        return _xHeld(kind);
+      case 'move:heldMidMove:deleteOriginal':
+        return _xHeldOriginal(kind);
+      case 'check:stampSkip':
+      case 'check:stampChangedByOther':
+        return _xStamps(kind);
+      case 'delete:restoredBeforeWatcherExpiry':
+        return _xRestoredBefore(kind, inPlace: true, quit: false);
+      case 'delete:restoredBeforeWatcherQuit':
+        return _xRestoredBefore(kind, inPlace: true, quit: true);
+      case 'delete:trashRestoredBeforeWatcherExpiry':
+        return _xRestoredBefore(kind, inPlace: false, quit: false);
+      case 'delete:trashRestoredBeforeWatcherQuit':
+        return _xRestoredBefore(kind, inPlace: false, quit: true);
+      case 'delete:restoredMidExpiry':
+      case 'delete:expiryKeptThenRestored':
+        return _xRestoredLater(kind);
+      case 'delete:expiryHeld':
+        return _xExpiryHeld(kind);
+      case 'delete:expiryListingFails':
+        return _xListingFails(kind);
+      case 'delete:inPlaceRenamed':
+      case 'delete:inPlaceUndo':
+      case 'delete:inPlaceKilled':
+      case 'delete:inPlaceRollback':
+      case 'delete:crossVolumePutBackKeepsTrash':
+        return _xInPlace(kind);
+    }
+    if (kind.startsWith('move:strayDeclined:')) return _xStray(kind);
+    throw StateError('no scenario for $kind');
+  }
+
+  // ---- building blocks ---------------------------------------------------------
+
+  Future<void> _xQuiet() => Future<void>.delayed(const Duration(milliseconds: 200));
+
+  Future<void> _xUntil(bool Function() ok, String what, {int ms = 6000}) async {
+    final end = DateTime.now().add(Duration(milliseconds: ms));
+    while (!ok()) {
+      if (DateTime.now().isAfter(end)) fail('timed out waiting for $what');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+  }
+
+  /// Stamps are fresh and nothing is pending: the state the scenarios start from.
+  Future<void> _xFreshen() async {
+    await nb.flush();
+    await nb.checkFolders();
+    await _settle();
+  }
+
+  /// Waits for an expiry. One that finds a file of the folder it has not stamped
+  /// is kept and tried again after the next check there (a limit of the design),
+  /// so the folder is checked as the watcher would meanwhile.
+  Future<void> _xExpired(bool Function() done, String loc, String what) async {
+    final end = DateTime.now().add(const Duration(seconds: 8));
+    while (!done()) {
+      if (DateTime.now().isAfter(end)) fail('timed out waiting for $what');
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      if (!done()) await _xCheckLoc(loc);
+    }
+  }
+
+  /// The watcher's look at every page file of [loc] (a kept expiry is tried again
+  /// after the check of a file there).
+  Future<void> _xCheckLoc(String loc) async {
+    for (final e in model.entries.toList()) {
+      if (e.value.loc == loc) await nb.checkFile(_pathOf(e.key));
+    }
+    await nb.checkFolders();
+  }
+
+  String _xFile(String loc, String id) => '${dirs[loc]!.path}$sep$id.canvas';
+
+  /// A page the model makes in [loc] (under [parent] if given).
+  Future<String> _xPage(String loc, {String? parent}) async {
+    final id = await nb.createPage(
+      parentId: parent,
+      binderPath: parent == null && loc == 'a' ? pathA : (parent == null && loc == 'b' ? pathB : null),
+      folderPath: parent == null && loc == 'x' ? dirs['x']!.path : null,
+    );
+    model[id] = _MPage(loc, parent: parent);
+    trace.add('  made page ${_short(id)} in $loc under ${parent == null ? '-' : _short(parent)}');
+    await nb.open(id);
+    nb.current!.insertBox(_opaqueBox());
+    _addBox(model[id]!, nb.current!);
+    await nb.flush();
+    return id;
+  }
+
+  /// A root whose subtree has at least [len] pages (made if need be), at the top
+  /// level unless [top] is false, in one of [locs].
+  Future<String> _xTree(int len, {Set<String>? locs, bool top = true}) async {
+    final roots = [
+      for (final e in model.entries)
+        if ((!top || e.value.parent == null) && (locs == null || locs.contains(e.value.loc))) e.key,
+    ]..shuffle(_xrng);
+    for (final r in roots) {
+      if (_subtree(r).length >= len) return r;
+    }
+    final r = roots.isEmpty ? await _xPage(locs?.first ?? 'pages') : roots.first;
+    var tree = _subtree(r);
+    while (tree.length < len) {
+      await _xPage(model[r]!.loc, parent: r); // one level deep, as the other steps make them
+      tree = _subtree(r);
+    }
+    return r;
+  }
+
+  /// The pages the app moves with [id], in its order (the page, then each subpage
+  /// stored with it, depth first).
+  List<String> _xOrder(String id) {
+    final loc = model[id]!.loc;
+    final b = nb.binderOfPage(id);
+    final tree = b == null ? nb.tree : nb.binders.firstWhere((s) => _norm(s.path) == _norm(b)).tree;
+    final out = [id];
+    void walk(String p) {
+      for (final c in tree.childrenOf(p)) {
+        if (model[c.id]?.loc != loc) continue;
+        out.add(c.id);
+        walk(c.id);
+      }
+    }
+
+    walk(id);
+    return out;
+  }
+
+  /// A binder keeps a page when [moving] leave it: one is made if there is none.
+  Future<void> _xSpare(String loc, List<String> moving) async {
+    if ((loc == 'a' || loc == 'b') && !model.entries.any((e) => e.value.loc == loc && !moving.contains(e.key))) {
+      await _xPage(loc);
+    }
+  }
+
+  String? _xTarget(String id, {Set<String>? among}) {
+    final sub = _subtree(id);
+    final from = model[id]!.loc;
+    // A binder keeps a page: the binder steps look for one in each.
+    if ((from == 'a' || from == 'b') && !model.entries.any((e) => e.value.loc == from && !sub.contains(e.key))) return null;
+    final opts = [
+      for (final l in _locs)
+        if (l != from && (among == null || among.contains(l)) && _standaloneLeft(sub, to: l) >= 1) l,
+    ];
+    return opts.isEmpty ? null : opts[_xrng.nextInt(opts.length)];
+  }
+
+  /// [n] hash-named files (their name is their content hash, so each has an
+  /// identity) in page [id]'s attachments folder.
+  void _xGive(String id, int n) {
+    final m = model[id]!;
+    final d = Directory(_assetsPath(id))..createSync(recursive: true);
+    for (var i = 0; i < n; i++) {
+      final k = ++_xCounter;
+      final bytes = List<int>.generate(30, (j) => (seed * 31 + k * 7 + j * 3) & 255);
+      final name = attachmentFileName(contentHash(Uint8List.fromList(bytes)), 'bin');
+      File('${d.path}$sep$name').writeAsBytesSync(bytes);
+      m.files[name] = bytes;
+    }
+  }
+
+  /// The user's removal of whatever attachments, set-aside folders and trash of
+  /// page [id] a scenario left.
+  Future<void> _xClear(String id) async {
+    final aside = RegExp('^${RegExp.escape(id)}\\.deleted-[0-9a-f]{12}\\.assets\$');
+    for (final loc in _locs) {
+      for (final e in dirs[loc]!.listSync()) {
+        final name = _xName(e.path);
+        if (e is Directory && (name == assetsFolderName(id) || aside.hasMatch(name))) {
+          await _busyRetry(() async => e.deleteSync(recursive: true));
+        }
+      }
+    }
+    for (final (l, name) in _extra.toList()) {
+      if (!name.startsWith(id)) continue;
+      final t = '${dirs[l]!.path}$sep$name';
+      await _busyRetry(() async {
+        if (Directory(t).existsSync()) Directory(t).deleteSync(recursive: true);
+        if (File(t).existsSync()) File(t).deleteSync();
+      });
+      _extra.remove((l, name));
+    }
+    final trash = Directory('${root.path}${sep}app${sep}deleted-attachments');
+    if (trash.existsSync()) {
+      for (final e in trash.listSync()) {
+        if (e is! Directory) continue;
+        for (final c in e.listSync()) {
+          if (_xName(c.path).contains(id)) await _busyRetry(() async => c.deleteSync(recursive: true));
+        }
+        if (e.listSync().isEmpty) e.deleteSync();
+      }
+    }
+    model[id]?.files.clear();
+    model[id]?.left.clear();
+    await nb.checkFolders();
+  }
+
+  Future<NotebookException?> _xMove(String id, String to) async {
+    try {
+      await _moveTo(id, to);
+      return null;
+    } on NotebookException catch (e) {
+      return e;
+    }
+  }
+
+  /// A move that ends at the target: every page of [order] is there.
+  void _xMoved(List<String> order, String to) {
+    for (final p in order) {
+      model[p]!.loc = to;
+    }
+    model[order.first]!.parent = null;
+  }
+
+  /// The process is killed: the notebook is dropped with no quit.
+  void _xKill() {
+    _gone.add(nb);
+    nb.dispose();
+  }
+
+  Future<void> _xRestart({DateTime Function()? clock}) async {
+    nb = _make();
+    _spare.add(nb);
+    if (clock != null) nb.now = clock;
+    await nb.load();
+  }
+
+  /// The user moves the pages of [order] still at [from] to [to] again (a crash
+  /// or a refusal split the tree).
+  Future<void> _xFinishSplit(List<String> order, String from, String to) async {
+    while (true) {
+      final left = [
+        for (final p in order)
+          if (model[p]!.loc == from) p,
+      ];
+      if (left.isEmpty) return;
+      final top = left.firstWhere((p) => !left.contains(model[p]!.parent), orElse: () => left.first);
+      final sub = _subtree(top);
+      final e = await _xMove(top, to);
+      expect(e, isNull, reason: 'the user moves the rest again: $e');
+      _xMoved(sub, to);
+    }
+  }
+
+  // ---- dehydrated pages, changed and replaced sources ----------------------------
+
+  Future<String?> _xDehydrated(String kind, {required bool scanned}) async {
+    final id = scanned ? model.keys.elementAt(_xrng.nextInt(model.length)) : await _xTree(2);
+    final sub = _subtree(id);
+    final to = _xTarget(id);
+    final others = [
+      for (final p in model.keys)
+        if (!sub.contains(p)) p,
+    ];
+    if (to == null || others.isEmpty) return null;
+    await _xFreshen();
+    if (scanned) {
+      await _opRestart(); // every page is stamped by the scan only
+    } else {
+      for (final p in sub) {
+        // read once and saved once since launch
+        await nb.open(p);
+        _localEdit(model[p]!, nb.current!, addOnly: true);
+        await nb.flush();
+      }
+    }
+    await nb.open(others.first);
+    await nb.flush();
+    final reads = <String>[];
+    Notebook.placeholderMarksForTest = {for (final p in sub) fileStamp(_pathOf(p))!};
+    Notebook.syncRootOfForTest = (_) => const SyncRoot(1, 1);
+    PageStore.fileReadObserver = reads.add;
+    final held = model[id]!.parent != null;
+    final e = await _xMove(id, to);
+    PageStore.fileReadObserver = null;
+    expect(e, isNull, reason: 'a dehydrated page moves by rename inside one root: $e');
+    expect(reads.where((r) => sub.any((p) => r.endsWith('$p.canvas'))), isEmpty, reason: 'no page content was read: $reads');
+    for (final p in sub) {
+      model[p]!.loc = to;
+    }
+    if (!held) model[id]!.parent = null;
+    Notebook.placeholderMarksForTest = {};
+    Notebook.syncRootOfForTest = null;
+    if (held) {
+      // The placement waits for the page's next read (N8).
+      await verify('after moving a dehydrated page (seed $seed)', fresh: true);
+      await nb.open(id);
+      await nb.flush();
+      model[id]!.parent = null;
+    }
+    return kind;
+  }
+
+  Future<String?> _xSourceChanged(String kind) async {
+    final id = await _xTree(2);
+    final sub = _subtree(id);
+    final to = _xTarget(id);
+    final others = [
+      for (final p in model.keys)
+        if (!sub.contains(p)) p,
+    ];
+    if (to == null || others.isEmpty) return null;
+    await _xFreshen();
+    await _opRestart();
+    await nb.open(others.first);
+    await nb.flush();
+    final victim = sub[1 + _xrng.nextInt(sub.length - 1)];
+    final y = _newBox(_text('sync'));
+    final reads = <String>[];
+    PageStore.fileReadObserver = reads.add;
+    // A newer version of a subpage lands at the source before its turn.
+    final undo = _atRename(1, () => _externalWriteSync(victim, _disk(victim).insertNode(y)));
+    final e = await _xMove(id, to);
+    undo();
+    PageStore.fileReadObserver = null;
+    expect(e, isNull, reason: 'the move failed: $e');
+    model[victim]!.boxes[y.id] = _val(y);
+    expect(
+      reads.where((r) => sub.any((p) => p != id && p != victim && r.endsWith('$p.canvas'))),
+      isEmpty,
+      reason: 'only the changed page (and the root, placed) was read: $reads',
+    );
+    expect(reads.where((r) => r.endsWith('$victim.canvas')), isNotEmpty, reason: 'the changed page was read');
+    _xMoved(sub, to);
+    return kind;
+  }
+
+  Future<String?> _xSourceReplaced(String kind) async {
+    final leaves = [
+      for (final e in model.entries)
+        if (!model.values.any((o) => o.parent == e.key)) e.key,
+    ]..shuffle(_xrng);
+    if (leaves.isEmpty || model.length < 2) return null;
+    final p = leaves.first;
+    final to = _xTarget(p);
+    if (to == null) return null;
+    if (_standaloneLeft([p], to: null) < 1) return null; // p is lost: a standalone page must stay
+    // q is in another folder than the target. (In the same folder the live notebook
+    // lists no duplicate while a fresh one does: reported, not covered here.)
+    final qs = [
+      for (final e in model.entries)
+        if (e.key != p && e.value.loc != to) e.key,
+    ];
+    if (qs.isEmpty) return null;
+    final q = qs.first;
+    await _xFreshen();
+    await _opRestart();
+    final from = model[p]!.loc;
+    final qText = File(_pathOf(q)).readAsStringSync();
+    // Another page's file lands under p's name at the source before the rename.
+    final undo = _atRename(1, () => File(_pathOf(p)).writeAsStringSync(qText));
+    final e = await _xMove(p, to);
+    undo();
+    trace.add('  replaced move: $e');
+    // p's own file is gone (replaced by the sync client); the file at the target
+    // holds q and is a second file of q. Nothing was deleted.
+    expect(File(_xFile(to, p)).readAsStringSync(), qText, reason: 'the replaced file moved as it was');
+    expect(File(_xFile(from, p)).existsSync(), isFalse);
+    expect(e, isNotNull, reason: 'the placement of a file that holds another page is refused, reported');
+    final atTarget = _xFile(to, p), own = _pathOf(q);
+    // q is in two files in two folders, listed once; the other is its duplicate. p
+    // is in no file (sync replaced it), and nothing was deleted.
+    final listedDup = {
+      for (final u in [...nb.unreadable, for (final b in nb.binders) ...b.unreadable])
+        if (u.reason.startsWith('duplicate page id $q')) _norm(u.path),
+    };
+    expect(listedDup.length, 1, reason: 'q is listed once and its other file is the duplicate: $listedDup; q in ${model[q]!.loc}, p to $to from $from; ${[...nb.unreadable, for (final b in nb.binders) ...b.unreadable].map((u) => '${u.path} ${u.reason}')}; ${nb.pageTitleOf(p)} ${nb.binderOfPage(q)}');
+    final targetIsDup = listedDup.contains(_norm(atTarget));
+    trace.add('  the duplicate is ${targetIsDup ? "the file at the target" : "q's own file"}');
+    expect(targetIsDup || listedDup.contains(_norm(own)), isTrue);
+    final qLoc = model[q]!.loc;
+    final dupLoc = targetIsDup ? to : qLoc;
+    final dupPath = targetIsDup ? atTarget : own;
+    _dups.add(_Dup(q, dupLoc, dupPath, qText));
+    model.remove(p);
+    model[q]!.loc = targetIsDup ? qLoc : to;
+    await verify('after a replaced source moved (seed $seed)', fresh: true);
+    // The user removes the duplicate, and names the file that stays after its page.
+    await _removeDups();
+    if (!targetIsDup) {
+      File(atTarget).renameSync(_xFile(to, q));
+      await _opRestart();
+    }
+    return kind;
+  }
+
+  // ---- crashes in the middle of a move --------------------------------------------
+
+  Future<String?> _xCrash(String kind) async {
+    final standalone = kind == 'move:renameStandaloneCrash';
+    final locs = standalone ? {'pages', 'x'} : null;
+    final id = await _xTree(kind == 'move:renameCrashMidTree' ? 3 : 2, locs: locs, top: !standalone);
+    final from = model[id]!.loc;
+    final to = _xTarget(id, among: locs);
+    if (to == null) return null;
+    final order = _xOrder(id);
+    final k = kind == 'move:renameCrashAfterRoot' ? 1 : (kind == 'move:renameCrashMidTree' ? 2 : 1 + _xrng.nextInt(min(2, order.length - 1)));
+    await _xFreshen();
+    for (final p in order) {
+      _xGive(p, 1);
+    }
+    var n = 0;
+    nb.syncHook = (point, _) async {
+      if (point != 'move-after-rename' || ++n < k) return;
+      _xKill();
+      throw StateError('crash after rename $k');
+    };
+    Object? error;
+    try {
+      await _moveTo(id, to);
+    } on Object catch (e) {
+      error = e;
+    }
+    expect(error, isNotNull, reason: 'the process died in the move');
+    var t = DateTime.now();
+    await _xRestart(clock: () => t);
+    // The first k pages are at the target, each in one place; the folder of the page
+    // the crash stopped at is still at the source.
+    var atTarget = 0;
+    var stranded = 0;
+    for (final p in order) {
+      final m = model[p]!;
+      if (File(_xFile(to, p)).existsSync()) {
+        atTarget++;
+        m.loc = to;
+        if (!Directory(_assetsPath(p, to)).existsSync()) {
+          stranded++;
+          m.left[from] = Map.of(m.files);
+          m.files.clear();
+        }
+      } else {
+        expect(File(_xFile(from, p)).existsSync(), isTrue, reason: 'page ${_short(p)} is in one place');
+      }
+    }
+    expect(atTarget, k, reason: 'the pages renamed before the crash');
+    expect(stranded, 1, reason: 'the page the crash stopped at left its folder behind');
+    await verify('after the crash in a move (seed $seed)', fresh: true);
+    // O moves the folder once it has been quiet for 30 s.
+    for (var i = 0; i < 3; i++) {
+      await nb.checkFolders();
+      t = t.add(const Duration(seconds: 31));
+    }
+    for (final p in order) {
+      final m = model[p]!;
+      if (m.left.containsKey(from)) m.files.addAll(m.left.remove(from)!);
+    }
+    await verify('after the stray folder was moved (seed $seed)', fresh: true);
+    await _xFinishSplit(order, from, to);
+    for (final p in order) {
+      await _xClear(p);
+    }
+    return kind;
+  }
+
+  // ---- 2c: taken names ------------------------------------------------------------
+
+  Future<String?> _xTaken(String kind) async {
+    final id = await _xTree(1);
+    final sub = _subtree(id);
+    final to = _xTarget(id);
+    if (to == null) return null;
+    final from = model[id]!.loc;
+    await _xFreshen();
+    final m = model[id]!;
+    final mine = List<int>.generate(20, (i) => (seed + i) & 255);
+    final free = List<int>.generate(20, (i) => (seed + 50 + i) & 255);
+    final theirs = List<int>.generate(20, (i) => (seed + 100 + i) & 255);
+    Directory(_assetsPath(id)).createSync();
+    File('${_assetsPath(id)}${sep}same.bin').writeAsBytesSync(mine);
+    File('${_assetsPath(id)}${sep}free.bin').writeAsBytesSync(free);
+    Directory(_assetsPath(id, to)).createSync();
+    File('${_assetsPath(id, to)}${sep}same.bin').writeAsBytesSync(theirs);
+    final e = await _xMove(id, to);
+    expect(e?.message, contains('stayed in'), reason: 'a taken name stays, reported');
+    _xMoved(sub, to);
+    m.files
+      ..['same.bin'] = theirs
+      ..['free.bin'] = free;
+    m.left[from] = {'same.bin': mine};
+    await verify('after a move with a taken name (seed $seed)', fresh: true);
+    await _xClear(id);
+    return kind;
+  }
+
+  // ---- 2c: the damaged-target branch ------------------------------------------------
+
+  Future<String?> _xDamaged(String kind) async {
+    final id = await _xTree(1);
+    final sub = _subtree(id);
+    final to = _xTarget(id);
+    if (to == null) return null;
+    final from = model[id]!.loc;
+    await _xFreshen();
+    final m = model[id]!;
+    final good = List<int>.generate(30, (i) => (seed * 3 + i) & 255);
+    final bad = List<int>.generate(30, (i) => (seed * 5 + i + 1) & 255);
+    final name = attachmentFileName(contentHash(Uint8List.fromList(good)), 'bin');
+    final aside = damagedCopyName(name, contentHash(Uint8List.fromList(bad)));
+    Directory(_assetsPath(id)).createSync();
+    File('${_assetsPath(id)}$sep$name').writeAsBytesSync(good);
+    Directory(_assetsPath(id, to)).createSync();
+    File('${_assetsPath(id, to)}$sep$name').writeAsBytesSync(bad);
+    if (kind == 'move:damagedTargetReplaced') {
+      // The damaged file is replaced between its hash and its set-aside: put back,
+      // both files stay.
+      nb.syncHook = (point, path) async {
+        if (point == 'move-before-aside') File(path).writeAsBytesSync([7, 7]);
+      };
+      final e = await _xMove(id, to);
+      expect(e, isNotNull, reason: 'the damaged file changed: both stay, reported');
+      _xMoved(sub, to);
+      m.files[name] = [7, 7];
+      m.left[from] = {name: good};
+      await verify('after a damaged file was replaced (seed $seed)', fresh: true);
+      await _xClear(id);
+      return kind;
+    }
+    // The process dies after the damaged file was set aside and before the good
+    // one took its name: the name is free, the good file is at the source.
+    nb.syncHook = (point, _) async {
+      if (point != 'move-after-aside') return;
+      _xKill();
+      throw StateError('crash after the aside');
+    };
+    Object? error;
+    try {
+      await _moveTo(id, to);
+    } on Object catch (e) {
+      error = e;
+    }
+    expect(error, isNotNull, reason: 'the process died');
+    var t = DateTime.now();
+    await _xRestart(clock: () => t);
+    m.loc = to;
+    m.files[aside] = bad;
+    m.left[from] = {name: good};
+    await verify('after the crash in the damaged branch (seed $seed)', fresh: true);
+    for (var i = 0; i < 3; i++) {
+      await nb.checkFolders();
+      t = t.add(const Duration(seconds: 31));
+    }
+    m.files[name] = good;
+    m.left.remove(from);
+    await verify('after O moved the good file in (seed $seed)', fresh: true);
+    await _xFinishSplit(sub, from, to);
+    for (final p in sub) {
+      await _xClear(p);
+    }
+    return kind;
+  }
+
+  // ---- a rollback, a watcher event in the middle, a stalled folder ---------------------
+
+  Future<String?> _xRollback(String kind) async {
+    final id = await _xTree(3);
+    final order = _xOrder(id);
+    final to = _xTarget(id);
+    if (to == null) return null;
+    final sub = _subtree(id);
+    await _xFreshen();
+    for (final p in sub) {
+      _xGive(p, 1);
+    }
+    // The last page's name is taken at the target when its turn comes; sometimes
+    // sync has also replaced the root's file at the target by then, so its stamp
+    // is not the one carried back.
+    final newer = _xrng.nextBool();
+    final y = _newBox(_text('sync'));
+    File? taken;
+    final undo = _atRename(order.length, () {
+      taken = _takeName(to, order.last);
+      if (newer) {
+        final f = File(_xFile(to, id));
+        f.writeAsStringSync(writePage(readPage(f.readAsStringSync()).insertNode(y)));
+      }
+    });
+    final e = await _xMove(id, to);
+    undo();
+    expect(e, isNotNull, reason: 'the move should have been refused');
+    if (newer) model[id]!.boxes[y.id] = _val(y);
+    taken!.deleteSync();
+    await nb.checkFile(taken!.path);
+    await nb.checkFolders();
+    await verify('after the rollback (seed $seed, newer $newer)', fresh: true);
+    for (final p in sub) {
+      await _xClear(p);
+    }
+    return kind;
+  }
+
+  Future<String?> _xWatcher(String kind) async {
+    final id = await _xTree(2);
+    final sub = _subtree(id);
+    final order = _xOrder(id);
+    final to = _xTarget(id);
+    if (to == null) return null;
+    final from = model[id]!.loc;
+    await _xFreshen();
+    _xGive(id, 1);
+    // The watcher's debounce elapses between a page's rename and its folder: its
+    // events and a folder check arrive meanwhile (not awaited: they queue behind
+    // the move's locks).
+    final events = <Future<void>>[];
+    var calls = 0;
+    nb.syncHook = (point, _) async {
+      if (point != 'move-after-rename') return;
+      final p = order[calls++];
+      events
+        ..add(nb.checkFile(_xFile(from, p)))
+        ..add(nb.checkFile(_xFile(to, p)))
+        ..add(nb.checkFolders());
+    };
+    final e = await _xMove(id, to);
+    nb.syncHook = null;
+    expect(e, isNull, reason: 'the move failed: $e');
+    await Future.wait(events);
+    _xMoved(sub, to);
+    await verify('after watcher events in the middle of a move (seed $seed)', fresh: true);
+    await _xClear(id);
+    return kind;
+  }
+
+  Future<String?> _xStalled(String kind) async {
+    final both = {'pages', 'x'};
+    final id = await _xTree(3, locs: both);
+    final order = _xOrder(id);
+    final to = _xTarget(id, among: both);
+    if (to == null) return null;
+    final from = model[id]!.loc;
+    await _xFreshen();
+    _xGive(id, 1);
+    Notebook.pairLockLimit = const Duration(milliseconds: 150);
+    Notebook.pairRetryDelay = const Duration(milliseconds: 10);
+    final gate = Completer<void>();
+    final stalled = Completer<void>();
+    File? taken;
+    // The last page's name is taken at the target, and the target's folder stalls
+    // as the rollback starts.
+    final undo = _atRename(order.length, () {
+      taken = _takeName(to, order.last);
+      unawaited(nb.folderLocks.run(dirs[to]!, () => gate.future));
+      stalled.complete();
+      Timer(const Duration(milliseconds: 1500), gate.complete);
+    });
+    final moving = _xMove(id, to);
+    await stalled.future;
+    // The source stays usable meanwhile: a save there lands.
+    final inSource = [
+      for (final e in model.entries)
+        if (e.value.loc == from && !order.contains(e.key)) e.key,
+    ];
+    if (inSource.isNotEmpty) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await nb.open(inSource.first);
+      _localEdit(model[inSource.first]!, nb.current!, addOnly: true);
+      await nb.flush();
+    }
+    final e = await moving;
+    undo();
+    await gate.future;
+    expect(e?.message, contains('stayed in'), reason: 'the pages the rollback could not return stay, reported: $e');
+    // Each page is in one place: the ones renamed before the failure stayed at the target.
+    for (final p in order.take(order.length - 1)) {
+      model[p]!.loc = to;
+    }
+    taken!.deleteSync();
+    await nb.checkFile(taken!.path);
+    await nb.checkFolders();
+    await verify('after a rollback that stalled (seed $seed)', fresh: true);
+    await _xFinishSplit(order, from, to); // the user moves the page that stayed behind
+    await _xClear(id);
+    return kind;
+  }
+
+  // ---- O: a stray attachments folder that is declined ---------------------------------
+
+  Future<String?> _xStray(String kind) async {
+    final guard = kind.substring('move:strayDeclined:'.length);
+    final held = guard == 'held';
+    final id = await _xTree(1, locs: held ? {'a', 'b'} : null);
+    await _xSpare(model[id]!.loc, _subtree(id));
+    final sub = _subtree(id);
+    final to = _xTarget(id);
+    if (to == null) return null;
+    final from = model[id]!.loc;
+    final m = model[id]!;
+    await _xFreshen();
+    expect(await _xMove(id, to), isNull);
+    _xMoved(sub, to);
+    var t = DateTime.now();
+    nb.now = () => t;
+    // The page is at the target and its attachments folder arrives at the source,
+    // as another device's move arrives in pieces.
+    void strayFile() {
+      final k = ++_xCounter;
+      final bytes = List<int>.generate(30, (j) => (seed * 13 + k * 5 + j) & 255);
+      final name = attachmentFileName(contentHash(Uint8List.fromList(bytes)), 'bin');
+      Directory(_assetsPath(id, from)).createSync();
+      File('${_assetsPath(id, from)}$sep$name').writeAsBytesSync(bytes);
+      (m.left[from] ??= {})[name] = bytes;
+    }
+
+    Future<void> checks(int times, Duration every) async {
+      for (var i = 0; i < times; i++) {
+        await nb.checkFolders();
+        t = t.add(every);
+      }
+    }
+
+    bool strayThere() => Directory(_assetsPath(id, from)).existsSync();
+    bool movedIn() => Directory(_assetsPath(id, to)).existsSync();
+    final bf = File('${dirs[from]!.path}$sep$binderFileName');
+    String? own;
+    switch (guard) {
+      case 'recent':
+        strayFile();
+        await nb.checkFolders();
+        t = t.add(const Duration(seconds: 29));
+        await nb.checkFolders();
+        expect(strayThere() && !movedIn(), isTrue, reason: 'not moved before 30 s');
+        await verify('a stray folder before 30 s (seed $seed)', fresh: true);
+        t = t.add(const Duration(seconds: 3));
+        await nb.checkFolders();
+        expect(strayThere(), isFalse, reason: 'moved after 30 s');
+        m.files.addAll(m.left.remove(from)!);
+      case 'changing':
+        strayFile();
+        await nb.checkFolders();
+        t = t.add(const Duration(seconds: 20));
+        strayFile(); // a change inside the folder restarts the wait
+        await nb.checkFolders();
+        t = t.add(const Duration(seconds: 15));
+        await nb.checkFolders();
+        expect(strayThere() && !movedIn(), isTrue, reason: 'the wait restarted');
+      case 'mayBePage':
+        strayFile();
+        File('${dirs[from]!.path}$sep$id.keep.txt').writeAsStringSync('half synced');
+        _extra.add((from, '$id.keep.txt'));
+        await checks(4, const Duration(seconds: 40));
+        expect(strayThere() && !movedIn(), isTrue, reason: 'a file that may be the page keeps the folder');
+      case 'setAside':
+        final aside = '$id.deleted-0123456789ab.assets';
+        Directory('${dirs[from]!.path}$sep$aside').createSync();
+        File('${dirs[from]!.path}$sep$aside${sep}k.bin').writeAsBytesSync([3]);
+        _extra.add((from, aside));
+        await checks(4, const Duration(minutes: 5));
+        expect(Directory('${dirs[from]!.path}$sep$aside').existsSync() && !movedIn(), isTrue, reason: 'a set-aside is never moved');
+      case 'held':
+        strayFile();
+        own = bf.readAsStringSync();
+        bf.writeAsStringSync(Binder.create(title: 'Other', color: binderPalette[2]).write());
+        await nb.checkBinderFile(bf.path);
+        await nb.checkFolders();
+        expect(nb.holdOfFolder(dirs[from]!.path), isNotNull, reason: 'the folder is held');
+        await checks(4, const Duration(seconds: 40));
+        expect(strayThere() && !movedIn(), isTrue, reason: 'a held folder is not written');
+        bf.writeAsStringSync(own);
+        await nb.checkBinderFile(bf.path);
+        await nb.checkFolders();
+        expect(nb.holdOfFolder(dirs[from]!.path), isNull, reason: 'its own file clears the hold');
+        await checks(4, const Duration(seconds: 40));
+        expect(strayThere(), isFalse, reason: 'moved once the folder is free');
+        m.files.addAll(m.left.remove(from)!);
+    }
+    await verify('after a declined stray folder, $guard (seed $seed)', fresh: true);
+    await _xClear(id);
+    return kind;
+  }
+
+  // ---- 0184: a binder folder held in the middle of a move ------------------------------
+
+  Future<String?> _xHeld(String kind) async {
+    final id = await _xTree(2, locs: {'a', 'b'});
+    await _xSpare(model[id]!.loc, _subtree(id));
+    final order = _xOrder(id);
+    final to = _xTarget(id);
+    if (to == null) return null;
+    final from = model[id]!.loc;
+    await _xFreshen();
+    final bf = File('${dirs[from]!.path}$sep$binderFileName');
+    final own = bf.readAsStringSync();
+    var calls = 0;
+    nb.syncHook = (point, _) async {
+      // Another binder's file stands in the folder after the first page moved.
+      if (point == 'move-after-rename' && ++calls == 1) {
+        bf.writeAsStringSync(Binder.create(title: 'Other', color: binderPalette[2]).write());
+      }
+    };
+    final e = await _xMove(id, to);
+    nb.syncHook = null;
+    expect(e, isNotNull, reason: 'the move stops at the held folder');
+    // Nothing moved after the hold, and each page is in one place; the held folder
+    // refuses the pages' return too, so the first stays at the target.
+    expect(File(_xFile(to, order.first)).existsSync(), isTrue);
+    for (final p in order) {
+      final atFrom = File(_xFile(from, p)).existsSync(), atTo = File(_xFile(to, p)).existsSync();
+      expect(atFrom != atTo, isTrue, reason: 'page ${_short(p)} is in one place');
+      model[p]!.loc = atTo ? to : from;
+    }
+    expect(order.where((p) => model[p]!.loc == to), [order.first], reason: 'nothing moved after the hold');
+    bf.writeAsStringSync(own);
+    await nb.checkBinderFile(bf.path);
+    await nb.checkFolders();
+    expect(nb.holdOfFolder(dirs[from]!.path), isNull, reason: 'its own file clears the hold');
+    await verify('after a folder was held in a move (seed $seed)', fresh: true);
+    await _xFinishSplit(order, from, to);
+    return kind;
+  }
+
+  // Delete the original (copy path) with the source folder held: both copies stay;
+  // after the hold it goes through.
+  Future<String?> _xHeldOriginal(String kind) async {
+    final leaves = [
+      for (final e in model.entries)
+        if ((e.value.loc == 'a' || e.value.loc == 'b') && !model.values.any((o) => o.parent == e.key)) e.key,
+    ]..shuffle(_xrng);
+    if (leaves.isEmpty) return null;
+    final id = leaves.first;
+    await _xSpare(model[id]!.loc, [id]);
+    final to = _xTarget(id);
+    if (to == null) return null;
+    final from = model[id]!.loc;
+    await _xFreshen();
+    Notebook.forceCopyMoveForTest = true;
+    CopiedMove? kept;
+    try {
+      await _moveTo(id, to);
+    } on OriginalsKeptException catch (e) {
+      kept = e.move;
+    }
+    Notebook.forceCopyMoveForTest = false;
+    expect(kept, isNotNull, reason: 'the move copied and kept the original');
+    _readBoth([id], from, to);
+    final bf = File('${dirs[from]!.path}$sep$binderFileName');
+    final own = bf.readAsStringSync();
+    bf.writeAsStringSync(Binder.create(title: 'Other', color: binderPalette[2]).write());
+    await nb.checkBinderFile(bf.path);
+    await nb.checkFolders();
+    Object? refused;
+    try {
+      await nb.deleteOriginals(kept!);
+    } on NotebookException catch (e) {
+      refused = e;
+    }
+    trace.add('  refused: $refused');
+    expect(File(_pathOf(id, from)).existsSync(), isTrue, reason: 'the held folder keeps the original');
+    bf.writeAsStringSync(own);
+    await nb.checkBinderFile(bf.path);
+    await nb.checkFolders();
+    expect(nb.holdOfFolder(dirs[from]!.path), isNull);
+    await nb.deleteOriginals(kept!);
+    expect(File(_pathOf(id, from)).existsSync(), isFalse, reason: 'Delete the original goes through once it is free');
+    _dups.clear();
+    await verify('after Delete the original with a held folder (seed $seed)', fresh: true);
+    return kind;
+  }
+
+  // ---- the stamp shortcut (N11) ----------------------------------------------------
+
+  Future<String?> _xStamps(String kind) async {
+    await _xFreshen();
+    await _opRestart(); // the scan stamps every file
+    final closed = [
+      for (final p in model.keys)
+        if (p != nb.currentId) p,
+    ];
+    if (closed.isEmpty) return null;
+    final reads = <String>[];
+    PageStore.fileReadObserver = reads.add;
+    List<String> readOf(String p) => reads.where((r) => r.endsWith('$p.canvas')).toList();
+    for (final p in closed) {
+      await nb.checkFile(_pathOf(p));
+    }
+    await nb.checkFolders();
+    expect(closed.where((p) => readOf(p).isNotEmpty), isEmpty, reason: 'a file whose stamp matches is not read: $reads');
+    if (kind == 'check:stampSkip') return kind;
+    // Another writer changes one: it is read once, then its new stamp matches.
+    final p = closed[_xrng.nextInt(closed.length)];
+    final y = _newBox(_text('sync'));
+    _externalWriteSync(p, _disk(p).insertNode(y));
+    model[p]!.boxes[y.id] = _val(y);
+    await nb.checkFile(_pathOf(p));
+    final once = readOf(p).length;
+    expect(once, greaterThan(0), reason: 'a changed file is read');
+    await nb.checkFile(_pathOf(p));
+    await nb.checkFolders();
+    expect(readOf(p), hasLength(once), reason: 'and its new stamp is not read again');
+    // The same bytes with another modification time are read too (the stamp is
+    // metadata, not content).
+    File(_pathOf(p)).setLastModifiedSync(DateTime.now().add(const Duration(hours: 1)));
+    await nb.checkFile(_pathOf(p));
+    expect(readOf(p).length, greaterThan(once), reason: 'a file whose time changed is read');
+    return kind;
+  }
+
+  // ---- the delete set-aside ----------------------------------------------------------
+
+  /// A page nothing hangs under whose delete leaves a standalone page.
+  String? _xDeleteTarget({Set<String>? locs}) {
+    final c = [
+      for (final e in model.entries)
+        if (!model.values.any((o) => o.parent == e.key) &&
+            (locs == null || locs.contains(e.value.loc)) &&
+            model.values.where((o) => o.loc == e.value.loc).length >= 2 &&
+            _standaloneLeft([e.key], to: null) >= 1)
+          e.key,
+    ]..shuffle(_xrng);
+    return c.isEmpty ? null : c.first;
+  }
+
+  List<Directory> _xAside(String id, String loc) {
+    final re = RegExp('^${RegExp.escape(id)}\\.deleted-[0-9a-f]{12}\\.assets\$');
+    return [
+      for (final e in dirs[loc]!.listSync())
+        if (e is Directory && re.hasMatch(_xName(e.path))) e,
+    ];
+  }
+
+  List<File> _xTrash(String id) {
+    final d = Directory('${root.path}${sep}app${sep}deleted-attachments');
+    if (!d.existsSync()) return const [];
+    return [
+      for (final e in d.listSync(recursive: true))
+        if (e is File && e.path.contains(id)) e,
+    ];
+  }
+
+  /// The files of page [id] kept in its set-aside, in place or in the trash.
+  int _xKept(String id, String loc, {required bool inPlace}) => inPlace
+      ? _xAside(id, loc).expand((d) => d.listSync(recursive: true)).whereType<File>().length
+      : _xTrash(id).length;
+
+  void _xExpectBack(String id) {
+    for (final e in model[id]!.files.entries) {
+      expect(File('${_assetsPath(id)}$sep${e.key}').readAsBytesSync(), e.value, reason: 'attachment ${e.key} of ${_short(id)} is back');
+    }
+    expect(_xAside(id, model[id]!.loc), isEmpty);
+    expect(_xTrash(id), isEmpty);
+  }
+
+  Future<String?> _xInPlace(String kind) async {
+    final inPlace = kind != 'delete:crossVolumePutBackKeepsTrash';
+    final rollback = kind == 'delete:inPlaceRollback';
+    final String? p = rollback ? await _xTree(2) : _xDeleteTarget();
+    if (p == null) return null;
+    final gone = _subtree(p);
+    if (_standaloneLeft(gone, to: null) < 1) return null;
+    final loc = model[p]!.loc;
+    await _xFreshen();
+    for (final q in gone) {
+      _xGive(q, 2);
+    }
+    final order = _xOrder(p);
+    Notebook.forceCopyMoveForTest = inPlace;
+    final reads = <String>[];
+    switch (kind) {
+      case 'delete:inPlaceRenamed':
+        final deleted = await nb.delete(p);
+        expect(_xAside(p, loc), hasLength(1), reason: 'the folder is renamed beside the page');
+        expect(_xTrash(p), isEmpty, reason: 'not in deleted-attachments');
+        expect(Directory(_assetsPath(p)).existsSync(), isFalse);
+        PageStore.fileReadObserver = reads.add;
+        nb.discardDeleted(deleted);
+        await _xQuiet();
+        PageStore.fileReadObserver = null;
+        expect(reads, isEmpty, reason: 'the expiry reads no page file');
+        model.remove(p);
+        await _xExpired(() => _xAside(p, loc).isEmpty, loc, 'the expiry to empty the set-aside');
+        return kind;
+      case 'delete:inPlaceUndo':
+        final deleted = await nb.delete(p);
+        expect(_xAside(p, loc), hasLength(1));
+        final snapshot = model.remove(p)!;
+        await nb.undoDelete(deleted);
+        model[p] = snapshot;
+        _xExpectBack(p);
+      case 'delete:inPlaceKilled':
+        await nb.delete(p);
+        final aside = _xAside(p, loc).single;
+        final snapshot = model.remove(p)!;
+        _extra.add((loc, _xName(aside.path)));
+        _xKill();
+        await _xRestart();
+        await _xQuiet();
+        await nb.checkFolders();
+        expect(aside.existsSync(), isTrue, reason: 'nothing removes it');
+        expect(Directory(_assetsPath(p, loc)).existsSync(), isFalse, reason: 'O leaves a .deleted- folder alone');
+        expect(snapshot.files, isNotEmpty);
+        await verify('after a kill before the expiry (seed $seed)', fresh: true);
+        await _xClear(p);
+        return kind;
+      case 'delete:inPlaceRollback':
+        // The last page's delete fails: every page and its folder go back by rename.
+        storeOf(loc).failDelete.add(order.last);
+        Object? error;
+        try {
+          await nb.delete(p);
+        } on Object catch (e) {
+          error = e;
+        }
+        storeOf(loc).failDelete.clear();
+        expect(error, isNotNull, reason: 'the delete should have failed');
+        for (final q in gone) {
+          _xExpectBack(q);
+        }
+      default: // delete:crossVolumePutBackKeepsTrash
+        final deleted = await nb.delete(p);
+        expect(_xTrash(p), hasLength(2));
+        final snapshot = model.remove(p)!;
+        Notebook.forcePutBackCannotRenameForTest = true;
+        Object? error;
+        try {
+          await nb.undoDelete(deleted);
+        } on NotebookException catch (e) {
+          error = e;
+        }
+        Notebook.forcePutBackCannotRenameForTest = false;
+        expect(error, isNotNull, reason: 'the put-back reports');
+        model[p] = snapshot;
+        for (final e in snapshot.files.entries) {
+          expect(File('${_assetsPath(p)}$sep${e.key}').readAsBytesSync(), e.value, reason: 'copied back');
+        }
+        expect(_xTrash(p), hasLength(2), reason: 'the trash folder is kept');
+        nb.discardDeleted(deleted);
+        await _xQuiet();
+        expect(_xTrash(p), hasLength(2), reason: 'and kept from the expiry');
+    }
+    await verify('after $kind (seed $seed)', fresh: true);
+    for (final q in gone) {
+      await _xClear(q);
+    }
+    return kind;
+  }
+
+  /// Page [id]'s delete, as a scenario for the expiry starts it: hash-named
+  /// attachments, a delete, and the page's text for a restore.
+  Future<(String, _MPage, DeletedPages, String)?> _xDeleted(
+    int files, {
+    required bool inPlace,
+    Set<String>? locs,
+  }) async {
+    var p = _xDeleteTarget(locs: locs);
+    if (p == null) {
+      // None there: the scenario makes one (with another page beside it in its place).
+      final loc = locs?.first ?? 'pages';
+      if (model.values.every((o) => o.loc != loc)) return null;
+      p = await _xPage(loc);
+      if (_standaloneLeft([p], to: null) < 1) return null;
+    }
+    await _xFreshen();
+    await _opRestart(); // the scan stamps every page file: the expiry then tells them from the page
+    _xGive(p, files);
+    final text = File(_pathOf(p)).readAsStringSync();
+    Notebook.forceCopyMoveForTest = inPlace;
+    final deleted = await nb.delete(p);
+    final m = model.remove(p)!;
+    return (p, m, deleted, text);
+  }
+
+  // The page comes back from sync before the watcher says so (5.3, 5.4 B1).
+  Future<String?> _xRestoredBefore(String kind, {required bool inPlace, required bool quit}) async {
+    final d = await _xDeleted(2, inPlace: inPlace);
+    if (d == null) return null;
+    final (p, m, deleted, text) = d;
+    final loc = m.loc;
+    final form = const ['id', 'chosen', 'conflict'][(_xTried[kind] ?? 0) % 3];
+    final name = switch (form) {
+      'id' => '$p.canvas',
+      'chosen' => 'My notes.canvas',
+      _ => '$p-conflict-0123abcd.canvas',
+    };
+    final planted = File('${dirs[loc]!.path}$sep$name')..writeAsStringSync(text);
+    if (quit) {
+      await nb.discardPendingDelete();
+    } else {
+      nb.discardDeleted(deleted);
+      await _xQuiet();
+    }
+    expect(_xKept(p, loc, inPlace: inPlace), 2, reason: 'nothing was deleted: the page may be back ($form)');
+    if (form == 'conflict') {
+      // Sync takes the copy away again: the page is gone, and the next check expires.
+      planted.deleteSync();
+      await nb.checkFile(planted.path);
+      await _xCheckLoc(loc);
+      await _xExpired(() => _xKept(p, loc, inPlace: inPlace) == 0, loc, 'the retried expiry');
+      return kind;
+    }
+    await nb.checkFile(planted.path); // the watcher's event
+    await _xUntil(
+      () => m.files.keys.every((k) => File('${_assetsPath(p, loc)}$sep$k').existsSync()),
+      'the set-aside to be restored',
+    );
+    expect(_xKept(p, loc, inPlace: inPlace), 0);
+    model[p] = m;
+    if (form == 'chosen') {
+      planted.renameSync(_xFile(loc, p));
+      await _opRestart();
+    }
+    await verify('after a restore before the watcher, $form (seed $seed)', fresh: true);
+    await _xClear(p);
+    return kind;
+  }
+
+  Future<String?> _xRestoredLater(String kind) async {
+    final mid = kind == 'delete:restoredMidExpiry';
+    final inPlace = _xrng.nextBool();
+    final d = await _xDeleted(mid ? 3 : 1, inPlace: inPlace);
+    if (d == null) return null;
+    final (p, m, deleted, text) = d;
+    final loc = m.loc;
+    final page = File(_xFile(loc, p));
+    final seen = <String>{};
+    if (mid) {
+      // The restore lands between two files' unlinks.
+      nb.syncHook = (point, path) async {
+        if (point == 'expiry-file' && seen.add(path) && seen.length == 2) page.writeAsStringSync(text);
+      };
+    } else {
+      page.writeAsStringSync(text);
+    }
+    nb.discardDeleted(deleted);
+    if (mid) await _xExpired(() => seen.length >= 2, loc, 'the second file');
+    await _xQuiet();
+    nb.syncHook = null;
+    final left = _xKept(p, loc, inPlace: inPlace);
+    expect(left, mid ? 2 : 1, reason: mid ? 'one file went before the restore, none after it' : 'kept by the first run');
+    await nb.checkFile(page.path);
+    await _xUntil(
+      () => _xKept(p, loc, inPlace: inPlace) == 0 && Directory(_assetsPath(p, loc)).existsSync(),
+      'the set-aside to be restored',
+    );
+    m.files.removeWhere((k, _) => !File('${_assetsPath(p, loc)}$sep$k').existsSync());
+    expect(m.files, hasLength(left), reason: 'what was not deleted is back');
+    model[p] = m;
+    await verify('after the restore at $kind (seed $seed)', fresh: true);
+    await _xClear(p);
+    return kind;
+  }
+
+  // 0184's gate refuses the expiry's turn: nothing is deleted until the folder is free.
+  Future<String?> _xExpiryHeld(String kind) async {
+    final inPlace = _xrng.nextBool();
+    final d = await _xDeleted(1, inPlace: inPlace, locs: {'a', 'b'});
+    if (d == null) return null;
+    final (p, m, deleted, _) = d;
+    final loc = m.loc;
+    final bf = File('${dirs[loc]!.path}$sep$binderFileName');
+    final own = bf.readAsStringSync();
+    bf.writeAsStringSync(Binder.create(title: 'Other', color: binderPalette[2]).write());
+    nb.discardDeleted(deleted);
+    await _xQuiet();
+    expect(_xKept(p, loc, inPlace: inPlace), 1, reason: "0184's gate refused the turn: nothing deleted");
+    bf.writeAsStringSync(own);
+    await nb.checkBinderFile(bf.path);
+    await _xCheckLoc(loc);
+    await _xExpired(() => _xKept(p, loc, inPlace: inPlace) == 0, loc, 'the retried expiry once the folder is free');
+    await _xClear(p);
+    return kind;
+  }
+
+  // A listing of the page's folder that fails counts as the page: kept.
+  Future<String?> _xListingFails(String kind) async {
+    final d = await _xDeleted(1, inPlace: false, locs: {'pages'});
+    if (d == null) return null;
+    final (p, m, deleted, _) = d;
+    final dir = dirs[m.loc]!;
+    final away = Directory('${dir.path}-away');
+    nb.syncHook = (point, _) async {
+      if (point == 'expiry-final-check') _busySync(() => dir.renameSync(away.path));
+    };
+    nb.discardDeleted(deleted);
+    await _xQuiet();
+    nb.syncHook = null;
+    if (away.existsSync()) await _busyRetry(() async => away.renameSync(dir.path));
+    expect(_xTrash(p), hasLength(1), reason: 'kept');
+    await _xCheckLoc(m.loc);
+    await _xExpired(() => _xTrash(p).isEmpty, m.loc, 'the retried expiry once the listing works');
+    await _xClear(p);
+    return kind;
+  }
+}
+
 /// Every kind of step and variant the seeds must reach between them, so a
 /// change to the generator can't quietly stop exercising one.
 const _expectedKinds = {
@@ -3914,6 +5261,19 @@ const _expectedKinds = {
   'binder:write/goneAtPublish', 'binder:write/tightenedBehindOtherDelta', 'binder:write/crashAside', //
   'binder:write/missingThenBack', 'binder:write/foreignAfterMissing', 'binder:write/heldThenUse', //
   'sync:swapAside/save', 'sync:swapAside/delete', 'sync:swapAside/redundant', //
+  'move:renameDehydrated', 'move:renameScannedDehydrated', 'move:renameSourceChangedUnread', //
+  'move:renameSourceReplaced', 'move:renameCrashAfterRoot', 'move:renameCrashMidTree', //
+  'move:renameStandaloneCrash', 'move:renameAssetsTargetExists', 'move:damagedTargetReplaced', //
+  'move:damagedCrash', 'move:renameRollback', 'move:watcherMidMove', 'move:rollbackStalled', //
+  'move:strayDeclined:recent', 'move:strayDeclined:changing', 'move:strayDeclined:mayBePage', //
+  'move:strayDeclined:setAside', 'move:strayDeclined:held', //
+  'move:heldMidMove', 'move:heldMidMove:deleteOriginal', //
+  'check:stampSkip', 'check:stampChangedByOther', //
+  'delete:inPlaceRenamed', 'delete:inPlaceUndo', 'delete:inPlaceKilled', 'delete:inPlaceRollback', //
+  'delete:crossVolumePutBackKeepsTrash', 'delete:restoredBeforeWatcherExpiry', //
+  'delete:restoredBeforeWatcherQuit', 'delete:trashRestoredBeforeWatcherExpiry', //
+  'delete:trashRestoredBeforeWatcherQuit', 'delete:restoredMidExpiry', 'delete:expiryKeptThenRestored', //
+  'delete:expiryHeld', 'delete:expiryListingFails', //
 };
 
 final Set<String> _seen = {};
@@ -4185,6 +5545,7 @@ void main() {
       }
       await run.nb.flush();
       await run.verify('end', fresh: true);
+      if (_xOnly.isNotEmpty) expect(run.kinds, contains(_xOnly), reason: 'the forced kind never ran (its preconditions were not met)');
       if (const bool.fromEnvironment('RELOAD_TRACE')) debugPrint(run.trace.join('\n'));
     } finally {
       _seen.addAll(run.kinds);

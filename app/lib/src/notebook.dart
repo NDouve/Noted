@@ -346,7 +346,7 @@ class _AsideRecord {
   /// `<id>.deleted-<12 hex>` for an in-place folder (N10).
   String? get stem {
     if (!inPlace) return null;
-    final n = dir.path.split(RegExp(r'[/]')).last;
+    final n = dir.path.split(RegExp(r'[\\/]')).last;
     return n.substring(0, n.length - '.assets'.length);
   }
 }
@@ -5567,6 +5567,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final asidePath = '$folder${Platform.pathSeparator}$aside';
       await syncHook?.call('move-before-aside', dst);
       if (await moveExclusive(dst, asidePath) != MoveOutcome.moved) return MoveOutcome.targetExists;
+      await syncHook?.call('move-after-aside', dst);
       // What was set aside is what was checked; if not, it goes back when it can.
       if (await ContentIdentity.ofFile(asidePath) != found) {
         await moveExclusive(asidePath, dst);
