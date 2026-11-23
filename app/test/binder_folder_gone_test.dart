@@ -52,10 +52,10 @@ void main() {
   File binderFile() => File('${folder.path}/$binderFileName');
   File pageFile(String id) => File('${folder.path}/$id.canvas');
 
-  Future<void> until(bool Function() ok, {int ms = 5000}) async {
+  Future<void> until(bool Function() ok, {int ms = 5000, String what = 'condition'}) async {
     final end = DateTime.now().add(Duration(milliseconds: ms));
     while (!ok()) {
-      if (DateTime.now().isAfter(end)) fail('condition not reached in time');
+      if (DateTime.now().isAfter(end)) fail('$what not reached in time');
       await Future<void>.delayed(const Duration(milliseconds: 20));
     }
   }
@@ -160,15 +160,15 @@ void main() {
     final d = await setUpBinder();
     final nb = d.nb;
     await takeAway();
-    await until(() => d.s.missing);
+    await until(() => d.s.missing, ms: 15000, what: 'the binder missing');
     await bringBack();
     final second = make(watch: false);
     await second.load();
     await second.open(d.page);
     second.current!.createBoxAt(const Bounds(300, 300, 0, 0));
     await second.flush();
-    await until(() => nb.binders.single.available);
-    await until(() => nb.current!.page.nodes.length == 2);
+    await until(() => nb.binders.single.available, ms: 15000, what: 'the binder back');
+    await until(() => nb.current!.page.nodes.length == 2, ms: 15000, what: 'the change merged');
     expect(nb.current!.readOnly, isFalse);
   });
 

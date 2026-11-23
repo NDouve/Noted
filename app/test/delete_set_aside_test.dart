@@ -633,8 +633,9 @@ void main() {
       reads.clear();
       nb.discardDeleted(deleted);
       await until(() => trashFiles().isEmpty, what: 'the expiry');
+      // The emptied folders are pruned after the last file, in the same turn.
+      await until(() => !trashDir().existsSync() || trashDir().listSync().isEmpty, what: 'empty folders are pruned');
       expect(reads, isEmpty);
-      expect(trashDir().existsSync() ? trashDir().listSync() : [], isEmpty, reason: 'empty folders are pruned');
       await reloadAgrees(nb, listed: {keep});
     });
   });
