@@ -291,12 +291,17 @@ Future<String?> keepGoodCopy(Directory dir, String name, Uint8List bytes) async 
         if (c.state == AttachmentState.ok) return n;
       }
     }
+  } on StorageBusy catch (e) {
+    debugPrint('The folder is busy; not looking for a kept copy of $name: $e');
   } on FileSystemException catch (e) {
     debugPrint('Looking for a kept copy of $name failed: $e');
   }
   final keptName = '$name$keptMarker${DateTime.now().microsecondsSinceEpoch}-${_counter++}';
   try {
     if (await writeNewAttachmentFile(File('${dir.path}$sep$keptName'), bytes, hash)) return keptName;
+  } on StorageBusy catch (e) {
+    // No copy was kept: the caller reports that, and nothing is written another way.
+    debugPrint('The folder is busy; not keeping a good copy of $name: $e');
   } on FileSystemException catch (e) {
     debugPrint('Keeping a good copy of $name failed: $e');
   }
@@ -692,27 +697,25 @@ Future<_Published> _publishDetailed(File tmp, String target) async {
 
 Future<bool> _createExclusive(File tmp, String target) async {
   final f = File(target);
-  // Each step is one coordinated write on the file's folder (N4); neither
-  // wraps the cleanup below, which is a primitive's own call.
+  // The exclusive create and the fill are one coordinated write on the file's
+  // folder (N4); the rollback is a primitive's own call, so it runs outside.
   final folder = CoordinatedWrite([CoordinationIntent(f.parent.path, CoordinationKind.write)]);
-  try {
-    await coordinated(folder, () async {
-      await f.create(exclusive: true);
-    });
-  } on StorageBusy {
-    rethrow; // nothing was made, and nothing is written another way (C2)
-  } on FileSystemException {
-    if (FileSystemEntity.typeSync(target, followLinks: false) != FileSystemEntityType.notFound) {
-      return false;
-    }
-    rethrow;
-  }
-  // Written through the file just created, appending after a check that it is
-  // still empty, so anything somebody else puts there is never truncated.
+  var created = false;
   var written = 0;
   RandomAccessFile? out;
   try {
-    final ours = await coordinated<bool>(folder, () async {
+    return await coordinated<bool>(folder, () async {
+      try {
+        await f.create(exclusive: true);
+      } on FileSystemException {
+        if (FileSystemEntity.typeSync(target, followLinks: false) != FileSystemEntityType.notFound) {
+          return false;
+        }
+        rethrow;
+      }
+      created = true;
+      // Written through the file just created, appending after a check that it
+      // is still empty, so anything somebody else puts there is never truncated.
       final o = out = await f.open(mode: FileMode.writeOnlyAppend);
       if (await o.length() != 0) {
         await o.close();
@@ -726,25 +729,31 @@ Future<bool> _createExclusive(File tmp, String target) async {
       await o.flush();
       return true;
     });
-    if (!ours) return false;
+  } on StorageBusy {
+    // A refusal is never a failure to fall back from (C2). Nothing ran, so
+    // there is nothing to roll back.
+    rethrow;
   } catch (_) {
     await out?.close();
     out = null;
-    try {
-      // Ours only while it still holds exactly the bytes written so far (their
-      // size and hash), checked at the moment of deleting.
-      final prefix = ContentIdentity(written, await contentHashOfStream(tmp.openRead(0, written)));
-      await deleteFileIfMatches(target, identity: prefix);
-    } on StorageBusy {
-      // Left for the caller's verification to reject.
-    } on FileSystemException {
-      // Left for the caller's verification to reject.
+    if (created) {
+      try {
+        // Ours only while it still holds exactly the bytes written so far (their
+        // size and hash), checked at the moment of deleting.
+        final prefix = written == 0
+            ? ContentIdentity(0, contentHash(Uint8List(0)))
+            : ContentIdentity(written, await contentHashOfStream(tmp.openRead(0, written)));
+        await deleteFileIfMatches(target, identity: prefix);
+      } on StorageBusy {
+        // Left for the caller's verification to reject.
+      } on FileSystemException {
+        // Left for the caller's verification to reject.
+      }
     }
     rethrow;
   } finally {
     await out?.close();
   }
-  return true;
 }
 
 /// Removes what [copyAttachmentTree] recorded in `created`: the files, then

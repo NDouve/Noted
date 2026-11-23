@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/attachment_copy.dart';
@@ -14,6 +15,8 @@ import 'package:noted/src/page_attachments.dart';
 import 'package:noted_box_attachments/noted_box_attachments.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+
+import 'support/scripted_coordinator.dart';
 
 /// A store whose page [failId] can't be written (and from then on its folder is
 /// [unwritable]), so Undo of that page fails.
@@ -1134,6 +1137,27 @@ void main() {
       expect(Directory('${root.path}/app/templates/${t.id}.assets').existsSync(), isFalse);
     });
 
+    test('deleting a template whose assets folders are busy: the files go, the folders stay, and the busy folder is said (C2)', () async {
+      final nb = make();
+      await nb.load();
+      final a = nb.currentId!;
+      await attach(nb);
+      final t = await nb.savePageAsTemplate(a, name: 'With file');
+      final tAssets = Directory('${root.path}/app/templates/${t.id}.assets/$a');
+      final listing = await nb.listTemplates(TemplateKind.page);
+      final c = ScriptedCoordinator()
+        ..refuse = (w) => w.intents.length == 1 && w.intents.single.kind == CoordinationKind.write && w.intents.single.path.contains('.assets');
+      registerScripted(root, c);
+      final log = <String>[];
+      final old = debugPrint;
+      debugPrint = (m, {wrapWidth}) => log.add(m ?? '');
+      addTearDown(() => debugPrint = old);
+      await nb.deleteTemplate(listing.items.single);
+      expect(File('${tAssets.path}/$hash.txt').existsSync(), isFalse, reason: 'the verified file went');
+      expect(tAssets.existsSync(), isTrue, reason: 'the busy folder stays');
+      expect(log.any((l) => l.contains('The folder is busy; not removing')), isTrue);
+    });
+
     test('a file added while the folder is away is kept for recovery and lands with the page', () async {
       final nb = make(saveDelay: const Duration(hours: 1));
       await nb.load();
@@ -1199,6 +1223,24 @@ void main() {
     late Directory dest;
 
     setUp(() async => dest = await Directory('${root.path}/Copies').create());
+
+    test('a refused create of the chosen folder is "busy", and nothing is made (C2)', () async {
+      final target = '${dest.path}/new';
+      final nb = make(pick: () async => target);
+      await nb.load();
+      await attach(nb);
+      final c = ScriptedCoordinator()..refuse = (w) => isOneWriteOn(w, dest.path);
+      registerScripted(root, c);
+      Object? e;
+      try {
+        await nb.saveCopyElsewhere();
+      } on Object catch (x) {
+        e = x;
+      }
+      expect(e, isA<NotebookException>());
+      expect((e! as NotebookException).message, contains('the folder is busy. Try again.'));
+      expect(Directory(target).existsSync(), isFalse);
+    });
 
     // The attachments folder of the only copy made in [dest], or null.
     Directory? copiedAssets() {

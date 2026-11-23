@@ -2890,6 +2890,30 @@ void main() {
       expect((error! as NotebookException).message, contains('a copy could not be saved'));
     });
 
+    test('8c: the copy is refused as busy (StorageBusy): one try, not eight names; the page is held (C2)', () async {
+      await start(withRecovery: false);
+      parent = nb.currentId!;
+      mine = nb.current!.createBoxAt(const Bounds(10, 10, 0, 0));
+      child = await nb.createPage(parentId: parent);
+      await nb.createPage();
+      await nb.flush();
+      counting.failDelete.add(child);
+      final theirs = writePage(
+        onDisk(parent).removeNode(mine.id).insertNode(noteBox('theirs', at: const Bounds(400, 10, 200, 40))),
+      );
+      counting.onFailDelete = () => File(pathOf(parent)).writeAsStringSync(theirs);
+      var tries = 0;
+      nb.syncHook = (point, path) async {
+        if (point == 'undo-copy-before-publish') {
+          tries++;
+          throw StorageBusy(StorageBusyReason.coordination, [path]);
+        }
+      };
+      final error = await startDelete();
+      expect(error, isA<PagesNotRestoredException>());
+      expect(tries, 1, reason: 'a refusal is not a taken name: the next name is not tried');
+    });
+
     test('13: the copy beside a different file threw: the version is in the file after replay', () async {
       await treeWithBoxes();
       final text = writePage(fileVersion);

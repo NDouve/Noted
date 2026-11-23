@@ -12,6 +12,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/attachment_copy.dart';
@@ -88,19 +89,25 @@ void main() {
       });
 
       test(
-        '_createExclusive: a refused fill takes the empty file away again',
+        '_createExclusive: the create and the fill are one call, and a fill that fails takes the empty file away again',
         () async {
           final dir = Directory('${root.path}/f')..createSync();
           final c = ScriptedCoordinator();
-          c.refuse = (w) =>
-              isWriteOn(w, dir.path) &&
-              c.calls.where((x) => isWriteOn(x, dir.path)).length == 2;
           registerScripted(root, c);
-          attachmentPublishHook = (tmp, target) async =>
-              throw const FileSystemException('no hard links');
+          // The publish fails (no hard links) and the temp is gone, so the fill
+          // can not read it.
+          attachmentPublishHook = (tmp, target) async {
+            tmp.deleteSync();
+            throw const FileSystemException('no hard links');
+          };
           await expectLater(
             writeNewAttachmentFile(File('${dir.path}/$name'), bytes, hash),
-            throwsA(isA<StorageBusy>()),
+            throwsA(isA<FileSystemException>()),
+          );
+          expect(
+            c.calls.where((w) => isWriteOn(w, dir.path)),
+            hasLength(1),
+            reason: 'one coordinated call for the create and the fill',
           );
           expect(
             File('${dir.path}/$name').existsSync(),
@@ -140,6 +147,71 @@ void main() {
       });
     },
   );
+
+  // What the app says through debugPrint, so a handler that maps a refusal to
+  // "busy" can be told from one that took it for another failure.
+  List<String> captureLog() {
+    final log = <String>[];
+    final old = debugPrint;
+    debugPrint = (m, {wrapWidth}) => log.add(m ?? '');
+    addTearDown(() => debugPrint = old);
+    return log;
+  }
+
+  group('the handlers that map a refusal to their busy path', () {
+    bool refusesMoves(CoordinatedWrite w) => w.intents.any((i) => i.kind == CoordinationKind.move);
+
+    test('restoreKeptCopy: a refused publish puts nothing back and says the folder is busy', () async {
+      final dir = Directory('${root.path}/f')..createSync();
+      File('${dir.path}/$name.kept-1').writeAsBytesSync(bytes);
+      final c = ScriptedCoordinator()..refuse = refusesMoves;
+      registerScripted(root, c);
+      final log = captureLog();
+      expect(await restoreKeptCopy(dir, name, hash, bytes.length), isFalse);
+      expect(File('${dir.path}/$name').existsSync(), isFalse);
+      expect(File('${dir.path}/$name.kept-1').readAsBytesSync(), bytes);
+      expect(c.calls.any(refusesMoves), isTrue);
+      expect(log.any((l) => l.contains('The folder is busy; not looking for a kept copy')), isTrue);
+    });
+
+    test('sweepAttachmentLeftovers: a refused publish of a leftover keeps it and reports it', () async {
+      final dir = Directory('${root.path}/f')..createSync();
+      final left = File('${dir.path}/$name.1700000000000-1.tmp')..writeAsBytesSync(bytes);
+      final c = ScriptedCoordinator()..refuse = refusesMoves;
+      registerScripted(root, c);
+      final log = captureLog();
+      final r = AttachmentCopy();
+      await sweepAttachmentLeftovers(dir, r);
+      expect(File('${dir.path}/$name').existsSync(), isFalse, reason: 'nothing was published another way');
+      expect(left.existsSync(), isTrue);
+      expect(r.keptAside.map((p) => p.replaceAll(r'\', '/')), [left.path.replaceAll(r'\', '/')]);
+      expect(log.any((l) => l.contains('The folder is busy; leaving the leftover')), isTrue);
+    });
+
+    test('keepGoodCopy: a refused publish keeps no copy, returns null and says the folder is busy', () async {
+      final dir = Directory('${root.path}/f')..createSync();
+      final c = ScriptedCoordinator()..refuse = refusesMoves;
+      registerScripted(root, c);
+      final log = captureLog();
+      expect(await keepGoodCopy(dir, name, bytes), isNull);
+      expect(dir.listSync(), isEmpty, reason: 'no copy and no temp');
+      expect(log.any((l) => l.contains('The folder is busy; not keeping a good copy')), isTrue);
+    });
+
+    test('_removeDir: a refused remove keeps the folder, and says the folder is busy', () async {
+      final d = Directory('${root.path}/trash')..createSync();
+      File('${d.path}/x').writeAsBytesSync(bytes);
+      final c = ScriptedCoordinator()..refuse = (w) => isOneWriteOn(w, root.path);
+      registerScripted(root, c);
+      final log = captureLog();
+      await Notebook.removeDirForTest(d);
+      expect(File('${d.path}/x').readAsBytesSync(), bytes);
+      expect(log.any((l) => l.contains('The folder is busy; not removing')), isTrue);
+      c.refuse = null;
+      await Notebook.removeDirForTest(d);
+      expect(d.existsSync(), isFalse);
+    });
+  });
 
   group('the folder helpers', () {
     test('createFolderCoordinated is one write on the parent; a folder that is there costs no call', () async {

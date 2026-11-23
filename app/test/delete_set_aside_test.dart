@@ -252,6 +252,21 @@ void main() {
       await reloadAgrees(nb, listed: {keep});
     });
 
+    test('delete:expiryRefused: a refused delete in the expiry counts as kept, never done: the run stops and no file is lost (R5.16, C2)', () async {
+      final (nb, a, keep) = await world(files: 2);
+      final deleted = await nb.delete(a);
+      expect(trashFiles(), hasLength(2));
+      var seen = 0;
+      final refuser = _Refuser((w) => w.intents.any((i) => i.kind == CoordinationKind.delete && i.path.contains('deleted-attachments')) && ++seen == 1);
+      registerCoordinator(root.path, refuser);
+      addTearDown(() => unregisterCoordinator(root.path));
+      nb.discardDeleted(deleted);
+      await quiet();
+      expect(seen, greaterThanOrEqualTo(1));
+      expect(trashFiles(), hasLength(2), reason: 'kept: the refused run ends at once, the other file is not deleted either');
+      await reloadAgrees(nb, listed: {keep});
+    });
+
     test('delete:inPlaceUndo: Undo renames it back', () async {
       Notebook.forceCopyMoveForTest = true;
       final (nb, a, keep) = await world(files: 2);
@@ -1026,7 +1041,11 @@ void main() {
         for (final l in lines)
           if (l.contains('_removeDir(') && !l.contains('static Future<void> _removeDir(')) l.trim(),
       ];
-      expect(calls, ['if (stash.isEmpty && keepTrash.isEmpty) await _removeDir(trash);']);
+      // (and the test seam that lets a test call it)
+      expect(calls, [
+        'static Future<void> removeDirForTest(Directory d) => _removeDir(d);',
+        'if (stash.isEmpty && keepTrash.isEmpty) await _removeDir(trash);',
+      ]);
       expect(text.contains('_removeSetAside'), isFalse);
       expect(text.contains('removeVerifiedSources'), isFalse, reason: 'no copy-then-delete');
     });

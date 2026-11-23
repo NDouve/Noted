@@ -22,24 +22,8 @@ const String _private = 'an app-private file or folder, not shared storage';
 const String _emptyDir =
     'a non-recursive folder delete: it fails when anything is in it';
 const String _primitive = 'the checked primitive itself';
-const String _landing =
-    'the fixed-name <target>.landing.tmp of a non-hash kept file (known; a unique name is for the area audit)';
-const String _tempMixed =
-    'own temporary files: unique names, and the fixed-name <target>.landing.tmp of a non-hash kept file (known)';
 
 const List<Site> deleteSites = [
-  (
-    'app/lib/src/notebook.dart',
-    's.deleteSync(); // an empty folder only',
-    1,
-    'a folder emptied by a move, removed without recursive: never a file',
-  ),
-  (
-    'app/lib/src/notebook.dart',
-    'if (d.listSync(followLinks: false).isEmpty) d.deleteSync();',
-    1,
-    'a folder emptied by Delete the original, removed without recursive: never a file',
-  ),
   ('app/lib/src/ai/ai_link_server.dart', 'file.deleteSync();', 1, _private),
   ('app/lib/src/app_commands.dart', 'invoke: () => a.delete(p),', 1, _call),
   (
@@ -75,20 +59,14 @@ const List<Site> deleteSites = [
   (
     'app/lib/src/notebook.dart',
     'if (await tmp.exists()) await tmp.delete();',
-    4,
-    _tempMixed,
+    2,
+    _unique,
   ),
   (
     'app/lib/src/notebook.dart',
-    'if (await tmp.exists()) await tmp.delete(); // left by an earlier try',
+    '() => tmp.delete(),',
     1,
-    _landing,
-  ),
-  (
-    'app/lib/src/notebook.dart',
-    'd.deleteSync();',
-    1,
-    'an empty folder of a set-aside (the expiry, the trash folder made for a rename that did not happen), removed without recursive: never a file',
+    'coordinated: delete the file, write its folder (N4); the fixed-name <target>.landing.tmp of a non-hash kept file',
   ),
   (
     'app/lib/src/notebook.dart',
@@ -485,12 +463,6 @@ const List<Site> writeSites = [
   ),
   ('app/lib/src/onedrive_sync.dart', 'await file.parent.create(recursive: true);', 1, _appState),
   ('app/lib/src/onedrive_sync.dart', 'await tmp.writeAsString(jsonEncode(root.toJson()), flush: true);', 1, _appTemp),
-  (
-    'app/lib/src/page_attachments.dart',
-    'await _mutateIn(d, () => d.create(recursive: true));',
-    1,
-    '$_gapMark: the attachments folder of a page, made in the folder\'s turn; `page_attachments.dart` is not in step 2\'s files',
-  ),
   ('app/lib/src/page_attachments.dart', 'await dir.create(recursive: true);', 1, '$_outsideMark: a folder in the system temp, for opening an embedded file'),
   ('app/lib/src/page_attachments.dart', 'await file.writeAsBytes(bytes, flush: true);', 1, '$_outsideMark: a copy in the system temp, for opening an embedded file'),
   ('app/lib/src/recovery_lock.dart', 'file.parent.createSync(recursive: true);', 1, _appState),
@@ -568,6 +540,11 @@ const List<Site> writeSites = [
   ('packages/noted_sync/lib/src/pull_engine.dart', 'await File(oldAbs).copy(copy.path);', 1, '$_tempMark: _newTmp, a fresh name in the state folder'),
 ];
 
+/// This sees only direct calls: a handler around a function that itself calls a
+/// primitive (for instance `writeNewAttachmentFile`) is not found, so those
+/// handlers are checked by hand and by the refusal tests in
+/// `storage_busy_sites_test.dart`.
+///
 /// The calls a handler has to treat a refusal of: the checked primitives, a
 /// `coordinated()` call, the helpers that wrap one (`createFolderCoordinated`,
 /// `removeFolderCoordinated`) and `TemplateStore.save`. `moveExclusive` is not
@@ -715,6 +692,21 @@ void main() {
       '${root.path}/packages/noted_core/lib/src/storage/page_store.dart',
     ).readAsStringSync();
     expect(RegExp(r'Future<void>\s+save\(').hasMatch(text), isFalse);
+  });
+
+  // Nothing registers a coordinator in the app yet (R5.14 step 5). The gap rows
+  // above are not coordinated, so the step that registers one has to coordinate
+  // them first (or list why not): this fails until no gap row is left.
+  test('no coordinator is registered in the app while a gap row remains', () {
+    final gaps = [for (final s in writeSites) if (s.$4.startsWith('$_gapMark: ')) '${s.$1}: ${s.$2}'];
+    final registered = [
+      for (final f in Directory('${root.path}/app/lib').listSync(recursive: true).whereType<File>())
+        if (f.path.endsWith('.dart') && f.readAsStringSync().contains('registerCoordinator('))
+          f.path.substring(root.path.length + 1),
+    ];
+    if (registered.isNotEmpty) {
+      expect(gaps, isEmpty, reason: 'registerCoordinator( in $registered, with gap rows left');
+    }
   });
 
   test('every create and write into a folder is listed with a mark (N4)', () {

@@ -3577,7 +3577,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           if (!fromTrash) {
             // The caller sets the folder aside in place: the folder made for the
             // rename goes again (never recursively; another page's may be in it).
-            _pruneEmptyFolder(to.parent);
+            await _pruneEmptyFolder(to.parent);
           }
         } else {
           var leftover = false;
@@ -3595,14 +3595,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
       } on _LockTimeout catch (e) {
         if (!fromTrash) {
-          _pruneEmptyFolder(to.parent); // nothing moved: no empty folder stays
+          await _pruneEmptyFolder(to.parent); // nothing moved: no empty folder stays
         }
         throw _FolderBusy(e.path);
       } on _BinderUnreadableNow catch (e) {
-        if (!fromTrash) _pruneEmptyFolder(to.parent);
+        if (!fromTrash) await _pruneEmptyFolder(to.parent);
         throw _GateRefused(e.message, from.parent.path);
       } on BinderHeldException catch (e) {
-        if (!fromTrash) _pruneEmptyFolder(to.parent);
+        if (!fromTrash) await _pruneEmptyFolder(to.parent);
         throw _GateRefused(e.message, from.parent.path);
       }
     }
@@ -3854,6 +3854,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       return const [];
     }
   }
+
+  @visibleForTesting
+  static Future<void> removeDirForTest(Directory d) => _removeDir(d);
 
   static Future<void> _removeDir(Directory d) async {
     try {
@@ -5242,10 +5245,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       } on NotebookException {
         return _Expiry.kept; // the gate (0184) or a read-only folder refused this turn
       } on StorageBusy catch (e) {
-        // The folder's coordination refused: nothing was removed, and the run
-        // is not counted as a kept one (C2).
+        // The folder's coordination refused: nothing was removed, and a refusal
+        // counts as kept, never as done (R5.16, C2).
         debugPrint('The folder is busy; not removing ${f.path} from the set-aside: $e');
-        return _Expiry.busy;
+        return _Expiry.kept;
       } on FileSystemException catch (e) {
         debugPrint('Removing ${f.path} from the set-aside failed: $e');
         changed++;
@@ -5335,8 +5338,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Removes the empty folders of [rec] (non-recursively, deepest first) and, for
   // a folder in `deleted-attachments`, its own empty parent.
-  void _pruneSetAside(_AsideRecord rec) {
-    void prune(Directory d) {
+  Future<void> _pruneSetAside(_AsideRecord rec) async {
+    Future<void> prune(Directory d) async {
       final List<FileSystemEntity> entries;
       try {
         entries = d.listSync(followLinks: false);
@@ -5345,21 +5348,25 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       for (final e in entries) {
         if (e is Directory && FileSystemEntity.typeSync(e.path, followLinks: false) == FileSystemEntityType.directory) {
-          prune(e);
+          await prune(e);
         }
       }
-      _pruneEmptyFolder(d); // not empty when files stayed
+      await _pruneEmptyFolder(d); // not empty when files stayed
     }
 
-    prune(rec.dir);
-    if (!rec.inPlace) _pruneEmptyFolder(rec.dir.parent); // other folders may be in it
+    await prune(rec.dir);
+    if (!rec.inPlace) await _pruneEmptyFolder(rec.dir.parent); // other folders may be in it
   }
 
   // Removes [d] only if it is empty (never recursively); nothing happens when it
-  // holds anything or is gone.
-  static void _pruneEmptyFolder(Directory d) {
+  // holds anything, is gone, or the folder is busy (it stays, and the next
+  // clean-up tries again).
+  static Future<void> _pruneEmptyFolder(Directory d) async {
     try {
-      d.deleteSync();
+      if (d.listSync(followLinks: false).isNotEmpty) return;
+      await removeFolderCoordinated(d);
+    } on StorageBusy {
+      // Kept: busy.
     } on FileSystemException {
       // Not empty, or already gone.
     }
@@ -5392,7 +5399,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         'the page',
         rec.inPlace ? 'the page\'s folder' : 'the folder of deleted pages',
       );
-      if (!rec.inPlace) _pruneSetAside(rec);
+      if (!rec.inPlace) await _pruneSetAside(rec);
       return true;
     } on NotebookException {
       return false; // read-only, pull-only or held: kept
@@ -5725,7 +5732,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
       }
       try {
-        s.deleteSync(); // an empty folder only
+        if (s.listSync(followLinks: false).isEmpty) await removeFolderCoordinated(s); // an empty folder only
+      } on StorageBusy {
+        // Busy: the folder stays.
       } on FileSystemException {
         // Not empty: files stayed.
       }
@@ -6664,7 +6673,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final e in d.listSync(followLinks: false)) {
         if (e is Directory) await _pruneEmptyDirs(e);
       }
-      if (d.listSync(followLinks: false).isEmpty) d.deleteSync();
+      if (d.listSync(followLinks: false).isEmpty) await removeFolderCoordinated(d);
+    } on StorageBusy {
+      // Busy: it stays, and the next clean-up tries again.
     } on FileSystemException {
       // Something is in it, or in use: it stays.
     }
@@ -6955,6 +6966,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final path = await _newBinderFolder(name);
     try {
       return _showNewBinder(await addBinder(path));
+    } on StorageBusy {
+      throw const NotebookException('Could not create the binder: the folder is busy. Try again.');
     } on FileSystemException catch (e) {
       throw NotebookException('Could not create the binder: ${e.message}');
     }
@@ -7873,8 +7886,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await _templateLocked(binder, snap, 'dirDelete', () async {
         try {
           await removeFolderCoordinated(d);
-        } on StorageBusy {
+        } on StorageBusy catch (e) {
           // Busy: the folder stays, and the next clean-up tries again.
+          debugPrint('The folder is busy; not removing ${d.path}: $e');
         } on FileSystemException {
           // Not empty: what is in it is reported above.
         }
@@ -11512,6 +11526,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // when complete, under their own name in [from] and land with the rest; the
   // others stay and keep the folder. Every file that is in place with verified
   // content is added to [done].
+  // Removes a landing temp (`<target>.landing.tmp`, a fixed name) as one
+  // coordinated call: delete the file, write its folder (N4). A StorageBusy
+  // propagates; the landing is tried again.
+  static Future<void> _removeLandingTemp(File tmp) async {
+    if (!await tmp.exists()) return;
+    await coordinated(
+      CoordinatedWrite([
+        CoordinationIntent(tmp.path, CoordinationKind.delete),
+        CoordinationIntent(tmp.parent.path, CoordinationKind.write),
+      ]),
+      () => tmp.delete(),
+    );
+  }
+
   static Future<void> _landFiles(Directory from, Directory to, List<_LandedFile> done, AttachmentCopy r) async {
     await createFolderCoordinated(to);
     await sweepAttachmentLeftovers(from, r);
@@ -11558,14 +11586,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       final tmp = File('${target.path}.landing.tmp');
       if (await _holdsContent(e, name, target)) {
-        if (await tmp.exists()) await tmp.delete(); // left by an earlier try
+        await _removeLandingTemp(tmp); // left by an earlier try
         done.add(_LandedFile(e, name, target));
         continue;
       }
       if (await FileSystemEntity.type(target.path, followLinks: false) != FileSystemEntityType.notFound) {
         throw collision;
       }
-      if (await tmp.exists()) await tmp.delete();
+      await _removeLandingTemp(tmp);
       try {
         // The temp has a fixed name, so its creation is a coordinated write too.
         await coordinated(
@@ -11580,7 +11608,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (!await publishExclusive(tmp, target.path, beforeOsCall: landBeforePublishHook)) throw collision;
       } catch (_) {
         try {
-          if (await tmp.exists()) await tmp.delete();
+          await _removeLandingTemp(tmp);
         } on Object {
           // Only a cleanup; the original error is what counts.
         }

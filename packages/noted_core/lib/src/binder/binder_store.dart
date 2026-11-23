@@ -418,6 +418,10 @@ class BinderStore {
           beforeFinalCheck: beforeFinalCheck,
           afterFinalRead: afterFinalRead,
         );
+      } on StorageBusy {
+        // The folder's coordination refused: nothing was written. Not "in use
+        // by another program", and not tried again here (C2).
+        return BinderRefused(BinderRefusal.inUse, 'The folder is busy; try again', kept: kept);
       } on FileSystemException catch (e) {
         if (!_isWritable(f.path)) {
           return BinderRefused(BinderRefusal.readOnly, 'The binder file is read-only', kept: kept);

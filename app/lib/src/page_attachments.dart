@@ -257,7 +257,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     Future<void> into(Directory d) async {
       final target = _in(d, name);
       // Made in its own turn too: a held folder gets no assets folder.
-      await _mutateIn(d, () => d.create(recursive: true));
+      await _mutateIn(d, () => createFolderCoordinated(d));
       String? damagedKeptAs;
       final type = FileSystemEntity.typeSync(target.path, followLinks: false);
       if (type != FileSystemEntityType.notFound) {
