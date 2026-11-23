@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/coordination_support.dart';
+import 'support/page_save.dart';
 
 void suite() {
   deleteTests();

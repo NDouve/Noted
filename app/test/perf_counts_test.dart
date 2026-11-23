@@ -17,6 +17,7 @@ import 'package:noted_core/noted_core.dart';
 import 'package:noted_core/testing.dart';
 
 import 'support/counting_io.dart';
+import 'support/page_save.dart';
 
 Map<String, Object?> doc(String text) => {
   'document': {

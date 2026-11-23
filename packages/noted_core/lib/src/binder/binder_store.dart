@@ -7,6 +7,7 @@ import 'dart:io';
 
 import '../ai/ai_access.dart';
 import '../model/box_types.dart';
+import '../storage/coordination.dart';
 import '../storage/exclusive_publish.dart';
 import '../storage/replace_if_unchanged.dart';
 import 'binder.dart';
@@ -534,6 +535,9 @@ class BinderStore {
       final bool published;
       try {
         published = await publishExclusive(tmp, file.path);
+      } on StorageBusy {
+        // A refusal is not a drive that can't publish safely (C2).
+        rethrow;
       } on FileSystemException catch (e) {
         throw FileSystemException(
           "This folder's drive can't create a binder safely",

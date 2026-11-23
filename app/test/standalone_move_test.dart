@@ -13,6 +13,7 @@ import 'package:noted/src/page_tree_view.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/real_io.dart';
 import 'support/settle_saves.dart';
+import 'support/page_save.dart';
 
 /// A store whose [corruptAt]th write is damaged after it lands.
 class CorruptingStore extends PageStore {
@@ -21,9 +22,8 @@ class CorruptingStore extends PageStore {
   final int corruptAt;
   int saves = 0;
 
-  @override
   Future<void> save(NotedPage page) async {
-    await super.save(page);
+    await savePageDirect(this, page);
     if (++saves == corruptAt) {
       final f = File('${directory.path}${Platform.pathSeparator}${page.id}.canvas');
       await f.writeAsString(' ', mode: FileMode.append);

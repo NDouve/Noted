@@ -57,6 +57,8 @@ import '../format/page_format.dart';
 import '../json/raw_json.dart';
 import '../model/ids.dart';
 import '../model/page.dart';
+import '../storage/coordination.dart';
+import '../storage/exclusive_publish.dart';
 import '../storage/replace_if_unchanged.dart';
 
 /// The template format version this build reads and writes.
@@ -518,18 +520,39 @@ final class TemplateStore {
   File fileFor(String templateId) =>
       File('${directory.path}${Platform.pathSeparator}$templateId$templateExtension');
 
-  /// Writes [template] atomically: to a temporary file, then renamed. Throws
-  /// [FileSystemException] if a file for its id already exists, which is
-  /// never overwritten.
+  static int _tmpCounter = 0;
+
+  /// Writes [template] to a unique temporary file and publishes it with
+  /// [publishExclusive], so it never replaces anything. Throws
+  /// [FileSystemException] if a file for its id already exists (it is left as
+  /// it is), and [StorageBusy] when the folder's coordination refuses (nothing
+  /// is written).
   Future<File> save(NotedTemplate template) async {
     final file = fileFor(template.id);
     if (await file.exists()) {
       throw FileSystemException('template file already exists', file.path);
     }
-    await directory.create(recursive: true);
-    final tmp = File('${file.path}.tmp');
-    await tmp.writeAsString(template.write(), flush: true);
-    await tmp.rename(file.path);
+    // One coordinated write on the folder (N4, C2: a refusal is not a failure
+    // to fall back from).
+    await coordinated(
+      CoordinatedWrite([CoordinationIntent(directory.path, CoordinationKind.write)]),
+      () async {
+        await directory.create(recursive: true);
+      },
+    );
+    final tmp = File('${file.path}.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
+    try {
+      await tmp.writeAsString(template.write(), flush: true);
+      if (!await publishExclusive(tmp, file.path)) {
+        throw FileSystemException('template file already exists', file.path);
+      }
+    } finally {
+      try {
+        if (await tmp.exists()) await tmp.delete();
+      } on FileSystemException {
+        // Only a leftover with this call's own name.
+      }
+    }
     return file;
   }
 

@@ -6,6 +6,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/coordination_support.dart';
+import 'support/page_save.dart';
 
 void main() {
   late Directory dir;
@@ -382,4 +384,43 @@ void main() {
     });
   });
 
+  group('the folder create of scan goes through the coordinator (N4, C2)', () {
+    late Directory made;
+    late RecordingCoordinator c;
+
+    setUp(() {
+      made = Directory('${dir.path}/pages');
+      c = RecordingCoordinator();
+      registerCoordinator(dir.resolveSymbolicLinksSync(), c);
+    });
+    tearDown(() => unregisterCoordinator(dir.resolveSymbolicLinksSync()));
+
+    test('a missing folder is one coordinated write on the folder that holds it', () async {
+      await PageStore(made).scan();
+      expect(made.existsSync(), isTrue);
+      expect(c.calls, hasLength(1));
+      expect(c.calls.single.intents.single.kind, CoordinationKind.write);
+      expect(c.calls.single.intents.single.path, dir.path);
+    });
+
+    test('a folder that is there costs no coordinated call', () async {
+      made.createSync();
+      await PageStore(made).scan();
+      expect(c.calls, isEmpty);
+    });
+
+    test('a refusal is a StorageBusy: the folder is not made', () async {
+      c.refuse = StorageBusy(StorageBusyReason.coordination, [dir.path]);
+      await expectLater(PageStore(made).scan(), throwsA(isA<StorageBusy>()));
+      expect(made.existsSync(), isFalse);
+    });
+
+    test('saveNew publishes through the coordinator, naming the folder', () async {
+      made.createSync();
+      final page = NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0));
+      expect(await PageStore(made).saveNew(page), isTrue);
+      expect(c.calls, isNotEmpty);
+      expect(c.calls.every((w) => w.intents.any((i) => i.kind == CoordinationKind.write)), isTrue);
+    });
+  });
 }

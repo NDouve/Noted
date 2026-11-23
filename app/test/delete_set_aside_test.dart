@@ -233,6 +233,25 @@ void main() {
       await reloadAgrees(nb, listed: {keep});
     });
 
+    test('delete:createRefused: a refused create of the folder for the rename (N4, C2) is busy: nothing moves, nothing is copied', () async {
+      final (nb, a, keep) = await world();
+      // The create of `deleted-attachments/<id>` is one write on `deleted-attachments`.
+      final refuser = _Refuser(
+        (w) => w.intents.length == 1 && w.intents.single.kind == CoordinationKind.write && w.intents.single.path.endsWith('deleted-attachments'),
+      );
+      registerCoordinator(root.path, refuser);
+      addTearDown(() => unregisterCoordinator(root.path));
+      final deleted = await nb.delete(a);
+      expect(refuser.calls.where((w) => w.intents.single.path.endsWith('deleted-attachments')), isNotEmpty);
+      expect(inPlace(a), isEmpty, reason: 'no rename beside the page either: the folder was busy');
+      expect(trashDir().existsSync() ? trashDir().listSync() : const [], isEmpty);
+      expect(live(a, 1).readAsBytesSync(), bytesOf(1), reason: 'the folder stays as <p>.assets, untouched');
+      nb.discardDeleted(deleted);
+      await quiet();
+      expect(live(a, 1).existsSync(), isTrue, reason: 'no record, so the expiry deletes nothing there');
+      await reloadAgrees(nb, listed: {keep});
+    });
+
     test('delete:inPlaceUndo: Undo renames it back', () async {
       Notebook.forceCopyMoveForTest = true;
       final (nb, a, keep) = await world(files: 2);
@@ -989,11 +1008,14 @@ void main() {
     test('nothing in notebook.dart removes a folder recursively but _removeDir, called only by the delete rollback', () {
       final text = File('lib/src/notebook.dart').readAsStringSync().replaceAll('\r\n', '\n');
       final lines = text.split('\n');
-      // A line that deletes with `recursive: true`: the only one is inside
-      // `_removeDir`, the exempt helper.
+      // A line that deletes with `recursive: true` (directly, or through the
+      // coordinated folder remove): the only one is inside `_removeDir`, the
+      // exempt helper.
       final recursive = [
         for (var i = 0; i < lines.length; i++)
-          if (RegExp(r'recursive:\s*true').hasMatch(lines[i]) && lines[i].contains('delete')) i,
+          if (RegExp(r'recursive:\s*true').hasMatch(lines[i]) &&
+              (lines[i].contains('delete') || lines[i].contains('removeFolderCoordinated')))
+            i,
       ];
       final helper = lines.indexWhere((l) => l.contains('static Future<void> _removeDir('));
       expect(helper, greaterThanOrEqualTo(0));

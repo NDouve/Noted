@@ -9,6 +9,30 @@ import 'package:flutter/foundation.dart';
 import 'package:noted_canvas/noted_canvas.dart' show AttachmentState;
 import 'package:noted_core/noted_core.dart';
 
+/// Creates [dir] (and its missing parents) as one coordinated write on the
+/// folder that holds it (N4). A folder that is there costs no call. Throws
+/// [StorageBusy] when the coordination refuses: nothing was made, and the
+/// caller must not fall back to another way of making it.
+Future<void> createFolderCoordinated(Directory dir, {bool recursive = true}) async {
+  if (await dir.exists()) return;
+  await coordinated(
+    CoordinatedWrite([CoordinationIntent(dir.parent.path, CoordinationKind.write)]),
+    () async {
+      await dir.create(recursive: recursive);
+    },
+  );
+}
+
+/// Removes the folder [dir] as one coordinated write on the folder that holds
+/// it (N4); without [recursive] only if it is empty. Throws [StorageBusy] when
+/// the coordination refuses: nothing was removed.
+Future<void> removeFolderCoordinated(Directory dir, {bool recursive = false}) => coordinated(
+  CoordinatedWrite([CoordinationIntent(dir.parent.path, CoordinationKind.write)]),
+  () async {
+    await dir.delete(recursive: recursive);
+  },
+);
+
 /// A source attachment file and the copy that was verified equal to it.
 class CopiedFile {
   const CopiedFile(this.source, this.target);
@@ -300,6 +324,8 @@ Future<bool> restoreKeptCopy(Directory dir, String fileName, String hash, int si
       final c = await checkAttachmentFile(e, hash, size);
       if (c.state == AttachmentState.ok && await publishExclusive(e, target)) return true;
     }
+  } on StorageBusy catch (e) {
+    debugPrint('The folder is busy; not looking for a kept copy of $fileName: $e');
   } on FileSystemException catch (e) {
     debugPrint('Looking for a kept copy of $fileName failed: $e');
   }
@@ -367,6 +393,8 @@ Future<void> sweepAttachmentLeftovers(Directory dir, AttachmentCopy r) async {
         final n = _baseName(e.path);
         if (e is File && (n.endsWith(asideSuffix) || n.endsWith(verifiedSuffix))) r.keptAside.add(e.path);
       }
+    } on StorageBusy catch (e) {
+      debugPrint('The folder is busy; not sweeping ${dir.path}: $e');
     } on FileSystemException catch (e) {
       debugPrint('Sweeping ${dir.path} failed: $e');
     }
@@ -396,6 +424,9 @@ Future<void> sweepAttachmentLeftovers(Directory dir, AttachmentCopy r) async {
           if (del.deleted || del.outcome == DeleteOutcome.absent) continue;
         }
       }
+    } on StorageBusy catch (e) {
+      // Left where it is, and reported below; no other way of putting it back.
+      debugPrint('The folder is busy; leaving the leftover ${f.path}: $e');
     } on FileSystemException catch (e) {
       debugPrint('Checking the leftover ${f.path} failed: $e');
     }
@@ -459,7 +490,7 @@ Future<void> copyAttachmentTree(Directory from, Directory to, AttachmentCopy r, 
   r.sourceExisted = true;
   if (sweepSource) await sweepAttachmentLeftovers(from, r);
   if (!await to.exists()) {
-    await to.create(recursive: true);
+    await createFolderCoordinated(to);
     r.created.add(to.path);
   }
   final sep = Platform.pathSeparator;
@@ -503,6 +534,8 @@ Future<void> copyAttachmentFile(File src, String target, String name, Attachment
           // Only while it is still what was written (size and hash); a file
           // somebody else put there since is not ours to remove.
           await deleteFileIfMatches(target, identity: ContentIdentity(written, writtenHash));
+        } on StorageBusy {
+          // The rollback reports what is left.
         } on FileSystemException {
           // The rollback reports what is left.
         }
@@ -641,6 +674,11 @@ Future<_Published> _publishDetailed(File tmp, String target) async {
   try {
     final hook = attachmentPublishHook;
     return (published: await (hook != null ? hook(tmp, target) : publishExclusive(tmp, target)), copied: false);
+  } on StorageBusy {
+    // The folder refused the call: nothing was written, and a refusal is not a
+    // volume without hard links, so the create-and-fill below never runs on it
+    // (C2).
+    rethrow;
   } on FileSystemException {
     // A volume without hard links (exFAT/FAT, some SMB and FUSE mounts,
     // Android shared storage): create the target exclusively and fill it. It
@@ -654,8 +692,15 @@ Future<_Published> _publishDetailed(File tmp, String target) async {
 
 Future<bool> _createExclusive(File tmp, String target) async {
   final f = File(target);
+  // Each step is one coordinated write on the file's folder (N4); neither
+  // wraps the cleanup below, which is a primitive's own call.
+  final folder = CoordinatedWrite([CoordinationIntent(f.parent.path, CoordinationKind.write)]);
   try {
-    await f.create(exclusive: true);
+    await coordinated(folder, () async {
+      await f.create(exclusive: true);
+    });
+  } on StorageBusy {
+    rethrow; // nothing was made, and nothing is written another way (C2)
   } on FileSystemException {
     if (FileSystemEntity.typeSync(target, followLinks: false) != FileSystemEntityType.notFound) {
       return false;
@@ -667,17 +712,21 @@ Future<bool> _createExclusive(File tmp, String target) async {
   var written = 0;
   RandomAccessFile? out;
   try {
-    out = await f.open(mode: FileMode.writeOnlyAppend);
-    if (await out.length() != 0) {
-      await out.close();
-      out = null;
-      return false; // not ours
-    }
-    await for (final chunk in tmp.openRead()) {
-      await out.writeFrom(chunk);
-      written += chunk.length;
-    }
-    await out.flush();
+    final ours = await coordinated<bool>(folder, () async {
+      final o = out = await f.open(mode: FileMode.writeOnlyAppend);
+      if (await o.length() != 0) {
+        await o.close();
+        out = null;
+        return false; // not ours
+      }
+      await for (final chunk in tmp.openRead()) {
+        await o.writeFrom(chunk);
+        written += chunk.length;
+      }
+      await o.flush();
+      return true;
+    });
+    if (!ours) return false;
   } catch (_) {
     await out?.close();
     out = null;
@@ -686,6 +735,8 @@ Future<bool> _createExclusive(File tmp, String target) async {
       // size and hash), checked at the moment of deleting.
       final prefix = ContentIdentity(written, await contentHashOfStream(tmp.openRead(0, written)));
       await deleteFileIfMatches(target, identity: prefix);
+    } on StorageBusy {
+      // Left for the caller's verification to reject.
     } on FileSystemException {
       // Left for the caller's verification to reject.
     }
@@ -727,7 +778,7 @@ Future<bool> removeCreated(AttachmentCopy? copy) async {
           }
         }
       } else {
-        await Directory(p).delete();
+        await removeFolderCoordinated(Directory(p));
       }
     } on Object catch (e) {
       all = false;

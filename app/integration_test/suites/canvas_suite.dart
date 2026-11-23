@@ -13,6 +13,7 @@ import 'package:noted_core/noted_core.dart';
 
 import '../support/harness.dart';
 import '../support/note_helpers.dart';
+import '../../test/support/page_save.dart';
 
 const _select = 'canvas.select';
 const _pen = 'noted.drawing.pen';

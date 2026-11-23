@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/page_save.dart';
 
 /// A binder page store whose [corruptAt]th write is damaged after it lands.
 class CorruptingStore extends PageStore {
@@ -16,9 +17,8 @@ class CorruptingStore extends PageStore {
   final int corruptAt;
   int saves = 0;
 
-  @override
   Future<void> save(NotedPage page) async {
-    await super.save(page);
+    await savePageDirect(this, page);
     if (++saves == corruptAt) {
       final f = File('${directory.path}${Platform.pathSeparator}${page.id}.canvas');
       await f.writeAsString(' ', mode: FileMode.append);

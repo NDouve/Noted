@@ -15,14 +15,15 @@ import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/page_save.dart';
+import 'support/scripted_coordinator.dart';
 
 /// A store whose saves lose the page's boxes: a recovery that goes through it
 /// can't pass the check.
 class _LossyStore extends PageStore {
   _LossyStore(super.directory);
 
-  @override
-  Future<void> save(NotedPage page) => super.save(NotedPage.create(page.meta));
+  Future<void> save(NotedPage page) => savePageDirect(this, NotedPage.create(page.meta));
 
   @override
   Future<ReplaceResult> saveIfUnchanged(
@@ -159,10 +160,9 @@ class _RacingStore extends PageStore {
   final void Function(int call) onPublish;
   int calls = 0;
 
-  @override
   Future<void> save(NotedPage page) {
     onPublish(calls++);
-    return super.save(page);
+    return savePageDirect(this, page);
   }
 
   @override
@@ -221,8 +221,7 @@ class _ToggleStore extends PageStore {
   bool alterRead = false;
   bool failWrite = false;
 
-  @override
-  Future<void> save(NotedPage page) => super.save(lossy ? NotedPage.create(page.meta) : page);
+  Future<void> save(NotedPage page) => savePageDirect(this, lossy ? NotedPage.create(page.meta) : page);
 
   @override
   Future<ReplaceResult> saveIfUnchanged(
@@ -1827,6 +1826,66 @@ void main() {
       expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
       expect(keptDir().existsSync(), isFalse);
       expect(nb.recoveryDamaged, isEmpty);
+    });
+
+    // N4, C2: the landing's folder create, copy, delete and folder remove each go
+    // through coordinated(); a refusal keeps every kept file, writes nothing
+    // another way, lists the files as busy and lands them at the next check.
+    Future<void> landsAfterRefusal(ScriptedCoordinator c, Notebook nb, String name) async {
+      expect(nb.recoveryDamaged.single.reason, allOf(startsWith('The files kept for'), contains('the folder is busy')));
+      expect(File('${keptDir().path}/$name').readAsBytesSync(), bytes, reason: 'the kept file is still there');
+      c.refuse = null;
+      await nb.checkFolders();
+      expect(File('${assetsOf(id).path}/$name').readAsBytesSync(), bytes);
+      expect(keptDir().existsSync(), isFalse, reason: 'landed at the next check');
+      expect(nb.recoveryDamaged, isEmpty);
+    }
+
+    test('a refused create of the page\'s assets folder: nothing is made, the kept files stay and are listed busy', () async {
+      await pageOnly();
+      keep();
+      final c = ScriptedCoordinator()..refuse = (w) => isOneWriteOn(w, pages.path);
+      registerScripted(root, c);
+      final nb = await launch();
+      expect(assetsOf(id).existsSync(), isFalse);
+      await landsAfterRefusal(c, nb, keptName);
+    });
+
+    test('a refused delete of a landed kept file: the verified copy is in place, the source stays, the files are listed busy', () async {
+      await pageOnly();
+      keep();
+      final c = ScriptedCoordinator()
+        ..refuse = (w) => w.intents.any((i) => i.kind == CoordinationKind.delete && i.path.replaceAll(r'\', '/').startsWith(keptDir().path.replaceAll(r'\', '/')));
+      registerScripted(root, c);
+      final nb = await launch();
+      expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
+      await landsAfterRefusal(c, nb, keptName);
+    });
+
+    test('a refused remove of the emptied kept folder: the folder stays (empty) and the files are listed busy', () async {
+      await pageOnly();
+      keep();
+      final c = ScriptedCoordinator()..refuse = (w) => isOneWriteOn(w, rec.path);
+      registerScripted(root, c);
+      final nb = await launch();
+      expect(File('${assetsOf(id).path}/$keptName').readAsBytesSync(), bytes);
+      expect(keptDir().existsSync(), isTrue);
+      expect(keptDir().listSync(), isEmpty);
+      expect(nb.recoveryDamaged.single.reason, allOf(startsWith('The files kept for'), contains('the folder is busy')));
+      c.refuse = null;
+      await nb.checkFolders();
+      expect(keptDir().existsSync(), isFalse);
+      expect(nb.recoveryDamaged, isEmpty);
+    });
+
+    test('a refused copy of a kept file that is not hash-named leaves no temp and no landed file', () async {
+      await pageOnly();
+      keep(name: 'note.txt');
+      final c = ScriptedCoordinator()..refuse = (w) => isOneWriteOn(w, assetsOf(id).path);
+      registerScripted(root, c);
+      final nb = await launch();
+      expect(assetsOf(id).existsSync() ? assetsOf(id).listSync() : const [], isEmpty, reason: 'no landing temp, no file');
+      await landsAfterRefusal(c, nb, 'note.txt');
     });
 
     List<String> namesIn(Directory d) => d.listSync().map((f) => f.path.split(RegExp(r'[\\/]')).last).toList()..sort();

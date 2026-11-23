@@ -18,6 +18,7 @@ import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/page_save.dart';
 
 Map<String, Object?> doc(String text) => {
   'document': {
@@ -134,11 +135,10 @@ class CountingStore extends PageStore {
     f?.call();
   }
 
-  @override
   Future<void> save(NotedPage page) {
     saves++;
     _fire();
-    return super.save(page);
+    return savePageDirect(this, page);
   }
 
   @override
