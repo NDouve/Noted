@@ -49,6 +49,7 @@ void main() {
 
   tearDown(() async {
     await nb.flush();
+    await realIoUntil(() => nb.unsavedDescription == null, 'the saves to land');
     nb.dispose();
     await root.delete(recursive: true);
   });
@@ -177,11 +178,15 @@ void main() {
     pickAnswer = other.path;
     await pumpPanel(t);
     await t.runAsync(() async {
-      await t.tap(find.byKey(const ValueKey('settings-location-move')));
-      // The move runs on real IO: wait until it has landed, so it is not still
-      // running when the test ends and the notebook is disposed.
-      await realIoUntil(() => nb.folderOfPage(a) != nb.defaultFolderPath, 'the page to be moved');
+      // Call the button's handler and await it, rather than tapping: the folder
+      // changes early in the move, and the rest (attachments, placing the file)
+      // and a closed-page update still run after it, not awaited by flush()
+      // (tracked only in unsavedDescription).
+      final button = t.widget<OutlinedButton>(find.byKey(const ValueKey('settings-location-move')));
+      expect(button.onPressed, isNotNull);
+      await (button.onPressed! as Future<void> Function())();
       await nb.flush();
+      await realIoUntil(() => nb.unsavedDescription == null, 'the saves to land');
     });
     await t.pump();
     await t.pump(const Duration(milliseconds: 50));

@@ -5902,12 +5902,22 @@ void main() {
       };
       final check = run.nb.checkFile(copy);
       await paused.future;
+      final left = run.nb.currentId!;
       final open = run.nb.open(id);
       await Future<void>.delayed(const Duration(milliseconds: 100));
       resume.complete();
       await check;
       await open;
       run.nb.syncHook = null;
+      // The open waits for the merge on the chain, so the page it leaves may be
+      // saved too late (leaveSaveLimit) on a slow disk: its edits are then kept
+      // in recovery and retired when that save ends. Wait for that.
+      // Only the page left: an entry for the merged page stays for verify.
+      await run._until(() => !run.nb.isBusy(left), 'the save of the page left to end');
+      await run._until(
+        () => run.nb.recoveryStoreForTest!.indexEntries.where((e) => e.pageId == left).isEmpty,
+        'the kept edits of the page left to be retired',
+      );
       expect(run.nb.current!.page.node(z.id), isNotNull, reason: 'the editor shows the copy');
       run._addBox(m, run.nb.current!);
       await run.nb.flush();
