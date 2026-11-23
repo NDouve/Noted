@@ -255,6 +255,63 @@ void main() {
     });
   });
 
+  group('the feed never ends with a published page that has no file', () {
+    // The last event of a path is not a `published` while no file is there.
+    void expectNoOrphan(List<LocalChange> seen, Directory dir) {
+      final last = <String, LocalChange>{};
+      for (final c in seen) {
+        last[c.path] = c;
+      }
+      for (final c in last.values) {
+        if (c.kind == LocalChangeKind.published && c.path.startsWith(dir.path)) {
+          expect(File(c.path).existsSync(), isTrue, reason: 'published without a file: $seen');
+        }
+      }
+    }
+
+    test('a rollback leaves no published event at the target', () async {
+      final w = await scanned();
+      final seen = <LocalChange>[];
+      final feed = w.nb.localChanges.listen(seen.add);
+      addTearDown(feed.cancel);
+      touch('${pages.path}/${w.b}.canvas'); // queued at the target
+      var n = 0;
+      hook = (point, path) async {
+        if (point == 'move-before-rename' && ++n == 2) throw StateError('boom');
+      };
+      try {
+        await w.nb.move(w.b, parentId: w.x);
+      } on Object {
+        // the move ends in an error; the feed is what is looked at
+      }
+      hook = null;
+      await Future<void>.delayed(Duration.zero);
+      expect(has(pages, w.b), isTrue, reason: 'put back');
+      expect(seen.where((c) => c.kind == LocalChangeKind.published && c.path.startsWith(extra.path)), isEmpty, reason: '$seen');
+      expectNoOrphan(seen, extra);
+    });
+
+    test('a file that sync deleted before step 4 is not announced', () async {
+      final w = await scanned();
+      final seen = <LocalChange>[];
+      final feed = w.nb.localChanges.listen(seen.add);
+      addTearDown(feed.cancel);
+      var n = 0;
+      hook = (point, path) async {
+        if (point == 'move-after-rename' && ++n == 2) File('${extra.path}/${w.bc}.canvas').deleteSync();
+      };
+      try {
+        await w.nb.move(w.b, parentId: w.x);
+      } on Object {
+        // whatever the move reports, the feed is what is looked at
+      }
+      hook = null;
+      await Future<void>.delayed(Duration.zero);
+      expect(has(extra, w.bc), isFalse);
+      expectNoOrphan(seen, extra);
+    });
+  });
+
   group('finding 10: an error that is not a NotebookException', () {
     test('a page already renamed is put back', () async {
       final w = await scanned();

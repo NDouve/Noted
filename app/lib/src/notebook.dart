@@ -6055,6 +6055,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final match = carried != null && nowStamp != null && carried == nowStamp;
     // 2d: the bookkeeping, still inside the locks.
     _known.remove(oldKey);
+    _movePublish.remove(oldKey); // a page leaving a path it was queued at (a rollback)
     _pathId.remove(oldKey);
     _pathId[newKey] = p;
     if (match && knownText != null) {
@@ -6837,8 +6838,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       // A page whose read failed (held by a sync client) still arrived: told
       // without an identity, the consumer reads it.
-      for (final path in _movePublish.values) {
-        _emitPublishedUnread(path);
+      // Only a page still listed there, with its file: not one rolled back, nor
+      // one whose file sync deleted.
+      for (final e in _movePublish.entries) {
+        if (_pathId[e.key] != null && File(e.value).existsSync()) _emitPublishedUnread(e.value);
       }
       _movePublish.clear();
       if (reopen != null && _current == null && _loc.containsKey(reopen)) {
