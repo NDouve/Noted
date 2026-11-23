@@ -296,4 +296,73 @@ void main() {
       expect(await PageStore.findConflictOriginal(up, page, preferred: b.path), isNull);
     });
   });
+  group('moveTo', () {
+    late Directory other;
+    setUp(() async => other = await Directory.systemTemp.createTemp('noted_store_to'));
+    tearDown(() async => other.delete(recursive: true));
+
+    NotedPage page(String id, [String title = '']) => NotedPage.create(PageMeta.create(id: id, title: title, order: 0));
+
+    test('moves the file by name, and the target store reads it', () async {
+      final from = PageStore(dir), to = PageStore(other);
+      await from.save(page('p1', 'One'));
+      final bytes = File(from.pathFor('p1')).readAsBytesSync();
+      final oldPath = from.pathFor('p1');
+      expect(from.moveTo('p1', to), MoveOutcome.moved);
+      expect(File(oldPath).existsSync(), isFalse);
+      expect(File(to.pathFor('p1')).readAsBytesSync(), bytes);
+      expect(File(to.pathFor('p1')).parent.path, other.path);
+      expect((await to.load('p1')).meta.title, 'One');
+    });
+
+    test('keeps the file stamp (a rename does not change it)', () async {
+      final from = PageStore(dir), to = PageStore(other);
+      await from.save(page('p1'));
+      final before = fileStamp(from.pathFor('p1'));
+      from.moveTo('p1', to);
+      expect(fileStamp(to.pathFor('p1')), before);
+    });
+
+    test('drops the source path and adoption', () async {
+      final from = PageStore(dir), to = PageStore(other);
+      final text = writePage(page('p1'));
+      File('${dir.path}/chosen.canvas').writeAsStringSync(text);
+      from.adopt('p1', '${dir.path}/chosen.canvas');
+      expect(from.moveTo('p1', to), MoveOutcome.moved);
+      // The chosen name travels with the file.
+      expect(File('${other.path}/chosen.canvas').existsSync(), isTrue);
+      expect(to.pathFor('p1'), '${other.path}${Platform.pathSeparator}chosen.canvas');
+      // The source forgot it: its path is the default again and a scan does not list it.
+      expect(from.pathFor('p1'), '${dir.path}${Platform.pathSeparator}p1.canvas');
+      expect(await from.scan(), isEmpty);
+      File('${dir.path}/other.canvas').writeAsStringSync(text);
+      expect((await from.scan()).whereType<ReadablePage>().single.path, endsWith('other.canvas'));
+    });
+
+    test('a file at the target is targetExists: nothing moves, nothing changes', () async {
+      final from = PageStore(dir), to = PageStore(other);
+      await from.save(page('p1', 'Source'));
+      await to.save(page('p1', 'Target'));
+      final src = File(from.pathFor('p1')).readAsBytesSync();
+      final dst = File(to.pathFor('p1')).readAsBytesSync();
+      expect(from.moveTo('p1', to), MoveOutcome.targetExists);
+      expect(File(from.pathFor('p1')).readAsBytesSync(), src);
+      expect(File(to.pathFor('p1')).readAsBytesSync(), dst);
+      expect((await from.load('p1')).meta.title, 'Source');
+    });
+
+    test('a target made at the call is not replaced', () async {
+      final from = PageStore(dir), to = PageStore(other);
+      await from.save(page('p1', 'Source'));
+      final outcome = from.moveTo('p1', to, beforeOsCall: () => File('${other.path}/p1.canvas').writeAsStringSync('theirs'));
+      expect(outcome, MoveOutcome.targetExists);
+      expect(File('${other.path}/p1.canvas').readAsStringSync(), 'theirs');
+      expect((await from.load('p1')).meta.title, 'Source');
+    });
+
+    test('a missing source file throws', () {
+      expect(() => PageStore(dir).moveTo('nope', PageStore(other)), throwsA(isA<FileSystemException>()));
+    });
+  });
+
 }

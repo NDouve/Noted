@@ -4,6 +4,9 @@
 
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
+
+import 'package:crypto/crypto.dart' as crypto show Digest, sha256;
 
 import '../attachments/attachments.dart';
 import '../merge/conflict_copy.dart';
@@ -509,6 +512,29 @@ class ContentIdentity {
     return ContentIdentity(await f.length(), await contentHashOfStream(f.openRead()));
   }
 
+  /// The synchronous form of [ofFile], read in chunks, so a check that must not
+  /// await between its read and what follows can use it (a `stillRedundant`
+  /// callback). Throws a [FileSystemException] if the file can't be read.
+  static ContentIdentity ofFileSync(String path) {
+    final sink = _DigestSink();
+    final input = crypto.sha256.startChunkedConversion(sink);
+    final file = File(path).openSync();
+    var length = 0;
+    try {
+      final buffer = Uint8List(64 * 1024);
+      while (true) {
+        final n = file.readIntoSync(buffer);
+        if (n <= 0) break;
+        length += n;
+        input.add(Uint8List.sublistView(buffer, 0, n));
+      }
+    } finally {
+      file.closeSync();
+    }
+    input.close();
+    return ContentIdentity(length, sink.value.toString());
+  }
+
   final int length;
 
   /// Lowercase hex.
@@ -738,4 +764,14 @@ Future<void> _putBackOrThrow(
       target,
     );
   }
+}
+
+class _DigestSink implements Sink<crypto.Digest> {
+  late crypto.Digest value;
+
+  @override
+  void add(crypto.Digest data) => value = data;
+
+  @override
+  void close() {}
 }

@@ -8,7 +8,9 @@ import 'dart:io';
 import '../format/page_format.dart';
 import '../merge/conflict_copy.dart';
 import '../model/page.dart';
+import 'exclusive_move.dart';
 import 'exclusive_publish.dart';
+import 'file_stamp.dart';
 import 'replace_if_unchanged.dart';
 
 /// The result of scanning one page file.
@@ -19,12 +21,17 @@ sealed class PageEntry {
 }
 
 final class ReadablePage extends PageEntry {
-  const ReadablePage(super.path, this.meta, {this.conflicted = false});
+  const ReadablePage(super.path, this.meta, {this.conflicted = false, this.stamp});
 
   final PageMeta meta;
 
   /// Some box on the page has an unresolved conflict (0020).
   final bool conflicted;
+
+  /// The file's [FileStamp], taken before and after it was read, when [PageStore.scan]
+  /// was asked for stamps and the two were equal. Null otherwise (no stamps asked,
+  /// the stamp failed, or the file changed during its read).
+  final FileStamp? stamp;
 }
 
 /// A sync client's conflict copy of another page file (same page id, a name
@@ -85,7 +92,16 @@ class PageStore {
   /// and leaves set-aside files for the writer that made them (they may belong
   /// to a write still under way on another device); they are listed as files
   /// that can't be opened.
-  Future<List<PageEntry>> scan({bool createFolder = true, bool sweep = true}) async {
+  ///
+  /// [stamps] stamps each file listed as a [ReadablePage] before and after its
+  /// read (see [ReadablePage.stamp]); [afterFileRead] runs after a file's read,
+  /// before the second stamp (a seam for tests).
+  Future<List<PageEntry>> scan({
+    bool createFolder = true,
+    bool sweep = true,
+    bool stamps = false,
+    void Function(String path)? afterFileRead,
+  }) async {
     if (createFolder) await directory.create(recursive: true);
     // Put back what a crashed or failed replace left under a set-aside name
     // (see [sweepAsideFiles]); one that can't be moved yet is listed below.
@@ -94,6 +110,7 @@ class PageStore {
     _released = const {};
     final entries = <PageEntry>[];
     final read = <String, (String, NotedPage)>{}; // by file name
+    final stamped = <String, FileStamp>{}; // by path
     await for (final f in directory.list()) {
       if (f is File && (f.path.endsWith(asideSuffix) || f.path.endsWith(verifiedSuffix))) {
         entries.add(UnreadablePage(f.path, 'left over from a replace; not put back yet'));
@@ -101,7 +118,14 @@ class PageStore {
       }
       if (f is! File || !f.path.endsWith(extension)) continue;
       try {
-        read[_name(f.path)] = (f.path, readPage(await f.readAsString()));
+        final before = stamps ? fileStamp(f.path) : null;
+        final page = readPage(await f.readAsString());
+        read[_name(f.path)] = (f.path, page);
+        if (stamps) {
+          afterFileRead?.call(f.path);
+          final after = fileStamp(f.path);
+          if (before != null && before == after) stamped[f.path] = before;
+        }
       } on PageFormatException catch (e) {
         entries.add(UnreadablePage(f.path, e.message));
       } on FileSystemException catch (e) {
@@ -172,7 +196,7 @@ class PageStore {
         continue;
       }
       _paths[page.id] = path;
-      entries.add(ReadablePage(path, page.meta, conflicted: hasConflicts(page)));
+      entries.add(ReadablePage(path, page.meta, conflicted: hasConflicts(page), stamp: stamped[path]));
     }
     return entries;
   }
@@ -252,8 +276,15 @@ class PageStore {
   ///
   /// [beforePublish] runs after the temporary file is written and before it is
   /// published; it is a seam for tests.
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) =>
-      saveNewText(page, writePage(page), beforePublish: beforePublish);
+  ///
+  /// [onPublishStamp] is called, only when the publish landed, with the
+  /// temporary file's [FileStamp] taken right before the publish (a rename keeps
+  /// it, so it is the stamp of the published file). Null if the stamp failed.
+  Future<bool> saveNew(
+    NotedPage page, {
+    Future<void> Function()? beforePublish,
+    void Function(FileStamp?)? onPublishStamp,
+  }) => saveNewText(page, writePage(page), beforePublish: beforePublish, onPublishStamp: onPublishStamp);
 
   /// As [saveNew], but writes [text] (the page's file text, for putting back a
   /// file byte for byte); [page] is the page [text] holds.
@@ -261,13 +292,16 @@ class PageStore {
     NotedPage page,
     String text, {
     Future<void> Function()? beforePublish,
+    void Function(FileStamp?)? onPublishStamp,
   }) async {
     final path = _pathFor(page.id);
     final tmp = File('$path.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
     final bool published;
+    FileStamp? stamp;
     try {
       await tmp.writeAsString(text, flush: true);
       if (beforePublish != null) await beforePublish();
+      if (onPublishStamp != null) stamp = fileStamp(tmp.path);
       published = await publishExclusive(tmp, path);
     } catch (_) {
       if (await tmp.exists()) await tmp.delete();
@@ -278,6 +312,7 @@ class PageStore {
       return false;
     }
     _paths[page.id] = path;
+    onPublishStamp?.call(stamp);
     return true;
   }
 
@@ -293,6 +328,10 @@ class PageStore {
   /// Callers must serialise this with [scan] on the same folder (see [scan]).
   ///
   /// The hooks are seams for tests (see [replaceIfUnchanged]).
+  ///
+  /// [onPublishStamp] is called, only when the new file replaced the old one,
+  /// with the temporary file's [FileStamp] taken right before the publish (see
+  /// [saveNew]).
   Future<ReplaceResult> saveIfUnchanged(
     NotedPage page,
     String? expectedText, {
@@ -303,9 +342,11 @@ class PageStore {
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
+    void Function(FileStamp?)? onPublishStamp,
   }) async {
     final path = _pathFor(page.id);
     final tmp = File('$path.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
+    FileStamp? stamp;
     try {
       final written = writePage(page);
       await tmp.writeAsString(written, flush: true);
@@ -316,13 +357,19 @@ class PageStore {
         expected,
         beforeMoveAside: beforeMoveAside,
         afterRead: afterRead,
-        beforePublish: beforePublish,
+        beforePublish: () {
+          beforePublish?.call();
+          if (onPublishStamp != null) stamp = fileStamp(tmp.path);
+        },
         beforeRestore: beforeRestore,
         beforeAsideDelete: beforeAsideDelete,
         beforeFinalCheck: beforeFinalCheck,
         afterFinalRead: afterFinalRead,
       );
-      if (result.replaced) _paths[page.id] = path;
+      if (result.replaced) {
+        _paths[page.id] = path;
+        onPublishStamp?.call(stamp);
+      }
       return result;
     } finally {
       if (await tmp.exists()) await tmp.delete();
@@ -355,6 +402,27 @@ class PageStore {
     );
     if (r.deleted || r.outcome == DeleteOutcome.absent) _paths.remove(pageId);
     return r;
+  }
+
+  /// Moves the page's file to [to]'s folder under the same file name, with
+  /// [moveExclusive]: it never replaces a file and never deletes one, and it
+  /// never reads the file. The source's path and adoption are dropped on
+  /// [MoveOutcome.moved], and [to] then reads and writes the page at the new
+  /// path. Other outcomes change nothing. Throws as [moveExclusive] does, and a
+  /// [FileSystemException] if the source file is missing.
+  ///
+  /// The caller serialises it with scans and saves of both folders.
+  /// [beforeOsCall] is a seam for tests.
+  MoveOutcome moveTo(String pageId, PageStore to, {void Function()? beforeOsCall}) {
+    final from = _pathFor(pageId);
+    final target = '${to.directory.path}${Platform.pathSeparator}${_name(from)}';
+    final outcome = moveExclusive(from, target, beforeOsCall: beforeOsCall);
+    if (outcome == MoveOutcome.moved) {
+      _paths.remove(pageId);
+      _adopted.remove(pageId);
+      to._paths[pageId] = target;
+    }
+    return outcome;
   }
 
   /// Makes [path] (a page file of this folder holding [pageId]) the file this
