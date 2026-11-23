@@ -233,6 +233,28 @@ void main() {
     });
   });
 
+  group('the feed when the step-4 read fails', () {
+    test('a moved page whose read at the target throws is published without an identity', () async {
+      final w = await scanned();
+      final seen = <LocalChange>[];
+      final feed = w.nb.localChanges.listen(seen.add);
+      addTearDown(feed.cancel);
+      touch('${pages.path}/${w.bc}.canvas'); // stamp mismatch: step 4 reads it
+      hook = (point, path) async {
+        if (point == 'check-read' && path.endsWith('${w.bc}.canvas') && path.contains('Elsewhere')) {
+          throw const FileSystemException('held by a sync client');
+        }
+      };
+      expect(await w.nb.move(w.b, parentId: w.x), isTrue);
+      await Future<void>.delayed(Duration.zero);
+      final gone = seen.indexWhere((c) => c.kind == LocalChangeKind.deleted && c.path.endsWith('${w.bc}.canvas'));
+      final came = seen.indexWhere((c) => c.kind == LocalChangeKind.published && c.path.endsWith('${w.bc}.canvas') && c.path.contains('Elsewhere'));
+      expect(gone, isNonNegative);
+      expect(came, greaterThan(gone), reason: '$seen');
+      expect(seen[came].identity, isNull);
+    });
+  });
+
   group('finding 10: an error that is not a NotebookException', () {
     test('a page already renamed is put back', () async {
       final w = await scanned();

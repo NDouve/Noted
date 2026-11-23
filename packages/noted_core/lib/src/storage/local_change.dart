@@ -16,7 +16,7 @@ class LocalChange {
   /// The absolute path of the file.
   final String path;
 
-  /// The identity of what was written; null for a delete.
+  /// The identity of what was written; null for a delete, and for a moved page Noted did not read (the consumer reads it).
   final ContentIdentity? identity;
 
   @override

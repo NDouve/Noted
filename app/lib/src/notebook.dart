@@ -1584,7 +1584,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   final Map<String, String> _baseText = {};
   // Moved files (by path key) whose arrival the change feed hasn't been told of
   // for want of their text: the next read of the file tells it.
-  final Set<String> _movePublish = {};
+  final Map<String, String> _movePublish = {}; // key to path
   // Page id of each page file (by path key).
   late final Map<String, String> _pathId = _TrackedMap(_fileStamps.remove);
   // The file stamp of each page file Noted last classified (by path key): what a
@@ -6074,7 +6074,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } else {
       // The identity comes from the read that step 4 makes of the file (a
       // rollback publishes the source the same way).
-      _movePublish.add(newKey);
+      _movePublish[newKey] = newPath;
     }
     // 2c: its images and files.
     final damaged = <DamagedKept>[];
@@ -6832,10 +6832,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           if (_disposed) break;
           await checkFile(path);
         }
-        _movePublish.clear();
       } on Object catch (e) {
         debugPrint('Checking the moved pages failed: $e');
       }
+      // A page whose read failed (held by a sync client) still arrived: told
+      // without an identity, the consumer reads it.
+      for (final path in _movePublish.values) {
+        _emitPublishedUnread(path);
+      }
+      _movePublish.clear();
       if (reopen != null && _current == null && _loc.containsKey(reopen)) {
         try {
           await open(reopen);
@@ -12883,7 +12888,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _fileGone(loc, key, path);
       return false;
     }
-    if (_movePublish.remove(key)) _emitPublished(path, null, () => text!);
+    if (_movePublish.remove(key) != null) _emitPublished(path, null, () => text!);
     if (conflictCopyOriginalNames(path.split(RegExp(r'[\\/]')).last).isNotEmpty) {
       if (_pullOnly(loc)) {
         // Never merged here: a copy with a same-id original is listed as a
