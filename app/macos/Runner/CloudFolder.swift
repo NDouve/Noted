@@ -39,8 +39,13 @@
 //   done({id}), cancel({id})        -> null. Unknown ids are ignored.
 //   versions({path})                -> one entry per unresolved conflict version:
 //                                   {id, tmpPath}, or {id, error} with no tmpPath
-//                                   for a version that could not be copied (or
-//                                   timed out after 60 s). tmpPath is an
+//                                   for a version that could not be copied.
+//                                   The whole call has one 60 s deadline;
+//                                   versions not reached (or in progress) at
+//                                   the deadline come back {id, error:
+//                                   "timeout"}. Their temps may still appear
+//                                   later; Dart's leftover-temp rule handles
+//                                   them. tmpPath is an
 //                                   exclusively created
 //                                   `.<name>.noted-version-<16 hex>.tmp` in the
 //                                   target's folder; it holds a copy of the
@@ -50,8 +55,9 @@
 //   resolveVersion({path, id})      -> bool: true if a matching unresolved
 //                                   version was found and its isResolved set
 //                                   (inside a coordinated write of the item);
-//                                   false if none matched. Never
-//                                   removeOtherVersions.
+//                                   false if none matched. A coordination
+//                                   failure or a 60 s timeout is the error code
+//                                   "coordination". Never removeOtherVersions.
 //   startDownloading({path})        -> null (startDownloadingUbiquitousItem).
 //
 // Swift -> Dart (invokeMethod, always from the main thread, never awaited)
@@ -73,8 +79,13 @@
 //
 // Holds are released on cancel, done, reset, and when the app terminates or the
 // CloudFolder is deallocated (there is no FlutterPlugin detach hook here).
-// Root paths are normalized (resolvingSymlinksInPath, standardizedFileURL) on
-// both sides of every lookup.
+// Paths Swift returns or sends (resolve, pick, changed) are realpaths, equal to
+// Dart's resolveSymbolicLinks (so /private/var, not /var); a missing path is
+// the realpath of its nearest existing ancestor plus the tail. Every lookup
+// normalizes the same way.
+//
+// versions and resolveVersion take their own coordinated access, so Dart never
+// calls them inside a coordinate hold.
 
 import Foundation
 
@@ -260,8 +271,8 @@ final class CloudFolder: NSObject {
         return bad(result, "path, id")
       }
       DispatchQueue.global(qos: .userInitiated).async {
-        let ok = self.resolveVersion(path: path, id: id)
-        DispatchQueue.main.async { result(ok) }
+        let out = self.resolveVersion(path: path, id: id)
+        DispatchQueue.main.async { result(out) }
       }
     case "startDownloading":
       guard let path = args["path"] as? String else { return bad(result, "path") }
@@ -313,8 +324,8 @@ final class CloudFolder: NSObject {
     if let existing = roots[key] { return existing.started }
     let started = url.startAccessingSecurityScopedResource()
     let presenter = FolderPresenter(url: url) { [weak self] path, to in
-      var args: [String: Any] = ["path": path]
-      if let to = to { args["to"] = to }
+      var args: [String: Any] = ["path": CloudFolder.normalize(path)]
+      if let to = to { args["to"] = CloudFolder.normalize(to) }
       self?.send("changed", args)
     }
     NSFileCoordinator.addFilePresenter(presenter)
@@ -322,8 +333,28 @@ final class CloudFolder: NSObject {
     return started
   }
 
-  private static func normalize(_ path: String) -> String {
-    return URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+  /// The realpath, as Dart's resolveSymbolicLinks gives it. For a path that does
+  /// not exist, the realpath of the nearest existing ancestor plus the tail.
+  static func normalize(_ path: String) -> String {
+    let standard = URL(fileURLWithPath: path).standardizedFileURL
+    var url = standard
+    var tail: [String] = []
+    while url.path != "/" && !url.path.isEmpty {
+      if let real = realPath(url.path) {
+        var out = URL(fileURLWithPath: real)
+        for part in tail.reversed() { out.appendPathComponent(part) }
+        return out.path
+      }
+      tail.append(url.lastPathComponent)
+      url.deleteLastPathComponent()
+    }
+    return standard.path
+  }
+
+  private static func realPath(_ path: String) -> String? {
+    guard let r = Darwin.realpath(path, nil) else { return nil }
+    defer { free(r) }
+    return String(cString: r)
   }
 
   private func resolve(_ b64: String) throws -> [String: Any] {
@@ -525,12 +556,18 @@ final class CloudFolder: NSObject {
     let url = URL(fileURLWithPath: path)
     guard let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) else { return [] }
     var out: [[String: Any]] = []
+    let deadline = Date().addingTimeInterval(60)
     for version in versions {
       guard let id = versionId(version) else {
         out.append(["id": "", "error": "The version has no identifier."])
         continue
       }
-      let copy = copyVersion(version, of: url)
+      let remaining = deadline.timeIntervalSinceNow
+      if remaining <= 0 {
+        out.append(["id": id, "error": "timeout"])
+        continue
+      }
+      let copy = copyVersion(version, of: url, timeout: remaining)
       if let tmp = copy.path {
         out.append(["id": id, "tmpPath": tmp])
       } else {
@@ -542,7 +579,9 @@ final class CloudFolder: NSObject {
 
   /// Copies one version into an exclusively created temp beside `target`, with
   /// a coordinated read of the version and a coordinated write of the folder.
-  private func copyVersion(_ version: NSFileVersion, of target: URL) -> (path: String?, error: String?) {
+  private func copyVersion(_ version: NSFileVersion, of target: URL, timeout: TimeInterval)
+    -> (path: String?, error: String?)
+  {
     let folder = target.deletingLastPathComponent()
     let name = target.lastPathComponent
     let coordinator = NSFileCoordinator(filePresenter: presenter(containing: target.path))
@@ -565,12 +604,12 @@ final class CloudFolder: NSObject {
       tmpPath = made
       box.unlock()
     }
-    if done.wait(timeout: .now() + 60) == .timedOut {
+    if done.wait(timeout: .now() + timeout) == .timedOut {
       box.lock()
       abandoned = true
       box.unlock()
       coordinator.cancel()
-      return (nil, "Timed out waiting for coordination.")
+      return (nil, "timeout")
     }
     box.lock()
     defer { box.unlock() }
@@ -603,14 +642,29 @@ final class CloudFolder: NSObject {
   }
 
   /// Runs on a background queue, inside a coordinated write of the item.
-  private func resolveVersion(path: String, id: String) -> Bool {
+  /// Returns a Bool, or a FlutterError when the coordination failed or timed out.
+  private func resolveVersion(path: String, id: String) -> Any {
     let url = URL(fileURLWithPath: path)
     let coordinator = NSFileCoordinator(filePresenter: presenter(containing: path))
     let wanted = decodeIdentifier(id)
+    let intent = NSFileAccessIntent.writingIntent(with: url, options: [])
+    let queue = OperationQueue()
+    let done = DispatchSemaphore(value: 0)
+    let box = NSLock()
+    var abandoned = false
+    var failed = false
     var found = false
-    var coordError: NSError?
-    coordinator.coordinate(writingItemAt: url, options: [], error: &coordError) { itemURL in
-      guard let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: itemURL) else { return }
+    coordinator.coordinate(with: [intent], queue: queue) { error in
+      defer { done.signal() }
+      box.lock()
+      let skip = abandoned
+      if error != nil { failed = true }
+      box.unlock()
+      if skip || error != nil { return }
+      guard let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: intent.url) else {
+        return
+      }
+      var any = false
       for version in versions {
         var same = self.versionId(version) == id
         if !same, let wanted = wanted {
@@ -618,10 +672,24 @@ final class CloudFolder: NSObject {
         }
         if same {
           version.isResolved = true
-          found = true
+          any = true
         }
       }
+      box.lock()
+      found = any
+      box.unlock()
     }
-    return found
+    let err = FlutterError(
+      code: "coordination", message: "The item could not be coordinated.", details: nil)
+    if done.wait(timeout: .now() + 60) == .timedOut {
+      box.lock()
+      abandoned = true
+      box.unlock()
+      coordinator.cancel()
+      return err
+    }
+    box.lock()
+    defer { box.unlock() }
+    return failed ? err : found
   }
 }
