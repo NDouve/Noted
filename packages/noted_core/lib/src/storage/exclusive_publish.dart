@@ -50,8 +50,8 @@ bool publishExclusiveSync(
   final bool ok;
   try {
     if (Platform.isWindows) {
-      _checkWindowsName(target);
-      ok = _moveWindows(_windowsPath(from), _windowsPath(target), beforeOsCall);
+      checkWindowsName(target);
+      ok = _moveWindows(windowsPath(from), windowsPath(target), beforeOsCall);
     } else if (Platform.isLinux ||
         Platform.isMacOS ||
         Platform.isIOS ||
@@ -168,7 +168,10 @@ final _reservedName = RegExp(
 /// Throws if the last name of [path] is one Windows would quietly change
 /// (trailing dot or space) or treat as a device (CON, NUL, COM1, ... with or
 /// without an extension).
-void _checkWindowsName(String path) {
+///
+/// Public for `exclusive_move.dart` and `file_stamp.dart`; not exported by the
+/// package's libraries.
+void checkWindowsName(String path) {
   final name = path.split(RegExp(r'[\\/]')).last;
   if (name.endsWith('.') || name.endsWith(' ')) {
     throw FileSystemException('Name ends with a dot or a space', path);
@@ -182,7 +185,10 @@ void _checkWindowsName(String path) {
 /// with the `\\?\` (or `\\?\UNC\`) prefix added only when it is 260 characters
 /// or longer, which turns off the length limit. `\\.\` and `\\?\` paths pass
 /// through unchanged. A drive-relative path (`D:foo`) on another drive throws.
-String _windowsPath(String path) {
+///
+/// Public for `exclusive_move.dart` and `file_stamp.dart`; not exported by the
+/// package's libraries.
+String windowsPath(String path) {
   var s = path.replaceAll('/', r'\');
   if (s.startsWith(r'\\.\') || s.startsWith(r'\\?\')) return s;
   final drive = RegExp(r'^([A-Za-z]):(?!\\)').firstMatch(s);
