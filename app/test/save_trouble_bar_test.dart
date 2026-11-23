@@ -154,6 +154,26 @@ void main() {
     expect(shown, isTrue);
   });
 
+  testWidgets('the kept notice of a held folder uses the banner\'s promise', (tester) async {
+    String textOf(KeptNotice n) => (keptNoticeBar(n, () {}).content as Text).data!;
+    expect(
+      textOf(
+        const KeptNotice(
+          pageId: 'p',
+          title: 'T',
+          reason: 'its folder now holds another binder',
+          promise: 'Your changes are kept and are saved in this folder if you choose Use this binder.',
+        ),
+      ),
+      'Couldn\'t save "T" (its folder now holds another binder). '
+      'Your changes are kept and are saved in this folder if you choose Use this binder.',
+    );
+    expect(
+      textOf(const KeptNotice(pageId: 'p', title: 'T', reason: 'it is locked')),
+      'Couldn\'t save "T" (it is locked). Your changes are kept in local recovery and will be saved when it works again.',
+    );
+  });
+
   testWidgets('"Noted is already open." has Quit', (tester) async {
     await tester.pumpWidget(const AlreadyOpenApp());
     expect(find.text('Noted is already open.'), findsOneWidget);

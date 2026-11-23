@@ -298,6 +298,32 @@ void main() {
           greaterThanOrEqualTo(4.5),
         );
       });
+
+      testWidgets('read-only banner: the reason takes the width, no overflow at 360', (
+        t,
+      ) async {
+        const reason =
+            'This folder now holds another binder, so this page is read-only. Your unsaved changes are kept and are saved in this folder if you choose Use this binder.';
+        Future<Size> reasonSize(double width) async {
+          t.view.physicalSize = Size(width, 600);
+          t.view.devicePixelRatio = 1;
+          addTearDown(t.view.reset);
+          await t.pumpWidget(
+            MaterialApp(
+              theme: theme,
+              home: const Scaffold(body: ReadOnlyBanner(reason: reason)),
+            ),
+          );
+          return t.getSize(find.text(reason));
+        }
+
+        final wide = await reasonSize(1200);
+        expect(wide.width, greaterThan(600), reason: 'not squeezed to half the banner');
+        expect(t.takeException(), isNull);
+        await reasonSize(360);
+        expect(t.takeException(), isNull, reason: 'no overflow at phone width');
+        expect(find.text(ReadOnlyBanner.paused), findsOneWidget);
+      });
     });
   }
 }

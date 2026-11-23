@@ -209,7 +209,7 @@ class PullEngine {
     }
     return SyncStatus(
       SyncState.paused,
-      'Unexpected problem (${e.runtimeType})',
+      'unexpected problem (${e.runtimeType})',
     );
   }
 
@@ -230,7 +230,7 @@ class PullEngine {
   Future<void> _round() async {
     _roundIssues = [];
     if (!await workingCopy.exists()) {
-      throw _PauseRound('The $_name folder is missing on this device');
+      throw _PauseRound('the $_name folder is missing on this device');
     }
     await _start();
     final j = _journal!;
@@ -298,8 +298,8 @@ class PullEngine {
         SyncStatus(
           SyncState.paused,
           driver.caps.serverHash
-              ? 'Downloads keep failing the checksum from $_name'
-              : 'Downloads keep not matching what $_name lists',
+              ? 'downloads keep failing the checksum from $_name'
+              : 'downloads keep not matching what $_name lists',
         ),
       );
     } else {

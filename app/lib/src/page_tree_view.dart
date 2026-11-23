@@ -434,10 +434,10 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     final m = NotedMetrics.of(context);
     return Padding(
       key: ValueKey('binder-kept-${b.path}'),
-      padding: EdgeInsets.only(left: 36, right: m.space3, top: m.space1, bottom: m.space1),
+      padding: EdgeInsets.only(left: 36, right: m.space3, top: b.other == null ? m.space2 : m.space1, bottom: m.space1),
       child: Text(
         'Changes to $pages ${pages == 1 ? 'page' : 'pages'} kept',
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: NotedColors.of(context).textDisabled),
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
       ),
     );
   }

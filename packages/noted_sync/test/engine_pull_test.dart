@@ -602,7 +602,7 @@ void _cases(RemoteKind kind) {
         expect(h.stateFiles('tmp'), isEmpty);
       }
       expect(h.engine.status.state, SyncState.paused);
-      expect(h.engine.status.reason, contains('checksum'));
+      expect(h.engine.status.reason, 'downloads keep failing the checksum from OneDrive');
       h.fake.corruptContent = false;
       await h.round();
       expect(h.read('a.canvas'), 'AAA');
