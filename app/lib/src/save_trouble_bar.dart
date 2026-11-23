@@ -291,8 +291,8 @@ SnackBar keptNoticeBar(KeptNotice n, VoidCallback show) => SnackBar(
   duration: const Duration(seconds: 30),
   showCloseIcon: true,
   content: Text(
-    'Couldn\'t save "${n.title}" (${n.reason}). Your changes are kept in local recovery and will be saved '
-    'when it works again.',
+    "Couldn't save \"${n.title}\" (${n.reason}). "
+    '${n.promise ?? 'Your changes are kept in local recovery and will be saved when it works again.'}',
   ),
   action: SnackBarAction(label: 'Show', onPressed: show),
 );

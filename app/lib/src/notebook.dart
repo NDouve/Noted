@@ -1173,7 +1173,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Entries that were read but couldn't be applied, by the entry's path
   // without extension and its time (a newer generation in the same file starts
   // clean): the path and why. Cleared once the entry is replayed (0077).
-  final Map<String, ({String path, String why})> _replayProblems = {};
+  final Map<String, ({String path, String why, bool kept})> _replayProblems = {};
 
   // Pages whose recovered edits landed and were retired, but whose file was
   // then changed so that it can no longer be read as the page (the edits are
@@ -1234,7 +1234,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// entries that couldn't be applied and kept files that couldn't be landed.
   List<UnreadablePage> get recoveryOwnDamaged => [
     for (final p in _replayProblems.values)
-      UnreadablePage(p.path, "Recovery can't finish: ${p.why}${p.why.endsWith(')') ? '' : '.'}"),
+      UnreadablePage(p.path, p.kept ? p.why : "Recovery can't finish: ${p.why}${p.why.endsWith(')') ? '' : '.'}"),
     for (final p in _landedProblems.values) UnreadablePage(p.path, '${p.why}.'),
     for (final p in _keptProblems.entries) UnreadablePage(p.key, p.value),
   ];
@@ -1602,6 +1602,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// Edits put in recovery on leaving a page: the window shows a notice.
   Stream<KeptNotice> get keptNotices => _keptNotices.stream;
 
+  final StreamController<String> _keptCleared = StreamController<String>.broadcast();
+
+  /// A page whose kept-edits notice no longer holds (its edits landed): the
+  /// window takes the notice down.
+  Stream<String> get keptNoticesCleared => _keptCleared.stream;
+
+  void _clearKeptNotice(String pageId) {
+    if (_told.remove(pageId) && !_keptCleared.isClosed) _keptCleared.add(pageId);
+  }
+
   /// Whether page [id] is held by something (replaying, a save left behind, a
   /// delete, a move, a discard): it is not replayed, deleted or moved now, and
   /// opening it gives the preview.
@@ -1745,6 +1755,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     BinderHold.otherBinder => 'its folder now holds another binder',
     BinderHold.damaged => "its binder's file can't be read",
     BinderHold.missing => 'its binder file is missing',
+  };
+
+  // What is promised for edits kept in a folder held for [h], in the banner's
+  // words; null where there is no such promise.
+  static String? _heldPromise(BinderHold h) => switch (h) {
+    BinderHold.otherBinder => 'Your changes are kept and are saved here if you choose Use this binder.',
+    BinderHold.damaged => 'Your changes are kept until it can be read.',
+    BinderHold.missing => null,
   };
 
   /// The hold of the binder whose folder is [folder] (a recovery entry's
@@ -8153,7 +8171,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (hold != null && keep.safe && session != null && identical(session, _session) && !session.ended) {
       // A held folder (held edits): the edits are kept, with the kept notice and
       // no failing bar. They land when the folder holds this binder again.
-      _announceKept(toSave, reason: _heldReason(hold));
+      _announceKept(toSave, reason: _heldReason(hold), promise: _heldPromise(hold));
       _syncReadOnly();
       return SaveResult(SaveEnd.failed, keep);
     }
@@ -8599,7 +8617,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (identical(session, _session) && _trouble.pageId == saved.id && _trouble.kind != TroubleKind.preview) {
       _setTrouble(TroubleState.saved);
     }
-    _told.remove(saved.id);
+    _clearKeptNotice(saved.id);
     _backoff.reset();
     if (rec != null && rec.indexEntries.isNotEmpty) _backoff.schedule();
   }
@@ -8781,12 +8799,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (await _recoverEntry(rec, e, loc)) {
         _replayProblems.remove(key);
         _replayHardFailure.remove(e.pageId);
-        _told.remove(e.pageId);
+        _clearKeptNotice(e.pageId);
         return true;
       }
     } on _ReplayFailure catch (ex) {
       debugPrint('Recovered page ${e.pageId} not accepted: ${ex.detail ?? ex.why}');
-      _replayProblems[key] = (path: path, why: ex.why);
+      _replayProblems[key] = (path: path, why: ex.why, kept: false);
       if (!ex.transient) _replayHardFailure.add(e.pageId);
     } on Object catch (ex) {
       // A write failure; the reading failures are _ReplayFailures above.
@@ -8796,6 +8814,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         why:
             'the edits kept for "${_titleOrUntitled(e.page.meta.title)}" could not be saved into '
             'the page file${_osReason(ex)}',
+        kept: false,
       );
     }
     return false;
@@ -9041,7 +9060,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       m.timer = null;
       _replayProblems[_entryKey(e)] = (
         path: _entryPath(e),
-        why: 'Sync keeps putting back an older version of $label; the merged copy is kept in recovery',
+        why: 'Sync keeps putting back an older version of $label. The merged copy is kept in recovery.',
+        kept: true,
       );
     } else {
       _armConsumed(m);
@@ -13162,10 +13182,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Tells the user, once per failure streak, that [page]'s edits are in
   // recovery.
-  void _announceKept(NotedPage page, {String? reason}) {
+  void _announceKept(NotedPage page, {String? reason, String? promise}) {
     if (_disposed || !_told.add(page.id)) return;
     reason ??= _trouble.pageId == page.id && _trouble.reason.isNotEmpty ? _trouble.reason : 'it could not be saved';
-    _keptNotices.add(KeptNotice(pageId: page.id, title: _titleOrUntitled(page.meta.title), reason: reason));
+    _keptNotices.add(
+      KeptNotice(pageId: page.id, title: _titleOrUntitled(page.meta.title), reason: reason, promise: promise),
+    );
   }
 
   Future<void> _closeCurrent() async {
@@ -14046,6 +14068,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     _backoff.dispose();
     unawaited(_keptNotices.close());
+    unawaited(_keptCleared.close());
     _folderTimer?.cancel();
     _settingsTimer?.cancel();
     for (final t in [..._coverTimers.values, ..._asideTimers.values]) {

@@ -1018,6 +1018,38 @@ void main() {
     await stop();
   });
 
+  test('a held folder\'s kept notice promises what the banner does, and clears when the edit lands', () async {
+    await start();
+    final cleared = <String>[];
+    final sub = nb.keptNoticesCleared.listen(cleared.add);
+    final box = addBox();
+    swap(_Swap.other);
+    await check();
+    expect(
+      keptNotices.where((n) => n.pageId == pageId).map((n) => n.promise),
+      ['Your changes are kept and are saved here if you choose Use this binder.'],
+    );
+    await nb.useThisBinder(folder.path);
+    await nb.flush();
+    await realIoUntil(() => fileHas(pageId, box) && kept().isEmpty, 'the edits to land');
+    await realIoUntil(() => cleared.contains(pageId), 'the notice to clear');
+    expect(nb.trouble.isTrouble, isFalse);
+    await sub.cancel();
+    await stop();
+  });
+
+  test('a damaged binder file: the kept notice says kept until it can be read', () async {
+    await start();
+    addBox();
+    swap(_Swap.damaged);
+    await check();
+    expect(
+      keptNotices.where((n) => n.pageId == pageId).map((n) => n.promise),
+      ['Your changes are kept until it can be read.'],
+    );
+    await stop();
+  });
+
   test('24. Delete of a copy while the binder file is missing, then Put back: the hold clears and the edits land', () async {
     await start();
     final box = addBox();

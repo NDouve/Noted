@@ -298,8 +298,8 @@ class PullEngine {
         SyncStatus(
           SyncState.paused,
           driver.caps.serverHash
-              ? 'Downloads keep failing the checksum from $_name'
-              : 'Downloads keep not matching what $_name lists',
+              ? 'downloads keep failing the checksum from $_name'
+              : 'downloads keep not matching what $_name lists',
         ),
       );
     } else {

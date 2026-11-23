@@ -369,11 +369,16 @@ class KeptNotice {
     required this.pageId,
     required this.title,
     required this.reason,
+    this.promise,
   });
 
   final String pageId;
   final String title;
   final String reason;
+
+  /// What is promised about the kept edits, when the folder is held (the
+  /// banner's words, a sentence); null: saving is tried again.
+  final String? promise;
 }
 
 // Marks the code of one running chain job; cleared when the job ends, so a

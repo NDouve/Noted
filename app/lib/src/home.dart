@@ -137,6 +137,9 @@ class _HomeState extends State<Home> {
 
   StreamSubscription<String>? _notices;
   StreamSubscription<KeptNotice>? _kept;
+  StreamSubscription<String>? _keptCleared;
+  String? _keptShownFor;
+  ScaffoldFeatureController<SnackBar, SnackBarClosedReason>? _keptBar;
 
   @override
   void initState() {
@@ -146,6 +149,7 @@ class _HomeState extends State<Home> {
     _search.addListener(_searchChanged);
     _notices = notebook.attachmentNotices.listen(_showNotice);
     _kept = notebook.keptNotices.listen(_showKept);
+    _keptCleared = notebook.keptNoticesCleared.listen(_hideKept);
     final settings = widget.settings;
     if (settings != null) {
       unawaited(
@@ -166,7 +170,16 @@ class _HomeState extends State<Home> {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.maybeOf(context);
     messenger?.hideCurrentSnackBar();
-    messenger?.showSnackBar(keptNoticeBar(n, () => unawaited(_showKeptPage(n.pageId))));
+    _keptShownFor = n.pageId;
+    _keptBar = messenger?.showSnackBar(keptNoticeBar(n, () => unawaited(_showKeptPage(n.pageId))));
+  }
+
+  // The edits of [pageId] landed: its kept notice no longer holds.
+  void _hideKept(String pageId) {
+    if (_keptShownFor != pageId) return;
+    _keptShownFor = null;
+    _keptBar?.close();
+    _keptBar = null;
   }
 
   Future<void> _showKeptPage(String id) async {
@@ -365,6 +378,7 @@ class _HomeState extends State<Home> {
     _titleHighlight.dispose();
     unawaited(_notices?.cancel());
     unawaited(_kept?.cancel());
+    unawaited(_keptCleared?.cancel());
     _searchCommands.dispose();
     _findRequests.dispose();
     _registry.dispose();
