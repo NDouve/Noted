@@ -31,8 +31,8 @@ class CorruptingStore extends PageStore {
   }
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
-    final ok = await super.saveNew(page, beforePublish: beforePublish);
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) async {
+    final ok = await super.saveNew(page, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
     if (ok && ++saves == corruptAt) {
       final f = File('${directory.path}${Platform.pathSeparator}${page.id}.canvas');
       await f.writeAsString(' ', mode: FileMode.append);
@@ -156,7 +156,9 @@ void main() {
       expect(has(extra, x), isTrue);
     });
 
-    test('a failed verification keeps the sources and removes the copies', () async {
+    test('a copy that fails verification keeps the sources and removes the copies', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       // Writes to the extra folder: creating x is #1, then the move's two copies.
       final nb = make(factory: (d) => CorruptingStore(d, corruptAt: 3));
       await nb.load();

@@ -132,6 +132,10 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
   StreamSubscription<FileSystemEvent>? _watcher;
   bool _disposed = false;
 
+  // Damaged files already reported while this page is open (by path), so a
+  // damaged file whose aside name is taken is said once, not at every read.
+  final Set<String> _damagedReported = {};
+
   /// The assets folder.
   Directory get folder => Directory('${pageFolder.path}${Platform.pathSeparator}${assetsFolderName(pageId)}');
 
@@ -236,15 +240,18 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
   // nothing is ever overwritten. When no copy could be stored, this throws:
   // it never returns for a copy it didn't make.
   Future<void> _write(String name, String hash, Uint8List bytes, {required bool allowRecovery}) async {
-    Future<void> keepBeside(Directory d, String why, {bool tellIfNoCopy = false}) async {
+    Future<void> keepBeside(Directory d, String why, {bool tellIfNoCopy = false, bool once = false}) async {
       final kept = await _mutateIn(d, () => keepGoodCopy(d, name, bytes));
+      // A damaged file that stays (its aside name is taken) is said once per
+      // page open.
+      final say = !once || _damagedReported.add(_in(d, name).path);
       if (kept == null) {
         // The caller reports the failure; a damaged file that stays is still
         // reported here, with where it is (0132).
-        if (tellIfNoCopy) notify('A file in this page\'s folder $why, and a good copy could not be saved.');
+        if (tellIfNoCopy && say) notify('A file in this page\'s folder $why, and a good copy could not be saved.');
         throw FileSystemException('A good copy of $name could not be saved: a file in the folder $why', d.path);
       }
-      notify('A file in this page\'s folder $why. A good copy was kept as "$kept" beside it.');
+      if (say) notify('A file in this page\'s folder $why. A good copy was kept as "$kept" beside it.');
     }
 
     Future<void> into(Directory d) async {
@@ -270,6 +277,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
             d,
             'is damaged and could not be set aside (it is at "${r.leftAt}")',
             tellIfNoCopy: true,
+            once: true,
           );
           return;
         }
@@ -398,12 +406,48 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
               break;
             }
             if (r.leftAt != fileName) filesChanged();
-            out = VerifiedAttachment(AttachmentState.damaged, keptAs: r.name, leftAt: r.leftAt);
+            if (r.name == null && r.leftAt == fileName) {
+              // The aside name is taken: the damaged file stays, and the verified
+              // kept copy (a `.kept-<n>` beside it) is served, said once per open.
+              final k = await _verifiedKept(d, fileName, hash, size, keepBytes);
+              if (k != null) {
+                final first = _damagedReported.add(f.path);
+                return VerifiedAttachment(
+                  AttachmentState.ok,
+                  bytes: k.bytes,
+                  keptAs: first ? k.name : null,
+                  leftAt: first ? fileName : null,
+                );
+              }
+            }
+            out =VerifiedAttachment(AttachmentState.damaged, keptAs: r.name, leftAt: r.leftAt);
         }
       }
       first ??= out;
     }
     return first ?? const VerifiedAttachment(AttachmentState.syncing);
+  }
+
+  // A `<fileName>.kept-<n>` copy in [d] that holds [hash] at [size] bytes, with
+  // its bytes when asked, or null.
+  Future<({String name, Uint8List? bytes})?> _verifiedKept(
+    Directory d,
+    String fileName,
+    String hash,
+    int size,
+    bool keepBytes,
+  ) async {
+    try {
+      await for (final e in d.list(followLinks: false)) {
+        final n = e.path.split(RegExp(r'[\\/]')).last;
+        if (e is! File || !n.startsWith('$fileName$keptMarker') || n.endsWith('.tmp')) continue;
+        final c = await checkAttachmentFile(e, hash, size, keepBytes: keepBytes);
+        if (c.state == AttachmentState.ok) return (name: n, bytes: c.bytes);
+      }
+    } on FileSystemException catch (e) {
+      debugPrint('Looking for a kept copy of $fileName failed: $e');
+    }
+    return null;
   }
 
   // [restoreKeptCopy] as its own turn; a refusal restores nothing.

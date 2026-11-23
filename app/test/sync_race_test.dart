@@ -85,9 +85,9 @@ class CountingStore extends PageStore {
   }
 
   @override
-  Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish}) async {
+  Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) async {
     if (failNew.contains(page.id)) throw const FileSystemException('destination gone');
-    final done = await super.saveNewText(page, text, beforePublish: beforePublish);
+    final done = await super.saveNewText(page, text, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
     if (done) {
       final f = afterNewText;
       afterNewText = null;
@@ -103,7 +103,7 @@ class CountingStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
@@ -148,7 +148,7 @@ class CountingStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     void Function()? beforePublish,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
@@ -164,6 +164,7 @@ class CountingStore extends PageStore {
       afterRead: afterRead,
       beforePublish: hook ?? beforePublish,
       beforeRestore: beforeRestore,
+      onPublishStamp: onPublishStamp,
       beforeAsideDelete: beforeAsideDelete,
       beforeFinalCheck: beforeFinalCheck,
       afterFinalRead: afterFinalRead,
@@ -185,7 +186,7 @@ class _GoneStore extends CountingStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
@@ -1248,7 +1249,7 @@ void main() {
       File('${assets.path}${sep}f.bin').writeAsBytesSync(bytes);
       final d1 = await nb.delete(id);
       expect(assets.existsSync(), isFalse, reason: 'set aside');
-      Notebook.forceCopyMoveForTest = true;
+      Notebook.forcePutBackCannotRenameForTest = true;
       final reached = Completer<void>();
       final release = Completer<void>();
       attachmentBeforePublishHook = (target) async {
@@ -1257,7 +1258,7 @@ void main() {
         await release.future;
       };
       addTearDown(() {
-        Notebook.forceCopyMoveForTest = false;
+        Notebook.forcePutBackCannotRenameForTest = false;
         attachmentBeforePublishHook = null;
         if (!release.isCompleted) release.complete();
       });
@@ -2641,8 +2642,8 @@ void main() {
       }
 
       test('1, 4 ($how): the page stuck and the attachment put-back stalled: the next launch has the page', () async {
-        Notebook.forceCopyMoveForTest = true;
-        addTearDown(() => Notebook.forceCopyMoveForTest = false);
+        Notebook.forcePutBackCannotRenameForTest = true;
+        addTearDown(() => Notebook.forcePutBackCannotRenameForTest = false);
         await tree();
         giveAssets([1, 2, 3]);
         final text = File(pathOf(parent)).readAsStringSync();
@@ -2665,8 +2666,8 @@ void main() {
       });
 
       test('1, 4 ($how): the attachments being handed to recovery: the next launch has the page', () async {
-        Notebook.forceCopyMoveForTest = true;
-        addTearDown(() => Notebook.forceCopyMoveForTest = false);
+        Notebook.forcePutBackCannotRenameForTest = true;
+        addTearDown(() => Notebook.forcePutBackCannotRenameForTest = false);
         await tree();
         giveAssets([1, 2, 3]);
         final text = File(pathOf(parent)).readAsStringSync();
@@ -3084,8 +3085,8 @@ void main() {
     });
 
     test('4: quit without recovery, the put-back stalled: asks and names the page, staying keeps it', () async {
-      Notebook.forceCopyMoveForTest = true;
-      addTearDown(() => Notebook.forceCopyMoveForTest = false);
+      Notebook.forcePutBackCannotRenameForTest = true;
+      addTearDown(() => Notebook.forcePutBackCannotRenameForTest = false);
       await start(withRecovery: false);
       parent = nb.currentId!;
       await nb.rename(parent, 'Rollback parent');

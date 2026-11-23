@@ -39,10 +39,10 @@ class _NoNewStore extends PageStore {
   Future<bool> saveNewText(
     NotedPage page,
     String text, {
-    Future<void> Function()? beforePublish,
+    Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp,
   }) {
     if (refuse()) throw const FileSystemException('injected write failure');
-    return super.saveNewText(page, text, beforePublish: beforePublish);
+    return super.saveNewText(page, text, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
   }
 }
 
@@ -355,7 +355,9 @@ void main() {
       expect(nb.landedTextCount, 0);
     });
 
-    test('a rolled-back move leaves a combined entry at the target: it is merged back into the source', () async {
+    test('a copy that fails leaves a combined entry at the target: it is merged back into the source', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final p = await makePage();
       final nb = await landedUnsettled(p.id, p.baseText);
       await targetEntry(p.baseText, p.xs[0]);

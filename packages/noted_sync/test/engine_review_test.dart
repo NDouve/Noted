@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:noted_core/noted_core.dart';
 import 'package:noted_sync/noted_sync.dart';
 
 import 'fake_graph.dart';
@@ -207,6 +208,43 @@ void _cases(RemoteKind kind) {
         expect(h.read('templates/a.bin'), 'AAA');
       },
     );
+  });
+
+  renameGroup('a re-path across folders takes the two locks in key order (N9)', () {
+    // Which locks were taken while another was held, as "held>taken" keys.
+    Future<List<String>> nestedAfterMove(String from, String to) async {
+      final locks = _NestingLocks();
+      h.locks = locks;
+      h.restart();
+      seedBinder();
+      h.remote.addFile('Noted/z.canvas', Harness.b('Z'));
+      await h.round();
+      locks.nested.clear();
+      h.remote.move(from, to);
+      await h.round();
+      return locks.nested;
+    }
+
+    String keyOfRoot() => FolderLocks.keyOf(h.work);
+    String keyOfB1() => FolderLocks.keyOf(Directory('${h.work.path}/B1'));
+
+    test('the root then a binder', () async {
+      final nested = await nestedAfterMove('Noted/z.canvas', 'Noted/B1');
+      expect(h.has('B1/z.canvas'), isTrue);
+      final ordered = keyOfRoot().compareTo(keyOfB1()) < 0;
+      final want = ordered ? '${keyOfRoot()}>${keyOfB1()}' : '${keyOfB1()}>${keyOfRoot()}';
+      expect(nested, contains(want));
+      expect(nested, isNot(contains(want.split('>').reversed.join('>'))));
+    });
+
+    test('a binder then the root', () async {
+      final nested = await nestedAfterMove('Noted/B1/q.canvas', 'Noted');
+      expect(h.has('q.canvas'), isTrue);
+      final ordered = keyOfRoot().compareTo(keyOfB1()) < 0;
+      final want = ordered ? '${keyOfRoot()}>${keyOfB1()}' : '${keyOfB1()}>${keyOfRoot()}';
+      expect(nested, contains(want));
+      expect(nested, isNot(contains(want.split('>').reversed.join('>'))));
+    });
   });
 
   renameGroup('a binder rename killed part-way', () {
@@ -1087,4 +1125,24 @@ void _cases(RemoteKind kind) {
       },
     );
   });
+}
+
+/// Folder locks that record each lock taken while another is held.
+class _NestingLocks extends FolderLocks {
+  final List<String> nested = [];
+  final List<String> _held = [];
+
+  @override
+  Future<T> run<T>(Directory folder, Future<T> Function() job) {
+    final key = FolderLocks.keyOf(folder);
+    return super.run(folder, () async {
+      if (_held.isNotEmpty) nested.add('${_held.last}>$key');
+      _held.add(key);
+      try {
+        return await job();
+      } finally {
+        _held.removeLast();
+      }
+    });
+  }
 }

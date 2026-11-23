@@ -6,6 +6,8 @@ import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
+import 'coordination.dart';
+
 /// Moves the finished file [tmp] to [target] only if nothing is at [target]
 /// at the moment of publishing. There is no check-then-rename window: the
 /// operating system makes the decision atomically.
@@ -34,14 +36,38 @@ import 'dart:io';
 /// Windows: `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`, on `\\?\` paths
 /// so long paths work. Linux, macOS, iOS, Android: `link(tmp, target)` (fails
 /// with EEXIST), then `unlink(tmp)`.
+///
+/// Under a registered coordinator (`coordination.dart`) the call runs inside
+/// it, naming the folders as writes and [tmp] as a move; a [StorageBusy] means
+/// nothing was written. With none registered it runs directly.
 Future<bool> publishExclusive(
   File tmp,
   String target, {
   void Function()? beforeOsCall,
-}) async => publishExclusiveSync(tmp, target, beforeOsCall: beforeOsCall);
+}) {
+  String folder(String p) => folderOf(p);
+  final targetFolder = folder(target), sourceFolder = folder(tmp.path);
+  return coordinated(
+    CoordinatedWrite([
+      CoordinationIntent(targetFolder, CoordinationKind.write),
+      if (sourceFolder != targetFolder)
+        CoordinationIntent(sourceFolder, CoordinationKind.write),
+      CoordinationIntent(tmp.path, CoordinationKind.move),
+    ]),
+    () => publishExclusiveUncoordinated(tmp, target, beforeOsCall: beforeOsCall),
+  );
+}
 
-/// The synchronous form of [publishExclusive].
-bool publishExclusiveSync(
+/// [publishExclusive] without the coordination hook, for the primitives that
+/// are already inside their one coordinated call. Not exported by the
+/// package's libraries.
+Future<bool> publishExclusiveUncoordinated(
+  File tmp,
+  String target, {
+  void Function()? beforeOsCall,
+}) async => _publishExclusiveSync(tmp, target, beforeOsCall: beforeOsCall);
+
+bool _publishExclusiveSync(
   File tmp,
   String target, {
   void Function()? beforeOsCall,
@@ -50,8 +76,8 @@ bool publishExclusiveSync(
   final bool ok;
   try {
     if (Platform.isWindows) {
-      _checkWindowsName(target);
-      ok = _moveWindows(_windowsPath(from), _windowsPath(target), beforeOsCall);
+      checkWindowsName(target);
+      ok = _moveWindows(windowsPath(from), windowsPath(target), beforeOsCall);
     } else if (Platform.isLinux ||
         Platform.isMacOS ||
         Platform.isIOS ||
@@ -168,7 +194,10 @@ final _reservedName = RegExp(
 /// Throws if the last name of [path] is one Windows would quietly change
 /// (trailing dot or space) or treat as a device (CON, NUL, COM1, ... with or
 /// without an extension).
-void _checkWindowsName(String path) {
+///
+/// Public for `exclusive_move.dart` and `file_stamp.dart`; not exported by the
+/// package's libraries.
+void checkWindowsName(String path) {
   final name = path.split(RegExp(r'[\\/]')).last;
   if (name.endsWith('.') || name.endsWith(' ')) {
     throw FileSystemException('Name ends with a dot or a space', path);
@@ -182,7 +211,10 @@ void _checkWindowsName(String path) {
 /// with the `\\?\` (or `\\?\UNC\`) prefix added only when it is 260 characters
 /// or longer, which turns off the length limit. `\\.\` and `\\?\` paths pass
 /// through unchanged. A drive-relative path (`D:foo`) on another drive throws.
-String _windowsPath(String path) {
+///
+/// Public for `exclusive_move.dart` and `file_stamp.dart`; not exported by the
+/// package's libraries.
+String windowsPath(String path) {
   var s = path.replaceAll('/', r'\');
   if (s.startsWith(r'\\.\') || s.startsWith(r'\\?\')) return s;
   final drive = RegExp(r'^([A-Za-z]):(?!\\)').firstMatch(s);

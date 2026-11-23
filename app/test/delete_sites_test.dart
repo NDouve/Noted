@@ -28,6 +28,18 @@ const String _tempMixed =
     'own temporary files: unique names, and the fixed-name <target>.landing.tmp of a non-hash kept file (known)';
 
 const List<Site> deleteSites = [
+  (
+    'app/lib/src/notebook.dart',
+    's.deleteSync(); // an empty folder only',
+    1,
+    'a folder emptied by a move, removed without recursive: never a file',
+  ),
+  (
+    'app/lib/src/notebook.dart',
+    'if (d.listSync(followLinks: false).isEmpty) d.deleteSync();',
+    1,
+    'a folder emptied by Delete the original, removed without recursive: never a file',
+  ),
   ('app/lib/src/ai/ai_link_server.dart', 'file.deleteSync();', 1, _private),
   ('app/lib/src/app_commands.dart', 'invoke: () => a.delete(p),', 1, _call),
   (
@@ -56,12 +68,6 @@ const List<Site> deleteSites = [
   ),
   (
     'app/lib/src/attachment_copy.dart',
-    'if (await d.list().isEmpty) await d.delete();',
-    1,
-    _emptyDir,
-  ),
-  (
-    'app/lib/src/attachment_copy.dart',
     'await Directory(p).delete();',
     1,
     _emptyDir,
@@ -82,7 +88,13 @@ const List<Site> deleteSites = [
     'app/lib/src/notebook.dart',
     'if (await d.exists()) await d.delete(recursive: true);',
     1,
-    'the deleted-attachments folder under the app folder (_removeDir), not shared storage',
+    'the emptied trash folder of a failed delete rollback (_removeDir, exempt by name); no expiry path removes a set-aside recursively',
+  ),
+  (
+    'app/lib/src/notebook.dart',
+    'd.deleteSync();',
+    1,
+    'an empty folder of a set-aside (the expiry, the trash folder made for a rename that did not happen), removed without recursive: never a file',
   ),
   (
     'app/lib/src/notebook.dart',
@@ -290,7 +302,18 @@ const String _move =
 const String _unchecked =
     'KNOWN unchecked replace of a shared file, left for the area audit (see the design note)';
 
-const List<Site> renameSites = [
+final List<Site> renameSites = [
+  for (final call in [
+    'Directory(from).renameSync(to);',
+    'Link(from).renameSync(to);',
+    'File(from).renameSync(to);',
+  ])
+    (
+      'packages/noted_core/lib/src/storage/exclusive_move.dart',
+      call,
+      1,
+      'the Android fallback below API 30, after an lstat that found no target, under the folder locks',
+    ),
   (
     'app/lib/src/ai/ai_link_server.dart',
     'tmp.renameSync(file.path);',
@@ -305,7 +328,6 @@ const List<Site> renameSites = [
     1,
     _rename,
   ),
-  ('app/lib/src/notebook.dart', 'await from.rename(to.path);', 1, _move),
   ('app/lib/src/notebook.dart', 'await tmp.rename(f.path);', 1, _ownTemp),
   (
     'app/lib/src/onedrive_sync.dart',

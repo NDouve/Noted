@@ -7,8 +7,9 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/coordination_support.dart';
 
-void main() {
+void suite() {
   deleteTests();
   saveNewTextTests();
   late Directory dir;
@@ -677,3 +678,5 @@ void saveNewTextTests() {
     expect(File(store.pathFor('p1')).readAsStringSync(), text);
   });
 }
+
+void main() => runWithAndWithoutCoordinator(suite);

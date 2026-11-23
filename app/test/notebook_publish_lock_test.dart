@@ -32,7 +32,7 @@ class HookedStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
@@ -48,19 +48,19 @@ class HookedStore extends PageStore {
   Future<bool> saveNewText(
     NotedPage page,
     String text, {
-    Future<void> Function()? beforePublish,
+    Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp,
   }) async {
     if (failNewText) throw const FileSystemException('destination gone');
-    return super.saveNewText(page, text, beforePublish: beforePublish);
+    return super.saveNewText(page, text, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
   }
 
   @override
   Future<bool> saveNew(
     NotedPage page, {
-    Future<void> Function()? beforePublish,
+    Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp,
   }) async {
     if (onSaveNew?.call() ?? false) return false;
-    return super.saveNew(page, beforePublish: beforePublish);
+    return super.saveNew(page, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
   }
 }
 

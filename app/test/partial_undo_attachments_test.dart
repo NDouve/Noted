@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
@@ -24,8 +25,8 @@ class _FlakyStore extends PageStore {
   Directory get directory => broken ? unwritable : super.directory;
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async =>
-      armed ? _fail() : super.saveNew(page, beforePublish: beforePublish);
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) async =>
+      armed ? _fail() : super.saveNew(page, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
 
   // The page can not be written, and from now on the folder can not be
   // written to either (so no copy can be put beside the file).
@@ -115,7 +116,10 @@ void main() {
   test('a delete without a partial Undo is still removed completely', () async {
     final id = await nb.createPage();
     final assets = await Directory('${pages.path}/${assetsFolderName(id)}').create();
-    await File('${assets.path}/x.bin').writeAsBytes([1]);
+    // An attachment's name is its content hash, which is its identity for the
+    // expiry (0098).
+    final name = attachmentFileName(contentHash(Uint8List.fromList([1])), 'bin');
+    await File('${assets.path}/$name').writeAsBytes([1]);
     await nb.delete(id);
     final trash = Directory('${app.path}/deleted-attachments');
     expect(trash.listSync(recursive: true).whereType<File>(), isNotEmpty);

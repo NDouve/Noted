@@ -1185,7 +1185,7 @@ void main() {
     await stop();
   });
 
-  test('35. a move out of a binder with the swap before the source attachments are removed: they stay and are named', () async {
+  test('35. a move out of a binder held since it began: refused at the first page, its page and attachments stay', () async {
     await start();
     final other = await nb.createPage(binderPath: section().path);
     await nb.open(pageId);
@@ -1194,9 +1194,10 @@ void main() {
       ..createSync();
     File('${assets.path}${sep}a.txt').writeAsStringSync('attached');
     nb.syncHook = (point, path) async {
-      if (point == 'move-source-deleted') {
+      if (point == 'move-rekeyed') {
         nb.syncHook = null;
         swap(_Swap.other);
+        await check();
       }
     };
     Object? error;
@@ -1205,18 +1206,14 @@ void main() {
     } on NotebookException catch (e) {
       error = e;
     }
+    expect(error, isA<NotebookException>(), reason: 'the held folder refuses the move');
     expect(
       File('${assets.path}${sep}a.txt').readAsStringSync(),
       'attached',
       reason: 'the source attachments stay',
     );
-    expect(
-      '$error'.isNotEmpty &&
-          error is NotebookException &&
-          error.message.contains('stayed'),
-      isTrue,
-      reason: '$error',
-    );
+    expect(pageFile(other).existsSync(), isTrue, reason: 'the page file stays');
+    expect(File('${pages.path}$sep$other.canvas').existsSync(), isFalse, reason: 'nothing at the target');
     await stop();
   });
 
@@ -1272,9 +1269,10 @@ void main() {
       await nb.flush();
       attach(folder, p);
       attach(folder, sub);
-      // Both set aside, the first page deleted; the second page's turn finds
+      // Both set aside (a gate at each caller and in each rename turn: four),
+      // the first page deleted; the second page's turn (the sixth) finds
       // another binder's file: the delete throws and is rolled back.
-      atGate({4: () => swap(_Swap.other)});
+      atGate({6: () => swap(_Swap.other)});
       await expectLater(nb.delete(p), throwsA(isA<NotebookException>()));
       nb.syncHook = null;
       expect(
@@ -1341,7 +1339,7 @@ void main() {
       await stop();
     });
 
-    test('a move rolled back after the source changed: the copies stay in a target held since', () async {
+    test('a move into a binder held since it began: refused at the first page, nothing is written there', () async {
       await start();
       await nb.open(standalone);
       final p = await nb.createPage();
@@ -1349,16 +1347,10 @@ void main() {
       await nb.flush();
       attach(pages, p);
       nb.syncHook = (point, path) async {
-        if (point == 'move-before-source-delete') {
+        if (point == 'move-rekeyed') {
           nb.syncHook = null;
-          File('${pages.path}$sep$p.canvas').writeAsStringSync(
-            writePage(
-              NotedPage.create(
-                PageMeta.create(id: p, title: 'Newer', order: 3),
-              ),
-            ),
-          );
           swap(_Swap.other);
+          await check();
         }
       };
       await expectLater(
@@ -1366,10 +1358,12 @@ void main() {
         throwsA(isA<NotebookException>()),
       );
       expect(
-        File('${folder.path}$sep${assetsFolderName(p)}${sep}a.txt')
-            .existsSync(),
+        File('${pages.path}$sep${assetsFolderName(p)}${sep}a.txt').existsSync(),
         isTrue,
+        reason: 'the attachments stay where they were',
       );
+      expect(pageFile(p).existsSync(), isFalse, reason: 'nothing is written to the held folder');
+      expect(File('${pages.path}$sep$p.canvas').existsSync(), isTrue);
       await stop();
     });
   });

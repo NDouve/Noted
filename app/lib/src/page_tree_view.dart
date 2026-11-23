@@ -236,6 +236,18 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     }
   }
 
+  /// Deletes the originals a copying move kept; what was done, or what was
+  /// kept, is shown queued behind the message on screen.
+  Future<void> _deleteOriginals(CopiedMove move) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      final done = await _nb.deleteOriginals(move);
+      messenger?.showSnackBar(SnackBar(content: Text(done), showCloseIcon: true));
+    } on NotebookException catch (e) {
+      _report(messenger, e, queued: true);
+    }
+  }
+
   /// Like [_guard], for an Undo: its outcome is shown queued, behind the
   /// message on screen, so it never hides a newer delete's Deleted bar (whose
   /// closing by hide would discard that delete).
@@ -254,20 +266,33 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     if (!queued) messenger?.hideCurrentSnackBar();
     // A message that asks the user to act stays until it is closed.
     final held = e is PagesNotRestoredException ? e.deleted : null;
+    final kept = e is OriginalsKeptException ? e.move : null;
     messenger
         ?.showSnackBar(
           SnackBar(
             content: Text(e.message),
             persist: e.needsAction,
             showCloseIcon: e.needsAction,
-            // Pages that only exist in memory: Undo writes them back.
-            action: held == null
-                ? null
-                : SnackBarAction(label: 'Undo', onPressed: () => _guardUndo(held)),
+            // Pages that only exist in memory: Undo writes them back. A move that
+            // copied: the originals it kept can be deleted.
+            action: held != null
+                ? SnackBarAction(label: 'Undo', onPressed: () => _guardUndo(held))
+                : kept != null
+                ? SnackBarAction(label: 'Delete the original', onPressed: () => _deleteOriginals(kept))
+                : null,
           ),
         )
         .closed
         .then((reason) {
+          if (kept != null && kept.pending > 0 && reason != SnackBarClosedReason.action) {
+            // Replaced by another message: the originals are still there, so the
+            // way to delete them is shown again after it. Closing it with its X
+            // leaves them (they stay listed as duplicates).
+            if (reason != SnackBarClosedReason.dismiss && reason != SnackBarClosedReason.swipe && mounted) {
+              _report(messenger, e, queued: true);
+            }
+            return;
+          }
           if (held == null || !_nb.isPendingDelete(held)) return;
           if (reason == SnackBarClosedReason.dismiss || reason == SnackBarClosedReason.swipe) {
             // Closing the message with its X lets the pages go.

@@ -15,39 +15,6 @@ import 'package:noted_core/noted_core.dart';
 
 typedef _S = ({Notebook nb, String id, String orig, String copy});
 
-/// A page store whose compare-and-delete of [failDelete] fails, like a source
-/// drive that went away.
-class _FailDeleteStore extends PageStore {
-  _FailDeleteStore(super.directory);
-
-  final Set<String> failDelete = {};
-
-  @override
-  Future<DeleteResult> deleteIfUnchanged(
-    String pageId,
-    String expectedText, {
-    void Function()? beforeMoveAside,
-    void Function()? afterRead,
-    Future<void> Function()? beforeDelete,
-    void Function()? beforeRestore,
-    Future<void> Function(String path)? beforeAsideDelete,
-    Future<void> Function(String path)? beforeFinalCheck,
-    Future<void> Function(String path)? afterFinalRead,
-  }) {
-    if (failDelete.contains(pageId)) throw const FileSystemException('drive gone');
-    return super.deleteIfUnchanged(
-      pageId,
-      expectedText,
-      beforeMoveAside: beforeMoveAside,
-      afterRead: afterRead,
-      beforeDelete: beforeDelete,
-      beforeRestore: beforeRestore,
-      beforeAsideDelete: beforeAsideDelete,
-      beforeFinalCheck: beforeFinalCheck,
-      afterFinalRead: afterFinalRead,
-    );
-  }
-}
 
 void main() {
   late Directory root;
@@ -1025,12 +992,7 @@ void main() {
           await other.rename(id, 'Original');
           final sub = await other.createPage(parentId: id);
           await other.flush();
-          late _FailDeleteStore source;
-          final nb = make('main', pages, false, (d) {
-            final st = _FailDeleteStore(d);
-            if (d.path == dir.path) source = st;
-            return st;
-          });
+          final nb = make('main', pages, false);
           await nb.load();
           await nb.addStandaloneFolder(dir.path);
           final target = await nb.addBinder(bDir.path);
@@ -1042,12 +1004,13 @@ void main() {
           await openExistingFile(nb, copy);
           await nb.open(await nb.createPage());
           await settled(nb);
-          source.failDelete.add(sub);
+          // The subpage's name is taken at the target: the move fails at its
+          // second page, after the chosen file arrived there as <id>.canvas.
+          File('${dir.path}/$sub.canvas').copySync('${bDir.path}/$sub.canvas');
           await expectLater(nb.moveToLocation(id, binderPath: target.path), throwsA(isA<NotebookException>()));
           expect(bytes(copy), copyBytes, reason: 'the chosen file is back under its own name');
           expect(bytes(orig), origBytes);
           expect(File('${bDir.path}/$id.canvas').existsSync(), isFalse);
-          source.failDelete.clear();
           await nb.open(id);
           expect(nb.pageTitleOf(id), 'Copy');
         });
@@ -1330,6 +1293,8 @@ void main() {
           final bDir = await Directory('${root.path}/Bnd').create();
           final target = await s.nb.addBinder(bDir.path);
           await leave(s);
+          // The chosen file's name is taken at the target, so the move is refused.
+          File('${bDir.path}/${File(s.copy).uri.pathSegments.last}').writeAsStringSync('not a page');
           s.nb.syncHook = (point, path) async {
             if (point == 'move-rekeyed') File(s.copy).writeAsStringSync(y.text);
           };

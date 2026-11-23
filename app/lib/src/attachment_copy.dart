@@ -27,8 +27,7 @@ class AttachmentCopy {
   /// rollback deletes it only while it still holds that (see [removeCreated]).
   final Map<String, ContentIdentity> createdIdentity = {};
 
-  /// Source files whose target holds exactly their bytes: the only ones
-  /// [removeVerifiedSources] may delete.
+  /// Source files whose target holds exactly their bytes.
   final List<CopiedFile> verified = [];
 
   /// Targets that were left as they are because they hold something else (a
@@ -173,10 +172,12 @@ Future<FileCheck> checkAttachmentFile(
 /// under now (it may have moved part-way).
 typedef SetAside = ({String? name, String leftAt});
 
-/// Keeps the damaged [file] aside, in its own folder, as [damagedCopyName],
-/// never over anything: it is moved with [publishExclusive] and checked there.
-/// [found] is what the check read. A file that changed between the check and
-/// the move is put back, not renamed.
+/// Keeps the damaged [file] aside, in its own folder, as [damagedCopyName]: it
+/// is renamed with `moveExclusive`, which never replaces anything, and checked
+/// there. Nothing is ever deleted. A taken aside name (the same damaged bytes
+/// were kept before) leaves the damaged file where it is, and the caller does
+/// not publish the good copy under its name. [found] is what the check read. A
+/// file that changed between the check and the move is put back, not renamed.
 Future<SetAside> setAsideDamaged(File file, ContentIdentity found) async {
   final sep = Platform.pathSeparator;
   final name = _baseName(file.path);
@@ -185,24 +186,14 @@ Future<SetAside> setAsideDamaged(File file, ContentIdentity found) async {
   var leftAt = name;
   try {
     attachmentBeforeSetAsideHook?.call(aside);
-    if (await publishExclusive(file, aside)) {
+    if (await moveExclusive(file.path, aside) == MoveOutcome.moved) {
       leftAt = asideName;
       attachmentAfterSetAsideHook?.call(aside);
       if (await ContentIdentity.ofFile(aside) == found) return (name: asideName, leftAt: asideName);
       // Something else was at the path when it was moved: not the file that
       // was checked. Put it back where it was if that is free.
-      if (FileSystemEntity.typeSync(file.path, followLinks: false) == FileSystemEntityType.notFound &&
-          await publishExclusive(File(aside), file.path)) {
-        leftAt = name;
-      }
+      if (await moveExclusive(aside, file.path) == MoveOutcome.moved) leftAt = name;
       return (name: null, leftAt: leftAt);
-    }
-    // The same damaged bytes were kept before: this one is a duplicate, and
-    // goes only while it still holds exactly what was seen.
-    if (FileSystemEntity.typeSync(aside, followLinks: false) == FileSystemEntityType.file &&
-        await ContentIdentity.ofFile(aside) == found) {
-      final del = await deleteFileIfMatches(file.path, identity: found);
-      if (del.deleted || del.outcome == DeleteOutcome.absent) return (name: asideName, leftAt: asideName);
     }
   } on FileSystemException catch (e) {
     debugPrint('Keeping the damaged ${file.path} aside failed: $e');
@@ -329,26 +320,6 @@ Future<bool> Function(File tmp, String target)? attachmentPublishHook;
 /// tests.
 @visibleForTesting
 Future<void> Function(String target)? attachmentBeforePublishHook;
-
-/// Run in [removeVerifiedSources] just before a source is moved aside. For
-/// tests.
-@visibleForTesting
-Future<void> Function(File source)? attachmentBeforeRemoveHook;
-
-/// Run in [removeVerifiedSources] after a source was moved aside and its bytes
-/// were compared: the source path is free then. For tests.
-@visibleForTesting
-void Function(File source)? attachmentAfterAsideHook;
-
-/// Run in [removeVerifiedSources] just before a source is moved aside, inside
-/// the compare-and-delete (after its first check). For tests.
-@visibleForTesting
-void Function(File source)? attachmentMoveAsideHook;
-
-/// Run in [removeVerifiedSources] just before a set-aside source that no longer
-/// matches is put back (its path is free). For tests.
-@visibleForTesting
-void Function(File source)? attachmentBeforeRestoreHook;
 
 const _chunk = 64 * 1024;
 
@@ -723,66 +694,6 @@ Future<bool> _createExclusive(File tmp, String target) async {
     await out?.close();
   }
   return true;
-}
-
-/// Deletes the source files [r] verified as copied, but only those that still
-/// match their copy (the same size and bytes); one that changed since is kept.
-/// Then the empty folders under [root] go (and [root]). Anything else in
-/// [root], such as a file that arrived after the copy, stays.
-Future<void> removeVerifiedSources(AttachmentCopy r, Directory root) async {
-  for (final c in r.verified) {
-    try {
-      if (FileSystemEntity.typeSync(c.source.path, followLinks: false) != FileSystemEntityType.file) continue;
-      if (!await sameContent(c.source, c.target)) {
-        debugPrint('Keeping ${c.source.path}: it changed after it was copied');
-        continue;
-      }
-      // Deleted by the shared compare-and-delete: the source is moved aside,
-      // compared there with the copy's identity and only then removed, so a
-      // file that replaces the source in between is never the one deleted.
-      final identity = await ContentIdentity.ofFile(c.target.path);
-      await attachmentBeforeRemoveHook?.call(c.source);
-      try {
-        final res = await deleteFileIfMatches(
-          c.source.path,
-          identity: identity,
-          beforeMoveAside: () => attachmentMoveAsideHook?.call(c.source),
-          afterRead: () => attachmentAfterAsideHook?.call(c.source),
-          beforeRestore: () => attachmentBeforeRestoreHook?.call(c.source),
-        );
-        if (res.outcome == DeleteOutcome.changed) {
-          debugPrint('Keeping ${c.source.path}: it changed after it was copied');
-        } else if (res.keptPath != null) {
-          r.keptAside.add(res.keptPath!); // something new is at the path: both stay
-        }
-      } on FileSystemException catch (e) {
-        debugPrint('Putting back ${c.source.path} failed: $e');
-        // Whatever was set aside stays under its own name; say where.
-        final name = _baseName(c.source.path);
-        await for (final f in c.source.parent.list(followLinks: false)) {
-          final n = _baseName(f.path);
-          if (f is File && n.startsWith('$name.') && (n.endsWith(asideSuffix) || n.endsWith(verifiedSuffix))) {
-            r.keptAside.add(f.path);
-          }
-        }
-      }
-    } on FileSystemException catch (e) {
-      debugPrint('Removing ${c.source.path} failed: $e');
-    }
-  }
-  Future<void> prune(Directory d) async {
-    if (!await d.exists()) return;
-    await for (final e in d.list(followLinks: false)) {
-      if (e is Directory) await prune(e);
-    }
-    try {
-      if (await d.list().isEmpty) await d.delete();
-    } on FileSystemException catch (e) {
-      debugPrint('Removing ${d.path} failed: $e');
-    }
-  }
-
-  await prune(root);
 }
 
 /// Removes what [copyAttachmentTree] recorded in `created`: the files, then

@@ -106,15 +106,34 @@ void main() {
       expect(notices, isEmpty);
     });
 
-    test('the same damaged bytes met twice keep one damaged copy', () async {
+    test('the same damaged bytes met twice: nothing is deleted, the damaged file stays, one good copy is kept beside it', () async {
       plant(bad);
       await store.put(good, extension: 'bin');
       asset(name).deleteSync();
       plant(bad);
+      final before = notices.length;
       await store.put(good, extension: 'bin');
-      final names = Directory('${pages.path}/p.assets').listSync().map((e) => e.path.split(RegExp(r'[\\/]')).last).toSet();
-      expect(names, {name, damagedName(name, badHash)});
-      expect(asset(name).readAsBytesSync(), good);
+      await store.put(good, extension: 'bin');
+      final names = Directory('${pages.path}/p.assets').listSync().map((e) => e.path.split(RegExp(r'[\\/]')).last).toList();
+      expect(names, hasLength(3), reason: 'the file, the earlier aside and one kept copy');
+      expect(names, containsAll([name, damagedName(name, badHash)]));
+      expect(names.where((n) => n.contains('.kept-')), hasLength(1));
+      expect(asset(name).readAsBytesSync(), bad, reason: 'the damaged file stays: it is never deleted');
+      expect(notices.length - before, 1, reason: 'said once per page open');
+    });
+
+    test('the aside name taken: a read serves the kept good copy and says so once', () async {
+      plant(bad);
+      await store.put(good, extension: 'bin'); // aside made, the good copy in place
+      asset(name).deleteSync();
+      plant(bad);
+      await store.put(good, extension: 'bin'); // aside taken: damaged stays, one kept copy
+      final r1 = await store.readVerified(name, size: good.length);
+      expect(r1.state, AttachmentState.ok);
+      expect(r1.bytes, good);
+      final r2 = await store.readVerified(name, size: good.length);
+      expect(r2.bytes, good);
+      expect(r2.keptAs, isNull, reason: 'reported once per open');
     });
   });
 

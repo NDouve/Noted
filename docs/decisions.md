@@ -540,7 +540,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0049 — Optional binders, without passwords
 - **Date:** 2026-10-25
-- **Status:** Active (implements 0026 except passwords, locking and encryption); "New binder asks for a folder" superseded by 0084; failed-move rollback amended by 0124; a binder that comes back reopens its page, amended by 0165
+- **Status:** Active (implements 0026 except passwords, locking and encryption); "New binder asks for a folder" superseded by 0084; failed-move rollback amended by 0124; a binder that comes back reopens its page, amended by 0165; the move (copy, verify, delete) superseded by 0186
 - **Decision:**
   - **Creating a binder:** "New binder" asks for a folder. A folder that already has a binder file is opened, never overwritten. Otherwise a binder file is created, and any page files already in the folder become its pages.
   - **Cover page:** title, description and owner are editable. It also shows last edited (the latest change to the binder's files), the storage folder, and a color chosen from an 8-color palette. The color is applied to the binder's sidebar entries.
@@ -693,7 +693,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0059 — Moving pages across standalone folders
 - **Date:** 2026-10-25
-- **Status:** Active (supersedes the refusal of cross-folder nesting in 0056); failed-move rollback amended by 0124
+- **Status:** Active (supersedes the refusal of cross-folder nesting in 0056); failed-move rollback amended by 0124; the move algorithm superseded by 0186
 - **Decision:**
   - Nesting a page under, or placing it before or after, a page in a different standalone folder moves the page's file and its subpages' files into that folder.
   - It uses the same copy, read-back-and-compare, delete-the-sources algorithm as binder moves (0049). On any failure the copies are removed and the sources stay.
@@ -1341,7 +1341,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0098 — Image and file boxes, and where their files are stored
 - **Date:** 2026-10-31
-- **Status:** Active (page format change approved by the maintainer; Box API 0.7 and the attachments package approved retroactively); amended by 0102 (Delete, alt text below the picture); landing kept files amended by 0124; verification and damaged copies amended by 0132; attachment names checked before use, 0133; conversion verified in the page folder and asking before opening runnable files, 0134
+- **Status:** Active (page format change approved by the maintainer; Box API 0.7 and the attachments package approved retroactively); amended by 0102 (Delete, alt text below the picture); landing kept files amended by 0124; verification and damaged copies amended by 0132; attachment names checked before use, 0133; conversion verified in the page folder and asking before opening runnable files, 0134; moving and deleting the assets folder amended by 0186
 - **Decision:**
   - **Setting "Store images and files":** on pages and binders, either *In a folder beside the page* (the default) or *In the page file*.
     - It is stored as `"attachments":"folder"|"embedded"` in the page header's `noted` object or in the binder file. An absent value means the page follows its parent.
@@ -1746,7 +1746,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0124 — Saves, moves and recovery never overwrite or delete what they can't verify
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106; amended by 0127 and 0130; amended by 0131; mobile recovery re-keying amended by 0142); replay's retirement after a landed write amended by 0156; a merged conflict copy's retirement amended by 0183
+- **Status:** Active (approved by the maintainer through the Codex data-integrity review, findings R-1 to R-7, R-9 and R-10; amends 0049, 0051, 0053, 0059, 0070, 0077, 0098 and 0106; amended by 0127 and 0130; amended by 0131; mobile recovery re-keying amended by 0142); replay's retirement after a landed write amended by 0156; a merged conflict copy's retirement amended by 0183; moves amended by 0186
 - **Decision:**
   - **The open page's file (0051):** before every save of the open page, its file is read again, found by path. If it is unreadable, from a newer format, holds a different page, or can't be read for any reason other than not existing, nothing is written: the file stays as it is, the edits go to recovery, and the page becomes read-only with a plain reason and a way out ("Put back a readable version, or open another page"). The block is rechecked by the watcher and the folder timer; when a readable version appears it is merged three-way and the page is editable again, and the block's recovery entry is removed once the merged save reads back. A folder that comes back while the open page waits for it is handled the same way, with or without a recovery entry: a file that is there but unreadable blocks the page, and a missing file puts the page back in place so a file that lands later is merged.
   - **Conflict copies (0053):** a copy is deleted only if its bytes still equal the ones that were merged, and the original is replaced only if it still equals what the merge read. Otherwise the merge is redone, up to five times; then the copy is kept and listed under "Can't open".
@@ -1782,7 +1782,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0127 — Build tooling outside this repository; exclusive publishing; recovery, AI-code and formula fixes
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer; amends 0120, 0124, 0125 and 0126); the hash-named kept file rule amended by 0172
+- **Status:** Active (approved by the maintainer; amends 0120, 0124, 0125 and 0126); the hash-named kept file rule amended by 0172; the move primitive amended by 0186
 - **Decision:**
   - **Repository:** the build tooling (agent definitions, run and review history, the review and cleanup scripts and the reviewers' instructions) lives in a separate private repository. This repository holds the app, its spec and its CI. The cleanup script's tests no longer run in this repository's CI.
   - **Exclusive publishing (noted_core):** `publishExclusive` moves a written temporary file to its target only if nothing is there at that moment, with no gap between a check and the move: on Windows a move that doesn't replace, elsewhere a hard link followed by removing the temporary name. It never falls back to replacing; a volume without hard links is an error. On Windows the long-path prefix is added only from 260 characters, and a name Windows would change (a trailing dot or space, a device name) is refused. `PageStore.saveNew` saves a page this way.
@@ -1820,7 +1820,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0130 — Mobile storage, pen and touch, compact toolbar; replay, moves and attachment copies that verify before they act
 - **Date:** 2026-11-03
-- **Status:** Active (mobile work and the stylus rule decided by the maintainer for this run; storage rules from the accepted Codex data-integrity findings; the replay rule after a landed write decided by the PM and awaiting the maintainer's confirmation; amends 0033, 0124, 0128 and 0129); conflict copies, moves and attachment copies amended by 0131; the quit-time trade-off for landed entries amended by 0137; mobile stored folders amended by 0142; the small-screen drawer width amended for desktop by 0178; "Replay"'s retirement after a landed write and its notice, and the matching alternatives, superseded by 0156
+- **Status:** Active (mobile work and the stylus rule decided by the maintainer for this run; storage rules from the accepted Codex data-integrity findings; the replay rule after a landed write decided by the PM and awaiting the maintainer's confirmation; amends 0033, 0124, 0128 and 0129); conflict copies, moves and attachment copies amended by 0131; the quit-time trade-off for landed entries amended by 0137; mobile stored folders amended by 0142; the small-screen drawer width amended for desktop by 0178; "Replay"'s retirement after a landed write and its notice, and the matching alternatives, superseded by 0156; "One folder at a time" and "Moves" amended by 0186
 - **Decision:**
   - **Storage on mobile (0129):** pages and binders live in the app's documents folder (`Noted/`), `settings.json` and recovery in its support folder (`Noted/`), the attachment cache in its cache folder. `NOTED_PAGES_DIR` keeps the desktop layout. If the folders can't be found at launch, a plain screen names the failure. Desktop is unchanged.
   - **Off on mobile (0129):** drag and drop, the AI link server and its running lock, folder watching beyond the app's storage, and the folder picker.
@@ -1963,7 +1963,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0139 — Attachment copies keep a damaged destination file; incomplete moves keep their sources
 - **Date:** 2026-11-05
-- **Status:** Active (amends 0130 and 0132)
+- **Status:** Active (amends 0130 and 0132); amended by 0186
 - **Decision:**
   - **Nothing at a copy's target is replaced (amends 0130).** When an attachment copy (page moves, delete set-aside and Undo, put-backs, templates, binder from template, Save a copy elsewhere) finds a hash-named file at its target that is stable but shorter than the source or holds other bytes, that file is moved aside as `<name>.damaged-<12 hex of its bytes>` and checked, and only then is the verified copy published exclusively. A target that is changing or can't be read is left alone, and the source stays.
   - **Incomplete moves fail and keep their sources.** A move of a page's attachments folder that leaves any file behind (different, changing, or still in the source after the verified removal) fails. Every caller keeps what it couldn't move: the delete set-aside records its trash folder whenever it exists, put-backs and Undo keep a folder they couldn't empty, and clean-up never removes such a folder or its parent.
@@ -2104,7 +2104,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0148 — OneDrive sync stage 1: one folder lock, a feed of local writes and a remote merge; closed merges run on the save queue
 - **Date:** 2026-11-06
-- **Status:** Active (design approved by the maintainer's PM chat; details decided by the build team); folder checks' reads amended by 0157
+- **Status:** Active (design approved by the maintainer's PM chat; details decided by the build team); folder checks' reads amended by 0157; "One folder lock" amended by 0186 (two locks for a rename)
 - **Decision:**
   - **One folder lock.** Every page write, delete and scan in a folder runs under one shared per-folder lock (`FolderLocks`, in noted_core), which the sync engine will share. Nested jobs on the same folder queue, as before.
   - **A feed of local writes.** The notebook reports each page or binder file it publishes or deletes, with the path and the content identity of what it wrote, in the lock's order. Failed writes report nothing. Attachments, templates, files a scan puts back, kept copies and the app-support files are not reported; the sync engine must find those another way.
@@ -2116,7 +2116,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0149 — A chosen same-id file keeps its page through rescans, damage and replacement
 - **Date:** 2026-11-06
-- **Status:** Active (decided by the build team from the reviewed chosen-duplicate design, revision 7; amends 0137 and 0138); same-id file naming amended by 0171
+- **Status:** Active (decided by the build team from the reviewed chosen-duplicate design, revision 7; amends 0137 and 0138); same-id file naming amended by 0171; a moved chosen file amended by 0186
 - **Decision:**
   - **Rescans keep the choice (amends 0137, 0138).** A chosen file that is locked, half-written or invalid during a scan or a check keeps its page, and the other file with that id stays listed as the duplicate. A chosen file seen missing is given up only after a later folder check confirms it, while its folder is present. When the chosen file reads again, the next folder check puts the page back from it. *(Amended by 0171: such names are no longer offered as duplicates to choose, and a chosen file is never treated as a copy of another file.)*
   - **A file that now holds another page.** The choice is given up and the other file with the id takes the page, unless the page is open or busy; then its next save is blocked as "it holds a different page". Opening, reading for AI, search or templates, delete, move and closed-page changes never use a file that holds another page in place of this one.
@@ -2149,7 +2149,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0152 — New pages, restores, template pages and copies are published under the folder lock
 - **Date:** 2026-11-08
-- **Status:** Active (option chosen by the maintainer's PM chat; details decided by the build team; makes 0148's "every page write" true for page files); "Quit" amended by 0155; "A stalled folder" amended by 0157
+- **Status:** Active (option chosen by the maintainer's PM chat; details decided by the build team; makes 0148's "every page write" true for page files); "Quit" amended by 0155; "A stalled folder" amended by 0157; "A stalled folder" amended by 0186
 - **Decision:**
   - **Under the lock.** Each publish of a new page, restored text, a binder-template page, a saved copy and an Undo conflict copy runs with its change-feed event as one job on the folder's lock, and so does the delete in a binder-creation rollback. The can-write check is made again inside the job, so a location that stops being writable during the wait gets nothing.
   - **A stalled folder.** A save that hangs in a folder now also holds up new pages, Undo and moves into that folder until it ends, as it already did for renames and deletes. Other folders and quit aren't held up.
@@ -2225,7 +2225,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0157 — Watcher reads take the folder lock; a stalled folder shows a note; a second New page joins the first
 - **Date:** 2026-11-09
-- **Status:** Active (the note decided by the maintainer's PM chat; details decided by the build team; amends 0148 "One folder lock" and 0152 "A stalled folder"); "The note" extended by 0159
+- **Status:** Active (the note decided by the maintainer's PM chat; details decided by the build team; amends 0148 "One folder lock" and 0152 "A stalled folder"); "The note" extended by 0159; stamps and a stalled move amended by 0186
 - **Decision:**
   - **Reads under the lock (amends 0148).** A folder check's read of a page file runs as a job on that folder's lock, so it never overlaps the notebook's own replace (on Windows an open file can't be renamed). It waits at most 500 ms for its turn, then reads as before; inside a job on that folder it reads directly.
   - **The note (amends 0152).** When New page, Undo of a delete or a move has waited more than 3 seconds for a folder, "Waiting for the folder…" shows at the top of the window until the wait ends. Background work never shows it.
@@ -2577,7 +2577,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0182 — The maintainer's answers for the cloud drivers and the rename-based move
 - **Date:** 2026-11-15
-- **Status:** Active (the maintainer, answers of 2026-11-15 to the reviewed notes `2026-11-15-01-cloud-parity` and `2026-11-14-02-rename-move`). The WebDAV pull built from them is 0177; the iCloud and Google Drive drivers and the rename-based move are not built yet.
+- **Status:** Active (the maintainer, answers of 2026-11-15 to the reviewed notes `2026-11-15-01-cloud-parity` and `2026-11-14-02-rename-move`). The WebDAV pull built from them is 0177; the rename-based move and the in-place set-aside are built in 0186; the iCloud and Google Drive drivers are not built yet.
 - **Decision:**
   - **iCloud Drive:** on Apple devices and on Windows (through the iCloud for Windows folder) only; elsewhere such a folder follows the usual read-only rules. On Apple devices the folder is chosen with the folder picker and kept by a bookmark. No iCloud flag is stored; the MCP server recognises an iCloud folder by the dataless flag on its files, with a path rule until that check exists.
   - **Google Drive:** the full `drive` scope under Google's personal-use path (published, unverified, under 100 users); never a paid assessment. For a public release Google's free verification is tried; if Google requires a paid security assessment, the public build uses `drive.file` instead, which cannot see files Noted didn't create (for example binders written through the Drive desktop folder, and Drive's own conflict copies). The scope is one setting in the driver. Sign-in uses `flutter_appauth` on devices if the probe passes, and Noted's own redirect flow in the browser. If a Drive probe fails, the gap is accepted.
@@ -2613,7 +2613,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0185 — The MCP server re-checks its aside before removing it
 - **Date:** 2026-11-16
-- **Status:** Active (the maintainer, 2026-11-16, option (a) of run 2026-11-15-02's question; built in run 2026-11-16-01); amends 0131 and 0172
+- **Status:** Active (the maintainer, 2026-11-16, option (a) of run 2026-11-15-02's question; built in run 2026-11-16-01); amends 0131 and 0172; the coordination hook built in run 2026-11-22-01, registered by nothing yet; the dataless check not built
 - **Decision:**
   - **One checked drop.** The re-check before a verified aside is removed is one shared file importing `dart:io` only, `packages/noted_core/lib/src/storage/drop_verified.dart`, used by the app's checked delete and by the MCP server's closed writer.
   - **The server's aside.** After a successful publish the server removes its aside only after re-checking it: moved to a fresh `.cas-verified` name, read again and compared by bytes with the page's previous bytes, with its size and time unchanged across the read. A file in doubt stays for Noted's sweep, which keeps it as a conflict copy, and the answer is still `done`.
@@ -2622,6 +2622,22 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Limit:** as for the app's re-check (0131), a writer that reaches the drop name between the last check and the unlink is still lost.
 - **Rationale:** OneDrive can follow the page's item to the aside name, so a remote edit could land in the aside, and the server deleted it unchecked (Codex area-invariants R-1; invariant 4). Sharing the app's re-check keeps one implementation.
 - **Alternatives considered:** a copy of the re-check inside the closed writer (duplicates the shared primitive); never deleting the aside (every closed write would leave a conflict copy, and its merge would report spurious box conflicts).
+
+## 0186 — A move renames the one copy; a deleted page's attachments are set aside and expire file by file
+- **Date:** 2026-11-23
+- **Status:** Active (the build team (PM), run 2026-11-22-01, from the reviewed note `2026-11-14-02-rename-move` revision 5.4, with the maintainer's answers in 0182; amends 0049, 0059, 0098, 0124, 0127, 0130, 0139, 0148, 0149, 0152 and 0157)
+- **Decision:**
+  - **Moves (amends 0049, 0059, 0124 and 0130 "Moves").** Moving a page and its subpages between locations renames each page file and its attachments folder, by a rename that never replaces a file (`moveExclusive`). On one volume nothing is copied or deleted; a taken name stays and is reported; the source check and the copy classification are gone, and a failed move is rolled back by rename. Page files are checked by metadata only (file stamps: volume, file id, size, modification time); a move doesn't read a page's content, except to place the root, on the copy path and when reopening the open page. Where a rename can't be made (another drive, a page not downloaded yet that would leave its cloud's folder, a folder that answers it can't), the move copies and keeps the original, and the page is listed in both places until the user chooses *Delete the original*, which deletes each original only while its copy at the destination still holds what the move put there, checked by its content right before each delete; otherwise both stay.
+  - **Attachments (amends 0098, applying 0182).** A page's attachments folder moves with its page, including between storage folders, by the same rename; where it can't be renamed it is copied and the original is kept until *Delete the original*, which removes each original file only while it is unchanged and its copy still holds the same content. Deleting a page renames the folder into `deleted-attachments` beside `binders.json`. Where it can't be renamed there, or it holds files not downloaded yet, it is set aside in place: renamed beside the page to `<page id>.deleted-<12 hex>.assets`, with each file's identity recorded. Undo renames it back, each page into its own folder (into the root's folder when its own is no longer available). Once the delete can no longer be undone, each file of either set-aside is removed only if it is unchanged, no location lists the page and, checked right before each removal from the page folder's names and current file stamps without reading a page, no file there may be the page; a changed, new or not-downloaded file is kept and reported. If the page may be back, nothing more is removed, the check is tried again after a later check of a file that may be the page, and a page listed again gets its folder back. If Noted stops before that, or the expiry is still running 5 s into a quit, the folder is left under its name. Nothing on an expiry path deletes a folder recursively.
+  - **Two locks (amends 0130 "One folder at a time" and 0148 "One folder lock").** A rename between two folders with different lock keys (a page move, its rollback, the stray-folder move, a restore from `deleted-attachments`, a hand-off to recovery) and *Delete the original* hold both folders' locks, taken in `FolderLocks.keyOf` order, each waited for at most 5 s; then whatever is held is released and the pair is tried again half a second later (twice for a move, three times for its rollback). A rename within one lock folder takes that lock only. The pull engine's checked delete holds both locks in the same order. Such a rename runs as one job and reports a delete in the old folder and a publish in the new one; a page the move didn't read is published without a content identity, and the feed's consumer reads it. 0184's binder check runs inside each turn.
+  - **A stalled folder (amends 0152 and 0157).** A move into or out of a folder whose save hangs waits up to 5 s, lets go and tries once more; if it is still held, the move is refused naming the folder (at its first page) or rolled back (later). A rollback tries three times, never holding one folder more than 5 s while it waits for the other; then it leaves the remaining pages in the new folder, each in one place, and says so.
+  - **Stamps (amends 0157).** A file whose stamp still matches the one taken when Noted last read, scanned or saved it isn't read again by a folder check or a watcher event, except the open page's.
+  - **Stray attachments folder.** An attachments folder left in a location without its page (another device's move arriving in pieces) is moved to the page's location when it has been quiet for 30 s, nothing in its location may be the page, the page is listed only at its new place and isn't busy, both folders are on one volume, writable and unheld, and it isn't a set-aside; otherwise it stays and, on another volume, is reported.
+  - **Primitives (amends 0127, 0139 and 0149).** `moveExclusive` is in its own file, outside the MCP server's import graph; `file_stamp.dart` only reads; `publishExclusive` keeps its behaviour; it and the other checked primitives now run through the coordination hook of 0185, which does nothing while no coordinator is registered. The damaged-destination rule is per file and the damaged file is renamed aside, never deleted; a placeholder at the destination is never hashed. A move carries a file by its name without reading it; a file that holds another page by then is classified at the destination.
+  - Host-only additions (`moveExclusive`, `FileStamp` and `fileStamp`, `PageStore.moveTo`, `scan(stamps:)`, `onPublishStamp`, `ContentIdentity.ofFileSync`), recorded in `BOX_API_CHANGELOG.md`; no file format or dependency change.
+  - **Known limits:** a kill between the set-aside and the page's own delete leaves the page with its attachments set aside until the user moves them (nothing is deleted); a restore of the page in another location, or still in the cloud, isn't seen by the expiry; a set-aside kept by three runs of the check stays under its name for good, and a page that comes back after that gets no restore; the stray-folder move may churn while another device's move arrives; an Undo that falls back to the root's folder doesn't say so.
+- **Rationale:** a copy-then-delete move and a recursive delete of a deleted page's folder could delete the only copy of a page or its attachments when a sync client changed them mid-operation (Codex design-review 2026-11-16 R-1 and area-data-integrity 2026-11-09 R-1). A rename moves the one copy and never deletes it.
+- **Alternatives considered:** keeping copy-then-delete with a stronger source check (still deletes the only copy if the check races a writer); deleting set-asides by folder (the earlier rule); reading every page file at each check (rejected for the cost on large folders; stamps decide when to read).
 
 ---
 

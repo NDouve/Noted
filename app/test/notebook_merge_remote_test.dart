@@ -56,7 +56,7 @@ class HookStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     void Function()? beforePublish,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
@@ -70,6 +70,7 @@ class HookStore extends PageStore {
       afterRead: afterRead,
       beforePublish: beforePublish,
       beforeRestore: beforeRestore,
+      onPublishStamp: onPublishStamp,
       beforeAsideDelete: beforeAsideDelete,
       beforeFinalCheck: beforeFinalCheck,
       afterFinalRead: afterFinalRead,
@@ -80,10 +81,10 @@ class HookStore extends PageStore {
   }
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) async {
     final s = stallSaveNew;
     if (s != null) await s.future;
-    return super.saveNew(page, beforePublish: beforePublish);
+    return super.saveNew(page, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
   }
 }
 
@@ -356,22 +357,15 @@ void main() {
       await start();
       final folder = await Directory.systemTemp.createTemp('noted_merge_remote_mv');
       extra.add(folder);
-      late HookStore dest;
-      nb.dispose();
-      nb = Notebook(
-        store = HookStore(dir),
-        modules,
-        saveDelay: const Duration(hours: 1),
-        storeFactory: (d) => d.path == dir.path ? PageStore(d) : (dest = HookStore(d)),
-      );
-      await nb.load();
       final section = await nb.addBinder(folder.path);
       final id = nb.currentId!;
       await nb.createPage();
       await nb.flush();
       final base = readPage(textOf(id));
       final stall = Completer<void>();
-      dest.stallSaveNew = stall;
+      nb.syncHook = (point, path) async {
+        if (point == 'move-before-rename') await stall.future;
+      };
       final move = nb.moveToLocation(id, binderPath: section.path);
       await pump();
       final before = textOf(id);
@@ -690,7 +684,7 @@ class FlakyDelete extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,

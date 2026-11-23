@@ -27,7 +27,7 @@ class _FailingStore extends PageStore {
   }
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) async {
     throw const FileSystemException('disk full');
   }
 }
@@ -258,6 +258,8 @@ void main() {
     });
 
     test('a failed move keeps the sources and leaves nothing in the target', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       final nb = make(
         settings: makeSettings(),
         factory: (d) => norm(d.path) == norm(extra.path) ? _FailingStore(d) : PageStore(d),

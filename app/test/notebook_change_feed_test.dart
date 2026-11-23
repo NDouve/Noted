@@ -30,19 +30,19 @@ class FailingStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     void Function()? beforePublish,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
   }) {
     if (failSaves) throw const FileSystemException('disk full');
-    return super.saveIfUnchanged(page, expectedText);
+    return super.saveIfUnchanged(page, expectedText, onPublishStamp: onPublishStamp);
   }
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) async {
     if (saveNewTaken) return false;
-    return super.saveNew(page, beforePublish: beforePublish);
+    return super.saveNew(page, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
   }
 
   @override
@@ -52,7 +52,7 @@ class FailingStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
@@ -338,7 +338,9 @@ void main() {
       expect(File(pagePath(first)).existsSync(), isTrue);
     });
 
-    test('a move that fails and rolls back emits its publish and delete pair', () async {
+    test('a copying move that fails and rolls back emits its publish and delete pair', () async {
+      Notebook.forceCopyMoveForTest = true; // the copy path
+      addTearDown(() => Notebook.forceCopyMoveForTest = false);
       await start();
       late FailingStore dest;
       nb.dispose();
@@ -354,10 +356,11 @@ void main() {
       nb.localChanges.listen(events.add);
       final section = await nb.addBinder(folder.path);
       final id = nb.currentId!;
-      await nb.createPage();
+      final sub = await nb.createPage(parentId: id);
       await nb.flush();
+      // The subpage's file is at the target already, so its copy fails after the page's was made.
+      File(pagePath(sub)).copySync(pagePath(sub, folder));
       await take();
-      source.failDeletes = true; // the source can't be removed: the move rolls back
       try {
         await nb.moveToLocation(id, binderPath: section.path);
       } on NotebookException {

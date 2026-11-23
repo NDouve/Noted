@@ -219,6 +219,10 @@ RemoteView buildView(
 
 enum _Kind { skip, mirrored, rootBinder }
 
+/// `<page id>.deleted-<12 hex>.assets`: the folder a page's delete set aside
+/// beside the page.
+final RegExp _deletedAsideName = RegExp(r'\.deleted-[0-9a-f]{12}\.assets$');
+
 /// The mirror filter, by name only: `*.canvas` and `noted-binder.json` in the
 /// root and in each binder, and everything below a `templates` or `*.assets`
 /// folder there. Never `*.tmp`, asides or `-remote-` copies.
@@ -236,6 +240,9 @@ _Kind _mirrorKind(List<String> segs, Set<String> binderKeys) {
     return _Kind.skip;
   }
   final first = foldKey(rest[0]);
+  // A delete's in-place set-aside is not mirrored (N12): it is local, and goes
+  // when its files do.
+  if (_deletedAsideName.hasMatch(first)) return _Kind.skip;
   if (first == 'templates' || first.endsWith('.assets')) return _Kind.mirrored;
   return _Kind.skip;
 }

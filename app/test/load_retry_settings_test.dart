@@ -20,9 +20,9 @@ class _ReadStore extends PageStore {
   bool failWrite = false;
 
   @override
-  Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish}) async {
+  Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) async {
     if (failWrite) throw const FileSystemException('late failure');
-    return super.saveNewText(page, text, beforePublish: beforePublish);
+    return super.saveNewText(page, text, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
   }
 }
 

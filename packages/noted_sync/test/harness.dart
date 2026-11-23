@@ -51,7 +51,7 @@ class Harness {
   final FakeClock clock;
   late final Directory work = Directory('${base.path}/work');
   late final Directory state = Directory('${base.path}/state');
-  final FolderLocks locks = FolderLocks();
+  FolderLocks locks = FolderLocks();
   late PullEngine engine;
   late String rootId;
 

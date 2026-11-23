@@ -103,7 +103,7 @@ class SeamStore extends BinderStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     void Function()? beforePublish,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
   }) async {
     final n = seams.updates++;
     if (n < seams.gates.length) await seams.gates[n].future;
