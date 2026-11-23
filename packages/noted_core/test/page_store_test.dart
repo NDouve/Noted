@@ -342,8 +342,8 @@ void main() {
     test('an adoption the target store held for another file is dropped', () async {
       final from = PageStore(dir), to = PageStore(other);
       final text = writePage(page('p1'));
-      File('${other.path}/mine.canvas').writeAsStringSync(text);
-      to.adopt('p1', '${other.path}/mine.canvas');
+      File('${other.path}/zzz.canvas').writeAsStringSync(text);
+      to.adopt('p1', '${other.path}/zzz.canvas');
       await from.save(page('p1', 'Source'));
       // The target holds p1 under another name, so p1.canvas is free there.
       expect(from.moveTo('p1', to), MoveOutcome.moved);
@@ -352,6 +352,8 @@ void main() {
       final scanned = await to.scan();
       expect(scanned.whereType<ReadablePage>(), hasLength(1));
       expect(scanned.whereType<UnreadablePage>(), hasLength(1));
+      // The moved file wins (the old choice, zzz, would sort last in a listing).
+      expect(scanned.whereType<ReadablePage>().single.path, endsWith('p1.canvas'));
     });
 
     test('a file at the target is targetExists: nothing moves, nothing changes', () async {
