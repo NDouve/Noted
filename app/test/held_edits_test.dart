@@ -1237,9 +1237,10 @@ void main() {
       await nb.flush();
       attach(folder, p);
       attach(folder, sub);
-      // Both set aside, the first page deleted; the second page's turn finds
+      // Both set aside (a gate at each caller and in each rename turn: four),
+      // the first page deleted; the second page's turn (the sixth) finds
       // another binder's file: the delete throws and is rolled back.
-      atGate({4: () => swap(_Swap.other)});
+      atGate({6: () => swap(_Swap.other)});
       await expectLater(nb.delete(p), throwsA(isA<NotebookException>()));
       nb.syncHook = null;
       expect(

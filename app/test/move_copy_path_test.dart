@@ -235,6 +235,28 @@ void main() {
     },
   );
 
+  test('a copied file rewritten in place (same size, time put back) just before the unlink keeps the original', () async {
+    final (nb, a, _) = await setup();
+    final kept = await copied(nb, a);
+    final d = File('${extra.path}/$a.assets/one.bin');
+    // A time a file system keeps exactly, so putting it back gives the same stamp.
+    final when = DateTime.utc(2020, 1, 1);
+    d.setLastModifiedSync(when);
+    hook = (point, path) async {
+      if (point != 'originals-file-before-final-check') return;
+      hook = null;
+      d.writeAsBytesSync([9, 9, 9]);
+      d.setLastModifiedSync(when);
+    };
+    final e = await failure(nb.deleteOriginals(kept));
+    expect(e, isA<NotebookException>());
+    expect(
+      File('${pages.path}/$a.assets/one.bin').readAsBytesSync(),
+      [1, 2, 3],
+      reason: 'the original of the file stays: the copy no longer holds what the move put there',
+    );
+  });
+
   test('an original is kept while its folder lock is held: both copies stay, reported', () async {
     final (nb, a, ca) = await setup();
     final kept = await copied(nb, a);

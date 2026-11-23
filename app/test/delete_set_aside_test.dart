@@ -658,7 +658,28 @@ void main() {
       final keep = {...idsOf(nb)}..removeAll({a, sub});
       final deleted = await nb.delete(a);
       await nb.undoDelete(deleted);
+      expect(File('${pages.path}/$a.canvas').existsSync(), isTrue, reason: 'the page is back in its folder');
+      expect(File('${extra.path}/$sub.canvas').existsSync(), isTrue, reason: 'the subpage is back in the folder it was stored in');
+      expect(File('${pages.path}/$sub.canvas').existsSync(), isFalse);
+      expect(File('${extra.path}/$a.canvas').existsSync(), isFalse);
       await reloadAgrees(nb, listed: {...keep, a, sub});
+    });
+
+    test('Undo puts each page and its attachments back in the folder it was deleted from', () async {
+      final (nb, a, sub) = await splitTree();
+      giveAssets(a, 1);
+      giveAssets(sub, 1, dir: extra);
+      final deleted = await nb.delete(a);
+      await nb.undoDelete(deleted);
+      expect(File('${pages.path}/$a.canvas').existsSync(), isTrue);
+      expect(File('${extra.path}/$sub.canvas').existsSync(), isTrue, reason: 'the subpage is back in its own folder');
+      expect(File('${pages.path}/$sub.canvas').existsSync(), isFalse);
+      expect(File('${extra.path}/$a.canvas').existsSync(), isFalse);
+      expect(live(a, 1).existsSync(), isTrue);
+      expect(live(sub, 1, extra).existsSync(), isTrue, reason: 'its attachments too');
+      expect(live(sub, 1).existsSync(), isFalse);
+      expect(trashFiles(), isEmpty);
+      await reloadAgrees(nb, listed: {...idsOf(nb)});
     });
   });
 
@@ -804,6 +825,48 @@ void main() {
       });
     }
 
+    for (final placeholder in [false, true]) {
+      test('a hold planted after the caller\'s gate and before the turn refuses the set-aside (${placeholder ? 'in place' : 'deleted-attachments'})', () async {
+        final nb = make();
+        await nb.load();
+        final folder = await Directory('${root.path}/Work').create();
+        final s = await nb.addBinder(folder.path);
+        final a = await nb.createPage(binderPath: s.path);
+        await nb.createPage(binderPath: s.path);
+        await nb.flush();
+        giveAssets(a, 1, dir: folder);
+        if (placeholder) Notebook.placeholderMarksForTest = {fileStamp(live(a, 1, folder).path)!}; // the in-place branch
+        hook = (point, path) async {
+          if (point != 'move-dir-before-lock') return;
+          hook = null; // the caller's gate has passed; another binder's file arrives now
+          File('${folder.path}/$binderFileName').writeAsStringSync(Binder.create(title: 'Other', color: binderPalette[2]).write());
+        };
+        try {
+          await nb.delete(a);
+        } on NotebookException {
+          // the held folder refuses the page's own delete too
+        }
+        hook = null;
+        expect(live(a, 1, folder).existsSync(), isTrue, reason: 'the rename did not run into the held folder');
+        expect(trashFiles(), isEmpty);
+        expect(inPlace(a, folder), isEmpty);
+        expect(notices.where((n) => n.contains('could not be set aside')), hasLength(1));
+      });
+    }
+
+    test('a partial set-aside says which files were left in the page\'s folder', () async {
+      final (nb, a, keep) = await world(files: 2);
+      // The folder can't be renamed whole, and the second file can't be moved.
+      final refuser = _Refuser((w) => w.intents.any((i) => i.kind == CoordinationKind.move && (i.path.endsWith('.assets') || i.path.endsWith(hashName(2)))));
+      registerCoordinator(root.path, refuser);
+      addTearDown(() => unregisterCoordinator(root.path));
+      await nb.delete(a);
+      expect(live(a, 2).existsSync(), isTrue, reason: 'the second file stayed in the live folder');
+      expect(trashFiles().single.path.endsWith(hashName(1)), isTrue, reason: 'the first file was set aside');
+      expect(notices.where((n) => n.contains('were left there')), hasLength(1), reason: '$notices');
+      await reloadAgrees(nb, listed: {keep});
+    });
+
     test('three kept runs end the record: the page coming back later gets no restore', () async {
       final (nb, a, _, deleted, text) = await restoredButUnlisted();
       File('${pages.path}/$a.canvas').deleteSync(); // sync's file is a not yet listed page, named for it
@@ -858,18 +921,25 @@ void main() {
   });
 
   group('guards', () {
-    test('no expiry path removes a set-aside recursively', () {
+    test('nothing in notebook.dart removes a folder recursively but _removeDir, called only by the delete rollback', () {
       final text = File('lib/src/notebook.dart').readAsStringSync().replaceAll('\r\n', '\n');
-      final begin = text.indexOf('// --- expiry begin');
-      final end = text.indexOf('// --- expiry end ---');
-      expect(begin, greaterThan(0));
-      expect(end, greaterThan(begin));
-      final region = text.substring(begin, end);
-      expect(RegExp(r'recursive:\s*true').allMatches(region).where((m) {
-        final line = region.substring(region.lastIndexOf('\n', m.start) + 1, region.indexOf('\n', m.start));
-        return line.contains('delete');
-      }), isEmpty);
-      expect(region.contains('_removeDir('), isFalse);
+      final lines = text.split('\n');
+      // A line that deletes with `recursive: true`: the only one is inside
+      // `_removeDir`, the exempt helper.
+      final recursive = [
+        for (var i = 0; i < lines.length; i++)
+          if (RegExp(r'recursive:\s*true').hasMatch(lines[i]) && lines[i].contains('delete')) i,
+      ];
+      final helper = lines.indexWhere((l) => l.contains('static Future<void> _removeDir('));
+      expect(helper, greaterThanOrEqualTo(0));
+      expect(recursive, hasLength(1), reason: 'only _removeDir deletes recursively');
+      expect(recursive.single, inInclusiveRange(helper, helper + 6), reason: 'and that line is in _removeDir');
+      // _removeDir's one call: the rollback of a delete, on the trash folder it made.
+      final calls = [
+        for (final l in lines)
+          if (l.contains('_removeDir(') && !l.contains('static Future<void> _removeDir(')) l.trim(),
+      ];
+      expect(calls, ['if (stash.isEmpty && keepTrash.isEmpty) await _removeDir(trash);']);
       expect(text.contains('_removeSetAside'), isFalse);
       expect(text.contains('removeVerifiedSources'), isFalse, reason: 'no copy-then-delete');
     });

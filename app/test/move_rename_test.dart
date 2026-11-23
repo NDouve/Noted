@@ -174,4 +174,35 @@ void main() {
     expect(File('${extra.path}/$ca.canvas').readAsStringSync(), 'someone else', reason: 'never replaced');
     expect(nb.tree.descendantsOf(a), [ca]);
   });
+
+  test('a rollback whose stamp no longer matches publishes the source again and deletes the target', () async {
+    final (nb, a, ca, x) = await scanned();
+    File('${extra.path}/$ca.canvas').writeAsStringSync('someone else'); // page 2 fails: page 1 goes back
+    final feed = <LocalChange>[];
+    final sub = nb.localChanges.listen(feed.add);
+    addTearDown(sub.cancel);
+    hook = (point, path) async {
+      if (point != 'move-after-rename' || !path.startsWith(extra.path)) return;
+      hook = null;
+      // The moved file changes before it goes back: its stamp is not the one carried.
+      final f = File('${extra.path}/$a.canvas');
+      final page = readPage(f.readAsStringSync());
+      f.writeAsStringSync(writePage(page.withMeta(page.meta.withTitle('Changed on the way'))));
+    };
+    await expectLater(nb.move(a, parentId: x), throwsA(isA<NotebookException>()));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    final source = '${pages.path}/$a.canvas';
+    expect(has(pages, a), isTrue);
+    String norm(String p) => p.replaceAll(r'\', '/');
+    expect(
+      feed.any((c) => c.kind == LocalChangeKind.deleted && norm(c.path) == norm('${extra.path}/$a.canvas')),
+      isTrue,
+      reason: 'the target went',
+    );
+    expect(
+      feed.lastWhere((c) => norm(c.path) == norm(source)).kind,
+      LocalChangeKind.published,
+      reason: 'the source is back: published, not left unmentioned',
+    );
+  });
 }
