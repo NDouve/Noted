@@ -7,6 +7,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'coordination.dart';
+import 'dataless.dart';
 import 'exclusive_publish.dart' show checkWindowsName, windowsPath;
 import 'file_stamp.dart';
 
@@ -113,11 +114,14 @@ MoveOutcome moveExclusiveUncoordinated(
   String to, {
   void Function()? beforeOsCall,
 }) {
+  // A file that is not downloaded, or a stub with no file, stays where it is:
+  // never "missing".
+  _requireDownloaded(from);
   if (_isAbsent(from)) {
     throw FileSystemException('The source is missing', from);
   }
   if (Platform.isWindows) checkWindowsName(to);
-  if (!_isAbsent(to)) return MoveOutcome.targetExists;
+  if (_taken(to)) return MoveOutcome.targetExists;
   final int code;
   try {
     code = _callOs(from, to, beforeOsCall);
@@ -128,8 +132,11 @@ MoveOutcome moveExclusiveUncoordinated(
     throw FileSystemException('Exclusive move failed: $e', to);
   }
   if (code == 0) return MoveOutcome.moved;
-  if (!_isAbsent(to)) return MoveOutcome.targetExists;
-  if (_isAbsent(from)) throw FileSystemException('The source is missing', from);
+  if (_taken(to)) return MoveOutcome.targetExists;
+  if (_isAbsent(from)) {
+    _requireDownloaded(from);
+    throw FileSystemException('The source is missing', from);
+  }
   if (_isNotFound(code)) {
     throw FileSystemException('The target folder is missing', to);
   }
@@ -147,6 +154,15 @@ MoveOutcome _outcomeWithoutCode(String from, String to) {
     if (a != null && b != null && a != b) return MoveOutcome.cannotRename;
   } catch (_) {}
   return MoveOutcome.busy;
+}
+
+/// Something is at [path], or only its stub is (a stubbed name is taken).
+bool _taken(String path) => !_isAbsent(path) || hasStub(path);
+
+void _requireDownloaded(String path) {
+  if (isDataless(path)) {
+    throw StorageBusy(StorageBusyReason.dataless, [path]);
+  }
 }
 
 bool _isAbsent(String path) =>
@@ -340,7 +356,7 @@ int _sysRenameat2() {
 /// the lock that makes Noted the only writer there.
 int _lstatRename(String from, String to, void Function()? hook) {
   hook?.call();
-  if (!_isAbsent(to)) return _eexist;
+  if (_taken(to)) return _eexist;
   try {
     final type = FileSystemEntity.typeSync(from, followLinks: false);
     if (type == FileSystemEntityType.directory) {
@@ -383,6 +399,13 @@ enum PlaceholderState {
 /// no data access.
 PlaceholderState placeholderState(String path) {
   try {
+    if (Platform.isMacOS || Platform.isIOS) {
+      // One dataless check (a stub counts as the file).
+      if (isDataless(path)) return PlaceholderState.placeholder;
+      return _isAbsent(path)
+          ? PlaceholderState.unknown
+          : PlaceholderState.notPlaceholder;
+    }
     final info = rawFileInfo(path);
     if (info == null) return PlaceholderState.unknown;
     return info.placeholder

@@ -2,10 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:ffi' show Abi;
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/src/storage/dataless.dart' show debugDatalessAbi, debugResetDataless;
 
 void main() {
   late Directory dir;
@@ -84,5 +86,30 @@ void main() {
       BinderCreated.exists,
     );
     expect(f.readAsStringSync(), '{"format":1}');
+  });
+
+  group('files that are not downloaded', () {
+    tearDown(() {
+      debugDatalessAbi = null;
+      debugResetDataless();
+    });
+
+    test('a stub-only binder file is present: unreadable while downloading, never missing, never created over', () async {
+      File('${dir.path}/.noted-binder.json.icloud').writeAsStringSync('');
+      final r = await store.read();
+      expect(r, isA<BinderUnreadable>());
+      expect((r as BinderUnreadable).reason, stillDownloading);
+      expect(await store.create(Binder.create(title: 'x', color: binderPalette.first)), BinderCreated.exists);
+      expect(dir.listSync().length, 1);
+    });
+
+    test('a dataless binder file is not read', () async {
+      await store.create(Binder.create(title: 'x', color: binderPalette.first));
+      if (Platform.isMacOS || Platform.isIOS) return;
+      debugDatalessAbi = Abi.macosArm64;
+      debugResetDataless();
+      expect(await store.read(), isA<BinderUnreadable>());
+      expect(store.fileHoldsBinderSync('anything'), isFalse);
+    });
   });
 }

@@ -2,11 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:ffi' show Abi;
 import 'dart:io';
 import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/src/storage/dataless.dart' show debugDatalessAbi, debugResetDataless;
 import 'support/coordination_support.dart';
 import 'package:noted_core/src/storage/exclusive_move.dart'
     show MoveStrategy, debugMoveStrategy, moveExclusiveUncoordinated;
@@ -455,6 +457,45 @@ void suite() {
 
     test('a missing path is unknown', () async {
       expect(placeholderState(p('nope')), PlaceholderState.unknown);
+    });
+  });
+
+  group('files that are not downloaded', () {
+    tearDown(() {
+      debugDatalessAbi = null;
+      debugResetDataless();
+    });
+
+    test('a stub-only source stays where it is: busy, never missing', () async {
+      File(p('.a.bin.icloud')).writeAsStringSync('');
+      expect(await moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.busy);
+      expect(
+        () => moveExclusiveUncoordinated(p('a.bin'), p('b.bin')),
+        throwsA(isA<StorageBusy>().having((e) => e.reason, 'reason', StorageBusyReason.dataless)),
+      );
+      expect(File(p('.a.bin.icloud')).existsSync(), isTrue);
+      expect(File(p('b.bin')).existsSync(), isFalse);
+    });
+
+    test('a stubbed name is taken: the move reports targetExists and moves nothing', () async {
+      File(p('a.bin')).writeAsBytesSync([1]);
+      File(p('.b.bin.icloud')).writeAsStringSync('');
+      expect(await moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.targetExists);
+      expect(File(p('a.bin')).readAsBytesSync(), [1]);
+      debugMoveStrategy = MoveStrategy.lstatRename;
+      expect(await moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.targetExists);
+      expect(File(p('a.bin')).existsSync(), isTrue);
+    });
+
+    test('a dataless source stays where it is', () async {
+      File(p('a.bin')).writeAsBytesSync([1]);
+      if (Platform.isMacOS || Platform.isIOS) return;
+      debugDatalessAbi = Abi.macosArm64;
+      debugResetDataless();
+      expect(await moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.busy);
+      debugDatalessAbi = null;
+      expect(File(p('a.bin')).existsSync(), isTrue);
+      expect(File(p('b.bin')).existsSync(), isFalse);
     });
   });
 }

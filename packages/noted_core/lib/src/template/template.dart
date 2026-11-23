@@ -58,6 +58,7 @@ import '../json/raw_json.dart';
 import '../model/ids.dart';
 import '../model/page.dart';
 import '../storage/coordination.dart';
+import '../storage/dataless.dart';
 import '../storage/exclusive_publish.dart';
 import '../storage/replace_if_unchanged.dart';
 
@@ -490,12 +491,29 @@ final class TemplateStore {
     if (!await directory.exists()) return const [];
     if (sweep) await sweepAsideFiles(directory, extension: templateExtension);
     final entries = <TemplateEntry>[];
-    await for (final f in directory.list()) {
+    await for (final listed in directory.list()) {
+      // A `.<name>.icloud` stub is listed as `<name>`, not downloaded; a file
+      // listed beside its stub speaks for itself.
+      var f = listed;
+      var stubbed = false;
+      if (f is File) {
+        final target = stubTargetName(f.path.split(RegExp(r'[\\/]')).last);
+        if (target != null) {
+          final real = File('${directory.path}${Platform.pathSeparator}$target');
+          if (real.existsSync()) continue;
+          f = real;
+          stubbed = true;
+        }
+      }
       if (f is File && (f.path.endsWith(asideSuffix) || f.path.endsWith(verifiedSuffix))) {
         entries.add(UnreadableTemplate(f.path, 'left over from a delete; not put back yet'));
         continue;
       }
       if (f is! File || !f.path.endsWith(templateExtension)) continue;
+      if (stubbed || isDataless(f.path)) {
+        entries.add(UnreadableTemplate(f.path, stillDownloading));
+        continue;
+      }
       try {
         final bytes = await f.readAsBytes();
         final text = utf8.decode(bytes);
@@ -529,7 +547,7 @@ final class TemplateStore {
   /// is written).
   Future<File> save(NotedTemplate template) async {
     final file = fileFor(template.id);
-    if (await file.exists()) {
+    if (await file.exists() || isDataless(file.path)) {
       throw FileSystemException('template file already exists', file.path);
     }
     // One coordinated write on the folder (N4, C2: a refusal is not a failure

@@ -9,6 +9,7 @@ import '../format/page_format.dart';
 import '../merge/conflict_copy.dart';
 import '../model/page.dart';
 import 'coordination.dart';
+import 'dataless.dart';
 import 'exclusive_move.dart';
 import 'exclusive_publish.dart';
 import 'file_stamp.dart';
@@ -126,12 +127,30 @@ class PageStore {
     final entries = <PageEntry>[];
     final read = <String, (String, NotedPage)>{}; // by file name
     final stamped = <String, FileStamp>{}; // by path
-    await for (final f in directory.list()) {
+    await for (final listed in directory.list()) {
+      // A `.<name>.icloud` stub is listed as `<name>`: present, not downloaded.
+      // (With the file itself listed too, the file speaks for itself.)
+      var f = listed;
+      var stubbed = false;
+      if (f is File) {
+        final target = stubTargetName(_name(f.path));
+        if (target != null) {
+          final real = File('${directory.path}${Platform.pathSeparator}$target');
+          if (FileSystemEntity.typeSync(real.path, followLinks: false) != FileSystemEntityType.notFound) continue;
+          f = real;
+          stubbed = true;
+        }
+      }
       if (f is File && (f.path.endsWith(asideSuffix) || f.path.endsWith(verifiedSuffix))) {
         entries.add(UnreadablePage(f.path, 'left over from a replace; not put back yet'));
         continue;
       }
       if (f is! File || !f.path.endsWith(extension)) continue;
+      // Never read a file that is not downloaded (a read would download it).
+      if (stubbed || isDataless(f.path)) {
+        entries.add(UnreadablePage(f.path, stillDownloading));
+        continue;
+      }
       try {
         final before = stamps ? fileStamp(f.path) : null;
         fileReadObserver?.call(f.path);
@@ -238,6 +257,7 @@ class PageStore {
       final other = File('$dir${Platform.pathSeparator}$cand');
       try {
         if (!await other.exists()) continue;
+        if (isDataless(other.path)) continue;
         if (readPage(await other.readAsString()).id != copy.id) continue;
       } on PageFormatException {
         continue;
@@ -266,16 +286,22 @@ class PageStore {
   /// Reads the page's file. Throws [PageFormatException] if the file holds a
   /// different page, so one page's content is never served under another id.
   Future<NotedPage> load(String pageId) async {
-    fileReadObserver?.call(_pathFor(pageId));
-    final page = readPage(await File(_pathFor(pageId)).readAsString());
+    final page = readPage(await readText(pageId));
     if (page.id != pageId) throw const PageFormatException('the page file holds a different page');
     return page;
   }
 
   /// The text of the page's file, as stored.
-  Future<String> readText(String pageId) {
-    fileReadObserver?.call(_pathFor(pageId));
-    return File(_pathFor(pageId)).readAsString();
+  ///
+  /// Throws [StorageBusy] (`dataless`), reading nothing, when the file is not
+  /// downloaded.
+  Future<String> readText(String pageId) async {
+    final path = _pathFor(pageId);
+    if (isDataless(path)) {
+      throw StorageBusy(StorageBusyReason.dataless, [path]);
+    }
+    fileReadObserver?.call(path);
+    return await File(path).readAsString();
   }
 
   /// Writes [page] as a new file, and only if no file is at its path at the

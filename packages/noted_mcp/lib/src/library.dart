@@ -6,6 +6,10 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:noted_core/noted_core_read.dart';
+// The core's read-only barrel leaves out storage code; the dataless check is
+// imported directly (invariant_test.dart allows it).
+// ignore: implementation_imports
+import 'package:noted_core/src/storage/dataless.dart' show isDataless, stubTargetName;
 
 import 'running_probe.dart';
 
@@ -435,7 +439,10 @@ final class NotedLibrary {
     LibrarySources? kept,
     String? recordedId,
   ) async {
-    final bytes = await identity.readBytes(binderFilePath(dir.path));
+    // Not downloaded: not read, like a binder file that can't be read.
+    final bytes = isDataless(binderFilePath(dir.path))
+        ? null
+        : await identity.readBytes(binderFilePath(dir.path));
     kept?.files[binderFilePath(dir.path)] = bytes;
     final binder = usableBinder(bytes, recordedId);
     kept?.binderUsable[binderFilePath(dir.path)] = binder != null;
@@ -482,8 +489,26 @@ final class NotedLibrary {
         return _FolderScan(FolderState.absent, const [], const {});
       }
       await for (final e in dir.list()) {
-        if (e is! File || !e.path.endsWith('.canvas')) continue;
+        if (e is! File) continue;
+        // A `.<name>.icloud` stub is listed as `<name>`: a file that is there
+        // and can't be read. (The file itself, if listed too, speaks for itself.)
+        final stubOf = stubTargetName(e.path.split(RegExp(r'[\\/]')).last);
+        if (stubOf != null) {
+          if (!stubOf.endsWith('.canvas')) continue;
+          final real = '${dir.path}${Platform.pathSeparator}$stubOf';
+          if (FileSystemEntity.typeSync(real, followLinks: false) != FileSystemEntityType.notFound) continue;
+          stats[real] = await fileSignature(e.path);
+          carried[real] = fileIdsOf(real, null);
+          continue;
+        }
+        if (!e.path.endsWith('.canvas')) continue;
         stats[e.path] = await fileSignature(e.path);
+        // A page that is not downloaded is never read: it counts like an
+        // unreadable one (its name's ids, or any page without them).
+        if (isDataless(e.path)) {
+          carried[e.path] = fileIdsOf(e.path, null);
+          continue;
+        }
         final bytes = await identity.readBytes(e.path);
         kept?.files[e.path] = bytes;
         String? parsed;

@@ -3,11 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:convert';
+import 'dart:ffi' show Abi;
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart' show conflictCopyOriginalNames, sweepAsideFiles;
 import 'package:noted_core/noted_core_read.dart';
+import 'package:noted_core/src/storage/dataless.dart' show debugDatalessAbi, debugResetDataless;
 import 'package:noted_core/src/storage/exclusive_publish.dart' show publishExclusive;
 import 'package:noted_mcp/noted_mcp.dart';
 
@@ -1178,6 +1180,76 @@ void main() {
       final gone = ClosedWriter(dataDir: Directory('${root.path}/nope'), folders: const []);
       expect(await gone.appendLog('{}'), isFalse);
       expect(Directory('${root.path}/nope').existsSync(), isFalse);
+    });
+  });
+
+  group('the narrow writer and files that are not downloaded', () {
+    late Directory folder;
+    late ClosedWriter w;
+    final old = utf8.encode('old');
+    final fresh = utf8.encode('new');
+
+    setUp(() {
+      folder = Directory('${root.path}/Writer')..createSync();
+      w = ClosedWriter(dataDir: data, folders: [folder.path]);
+    });
+    tearDown(() {
+      debugDatalessAbi = null;
+      debugResetDataless();
+    });
+
+    // Every existing file counts as dataless: the lookup can't be made here.
+    bool failClosed() {
+      if (Platform.isMacOS) return false;
+      debugDatalessAbi = Abi.macosArm64;
+      debugResetDataless();
+      return true;
+    }
+
+    List<String> names() => folder.listSync().map((e) => e.path.split(RegExp(r'[\\/]')).last).toList()..sort();
+
+    test('a missing page with its stub beside it is busy, never refused as absent', () async {
+      File('${folder.path}/.p.canvas.icloud').writeAsStringSync('');
+      expect(await w.replacePage('${folder.path}/p.canvas', expected: old, text: fresh), PageReplace.busy);
+      expect(names(), ['.p.canvas.icloud']);
+      // Without a stub it is refused, as before.
+      expect(await w.replacePage('${folder.path}/q.canvas', expected: old, text: fresh), PageReplace.refused);
+    });
+
+    test('a dataless target is busy before any read, and nothing is written', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      if (!failClosed()) return;
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.busy);
+      expect(names(), ['p.canvas']);
+      debugDatalessAbi = null;
+      expect(f.readAsStringSync(), 'old');
+    });
+
+    test('a dataless aside is put back, then busy', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      if (Platform.isMacOS) return;
+      // Fine at the first look; dataless once it is set aside.
+      w.beforeAside = () async {
+        debugDatalessAbi = Abi.macosArm64;
+        debugResetDataless();
+      };
+      // The target check runs before beforeAside, so only the aside's does.
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.busy);
+      debugDatalessAbi = null;
+      expect(names(), ['p.canvas']);
+      expect(f.readAsStringSync(), 'old');
+    });
+
+    test('an ordinary replace still drops its aside', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.done);
+      expect(names(), ['p.canvas']);
+    });
+
+    test('the writer has no platform case: no Platform.isMacOS, Platform.isIOS or iCloud name', () {
+      final src = File('lib/src/closed_writer.dart').readAsStringSync();
+      final code = src.split(RegExp(r'\r?\n')).where((l) => !l.trimLeft().startsWith('//')).join('\n');
+      expect(RegExp(r'Platform\.is(MacOS|IOS)|icloud', caseSensitive: false).hasMatch(code), isFalse);
     });
   });
 }

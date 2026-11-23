@@ -2,10 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:ffi' show Abi;
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/src/storage/dataless.dart' show debugDatalessAbi, debugResetDataless;
 import 'support/coordination_support.dart';
 import 'support/page_save.dart';
 
@@ -424,6 +426,60 @@ void main() {
       expect(await PageStore(made).saveNew(page), isTrue);
       expect(c.calls, isNotEmpty);
       expect(c.calls.every((w) => w.intents.any((i) => i.kind == CoordinationKind.write)), isTrue);
+    });
+  });
+
+  group('files that are not downloaded', () {
+    tearDown(() {
+      debugDatalessAbi = null;
+      debugResetDataless();
+    });
+
+    test('a stub is listed as the page file, still downloading, and is not a page', () async {
+      final text = writePage(NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0)));
+      File('${dir.path}/p2.canvas').writeAsStringSync(text.replaceAll('p1', 'p2'));
+      File('${dir.path}/.p1.canvas.icloud').writeAsStringSync('');
+      final store = PageStore(dir);
+      final entries = await store.scan();
+      expect(entries.whereType<ReadablePage>().single.path, endsWith('p2.canvas'));
+      final waiting = entries.whereType<UnreadablePage>().single;
+      expect(waiting.path, endsWith('p1.canvas'));
+      expect(waiting.reason, stillDownloading);
+      // Never absent: the load is busy, not a missing file.
+      await expectLater(store.load('p1'), throwsA(isA<StorageBusy>()));
+    });
+
+    test('a stub beside its file is listed once, as the file', () async {
+      final text = writePage(NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0)));
+      File('${dir.path}/p1.canvas').writeAsStringSync(text);
+      File('${dir.path}/.p1.canvas.icloud').writeAsStringSync('');
+      final entries = await PageStore(dir).scan();
+      expect(entries.single, isA<ReadablePage>());
+    });
+
+    test('a dataless page file is listed, not read', () async {
+      final text = writePage(NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0)));
+      File('${dir.path}/p1.canvas').writeAsStringSync(text);
+      if (Platform.isMacOS || Platform.isIOS) return;
+      debugDatalessAbi = Abi.macosArm64;
+      debugResetDataless();
+      final store = PageStore(dir);
+      final entries = await store.scan();
+      expect((entries.single as UnreadablePage).reason, stillDownloading);
+      await expectLater(store.readText('p1'), throwsA(isA<StorageBusy>()));
+      debugDatalessAbi = null;
+      expect(File('${dir.path}/p1.canvas').readAsStringSync(), text);
+    });
+
+    test('saving over a stub-only page is busy', () async {
+      final page = NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0));
+      File('${dir.path}/.p1.canvas.icloud').writeAsStringSync('');
+      await expectLater(
+        PageStore(dir).saveIfUnchanged(page, writePage(page)),
+        throwsA(isA<StorageBusy>()),
+      );
+      expect(await PageStore(dir).saveNew(page), isFalse, reason: 'a stubbed name is taken');
+      expect(dir.listSync().length, 1);
     });
   });
 }

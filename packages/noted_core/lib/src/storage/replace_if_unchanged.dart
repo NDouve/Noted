@@ -11,6 +11,7 @@ import 'package:crypto/crypto.dart' as crypto show Digest, sha256;
 import '../attachments/attachments.dart';
 import '../merge/conflict_copy.dart';
 import 'coordination.dart';
+import 'dataless.dart';
 import 'drop_verified.dart';
 import 'exclusive_publish.dart' show publishExclusiveUncoordinated;
 
@@ -120,6 +121,7 @@ Future<String?> _keepAsConflictCopy(File file, String target, String label) asyn
 Future<void> _dropLeftoverLink(File source, String published, String target) async {
   try {
     if (!await source.exists()) return;
+    if (isDataless(published) || isDataless(source.path)) return;
     final publishedBytes = await File(published).readAsBytes();
     await _dropAside(source, target, bytes: publishedBytes, late: false);
   } on FileSystemException {
@@ -145,7 +147,7 @@ Future<DropResult> _dropAside(
 }) => dropVerified(
   aside,
   _dropName(target),
-  (f) => _matches(f, bytes, identity),
+  (f) async => !isDataless(f.path) && await _matches(f, bytes, identity),
   stillRedundant: stillRedundant,
   beforeRename: beforeAsideDelete,
   beforeFinalCheck: beforeFinalCheck,
@@ -267,6 +269,9 @@ Future<ReplaceResult> _replaceIfUnchanged(
     final ok = await publishExclusiveUncoordinated(tmp, target, beforeOsCall: beforePublish);
     return ReplaceResult(ok ? ReplaceOutcome.replaced : ReplaceOutcome.changed);
   }
+  // A file that is not downloaded (or a stub with no file) is never read, and
+  // is never absent or changed: the call is busy.
+  _requireDownloaded(target);
   // Don't move anything when it plainly can't match.
   try {
     if (!await _matches(File(target), expected, identity)) {
@@ -275,6 +280,7 @@ Future<ReplaceResult> _replaceIfUnchanged(
   } on FileSystemException {
     if (FileSystemEntity.typeSync(target, followLinks: false) ==
         FileSystemEntityType.notFound) {
+      _requireDownloaded(target);
       return const ReplaceResult(ReplaceOutcome.changed);
     }
     rethrow;
@@ -286,11 +292,16 @@ Future<ReplaceResult> _replaceIfUnchanged(
     await File(target).rename(aside.path);
   } on FileSystemException catch (e) {
     // Not found: it vanished or was replaced since the read above.
-    if (isNotFoundError(e)) return const ReplaceResult(ReplaceOutcome.changed);
+    if (isNotFoundError(e)) {
+      _requireDownloaded(target);
+      return const ReplaceResult(ReplaceOutcome.changed);
+    }
     rethrow;
   }
 
-  // The aside file is exactly what was at the target. Compare it.
+  // The aside file is exactly what was at the target. Compare it, unless it
+  // is not downloaded: then put it back and refuse.
+  await _putBackIfDataless(aside, target, beforeRestore);
   final bool equal;
   try {
     equal = await _matches(aside, expected, identity);
@@ -538,6 +549,26 @@ Future<bool> _retry(Future<bool> Function() op) async {
   }
 }
 
+/// Throws [StorageBusy] (`dataless`) when the file at [path] is not downloaded,
+/// or is a stub with no file: nothing has been read or moved.
+void _requireDownloaded(String path) {
+  if (isDataless(path)) {
+    throw StorageBusy(StorageBusyReason.dataless, [path]);
+  }
+}
+
+/// The set-aside [aside] of [target] is not downloaded: it is put back, then
+/// the call is busy.
+Future<void> _putBackIfDataless(
+  File aside,
+  String target,
+  void Function()? hook,
+) async {
+  if (!isDataless(aside.path)) return;
+  await _putBack(aside, target, hook);
+  throw StorageBusy(StorageBusyReason.dataless, [target]);
+}
+
 /// Puts [aside] back at [target] without replacing anything.
 Future<ReplaceResult> _restore(
   File aside,
@@ -628,6 +659,7 @@ class ContentIdentity {
 
   /// The identity of the file at [path], read as a stream.
   static Future<ContentIdentity> ofFile(String path) async {
+    _requireDownloaded(path);
     final f = File(path);
     return ContentIdentity(await f.length(), await contentHashOfStream(f.openRead()));
   }
@@ -636,6 +668,7 @@ class ContentIdentity {
   /// await between its read and what follows can use it (a `stillRedundant`
   /// callback). Throws a [FileSystemException] if the file can't be read.
   static ContentIdentity ofFileSync(String path) {
+    _requireDownloaded(path);
     final sink = _DigestSink();
     final input = crypto.sha256.startChunkedConversion(sink);
     final file = File(path).openSync();
@@ -790,6 +823,7 @@ Future<DeleteResult> _deleteFileIfMatches(
   Future<void> Function(String path)? beforeFinalCheck,
   Future<void> Function(String path)? afterFinalRead,
 ) async {
+  _requireDownloaded(target);
   try {
     if (!await _matches(File(target), bytes, identity)) {
       return const DeleteResult(DeleteOutcome.changed);
@@ -797,6 +831,7 @@ Future<DeleteResult> _deleteFileIfMatches(
   } on FileSystemException {
     if (FileSystemEntity.typeSync(target, followLinks: false) ==
         FileSystemEntityType.notFound) {
+      _requireDownloaded(target);
       return const DeleteResult(DeleteOutcome.absent);
     }
     rethrow;
@@ -806,9 +841,13 @@ Future<DeleteResult> _deleteFileIfMatches(
   try {
     await File(target).rename(aside.path);
   } on FileSystemException catch (e) {
-    if (isNotFoundError(e)) return const DeleteResult(DeleteOutcome.absent);
+    if (isNotFoundError(e)) {
+      _requireDownloaded(target);
+      return const DeleteResult(DeleteOutcome.absent);
+    }
     rethrow;
   }
+  await _putBackIfDataless(aside, target, beforeRestore);
   final bool equal;
   try {
     equal = await _matches(aside, bytes, identity);
@@ -876,8 +915,10 @@ Future<DeleteResult> _deleteFileIfMatches(
   }
   if (restored) return const DeleteResult(DeleteOutcome.changed);
   if (drop.kind == DropKind.vanished) {
+    // A stub at the name is a file that is there but not downloaded.
     return FileSystemEntity.typeSync(target, followLinks: false) ==
-            FileSystemEntityType.notFound
+                FileSystemEntityType.notFound &&
+            !hasStub(target)
         ? const DeleteResult(DeleteOutcome.absent)
         : const DeleteResult(DeleteOutcome.changed);
   }

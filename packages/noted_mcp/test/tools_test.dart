@@ -3,10 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:convert';
+import 'dart:ffi' show Abi;
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core_read.dart';
+
+import 'package:noted_core/src/storage/dataless.dart' show debugDatalessAbi, debugResetDataless;
 import 'package:noted_mcp/noted_mcp.dart';
 
 import 'fixture.dart';
@@ -289,5 +292,56 @@ E = mc^2
     final lib = await NotedLibrary.load(empty);
     expect(lib.pages, isEmpty);
     expect(empty.listSync(), isEmpty, reason: 'reading never creates anything');
+  });
+
+  group('files that are not downloaded', () {
+    late Directory dataDir;
+    String pagesPath(String name) => '${dataDir.path}/pages/$name';
+
+    setUp(() {
+      dataDir = writeFixture(Directory.systemTemp.createTempSync('noted_mcp_stub')..createSync());
+      addTearDown(() => dataDir.parent.deleteSync(recursive: true));
+    });
+
+    test('a stub counts for its name\'s ids, so the page is ambiguous', () async {
+      File(pagesPath('.${Ids.public}-LAPTOP.canvas.icloud')).writeAsStringSync('');
+      final lib = await NotedLibrary.load(dataDir);
+      expect(lib.ambiguous, contains(Ids.public));
+      expect(lib.allAmbiguous, isFalse);
+      // The stub is not a page: the page itself is still read.
+      expect(lib.pages.map((p) => p.id), contains(Ids.public));
+    });
+
+    test('a stub whose name carries no id may be any page', () async {
+      File(pagesPath('.notes.canvas.icloud')).writeAsStringSync('');
+      expect((await NotedLibrary.load(dataDir)).allAmbiguous, isTrue);
+    });
+
+    test('a stub beside its file is the file: nothing extra counts', () async {
+      File(pagesPath('.${Ids.public}.canvas.icloud')).writeAsStringSync('');
+      final lib = await NotedLibrary.load(dataDir);
+      expect(lib.ambiguous, isNot(contains(Ids.public)));
+      expect(lib.allAmbiguous, isFalse);
+    });
+
+    test('a page whose stub stands alone is not given out and counts for its id', () async {
+      File(pagesPath('${Ids.public}.canvas')).renameSync(pagesPath('.${Ids.public}.canvas.icloud'));
+      File(pagesPath('${Ids.public}-DESK.canvas')).writeAsStringSync('not a page');
+      final lib = await NotedLibrary.load(dataDir);
+      expect(lib.pages.map((p) => p.id), isNot(contains(Ids.public)));
+      expect(lib.ambiguous, contains(Ids.public));
+    });
+
+    test('with the check failing closed, no page file is read and the library is ambiguous', () async {
+      debugDatalessAbi = Abi.macosArm64; // no lstat in this process on Windows: fails closed
+      debugResetDataless();
+      addTearDown(() {
+        debugDatalessAbi = null;
+        debugResetDataless();
+      });
+      if (Platform.isMacOS) return; // a real lstat exists: nothing fails
+      final lib = await NotedLibrary.load(dataDir);
+      expect(lib.pages, isEmpty);
+    });
   });
 }

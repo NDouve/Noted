@@ -48,8 +48,11 @@ void main() {
   final entry = File('bin/noted_mcp.dart').absolute.uri;
   final graph = reachable(entry);
 
-  test('dart:ffi is imported by the exclusive publisher and by no other library in the whole graph', () {
-    expect(ffiImporters, {'package:noted_core/src/storage/exclusive_publish.dart'});
+  test('dart:ffi is imported by the exclusive publisher and the dataless check and by no other library in the whole graph', () {
+    expect(ffiImporters, {
+      'package:noted_core/src/storage/exclusive_publish.dart',
+      'package:noted_core/src/storage/dataless.dart',
+    });
   });
 
   test('the page mover and the file stamp are unreachable from the executable (they rename and stamp files)', () {
@@ -80,11 +83,12 @@ void main() {
 
   test('of Noted\'s own code only the read-only core and the server itself are reachable', () {
     const allowedCore = {'ai', 'binder', 'format', 'json', 'model', 'search', 'tree'};
-    // The storage files: the exclusive publisher, the checked drop and the coordination hook (dart:async and dart:io only; empty in the server) the narrow writer uses.
+    // The storage files, exactly: the exclusive publisher, the checked drop, the coordination hook (dart:async and dart:io only; empty in the server) and the dataless check (metadata only) the narrow writer and the library use.
     const storage = {
       'package:noted_core/src/storage/exclusive_publish.dart',
       'package:noted_core/src/storage/drop_verified.dart',
       'package:noted_core/src/storage/coordination.dart',
+      'package:noted_core/src/storage/dataless.dart',
     };
     final bad = [
       for (final lib in graph)
@@ -95,6 +99,11 @@ void main() {
             lib,
     ];
     expect(bad, isEmpty, reason: 'no canvas, box modules, storage writes, attachments or the full core');
+    expect(
+      {for (final lib in graph) if (lib.startsWith('package:noted_core/src/storage/')) lib},
+      storage,
+      reason: 'the allowed storage files are exactly exclusive_publish, drop_verified, coordination, dataless',
+    );
   });
 
   /// The source of every Noted library in the graph (the server, the
@@ -119,6 +128,30 @@ void main() {
   const exclusivePublish = 'package:noted_core/src/storage/exclusive_publish.dart';
   const dropVerifiedLib = 'package:noted_core/src/storage/drop_verified.dart';
 
+  test('the dataless check: metadata only, two leaf lstat lookups, no native memory of its own', () {
+    const dataless = 'package:noted_core/src/storage/dataless.dart';
+    final src = notedSources()[dataless]!;
+    // Its imports: dart:ffi, dart:io, dart:typed_data and nothing else.
+    expect(
+      RegExp(r'''^\s*import\s+['"]([^'"]+)['"]''', multiLine: true).allMatches(src).map((m) => m.group(1)).toSet(),
+      {'dart:ffi', 'dart:io', 'dart:typed_data'},
+    );
+    // The lookups are exactly lstat and lstat$INODE64, each a leaf call.
+    final lookups = RegExp(r'@Native<[^\n]*>\(([^)]*)\)').allMatches(src).map((m) => m.group(1)!).toList();
+    final names = {
+      for (final l in lookups) RegExp(r"symbol:\s*r?'([\w$]+)'").firstMatch(l)!.group(1),
+    };
+    expect(names, {'lstat', r'lstat$INODE64'});
+    expect(lookups.length, 2);
+    for (final l in lookups) {
+      expect(l, contains('isLeaf: true'));
+    }
+    expect(RegExp(r'\bexternal\b').allMatches(src).length, lookups.length);
+    expect(RegExp(r'lookupFunction|\.lookup\(').hasMatch(src), isFalse, reason: 'no other lookup');
+    expect(RegExp('malloc|calloc|free|Arena|allocate').hasMatch(src), isFalse);
+    // No write call (the write-API scan covers it too).
+    expect(RegExp(r'\.(rename|delete|create|open|writeAs\w+)\w*\(').hasMatch(src), isFalse);
+  });
   test('crypto is SHA-256 only: one import, `show sha256`, in the core\'s code format, and nothing else hashes', () {
     final sources = notedSources();
     final imports = RegExp(r'''^\s*(?:import|export)\s+['"]package:crypto/[^'"]*['"][^;]*;''', multiLine: true);
