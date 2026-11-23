@@ -63,6 +63,7 @@ class SwapStore extends PageStore {
       afterRead: afterRead,
       beforePublish: beforePublish,
       beforeRestore: beforeRestore,
+      onPublishStamp: onPublishStamp,
       beforeAsideDelete: a ?? beforeAsideDelete,
       beforeFinalCheck: f ?? beforeFinalCheck,
       afterFinalRead: afterFinalRead,

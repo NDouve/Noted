@@ -422,6 +422,7 @@ class _Chaos extends PageStore {
         beforePublish?.call();
       },
       beforeRestore: beforeRestore,
+      onPublishStamp: onPublishStamp,
       beforeAsideDelete: asideOnce ?? beforeAsideDelete,
       beforeFinalCheck: finalOnce ?? beforeFinalCheck,
       afterFinalRead: afterFinalRead,

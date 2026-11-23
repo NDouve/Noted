@@ -35,7 +35,7 @@ class _LossyStore extends PageStore {
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
-  }) => super.saveIfUnchanged(NotedPage.create(page.meta), expectedText);
+  }) => super.saveIfUnchanged(NotedPage.create(page.meta), expectedText, onPublishStamp: onPublishStamp);
 }
 
 /// A store whose read-back throws while [fail] says so.
@@ -144,7 +144,7 @@ class _OverlapStore extends PageStore {
       trigger = null;
       t?.call();
       await Future<void>.delayed(const Duration(milliseconds: 300));
-      return await super.saveIfUnchanged(page, expectedText);
+      return await super.saveIfUnchanged(page, expectedText, onPublishStamp: onPublishStamp);
     } finally {
       _replacing = false;
     }
@@ -184,7 +184,7 @@ class _RacingStore extends PageStore {
     Future<void> Function(String path)? afterFinalRead,
   }) {
     onPublish(calls++);
-    return super.saveIfUnchanged(page, expectedText);
+    return super.saveIfUnchanged(page, expectedText, onPublishStamp: onPublishStamp);
   }
 }
 
@@ -244,6 +244,7 @@ class _ToggleStore extends PageStore {
     afterRead: afterRead,
     beforePublish: beforePublish,
     beforeRestore: beforeRestore,
+    onPublishStamp: onPublishStamp,
     beforeAsideDelete: beforeAsideDelete,
     beforeFinalCheck: beforeFinalCheck,
     afterFinalRead: afterFinalRead,

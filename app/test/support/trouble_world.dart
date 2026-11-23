@@ -65,6 +65,7 @@ class FailStore extends PageStore {
       afterRead: afterRead,
       beforePublish: beforePublish,
       beforeRestore: beforeRestore,
+      onPublishStamp: onPublishStamp,
       beforeAsideDelete: beforeAsideDelete,
       beforeFinalCheck: beforeFinalCheck,
       afterFinalRead: afterFinalRead,

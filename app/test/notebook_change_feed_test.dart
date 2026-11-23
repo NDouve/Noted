@@ -36,7 +36,7 @@ class FailingStore extends PageStore {
     Future<void> Function(String path)? afterFinalRead,
   }) {
     if (failSaves) throw const FileSystemException('disk full');
-    return super.saveIfUnchanged(page, expectedText);
+    return super.saveIfUnchanged(page, expectedText, onPublishStamp: onPublishStamp);
   }
 
   @override
