@@ -176,7 +176,8 @@ class _TrackedMap extends MapBase<String, String> {
   String? operator [](Object? key) => _m[key];
   @override
   void operator []=(String key, String value) {
-    _changed(key);
+    // The same text again is no change: the stamp of the file it describes stays.
+    if (_m[key] != value) _changed(key);
     _m[key] = value;
   }
 
@@ -201,10 +202,6 @@ class _TrackedMap extends MapBase<String, String> {
 class _LockTimeout implements Exception {
   const _LockTimeout(this.path);
   final String path;
-}
-
-class _SkipRecheck implements Exception {
-  const _SkipRecheck();
 }
 
 /// How one page's rename ended (see [Notebook._renameOnePage]).
@@ -247,16 +244,13 @@ class CopiedMove {
   /// How many pages still have an original to delete.
   int get pending => _pages.where((p) => !p.finished).length;
 
-  // What each copy should still hold: D's page text once the placement is
-  // written (the root is the only page that is placed).
-  Future<void> _recordCopyText(PageStore to) async {
+  // What each copy should still hold: the text the placement wrote to D's root
+  // (the only page that is placed), as the notebook knows it; never a re-read,
+  // which could take a sync client's later write for the copy's own. With none
+  // known the text the copy was published with stays.
+  void _recordCopyText(String? written) {
     final root = _pages.firstOrNull;
-    if (root == null) return;
-    try {
-      root.copyText = await to.readText(root.id);
-    } on Object {
-      // The text the copy was published with stays: a changed copy keeps the original.
-    }
+    if (root != null && written != null) root.copyText = written;
   }
 }
 
@@ -1475,7 +1469,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   NotedPage? _base;
   // The exact text last written or read for each page file (by path key), so
   // the app's own writes aren't taken for outside changes.
-  late final Map<String, String> _known = _TrackedMap(_fileStamps.remove);
+  late final Map<String, String> _known = _TrackedMap((k) {
+    _fileStamps.remove(k);
+    _baseText.remove(k);
+  });
+  // The text a moved page's file held when it was moved, for a page whose stamp
+  // didn't match (2b): `_known` is dropped so the file is read, and this is
+  // what that read is compared with, so the move's own file is no foreign
+  // change. Dropped with any change of `_known` at the key.
+  final Map<String, String> _baseText = {};
+  // Moved files (by path key) whose arrival the change feed hasn't been told of
+  // for want of their text: the next read of the file tells it.
+  final Set<String> _movePublish = {};
   // Page id of each page file (by path key).
   late final Map<String, String> _pathId = _TrackedMap(_fileStamps.remove);
   // The file stamp of each page file Noted last classified (by path key): what a
@@ -2657,6 +2662,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (!_pathId.containsValue(id) && _loc.containsKey(id)) {
         final at = _loc[id]!;
         _metas.remove(id);
+        _heldPlacement.remove(id);
         _loc.remove(id);
         _conflicts.remove(id);
         _touch(at);
@@ -2729,6 +2735,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final NotedPage page;
     final String text;
     try {
+      PageStore.fileReadObserver?.call(path);
       text = await File(path).readAsString();
       page = readPage(text);
     } on Object {
@@ -4008,6 +4015,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (r.deleted) deletedNow.add(i);
         _landedProblems.remove(p); // the user deleted it
         _metas.remove(p);
+        _heldPlacement.remove(p);
         _loc.remove(p);
       }
     } on Object catch (rollbackError) {
@@ -4903,6 +4911,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<void> _setPlacement(String id, String? parentId, int order) async {
+    _heldPlacement.remove(id); // a placement of its own supersedes a held one (N8)
     final c = _current;
     if (c != null && c.page.id == id) {
       // The open page changes through its controller, so the in-memory page
@@ -4943,12 +4952,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       state = 2;
       out.completeError(_LockTimeout(dir.path));
     });
-    _lockRun<T>(dir, () async {
+    // The limit is for the wait for the lock only: it ends when the lock is held,
+    // before the gate's read of the binder file (G2), which can be slow.
+    final run = _lockRunRaw<T>(dir, () async {
       if (state == 2) throw const _LockTimeout('');
       state = 1;
       timer.cancel();
-      return job();
-    }, gate: gate).then<void>(
+      return gate ? _gated(dir, job) : job();
+    });
+    _afterLockJob(run);
+    run.then<void>(
       (v) {
         if (!out.isCompleted) out.complete(v);
       },
@@ -5317,6 +5330,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       return false;
     }
     st.adopt(p, to);
+    // The bookkeeping of the file follows its name (a rename keeps its stamp).
+    final ok = _key(cur), nk = _key(to);
+    if (_pathId[ok] == p) {
+      final t = _known[ok];
+      final s = _fileStamps[ok];
+      _known.remove(ok);
+      _pathId.remove(ok);
+      _pathId[nk] = p;
+      if (t != null) _known[nk] = t;
+      _recordStamp(nk, s);
+    }
     return true;
   }
 
@@ -5340,8 +5364,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!fromStore.directory.existsSync() || !toStore.directory.existsSync()) {
       throw NotebookException('${_placeName(forward ? fromLoc : toLoc)} is not available right now.');
     }
-    final oldPath = fromStore.pathFor(p);
-    final oldKey = _key(oldPath);
+    var oldPath = fromStore.pathFor(p);
     final sep = Platform.pathSeparator;
     if (forward) {
       origNames[p] = _folderName(oldPath);
@@ -5349,6 +5372,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // A chosen file goes back under its own name.
       if (!await _renameStoreFile(fromStore, p, '${fromStore.directory.path}$sep$want')) return _RenameOne.taken;
     }
+    oldPath = fromStore.pathFor(p);
+    final oldKey = _key(oldPath);
     if (forward) await syncHook?.call('move-before-rename', fromStore.directory.path);
     if (forward && cannotRenamePagesForTest.contains(p)) return _RenameOne.cannot;
     // A placeholder moves by rename only within one sync root (H): outside it,
@@ -5401,11 +5426,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _known.remove(oldKey);
     _pathId.remove(oldKey);
     _pathId[newKey] = p;
-    if (match && knownText != null) _known[newKey] = knownText;
+    if (match && knownText != null) {
+      _known[newKey] = knownText;
+    } else if (knownText != null) {
+      _baseText[newKey] = knownText;
+    }
     _recordStamp(newKey, match ? nowStamp : null);
     _loc[p] = toLoc;
     _emitDeleted(oldPath);
-    if (match && knownText != null) _emitPublished(newPath, _identityOf(() => knownText), () => knownText);
+    if (match && knownText != null) {
+      _emitPublished(newPath, _identityOf(() => knownText), () => knownText);
+    } else if (forward) {
+      // The identity comes from the read that step 4 makes of the file.
+      _movePublish.add(newKey);
+    }
     // 2c: its images and files.
     final damaged = <DamagedKept>[];
     final left = await _moveAssetsByRename(p, fromLoc, toLoc, hook: forward, kept: damaged, hydrated: hydrated);
@@ -5480,6 +5514,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         failure = '${_placeName(FolderLocks.keyOf(Directory(e.path)) == FolderLocks.keyOf(toDir) ? toLoc : fromLoc)} is busy; try again.';
       } on NotebookException catch (e) {
         failure = e.message;
+      } on Object catch (e) {
+        if (_disposed) rethrow;
+        debugPrint('Moving page $p failed: $e');
+        failure = 'Could not move $name.${_osReason(e)}';
       }
     }
     if (failure == null) return true;
@@ -5512,6 +5550,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         stalled = true;
       } on NotebookException catch (e) {
         notes.add(e.message);
+      } on Object catch (e) {
+        if (_disposed) rethrow;
+        debugPrint('Putting page $p back failed: $e');
+        notes.add('A page could not be put back.${_osReason(e)}');
       }
       if (back != _RenameOne.renamed) stayed.add(p);
       if (stalled) {
@@ -5566,11 +5608,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // header is in the file); a page that isn't downloaded is not read: its
   // placement is held until it is opened (N8). Throws a NotebookException when
   // the placement fails (the page stays where it was put).
-  Future<void> _placeRoot(String toLoc, String root, String? parentId, int order) async {
+  // [index], when given, is the place among its new siblings: for a held
+  // placement it is the held order (no sibling is read to renumber them).
+  // Returns true when the placement is held.
+  Future<bool> _placeRoot(String toLoc, String root, String? parentId, int order, {int? index}) async {
+    _heldPlacement.remove(root);
     final path = _storeOf(toLoc).pathFor(root);
     if (_isPlaceholder(path)) {
-      _heldPlacement[root] = (parentId: parentId, order: order);
-      return;
+      _heldPlacement[root] = (parentId: parentId, order: index ?? order);
+      return true;
     }
     final next = await _updateClosedPage(
       toLoc,
@@ -5578,6 +5624,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       (page) => page.withMeta(page.meta.withPlacement(parentId: parentId, order: order)),
     );
     if (next != null) _metas[root] = next.meta;
+    return false;
   }
 
   // The copy path (rule 4): [ids] (the page, then its subpages) are copied to
@@ -5793,6 +5840,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           break;
         } on NotebookException catch (e) {
           kept.add(e.message);
+        } on Object catch (e) {
+          if (_disposed) rethrow;
+          debugPrint('Deleting an original failed: $e');
+          kept.add('An original could not be deleted.${_osReason(e)}');
         }
       }
       if (kept.isEmpty) return deleted == 1 ? 'The original was deleted.' : 'The originals were deleted.';
@@ -5881,10 +5932,30 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       copyProblem = '';
       try {
+        // The copy is hashed here, as a stream, not inline under the locks: what
+        // the synchronous check right before the unlink compares is its stamp. Where
+        // no stamp can be taken it hashes inline, as the only way to check.
+        FileStamp? bound;
+        try {
+          if (!_isPlaceholder(f.target) &&
+              FileSystemEntity.typeSync(f.target, followLinks: false) == FileSystemEntityType.file) {
+            final before = fileStamp(f.target);
+            if (before != null && await ContentIdentity.ofFile(f.target) == f.identity && fileStamp(f.target) == before) {
+              bound = before;
+            }
+          }
+        } on Object {
+          bound = null;
+        }
+        final stamp = bound;
         final r = await deleteFileIfMatches(
           f.source,
           identity: f.identity,
-          stillRedundant: () => copyHolds(f.target, (d) => ContentIdentity.ofFileSync(d) == f.identity),
+          beforeFinalCheck: (path) async => syncHook?.call('originals-file-before-final-check', path),
+          stillRedundant: () => copyHolds(
+            f.target,
+            (d) => stamp != null ? fileStamp(d) == stamp : ContentIdentity.ofFileSync(d) == f.identity,
+          ),
         );
         if (r.deleted || r.outcome == DeleteOutcome.absent) {
           f.gone = true;
@@ -5921,6 +5992,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// the message offers [deleteOriginals]. A taken name stays, reported.
   Future<void> _moveAcross(String id, String toLoc, {String? parentId, int? index}) async {
     final fromLoc = _loc[id]!;
+    _heldPlacement.remove(id); // a move of its own supersedes a held placement (N8)
     _assertWritable(fromLoc);
     _assertWritable(toLoc);
     final fromStore = _storeOf(fromLoc);
@@ -5968,7 +6040,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     NotebookException? notice; // the move worked; there is something to tell
     String? attachmentsNote;
     var movedFully = false; // the pages are at the target; only placing is left
-    var renameMove = true; // false once the copy runs
     try {
       if (FolderLocks.keyOf(fromStore.directory) == FolderLocks.keyOf(toStore.directory)) {
         throw const NotebookException('These are the same folder.');
@@ -5995,7 +6066,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             '"${_titleOrUntitled(_metas[p]?.title ?? '')}" is listed as unreadable in ${_placeName(fromLoc)}, so nothing was moved.',
           );
         }
-        if (fileStamp(path) == null) {
+        // Existence, not the stamp: where no stamp can be taken it only says "read
+        // it" (S).
+        if (FileSystemEntity.typeSync(path, followLinks: false) == FileSystemEntityType.notFound) {
           throw NotebookException(
             'The file of "${_titleOrUntitled(_metas[p]?.title ?? '')}" is missing from ${_placeName(fromLoc)}, so nothing was moved.',
           );
@@ -6033,8 +6106,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _rebuildTree();
         movedFully = true;
         String? placeFailed;
+        var held = false;
         try {
-          await _placeRoot(toLoc, id, parentId, rootOrder);
+          held = await _placeRoot(toLoc, id, parentId, rootOrder, index: index);
         } on Object catch (e) {
           debugPrint('Placing the moved page failed: $e');
           placeFailed = 'it could not be put at that position.${e is NotebookException ? '' : _osReason(e)}';
@@ -6050,11 +6124,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
                 'The page was moved${RegExp(r'^[a-z]').hasMatch(first) ? ', but' : '.'} ${notes.join(' ')}',
                 needsAction: true,
               );
-        if (index != null && placeFailed == null) await move(id, parentId: parentId, index: index);
+        if (index != null && placeFailed == null && !held) await move(id, parentId: parentId, index: index);
         if (notice != null) throw notice;
         return;
       }
-      renameMove = false;
       // The first page can't be renamed (another drive or cloud): the move
       // copies, and the originals stay until the user deletes them (rule 4).
       await _settleRekeys(rekeys, const {});
@@ -6083,7 +6156,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           placeFailed = 'it could not be put at that position.${e is NotebookException ? '' : _osReason(e)}';
         }
       }
-      await copy._recordCopyText(toStore);
+      await syncHook?.call('move-copy-placed', toStore.directory.path);
+      copy._recordCopyText(_known[_key(toStore.pathFor(id))]);
       notice = OriginalsKeptException(
         '${copy._message}${placeFailed == null ? '' : ' Also, $placeFailed'}',
         copy,
@@ -6126,7 +6200,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Step 4: whatever the watchers held back while the pages were busy is
       // looked at now, at both ends. A moved page with a carried stamp isn't read.
       try {
-        if (!renameMove) throw const _SkipRecheck();
         for (final path in [
           ...sourcePaths,
           for (final p in ids)
@@ -6135,8 +6208,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           if (_disposed) break;
           await checkFile(path);
         }
-      } on _SkipRecheck {
-        // The copy keeps its own bookkeeping.
+        _movePublish.clear();
       } on Object catch (e) {
         debugPrint('Checking the moved pages failed: $e');
       }
@@ -6620,6 +6692,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final released = _dropAdoptionsIn(path);
     for (final id in ids) {
       _metas.remove(id);
+      _heldPlacement.remove(id);
       _loc.remove(id);
       _conflicts.remove(id);
     }
@@ -7360,6 +7433,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final released = _dropAdoptionsIn(path);
     for (final id in ids) {
       _metas.remove(id);
+      _heldPlacement.remove(id);
       _loc.remove(id);
       _conflicts.remove(id);
     }
@@ -8759,6 +8833,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final String text;
     final int time;
     try {
+      PageStore.fileReadObserver?.call(path);
       text = await File(path).readAsString();
       time = (await File(path).lastModified()).millisecondsSinceEpoch;
     } on FileSystemException catch (e) {
@@ -9861,6 +9936,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     try {
       text = await _underFolderLock(st, () async {
         try {
+          PageStore.fileReadObserver?.call(path);
           return await File(path).readAsString();
         } on PathNotFoundException {
           return null;
@@ -9979,7 +10055,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // get their extra round (see [_unparkConsumed]). Called before [_known] is
   // updated or the file is written over.
   void _noteDiskText(String path, String text) {
-    if (_consumedCopies.isEmpty || _known[_key(path)] == text) return;
+    final k = _key(path);
+    if (_consumedCopies.isEmpty || _known[k] == text || (_known[k] == null && _baseText[k] == text)) return;
     _unparkConsumed(path);
   }
 
@@ -11948,6 +12025,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (openHere && left) _disposeCurrent();
     for (final id in ids) {
       _metas.remove(id);
+      _heldPlacement.remove(id);
       _loc.remove(id);
       _conflicts.remove(id);
     }
@@ -12075,6 +12153,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Drops what the notebook knows of page [id] (not its file).
   void _forgetPage(String id) {
     _metas.remove(id);
+    _heldPlacement.remove(id);
     _loc.remove(id);
     _conflicts.remove(id);
     for (final e in _pathId.entries.toList()) {
@@ -12122,6 +12201,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           return (text: '', time: 0, stamp: before, skip: true);
         }
         if (before != null) await syncHook?.call('check-read', path);
+        if (before != null || file.existsSync()) PageStore.fileReadObserver?.call(path);
         final s = await file.readAsString();
         final t = (await file.lastModified()).millisecondsSinceEpoch;
         // Unchanged across the read, and not a link (a link is read through).
@@ -12171,6 +12251,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _fileGone(loc, key, path);
       return false;
     }
+    if (_movePublish.remove(key)) _emitPublished(path, null, () => text!);
     if (conflictCopyOriginalNames(path.split(RegExp(r'[\\/]')).last).isNotEmpty) {
       if (_pullOnly(loc)) {
         // Never merged here: a copy with a same-id original is listed as a
@@ -12184,6 +12265,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (_pathId[key] != null) _recordStamp(key, readStamp);
       return false;
     }
+    final moveBase = _known[key] == null ? _baseText[key] : null;
+    if (moveBase == text && !wasBlocked) {
+      // A moved file that holds what it held when it was moved: not a change.
+      _known[key] = text;
+      if (_pathId[key] != null) _recordStamp(key, readStamp);
+      return false;
+    }
     _unparkConsumed(path);
     final previous = _known[key];
     _known[key] = text;
@@ -12191,7 +12279,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     var saveAfterMerge = false;
     try {
       page = readPage(text);
-      if (_heldPlacement.remove(page.id) != null) {
+      // Held until opened; dropped only by text that differs from one known
+      // (N8). With none known, the read places it below.
+      if ((previous ?? moveBase) != null && _heldPlacement.remove(page.id) != null) {
         _notices.add('"${_titleOrUntitled(page.meta.title)}" was changed elsewhere, so it was not placed.');
       }
     } on PageFormatException catch (e) {
@@ -12294,6 +12384,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await _applyClosed(page, loc, key, path);
       // Recorded only where this read was applied (N4).
       if (_known[key] == text && _pathId[key] == page.id) _recordStamp(key, readStamp);
+      if (_heldPlacement.containsKey(page.id)) await _applyHeldPlacement(page.id);
     }
     return false;
   }
@@ -12537,6 +12628,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         } on _SourceChanged {
           if (attempt >= 4) throw const FormatException('the page files keep changing');
           try {
+            PageStore.fileReadObserver?.call(path);
             text = await File(path).readAsString();
             time = (await File(path).lastModified()).millisecondsSinceEpoch;
           } on FileSystemException {
@@ -12603,6 +12695,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // turned out to be open after all (checked first, inside the job).
     Future<({bool open, String? failure})> closedBranch() async {
       if (openHere()) return (open: true, failure: null);
+      PageStore.fileReadObserver?.call(originalPath);
       final text = await File(originalPath).readAsString();
       _noteDiskText(originalPath, text);
       final original = readPage(text);
@@ -12725,6 +12818,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     if (_loc[id] != loc || id == currentId) return forgotten; // moved, or open: keep it
     _metas.remove(id);
+    _heldPlacement.remove(id);
     _loc.remove(id);
     _conflicts.remove(id);
     _touch(loc);
@@ -12776,6 +12870,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (!_pathId.containsValue(id) && _loc.containsKey(id)) {
         final at = _loc[id]!;
         _metas.remove(id);
+        _heldPlacement.remove(id);
         _loc.remove(id);
         _conflicts.remove(id);
         _touch(at);
@@ -12878,6 +12973,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     if (id != null && _loc[id] == loc) {
       _metas.remove(id);
+      _heldPlacement.remove(id);
       _loc.remove(id);
       _conflicts.remove(id);
     }
@@ -13899,6 +13995,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final file = File(path);
       final String text;
       try {
+        PageStore.fileReadObserver?.call(path);
         text = await file.readAsString();
       } on PathNotFoundException {
         return (ran: true, theirs: null);
@@ -14349,7 +14446,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Sets up the page [id] (read as [text]) for editing.
   void _installEditable(String id, String loc, PageStore st, String text, NotedPage page) {
     _noteDiskText(st.pathFor(id), text);
-    _known[_key(st.pathFor(id))] = text;
+    final fileKey = _key(st.pathFor(id));
+    final stamped = _fileStamps[fileKey];
+    final hadText = _known[fileKey];
+    _known[fileKey] = text;
+    // A file that was classified at a stamp and is unchanged since was read as it
+    // was: opening it keeps its stamp (it is read once, not again after closing).
+    if (stamped != null && hadText == null && fileStamp(st.pathFor(id)) == stamped) _recordStamp(fileKey, stamped);
     _base = page;
     _metas[id] = page.meta;
     _setConflict(id, hasConflicts(page));

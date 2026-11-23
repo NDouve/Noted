@@ -42,6 +42,8 @@ void main() {
       await nb.createPage(); // opens another page, so [other] is closed
       await nb.flush();
       final path = store.pathFor(other);
+      // Its stamp no longer matches the one Noted recorded, so the check reads it.
+      File(path).setLastModifiedSync(DateTime.now().add(const Duration(seconds: 90)));
 
       // A save (or any other job) is running in the folder.
       final release = Completer<void>();
