@@ -204,13 +204,13 @@ class _LockTimeout implements Exception {
   final String path;
 }
 
-/// A folder move that waited for a lock and gave up: nothing was moved.
 /// The in-turn gate (0184) refused a move: nothing moved, and a restore keeps
 /// its record to try again.
 class _GateRefused extends FileSystemException {
   const _GateRefused(super.message, String super.path);
 }
 
+/// A folder move that waited for a lock and gave up: nothing was moved.
 class _FolderBusy extends FileSystemException {
   const _FolderBusy(String path) : super('The folder is busy; try again', path);
 }
@@ -4762,6 +4762,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   Future<void> _undoDeleteNow(DeletedPages deleted) async {
     final wasHeld = _held.contains(deleted);
+    // Where each page goes, worked out once: a folder that goes away during the
+    // Undo never splits a page from its attachments.
+    final where = {for (final p in deleted.pages) p.id: _undoLoc(deleted, p.id)};
+    String whereOf(String id) => where[id] ?? _undoLoc(deleted, id);
     try {
       _assertWritable(deleted._location);
       _storeOf(deleted._location);
@@ -4773,9 +4777,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final leftIds = <String>[];
     for (final MapEntry(key: id, value: dir) in deleted._assets.entries) {
       try {
-        await _gateMove(_undoLoc(deleted, id));
+        await _gateMove(whereOf(id));
         _postCopyNotices(
-          await _moveDir(dir, _assetsDir(_undoLoc(deleted, id), id), fromTrash: true),
+          await _moveDir(dir, _assetsDir(whereOf(id), id), fromTrash: true),
           'the page',
           'the folder of deleted pages',
         );
@@ -4822,7 +4826,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final title = _titleOrUntitled(page.meta.title);
       var wrote = false;
       try {
-        wrote = await _writeNew(_undoLoc(deleted, page.id), page);
+        wrote = await _writeNew(whereOf(page.id), page);
       } on Object catch (e) {
         debugPrint('Restoring page ${page.id} failed: $e');
         failedWrite.add(title); // still only in memory
@@ -4830,14 +4834,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       if (wrote) {
         _metas[page.id] = page.meta;
-        _loc[page.id] = _undoLoc(deleted, page.id);
+        _loc[page.id] = whereOf(page.id);
         deleted._restored.add(page.id);
         continue;
       }
       PageStore st;
       String? copy;
       try {
-        st = _storeOf(_undoLoc(deleted, page.id));
+        st = _storeOf(whereOf(page.id));
         copy = await _publishConflictCopy(st, page);
       } on Object catch (e) {
         debugPrint('Saving restored page ${page.id} beside its file failed: $e');
@@ -4860,7 +4864,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     final reopenFailed = <String>[];
     try {
-      for (final l in {deleted._location, for (final p in deleted.pages) _undoLoc(deleted, p.id)}) {
+      for (final l in {deleted._location, for (final p in deleted.pages) whereOf(p.id)}) {
         _touch(l);
       }
       _rebuildTree();
