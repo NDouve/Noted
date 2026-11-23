@@ -1524,9 +1524,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // nothing typed meanwhile can fall between the save and recovery.
   int _leaving = 0;
   bool _disposed = false;
-  // Set by [_checkFile] when the file differs from what this app last wrote or
-  // read (or is gone); [checkFile] reads it after the check.
-  bool _foreignChange = false;
+  // Keys of files [_checkFile] found different from what this app last wrote
+  // or read (or gone); [checkFile] takes its own file's key after its check.
+  final Set<String> _foreignKeys = {};
   Timer? _folderTimer;
   // The default folder disappeared while the app was running.
   bool _defaultGone = false;
@@ -10603,9 +10603,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final job = _checking.then((_) async {
       await _chain.idle; // let writes in flight land first
       if (_disposed) return;
-      _foreignChange = false;
+      final key = _key(path);
+      _foreignKeys.remove(key);
       await _checkFile(path);
-      if (_foreignChange && parked.isNotEmpty) _unparkConsumed(parked);
+      if (_foreignKeys.remove(key) && parked.isNotEmpty) _unparkConsumed(parked);
     }).catchError((Object e) {
       debugPrint('Checking $path failed: $e');
     });
@@ -11234,7 +11235,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final cp = _current;
         if (cp != null && cp.page.id == openId) _pageChanged(cp.page);
       }
-      _foreignChange = true;
+      _foreignKeys.add(key);
       _fileGone(loc, key, path);
       return false;
     }
@@ -11248,7 +11249,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     if (_known[key] == text && !wasBlocked) return false;
-    _foreignChange = true;
+    _foreignKeys.add(key);
     final previous = _known[key];
     _known[key] = text;
     final NotedPage page;

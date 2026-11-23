@@ -1467,7 +1467,6 @@ void main() {
       revert(path);
       await nb.checkFile(path);
     }
-// Someone else changes the file at [path] (sync puts the old one back), and    // its event arrives.    Future<void> foreign(String path) async {      File(path).writeAsStringSync(before);      await nb.checkFile(path);    }
 
     // Reverts the original at the hook [point], once (or [every] time).
     void revertAt(String point, {bool every = false}) {
@@ -1753,6 +1752,61 @@ void main() {
       await recheck();
       await Future<void>.delayed(const Duration(milliseconds: 500));
       expect(writes(), 4, reason: 'once per mark');
+    }, timeout: const Timeout(Duration(minutes: 1)));
+
+    test('(e) another page\'s real change checked meanwhile does not unpark this one on its own-write event', () async {
+      final writes = await park();
+      final qId = nb.currentId!;
+      await nb.createPage(); // the page [qId] is closed
+      final qPath = pathOf(qId);
+      final hook = nb.syncHook;
+      var fired = false;
+      nb.syncHook = (p, path) async {
+        await hook?.call(p, path);
+        if (p != 'check-start' || fired || path != pathOf(id)) return;
+        fired = true;
+        // A direct check of another page's file, as a job of the chain runs it.
+        File(qPath).writeAsStringSync(writePage(readPage(File(qPath).readAsStringSync()).insertNode(noteBox('q'))));
+        await nb.checkFileInChainForTest(qPath);
+      };
+      await nb.checkFile(pathOf(id)); // the file is as the last redo wrote it
+      expect(fired, isTrue);
+      await recheck();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(writes(), 3, reason: 'a change of another page is not this page\'s');
+    }, timeout: const Timeout(Duration(minutes: 1)));
+
+    test('(e) a mark parked while the event\'s check waits is not unparked by that event', () async {
+      await start(retire: const Duration(milliseconds: 300));
+      await withCopy();
+      await nb.checkFile(copy);
+      var writes = 0;
+      final hook = nb.syncHook;
+      final gate = Completer<void>();
+      var held = false;
+      nb.syncHook = (p, path) async {
+        await hook?.call(p, path);
+        if (p == 'copy-recheck') {
+          writes++;
+          File(path).writeAsStringSync(before);
+        } else if (p == 'check-start' && held && !gate.isCompleted && path == pathOf(id)) {
+          await gate.future;
+        }
+      };
+      await recheck();
+      await recheck(); // two rounds: not parked yet
+      expect(nb.consumedCopiesForTest.values.any((p) => p), isFalse);
+      held = true;
+      revert(); // a real change, announced now
+      final event = nb.checkFile(pathOf(id));
+      await recheck(); // the third round parks the mark while the check waits
+      await until(() => nb.consumedCopiesForTest.values.any((p) => p), 'the mark to be parked');
+      revert();
+      gate.complete();
+      await event;
+      await recheck();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(writes, 3, reason: 'the event is older than the park');
     }, timeout: const Timeout(Duration(minutes: 1)));
 
     test('(e) moved to another folder while parked: the old folder\'s file does not unpark, the new one\'s does', () async {
