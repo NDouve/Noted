@@ -7,10 +7,11 @@ import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/coordination_support.dart';
 import 'package:noted_core/src/storage/exclusive_move.dart'
-    show MoveStrategy, debugMoveStrategy;
+    show MoveStrategy, debugMoveStrategy, moveExclusiveUncoordinated;
 
-void main() {
+void suite() {
   late Directory dir;
 
   setUp(() async => dir = await Directory.systemTemp.createTemp('noted_move'));
@@ -23,71 +24,71 @@ void main() {
   String p(String n) => '${dir.path}$sep$n';
 
   group('moveExclusive', () {
-    test('moves a file, keeping its bytes', () {
+    test('moves a file, keeping its bytes', () async {
       File(p('a.bin')).writeAsBytesSync([1, 2, 3, 250]);
-      expect(moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.moved);
+      expect(await moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.moved);
       expect(File(p('a.bin')).existsSync(), isFalse);
       expect(File(p('b.bin')).readAsBytesSync(), [1, 2, 3, 250]);
     });
 
-    test('moves a folder with its files', () {
+    test('moves a folder with its files', () async {
       Directory(p('src/sub')).createSync(recursive: true);
       File(p('src/x.txt')).writeAsStringSync('x');
       File(p('src/sub/y.txt')).writeAsStringSync('y');
-      expect(moveExclusive(p('src'), p('dst')), MoveOutcome.moved);
+      expect(await moveExclusive(p('src'), p('dst')), MoveOutcome.moved);
       expect(Directory(p('src')).existsSync(), isFalse);
       expect(File(p('dst/x.txt')).readAsStringSync(), 'x');
       expect(File(p('dst/sub/y.txt')).readAsStringSync(), 'y');
     });
 
-    test('handles non-ASCII names', () {
+    test('handles non-ASCII names', () async {
       File(p('é.bin')).writeAsBytesSync([7]);
-      expect(moveExclusive(p('é.bin'), p('é ü.bin')), MoveOutcome.moved);
+      expect(await moveExclusive(p('é.bin'), p('é ü.bin')), MoveOutcome.moved);
       expect(File(p('é ü.bin')).readAsBytesSync(), [7]);
     });
 
-    test('a file at the target is targetExists, both untouched', () {
+    test('a file at the target is targetExists, both untouched', () async {
       File(p('a.bin')).writeAsBytesSync([1]);
       File(p('b.bin')).writeAsBytesSync([2]);
-      expect(moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.targetExists);
+      expect(await moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.targetExists);
       expect(File(p('a.bin')).readAsBytesSync(), [1]);
       expect(File(p('b.bin')).readAsBytesSync(), [2]);
     });
 
-    test('an empty folder at the target is targetExists (never replaced)', () {
+    test('an empty folder at the target is targetExists (never replaced)', () async {
       Directory(p('src')).createSync();
       File(p('src/x.txt')).writeAsStringSync('x');
       Directory(p('dst')).createSync();
-      expect(moveExclusive(p('src'), p('dst')), MoveOutcome.targetExists);
+      expect(await moveExclusive(p('src'), p('dst')), MoveOutcome.targetExists);
       expect(File(p('src/x.txt')).existsSync(), isTrue);
       expect(Directory(p('dst')).listSync(), isEmpty);
     });
 
-    test('a full folder at the target is targetExists, both untouched', () {
+    test('a full folder at the target is targetExists, both untouched', () async {
       Directory(p('src')).createSync();
       File(p('src/x.txt')).writeAsStringSync('x');
       Directory(p('dst')).createSync();
       File(p('dst/z.txt')).writeAsStringSync('z');
-      expect(moveExclusive(p('src'), p('dst')), MoveOutcome.targetExists);
+      expect(await moveExclusive(p('src'), p('dst')), MoveOutcome.targetExists);
       expect(File(p('src/x.txt')).readAsStringSync(), 'x');
       expect(File(p('dst/z.txt')).readAsStringSync(), 'z');
       expect(File(p('dst/x.txt')).existsSync(), isFalse);
     });
 
-    test('a file at the target is not replaced by a folder move, and the other way', () {
+    test('a file at the target is not replaced by a folder move, and the other way', () async {
       Directory(p('src')).createSync();
       File(p('dst')).writeAsStringSync('f');
-      expect(moveExclusive(p('src'), p('dst')), MoveOutcome.targetExists);
+      expect(await moveExclusive(p('src'), p('dst')), MoveOutcome.targetExists);
       File(p('f.txt')).writeAsStringSync('f');
       Directory(p('d2')).createSync();
-      expect(moveExclusive(p('f.txt'), p('d2')), MoveOutcome.targetExists);
+      expect(await moveExclusive(p('f.txt'), p('d2')), MoveOutcome.targetExists);
       expect(File(p('f.txt')).readAsStringSync(), 'f');
     });
 
-    test('a target made between the check and the call is not replaced', () {
+    test('a target made between the check and the call is not replaced', () async {
       File(p('a.bin')).writeAsBytesSync([1]);
       var calls = 0;
-      final outcome = moveExclusive(
+      final outcome = await moveExclusive(
         p('a.bin'),
         p('b.bin'),
         beforeOsCall: () {
@@ -103,10 +104,10 @@ void main() {
 
     test(
       'a folder target made between the check and the call is not replaced',
-      () {
+      () async {
         Directory(p('src')).createSync();
         File(p('src/x.txt')).writeAsStringSync('x');
-        final outcome = moveExclusive(
+        final outcome = await moveExclusive(
           p('src'),
           p('dst'),
           beforeOsCall: () => Directory(p('dst')).createSync(),
@@ -117,24 +118,24 @@ void main() {
       },
     );
 
-    test('a present target makes no OS call', () {
+    test('a present target makes no OS call', () async {
       File(p('a.bin')).writeAsBytesSync([1]);
       File(p('b.bin')).writeAsBytesSync([2]);
       var calls = 0;
-      moveExclusive(p('a.bin'), p('b.bin'), beforeOsCall: () => calls++);
+      await moveExclusive(p('a.bin'), p('b.bin'), beforeOsCall: () => calls++);
       expect(calls, 0);
     });
 
-    test('a missing source throws', () {
-      expect(
+    test('a missing source throws', () async {
+      await expectLater(
         () => moveExclusive(p('nope'), p('b')),
         throwsA(isA<FileSystemException>()),
       );
     });
 
-    test('a source that vanishes before the call throws', () {
+    test('a source that vanishes before the call throws', () async {
       File(p('a.bin')).writeAsBytesSync([1]);
-      expect(
+      await expectLater(
         () => moveExclusive(
           p('a.bin'),
           p('b.bin'),
@@ -144,20 +145,20 @@ void main() {
       );
     });
 
-    test('a missing target folder throws', () {
+    test('a missing target folder throws', () async {
       File(p('a.bin')).writeAsBytesSync([1]);
-      expect(
+      await expectLater(
         () => moveExclusive(p('a.bin'), p('nodir/b.bin')),
         throwsA(isA<FileSystemException>()),
       );
       expect(File(p('a.bin')).existsSync(), isTrue);
     });
 
-    test('a link is moved, not followed', () {
+    test('a link is moved, not followed', () async {
       if (Platform.isWindows) return; // links need privileges on Windows
       File(p('real')).writeAsStringSync('r');
       Link(p('l')).createSync(p('real'));
-      expect(moveExclusive(p('l'), p('m')), MoveOutcome.moved);
+      expect(await moveExclusive(p('l'), p('m')), MoveOutcome.moved);
       expect(Link(p('m')).targetSync(), p('real'));
       expect(File(p('real')).readAsStringSync(), 'r');
     });
@@ -165,12 +166,12 @@ void main() {
     test('runs in a real isolate', () async {
       File(p('a.bin')).writeAsBytesSync([5]);
       final from = p('a.bin'), to = p('b.bin');
-      final outcome = await Isolate.run(() => moveExclusive(from, to));
+      final outcome = await Isolate.run(() => moveExclusiveUncoordinated(from, to));
       expect(outcome, MoveOutcome.moved);
       expect(File(to).readAsBytesSync(), [5]);
     });
 
-    test('moveOutcomeForErrorCode follows the table', () {
+    test('moveOutcomeForErrorCode follows the table', () async {
       MoveOutcome w(int c) => moveOutcomeForErrorCode(c, windows: true);
       MoveOutcome x(int c) => moveOutcomeForErrorCode(c, windows: false);
       for (final c in [5, 32, 33]) {
@@ -188,16 +189,16 @@ void main() {
       expect(x(9999), MoveOutcome.busy);
     });
 
-    test('the Linux and Apple codes for no support map to cannotRename', () {
+    test('the Linux and Apple codes for no support map to cannotRename', () async {
       if (Platform.isMacOS || Platform.isIOS) {
         expect(moveOutcomeForErrorCode(78), MoveOutcome.cannotRename); // ENOSYS
-        expect(
+        await expectLater(
           moveOutcomeForErrorCode(45),
           MoveOutcome.cannotRename,
         ); // ENOTSUP
       } else if (Platform.isLinux || Platform.isAndroid) {
         expect(moveOutcomeForErrorCode(38), MoveOutcome.cannotRename); // ENOSYS
-        expect(
+        await expectLater(
           moveOutcomeForErrorCode(95),
           MoveOutcome.cannotRename,
         ); // ENOTSUP
@@ -208,22 +209,22 @@ void main() {
   group('the no-replace fallback (lstat, then rename)', () {
     setUp(() => debugMoveStrategy = MoveStrategy.lstatRename);
 
-    test('moves a file and a folder', () {
+    test('moves a file and a folder', () async {
       File(p('a.bin')).writeAsBytesSync([1]);
-      expect(moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.moved);
+      expect(await moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.moved);
       expect(File(p('b.bin')).readAsBytesSync(), [1]);
       Directory(p('src')).createSync();
       File(p('src/x')).writeAsStringSync('x');
-      expect(moveExclusive(p('src'), p('dst')), MoveOutcome.moved);
+      expect(await moveExclusive(p('src'), p('dst')), MoveOutcome.moved);
       expect(File(p('dst/x')).readAsStringSync(), 'x');
     });
 
     // These make the target in the hook, after moveExclusive's own check, so
     // only the fallback's lstat stands between the rename and a replace.
-    test('a file target present at the call is not replaced', () {
+    test('a file target present at the call is not replaced', () async {
       File(p('a.bin')).writeAsBytesSync([1]);
-      expect(
-        moveExclusive(
+      await expectLater(
+        await moveExclusive(
           p('a.bin'),
           p('b.bin'),
           beforeOsCall: () => File(p('b.bin')).writeAsBytesSync([2]),
@@ -234,11 +235,11 @@ void main() {
       expect(File(p('a.bin')).readAsBytesSync(), [1]);
     });
 
-    test('a folder target present at the call is not replaced', () {
+    test('a folder target present at the call is not replaced', () async {
       Directory(p('src')).createSync();
       File(p('src/x')).writeAsStringSync('x');
-      expect(
-        moveExclusive(
+      await expectLater(
+        await moveExclusive(
           p('src'),
           p('dst'),
           beforeOsCall: () => Directory(p('dst')).createSync(),
@@ -251,9 +252,9 @@ void main() {
 
     test(
       'a target made by the hook, after the first check, is not replaced',
-      () {
+      () async {
         File(p('a.bin')).writeAsBytesSync([1]);
-        final outcome = moveExclusive(
+        final outcome = await moveExclusive(
           p('a.bin'),
           p('b.bin'),
           beforeOsCall: () => File(p('b.bin')).writeAsBytesSync([9]),
@@ -268,12 +269,12 @@ void main() {
   group('Linux', () {
     final linux = Platform.isLinux;
 
-    test('the raw system call path moves and never replaces', () {
+    test('the raw system call path moves and never replaces', () async {
       debugMoveStrategy = MoveStrategy.linuxSyscall;
       File(p('a.bin')).writeAsBytesSync([1]);
-      expect(moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.moved);
+      expect(await moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.moved);
       File(p('c.bin')).writeAsBytesSync([3]);
-      final outcome = moveExclusive(
+      final outcome = await moveExclusive(
         p('c.bin'),
         p('d.bin'),
         beforeOsCall: () => File(p('d.bin')).writeAsBytesSync([4]),
@@ -284,13 +285,13 @@ void main() {
 
     test(
       'another file system is cannotRename (/dev/shm)',
-      () {
+      () async {
         final shm = Directory('/dev/shm');
         File(p('a.bin')).writeAsBytesSync([1]);
         final to =
             '${shm.path}/noted_move_${DateTime.now().microsecondsSinceEpoch}';
         try {
-          expect(moveExclusive(p('a.bin'), to), MoveOutcome.cannotRename);
+          expect(await moveExclusive(p('a.bin'), to), MoveOutcome.cannotRename);
           expect(File(p('a.bin')).existsSync(), isTrue);
           expect(File(to).existsSync(), isFalse);
         } finally {
@@ -306,62 +307,62 @@ void main() {
   group('Windows', () {
     final win = Platform.isWindows;
 
-    test('a file open in a folder makes the folder move busy', () {
+    test('a file open in a folder makes the folder move busy', () async {
       Directory(p('src')).createSync();
       final f = File(p('src/x.txt'))..writeAsStringSync('x');
       final open = f.openSync();
       try {
-        expect(moveExclusive(p('src'), p('dst')), MoveOutcome.busy);
+        expect(await moveExclusive(p('src'), p('dst')), MoveOutcome.busy);
         expect(Directory(p('dst')).existsSync(), isFalse);
       } finally {
         open.closeSync();
       }
-      expect(moveExclusive(p('src'), p('dst')), MoveOutcome.moved);
+      expect(await moveExclusive(p('src'), p('dst')), MoveOutcome.moved);
     }, skip: win ? false : 'Windows only');
 
-    test('an open file is busy to move', () {
+    test('an open file is busy to move', () async {
       final f = File(p('a.bin'))..writeAsBytesSync([1]);
       final open = f.openSync();
       try {
-        expect(moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.busy);
+        expect(await moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.busy);
       } finally {
         open.closeSync();
       }
-      expect(moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.moved);
+      expect(await moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.moved);
     }, skip: win ? false : 'Windows only');
 
-    test('a reserved or trailing-dot name throws', () {
+    test('a reserved or trailing-dot name throws', () async {
       File(p('a.bin')).writeAsBytesSync([1]);
-      expect(
+      await expectLater(
         () => moveExclusive(p('a.bin'), p('NUL.txt')),
         throwsA(isA<FileSystemException>()),
       );
-      expect(
+      await expectLater(
         () => moveExclusive(p('a.bin'), p('b.')),
         throwsA(isA<FileSystemException>()),
       );
       expect(File(p('a.bin')).existsSync(), isTrue);
     }, skip: win ? false : 'Windows only');
 
-    test('a path over 260 characters moves', () {
+    test('a path over 260 characters moves', () async {
       var deep = '\\\\?\\${dir.path}';
       while (deep.length < 300) {
         deep = '$deep\\${'d' * 40}';
       }
       Directory(deep).createSync(recursive: true);
       File('$deep\\a.bin').writeAsBytesSync([8]);
-      expect(moveExclusive('$deep\\a.bin', '$deep\\b.bin'), MoveOutcome.moved);
+      expect(await moveExclusive('$deep\\a.bin', '$deep\\b.bin'), MoveOutcome.moved);
       expect(File('$deep\\b.bin').readAsBytesSync(), [8]);
       // The same pair spelled without the prefix gets it added.
       final plain = deep.substring(4);
-      expect(
-        moveExclusive('$plain\\b.bin', '$plain\\c.bin'),
+      await expectLater(
+        await moveExclusive('$plain\\b.bin', '$plain\\c.bin'),
         MoveOutcome.moved,
       );
       expect(File('$deep\\c.bin').existsSync(), isTrue);
     }, skip: win ? false : 'Windows only');
 
-    test('another drive is cannotRename', () {
+    test('another drive is cannotRename', () async {
       final here = dir.path.substring(0, 1).toUpperCase();
       Directory? other;
       for (final letter in 'DEFGHIJKLMNOPQRSTUVWXYZ'.split('')) {
@@ -386,12 +387,12 @@ void main() {
       try {
         File(p('a.bin')).writeAsBytesSync([1]);
         Directory(p('src')).createSync();
-        expect(
-          moveExclusive(p('a.bin'), '${other.path}\\a.bin'),
+        await expectLater(
+          await moveExclusive(p('a.bin'), '${other.path}\\a.bin'),
           MoveOutcome.cannotRename,
         );
-        expect(
-          moveExclusive(p('src'), '${other.path}\\src'),
+        await expectLater(
+          await moveExclusive(p('src'), '${other.path}\\src'),
           MoveOutcome.cannotRename,
         );
         expect(File(p('a.bin')).existsSync(), isTrue);
@@ -400,7 +401,7 @@ void main() {
       }
     }, skip: win ? false : 'Windows only');
 
-    test('syncRootOf is null outside a sync root, and does not throw', () {
+    test('syncRootOf is null outside a sync root, and does not throw', () async {
       expect(syncRootOf(p('missing/deeper')), isNull);
       expect(syncRootOf(dir.path), isNull);
     }, skip: win ? false : 'Windows only');
@@ -417,28 +418,28 @@ void main() {
         ? 'lib'
         : '../lib';
 
-    test('exclusive_publish.dart does not import exclusive_move.dart', () {
-      expect(
+    test('exclusive_publish.dart does not import exclusive_move.dart', () async {
+      await expectLater(
         src('$dirPath/src/storage/exclusive_publish.dart'),
         isNot(contains('exclusive_move')),
       );
     });
 
-    test('noted_core_read does not export it, nor the file stamp', () {
+    test('noted_core_read does not export it, nor the file stamp', () async {
       final read = src('$dirPath/noted_core_read.dart');
       expect(read, isNot(contains('exclusive_move')));
       expect(read, isNot(contains('file_stamp')));
       expect(read, isNot(contains('page_store')));
     });
 
-    test('file_stamp.dart does not import exclusive_move.dart (the page store imports it)', () {
-      expect(
+    test('file_stamp.dart does not import exclusive_move.dart (the page store imports it)', () async {
+      await expectLater(
         src('$dirPath/src/storage/file_stamp.dart'),
         isNot(contains('exclusive_move')),
       );
     });
 
-    test('the page store imports the stamp and the mover', () {
+    test('the page store imports the stamp and the mover', () async {
       final store = src('$dirPath/src/storage/page_store.dart');
       expect(store, contains("import 'file_stamp.dart';"));
       expect(store, contains("import 'exclusive_move.dart';"));
@@ -446,14 +447,16 @@ void main() {
   });
 
   group('placeholderState', () {
-    test('an ordinary file and folder are not placeholders', () {
+    test('an ordinary file and folder are not placeholders', () async {
       File(p('a.bin')).writeAsBytesSync([1]);
       expect(placeholderState(p('a.bin')), PlaceholderState.notPlaceholder);
       expect(placeholderState(dir.path), PlaceholderState.notPlaceholder);
     });
 
-    test('a missing path is unknown', () {
+    test('a missing path is unknown', () async {
       expect(placeholderState(p('nope')), PlaceholderState.unknown);
     });
   });
 }
+
+void main() => runWithAndWithoutCoordinator(suite);

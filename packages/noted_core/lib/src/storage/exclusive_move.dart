@@ -6,6 +6,7 @@ import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'coordination.dart';
 import 'exclusive_publish.dart' show checkWindowsName, windowsPath;
 import 'file_stamp.dart';
 
@@ -72,7 +73,42 @@ MoveStrategy? debugMoveStrategy;
 /// `rename(2)` where a no-replace call exists (it replaces an empty folder).
 ///
 /// This blocks the calling isolate for one short file system call.
-MoveOutcome moveExclusive(
+///
+/// One coordinated call (see `coordination.dart`), made in the caller's
+/// isolate: a move of [from] and of each of [alsoMoved] (the files inside a
+/// folder being moved, so their versions are checked too), and a write on
+/// [to]'s folder. A [StorageBusy], for any reason, is [MoveOutcome.busy] with
+/// nothing moved. Code that runs the move in another isolate calls
+/// [moveExclusiveUncoordinated] there, after this call's coordination.
+Future<MoveOutcome> moveExclusive(
+  String from,
+  String to, {
+  void Function()? beforeOsCall,
+  List<String> alsoMoved = const [],
+}) async {
+  try {
+    return await coordinated(
+      CoordinatedWrite([
+        CoordinationIntent(from, CoordinationKind.move),
+        for (final p in alsoMoved) CoordinationIntent(p, CoordinationKind.move),
+        CoordinationIntent(folderOf(to), CoordinationKind.write),
+      ]),
+      () async => moveExclusiveUncoordinated(
+        from,
+        to,
+        beforeOsCall: beforeOsCall,
+      ),
+    );
+  } on StorageBusy {
+    return MoveOutcome.busy;
+  }
+}
+
+/// [moveExclusive] without the coordination hook: one OS call, synchronous,
+/// for a spawned isolate (where no coordinator is registered) or a caller
+/// already inside its coordinated call. Not exported by the package's
+/// libraries.
+MoveOutcome moveExclusiveUncoordinated(
   String from,
   String to, {
   void Function()? beforeOsCall,
@@ -107,7 +143,7 @@ MoveOutcome moveExclusive(
 MoveOutcome _outcomeWithoutCode(String from, String to) {
   try {
     final a = fileStamp(from)?.volume;
-    final b = fileStamp(File(to).parent.path)?.volume;
+    final b = fileStamp(folderOf(to))?.volume;
     if (a != null && b != null && a != b) return MoveOutcome.cannotRename;
   } catch (_) {}
   return MoveOutcome.busy;

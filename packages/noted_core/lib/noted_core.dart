@@ -42,8 +42,11 @@ export 'src/search/search_index.dart'
     hide searchBoxesExamined, resetSearchBoxesExamined;
 export 'src/search/search_query.dart';
 export 'src/search/text_folding.dart';
-export 'src/storage/exclusive_move.dart' hide debugMoveStrategy, MoveStrategy;
-export 'src/storage/exclusive_publish.dart' hide checkWindowsName, windowsPath;
+export 'src/storage/coordination.dart' hide folderOf;
+export 'src/storage/exclusive_move.dart'
+    hide debugMoveStrategy, MoveStrategy, moveExclusiveUncoordinated;
+export 'src/storage/exclusive_publish.dart'
+    hide checkWindowsName, publishExclusiveUncoordinated, windowsPath;
 export 'src/storage/file_stamp.dart' show FileStamp, fileStamp;
 export 'src/storage/folder_locks.dart';
 export 'src/storage/local_change.dart';

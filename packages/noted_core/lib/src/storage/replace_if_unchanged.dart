@@ -10,8 +10,9 @@ import 'package:crypto/crypto.dart' as crypto show Digest, sha256;
 
 import '../attachments/attachments.dart';
 import '../merge/conflict_copy.dart';
+import 'coordination.dart';
 import 'drop_verified.dart';
-import 'exclusive_publish.dart';
+import 'exclusive_publish.dart' show publishExclusiveUncoordinated;
 
 export 'drop_verified.dart' show verifiedSuffix;
 
@@ -91,12 +92,12 @@ String _extensionOf(String name) {
 Future<String?> _keepAsConflictCopy(File file, String target, String label) async {
   final name = _baseName(target);
   final ext = _extensionOf(name);
-  final dir = File(target).parent.path;
+  final dir = folderOf(target);
   final sep = Platform.pathSeparator;
   for (var attempt = 0; attempt < 8; attempt++) {
     final path = '$dir$sep${conflictCopyName(name, label: label, extension: ext, random: _random)}';
     try {
-      if (await publishExclusive(file, path)) {
+      if (await publishExclusiveUncoordinated(file, path)) {
         await _dropLeftoverLink(file, path, target);
         return path;
       }
@@ -208,6 +209,10 @@ String _asideName(String target) =>
 /// name) and [afterFinalRead] (after the re-check's read) are for tests. Known
 /// gap: between the last check and the unlink (microseconds) a writer that
 /// follows the file to its new name, or writes it in place, is not detected.
+///
+/// It is one coordinated call (see `coordination.dart`): a write on the
+/// target's folder and a move of the target. A [StorageBusy] means nothing was
+/// written.
 Future<ReplaceResult> replaceIfUnchanged(
   File tmp,
   String target,
@@ -224,8 +229,42 @@ Future<ReplaceResult> replaceIfUnchanged(
   if (expected != null && identity != null) {
     throw ArgumentError('give at most one of expected and identity');
   }
+  return coordinated(
+    CoordinatedWrite([
+      CoordinationIntent(folderOf(target), CoordinationKind.write),
+      CoordinationIntent(target, CoordinationKind.move),
+    ]),
+    () => _replaceIfUnchanged(
+      tmp,
+      target,
+      expected,
+      identity,
+      beforeMoveAside,
+      afterRead,
+      beforePublish,
+      beforeRestore,
+      beforeAsideDelete,
+      beforeFinalCheck,
+      afterFinalRead,
+    ),
+  );
+}
+
+Future<ReplaceResult> _replaceIfUnchanged(
+  File tmp,
+  String target,
+  List<int>? expected,
+  ContentIdentity? identity,
+  void Function()? beforeMoveAside,
+  void Function()? afterRead,
+  void Function()? beforePublish,
+  void Function()? beforeRestore,
+  Future<void> Function(String path)? beforeAsideDelete,
+  Future<void> Function(String path)? beforeFinalCheck,
+  Future<void> Function(String path)? afterFinalRead,
+) async {
   if (expected == null && identity == null) {
-    final ok = await publishExclusive(tmp, target, beforeOsCall: beforePublish);
+    final ok = await publishExclusiveUncoordinated(tmp, target, beforeOsCall: beforePublish);
     return ReplaceResult(ok ? ReplaceOutcome.replaced : ReplaceOutcome.changed);
   }
   // Don't move anything when it plainly can't match.
@@ -283,7 +322,7 @@ Future<ReplaceResult> replaceIfUnchanged(
   final bool ok;
   try {
     ok = await _retry(
-      () => publishExclusive(tmp, target, beforeOsCall: beforePublish),
+      () => publishExclusiveUncoordinated(tmp, target, beforeOsCall: beforePublish),
     );
   } catch (_) {
     await _putBack(aside, target, beforeRestore);
@@ -343,6 +382,10 @@ Future<ReplaceResult> replaceIfUnchanged(
 ///
 /// Don't run it while a [replaceIfUnchanged] on the same folder is in flight;
 /// it would take that call's aside file.
+///
+/// One coordinated call (a write on the folder, a move of each leftover it
+/// will consume) when a leftover is listed. A [StorageBusy] is caught here:
+/// nothing is consumed and it returns normally.
 Future<List<String>> sweepAsideFiles(
   Directory directory, {
   String extension = '.canvas',
@@ -350,30 +393,106 @@ Future<List<String>> sweepAsideFiles(
 }) async {
   final out = <String>[];
   if (!await directory.exists()) return out;
+  // Nothing registered, or the folder is under no registered root: one
+  // listing and one pass, as before the hook existed.
+  if (!underCoordination([directory.path])) {
+    await _sweepNamed(directory, extension, null, only, out, () {});
+    return out;
+  }
+  // Listed first (metadata only); the coordinated call is made only if a
+  // leftover will be consumed.
+  final named = await _listLeftovers(directory, extension, only);
+  if (named.isEmpty) return out;
+  var started = false;
+  try {
+    await coordinated(
+      CoordinatedWrite([
+        CoordinationIntent(directory.path, CoordinationKind.write),
+        for (final f in named) CoordinationIntent(f.path, CoordinationKind.move),
+      ]),
+      () => _sweepNamed(
+        directory,
+        extension,
+        {for (final f in named) f.path},
+        null,
+        out,
+        () => started = true,
+      ),
+    );
+  } on StorageBusy {
+    // Refused before the body started: nothing was consumed. After it
+    // started, [out] holds what was consumed so far. Either way the leftover
+    // is listed by the scan like any file it couldn't handle.
+    if (!started) out.clear();
+  } on FileSystemException {
+    // The coordinator failed after the body started (it is no longer a
+    // StorageBusy): keep what was consumed; a scan must not throw for it.
+    if (!started) rethrow;
+  }
+  return out;
+}
+
+/// The leftovers of [directory] a sweep would consume now.
+Future<List<File>> _listLeftovers(
+  Directory directory,
+  String extension,
+  bool Function(String targetName)? only,
+) async {
+  final out = <File>[];
+  await for (final f in directory.list(followLinks: false)) {
+    if (f is! File) continue;
+    final t = _leftoverTarget(f.path, extension);
+    if (t == null) continue;
+    if (only != null && !only(t.name)) continue;
+    out.add(f);
+  }
+  return out;
+}
+
+/// The name a leftover goes back to, and whether it was verified; null when
+/// [path] is not a leftover or is not a page file ([PageStore.scan] lists it).
+({String name, bool verified})? _leftoverTarget(String path, String extension) {
+  if (!path.endsWith(asideSuffix) && !path.endsWith(verifiedSuffix)) return null;
+  final name = path.split(RegExp(r'[\\/]')).last;
+  final verified = name.endsWith(verifiedSuffix);
+  final body = name.substring(
+    0,
+    name.length - (verified ? verifiedSuffix : asideSuffix).length,
+  );
+  final dot = body.lastIndexOf('.');
+  if (dot <= 0) return null;
+  final targetName = body.substring(0, dot);
+  if (!targetName.endsWith(extension)) return null;
+  return (name: targetName, verified: verified);
+}
+
+/// The sweep's body. Inside a coordinated call it lists again and handles only
+/// the leftovers [named] in the call's intents (one that appeared since waits
+/// for the next sweep); with [named] null it handles every leftover [only]
+/// accepts. Results go to [out], so a stop part way keeps what was consumed.
+Future<void> _sweepNamed(
+  Directory directory,
+  String extension,
+  Set<String>? named,
+  bool Function(String targetName)? only,
+  List<String> out,
+  void Function() onStart,
+) async {
+  onStart();
   final sep = Platform.pathSeparator;
   final leftovers = <File>[];
   await for (final f in directory.list(followLinks: false)) {
-    if (f is File &&
-        (f.path.endsWith(asideSuffix) || f.path.endsWith(verifiedSuffix))) {
-      leftovers.add(f);
-    }
+    if (f is File && (named == null || named.contains(f.path))) leftovers.add(f);
   }
   for (final f in leftovers) {
-    final name = f.path.split(RegExp(r'[\\/]')).last;
-    final verified = name.endsWith(verifiedSuffix);
-    final body = name.substring(
-      0,
-      name.length - (verified ? verifiedSuffix : asideSuffix).length,
-    );
-    final dot = body.lastIndexOf('.');
-    if (dot <= 0) continue;
-    final targetName = body.substring(0, dot);
-    // Not a page file: leave it where it is; [PageStore.scan] lists it.
-    if (!targetName.endsWith(extension)) continue;
-    if (only != null && !only(targetName)) continue;
+    final t = _leftoverTarget(f.path, extension);
+    if (t == null) continue;
+    if (named == null && only != null && !only(t.name)) continue;
+    final targetName = t.name;
+    final verified = t.verified;
     final dir = f.parent.path;
     try {
-      if (await publishExclusive(f, '$dir$sep$targetName')) {
+      if (await publishExclusiveUncoordinated(f, '$dir$sep$targetName')) {
         out.add('$dir$sep$targetName');
         continue;
       }
@@ -381,11 +500,12 @@ Future<List<String>> sweepAsideFiles(
       // be the only durable copy of the version it holds (0128).
       final kept = await _keepAsConflictCopy(f, '$dir$sep$targetName', verified ? 'conflict' : 'recovered');
       if (kept != null) out.add(kept);
+    } on StorageBusy {
+      return; // stop; what was consumed so far is in [out]
     } on FileSystemException {
       // Locked for now; the next scan tries again. It stays under its name.
     }
   }
-  return out;
 }
 
 /// Whether [f] holds exactly [bytes] or has the content [identity] (give one).
@@ -428,7 +548,7 @@ Future<ReplaceResult> _restore(
   final bool ok;
   try {
     ok = await _retry(
-      () => publishExclusive(aside, target, beforeOsCall: hook),
+      () => publishExclusiveUncoordinated(aside, target, beforeOsCall: hook),
     );
   } on FileSystemException catch (e) {
     throw FileSystemException(
@@ -617,6 +737,9 @@ Future<DeleteResult> deleteFileIfUnchanged(
 /// asynchronous [beforeDelete] (the verified file is still set aside),
 /// [beforeRestore], and [beforeAsideDelete], [beforeFinalCheck] and
 /// [afterFinalRead], as in [replaceIfUnchanged].
+///
+/// It is one coordinated call: a write on the target's folder and a delete of
+/// the target. A [StorageBusy] means nothing was written.
 Future<DeleteResult> deleteFileIfMatches(
   String target, {
   List<int>? bytes,
@@ -633,6 +756,40 @@ Future<DeleteResult> deleteFileIfMatches(
   if ((bytes == null) == (identity == null)) {
     throw ArgumentError('give exactly one of bytes and identity');
   }
+  return coordinated(
+    CoordinatedWrite([
+      CoordinationIntent(folderOf(target), CoordinationKind.write),
+      CoordinationIntent(target, CoordinationKind.delete),
+    ]),
+    () => _deleteFileIfMatches(
+      target,
+      bytes,
+      identity,
+      beforeMoveAside,
+      afterRead,
+      beforeDelete,
+      beforeRestore,
+      stillRedundant,
+      beforeAsideDelete,
+      beforeFinalCheck,
+      afterFinalRead,
+    ),
+  );
+}
+
+Future<DeleteResult> _deleteFileIfMatches(
+  String target,
+  List<int>? bytes,
+  ContentIdentity? identity,
+  void Function()? beforeMoveAside,
+  void Function()? afterRead,
+  Future<void> Function()? beforeDelete,
+  void Function()? beforeRestore,
+  bool Function()? stillRedundant,
+  Future<void> Function(String path)? beforeAsideDelete,
+  Future<void> Function(String path)? beforeFinalCheck,
+  Future<void> Function(String path)? afterFinalRead,
+) async {
   try {
     if (!await _matches(File(target), bytes, identity)) {
       return const DeleteResult(DeleteOutcome.changed);
@@ -736,7 +893,7 @@ Future<({bool restored, String? kept})> _keepForDelete(
   void Function()? hook,
 ) async {
   try {
-    if (await _retry(() => publishExclusive(file, target, beforeOsCall: hook))) {
+    if (await _retry(() => publishExclusiveUncoordinated(file, target, beforeOsCall: hook))) {
       return (restored: true, kept: null);
     }
   } on FileSystemException {

@@ -6,8 +6,9 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/coordination_support.dart';
 
-void main() {
+void suite() {
   late Directory dir;
 
   setUp(() async => dir = await Directory.systemTemp.createTemp('noted_excl'));
@@ -184,3 +185,5 @@ void main() {
     expect((await store.load('p1')).meta.title, 'One');
   });
 }
+
+void main() => runWithAndWithoutCoordinator(suite);

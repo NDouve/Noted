@@ -416,10 +416,10 @@ class PageStore {
   ///
   /// The caller serialises it with scans and saves of both folders.
   /// [beforeOsCall] is a seam for tests.
-  MoveOutcome moveTo(String pageId, PageStore to, {void Function()? beforeOsCall}) {
+  Future<MoveOutcome> moveTo(String pageId, PageStore to, {void Function()? beforeOsCall}) async {
     final from = _pathFor(pageId);
     final target = '${to.directory.path}${Platform.pathSeparator}${_name(from)}';
-    final outcome = moveExclusive(from, target, beforeOsCall: beforeOsCall);
+    final outcome = await moveExclusive(from, target, beforeOsCall: beforeOsCall);
     if (outcome == MoveOutcome.moved) {
       _paths.remove(pageId);
       _adopted.remove(pageId);
