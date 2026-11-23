@@ -5856,6 +5856,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final en in _pathId.entries) {
       if (en.value == p && _key(File(en.key).parent.path) == sk) return true;
     }
+    // Any other page file that isn't known to be another page (the expiry's
+    // rule): unclassified, unstamped, changed since its stamp or a placeholder
+    // may be the page, restored by sync under another name or over another
+    // page's file. Metadata only (rule P).
+    for (final n in names) {
+      if (!n.toLowerCase().endsWith(PageStore.extension)) continue;
+      final path = '${sDir.path}${Platform.pathSeparator}$n';
+      final key = _key(path);
+      final s = fileStamp(path);
+      final id = _pathId[key];
+      if (s == null || id == null || id == p || _fileStamps[key] != s || _isPlaceholder(path)) return true;
+    }
     return unreadable.any((u) => _key(File(u.path).parent.path) == sk);
   }
 

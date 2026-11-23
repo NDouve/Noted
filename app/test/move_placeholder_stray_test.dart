@@ -6,6 +6,7 @@
 // damaged-target branch of 2c, a stray attachments folder (O) and the same-volume
 // `_moveDir` on `moveExclusive`.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -318,6 +319,50 @@ void main() {
       expect(dir.existsSync(), isTrue);
       expect(Directory('${extra.path}/$x.assets').existsSync(), isFalse);
       expect(notices.where((n) => n.contains('stayed in')), hasLength(1));
+    });
+
+    // Page files in the source folder that sync changed or added before the
+    // watcher classified them may be the page (0186): the folder stays.
+    Future<void> staysAfter(Notebook nb, Directory dir, String x, {Future<void> Function()? during}) async {
+      var t = t0;
+      nb.now = () => t;
+      await nb.checkFolders();
+      t = t0.add(const Duration(seconds: 40));
+      if (during == null) {
+        await nb.checkFolders();
+      } else {
+        await during();
+      }
+      expect(dir.existsSync(), isTrue, reason: 'kept');
+      expect(Directory('${extra.path}/$x.assets').existsSync(), isFalse);
+    }
+
+    test('another page\'s file replaced with the page\'s content keeps the folder', () async {
+      final (nb, x, dir, _) = await stray();
+      final other = (await pages.list().where((e) => e.path.endsWith('.canvas')).first) as File;
+      other.writeAsStringSync(File('${extra.path}/$x.canvas').readAsStringSync());
+      other.setLastModifiedSync(DateTime.now().add(const Duration(hours: 1)));
+      await staysAfter(nb, dir, x);
+    });
+
+    test('a new page file under another name keeps the folder', () async {
+      final (nb, x, dir, _) = await stray();
+      File('${pages.path}/restored.canvas').writeAsStringSync('{}');
+      await staysAfter(nb, dir, x);
+    });
+
+    test('a page file planted inside the locks keeps the folder', () async {
+      Notebook.pairLockLimit = const Duration(seconds: 5);
+      final (nb, x, dir, _) = await stray();
+      final gate = Completer<void>();
+      await staysAfter(nb, dir, x, during: () async {
+        unawaited(nb.folderLocks.run(pages, () => gate.future));
+        final run = nb.checkFolders();
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        File('${pages.path}/restored.canvas').writeAsStringSync('{}');
+        gate.complete();
+        await run;
+      });
     });
 
     test('a set-aside folder is never moved', () async {
