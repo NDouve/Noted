@@ -94,13 +94,7 @@ const List<Site> deleteSites = [
     'app/lib/src/notebook.dart',
     'd.deleteSync();',
     1,
-    'the expiry prunes an emptied set-aside folder without recursive: never a file',
-  ),
-  (
-    'app/lib/src/notebook.dart',
-    'rec.dir.parent.deleteSync();',
-    1,
-    'the expiry prunes the emptied trash folder of a set-aside without recursive: never a file',
+    'an empty folder of a set-aside (the expiry, the trash folder made for a rename that did not happen), removed without recursive: never a file',
   ),
   (
     'app/lib/src/notebook.dart',

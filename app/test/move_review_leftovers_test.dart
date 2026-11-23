@@ -246,6 +246,60 @@ void main() {
     });
   });
 
+  group('a source replaced by a page that is stored in the target folder itself', () {
+    for (final shown in ['no page', 'q', 'p']) {
+     test('the live notebook lists a duplicate of q as a fresh one does (open: $shown)', () async {
+      final first = make();
+      await first.load();
+      final folder = await Directory('${root.path}/Work').create();
+      final s = await first.addBinder(folder.path);
+      final p = await first.createPage(binderPath: s.path);
+      final q = await first.createPage();
+      await first.flush();
+      first.dispose();
+      opened.remove(first);
+      final nb = make();
+      await nb.load();
+      if (shown == 'q') await nb.open(q);
+      if (shown == 'p') await nb.open(p);
+      final qText = File('${pages.path}/$q.canvas').readAsStringSync();
+      hook = (point, path) async {
+        // Another page's file lands under p's name just before its rename.
+        if (point == 'move-before-rename') {
+          hook = null;
+          File('${folder.path}/$p.canvas').writeAsStringSync(qText);
+        }
+      };
+      Object? error;
+      try {
+        await nb.moveToLocation(p);
+      } on Object catch (e) {
+        error = e;
+      }
+      hook = null;
+      await nb.flush();
+      expect(File('${pages.path}/$p.canvas').readAsStringSync(), qText, reason: 'the replaced file moved as it was');
+      Set<String> dups(Notebook n) => {
+        for (final u in n.unreadable)
+          if (u.reason.startsWith('duplicate page id $q')) u.path.replaceAll(r'\', '/').toLowerCase(),
+      };
+      final two = {
+        '${pages.path}/$p.canvas'.replaceAll(r'\', '/').toLowerCase(),
+        '${pages.path}/$q.canvas'.replaceAll(r'\', '/').toLowerCase(),
+      };
+      final fresh = make();
+      await fresh.load();
+      // Which of the two files is the duplicate depends on the order a scan lists
+      // them in: each notebook lists exactly one of them.
+      expect(dups(fresh), hasLength(1), reason: 'a fresh notebook lists one of the two files of q as the duplicate (error: $error)');
+      expect(dups(nb), hasLength(1), reason: 'the live notebook lists one too (error: $error)');
+      expect(two.containsAll(dups(nb)), isTrue);
+      expect(nb.pageTitleOf(q), fresh.pageTitleOf(q));
+      expect(nb.pageTitleOf(p) == null, fresh.pageTitleOf(p) == null, reason: 'p is listed by both or neither');
+     });
+    }
+  });
+
   group('R5: the landing of kept files skips a busy page', () {
     test('a page that is moving gets nothing landed until it has moved; then they land at its new place', () async {
       final (nb, a, _, x) = await scanned();

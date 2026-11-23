@@ -3967,7 +3967,7 @@ const _xKinds = [
   'delete:crossVolumePutBackKeepsTrash', 'delete:restoredBeforeWatcherExpiry', //
   'delete:restoredBeforeWatcherQuit', 'delete:trashRestoredBeforeWatcherExpiry', //
   'delete:trashRestoredBeforeWatcherQuit', 'delete:restoredMidExpiry', 'delete:expiryKeptThenRestored', //
-  'delete:expiryHeld', 'delete:expiryListingFails', //
+  'delete:expiryHeld', 'delete:expiryListingFails', 'delete:subpageOtherFolder', //
 ];
 
 String _xName(String path) => path.split(RegExp(r'[\\/]')).last;
@@ -4069,6 +4069,8 @@ extension _XSteps on _Run {
         return _xExpiryHeld(kind);
       case 'delete:expiryListingFails':
         return _xListingFails(kind);
+      case 'delete:subpageOtherFolder':
+        return _xSplitDelete(kind);
       case 'delete:inPlaceRenamed':
       case 'delete:inPlaceUndo':
       case 'delete:inPlaceKilled':
@@ -4385,11 +4387,10 @@ extension _XSteps on _Run {
     final to = _xTarget(p);
     if (to == null) return null;
     if (_standaloneLeft([p], to: null) < 1) return null; // p is lost: a standalone page must stay
-    // q is in another folder than the target. (In the same folder the live notebook
-    // lists no duplicate while a fresh one does: reported, not covered here.)
+    // q is in the target folder or in another one.
     final qs = [
       for (final e in model.entries)
-        if (e.key != p && e.value.loc != to) e.key,
+        if (e.key != p) e.key,
     ];
     if (qs.isEmpty) return null;
     final q = qs.first;
@@ -5013,7 +5014,10 @@ extension _XSteps on _Run {
         nb.discardDeleted(deleted);
         await _xQuiet();
         PageStore.fileReadObserver = null;
-        expect(reads, isEmpty, reason: 'the expiry reads no page file');
+        // (The deleted page's own file may be read once by 0183's re-check of a
+        // consumed-copy mark that letting go of the delete starts; that is no read of
+        // the expiry's.)
+        expect(reads.where((r) => !r.endsWith('$p.canvas')), isEmpty, reason: 'the expiry reads no page file');
         model.remove(p);
         await _xExpired(() => _xAside(p, loc).isEmpty, loc, 'the expiry to empty the set-aside');
         return kind;
@@ -5187,6 +5191,39 @@ extension _XSteps on _Run {
     return kind;
   }
 
+  // A standalone page whose subpage is stored in the other standalone folder (as
+  // another device's move of it leaves it; the standalone folders share one tree).
+  // The delete reads, sets aside and deletes each page in its own folder.
+  Future<String?> _xSplitDelete(String kind) async {
+    if (!model.values.any((m) => m.loc == 'pages' || m.loc == 'x')) return null; // a standalone page must stay
+    await _xFreshen();
+    final r = await _xPage('pages');
+    final s = await _xPage('pages', parent: r);
+    await nb.flush();
+    File(_pathOf(s)).renameSync(_xFile('x', s));
+    model[s]!.loc = 'x';
+    await nb.checkFile(_xFile('pages', s));
+    await nb.checkFile(_xFile('x', s));
+    await _xFreshen();
+    _xGive(r, 2);
+    _xGive(s, 2);
+    final gone = [r, s];
+    final deleted = await nb.delete(r);
+    expect(File(_xFile('pages', r)).existsSync(), isFalse);
+    expect(File(_xFile('x', s)).existsSync(), isFalse, reason: 'the subpage is deleted from its own folder');
+    expect(_xTrash(r), hasLength(2));
+    expect(_xTrash(s), hasLength(2));
+    final snapshot = {for (final p in gone) p: model.remove(p)!};
+    nb.discardDeleted(deleted);
+    await _xExpired(() => _xTrash(r).isEmpty && _xTrash(s).isEmpty, 'pages', 'the expiry of both set-asides');
+    for (final p in gone) {
+      model[p] = snapshot[p]!;
+      await _xClear(p);
+      model.remove(p);
+    }
+    return kind;
+  }
+
   // 0184's gate refuses the expiry's turn: nothing is deleted until the folder is free.
   Future<String?> _xExpiryHeld(String kind) async {
     final inPlace = _xrng.nextBool();
@@ -5273,7 +5310,7 @@ const _expectedKinds = {
   'delete:crossVolumePutBackKeepsTrash', 'delete:restoredBeforeWatcherExpiry', //
   'delete:restoredBeforeWatcherQuit', 'delete:trashRestoredBeforeWatcherExpiry', //
   'delete:trashRestoredBeforeWatcherQuit', 'delete:restoredMidExpiry', 'delete:expiryKeptThenRestored', //
-  'delete:expiryHeld', 'delete:expiryListingFails', //
+  'delete:expiryHeld', 'delete:expiryListingFails', 'delete:subpageOtherFolder', //
 };
 
 final Set<String> _seen = {};

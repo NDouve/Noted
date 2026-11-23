@@ -503,6 +503,30 @@ void main() {
       expect(file.existsSync(), isTrue, reason: '0184\'s gate refused the turn');
     });
 
+    test('delete:expiryHeld at file 2: the gate is taken per file; the first goes, the second is kept', () async {
+      final nb = make();
+      await nb.load();
+      final folder = await Directory('${root.path}/Work').create();
+      final s = await nb.addBinder(folder.path);
+      final a = await nb.createPage(binderPath: s.path);
+      await nb.createPage(binderPath: s.path);
+      await nb.flush();
+      giveAssets(a, 2, dir: folder);
+      final deleted = await nb.delete(a);
+      expect(trashFiles(), hasLength(2));
+      var n = 0;
+      hook = (point, path) async {
+        if (point == 'expiry-file' && ++n == 2) {
+          File('${folder.path}/$binderFileName').writeAsStringSync(Binder.create(title: 'Other', color: binderPalette[2]).write());
+        }
+      };
+      nb.discardDeleted(deleted);
+      await until(() => n >= 2, what: 'the second file');
+      await quiet();
+      hook = null;
+      expect(trashFiles(), hasLength(1), reason: 'the first file went before the hold; the gate refused the second');
+    });
+
     test('delete:expiryListingFails: a listing that fails counts as the page', () async {
       final (nb, a, _) = await world();
       final deleted = await nb.delete(a);
@@ -567,13 +591,18 @@ void main() {
       final deleted = await nb.delete(a);
       var t = DateTime(2030);
       nb.now = () => t;
-      var n = 0;
+      // The first file's check takes 6 s (a slow hash): the file in flight finishes,
+      // and the next file is not started (its turn's own limit would stop it too, but
+      // only after the hook and the lock wait that the between-files check spares).
+      var starts = 0, finals = 0;
       hook = (point, path) async {
-        if (point == 'expiry-file' && ++n == 2) t = t.add(const Duration(seconds: 6));
+        if (point == 'expiry-file') starts++;
+        if (point == 'expiry-final-check' && ++finals == 1) t = t.add(const Duration(seconds: 6));
       };
       await nb.discardPendingDelete();
       hook = null;
       expect(deleted.pages, isNotEmpty);
+      expect(starts, 1, reason: 'no second file was started after the limit');
       expect(trashFiles().length, 2, reason: 'one went, the rest stay under their set-aside name');
     });
 
@@ -589,6 +618,242 @@ void main() {
       expect(sw.elapsedMilliseconds, lessThan(4000));
       expect(trashFiles(), hasLength(1));
       gate.complete();
+    });
+  });
+
+  // A subpage of `a` whose file is in the other standalone folder (as another
+  // device's move leaves it): the standalone folders share one tree.
+  Future<(Notebook, String, String)> splitTree() async {
+    final nb = make();
+    await nb.load();
+    await nb.addStandaloneFolder(extra.path);
+    final a = await nb.createPage();
+    final sub = await nb.createPage(parentId: a);
+    await nb.flush();
+    File('${pages.path}/$sub.canvas').renameSync('${extra.path}/$sub.canvas');
+    await nb.checkFile('${pages.path}/$sub.canvas');
+    await nb.checkFile('${extra.path}/$sub.canvas');
+    expect(nb.tree.childrenOf(a).map((m) => m.id), [sub], reason: 'the subpage is still under a');
+    return (nb, a, sub);
+  }
+
+  group('a standalone page whose subpage is stored in the other standalone folder', () {
+    test('is deleted with it, each read and removed in its own folder; Undo brings both back', () async {
+      final (nb, a, sub) = await splitTree();
+      giveAssets(a, 1);
+      giveAssets(sub, 1, dir: extra);
+      expect(File('${extra.path}/$sub.canvas').existsSync(), isTrue, reason: 'the subpage is stored in the other folder');
+      final deleted = await nb.delete(a);
+      expect(File('${pages.path}/$a.canvas').existsSync(), isFalse);
+      expect(File('${extra.path}/$sub.canvas').existsSync(), isFalse, reason: 'deleted from its own folder');
+      expect(trashFiles(), hasLength(2), reason: 'each folder of attachments was set aside');
+      expect(deleted.pages.map((p) => p.id), containsAll([a, sub]));
+      nb.discardDeleted(deleted);
+      await until(() => trashFiles().isEmpty, what: 'the expiry');
+      await reloadAgrees(nb, listed: {...idsOf(nb)});
+    });
+
+    test('a delete that is undone puts both pages back', () async {
+      final (nb, a, sub) = await splitTree();
+      final keep = {...idsOf(nb)}..removeAll({a, sub});
+      final deleted = await nb.delete(a);
+      await nb.undoDelete(deleted);
+      await reloadAgrees(nb, listed: {...keep, a, sub});
+    });
+  });
+
+  group('review fixes: the restore, busy, the quit limit, the notices, the runs', () {
+    // The page `a` was deleted and its file is back before the watcher says so;
+    // [discardDeleted] then keeps the set-aside (the page may be back).
+    Future<(Notebook, String, String, DeletedPages, String)> restoredButUnlisted({int files = 1}) async {
+      final (nb, a, keep) = await world(files: files);
+      final text = File('${pages.path}/$a.canvas').readAsStringSync();
+      final deleted = await nb.delete(a);
+      File('${pages.path}/$a.canvas').writeAsStringSync(text);
+      return (nb, a, keep, deleted, text);
+    }
+
+    for (final inPlaceSet in [true, false]) {
+      final where = inPlaceSet ? 'in place' : 'deleted-attachments';
+
+      test('a restore refused by the gate (0184) counts as kept and is tried again ($where)', () async {
+        Notebook.forceCopyMoveForTest = inPlaceSet;
+        final nb = make();
+        await nb.load();
+        final folder = await Directory('${root.path}/Work').create();
+        final s = await nb.addBinder(folder.path);
+        final a = await nb.createPage(binderPath: s.path);
+        await nb.createPage(binderPath: s.path);
+        await nb.flush();
+        giveAssets(a, 1, dir: folder);
+        final text = File('${folder.path}/$a.canvas').readAsStringSync();
+        final bf = File('${folder.path}/$binderFileName');
+        final own = bf.readAsStringSync();
+        final deleted = await nb.delete(a);
+        File('${folder.path}/$a.canvas').writeAsStringSync(text); // the page is back
+        nb.discardDeleted(deleted);
+        await quiet();
+        // The folder is held (another binder's file) while the watcher lists the page.
+        bf.writeAsStringSync(Binder.create(title: 'Other', color: binderPalette[2]).write());
+        await nb.checkFile('${folder.path}/$a.canvas');
+        await quiet();
+        expect(live(a, 1, folder).existsSync(), isFalse, reason: 'the refused restore is kept, not taken as done');
+        final aside = inPlaceSet ? inPlace(a, folder).expand((d) => d.listSync()).whereType<File>() : trashFiles();
+        expect(aside, hasLength(1), reason: 'the files stay in the set-aside');
+        expect(notices.where((n) => n.contains('could not be put back')), isEmpty, reason: 'a refused turn is not a failure to put back');
+        // The hold ends: the next check finds the record still pending and restores.
+        bf.writeAsStringSync(own);
+        await nb.checkBinderFile(bf.path);
+        await nb.checkFile('${folder.path}/$a.canvas');
+        await until(() => live(a, 1, folder).existsSync(), what: 'the restore once the folder is not held');
+      });
+    }
+
+    test('a restore whose folder lock is not got in time counts as kept (nothing moved, no notice)', () async {
+      final (nb, a, _, deleted, _) = await restoredButUnlisted();
+      nb.discardDeleted(deleted);
+      await quiet();
+      // The folder of deleted pages is the one that stalls (the page's own is read by the check).
+      final gate = Completer<void>();
+      unawaited(nb.folderLocks.run(trashDir(), () => gate.future));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await nb.checkFile('${pages.path}/$a.canvas');
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      expect(live(a, 1).existsSync(), isFalse);
+      expect(trashFiles(), hasLength(1), reason: 'still set aside');
+      expect(notices.where((n) => n.contains('could not be put back')), isEmpty);
+      gate.complete();
+      await nb.checkFile('${pages.path}/$a.canvas');
+      await until(() => live(a, 1).existsSync(), what: 'the restore after the lock is free');
+    });
+
+    test('p busy: the restore does not run in the middle of its move; it runs when the move is over', () async {
+      final (nb, a, keep, deleted, _) = await restoredButUnlisted();
+      await nb.checkFile('${pages.path}/$a.canvas');
+      expect(idsOf(nb), contains(a));
+      final binder = await nb.addBinder(extra.path);
+      var duringMove = true;
+      hook = (point, path) async {
+        if (point != 'move-after-rename') return;
+        hook = null;
+        nb.discardDeleted(deleted); // the expiry runs while a is being moved
+        await quiet();
+        duringMove = live(a, 1).existsSync() || live(a, 1, extra).existsSync();
+      };
+      await nb.moveToLocation(a, binderPath: binder.path);
+      hook = null;
+      expect(duringMove, isFalse, reason: 'nothing was put back while the page was busy');
+      await until(() => live(a, 1, extra).existsSync(), what: 'the restore after the move');
+      await reloadAgrees(nb, listed: {keep});
+    });
+
+    test('at a quit the restore is skipped: a stalled destination does not hold the quit', () async {
+      Notebook.expiryQuitLimit = const Duration(milliseconds: 300);
+      Notebook.pairLockLimit = const Duration(seconds: 3);
+      final (nb, a, _) = await world();
+      final other = await nb.createPage(folderPath: extra.path);
+      await nb.flush();
+      final text = File('${pages.path}/$a.canvas').readAsStringSync();
+      await nb.delete(a);
+      File('${extra.path}/$a.canvas').writeAsStringSync(text);
+      await nb.checkFile('${extra.path}/$a.canvas'); // listed in the other folder
+      expect(idsOf(nb), containsAll([a, other]));
+      final gate = Completer<void>();
+      unawaited(nb.folderLocks.run(extra, () => gate.future));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      final sw = Stopwatch()..start();
+      await nb.discardPendingDelete();
+      expect(sw.elapsedMilliseconds, lessThan(2500), reason: 'the restore would wait for the stalled folder');
+      expect(trashFiles(), hasLength(1), reason: 'the set-aside stays');
+      gate.complete();
+    });
+
+    test('the delete that cannot rename into deleted-attachments leaves no empty folder there', () async {
+      Notebook.forceCopyMoveForTest = true;
+      final (nb, a, _) = await world();
+      await nb.delete(a);
+      expect(inPlace(a), hasLength(1));
+      expect(trashDir().existsSync() ? trashDir().listSync() : <FileSystemEntity>[], isEmpty, reason: 'no empty <newId> folder');
+    });
+
+    for (final placeholder in [false, true]) {
+      test('a set-aside refused by 0184\'s gate is reported as one that could not be made (${placeholder ? 'in place' : 'deleted-attachments'})', () async {
+        final nb = make();
+        await nb.load();
+        final folder = await Directory('${root.path}/Work').create();
+        final s = await nb.addBinder(folder.path);
+        final a = await nb.createPage(binderPath: s.path);
+        await nb.createPage(binderPath: s.path);
+        await nb.flush();
+        giveAssets(a, 1, dir: folder);
+        if (placeholder) Notebook.placeholderMarksForTest = {fileStamp(live(a, 1, folder).path)!}; // the in-place branch
+        hook = (point, path) async {
+          if (point != 'binder-gate') return;
+          hook = null; // another binder's file stands in the folder at the delete's first turn
+          File('${folder.path}/$binderFileName').writeAsStringSync(Binder.create(title: 'Other', color: binderPalette[2]).write());
+        };
+        try {
+          await nb.delete(a);
+        } on NotebookException {
+          // the held folder refuses the page's own delete too
+        }
+        hook = null;
+        expect(notices.where((n) => n.contains('could not be set aside')), hasLength(1));
+        expect(live(a, 1, folder).existsSync(), isTrue, reason: 'the folder stays as <p>.assets');
+        expect(trashFiles(), isEmpty);
+      });
+    }
+
+    test('three kept runs end the record: the page coming back later gets no restore', () async {
+      final (nb, a, _, deleted, text) = await restoredButUnlisted();
+      File('${pages.path}/$a.canvas').deleteSync(); // sync's file is a not yet listed page, named for it
+      File('${pages.path}/$a-damaged.canvas').writeAsStringSync('{ not a page');
+      nb.discardDeleted(deleted);
+      await quiet();
+      // Each check of that file is a run that sees something that may be the page.
+      for (var i = 0; i < 3; i++) {
+        await nb.checkFile('${pages.path}/$a-damaged.canvas');
+        await quiet();
+      }
+      File('${pages.path}/$a.canvas').writeAsStringSync(text);
+      await nb.checkFile('${pages.path}/$a.canvas');
+      await quiet();
+      expect(live(a, 1).existsSync(), isFalse, reason: 'the record ended after three kept runs');
+      expect(trashFiles(), hasLength(1), reason: 'the folder stays where it is');
+    });
+
+    test('checks of other pages\' files do not use up the runs: p coming back after them still gets its folder', () async {
+      final (nb, a, _, deleted, text) = await restoredButUnlisted();
+      final other = await nb.createPage();
+      await nb.flush();
+      File('${pages.path}/$a.canvas').deleteSync();
+      File('${pages.path}/$a-damaged.canvas').writeAsStringSync('{ not a page'); // the first run is kept
+      nb.discardDeleted(deleted);
+      await quiet();
+      // Other pages' events and the notebook's own saves: many checks of known files.
+      for (var i = 0; i < 6; i++) {
+        File('${pages.path}/$other.canvas').setLastModifiedSync(DateTime.now().add(Duration(minutes: i + 1)));
+        await nb.checkFile('${pages.path}/$other.canvas');
+        await quiet();
+      }
+      File('${pages.path}/$a-damaged.canvas').deleteSync();
+      File('${pages.path}/$a.canvas').writeAsStringSync(text);
+      await nb.checkFile('${pages.path}/$a.canvas');
+      await until(() => live(a, 1).existsSync(), what: 'the restore at p\'s own event');
+    });
+
+    test('a file in the set-aside changed after the delete is kept (identity mismatch), the others go', () async {
+      final (nb, a, _) = await world(files: 2);
+      final deleted = await nb.delete(a);
+      final files = trashFiles();
+      final changed = files.firstWhere((f) => f.path.endsWith(hashName(1)));
+      changed.writeAsBytesSync(bytesOf(9)); // no longer what its name says, nor what was recorded
+      nb.discardDeleted(deleted);
+      await until(() => trashFiles().length == 1, what: 'the other file to go');
+      await quiet();
+      expect(trashFiles().single.path, changed.path);
+      expect(trashFiles().single.readAsBytesSync(), bytesOf(9));
+      expect(notices.where((n) => n.contains('were not removed')), hasLength(1));
     });
   });
 
