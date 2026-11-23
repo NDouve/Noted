@@ -47,7 +47,7 @@ class FailStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     void Function()? beforePublish,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,

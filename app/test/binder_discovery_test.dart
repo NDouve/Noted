@@ -46,12 +46,12 @@ class _VanishingStore extends PageStore {
   static bool armed = false;
 
   @override
-  Future<List<PageEntry>> scan({bool createFolder = true, bool sweep = true}) async {
+  Future<List<PageEntry>> scan({bool createFolder = true, bool sweep = true, bool stamps = false, void Function(String path)? afterFileRead}) async {
     if (armed) {
       armed = false;
       await directory.delete(recursive: true);
     }
-    return super.scan(createFolder: createFolder, sweep: sweep);
+    return super.scan(createFolder: createFolder, sweep: sweep, stamps: stamps, afterFileRead: afterFileRead);
   }
 }
 

@@ -85,9 +85,9 @@ class CountingStore extends PageStore {
   }
 
   @override
-  Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish}) async {
+  Future<bool> saveNewText(NotedPage page, String text, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) async {
     if (failNew.contains(page.id)) throw const FileSystemException('destination gone');
-    final done = await super.saveNewText(page, text, beforePublish: beforePublish);
+    final done = await super.saveNewText(page, text, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
     if (done) {
       final f = afterNewText;
       afterNewText = null;
@@ -103,7 +103,7 @@ class CountingStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
@@ -148,7 +148,7 @@ class CountingStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     void Function()? beforePublish,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
@@ -185,7 +185,7 @@ class _GoneStore extends CountingStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,

@@ -24,8 +24,8 @@ class _FlakyStore extends PageStore {
   Directory get directory => broken ? unwritable : super.directory;
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async =>
-      armed ? _fail() : super.saveNew(page, beforePublish: beforePublish);
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) async =>
+      armed ? _fail() : super.saveNew(page, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
 
   // The page can not be written, and from now on the folder can not be
   // written to either (so no copy can be put beside the file).

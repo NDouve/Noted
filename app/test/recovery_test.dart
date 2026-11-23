@@ -31,7 +31,7 @@ class _LossyStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     void Function()? beforePublish,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
@@ -114,12 +114,12 @@ class _OverlapStore extends PageStore {
   var scans = 0;
 
   @override
-  Future<List<PageEntry>> scan({bool createFolder = true, bool sweep = true}) async {
+  Future<List<PageEntry>> scan({bool createFolder = true, bool sweep = true, bool stamps = false, void Function(String path)? afterFileRead}) async {
     scans++;
     if (_replacing) overlapped = true;
     _scanning = true;
     try {
-      return await super.scan(createFolder: createFolder, sweep: sweep);
+      return await super.scan(createFolder: createFolder, sweep: sweep, stamps: stamps, afterFileRead: afterFileRead);
     } finally {
       _scanning = false;
     }
@@ -132,7 +132,7 @@ class _OverlapStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     void Function()? beforePublish,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
@@ -166,9 +166,9 @@ class _RacingStore extends PageStore {
   }
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) {
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) {
     onPublish(calls++);
-    return super.saveNew(page, beforePublish: beforePublish);
+    return super.saveNew(page, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
   }
 
   @override
@@ -178,7 +178,7 @@ class _RacingStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     void Function()? beforePublish,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
@@ -197,8 +197,8 @@ class _LandingStore extends PageStore {
   final _Landing plan;
 
   @override
-  Future<List<PageEntry>> scan({bool createFolder = true, bool sweep = true}) async {
-    final entries = await super.scan(createFolder: createFolder, sweep: sweep);
+  Future<List<PageEntry>> scan({bool createFolder = true, bool sweep = true, bool stamps = false, void Function(String path)? afterFileRead}) async {
+    final entries = await super.scan(createFolder: createFolder, sweep: sweep, stamps: stamps, afterFileRead: afterFileRead);
     final p = plan.path;
     if (p == null) return entries;
     File(p).writeAsStringSync(plan.text!);
@@ -231,7 +231,7 @@ class _ToggleStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     void Function()? beforePublish,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,

@@ -290,7 +290,18 @@ const String _move =
 const String _unchecked =
     'KNOWN unchecked replace of a shared file, left for the area audit (see the design note)';
 
-const List<Site> renameSites = [
+final List<Site> renameSites = [
+  for (final call in [
+    'Directory(from).renameSync(to);',
+    'Link(from).renameSync(to);',
+    'File(from).renameSync(to);',
+  ])
+    (
+      'packages/noted_core/lib/src/storage/exclusive_move.dart',
+      call,
+      1,
+      'the Android fallback below API 30, after an lstat that found no target, under the folder locks',
+    ),
   (
     'app/lib/src/ai/ai_link_server.dart',
     'tmp.renameSync(file.path);',

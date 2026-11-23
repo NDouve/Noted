@@ -39,10 +39,10 @@ class _NoNewStore extends PageStore {
   Future<bool> saveNewText(
     NotedPage page,
     String text, {
-    Future<void> Function()? beforePublish,
+    Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp,
   }) {
     if (refuse()) throw const FileSystemException('injected write failure');
-    return super.saveNewText(page, text, beforePublish: beforePublish);
+    return super.saveNewText(page, text, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
   }
 }
 

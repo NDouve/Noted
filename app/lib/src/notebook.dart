@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
+import 'dart:collection' show MapBase;
 import 'dart:convert' show utf8;
 import 'dart:io';
 import 'dart:math' show Random;
@@ -162,6 +163,36 @@ class _SaveRefused implements Exception {
   const _SaveRefused(this.response);
 
   final AiLinkResponse response;
+}
+
+/// A map that tells its owner which key changed, so [Notebook._fileStamps] can drop
+/// the stamp of any file whose `_known` or `_pathId` entry changed.
+class _TrackedMap extends MapBase<String, String> {
+  _TrackedMap(this._changed);
+  final void Function(String key) _changed;
+  final Map<String, String> _m = {};
+
+  @override
+  String? operator [](Object? key) => _m[key];
+  @override
+  void operator []=(String key, String value) {
+    _changed(key);
+    _m[key] = value;
+  }
+
+  @override
+  void clear() {
+    _m.keys.toList().forEach(_changed);
+    _m.clear();
+  }
+
+  @override
+  Iterable<String> get keys => _m.keys;
+  @override
+  String? remove(Object? key) {
+    if (key is String) _changed(key);
+    return _m.remove(key);
+  }
 }
 
 // A kept entry written under a move's target folder, paired with the old one
@@ -1367,9 +1398,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   NotedPage? _base;
   // The exact text last written or read for each page file (by path key), so
   // the app's own writes aren't taken for outside changes.
-  final Map<String, String> _known = {};
+  late final Map<String, String> _known = _TrackedMap(_fileStamps.remove);
   // Page id of each page file (by path key).
-  final Map<String, String> _pathId = {};
+  late final Map<String, String> _pathId = _TrackedMap(_fileStamps.remove);
+  // The file stamp of each page file Noted last classified (by path key): what a
+  // check skips by when the file is unchanged (0157, rule P). Any change of the
+  // file's `_known` or `_pathId` entry drops it (see [_TrackedMap]); it is set
+  // after those, where a scan, a read or Noted's own publish says so.
+  final Map<String, FileStamp> _fileStamps = {};
   // Pages with a conflicted box (0020).
   final Set<String> _conflicts = {};
   // The exact text last written or read for each binder file (by the key of
@@ -2561,6 +2597,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  // Sets or drops the stamp of the file at [key] (see [_fileStamps]); after the
+  // `_known` and `_pathId` entries it describes are set.
+  void _recordStamp(String key, FileStamp? stamp) {
+    if (stamp == null) {
+      _fileStamps.remove(key);
+    } else {
+      _fileStamps[key] = stamp;
+    }
+  }
+
   // The pages found in the default folder.
   void _adoptDefault(List<PageEntry> entries) {
     final dupes = <UnreadablePage>[];
@@ -2572,6 +2618,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _metas[e.meta.id] = e.meta;
       _loc[e.meta.id] = _standalone;
       _pathId[_key(e.path)] = e.meta.id;
+      _recordStamp(_key(e.path), e.stamp);
       if (e.conflicted) _conflicts.add(e.meta.id);
     }
     _unreadable = [...entries.whereType<UnreadablePage>(), ...dupes];
@@ -5761,6 +5808,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _metas[e.meta.id] = e.meta;
         _loc[e.meta.id] = path;
         _pathId[_key(e.path)] = e.meta.id;
+        _recordStamp(_key(e.path), e.stamp);
         if (e.conflicted) _conflicts.add(e.meta.id);
       }
       return StandaloneFolder._(path, available: true, store: pages, unreadable: bad);
@@ -6979,6 +7027,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _metas[e.meta.id] = e.meta;
         _loc[e.meta.id] = path;
         _pathId[_key(e.path)] = e.meta.id;
+        _recordStamp(_key(e.path), e.stamp);
         if (e.conflicted) _conflicts.add(e.meta.id);
         final m = await File(e.path).lastModified();
         if (m.isAfter(latest)) latest = m;
@@ -9899,16 +9948,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Outside the lock, so a test can pause a publish without holding the folder.
     await syncHook?.call('new-before-publish', st.directory.path);
     // The publish and its report are one job, so the feed keeps the lock's order.
+    FileStamp? pubStamp;
     final published = await _underFolderLock(st, () async {
       // Checked again inside the lock: the location may have gone while this waited.
       await _assertCanWrite(loc);
-      if (!await st.saveNewText(page, text, beforePublish: beforePublish)) return false;
+      if (!await st.saveNewText(page, text, beforePublish: beforePublish, onPublishStamp: (s) => pubStamp = s)) return false;
       _emitPublished(path, identity, () => text);
       return true;
     });
     if (!published) return false;
     _known[key] = text;
     _pathId[key] = page.id;
+    _recordStamp(key, pubStamp);
     if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
     onPageContent?.call(loc, page);
     return true;
@@ -9990,16 +10041,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final key = _key(path);
     await syncHook?.call('new-before-publish', st.directory.path);
     // The publish and its report are one job, so the feed keeps the lock's order.
+    FileStamp? pubStamp;
     final published = await _underFolderLock(st, () async {
       // Checked again inside the lock: the location may have gone while this waited.
       await _assertCanWrite(loc);
-      if (!await st.saveNew(page, beforePublish: beforePublish)) return false;
+      if (!await st.saveNew(page, beforePublish: beforePublish, onPublishStamp: (s) => pubStamp = s)) return false;
       _emitPublished(path, identity, () => writePage(page));
       return true;
     });
     if (!published) return false;
     _known[key] = writePage(page);
     _pathId[key] = page.id;
+    _recordStamp(key, pubStamp);
     if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
     onPageContent?.call(loc, page);
     return true;
@@ -10106,6 +10159,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // A pull-only folder is never created by a read (G2).
       final entries = await st.scan(
         createFolder: createFolder && !_pullOnly(st.directory.path),
+        stamps: true,
         sweep: sweep && _sweepOff == 0 && mayWrite && (opening || !_heldAt(s?.path ?? '')),
       );
       // A chosen file that now holds another page: the open or a busy page
@@ -10203,6 +10257,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final published = wantIdentity || _feedLive ? identityOfForTest(utf8.encode(writePage(page))) : null;
     var pathMoved = false;
     String? publishedAt;
+    FileStamp? pubStamp;
     // The check is made inside the lock, right before the replace.
     final result = await _underFolderLock(st, () async {
       await _assertCanWrite(loc);
@@ -10211,7 +10266,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         pathMoved = true;
         return null;
       }
-      final r = await st.saveIfUnchanged(page, expectedText);
+      final r = await st.saveIfUnchanged(page, expectedText, onPublishStamp: (s) => pubStamp = s);
       if (r.replaced) {
         publishedAt = path;
         // A listener that subscribed after the check above: hashed inside the
@@ -10225,6 +10280,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final key = _key(publishedAt ?? st.pathFor(page.id));
     _known[key] = writePage(page);
     _pathId[key] = page.id;
+    _recordStamp(key, pubStamp);
     if (page.id != currentId) _setConflict(page.id, hasConflicts(page));
     onPageContent?.call(loc, page);
     // A file the aside's final check kept (a version a sync client wrote into
@@ -11156,6 +11212,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // deleted, and a sync client often deletes first and renames the new file in.
     final isOpen = openId != null && _preview == null && _isOpenFile(loc, key);
     String? text;
+    FileStamp? readStamp; // the file's stamp, if it didn't change during the read
     var time = DateTime.now().millisecondsSinceEpoch;
     try {
       // A file held by another program (a sync client downloading it) is busy,
@@ -11166,14 +11223,27 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // on Windows a file open for reading can't be renamed, so a read that
       // overlapped this notebook's own save of the file made the save fail with
       // a sharing violation.
-      Future<({String text, int time})> read() => _readUnderFolderLock(file.parent, () async {
+      //
+      // A file whose stamp is the one last classified is not read (rule P, S): the
+      // open page's file and a blocked page are always read.
+      Future<({String text, int time, FileStamp? stamp, bool skip})> read() => _readUnderFolderLock(file.parent, () async {
+        final before = fileStamp(path);
+        if (!isOpen && _diskBlockId == null && before != null && _fileStamps[key] == before) {
+          return (text: '', time: 0, stamp: before, skip: true);
+        }
+        await syncHook?.call('check-read', path);
         final s = await file.readAsString();
-        return (text: s, time: (await file.lastModified()).millisecondsSinceEpoch);
+        final t = (await file.lastModified()).millisecondsSinceEpoch;
+        // Unchanged across the read, and not a link (a link is read through).
+        final stable = before != null && before == fileStamp(path) && !FileSystemEntity.isLinkSync(path);
+        return (text: s, time: t, stamp: stable ? before : null, skip: false);
       });
 
       final got = isOpen ? await _whileBusy(read) : await read();
+      if (got.skip) return false;
       text = got.text;
       time = got.time;
+      readStamp = got.stamp;
     } on FileSystemException catch (e) {
       if (await FileSystemEntity.type(path) == FileSystemEntityType.notFound) {
         text = null;
@@ -11218,7 +11288,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         return false;
       }
     }
-    if (_known[key] == text && !wasBlocked) return false;
+    if (_known[key] == text && !wasBlocked) {
+      if (_pathId[key] != null) _recordStamp(key, readStamp);
+      return false;
+    }
     final previous = _known[key];
     _known[key] = text;
     final NotedPage page;
@@ -11323,6 +11396,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // handled: listed as a duplicate, or the page was opened afresh there
     } else {
       await _applyClosed(page, loc, key, path);
+      // Recorded only where this read was applied (N4).
+      if (_known[key] == text && _pathId[key] == page.id) _recordStamp(key, readStamp);
     }
     return false;
   }

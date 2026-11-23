@@ -42,12 +42,12 @@ class _FailNewStore extends PageStore {
   Directory get directory => broken ? unwritable : super.directory;
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) async {
     if (page.id == failId) {
       broken = true;
       return false;
     }
-    return super.saveNew(page, beforePublish: beforePublish);
+    return super.saveNew(page, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
   }
 }
 
@@ -64,7 +64,7 @@ class _DeleteHookStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,

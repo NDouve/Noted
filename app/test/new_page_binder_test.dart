@@ -27,7 +27,7 @@ class _FailingStore extends PageStore {
   }
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) async {
     throw const FileSystemException('disk full');
   }
 }

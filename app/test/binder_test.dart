@@ -26,8 +26,8 @@ class CorruptingStore extends PageStore {
   }
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
-    final ok = await super.saveNew(page, beforePublish: beforePublish);
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) async {
+    final ok = await super.saveNew(page, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
     if (ok && ++saves == corruptAt) {
       final f = File('${directory.path}${Platform.pathSeparator}${page.id}.canvas');
       await f.writeAsString(' ', mode: FileMode.append);
@@ -45,9 +45,9 @@ class DestStore extends PageStore {
   void Function(int n)? onSaveNew;
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) {
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) {
     onSaveNew?.call(fresh++);
-    return super.saveNew(page, beforePublish: beforePublish);
+    return super.saveNew(page, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
   }
 }
 
@@ -85,13 +85,13 @@ class FlakyStore extends PageStore {
   Future<bool> saveNewText(
     NotedPage page,
     String text, {
-    Future<void> Function()? beforePublish,
+    Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp,
   }) async {
     if (failSave || failSaveIds.contains(page.id)) {
       onFailedSave?.call(page.id);
       throw const FileSystemException('drive gone');
     }
-    final ok = await super.saveNewText(page, text, beforePublish: beforePublish);
+    final ok = await super.saveNewText(page, text, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
     if (ok) saves.update(page.id, (n) => n + 1, ifAbsent: () => 1);
     return ok;
   }
@@ -103,7 +103,7 @@ class FlakyStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     void Function()? beforePublish,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,
@@ -160,7 +160,7 @@ class FlakyStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,

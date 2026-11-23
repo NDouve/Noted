@@ -31,8 +31,8 @@ class CorruptingStore extends PageStore {
   }
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) async {
-    final ok = await super.saveNew(page, beforePublish: beforePublish);
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) async {
+    final ok = await super.saveNew(page, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
     if (ok && ++saves == corruptAt) {
       final f = File('${directory.path}${Platform.pathSeparator}${page.id}.canvas');
       await f.writeAsString(' ', mode: FileMode.append);

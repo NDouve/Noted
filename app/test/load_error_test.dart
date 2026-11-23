@@ -22,11 +22,11 @@ class _FlakyStore extends PageStore {
   Completer<void>? hangOn;
 
   @override
-  Future<List<PageEntry>> scan({bool createFolder = true, bool sweep = true}) async {
+  Future<List<PageEntry>> scan({bool createFolder = true, bool sweep = true, bool stamps = false, void Function(String path)? afterFileRead}) async {
     scans++;
     if (failWith case final e?) throw e;
     if (hangOn case final h?) await h.future;
-    return super.scan(createFolder: createFolder, sweep: sweep);
+    return super.scan(createFolder: createFolder, sweep: sweep, stamps: stamps, afterFileRead: afterFileRead);
   }
 }
 

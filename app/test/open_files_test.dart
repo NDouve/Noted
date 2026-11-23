@@ -29,7 +29,7 @@ class _FailDeleteStore extends PageStore {
     void Function()? beforeMoveAside,
     void Function()? afterRead,
     Future<void> Function()? beforeDelete,
-    void Function()? beforeRestore,
+    void Function()? beforeRestore, void Function(FileStamp?)? onPublishStamp,
     Future<void> Function(String path)? beforeAsideDelete,
     Future<void> Function(String path)? beforeFinalCheck,
     Future<void> Function(String path)? afterFinalRead,

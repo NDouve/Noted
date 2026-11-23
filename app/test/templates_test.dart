@@ -52,9 +52,9 @@ class _FailingStore extends PageStore {
   void Function(int n, NotedPage page)? onSaveNew;
 
   @override
-  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish}) {
+  Future<bool> saveNew(NotedPage page, {Future<void> Function()? beforePublish, void Function(FileStamp?)? onPublishStamp}) {
     onSaveNew?.call(count++, page);
-    return super.saveNew(page, beforePublish: beforePublish);
+    return super.saveNew(page, beforePublish: beforePublish, onPublishStamp: onPublishStamp);
   }
 }
 
