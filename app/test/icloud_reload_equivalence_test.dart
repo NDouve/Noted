@@ -41,7 +41,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart' show buildModules;
 import 'package:noted/src/app_settings.dart';
@@ -1099,30 +1098,13 @@ class _Sim {
     // may still list a row for a state that has passed (a leftover that was
     // consumed, a stub that arrived): its rows are only refreshed by a scan,
     // which is when a restart looks (the same as before this step).
-    // KNOWN GAP (reported, not fixed here): a conflict copy of a page whose
-    // file is only a stub is taken for the page itself by the scan; when the
-    // file arrives the live notebook lists "duplicate page id" and no page
-    // until a restart. Pages it lists only as such a duplicate are left out of
-    // the comparison, and printed.
-    final dupIds = {
-      for (final l in live)
-        if (RegExp(r'^unreadable (\S+)\.canvas duplicate page id \1$')
-                .firstMatch(l)
-            case final m?)
-          m[1]!,
-    };
-    if (dupIds.isNotEmpty) {
-      debugPrint(
-        'the live notebook lists a duplicate for ${dupIds.join(', ')}',
-      );
-    }
     final livePages = [
       for (final l in live)
-        if (l.startsWith('page ') && !dupIds.contains(l.split(' ')[1])) l,
+        if (l.startsWith('page ')) l,
     ];
     final reloadedPages = [
       for (final l in reloaded)
-        if (l.startsWith('page ') && !dupIds.contains(l.split(' ')[1])) l,
+        if (l.startsWith('page ')) l,
     ];
     if (livePages.join('\n') != reloadedPages.join('\n')) {
       problems.add(
@@ -1147,27 +1129,17 @@ class _Sim {
         await nb.open(id);
         final b = boxesOf(nb);
         final a = liveBoxes[id];
-        // The live notebook may lag a restart for a page it still lists a row
-        // for (rows for this page's own files only: `<id>.` and `<id>-`): a copy
-        // whose merge was refused (`versionsPending`), or a copy or page it
-        // took for a duplicate when it last scanned. A restart looks again and
-        // merges them, so the reload has every box the live page has, and
-        // more. Rows are refreshed by a scan only; this is noted in the report.
-        final rows = live.where(
+        // The live notebook may lag a restart for a copy whose merge was
+        // refused (`Could not be merged … versionsPending`, tried again at the
+        // next scan): a restart merges it, so the reload has every box the live
+        // page has, and more. No other row excuses a difference.
+        final lagging = live.any(
           (l) =>
-              l.startsWith('unreadable $id-') ||
-              l.startsWith('unreadable $id.'),
+              (l.startsWith('unreadable $id-') ||
+                  l.startsWith('unreadable $id.')) &&
+              l.contains('Could not be merged') &&
+              l.contains('versionsPending'),
         );
-        final lagging = rows.isNotEmpty;
-        if (rows.any(
-          (l) =>
-              !(l.contains('Could not be merged') &&
-                  l.contains('versionsPending')),
-        )) {
-          debugPrint(
-            'page $id: the live notebook lags a restart, with rows: ${rows.join('; ')}',
-          );
-        }
         final same = a != null && a.length == b.length && a.containsAll(b);
         final superset = a != null && b.containsAll(a);
         if (a != null && !(lagging ? superset : same)) {
