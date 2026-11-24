@@ -105,6 +105,19 @@ void main() {
     expect(landed.single.refused, isTrue);
   });
 
+  test('the row of a file whose folder was deleted clears', () async {
+    final f = await w.picked();
+    final file = w.write('Sub/p1.canvas', 'current');
+    w.write('Sub/p1-icloud-${contentHash(b('theirs')).substring(0, 8)}.canvas', 'x');
+    w.write('Sub/p1-icloud-${contentHash(b('theirs')).substring(0, 16)}.canvas', 'y');
+    w.channel.addVersion(file.path, b('theirs'));
+    await f.landVersions([file.path]);
+    expect(f.versionIssues, hasLength(1));
+    Directory(w.path('Sub')).deleteSync(recursive: true);
+    await f.landVersions([file.path]);
+    expect(f.versionIssues, isEmpty);
+  });
+
   test('a file that is not downloaded keeps its row', () async {
     final f = await w.picked();
     final file = w.write('p1.canvas', 'current');

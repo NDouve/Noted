@@ -965,6 +965,7 @@ class IcloudFolders extends ChangeNotifier {
   bool _hasTempFor(String path) {
     final f = File(path);
     final prefix = '.${f.uri.pathSegments.last}.noted-version-';
+    if (!f.parent.existsSync()) return false; // the folder is gone: no temp is there
     try {
       for (final e in f.parent.listSync(followLinks: false)) {
         final n = e.path.split(RegExp(r'[\\/]')).last;
