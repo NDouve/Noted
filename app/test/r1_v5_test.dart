@@ -5,6 +5,7 @@
 // R-1 v5: failed saves never lose edits (runs/designs/2026-11-05-r1-v5.md).
 
 import 'dart:async';
+import 'dart:ffi' show Abi;
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -12,6 +13,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/src/storage/dataless.dart' show debugDatalessAbi, debugResetDataless;
 
 import 'support/trouble_world.dart';
 
@@ -830,6 +832,71 @@ void main() {
       );
     },
   );
+
+  group('a page file that is not downloaded (R5.5)', () {
+    String slashes(String s) => s.replaceAll(r'\', '/');
+    test('the save asks for the download, keeps the edit in recovery and says why; Retry lands it', () async {
+      final nb = w.make();
+      final asked = <String>[];
+      nb.requestDownload = asked.add;
+      final id = await w.editedPage(nb);
+      final path = w.pageFile(id).path;
+      w.storeFor(w.pages).failWith = StorageBusy(StorageBusyReason.dataless, [path]);
+      await nb.flush();
+      expect(asked, [path]);
+      expect(nb.trouble.kind, TroubleKind.failing);
+      expect(nb.trouble.reason, 'the page file is still downloading');
+      expect(nb.current!.readOnly, isFalse);
+      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      w.storeFor(w.pages).failWith = null;
+      await nb.retrySave();
+      expect(nb.trouble.isTrouble, isFalse);
+    });
+
+    test('a stub-only open page is not read or taken for gone: the save keeps the edit and says it is downloading', () async {
+      final nb = w.make();
+      final asked = <String>[];
+      nb.requestDownload = asked.add;
+      final id = await w.editedPage(nb);
+      final file = w.pageFile(id);
+      file.deleteSync();
+      File('${w.pages.path}/.$id.canvas.icloud').writeAsStringSync('');
+      await nb.flush();
+      expect(nb.trouble.kind, TroubleKind.failing);
+      expect(nb.trouble.reason, 'the page file is still downloading');
+      expect(asked.map(slashes), contains(slashes(file.path)));
+      expect(nb.current!.readOnly, isFalse);
+      expect(nb.currentId, id);
+      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      expect(file.existsSync(), isFalse, reason: 'nothing was written over the stub');
+    });
+
+    test('an open page that is not downloaded is never read, and its edit is kept', () async {
+      final nb = w.make();
+      final asked = <String>[];
+      nb.requestDownload = asked.add;
+      final id = await w.editedPage(nb);
+      final before = w.pageFile(id).readAsStringSync();
+      final reads = <String>[];
+      PageStore.fileReadObserver = reads.add;
+      addTearDown(() {
+        PageStore.fileReadObserver = null;
+        debugDatalessAbi = null;
+        debugResetDataless();
+      });
+      debugDatalessAbi = Abi.macosArm64; // no lstat here: every existing file fails closed
+      debugResetDataless();
+      await nb.flush();
+      expect(reads, isEmpty, reason: 'nothing was read');
+      expect(nb.trouble.kind, TroubleKind.failing);
+      expect(nb.trouble.reason, 'the page file is still downloading');
+      expect(asked.map(slashes), contains(slashes(w.pageFile(id).path)));
+      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      debugDatalessAbi = null;
+      debugResetDataless();
+      expect(w.pageFile(id).readAsStringSync(), before);
+    }, skip: (Platform.isMacOS || Platform.isIOS) ? 'a real lstat exists: nothing fails closed' : null);
+  });
 
   group('quitting', () {
     test('a save stuck on the drive does not hold up quitting; the edits are in recovery', () async {

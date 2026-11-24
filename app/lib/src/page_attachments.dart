@@ -376,6 +376,12 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     VerifiedAttachment? first;
     for (final d in [folder, if (!pageFolderOnly) ?recoveryFolder]) {
       final f = _in(d, fileName);
+      // A file that is not downloaded (or only its `.<name>.icloud` stub) is
+      // present, never read and never absent: still syncing.
+      if (isDataless(f.path)) {
+        first ??= const VerifiedAttachment(AttachmentState.syncing);
+        continue;
+      }
       var type = FileSystemEntity.typeSync(f.path, followLinks: false);
       // While the folder can't be written a missing file shows as Still
       // syncing: its kept copy is not put back.
@@ -486,6 +492,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     for (final d in [folder, ?recoveryFolder]) {
       final f = _in(d, fileName);
       try {
+        if (isDataless(f.path)) continue; // never read: it would download
         if (await f.exists()) return await f.readAsBytes();
       } on FileSystemException {
         // Being written or locked: try the next place.
@@ -498,7 +505,10 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
   bool exists(String fileName) =>
       isAttachmentFileName(fileName) &&
       (_in(folder, fileName).existsSync() ||
-          (recoveryFolder != null && _in(recoveryFolder!, fileName).existsSync()));
+          hasStub(_in(folder, fileName).path) ||
+          (recoveryFolder != null &&
+              (_in(recoveryFolder!, fileName).existsSync() ||
+                  hasStub(_in(recoveryFolder!, fileName).path))));
 
   @override
   void notify(String message) => onNotice?.call(message);
@@ -528,6 +538,10 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
       var sawSyncing = false;
       for (final d in [folder, ?recoveryFolder]) {
         final f = _in(d, fileName);
+        if (isDataless(f.path)) {
+          sawSyncing = true; // not downloaded yet: never read
+          continue;
+        }
         if (FileSystemEntity.typeSync(f.path, followLinks: false) != FileSystemEntityType.file) continue;
         final c = await checkAttachmentFile(f, hash, 0);
         if (c.state == AttachmentState.ok) {

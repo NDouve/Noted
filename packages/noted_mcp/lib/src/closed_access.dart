@@ -470,7 +470,7 @@ final class ClosedAccess {
       final List<int> bytes;
       try {
         if (beforeRead != null) await beforeRead!(attempt);
-        final read = await (await LockIdentity.of(dataDir)).readBytes(page.path!);
+        final read = await NotedLibrary.readSource(await LockIdentity.of(dataDir), page.path!);
         if (read == null) return _Refusal(AiLinkCode.noBox, page);
         bytes = read;
       } on Object {
@@ -608,12 +608,12 @@ final class ClosedAccess {
     if (s == null) return false;
     final identity = await LockIdentity.of(dataDir);
     for (final e in s.files.entries.toList()) {
-      final now = await identity.readBytes(e.key);
+      final now = await NotedLibrary.readSource(identity, e.key);
       if (expired()) return null;
       if (!_sameBytes(now, e.value)) return false;
     }
     for (final e in s.binderUsable.entries.toList()) {
-      final now = NotedLibrary.usableBinder(await identity.readBytes(e.key), s.recordedIds[e.key]) != null;
+      final now = NotedLibrary.usableBinder(await NotedLibrary.readSource(identity, e.key), s.recordedIds[e.key]) != null;
       if (expired()) return null;
       if (now != e.value) return false;
     }
@@ -630,7 +630,7 @@ final class ClosedAccess {
         // known rare gap (a sync client restoring mtimes).
         final was = e.value.carried[name];
         if (was != null && e.value.stats[name] == sig) continue;
-        final bytes = await identity.readBytes(name);
+        final bytes = await NotedLibrary.readSource(identity, name);
         if (expired()) return null;
         // The lock file (or a link to it) is not a page file: it counts for nothing.
         final now = bytes == null && await identity.isLockFile(name)
@@ -659,7 +659,10 @@ final class ClosedAccess {
     try {
       if (!await dir.exists()) return (FolderState.absent, names);
       await for (final e in dir.list()) {
-        if (e is File && e.path.endsWith('.canvas')) names.add((e.path, await fileSignature(e.path)));
+        if (e is! File) continue;
+        // A page's stub is listed as the page, as the library lists it.
+        final path = e.path.endsWith('.canvas') ? e.path : NotedLibrary.stubbedPagePath(e.path);
+        if (path != null) names.add((path, await fileSignature(e.path)));
       }
     } on FileSystemException {
       return (FolderState.failed, const <(String, String)>[]);

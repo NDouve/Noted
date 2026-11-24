@@ -284,6 +284,21 @@ void main() {
     }
     expect(NotedTemplate.parse(text).id, isNotEmpty);
   });
+
+  test('a stub is listed as the template file, still downloading, and its name is taken', () async {
+    final dir = await Directory.systemTemp.createTemp('noted_tpl');
+    addTearDown(() => dir.delete(recursive: true));
+    final store = TemplateStore(Directory('${dir.path}/templates'));
+    final t = NotedTemplate.forPage(name: 'N', page: readPage(pageText('p1')));
+    Directory('${dir.path}/templates').createSync();
+    File('${dir.path}/templates/.${t.id}$templateExtension.icloud').writeAsStringSync('');
+    final entries = await store.scan();
+    final waiting = entries.whereType<UnreadableTemplate>().single;
+    expect(waiting.path, endsWith('${t.id}$templateExtension'));
+    expect(waiting.reason, stillDownloading);
+    await expectLater(store.save(t), throwsA(isA<FileSystemException>()));
+    expect(Directory('${dir.path}/templates').listSync().length, 1);
+  });
 }
 
 /// Refuses every call that moves a file, and runs the others.
