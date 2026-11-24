@@ -15,14 +15,18 @@ import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
     private val reader = Executors.newSingleThreadExecutor()
+    private var documentRender: DocumentRender? = null
 
     override fun onDestroy() {
+        documentRender?.detach()
+        documentRender = null
         reader.shutdown()
         super.onDestroy()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        documentRender = DocumentRender(flutterEngine.dartExecutor.binaryMessenger, cacheDir)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "noted/content")
             .setMethodCallHandler { call, result ->
                 if (call.method != "read") {
