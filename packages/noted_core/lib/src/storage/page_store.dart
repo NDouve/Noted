@@ -127,6 +127,8 @@ class PageStore {
     final entries = <PageEntry>[];
     final read = <String, (String, NotedPage)>{}; // by file name
     final stamped = <String, FileStamp>{}; // by path
+    // File names that are there but not downloaded (a stub is the file).
+    final datalessNames = <String>{};
     await for (final listed in directory.list()) {
       // A `.<name>.icloud` stub is listed as `<name>`: present, not downloaded.
       // (With the file itself listed too, the file speaks for itself.)
@@ -148,6 +150,7 @@ class PageStore {
       if (f is! File || !f.path.endsWith(extension)) continue;
       // Never read a file that is not downloaded (a read would download it).
       if (stubbed || isDataless(f.path)) {
+        datalessNames.add(_pathKeyName(_name(f.path)));
         entries.add(UnreadablePage(f.path, stillDownloading));
         continue;
       }
@@ -223,6 +226,16 @@ class PageStore {
       ...read.entries.where((e) => !chosen(e)),
     ]) {
       final (path, page) = e.value;
+      // Named as a copy of a file that is there but not downloaded: that file
+      // is the original (a stub is the file, R5.5), so this is a copy, never
+      // the page, and it waits for the original. A copy of a copy waits for the
+      // end of its chain: every candidate name is looked at, before the copy is
+      // classified against another copy that is readable.
+      if (!chosen(e) &&
+          conflictCopyOriginalNames(e.key, extension: extension).any((c) => datalessNames.contains(_pathKeyName(c)))) {
+        entries.add(UnreadablePage(path, copyOfDatalessReason));
+        continue;
+      }
       if (copyOf.containsKey(e.key)) {
         entries.add(ConflictCopyPage(path, page.meta, read[rootOf(e.key)]!.$1));
         continue;
@@ -272,6 +285,23 @@ class PageStore {
     // Prefer the end of a chain of copies.
     return await findConflictOriginal(firstOk, copy, preferred: preferred) ?? firstOk;
   }
+
+  /// Why a conflict copy is listed as unreadable while the file it is a copy of
+  /// is not downloaded.
+  static const String copyOfDatalessReason = 'A copy; its page is still downloading';
+
+  /// Whether a file named as a conflict copy of [copyPath]'s name is in the
+  /// folder but not downloaded (a stub, or a dataless file). Such a file is the
+  /// original: the copy is not a page of its own.
+  static bool hasDatalessOriginal(String copyPath) {
+    final dir = File(copyPath).parent.path;
+    for (final cand in conflictCopyOriginalNames(_name(copyPath))) {
+      if (isDataless('$dir${Platform.pathSeparator}$cand')) return true;
+    }
+    return false;
+  }
+
+  static String _pathKeyName(String name) => Platform.isWindows ? name.toLowerCase() : name;
 
   static String _name(String path) => path.split(RegExp(r'[\\/]')).last;
 

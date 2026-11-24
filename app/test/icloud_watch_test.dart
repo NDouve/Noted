@@ -146,6 +146,148 @@ void main() {
       expect(nb.unreadable.where((u) => u.reason == 'Still downloading'), isEmpty);
     });
 
+    test('copies beside a page that is only a stub are copies of it: the page stays listed, no duplicate, and the copies merge when it arrives', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      await externalPage('gone1');
+      final nb = w.notebook(f);
+      await nb.load();
+      expect(ids(nb), contains('gone1'));
+      final file = File(w.path('gone1.canvas'));
+      final text = file.readAsStringSync();
+      final box = BoxRecord.create(
+        id: '00000000000000c1',
+        typeId: 'x.unregistered',
+        dataVersion: 1,
+        bounds: const Bounds(300, 300, 10, 10),
+        data: const RawJson.trusted('{"k":1}'),
+        snapshotText: 'from the copy',
+        rev: 'r',
+      );
+      final copyText = writePage(readPage(text).insertNode(box));
+      // The file is evicted; its copies (a replace's leftover that was kept, a landed version) are there.
+      file.deleteSync();
+      File(w.path('.gone1.canvas.icloud')).writeAsStringSync('');
+      final copies = [
+        File(w.path('gone1-recovered-0a1b2c3d.canvas'))..writeAsStringSync(copyText),
+        File(w.path('gone1-icloud-4d5e6f70.canvas'))..writeAsStringSync(copyText),
+      ];
+      for (final c in copies) {
+        await w.channel.emit('changed', {'path': c.path});
+        await nb.checkFile(c.path);
+      }
+      expect(ids(nb), contains('gone1'), reason: 'the page is not replaced by a copy, nor dropped');
+      expect(nb.unreadable.where((u) => u.reason.startsWith('duplicate page id')), isEmpty);
+      expect(nb.unreadable.where((u) => u.reason == PageStore.copyOfDatalessReason), hasLength(2));
+      expect(copies.every((c) => c.existsSync()), isTrue, reason: 'nothing is merged into a file that is not there');
+      // The file arrives: the copies merge into it and go.
+      File(w.path('.gone1.canvas.icloud')).deleteSync();
+      file.writeAsStringSync(text);
+      await w.channel.emit('changed', {'path': file.path});
+      await waitFor(() => copies.every((c) => !c.existsSync()), what: 'the copies to merge');
+      expect(ids(nb), contains('gone1'));
+      await waitFor(() => nb.unreadable.isEmpty, what: 'the rows of the merged copies to go');
+      expect(nb.unreadable, isEmpty);
+      expect(readPage(file.readAsStringSync()).node(box.id), isNotNull, reason: 'the copy\'s box is on the page');
+    });
+
+    test('a copy of a copy beside a stub-only page waits too, and both copies\' edits land when the page arrives', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      await externalPage('gone1');
+      final nb = w.notebook(f);
+      await nb.load();
+      final file = File(w.path('gone1.canvas'));
+      final text = file.readAsStringSync();
+      BoxRecord box(String id, String s) => BoxRecord.create(
+        id: id,
+        typeId: 'x.unregistered',
+        dataVersion: 1,
+        bounds: const Bounds(300, 300, 10, 10),
+        data: const RawJson.trusted('{"k":1}'),
+        snapshotText: s,
+        rev: 'r',
+      );
+      file.deleteSync();
+      File(w.path('.gone1.canvas.icloud')).writeAsStringSync('');
+      final copies = [
+        File(w.path('gone1-icloud-aaaaaaaa.canvas'))..writeAsStringSync(writePage(readPage(text).insertNode(box('00000000000000f1', 'edit one')))),
+        File(w.path('gone1-icloud-aaaaaaaa 2.canvas'))..writeAsStringSync(writePage(readPage(text).insertNode(box('00000000000000f2', 'edit two')))),
+      ];
+      for (final c in copies) {
+        await w.channel.emit('changed', {'path': c.path});
+        await nb.checkFile(c.path);
+      }
+      expect(nb.unreadable.where((u) => u.reason == PageStore.copyOfDatalessReason), hasLength(2), reason: 'both wait, none is "could not be merged"');
+      expect(nb.unreadable.where((u) => u.reason.contains('Could not be merged')), isEmpty);
+      File(w.path('.gone1.canvas.icloud')).deleteSync();
+      file.writeAsStringSync(text);
+      await w.channel.emit('changed', {'path': file.path});
+      await waitFor(() => copies.every((c) => !c.existsSync()), what: 'both copies to merge');
+      final page = readPage(file.readAsStringSync());
+      expect(page.node('00000000000000f1'), isNotNull);
+      expect(page.node('00000000000000f2'), isNotNull);
+      await waitFor(() => nb.unreadable.isEmpty, what: 'the rows of the merged copies to go');
+      expect(nb.unreadable, isEmpty);
+      expect(ids(nb), contains('gone1'));
+    });
+
+    test('a page that lives at a copy-shaped name keeps its file when a stub of the original name appears', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final page = NotedPage.create(PageMeta.create(id: 'gone1', title: 'Page gone1', order: 5));
+      final own = File(w.path('gone1-icloud-0a1b2c3d.canvas'))..writeAsStringSync(writePage(page));
+      final nb = w.notebook(f);
+      await nb.load();
+      expect(ids(nb), contains('gone1'), reason: 'alone, the copy-shaped file is the page');
+      File(w.path('.gone1.canvas.icloud')).writeAsStringSync('');
+      // The file changes (another device edits it), so it is looked at again.
+      own.writeAsStringSync(writePage(page.insertNode(BoxRecord.create(id: '00000000000000e1', typeId: 'x.unregistered', dataVersion: 1, bounds: const Bounds(10, 10, 10, 10), data: const RawJson.trusted('{"k":1}'), snapshotText: 'edited', rev: 'r'))));
+      await w.channel.emit('changed', {'path': own.path});
+      await nb.checkFile(own.path);
+      expect(ids(nb), contains('gone1'));
+      expect(nb.unreadable.where((u) => u.reason == PageStore.copyOfDatalessReason), isEmpty);
+      expect(own.existsSync(), isTrue);
+    });
+
+    test('an edit kept for a page that is still a stub at the next launch waits (not "changed on every attempt") and lands when the page arrives', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final nb = w.notebook(f);
+      await nb.load();
+      final id = nb.currentId!;
+      await nb.flush();
+      final file = File(w.path('$id.canvas'));
+      final text = file.readAsStringSync();
+      final box = BoxRecord.create(
+        id: '00000000000000d1',
+        typeId: 'x.unregistered',
+        dataVersion: 1,
+        bounds: const Bounds(300, 300, 10, 10),
+        data: const RawJson.trusted('{"k":1}'),
+        snapshotText: 'kept edit',
+        rev: 'r',
+      );
+      nb.current!.insertBox(box);
+      file.deleteSync();
+      File(w.path('.$id.canvas.icloud')).writeAsStringSync('');
+      await nb.flush(); // its save finds a stub: the edit is kept in recovery
+      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      // A new launch, the page still a stub.
+      nb.dispose();
+      w.notebooks.remove(nb);
+      f.dispose();
+      final g = await w.relaunched(platform: CloudPlatform.ios);
+      final nb2 = w.notebook(g);
+      await nb2.load();
+      await nb2.discoveryIdle;
+      expect((await nb2.pendingRecovery()).entries, hasLength(1), reason: 'the entry stays');
+      expect(nb2.recoveryProblems, isEmpty, reason: 'waiting is not a failure');
+      expect(w.channel.callsOf('startDownloading').map((c) => '${c.args['path']}'.replaceAll(r'\', '/')), contains(file.path.replaceAll(r'\', '/')));
+      // The page arrives: the kept edit lands without another launch.
+      File(w.path('.$id.canvas.icloud')).deleteSync();
+      file.writeAsStringSync(text);
+      await w.channel.emit('changed', {'path': file.path});
+      await waitFor(() => file.readAsStringSync().contains('kept edit'), what: 'the kept edit to land');
+for (var i = 0; i < 200 && (await nb2.pendingRecovery()).entries.isNotEmpty; i++) {        await Future<void>.delayed(const Duration(milliseconds: 25));      }      expect((await nb2.pendingRecovery()).entries, isEmpty, reason: 'and its entry is retired');
+    });
+
     test('an autosave on a dataless page requests the download, keeps the edit in recovery and saves on the change event', () async {
       final f = await w.picked(platform: CloudPlatform.ios);
       final nb = w.notebook(f);

@@ -249,6 +249,45 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # The Swift logic of the iCloud driver (hold and release order, cancel,
+      # the pending-version refusal, version copying and resolving) is tested
+      # in macos/RunnerTests with XCTest. After the uploads, so a failure here
+      # never costs an artifact. The debug build makes the Flutter files and
+      # Pods the test scheme needs; the signing identity is ad hoc, as the
+      # project's own default.
+      - name: Native tests (macOS RunnerTests)
+        working-directory: app
+        run: |
+          flutter build macos --debug --dart-define=NOTED_MS_CLIENT_ID=${{ vars.NOTED_MS_CLIENT_ID }}
+          xcodebuild test \
+            -workspace macos/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            CODE_SIGN_IDENTITY=- \
+            -resultBundlePath "$RUNNER_TEMP/RunnerTests.xcresult"
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: RunnerTests-xcresult
+          path: ${{ runner.temp }}/RunnerTests.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # ios/RunnerTests is the same file with other imports; it is compiled
+      # here (not run) so that it can't rot unseen.
+      - name: Compile the iOS RunnerTests
+        working-directory: app
+        run: |
+          flutter build ios --simulator --debug --no-codesign --dart-define=NOTED_MS_CLIENT_ID=${{ vars.NOTED_MS_CLIENT_ID }}
+          xcodebuild build-for-testing \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO
+
   macos-build-intel:
     name: macOS release build (Intel fallback)
     # Runs alongside the Apple Silicon job rather than after it: GitHub

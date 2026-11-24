@@ -11182,6 +11182,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (moved != null) return moved;
     final path = st.pathFor(id);
     final file = File(path);
+    // A page that is not downloaded (a stub is the file, R5.5) is neither
+    // changed nor gone: the replay waits for its change event, the entry stays,
+    // and the download is asked for.
+    if (isDataless(path)) {
+      requestDownload?.call(path);
+      return false;
+    }
     // Landed before and not settled yet (a read that kept failing, a write that
     // threw): not merged again, only settled.
     final landed = _landedText[e.gen];
@@ -12527,6 +12534,30 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!_disposed && list.any((p) => p.contains('.assets'))) _attachments?.filesChanged();
   }
 
+  // The copies listed as waiting for the page file [path] (it was not
+  // downloaded when they were looked at) are looked at again now it is there.
+  Future<void> _recheckCopiesWaitingFor(String path) async {
+    final name = path.split(RegExp(r'[\/]')).last;
+    final lists = [
+      _unreadable,
+      for (final f in _folders.values) f.unreadable,
+      for (final b in _binders.values) b.unreadable,
+    ];
+    final waiting = <String>[
+      for (final list in lists)
+        for (final u in list)
+          if (u.reason == PageStore.copyOfDatalessReason &&
+              conflictCopyOriginalNames(u.path.split(RegExp(r'[\/]')).last).contains(name))
+            u.path,
+    ];
+    for (final p in waiting) {
+      if (_disposed) return;
+      _known.remove(_key(p));
+      _fileStamps.remove(_key(p));
+      await checkFile(p);
+    }
+  }
+
   Future<void> _fileChanged(String path) async {
     if (_isBinderCopyFile(path)) {
       await refreshBinderCopies(File(path).parent.path);
@@ -12540,6 +12571,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final key = _key(path);
     final id = _pathId[key];
     await checkFile(path);
+    // The file is there: the copies that waited for it as their original are
+    // looked at again.
+    if (!_disposed && !isDataless(path)) await _recheckCopiesWaitingFor(path);
     if (_disposed || id == null) return;
     if (await FileSystemEntity.type(path) != FileSystemEntityType.notFound) return;
     // The file is gone: the files listed as duplicates of its page are looked
@@ -13521,6 +13555,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       copy = readPage(text);
     } on PageFormatException {
       return false;
+    }
+    // Named as a copy of a file that is there but not downloaded, at any end of
+    // its chain of copies: that file is the original (R5.5), so this is a copy
+    // that waits for it, not a page, and not merged through the stub's name. The
+    // page's own file (adopted, or listed for it) is never a copy.
+    final own = _adoptedFiles[copy.id];
+    final isOwn = (own != null && _key(own) == key) || _pathId[key] == copy.id;
+    if (!isOwn && PageStore.hasDatalessOriginal(path)) {
+      _known.remove(key);
+      _knownUnreadable(loc, key, path, PageStore.copyOfDatalessReason);
+      return true;
     }
     var originalPath = await PageStore.findConflictOriginal(path, copy, preferred: _adoptedFiles[copy.id]);
     if (originalPath == null) return false;
@@ -14652,6 +14697,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await filesChanged(paths);
       if (_disposed) return;
       _requestListedDownloads();
+      // A page file that was not downloaded is here: what was kept for it
+      // waited for this (R5.5) and is replayed now.
+      for (final p in paths) {
+        final loc = _locationOf(p);
+        if (loc != null && p.endsWith(PageStore.extension) && !isDataless(p)) {
+          unawaited(_recoverPending(onlyLoc: loc));
+          break;
+        }
+      }
       // The open page whose save found its file not downloaded saves now that
       // it came (R5.5): its edit is in recovery, and the retry lands it.
       final id = _current?.page.id;
