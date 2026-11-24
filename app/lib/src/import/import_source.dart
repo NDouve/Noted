@@ -12,7 +12,7 @@ final class ImportSource {
 
   /// A file from a drop or the open dialog.
   factory ImportSource.fromFile(XFile f) =>
-      ImportSource(f.name.split(RegExp(r'[\/]')).last, length: f.length, read: f.readAsBytes);
+      ImportSource(f.name.split(RegExp(r'[\\/]')).last, length: f.length, read: f.readAsBytes);
 
   /// The name the user sees, with its extension.
   final String name;

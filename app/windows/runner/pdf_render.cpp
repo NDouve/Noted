@@ -137,10 +137,6 @@ void Open(const std::shared_ptr<PdfRender::State>& state,
     writer.DetachStream();
     stream.Seek(0);
     PdfDocument doc = PdfDocument::LoadFromStreamAsync(stream).get();
-    if (doc.IsPasswordProtected()) {
-      state->PostError(result, "password", "The document needs a password.");
-      return;
-    }
     const int64_t count = doc.PageCount();
     if (count > kMaxPageCount) {
       state->PostError(result, "invalid", "Too many pages.");

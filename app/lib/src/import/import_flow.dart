@@ -25,7 +25,7 @@ export 'import_source.dart';
 /// renderer exists (Windows, macOS, iOS, Android; not Linux), a sheet as an
 /// image everywhere. Tests change it.
 ImportCapabilities importCapabilities = ImportCapabilities(
-  pdfPages: Platform.isWindows || Platform.isMacOS || Platform.isIOS || Platform.isAndroid,
+  pdfPages: !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isIOS || Platform.isAndroid),
   sheetImages: true,
 );
 
