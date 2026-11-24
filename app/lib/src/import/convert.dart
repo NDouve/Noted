@@ -128,11 +128,12 @@ ConvertedSheets convertToSheetsNow(ImportFormat format, String name, Uint8List b
       if (rowsCut.isNotEmpty) 'rows past ${limits.rows}${where(rowsCut)}',
       if (colsCut.isNotEmpty) 'columns past ${limits.columns}${where(colsCut)}',
     ];
+    final long = all.any((s) => s.rows.any((r) => r.any((c) => c.length * 3 > noteCellMaxBytes && utf8.encode(c).length > noteCellMaxBytes)));
     final sheets = [for (final s in all) if (s.rows.isNotEmpty) s];
     if (sheets.isEmpty) throw const ImportException('has nothing to import');
     return ConvertedSheets(
       sheets: sheets,
-      notices: [if (parts.isNotEmpty) '"$name": left out ${parts.join('; ')}.'],
+      notices: [if (parts.isNotEmpty) '"$name": left out ${parts.join('; ')}.', if (long) '"$name": long cells were shortened.'],
     );
   } on ImportException catch (e) {
     return ConvertedSheets(error: e.reason);

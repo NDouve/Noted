@@ -164,7 +164,11 @@ Future<RenderedImages> renderSheetImages(
   final files = <IncomingFile>[];
   var cut = false, cellsCut = false;
   for (final sheet in read.sheets) {
-    final plan = planSheet(sheet);
+    final plan = await planSheet(sheet, holds: () => target.holds);
+    if (plan == null) {
+      target.store.notify(stopText());
+      return const RenderedImages([], stopped: true);
+    }
     cellsCut = cellsCut || plan.cut;
     for (final (from, to) in plan.chunks) {
       if (files.length >= maxSheetImages) {

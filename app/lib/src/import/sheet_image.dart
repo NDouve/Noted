@@ -38,6 +38,12 @@ TextPainter _paint(String text, {bool bold = false, int? maxLines, double maxWid
   ellipsis: maxLines == null ? null : '…',
 )..layout(maxWidth: maxWidth);
 
+/// The most characters of one cell that are laid out; the readers already
+/// keep at most a few KB, this is a second guard.
+const int sheetCellChars = 10000;
+
+String shown(String text) => text.isEmpty ? ' ' : (text.length > sheetCellChars ? text.substring(0, sheetCellChars) : text);
+
 /// How a sheet is drawn: the column widths, the height of each row, the
 /// chunks (each an image) and whether a cell had to be cut.
 final class SheetPlan {
@@ -65,7 +71,7 @@ final class SheetPlan {
 /// Measures [sheet] and splits it into chunks, each at most 100 rows and 2,000
 /// cells and short enough for one image. A cell shows its whole text; only a
 /// row taller than an image is cut (then [SheetPlan.cut] is true).
-SheetPlan planSheet(SheetData sheet) {
+Future<SheetPlan?> planSheet(SheetData sheet, {bool Function()? holds}) async {
   final rows = sheet.rows;
   final cols = rows.isEmpty ? 0 : rows.first.length;
   final title = sheet.name == null || sheet.name!.isEmpty ? null : _paint(sheet.name!, bold: true, maxWidth: 1000);
@@ -76,13 +82,21 @@ SheetPlan planSheet(SheetData sheet) {
   final widths = List<double>.filled(cols, 24);
   final heights = <double>[];
   final maxLines = <int?>[];
-  var cut = false;
+  var cut = false, cells = 0;
   for (var r = 0; r < rows.length; r++) {
+    // Yield now and then, so a big sheet doesn't hold the UI; stop if the target went.
+    if (cells >= 2000) {
+      cells = 0;
+      await Future<void>.delayed(Duration.zero);
+      if (holds != null && !holds()) return null;
+    }
+    cells += cols;
     var h = 0.0, line = 0.0;
     final painters = <TextPainter>[];
     for (var c = 0; c < cols; c++) {
-      final t = _paint(rows[r][c].isEmpty ? ' ' : rows[r][c], bold: r == 0);
+      final t = _paint(shown(rows[r][c]), bold: r == 0);
       painters.add(t);
+      if (rows[r][c].length > sheetCellChars) cut = true;
       if (rows[r][c].isNotEmpty) widths[c] = math.max(widths[c], t.width);
       h = math.max(h, t.height);
       line = t.preferredLineHeight;
@@ -126,7 +140,7 @@ Future<Uint8List> drawSheetChunk(SheetData sheet, SheetPlan plan, int from, int 
   for (var r = 0; r < rows.length; r++) {
     painters.add([
       for (var c = 0; c < cols; c++)
-        _paint(rows[r][c].isEmpty ? ' ' : rows[r][c], bold: from + r == 0, maxLines: plan.rowMaxLines[from + r]),
+        _paint(shown(rows[r][c]), bold: from + r == 0, maxLines: plan.rowMaxLines[from + r]),
     ]);
   }
   final title = sheet.name == null || sheet.name!.isEmpty ? null : _paint(sheet.name!, bold: true, maxWidth: 1000);

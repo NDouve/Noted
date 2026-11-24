@@ -403,7 +403,7 @@ void main() {
     final sheet = SheetData('Wide', [
       for (var r = 0; r < 40; r++) [for (var c = 0; c < 50; c++) '$long $r $c'],
     ]);
-    final plan = planSheet(sheet);
+    final plan = (await planSheet(sheet))!;
     expect(plan.cut, isFalse);
     final png = await t.runAsync(() => drawSheetChunk(sheet, plan, 0, 40));
     final s = pngSize(png!)!;
@@ -414,8 +414,8 @@ void main() {
   });
 
   testWidgets('a cell shows all its lines: the row grows to fit', (t) async {
-    final one = planSheet(SheetData(null, [['a', 'b']]));
-    final five = planSheet(SheetData(null, [['a\nb\nc\nd\ne', 'b']]));
+    final one = (await planSheet(SheetData(null, [['a', 'b']])))!;
+    final five = (await planSheet(SheetData(null, [['a\nb\nc\nd\ne', 'b']])))!;
     expect(five.cut, isFalse);
     final line = one.rowHeights.single - 2 * sheetPadY;
     expect(five.rowHeights.single, closeTo(5 * line + 2 * sheetPadY, 0.01));
@@ -423,17 +423,29 @@ void main() {
 
   testWidgets('a row taller than an image is cut and named; the sheet name widens the image', (t) async {
     final tall = SheetData(null, [[List.filled(400, 'x').join('\n')]]);
-    final plan = planSheet(tall);
+    final plan = (await planSheet(tall))!;
     expect(plan.cut, isTrue);
     expect(plan.rowHeights.single, lessThanOrEqualTo(maxImageSide));
     final png = await t.runAsync(() => drawSheetChunk(tall, plan, 0, 1));
     expect(pngSize(png!)!.height, lessThanOrEqualTo(maxImageSide));
     // The title is wider than the table.
     final named = SheetData('Quarterly Revenue Report for the whole year', [['1']]);
-    final p = planSheet(named);
+    final p = (await planSheet(named))!;
     expect(p.titleWidth, greaterThan(p.widths.single + 16));
     final img = await t.runAsync(() => drawSheetChunk(named, p, 0, 1));
     expect(pngSize(img!)!.width, greaterThanOrEqualTo((p.titleWidth + 24).floor()));
+  });
+
+  testWidgets('a 1 MB cell is cut before it is laid out', (t) async {
+    final huge = SheetData(null, [['x' * (1 << 20)]]);
+    final plan = (await planSheet(huge))!;
+    expect(plan.cut, isTrue);
+    expect(plan.rowHeights.single, lessThan(maxImageSide));
+    final w = await open(t);
+    await importFile(t, w, 'big.csv', Uint8List.fromList(utf8.encode('"${"y" * (1 << 20)}",b\n')), 'asImage');
+    expect(boxes(w), hasLength(1));
+    expect(notices, ['"big.csv": long cells were shortened.']);
+    await w.close(t);
   });
 
   testWidgets('a cell too long to show in full gives the notice', (t) async {
