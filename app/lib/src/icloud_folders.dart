@@ -1,0 +1,978 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+// App access to iCloud Drive folders and to the folders a macOS sandbox
+// forgets (cloud parity R5.3, R5.4, R5.9; step 5): the channel client and its
+// coordinator, `folder-access.json`, resolving bookmarks before the first
+// load, registering each iCloud root's coordinator, and the self-test.
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:noted_core/noted_core.dart';
+
+/// Which Apple (or other) platform the folder access runs on; a seam, so
+/// tests choose it.
+enum CloudPlatform { ios, macos, other }
+
+/// The platform this process runs on.
+CloudPlatform cloudPlatformOfThisDevice() =>
+    Platform.isIOS ? CloudPlatform.ios : (Platform.isMacOS ? CloudPlatform.macos : CloudPlatform.other);
+
+/// The name of `folder-access.json`.
+const String folderAccessFileName = 'folder-access.json';
+
+/// What the folder rows and the load say (the design's words).
+class CloudFolderTexts {
+  const CloudFolderTexts._();
+
+  static const String chooseAgain = 'Choose the folder again';
+  static const String anotherDevice = 'On another device';
+  static const String checking = 'Checking the iCloud folder…';
+  static const String busy = 'iCloud is busy; Noted will try again';
+  static const String unsafe = "This iCloud folder can't be written safely on this device.";
+  static const String notICloud = 'Choose a folder in iCloud Drive';
+}
+
+/// The folder picker refused the folder (iOS: it isn't in iCloud Drive).
+class CloudPickRefused implements Exception {
+  const CloudPickRefused(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// The channel `noted/cloud_folder`, as Dart sees it: calls out, events in.
+abstract interface class CloudFolderChannel {
+  /// Calls [method] with [args]; the platform's answer.
+  Future<Object?> invoke(String method, [Map<String, Object?>? args]);
+
+  /// Where the platform's calls to Dart (`go`, `pending`, `failed`,
+  /// `changed`) are delivered.
+  set onEvent(Future<void> Function(String method, Map<Object?, Object?> args)? handler);
+}
+
+/// The real channel.
+class MethodCloudFolderChannel implements CloudFolderChannel {
+  MethodCloudFolderChannel([MethodChannel? channel]) : _channel = channel ?? const MethodChannel('noted/cloud_folder');
+
+  final MethodChannel _channel;
+
+  @override
+  Future<Object?> invoke(String method, [Map<String, Object?>? args]) => _channel.invokeMethod<Object?>(method, args);
+
+  @override
+  set onEvent(Future<void> Function(String method, Map<Object?, Object?> args)? handler) {
+    if (handler == null) {
+      _channel.setMethodCallHandler(null);
+      return;
+    }
+    _channel.setMethodCallHandler((call) async {
+      final a = call.arguments;
+      await handler(call.method, a is Map ? a : const {});
+      return null;
+    });
+  }
+}
+
+// -- The coordinator (R5.4 protocol) -----------------------------------------
+
+enum _AnswerKind { go, pending, failed }
+
+class _Answer {
+  const _Answer(this.kind, [this.paths = const []]);
+
+  final _AnswerKind kind;
+  final List<String> paths;
+}
+
+/// The [StorageCoordinator] that asks the platform for each coordinated call.
+///
+/// Dart sends `coordinate(id, intents)` and waits up to [timeout] for `go`. On
+/// a timeout the id is abandoned, `cancel(id)` is sent and the call is a
+/// [StorageBusy]. A `go` for an abandoned or unknown id is answered by `done`
+/// at once and runs nothing. The body runs in `try`/`finally` and `done(id)`
+/// is sent in the `finally`. `pending` is a [StorageBusy] (`versionsPending`)
+/// and calls [onVersionsPending].
+class ChannelCoordinator implements StorageCoordinator {
+  ChannelCoordinator(this._channel, {this.timeout = coordinationStartTimeout});
+
+  final CloudFolderChannel _channel;
+
+  /// How long a call waits for `go`.
+  final Duration timeout;
+
+  /// Called with the paths of a `pending` answer. Step 6 fills it: it lands
+  /// the iCloud versions of those files and retries. It does nothing yet.
+  void Function(List<String> paths) onVersionsPending = _noLanding;
+
+  static void _noLanding(List<String> paths) {}
+
+  final Map<int, Completer<_Answer>> _waiting = {};
+  final Set<int> _abandoned = {};
+  int _nextId = 0;
+  Future<void> _ready = Future<void>.value();
+
+  /// The calls wait for [ready] (the `reset` at channel start).
+  set ready(Future<void> ready) => _ready = ready;
+
+  /// How many calls wait for an answer (for tests).
+  @visibleForTesting
+  int get waitingCount => _waiting.length;
+
+  @override
+  Future<T> coordinate<T>(CoordinatedWrite write, Future<T> Function() body) async {
+    try {
+      await _ready;
+    } on Object {
+      // A failed reset: the call itself says whether the channel works.
+    }
+    final paths = [for (final i in write.intents) i.path];
+    final id = ++_nextId;
+    final answer = Completer<_Answer>();
+    _waiting[id] = answer;
+    try {
+      await _channel.invoke('coordinate', {
+        'id': id,
+        'intents': [
+          for (final i in write.intents) {'path': i.path, 'kind': i.kind.name},
+        ],
+      });
+    } on Object catch (e) {
+      _waiting.remove(id);
+      throw StorageBusy(StorageBusyReason.coordination, paths, 'The folder is not available: $e');
+    }
+    final _Answer a;
+    try {
+      a = await answer.future.timeout(timeout);
+    } on TimeoutException {
+      if (_waiting.remove(id) != null) _abandoned.add(id);
+      unawaited(_send('cancel', id));
+      throw StorageBusy(StorageBusyReason.coordination, paths, 'The folder did not answer in time');
+    }
+    switch (a.kind) {
+      case _AnswerKind.go:
+        try {
+          return await body();
+        } finally {
+          await _send('done', id);
+        }
+      case _AnswerKind.pending:
+        final held = a.paths.isEmpty ? paths : a.paths;
+        try {
+          onVersionsPending(held);
+        } on Object catch (e) {
+          debugPrint('Noted: the landing could not be scheduled: $e');
+        }
+        throw StorageBusy(StorageBusyReason.versionsPending, held);
+      case _AnswerKind.failed:
+        throw StorageBusy(StorageBusyReason.coordination, paths, 'The folder could not be reached');
+    }
+  }
+
+  Future<void> _send(String method, int id) async {
+    try {
+      await _channel.invoke(method, {'id': id});
+    } on Object catch (e) {
+      debugPrint('Noted: $method($id) failed: $e');
+    }
+  }
+
+  /// An event from the platform: `go`, `pending` or `failed`.
+  Future<void> handleEvent(String method, Map<Object?, Object?> args) async {
+    final raw = args['id'];
+    if (raw is! int) return;
+    final waiting = _waiting.remove(raw);
+    switch (method) {
+      case 'go':
+        if (waiting == null) {
+          // Late or unknown: nothing runs, the hold is let go of at once.
+          _abandoned.remove(raw);
+          await _send('done', raw);
+        } else {
+          waiting.complete(const _Answer(_AnswerKind.go));
+        }
+      case 'pending':
+        final p = args['paths'];
+        waiting?.complete(_Answer(_AnswerKind.pending, [if (p is List) for (final x in p) '$x']));
+        _abandoned.remove(raw);
+      case 'failed':
+        waiting?.complete(const _Answer(_AnswerKind.failed));
+        _abandoned.remove(raw);
+    }
+  }
+}
+
+// -- folder-access.json --------------------------------------------------------
+
+/// A probe on record: written before the probe file is published.
+class CloudProbe {
+  const CloudProbe(this.name, this.nonce);
+
+  final String name;
+
+  /// 32 bytes, base64.
+  final String nonce;
+}
+
+/// One folder Noted keeps access to.
+class CloudFolderEntry {
+  const CloudFolderEntry(this.path, this.bookmark, [this.probe]);
+
+  /// The folder's real path.
+  final String path;
+
+  /// The bookmark, base64.
+  final String bookmark;
+  final CloudProbe? probe;
+
+  CloudFolderEntry copyWith({String? bookmark, CloudProbe? probe, bool clearProbe = false}) =>
+      CloudFolderEntry(path, bookmark ?? this.bookmark, clearProbe ? null : (probe ?? this.probe));
+
+  Map<String, Object?> toJson() => {
+    'path': path,
+    'bookmark': bookmark,
+    if (probe != null) 'probe': {'name': probe!.name, 'nonce': probe!.nonce},
+  };
+}
+
+/// What reading `folder-access.json` found.
+enum CloudListState {
+  /// Read (or not there yet).
+  ok,
+
+  /// It couldn't be read; its bytes were copied and a new list started. Its
+  /// folders show "Choose the folder again".
+  restarted,
+
+  /// It couldn't be read and couldn't be copied: nothing is written, and its
+  /// folders show "On another device".
+  unavailable,
+}
+
+/// Whether the access to an entry's folder is live on this device.
+enum CloudAccess { live, anotherDevice }
+
+/// What the self-test of an iCloud root says.
+enum CloudRootCheck { checking, passed, busy, unsafe }
+
+class _Read {
+  const _Read(this.entries, this.bytes, {this.refused = false});
+
+  final List<CloudFolderEntry> entries;
+
+  /// The bytes of the file read, or null when it isn't there.
+  final Uint8List? bytes;
+
+  /// The list can't be written (unreadable and not copied).
+  final bool refused;
+}
+
+final Random _random = Random.secure();
+
+String _hex(int bytes) => [for (var i = 0; i < bytes; i++) _random.nextInt(256).toRadixString(16).padLeft(2, '0')].join();
+
+final String _sep = Platform.pathSeparator;
+
+/// [path] with its nearest existing ancestor resolved and the missing tail
+/// appended; [path] itself when nothing resolves.
+String _realPath(String path) {
+  var cur = Directory(path).absolute.path;
+  final tail = <String>[];
+  for (var i = 0; i < 4096; i++) {
+    if (FileSystemEntity.typeSync(cur, followLinks: false) != FileSystemEntityType.notFound) {
+      try {
+        final real = Directory(cur).resolveSymbolicLinksSync();
+        return tail.isEmpty ? real : '${_trimEnd(real)}$_sep${tail.join(_sep)}';
+      } on FileSystemException {
+        // A dangling link: climb.
+      }
+    }
+    final parent = Directory(cur).parent.path;
+    if (parent == cur) break;
+    final t = _trimEnd(cur);
+    var cut = t.length - 1;
+    while (cut >= 0 && t[cut] != '/' && t[cut] != r'\') {
+      cut--;
+    }
+    tail.insert(0, t.substring(cut + 1));
+    cur = parent;
+  }
+  return path;
+}
+
+String _trimEnd(String p) {
+  var e = p.length;
+  while (e > 1 && (p[e - 1] == '/' || p[e - 1] == r'\') && !(e == 3 && p[1] == ':')) {
+    e--;
+  }
+  return p.substring(0, e);
+}
+
+// The comparison key of a path: real, separators as '/', no trailing one,
+// lower case (an extra match only retains or coordinates more).
+String _key(String path) => _trimEnd(_realPath(path)).replaceAll(r'\', '/').toLowerCase();
+
+bool _isUnderKey(String child, String parent) => child == parent || child.startsWith(parent.endsWith('/') ? parent : '$parent/');
+
+/// The app's access to the folders that need a bookmark or coordination.
+///
+/// One per process. [start] resets the channel and resolves every entry of
+/// `folder-access.json`; the first load waits for [ready] (resolved, registered
+/// and self-tested).
+class IcloudFolders extends ChangeNotifier {
+  IcloudFolders({
+    required CloudFolderChannel channel,
+    required this.file,
+    this.platform = CloudPlatform.other,
+    this.locks,
+    Duration coordinationTimeout = coordinationStartTimeout,
+    this.retryBusyAfter = const Duration(minutes: 1),
+    this.ownFolders = const [],
+    DateTime Function()? now,
+  }) : _channel = channel,
+       _now = now ?? DateTime.now {
+    coordinator = ChannelCoordinator(channel, timeout: coordinationTimeout);
+    channel.onEvent = _onEvent;
+  }
+
+  final CloudFolderChannel _channel;
+
+  /// `folder-access.json`, beside `settings.json`.
+  final File file;
+  final CloudPlatform platform;
+
+  /// The notebook's folder locks, so a probe doesn't overlap a notebook job.
+  final FolderLocks? locks;
+
+  /// The least time between two self-tests of a root that was busy.
+  final Duration retryBusyAfter;
+
+  /// Folders inside the app's own storage, which need no bookmark.
+  final List<String> ownFolders;
+  final DateTime Function() _now;
+
+  late final ChannelCoordinator coordinator;
+
+  /// Called when a root becomes writable (true) or read-only (false): the
+  /// notebook keeps `_untestedRoots` from it. Called with true too when the
+  /// root is gone.
+  void Function(String root, bool writable)? onRootWritable;
+
+  /// An event `changed(path, to?)` from the platform's presenter (step 6).
+  void Function(String path, String? to)? onChanged;
+
+  /// Whether this platform has any folder access to manage.
+  bool get active => platform != CloudPlatform.other;
+
+  CloudListState _listState = CloudListState.ok;
+  CloudListState get listState => _listState;
+
+  List<CloudFolderEntry> _entries = [];
+  final Map<String, CloudAccess> _access = {}; // by entry key
+  final Map<String, CloudRootCheck> _checks = {}; // by entry key, iCloud roots only
+  final Map<String, String> _registered = {}; // entry key -> registered real path
+  final Map<String, DateTime> _lastTried = {};
+  Future<void> _serial = Future<void>.value();
+  Future<void>? _started;
+  Future<void> _ready = Future<void>.value();
+  final ValueNotifier<bool> _checkingNow = ValueNotifier<bool>(false);
+  bool _disposed = false;
+
+  /// Completes when every entry is resolved, registered and self-tested.
+  Future<void> get ready => _ready;
+
+  /// True while a self-test runs: the load shows "Checking the iCloud folder…".
+  ValueListenable<bool> get checking => _checkingNow;
+
+  /// The entries now on record.
+  List<CloudFolderEntry> get entries => List.unmodifiable(_entries);
+
+  Future<void> _onEvent(String method, Map<Object?, Object?> args) async {
+    if (method == 'changed') {
+      final p = args['path'];
+      final to = args['to'];
+      if (p is String) onChanged?.call(p, to is String ? to : null);
+      return;
+    }
+    await coordinator.handleEvent(method, args);
+  }
+
+  // The access of the entry covering [path] (the nearest one), or null.
+  CloudFolderEntry? _entryFor(String path) {
+    final k = _key(path);
+    CloudFolderEntry? best;
+    var bestLen = -1;
+    for (final e in _entries) {
+      final ek = _key(e.path);
+      if (_isUnderKey(k, ek) && ek.length > bestLen) {
+        best = e;
+        bestLen = ek.length;
+      }
+    }
+    return best;
+  }
+
+  /// What a location says about its access, or null: "On another device" for
+  /// a folder whose access is lost, "Choose the folder again" for one with no
+  /// entry on an Apple device, then the self-test's words. Meant for a
+  /// location that is unavailable or read-only.
+  String? statusOf(String path) {
+    if (!active) return null;
+    final e = _entryFor(path);
+    if (e == null) {
+      if (_listState == CloudListState.unavailable) return CloudFolderTexts.anotherDevice;
+      final k = _key(path);
+      if (ownFolders.any((o) => _isUnderKey(k, _key(o)))) return null;
+      return CloudFolderTexts.chooseAgain;
+    }
+    final ek = _key(e.path);
+    if (_access[ek] == CloudAccess.anotherDevice) return CloudFolderTexts.anotherDevice;
+    return switch (_checks[ek]) {
+      CloudRootCheck.checking => CloudFolderTexts.checking,
+      CloudRootCheck.busy => CloudFolderTexts.busy,
+      CloudRootCheck.unsafe => CloudFolderTexts.unsafe,
+      _ => null,
+    };
+  }
+
+  /// Whether the access to [path]'s folder was lost (resolved to another path,
+  /// or failed): nothing is written there.
+  bool accessLost(String path) {
+    final e = _entryFor(path);
+    return e != null && _access[_key(e.path)] == CloudAccess.anotherDevice;
+  }
+
+  /// The state of [path]'s entry, for tests and the rows.
+  CloudAccess? accessOf(String path) => _entryFor(path) == null ? null : _access[_key(_entryFor(path)!.path)];
+
+  /// The self-test of the iCloud root that holds [path], or null.
+  CloudRootCheck? checkOf(String path) {
+    final e = _entryFor(path);
+    return e == null ? null : _checks[_key(e.path)];
+  }
+
+  // -- Start ---------------------------------------------------------------------
+
+  /// Resets the channel, reads `folder-access.json` and resolves each entry
+  /// (R5.3, R5.9 steps 1 and 2), then self-tests each iCloud root. Idempotent.
+  Future<void> start() {
+    return _started ??= () async {
+      if (!active) return;
+      final reset = _channel.invoke('reset').then<void>((_) {}, onError: (Object e) => debugPrint('Noted: reset failed: $e'));
+      coordinator.ready = reset;
+      await reset;
+      final read = await _serialized(() => _readList());
+      _entries = List.of(read.entries);
+      final live = <CloudFolderEntry>[];
+      for (final e in List.of(_entries)) {
+        if (await _resolve(e)) live.add(e);
+      }
+      final tests = <Future<void>>[];
+      for (final e in live) {
+        if (await _register(e)) tests.add(_selfTest(e));
+      }
+      _ready = Future.wait(tests).then<void>((_) {});
+      await _ready;
+      _changed();
+    }();
+  }
+
+  void _changed() {
+    if (_disposed) return;
+    _checkingNow.value = _checks.values.contains(CloudRootCheck.checking);
+    notifyListeners();
+  }
+
+  // Resolves [e]; false when its access is lost (another device).
+  Future<bool> _resolve(CloudFolderEntry e) async {
+    final ek = _key(e.path);
+    try {
+      final r = await _channel.invoke('resolve', {'bookmark': e.bookmark});
+      if (r is! Map || r['path'] is! String) throw StateError('no path');
+      final path = r['path'] as String;
+      if (_key(path) != ek) {
+        // Another folder: access to it isn't ours to keep.
+        await _stopAccess(path);
+        _access[ek] = CloudAccess.anotherDevice;
+        return false;
+      }
+      if (r['stale'] == true) {
+        try {
+          final fresh = await _channel.invoke('bookmark', {'path': path});
+          if (fresh is String && fresh.isNotEmpty) {
+            await _mutate((list) => [for (final x in list) _same(x.path, e.path) ? x.copyWith(bookmark: fresh) : x]);
+          }
+        } on Object catch (err) {
+          debugPrint('Noted: renewing a bookmark failed: $err');
+        }
+      }
+      _access[ek] = CloudAccess.live;
+      return true;
+    } on Object {
+      _access[ek] = CloudAccess.anotherDevice;
+      return false;
+    }
+  }
+
+  bool _same(String a, String b) => _key(a) == _key(b);
+
+  Future<void> _stopAccess(String path) async {
+    try {
+      await _channel.invoke('stopAccess', {'path': path});
+    } on Object catch (e) {
+      debugPrint('Noted: stopAccess failed: $e');
+    }
+  }
+
+  // Reads isUbiquitous (never stored) and registers the root. True when it is
+  // an iCloud root, now untested.
+  Future<bool> _register(CloudFolderEntry e) async {
+    final bool ubiquitous;
+    try {
+      ubiquitous = (await _channel.invoke('isUbiquitous', {'path': e.path})) == true;
+    } on Object {
+      // Can't tell: coordinating a plain folder is safe, writing an iCloud one
+      // without it is not.
+      return _registerRoot(e);
+    }
+    if (!ubiquitous) return false;
+    return _registerRoot(e);
+  }
+
+  bool _registerRoot(CloudFolderEntry e) {
+    final ek = _key(e.path);
+    final real = _realPath(e.path);
+    registerCoordinator(real, coordinator);
+    _registered[ek] = real;
+    _checks[ek] = CloudRootCheck.checking;
+    onRootWritable?.call(real, false);
+    return true;
+  }
+
+  // -- Pick ----------------------------------------------------------------------
+
+  /// Picks a folder. iOS: the platform's iCloud picker; a folder outside
+  /// iCloud Drive is a [CloudPickRefused]. macOS: [pickDirectory] (the usual
+  /// folder picker), then a bookmark. Returns the folder's real path once its
+  /// self-test is over, or null if cancelled. Other platforms return what
+  /// [pickDirectory] gives.
+  Future<String?> pick({Future<String?> Function()? pickDirectory}) async {
+    await start();
+    switch (platform) {
+      case CloudPlatform.other:
+        return pickDirectory?.call();
+      case CloudPlatform.ios:
+        final Object? r;
+        try {
+          r = await _channel.invoke('pick');
+        } on PlatformException catch (e) {
+          if (e.code == 'notUbiquitous') throw const CloudPickRefused(CloudFolderTexts.notICloud);
+          rethrow;
+        }
+        if (r is! Map || r['path'] is! String) return null;
+        final path = r['path'] as String;
+        final bookmark = r['bookmark'];
+        return _adopt(path, bookmark is String ? bookmark : null, started: true);
+      case CloudPlatform.macos:
+        final chosen = await pickDirectory?.call();
+        if (chosen == null) return null;
+        String? bookmark;
+        try {
+          final b = await _channel.invoke('bookmark', {'path': chosen});
+          if (b is String && b.isNotEmpty) bookmark = b;
+        } on Object catch (e) {
+          debugPrint('Noted: making a bookmark failed: $e');
+        }
+        if (bookmark == null) return chosen;
+        return _adopt(chosen, bookmark, started: false);
+    }
+  }
+
+  Future<String> _adopt(String path, String? bookmark, {required bool started}) async {
+    var real = _realPath(path);
+    if (bookmark != null && !started) {
+      // Starts access and gives the real path.
+      try {
+        final r = await _channel.invoke('resolve', {'bookmark': bookmark});
+        if (r is Map && r['path'] is String) real = r['path'] as String;
+      } on Object catch (e) {
+        debugPrint('Noted: resolving a new bookmark failed: $e');
+      }
+    }
+    final entry = bookmark == null ? null : CloudFolderEntry(real, bookmark);
+    var recorded = false;
+    if (entry != null) {
+      recorded = await _mutate((list) => [for (final x in list) if (!_same(x.path, real)) x, entry]);
+    }
+    final e = _entries.where((x) => _same(x.path, real)).firstOrNull ?? CloudFolderEntry(real, bookmark ?? '');
+    _access[_key(real)] = CloudAccess.live;
+    if (await _register(e)) {
+      if (recorded) {
+        await _selfTest(e);
+      } else {
+        // The probe is recorded before it is published: with no record, the
+        // root stays read-only, still coordinated.
+        _setCheck(e, CloudRootCheck.unsafe);
+      }
+    }
+    _changed();
+    return real;
+  }
+
+  // -- Binders Noted creates -------------------------------------------------------
+
+  /// A bookmark of its own for [path], a folder Noted just created, while the
+  /// access of a picked folder above it is live. Written to
+  /// `folder-access.json` before the caller lists the folder. Never throws; if
+  /// it can't be made the folder is listed "Choose the folder again" at the
+  /// next launch where access is missing.
+  Future<void> bookmarkCreated(String path) async {
+    if (!active) return;
+    try {
+      await start();
+      final parent = _entryFor(path);
+      if (parent == null || _access[_key(parent.path)] != CloudAccess.live) return;
+      if (_same(parent.path, path)) return;
+      final real = _realPath(path);
+      final b = await _channel.invoke('bookmark', {'path': real});
+      if (b is! String || b.isEmpty) return;
+      await _mutate((list) => [for (final x in list) if (!_same(x.path, real)) x, CloudFolderEntry(real, b)]);
+      _access[_key(real)] = CloudAccess.live;
+    } on Object catch (e) {
+      debugPrint('Noted: no bookmark for a new folder: $e');
+    }
+  }
+
+  // -- Pruning (R5.3, R-2) -----------------------------------------------------------
+
+  /// Removes every entry that is none of [retained] (the paths of the binder
+  /// folders, the standalone folders, the default page folder and the default
+  /// binder folder) and not an ancestor of one, by real path. The caller calls
+  /// it only once the 0164 hold lifted and `settings.json` and `binders.json`
+  /// both read. Nothing is removed while `folder-access.json` is unreadable.
+  Future<void> prune(Iterable<String> retained) async {
+    if (!active) return;
+    await start();
+    final keys = [for (final r in retained) _key(r)];
+    final gone = <CloudFolderEntry>[];
+    final ok = await _mutate((list) {
+      gone.clear();
+      final keep = <CloudFolderEntry>[];
+      for (final e in list) {
+        final ek = _key(e.path);
+        if (keys.any((k) => _isUnderKey(k, ek))) {
+          keep.add(e);
+        } else {
+          gone.add(e);
+        }
+      }
+      return keep;
+    }, onlyIfReadable: true);
+    if (!ok) return;
+    for (final e in gone) {
+      await _forget(e);
+    }
+    _changed();
+  }
+
+  /// A folder was removed from Noted: its entry goes unless [retained] still
+  /// holds it (or something below it), and access to it stops.
+  Future<void> released(String path, Iterable<String> retained) async {
+    if (!active) return;
+    await start();
+    final keys = [for (final r in retained) _key(r)];
+    final target = _key(path);
+    final gone = <CloudFolderEntry>[];
+    final ok = await _mutate((list) {
+      gone.clear();
+      final keep = <CloudFolderEntry>[];
+      for (final e in list) {
+        final ek = _key(e.path);
+        if (ek == target && !keys.any((k) => _isUnderKey(k, ek))) {
+          gone.add(e);
+        } else {
+          keep.add(e);
+        }
+      }
+      return keep;
+    }, onlyIfReadable: true);
+    if (!ok) return;
+    for (final e in gone) {
+      await _forget(e);
+    }
+    _changed();
+  }
+
+  Future<void> _forget(CloudFolderEntry e) async {
+    final ek = _key(e.path);
+    final real = _registered.remove(ek);
+    if (real != null) {
+      unregisterCoordinator(real);
+      onRootWritable?.call(real, true);
+    }
+    _checks.remove(ek);
+    _access.remove(ek);
+    _lastTried.remove(ek);
+    await _stopAccess(e.path);
+  }
+
+  // -- Self-test (R5.9) ------------------------------------------------------------
+
+  void _setCheck(CloudFolderEntry e, CloudRootCheck c) {
+    final ek = _key(e.path);
+    _checks[ek] = c;
+    final real = _registered[ek];
+    if (real != null) onRootWritable?.call(real, c == CloudRootCheck.passed);
+    _changed();
+  }
+
+  /// Runs the self-test again for every root whose last one timed out, at
+  /// most once a minute each. The notebook calls it at its folder checks.
+  Future<void> retryBusy() async {
+    for (final e in List.of(_entries)) {
+      final ek = _key(e.path);
+      if (_checks[ek] != CloudRootCheck.busy) continue;
+      final last = _lastTried[ek];
+      if (last != null && _now().difference(last) < retryBusyAfter) continue;
+      await _selfTest(e);
+    }
+  }
+
+  Future<void> _selfTest(CloudFolderEntry e) async {
+    final ek = _key(e.path);
+    _lastTried[ek] = _now();
+    _setCheck(e, CloudRootCheck.checking);
+    try {
+      final dir = Directory(_registered[ek] ?? e.path);
+      final lock = locks;
+      final result = lock == null ? await _probe(e) : await lock.run(dir, () => _probe(e));
+      _setCheck(e, result);
+    } finally {
+      _checkingNow.value = _checks.values.contains(CloudRootCheck.checking);
+    }
+  }
+
+  Future<CloudRootCheck> _probe(CloudFolderEntry e) async {
+    final root = _registered[_key(e.path)] ?? e.path;
+    try {
+      // A leftover probe from an earlier run: removed by its nonce only.
+      final old = _entries.where((x) => _same(x.path, e.path)).firstOrNull?.probe;
+      if (old != null) {
+        final nonce = base64Decode(old.nonce);
+        for (final name in [old.name, '${old.name}.part']) {
+          final f = File('$root$_sep$name');
+          Uint8List? bytes;
+          try {
+            bytes = await f.readAsBytes();
+          } on FileSystemException {
+            bytes = null;
+          }
+          if (bytes != null && _bytesEqual(bytes, nonce)) {
+            await deleteFileIfMatches(f.path, bytes: nonce);
+          }
+        }
+        await _mutate((list) => [for (final x in list) _same(x.path, e.path) ? x.copyWith(clearProbe: true) : x]);
+      }
+      final name = '.noted-probe-${_hex(8)}.tmp';
+      final nonce = Uint8List.fromList([for (var i = 0; i < 32; i++) _random.nextInt(256)]);
+      final recorded = await _mutate(
+        (list) => [for (final x in list) _same(x.path, e.path) ? x.copyWith(probe: CloudProbe(name, base64Encode(nonce))) : x],
+      );
+      if (!recorded) return CloudRootCheck.unsafe;
+      final part = File('$root$_sep$name.part');
+      final target = '$root$_sep$name';
+      await part.writeAsBytes(nonce, flush: true);
+      final bool published;
+      try {
+        published = await publishExclusive(part, target);
+      } on StorageBusy {
+        await _dropTemp(part, nonce);
+        rethrow;
+      } on FileSystemException {
+        await _dropTemp(part, nonce);
+        return CloudRootCheck.unsafe;
+      }
+      if (!published) {
+        await _dropTemp(part, nonce);
+        return CloudRootCheck.unsafe;
+      }
+      // The probe is out: a vanished one (absent) still passes.
+      await deleteFileIfMatches(target, bytes: nonce);
+      await _mutate((list) => [for (final x in list) _same(x.path, e.path) ? x.copyWith(clearProbe: true) : x]);
+      return CloudRootCheck.passed;
+    } on StorageBusy {
+      return CloudRootCheck.busy;
+    } on Object catch (err) {
+      debugPrint('Noted: the iCloud self-test failed: $err');
+      return CloudRootCheck.unsafe;
+    }
+  }
+
+  Future<void> _dropTemp(File f, Uint8List nonce) async {
+    try {
+      await deleteFileIfMatches(f.path, bytes: nonce);
+    } on Object {
+      // Left for the next launch's nonce check.
+    }
+  }
+
+  bool _bytesEqual(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  // -- folder-access.json ----------------------------------------------------------
+
+  Future<T> _serialized<T>(Future<T> Function() job) {
+    final run = _serial.then((_) => job());
+    _serial = run.then<void>((_) {}, onError: (_) {});
+    return run;
+  }
+
+  /// Applies [change] to the list on disk and writes it with
+  /// [replaceIfUnchanged]; false if nothing could be written (unreadable and
+  /// not copied, or a write that failed). With [onlyIfReadable], a list that
+  /// isn't readable is never replaced.
+  Future<bool> _mutate(List<CloudFolderEntry> Function(List<CloudFolderEntry>) change, {bool onlyIfReadable = false}) {
+    return _serialized(() async {
+      for (var attempt = 0; attempt < 4; attempt++) {
+        final _Read r;
+        try {
+          r = await _readList(startNew: !onlyIfReadable);
+        } on Object catch (e) {
+          debugPrint('Noted: reading folder-access.json failed: $e');
+          return false;
+        }
+        if (r.refused) return false;
+        final next = change(List.of(r.entries));
+        if (_sameEntries(next, r.entries) && r.bytes != null) {
+          _entries = next;
+          return true;
+        }
+        final bytes = utf8.encode(jsonEncode({'version': 1, 'folders': [for (final x in next) x.toJson()]}));
+        final tmp = File('${file.path}.${_hex(8)}.tmp');
+        try {
+          await file.parent.create(recursive: true);
+          await tmp.writeAsBytes(bytes, flush: true);
+          if (r.bytes == null) {
+            if (!await publishExclusive(tmp, file.path)) {
+              await _dropTemp(tmp, Uint8List.fromList(bytes));
+              continue; // it appeared meanwhile
+            }
+          } else {
+            final res = await replaceIfUnchanged(tmp, file.path, r.bytes);
+            if (res.outcome != ReplaceOutcome.replaced) {
+              await _dropTemp(tmp, Uint8List.fromList(bytes));
+              continue;
+            }
+          }
+        } on Object catch (e) {
+          debugPrint('Noted: writing folder-access.json failed: $e');
+          await _dropTemp(tmp, Uint8List.fromList(bytes));
+          return false;
+        }
+        _entries = next;
+        return true;
+      }
+      return false;
+    });
+  }
+
+  bool _sameEntries(List<CloudFolderEntry> a, List<CloudFolderEntry> b) => jsonEncode([for (final x in a) x.toJson()]) == jsonEncode([for (final x in b) x.toJson()]);
+
+  // Reads the list. A missing file is an empty list. An unreadable one is
+  // copied to `folder-access-unreadable-<16 hex>.json` (read back equal) and,
+  // with [startNew], a new list is started against its bytes (R5.3).
+  Future<_Read> _readList({bool startNew = true}) async {
+    Uint8List bytes;
+    try {
+      bytes = await file.readAsBytes();
+    } on PathNotFoundException {
+      return const _Read([], null);
+    } on FileSystemException {
+      _listState = CloudListState.unavailable;
+      return const _Read([], null, refused: true);
+    }
+    final parsed = _parse(bytes);
+    if (parsed != null) return _Read(parsed, bytes);
+    if (!startNew) return _Read(const [], bytes, refused: true);
+    final copy = File('${file.parent.path}$_sep'
+        'folder-access-unreadable-${_hex(8)}.json');
+    final tmp = File('${copy.path}.tmp');
+    try {
+      await tmp.writeAsBytes(bytes, flush: true);
+      if (!await publishExclusive(tmp, copy.path) || !_bytesEqual(await copy.readAsBytes(), bytes)) {
+        await _dropTemp(tmp, bytes);
+        _listState = CloudListState.unavailable;
+        return _Read(const [], bytes, refused: true);
+      }
+    } on Object {
+      await _dropTemp(tmp, bytes);
+      _listState = CloudListState.unavailable;
+      return _Read(const [], bytes, refused: true);
+    }
+    // Copied: a new list, against the unreadable bytes.
+    final fresh = Uint8List.fromList(utf8.encode(jsonEncode({'version': 1, 'folders': <Object>[]})));
+    final t2 = File('${file.path}.${_hex(8)}.tmp');
+    try {
+      await t2.writeAsBytes(fresh, flush: true);
+      final res = await replaceIfUnchanged(t2, file.path, bytes);
+      if (res.outcome != ReplaceOutcome.replaced) {
+        await _dropTemp(t2, fresh);
+        _listState = CloudListState.unavailable;
+        return _Read(const [], bytes, refused: true);
+      }
+    } on Object {
+      await _dropTemp(t2, fresh);
+      _listState = CloudListState.unavailable;
+      return _Read(const [], bytes, refused: true);
+    }
+    _listState = CloudListState.restarted;
+    return _Read(const [], fresh);
+  }
+
+  // The entries of [bytes], or null if it isn't a version 1 list.
+  List<CloudFolderEntry>? _parse(List<int> bytes) {
+    try {
+      final j = jsonDecode(utf8.decode(bytes));
+      if (j is! Map || j['version'] != 1 || j['folders'] is! List) return null;
+      final out = <CloudFolderEntry>[];
+      for (final f in j['folders'] as List) {
+        if (f is! Map || f['path'] is! String || f['bookmark'] is! String) return null;
+        CloudProbe? probe;
+        final p = f['probe'];
+        if (p is Map && p['name'] is String && p['nonce'] is String) {
+          probe = CloudProbe(p['name'] as String, p['nonce'] as String);
+        }
+        out.add(CloudFolderEntry(f['path'] as String, f['bookmark'] as String, probe));
+      }
+      return out;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  /// Stops the roots this registered and detaches from the channel.
+  @override
+  void dispose() {
+    _disposed = true;
+    for (final real in _registered.values) {
+      unregisterCoordinator(real);
+    }
+    _registered.clear();
+    _channel.onEvent = null;
+    _checkingNow.dispose();
+    super.dispose();
+  }
+}

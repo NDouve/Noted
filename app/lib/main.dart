@@ -29,6 +29,7 @@ import 'src/cloud_sync.dart' show CloudSync;
 import 'src/device_storage.dart';
 import 'src/app_theme.dart';
 import 'src/home.dart';
+import 'src/icloud_folders.dart';
 import 'src/link_log.dart';
 import 'src/microsoft_account.dart';
 import 'src/notebook.dart';
@@ -248,8 +249,14 @@ Notebook buildAppNotebook({
   Directory? pagesDirectory,
   File? bindersFile,
   RecoveryLock? recoveryLock,
+  IcloudFolders? icloud,
+  FolderLocks? folderLocks,
 }) {
   final binders = bindersFile ?? defaultBindersFile();
+  final locks = folderLocks ?? FolderLocks();
+  // iOS and macOS only: bookmarks, the iCloud picker, coordination (R5.3).
+  // The Notebook resolves the bookmarks before its first load.
+  icloud ??= buildIcloudFolders(binders, locks);
   // The one lock the notebook and the cloud pulls share (stage 3, G11). On
   // a device the working copies (OneDrive, WebDAV) are read-only here while the
   // sync only pulls.
@@ -269,7 +276,7 @@ Notebook buildAppNotebook({
     buildModules(aiAccess: aiAccess),
     bindersFile: binders,
     recoveryDirectory: defaultRecoveryDirectory(binders),
-    pickFolder: isMobilePlatform ? null : () => getDirectoryPath(confirmButtonText: 'Use this folder'),
+    pickFolder: pickFolderFor(icloud),
     watchFiles: !isMobilePlatform,
     deviceName: computerName(),
     settings: settings,
@@ -278,10 +285,44 @@ Notebook buildAppNotebook({
     attachmentPicker: pickAttachments,
     attachmentOpener: openWithDefaultApp,
     recoveryLock: recoveryLock,
-    folderLocks: FolderLocks(),
+    folderLocks: locks,
+    icloud: icloud,
     readOnlyRoots: isMobilePlatform ? [?oneDriveRoot?.path, ?webDavRoot?.path] : const [],
     readOnlyRootNames: isMobilePlatform && webDavRoot != null ? {webDavRoot.path: 'WebDAV'} : const {},
   );
+}
+
+/// The folder access of this build (`folder-access.json` beside the settings):
+/// null except on iOS and macOS, where a folder needs a bookmark or
+/// coordination (R5.3). [platform] is a seam for tests.
+IcloudFolders? buildIcloudFolders(File bindersFile, FolderLocks locks, {CloudPlatform? platform}) {
+  final p = platform ?? cloudPlatformOfThisDevice();
+  if (p == CloudPlatform.other) return null;
+  final dir = defaultSettingsFile().absolute.parent;
+  return IcloudFolders(
+    channel: MethodCloudFolderChannel(),
+    file: File('${dir.path}${Platform.pathSeparator}$folderAccessFileName'),
+    platform: p,
+    locks: locks,
+    ownFolders: [dir.path, defaultPagesDirectory().path],
+  );
+}
+
+/// The folder picker of this build: iCloud's on iOS, the usual one plus a
+/// bookmark on macOS, none on Android, the usual one elsewhere (Windows is
+/// unchanged: the iCloud for Windows folder is a plain desktop folder).
+Future<String?> Function()? pickFolderFor(IcloudFolders? icloud) {
+  Future<String?> usual() => getDirectoryPath(confirmButtonText: 'Use this folder');
+  if (icloud != null && icloud.active) {
+    return () async {
+      try {
+        return await icloud.pick(pickDirectory: icloud.platform == CloudPlatform.macos ? usual : null);
+      } on CloudPickRefused catch (e) {
+        throw NotebookException(e.message);
+      }
+    };
+  }
+  return isMobilePlatform ? null : usual;
 }
 
 /// The OneDrive pull of this build: null on desktop, in a build without a
