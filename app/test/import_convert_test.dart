@@ -370,6 +370,18 @@ void main() {
     });
   });
 
+  test('table cells starting with = get the invisible guard; paragraphs and other cells do not', () {
+    String shownRows(List<List<String>> r) => r.map((x) => x.map((c) => c.replaceAll('​', '<z>')).join('|')).join('/');
+    final csv = rowsOf(blocksOf(conv(ImportFormat.csv, 'a.csv', utf8.encode('h,a=b\n=1+1,=\n'))).single);
+    expect(shownRows(csv), 'h|a=b/<z>=1+1|<z>=');
+    final x = blocksOf(conv(ImportFormat.sheet, 'x.xlsx', buildXlsx({'S': '<row r="1"><c r="A1" t="inlineStr"><is><t>=SUM(</t></is></c></row>'})));
+    expect(shownRows(rowsOf(x.last)), '<z>=SUM(');
+    const tc = '<w:tbl><w:tr><w:tc>';
+    final d = blocksOf(conv(ImportFormat.word, 'd.docx', buildDocx('$tc${wp('=1')}</w:tc></w:tr></w:tbl>${wp('=1 para')}')));
+    expect(shownRows(rowsOf(d.first)), '<z>=1');
+    expect(textOf(d.last), '=1 para');
+  });
+
   group('notices', () {
     final long = 'y' * 3000;
     const shortened = 'long cells were shortened.';

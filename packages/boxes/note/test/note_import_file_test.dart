@@ -5,8 +5,11 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:appflowy_editor/appflowy_editor.dart' show Document;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_box_note/noted_box_note.dart';
+import 'package:noted_box_note/src/note_editor_state.dart';
+import 'package:noted_box_note/src/table_formulas.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -76,5 +79,34 @@ void main() {
     for (final name in ['a.md', 'a.noted-blocks.json', 'a.txt', 'a.png', 'a.pdf']) {
       expect(module.fileAffinity(_file(name, const [1])), 0, reason: name);
     }
+  });
+
+  test('imported cells that start with = stay text in the editor, also after reload', () async {
+    const texts = ['=1+1', '=SUM(', '=', 'a=b', 'plain'];
+    final blocks = noteTables([
+      ['head'],
+      for (final t in texts) [t],
+    ]);
+    final made = await module.createFromFile(_file('s.noted-blocks.json', encodeNoteBlocksFile(blocks)), store);
+
+    void check(Map<String, Object?> document) {
+      final editor = NoteEditorState(document: Document.fromJson(document));
+      TableFormulas(editor).initialize();
+      final cells = editor.document.root.children.first.children;
+      final shown = <String>[];
+      for (final c in cells) {
+        final p = c.children.first;
+        expect(p.attributes['formulaValue'], isNull, reason: p.delta!.toPlainText());
+        shown.add(p.delta!.toPlainText().replaceAll('​', ''));
+      }
+      expect(shown, ['head', ...texts]);
+    }
+
+    check(made!.$1.document);
+    // After reload: saved as JSON and read again.
+    final reloaded = jsonDecode(jsonEncode(const NoteCodec().encode(made.$1))) as Map<String, dynamic>;
+    check(reloaded);
+    expect(tableCellText('a=b'), 'a=b');
+    expect(tableCellText('=x'), '​=x');
   });
 }

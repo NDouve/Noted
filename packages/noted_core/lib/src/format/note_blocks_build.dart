@@ -74,6 +74,20 @@ String cutUtf8(String text, int maxBytes) {
   return end == text.length ? text : text.substring(0, end);
 }
 
+/// The text an imported table cell is stored with: cut to
+/// [noteCellMaxBytes], and, if it starts with `=`, with a leading U+200B
+/// (zero-width space).
+///
+/// The note editor treats any cell whose text starts with `=` as a formula
+/// and shows its result or an error, so imported text such as `=1+1` or `=`
+/// would not show as written. The invisible first character keeps it text.
+/// Used for imported cells only (paragraphs are never evaluated). Remove it
+/// if a per-cell literal flag is added to the note format.
+String tableCellText(String text) {
+  final shown = text.startsWith('=') ? '​$text' : text;
+  return cutUtf8(shown, noteCellMaxBytes);
+}
+
 /// A table of [rows] (every row is padded to the widest), cell text literal
 /// and cut to [noteCellMaxBytes]. The first row is the header. At least one
 /// row and one column.
@@ -81,7 +95,7 @@ Map<String, Object?> noteTable(List<List<String>> rows) {
   final cols = rows.fold<int>(1, (m, r) => r.length > m ? r.length : m);
   final n = rows.isEmpty ? 1 : rows.length;
   const width = 160.0, height = 40.0;
-  String cell(int r, int c) => r < rows.length && c < rows[r].length ? cutUtf8(rows[r][c], noteCellMaxBytes) : '';
+  String cell(int r, int c) => r < rows.length && c < rows[r].length ? tableCellText(rows[r][c]) : '';
   return {
     'type': 'table',
     'data': {
@@ -122,7 +136,7 @@ List<Map<String, Object?>> noteTables(
   int maxBytes = 256 * 1024,
 }) {
   final cols = rows.fold<int>(1, (m, r) => r.length > m ? r.length : m);
-  int rowBytes(List<String> r) => r.fold<int>(0, (n, c) => n + utf8.encode(cutUtf8(c, noteCellMaxBytes)).length);
+  int rowBytes(List<String> r) => r.fold<int>(0, (n, c) => n + utf8.encode(tableCellText(c)).length);
   if (rows.length < 2) return [noteTable(rows)];
   final header = rows.first;
   final headerBytes = rowBytes(header);
