@@ -284,7 +284,15 @@ void main() {
       File(w.path('.$id.canvas.icloud')).deleteSync();
       file.writeAsStringSync(text);
       await w.channel.emit('changed', {'path': file.path});
-      await waitFor(() => file.readAsStringSync().contains('kept edit'), what: 'the kept edit to land');
+      bool landed() {
+        try {
+          return file.readAsStringSync().contains('kept edit');
+        } on FileSystemException {
+          return false; // not there for a moment: the replay swaps the file
+        }
+      }
+
+      await waitFor(landed, what: 'the kept edit to land');
 for (var i = 0; i < 200 && (await nb2.pendingRecovery()).entries.isNotEmpty; i++) {        await Future<void>.delayed(const Duration(milliseconds: 25));      }      expect((await nb2.pendingRecovery()).entries, isEmpty, reason: 'and its entry is retired');
     });
 
