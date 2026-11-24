@@ -6,6 +6,10 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:noted_core/noted_core_read.dart';
+// The core's read-only barrel leaves out storage code; the dataless check is
+// imported directly (invariant_test.dart allows it).
+// ignore: implementation_imports
+import 'package:noted_core/src/storage/dataless.dart' show isDataless, stubTargetName;
 
 import 'running_probe.dart';
 
@@ -429,13 +433,22 @@ final class NotedLibrary {
     }
   }
 
+  /// The bytes of [path] as [identity] reads them, or null when the file is
+  /// not downloaded (it is not read: a read would download it) or can't be
+  /// read. The re-check of recorded sources reads only through this.
+  static Future<List<int>?> readSource(LockIdentity identity, String path) async =>
+      isDataless(path) ? null : await identity.readBytes(path);
+
   static Future<Binder?> _readBinder(
     LockIdentity identity,
     Directory dir,
     LibrarySources? kept,
     String? recordedId,
   ) async {
-    final bytes = await identity.readBytes(binderFilePath(dir.path));
+    // Not downloaded: not read, like a binder file that can't be read.
+    final bytes = isDataless(binderFilePath(dir.path))
+        ? null
+        : await identity.readBytes(binderFilePath(dir.path));
     kept?.files[binderFilePath(dir.path)] = bytes;
     final binder = usableBinder(bytes, recordedId);
     kept?.binderUsable[binderFilePath(dir.path)] = binder != null;
@@ -469,6 +482,18 @@ final class NotedLibrary {
   /// The binder file of the binder folder [folder].
   static String binderFilePath(String folder) => '$folder${Platform.pathSeparator}$binderFileName';
 
+  /// The page path a `.<name>.icloud` stub at [path] stands for, when it is a
+  /// page's stub and the page file itself is not there; else null. The library
+  /// and the closed write's recheck list a stub as that path, so both count it
+  /// the same way.
+  static String? stubbedPagePath(String path) {
+    final cut = path.lastIndexOf(RegExp(r'[\\/]'));
+    final target = stubTargetName(path.substring(cut + 1));
+    if (target == null || !target.endsWith('.canvas')) return null;
+    final real = '${path.substring(0, cut + 1)}$target';
+    return FileSystemEntity.typeSync(real, followLinks: false) == FileSystemEntityType.notFound ? real : null;
+  }
+
   /// The `*.canvas` files in [path]: each that reads as a page, and the ids
   /// every file counts for.
   static Future<_FolderScan> _scanFolder(LockIdentity identity, String path, LibrarySources? kept) async {
@@ -482,8 +507,24 @@ final class NotedLibrary {
         return _FolderScan(FolderState.absent, const [], const {});
       }
       await for (final e in dir.list()) {
-        if (e is! File || !e.path.endsWith('.canvas')) continue;
+        if (e is! File) continue;
+        // A `.<name>.icloud` stub is listed as `<name>`: a file that is there
+        // and can't be read. (The file itself, if listed too, speaks for itself.)
+        if (stubTargetName(e.path.split(RegExp(r'[\\/]')).last) != null) {
+          final real = stubbedPagePath(e.path);
+          if (real == null) continue;
+          stats[real] = await fileSignature(e.path);
+          carried[real] = fileIdsOf(real, null);
+          continue;
+        }
+        if (!e.path.endsWith('.canvas')) continue;
         stats[e.path] = await fileSignature(e.path);
+        // A page that is not downloaded is never read: it counts like an
+        // unreadable one (its name's ids, or any page without them).
+        if (isDataless(e.path)) {
+          carried[e.path] = fileIdsOf(e.path, null);
+          continue;
+        }
         final bytes = await identity.readBytes(e.path);
         kept?.files[e.path] = bytes;
         String? parsed;

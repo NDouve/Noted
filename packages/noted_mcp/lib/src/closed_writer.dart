@@ -11,6 +11,8 @@ import 'package:noted_core/noted_core_read.dart';
 // ignore: implementation_imports
 import 'package:noted_core/src/storage/exclusive_publish.dart' show publishExclusive;
 // ignore: implementation_imports
+import 'package:noted_core/src/storage/dataless.dart' show hasStub, isDataless;
+// ignore: implementation_imports
 import 'package:noted_core/src/storage/drop_verified.dart' show dropVerified, verifiedSuffix;
 
 import 'running_probe.dart' show LockIdentity;
@@ -182,8 +184,15 @@ final class ClosedWriter {
     File? tmp;
     try {
       final file = await _checked(path);
-      if (file == null) return PageReplace.refused;
+      if (file == null) {
+        // A page that is missing with its stub beside it is there, not
+        // downloaded: busy, never absent.
+        final missing = await FileSystemEntity.type(path, followLinks: false) == FileSystemEntityType.notFound;
+        return missing && path.endsWith(pageExtension) && hasStub(path) ? PageReplace.busy : PageReplace.refused;
+      }
       if (!up()) return PageReplace.busy;
+      // A page that is not downloaded is never read.
+      if (isDataless(path) || hasStub(path)) return PageReplace.busy;
       final first = await file.readAsBytes();
       if (!up()) return PageReplace.busy;
       if (!_same(first, expected)) return PageReplace.changed;
@@ -212,6 +221,11 @@ final class ClosedWriter {
       await file.rename(aside.path);
       // From here the aside holds the page's previous bytes: it is removed
       // only after the new text is published, and otherwise put back or kept.
+      // An aside that is not downloaded is not read: put it back, then busy.
+      if (isDataless(aside.path)) {
+        await _putBack(aside, file);
+        return PageReplace.busy;
+      }
       if (!_same(await aside.readAsBytes(), expected)) {
         // The page changed after the first look: put it back, as it was.
         return await _putBack(aside, file) ? PageReplace.changed : PageReplace.busy;
@@ -235,7 +249,7 @@ final class ClosedWriter {
         await dropVerified(
           aside,
           drop,
-          (f) async => _same(await f.readAsBytes(), expected),
+          (f) async => !isDataless(f.path) && _same(await f.readAsBytes(), expected),
           beforeRename: beforeAsideDelete == null ? null : (_) => beforeAsideDelete!(aside),
           beforeFinalCheck: beforeFinalCheck,
           afterFinalRead: afterFinalRead,

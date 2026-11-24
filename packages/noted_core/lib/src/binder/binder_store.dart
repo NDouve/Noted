@@ -8,6 +8,7 @@ import 'dart:io';
 import '../ai/ai_access.dart';
 import '../model/box_types.dart';
 import '../storage/coordination.dart';
+import '../storage/dataless.dart';
 import '../storage/exclusive_publish.dart';
 import '../storage/replace_if_unchanged.dart';
 import 'binder.dart';
@@ -270,6 +271,8 @@ class BinderStore {
   /// Reads the folder's binder file.
   Future<BinderRead> read() async {
     final f = file;
+    // Not downloaded (or only its stub): present, never read, never missing.
+    if (isDataless(f.path)) return const BinderUnreadable(stillDownloading);
     try {
       if (!await f.exists()) return const BinderMissing();
       return BinderFound(Binder.parse(await f.readAsString()));
@@ -328,6 +331,13 @@ class BinderStore {
     for (var attempt = 1; attempt <= tries; attempt++) {
       // U2. Read.
       final f = file;
+      if (isDataless(f.path)) {
+        return BinderRefused(
+          BinderRefusal.inUse,
+          'The binder file is still downloading',
+          kept: kept,
+        );
+      }
       final List<int> bytes;
       try {
         bytes = await f.readAsBytes();
@@ -340,7 +350,9 @@ class BinderStore {
               kept: kept,
             );
           }
-          return BinderRefused(BinderRefusal.gone, 'The binder file is missing', kept: kept);
+          return hasStub(f.path)
+              ? BinderRefused(BinderRefusal.inUse, 'The binder file is still downloading', kept: kept)
+              : BinderRefused(BinderRefusal.gone, 'The binder file is missing', kept: kept);
         }
         last = inUse(e);
         if (attempt < tries) await Future<void>.delayed(retryDelay);
@@ -439,7 +451,9 @@ class BinderStore {
           return BinderUpdated(next, written, wrote: true, kept: kept);
         case ReplaceOutcome.changed:
           if (attempt >= tries && _notFound(f.path)) {
-            return BinderRefused(BinderRefusal.gone, 'The binder file is missing', kept: kept);
+            return hasStub(f.path)
+                ? BinderRefused(BinderRefusal.inUse, 'The binder file is still downloading', kept: kept)
+                : BinderRefused(BinderRefusal.gone, 'The binder file is missing', kept: kept);
           }
           last = BinderRefused(
             BinderRefusal.keepsChanging,
@@ -503,6 +517,7 @@ class BinderStore {
   /// read synchronously.
   bool fileHoldsBinderSync(String binderId) {
     try {
+      if (isDataless(file.path)) return false;
       return Binder.parse(utf8.decode(file.readAsBytesSync())).id == binderId;
     } on Object {
       return false;
@@ -529,7 +544,7 @@ class BinderStore {
   ///
   /// [beforePublish] is a test seam, run after the temporary file is written.
   Future<BinderCreated> create(Binder binder, {void Function()? beforePublish}) async {
-    if (await file.exists()) return BinderCreated.exists;
+    if (await file.exists() || isDataless(file.path)) return BinderCreated.exists;
     await directory.create(recursive: true);
     final tmp = newTempFile();
     final bytes = utf8.encode(binder.write());
@@ -584,8 +599,17 @@ class BinderStore {
     final copies = <BinderCopy>[];
     var aside = false;
     try {
-      await for (final e in directory.list(followLinks: false)) {
-        if (e is! File) continue;
+      await for (final listed in directory.list(followLinks: false)) {
+        if (listed is! File) continue;
+        // A stub is listed as the file it stands for, not downloaded.
+        var e = listed;
+        var stubbed = false;
+        final target = stubTargetName(_name(e.path));
+        if (target != null) {
+          e = File('${directory.path}${Platform.pathSeparator}$target');
+          if (e.existsSync()) continue;
+          stubbed = true;
+        }
         final name = _name(e.path);
         if (!name.startsWith('noted-binder') || name == binderFileName) continue;
         if (isBinderFileAsideName(name)) aside = true;
@@ -593,9 +617,11 @@ class BinderStore {
         Binder? binder;
         DateTime? modified;
         try {
-          modified = e.lastModifiedSync();
-          bytes = await e.readAsBytes();
-          binder = Binder.parse(utf8.decode(bytes));
+          if (!stubbed && !isDataless(e.path)) {
+            modified = e.lastModifiedSync();
+            bytes = await e.readAsBytes();
+            binder = Binder.parse(utf8.decode(bytes));
+          }
         } on Object {
           // Unreadable or not a binder.
         }

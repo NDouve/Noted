@@ -43,6 +43,12 @@ export 'src/search/search_index.dart'
 export 'src/search/search_query.dart';
 export 'src/search/text_folding.dart';
 export 'src/storage/coordination.dart' hide folderOf;
+export 'src/storage/dataless.dart'
+    hide
+        debugDatalessAbi,
+        debugDatalessLookupFailure,
+        debugResetDataless,
+        sfDataless;
 export 'src/storage/exclusive_move.dart'
     hide debugMoveStrategy, MoveStrategy, moveExclusiveUncoordinated;
 export 'src/storage/exclusive_publish.dart'

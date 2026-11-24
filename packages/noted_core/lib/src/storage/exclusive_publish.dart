@@ -7,6 +7,7 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'coordination.dart';
+import 'dataless.dart' show hasStub;
 
 /// Moves the finished file [tmp] to [target] only if nothing is at [target]
 /// at the moment of publishing. There is no check-then-rename window: the
@@ -73,6 +74,9 @@ bool _publishExclusiveSync(
   void Function()? beforeOsCall,
 }) {
   final from = tmp.path;
+  // A stubbed name (`.<name>.icloud`) is taken: nothing is published over a
+  // file that is not downloaded.
+  if (hasStub(target)) return false;
   final bool ok;
   try {
     if (Platform.isWindows) {
