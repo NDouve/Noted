@@ -92,7 +92,7 @@ void main() {
       for (var r = 0; r < 40; r++) [for (var c = 0; c < 50; c++) 'x' * 2000],
     ];
     final parts = noteTables(rows);
-    expect(parts.length, 39, reason: "header and one 100 KB row per part");
+    expect(parts.length, 39, reason: 'header and one 100 KB row per part');
     for (final p in parts) {
       expect(noteBlockBytes(p), lessThanOrEqualTo(256 * 1024));
       expect(noteBlockCells(p), lessThanOrEqualTo(2000));

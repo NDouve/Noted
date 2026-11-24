@@ -43,6 +43,12 @@ void main() {
     expect(importOptions(ImportFormat.text, none, disallowed: {'noted.file'}).last.off, 'Not allowed on this page');
   });
 
+  test('a switched-off module\'s choices are off', () {
+    final o = importOptions(ImportFormat.sheet, all, switchedOff: {'noted.image'});
+    expect(o.map((e) => e.off), [null, 'Switched off', null]);
+    expect(importAsks(ImportFormat.pdf, all, const {}, {'noted.image'}), isFalse);
+  });
+
   test('only a format with a choice besides a file asks', () {
     expect(importAsks(ImportFormat.text, none, const {}), isTrue);
     expect(importAsks(ImportFormat.sheet, none, const {}), isTrue);

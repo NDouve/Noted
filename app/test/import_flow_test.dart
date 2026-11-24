@@ -205,6 +205,62 @@ void main() {
     await w.close(t);
   });
 
+  testWidgets('a file named like an import file is a file box', (t) async {
+    final w = await open(t);
+    final f = await t.runAsync(() => write(w, 'x.noted-blocks.json', utf8.encode('{"version":1,"blocks":[{"type":"paragraph"}]}')));
+    final d = drop(t, w, [f!]);
+    await until(t, d.done);
+    expect(find.byKey(const ValueKey('import-dialog')), findsNothing);
+    expect(boxes(w).map((b) => b.typeId), ['noted.file']);
+    await w.close(t);
+  });
+
+  testWidgets('a page change between the dialog and the conversion stops the import, with the notices so far', (t) async {
+    final w = await open(t);
+    importLimits = () => const ImportLimits(sourceBytes: 10, entryBytes: 10, archiveBytes: 10);
+    var converted = false;
+    importRunner = <R>(R Function() work) async {
+      converted = true;
+      return work();
+    };
+    final gate = Completer<void>();
+    final c = w.canvas(t);
+    final target = c.captureImportTarget(null)!;
+    final run = runImport(t.element(find.byType(PageCanvas)), c, target, [
+      ImportSource('huge.txt', length: () async => 1000, read: () async => Uint8List(1000)),
+      ImportSource('a.txt', length: () async {
+        await gate.future;
+        return 1;
+      }, read: () async => Uint8List.fromList(utf8.encode('x'))),
+    ]);
+    await until(t, () => find.byKey(const ValueKey('import-dialog')).evaluate().isNotEmpty);
+    await t.tap(find.byKey(const ValueKey('import-ok')));
+    await t.pump();
+    await until(t, () => find.byKey(const ValueKey('import-dialog')).evaluate().isNotEmpty);
+    await t.tap(find.byKey(const ValueKey('import-ok')));
+    await t.pump(const Duration(milliseconds: 400));
+    await w.openPage(t, w.second);
+    gate.complete();
+    await t.runAsync(() => run);
+    await t.pump();
+    expect(converted, isFalse);
+    expect(boxes(w), isEmpty);
+    expect(notices, ['"huge.txt" is too large to import. Import stopped: the page changed.']);
+    await w.close(t);
+  });
+
+  testWidgets('Cancel after the page changed says nothing', (t) async {
+    final w = await open(t);
+    final f = await t.runAsync(() => write(w, 'doc.md', utf8.encode('# x')));
+    final d = drop(t, w, [f!]);
+    await until(t, () => find.byKey(const ValueKey('import-dialog')).evaluate().isNotEmpty);
+    await w.openPage(t, w.second);
+    await t.tap(find.byKey(const ValueKey('import-cancel')));
+    await until(t, d.done);
+    expect(notices, isEmpty);
+    await w.close(t);
+  });
+
   testWidgets('a page that changes during the conversion gets nothing, and the other page neither', (t) async {
     final w = await open(t);
     final a = w.nb.current!;

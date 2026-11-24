@@ -354,6 +354,35 @@ void main() {
     });
   });
 
+  group('notices', () {
+    final long = 'y' * 3000;
+    const shortened = 'long cells were shortened.';
+
+    test('long cells are shortened and said, with the file named', () {
+      final d = conv(ImportFormat.word, 'd.docx', buildDocx('<w:tbl><w:tr><w:tc>${wp(long)}</w:tc></w:tr></w:tbl>'));
+      expect(d.notices, ['"d.docx": $shortened']);
+      final x = conv(
+        ImportFormat.sheet,
+        'x.xlsx',
+        buildXlsx({'S': '<row r="1"><c r="A1" t="inlineStr"><is><t>$long</t></is></c></row>'}),
+      );
+      expect(x.notices, ['"x.xlsx": $shortened']);
+      final c = conv(ImportFormat.csv, 'a.csv', utf8.encode('a,b\n$long,2'));
+      expect(c.notices, ['"a.csv": $shortened']);
+      final cell = rowsOf(blocksOf(c).single)[1][0];
+      expect(utf8.encode(cell).length, 2048);
+      expect(conv(ImportFormat.csv, 'a.csv', utf8.encode('a,b\n1,2')).notices, isEmpty);
+    });
+
+    test('cut rows and columns name the file, and a csv has no sheet label', () {
+      final text = [for (var r = 0; r < 600; r++) [for (var c = 0; c < 60; c++) 'x'].join(',')].join('\n');
+      final n = conv(ImportFormat.csv, 'a.csv', utf8.encode(text)).notices.single;
+      expect(n, '"a.csv": left out rows past 500; columns past 50.');
+      final cells = [for (var k = 0; k < 60; k++) '<w:tc>${wp('c')}</w:tc>'].join();
+      expect(conv(ImportFormat.word, 'd.docx', buildDocx('<w:tbl><w:tr>$cells</w:tr></w:tbl>')).notices.single, startsWith('"d.docx": '));
+    });
+  });
+
   group('sizes', () {
     test('text over 256 KiB goes into more note boxes', () {
       final text = List.generate(600, (i) => 'p${'x' * 1000}').join('\n\n');

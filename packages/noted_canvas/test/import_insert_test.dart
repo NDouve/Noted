@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
+import 'dart:io' show FileSystemException;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -54,6 +55,7 @@ class _Module extends BoxModule<String> {
   Future<(String, Size)?> createFromFile(IncomingFile file, AttachmentStore store) async {
     await gate?.call();
     if (file.name.startsWith('bad')) return null;
+    if (file.name.startsWith('nofolder')) throw const FileSystemException('The folder rejects new files');
     return (file.name, size);
   }
 }
@@ -149,6 +151,18 @@ void main() {
     final r = await s.insertImportInto(target, [_f('a.x'), _f('bad.x')]);
     expect(boxes(c).map((e) => e.typeId), ['test.img']);
     expect(r.failed, ['bad.x']);
+    expect(r.stopped, isFalse);
+    c.dispose();
+  });
+
+  testWidgets('a file the folder could not store is named apart from one that made no box', (t) async {
+    final c = controller('a');
+    final s = await pump(t, c);
+    final target = s.captureImportTarget(null)!;
+    final r = await s.insertImportInto(target, [_f('nofolder.x'), _f('bad.x'), _f('ok.x')], module: 'test.img');
+    expect(r.unwritable, ['nofolder.x']);
+    expect(r.failed, ['bad.x']);
+    expect(r.added, 1);
     expect(r.stopped, isFalse);
     c.dispose();
   });
