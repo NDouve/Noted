@@ -52,6 +52,7 @@ class IcloudWorld {
   /// A folder access with the drive picked, registered and self-tested.
   Future<IcloudFolders> picked({CloudPlatform platform = CloudPlatform.macos, Duration retryAfter = Duration.zero}) async {
     final f = make(platform: platform, retryAfter: retryAfter);
+    channel.picked = drive.path; // the iOS picker
     await f.pick(pickDirectory: () async => drive.path);
     return f;
   }
