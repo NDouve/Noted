@@ -154,8 +154,14 @@ void main() {
                 globalPosition: at,
               ),
             );
-            await Future<void>.delayed(const Duration(milliseconds: 200));
           });
+          // The drop is an async import: wait until it is done. A drop that is
+          // taken starts it at once; one that is not never does.
+          for (var i = 0; i < 400 && importsRunning.value > 0; i++) {
+            await t.pump(const Duration(milliseconds: 50));
+            await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+          }
+          expect(importsRunning.value, 0, reason: 'the import finished');
           await w.settle(t);
         }
 
@@ -187,8 +193,14 @@ void main() {
                 globalPosition: at,
               ),
             );
-            await Future<void>.delayed(const Duration(milliseconds: 200));
           });
+          // The drop is an async import: wait until it is done. A drop that is
+          // taken starts it at once; one that is not never does.
+          for (var i = 0; i < 400 && importsRunning.value > 0; i++) {
+            await t.pump(const Duration(milliseconds: 50));
+            await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+          }
+          expect(importsRunning.value, 0, reason: 'the import finished');
           await w.settle(t);
         }
 
