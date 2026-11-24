@@ -659,7 +659,10 @@ final class ClosedAccess {
     try {
       if (!await dir.exists()) return (FolderState.absent, names);
       await for (final e in dir.list()) {
-        if (e is File && e.path.endsWith('.canvas')) names.add((e.path, await fileSignature(e.path)));
+        if (e is! File) continue;
+        // A page's stub is listed as the page, as the library lists it.
+        final path = e.path.endsWith('.canvas') ? e.path : NotedLibrary.stubbedPagePath(e.path);
+        if (path != null) names.add((path, await fileSignature(e.path)));
       }
     } on FileSystemException {
       return (FolderState.failed, const <(String, String)>[]);

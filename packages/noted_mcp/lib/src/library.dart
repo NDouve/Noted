@@ -482,6 +482,18 @@ final class NotedLibrary {
   /// The binder file of the binder folder [folder].
   static String binderFilePath(String folder) => '$folder${Platform.pathSeparator}$binderFileName';
 
+  /// The page path a `.<name>.icloud` stub at [path] stands for, when it is a
+  /// page's stub and the page file itself is not there; else null. The library
+  /// and the closed write's recheck list a stub as that path, so both count it
+  /// the same way.
+  static String? stubbedPagePath(String path) {
+    final cut = path.lastIndexOf(RegExp(r'[\\/]'));
+    final target = stubTargetName(path.substring(cut + 1));
+    if (target == null || !target.endsWith('.canvas')) return null;
+    final real = '${path.substring(0, cut + 1)}$target';
+    return FileSystemEntity.typeSync(real, followLinks: false) == FileSystemEntityType.notFound ? real : null;
+  }
+
   /// The `*.canvas` files in [path]: each that reads as a page, and the ids
   /// every file counts for.
   static Future<_FolderScan> _scanFolder(LockIdentity identity, String path, LibrarySources? kept) async {
@@ -498,11 +510,9 @@ final class NotedLibrary {
         if (e is! File) continue;
         // A `.<name>.icloud` stub is listed as `<name>`: a file that is there
         // and can't be read. (The file itself, if listed too, speaks for itself.)
-        final stubOf = stubTargetName(e.path.split(RegExp(r'[\\/]')).last);
-        if (stubOf != null) {
-          if (!stubOf.endsWith('.canvas')) continue;
-          final real = '${dir.path}${Platform.pathSeparator}$stubOf';
-          if (FileSystemEntity.typeSync(real, followLinks: false) != FileSystemEntityType.notFound) continue;
+        if (stubTargetName(e.path.split(RegExp(r'[\\/]')).last) != null) {
+          final real = stubbedPagePath(e.path);
+          if (real == null) continue;
           stats[real] = await fileSignature(e.path);
           carried[real] = fileIdsOf(real, null);
           continue;

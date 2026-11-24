@@ -1023,6 +1023,21 @@ void main() {
       expect(File(path).readAsBytesSync(), before);
     });
 
+    test('N6. a stub of a copy arriving under the hold is refused as a fresh load would, page bytes unchanged', () async {
+      final before = File(path).readAsBytesSync();
+      final out = await append(
+        toolbox(
+          beforeHold: (a) async {
+            if (a == 0) File('${pagesDir()}/.$id-LAPTOP.canvas.icloud').writeAsStringSync('');
+          },
+        ),
+        'aiT',
+      );
+      expect(out.isError, isTrue);
+      expect(out.text, ambiguousPageText);
+      expect(File(path).readAsBytesSync(), before);
+    });
+
     test('N2. a new file that can\'t be read and has no id, arriving under the hold, refuses the write', () async {
       // First: can this platform make a file unreadable at all (a probe outside every listed folder)?
       File('${root.path}/probe.txt').writeAsStringSync('x');
