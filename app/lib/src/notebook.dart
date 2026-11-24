@@ -842,14 +842,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _notifyLoad();
   }
 
-  // Whether [loc] is at or under an iCloud root that isn't tested yet.
   // Refuses a write into an iCloud root that is not tested or whose access is lost.
   void _assertTested(String path) {
-    if (_untested(path) || (icloud?.accessLost(path) ?? false)) throw NotebookException(_untestedMessage(path));
+    if (!_mayTouch(path)) throw NotebookException(_untestedMessage(path));
   }
 
   String _untestedMessage(String path) => icloud?.statusOf(path) ?? 'That folder is not available.';
 
+  // Whether [loc] may be written or swept: not in an iCloud root that is untested, and its access not lost (R5.9).
+  bool _mayTouch(String loc) => !_untested(loc) && (loc == _standalone || !(icloud?.accessLost(loc) ?? false));
+
+  // Whether [loc] is at or under an iCloud root that isn't tested yet.
   bool _untested(String loc) {
     if (_untestedRoots.isEmpty || loc == _standalone) return false;
     var k = _realKeys[loc];
@@ -2031,7 +2034,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   bool _isLocked(String loc) {
     if (_pullOnly(loc)) return true;
     // An iCloud root that isn't self-tested yet, or whose access is lost (R5.9).
-    if (_untested(loc) || (loc != _standalone && (icloud?.accessLost(loc) ?? false))) return true;
+    if (!_mayTouch(loc)) return true;
     if (loc == _standalone) return _defaultGone;
     final f = _folders[loc];
     if (f != null) return !f.available;
@@ -2098,7 +2101,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   String _lockedMessage(String loc) {
     if (_pullOnly(loc)) return pullOnlyMessageFor(loc);
-    if (_untested(loc) || (loc != _standalone && (icloud?.accessLost(loc) ?? false))) return _untestedMessage(loc);
+    if (!_mayTouch(loc)) return _untestedMessage(loc);
     final s = _binders[loc];
     // A hold is set before the binder's status changes.
     if (s != null && s._hold == BinderHold.damaged) return "This binder's file can't be read, so its pages are read-only.";
@@ -7232,7 +7235,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       throw NotebookException(pullOnlyMessageFor(path));
     }
     // Nor in an iCloud root that is not tested yet (R5.9).
-    if (_untested(path) && !await BinderStore(Directory(path)).file.exists()) {
+    if (!_mayTouch(path) && !await BinderStore(Directory(path)).file.exists()) {
       throw NotebookException(_untestedMessage(path));
     }
     await flush();
@@ -7645,7 +7648,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     ];
     for (final scope in scopes) {
       final dir = _templatesDirFor(scope);
-      final sweep = _sweepOff == 0 && !_pullOnly(dir.path) && !_untested(dir.path);
+      final sweep = _sweepOff == 0 && !_pullOnly(dir.path) && _mayTouch(dir.path);
       List<TemplateEntry> entries;
       if (sweep && scope != null) {
         // The sweep is decided inside its own turn at the binder's folder; a
@@ -7929,7 +7932,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final id = item.template.id;
     final assets = Directory('${dir.path}${Platform.pathSeparator}$id.assets');
     if (!_plainName.hasMatch(id) || _key(assets.parent.absolute.path) != _key(dir.absolute.path)) return;
-    if (_untested(dir.path)) return; // an iCloud root not yet tested: nothing is swept or deleted
+    if (!_mayTouch(dir.path)) return; // an iCloud root not yet tested: nothing is swept or deleted
     if (!await assets.exists()) return;
     final known = <String, String>{};
     if (await _templateAssetsShared(dir, id, known)) {
@@ -8664,10 +8667,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final got = await _lockRunUngated(dir, () async {
         // S: an aside of a replace that was killed is put back (never in a pull-only
         // place, and not while a found add runs); everything else is listed.
-        final sw = await binders.sweepLeftovers(restore: sweep && _sweepOff == 0 && !_pullOnly(path) && !_untested(path));
+        final sw = await binders.sweepLeftovers(restore: sweep && _sweepOff == 0 && !_pullOnly(path) && _mayTouch(path));
         var once = await _readBinderFile(binders);
         var made = false;
-        if (once.read is BinderMissing && create && !_pullOnly(path) && !_untested(path)) {
+        if (once.read is BinderMissing && create && !_pullOnly(path) && _mayTouch(path)) {
           // A complete copy of a binder file is never papered over by a new binder:
           // the user puts it back or deletes it first.
           if (sw.copies.any((c) => c.isTemp && c.binder != null)) {
@@ -8726,7 +8729,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final scanned = await _scanWithVerdict(
         pages,
         createFolder: createFolder,
-        sweep: sweep && _sweepOff == 0 && binder != null && !_untested(path),
+        sweep: sweep && _sweepOff == 0 && binder != null && _mayTouch(path),
         opening: true,
         expectId: want,
       );
@@ -11998,7 +12001,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final entries = await st.scan(
         createFolder: createFolder && !_pullOnly(st.directory.path),
         stamps: true,
-        sweep: sweep && _sweepOff == 0 && mayWrite && !_untested(st.directory.path) && (opening || !_heldAt(s?.path ?? '')),
+        sweep: sweep && _sweepOff == 0 && mayWrite && _mayTouch(st.directory.path) && (opening || !_heldAt(s?.path ?? '')),
       );
       // A chosen file that now holds another page: the open or a busy page
       // keeps it (its next save meets that page and is blocked); any other
@@ -12847,7 +12850,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> _restoreAside(BinderSection section) async {
     final store = _binderStore(Directory(section.path));
     await _lockRunUngated(Directory(section.path), () async {
-      await store.sweepLeftovers(restore: !_untested(section.path));
+      await store.sweepLeftovers(restore: _mayTouch(section.path));
       await _listCopiesLocked(section, store);
     });
   }
@@ -13944,7 +13947,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final st = _storeOf(loc);
       // Make the store find files whose names aren't the page id.
       // (Never when the folder is gone: a scan would create it.)
-      if (_key(st.pathFor(id)) != key && await st.directory.exists()) await _scan(st, sweep: _sweepOff == 0 && !_untested(st.directory.path));
+      if (_key(st.pathFor(id)) != key && await st.directory.exists()) await _scan(st, sweep: _sweepOff == 0 && _mayTouch(st.directory.path));
     }
     _setConflict(id, hasConflicts(page));
     _touch(loc);

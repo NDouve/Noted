@@ -419,7 +419,12 @@ class IcloudFolders extends ChangeNotifier {
     if (method == 'changed') {
       final p = args['path'];
       final to = args['to'];
-      if (p is String) onChanged?.call(p, to is String ? to : null);
+      if (p is String) {
+        onChanged?.call(p, to is String ? to : null);
+        // A change in a busy root: try its self-test again (not more than once a minute).
+        final e = _entryFor(p);
+        if (e != null && _checks[_k(e.path)] == CloudRootCheck.busy) unawaited(retryBusy().whenComplete(_armRetry));
+      }
       return;
     }
     await coordinator.handleEvent(method, args);
@@ -796,12 +801,31 @@ class IcloudFolders extends ChangeNotifier {
 
   // -- Self-test (R5.9) ------------------------------------------------------------
 
+  // The self-test of a busy root is retried on a timer of its own (R5.9: at most
+  // once a minute), whether or not the notebook watches folders (iOS doesn't).
+  Timer? _retryTimer;
+
+  void _armRetry() {
+    if (_disposed) return;
+    if (!_checks.values.contains(CloudRootCheck.busy)) {
+      _retryTimer?.cancel();
+      _retryTimer = null;
+      return;
+    }
+    if (_retryTimer?.isActive ?? false) return;
+    _retryTimer = Timer(retryBusyAfter, () {
+      _retryTimer = null;
+      unawaited(retryBusy().whenComplete(_armRetry));
+    });
+  }
+
   void _setCheck(CloudFolderEntry e, CloudRootCheck c) {
     final ek = _k(e.path);
     _checks[ek] = c;
     final real = _registered[ek];
     if (real != null) onRootWritable?.call(real, c == CloudRootCheck.passed);
     _changed();
+    _armRetry();
   }
 
   /// Runs the self-test again for every root whose last one timed out, at
@@ -1042,6 +1066,8 @@ class IcloudFolders extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _retryTimer?.cancel();
+    _retryTimer = null;
     for (final real in _registered.values) {
       unregisterCoordinator(real);
     }

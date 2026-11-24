@@ -298,6 +298,90 @@ void main() {
       });
     }
 
+    test('the iOS configuration (no folder watching): a busy root is retried by its own timer and becomes writable', () async {
+      final bdir = Directory('${drive.path}/Work')..createSync();
+      binders.parent.createSync(recursive: true);
+      recordEntry();
+      final seed = Notebook(PageStore(pages), buildModules(), bindersFile: binders);
+      await seed.load();
+      await seed.addBinder(bdir.path);
+      await seed.flush();
+      seed.dispose();
+
+      channel.mode = CoordinateMode.silent;
+      final f = IcloudFolders(
+        channel: channel,
+        file: access,
+        platform: CloudPlatform.ios,
+        coordinationTimeout: const Duration(milliseconds: 100),
+        retryBusyAfter: const Duration(milliseconds: 300),
+      );
+      folders.add(f);
+      // watchFiles is false, as main.dart builds it on iOS: no folder timer runs.
+      final nb = Notebook(PageStore(pages), buildModules(), bindersFile: binders, icloud: f, watchFiles: false);
+      notebooks.add(nb);
+      await nb.loadChecked();
+      expect(f.checkOf(drive.path), CloudRootCheck.busy);
+      await expectLater(nb.createPage(binderPath: bdir.path), throwsA(isA<NotebookException>()));
+      // The platform recovers; nothing else calls retryBusy.
+      channel.mode = CoordinateMode.go;
+      for (var i = 0; i < 40 && f.checkOf(drive.path) != CloudRootCheck.passed; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      expect(f.checkOf(drive.path), CloudRootCheck.passed);
+      final id = await nb.createPage(binderPath: bdir.path);
+      expect(bdir.listSync().any((e) => e.path.endsWith('$id.canvas')), isTrue);
+    });
+
+    test('a change event in a busy root retries its self-test (not before the minute is over)', () async {
+      recordEntry();
+      channel.mode = CoordinateMode.silent;
+      final f = make(timeout: const Duration(milliseconds: 100));
+      await f.start();
+      expect(f.checkOf(drive.path), CloudRootCheck.busy);
+      channel.mode = CoordinateMode.go;
+      await channel.emit('changed', {'path': drive.resolveSymbolicLinksSync()});
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(f.checkOf(drive.path), CloudRootCheck.busy, reason: 'the minute is not over');
+      clock = clock.add(const Duration(minutes: 1, seconds: 1));
+      await channel.emit('changed', {'path': drive.resolveSymbolicLinksSync()});
+      for (var i = 0; i < 30 && f.checkOf(drive.path) != CloudRootCheck.passed; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      expect(f.checkOf(drive.path), CloudRootCheck.passed);
+    });
+
+    test('a root whose access was refused is swept, restored and written by nothing, though its old path is readable', () async {
+      final bdir = Directory('${drive.path}/Work')..createSync();
+      binders.parent.createSync(recursive: true);
+      final seed = Notebook(PageStore(pages), buildModules(), bindersFile: binders);
+      await seed.load();
+      await seed.addBinder(bdir.path);
+      await seed.flush();
+      seed.dispose();
+      // A page leftover, and the binder's file left aside by a killed replace.
+      final pageAside = File('${bdir.path}/p1.canvas.cas-old')..writeAsStringSync('left over');
+      final binderFile = File('${bdir.path}/noted-binder.json');
+      final binderAside = File('${bdir.path}/noted-binder.json.cas-old')..writeAsStringSync(binderFile.readAsStringSync());
+      binderFile.deleteSync();
+      recordEntry();
+      channel.noAccess.add(record()['bookmark']! as String);
+      final other = Directory('${drive.path}/Other')..createSync();
+      final before = {for (final e in drive.listSync(recursive: true)) e.path};
+
+      final f = make();
+      final nb = Notebook(PageStore(pages), buildModules(), bindersFile: binders, icloud: f);
+      notebooks.add(nb);
+      await nb.loadChecked();
+      expect(f.accessLost(drive.path), isTrue);
+      expect(pageAside.existsSync(), isTrue, reason: 'not swept');
+      expect(binderAside.existsSync(), isTrue, reason: 'not restored');
+      expect(binderFile.existsSync(), isFalse);
+      await expectLater(nb.createPage(binderPath: bdir.path), throwsA(isA<NotebookException>()));
+      await expectLater(nb.addBinder(other.path), throwsA(isA<NotebookException>()));
+      expect({for (final e in drive.listSync(recursive: true)) e.path}, before, reason: 'nothing written');
+    });
+
     test('a failed probe leaves the root read-only for the session', () async {
       recordEntry();
       final f = make(publish: (t, p) async => throw const FileSystemException('no'));
