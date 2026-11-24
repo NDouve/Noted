@@ -147,6 +147,22 @@ void main() {
       expect(() => ZipReader(cut, limits).read('a'), throwsA(isA<ImportException>()));
     });
 
+    test('a payload that changed but kept its length fails its CRC-32', () {
+      for (final store in [true, false]) {
+        final zip = buildZip({'a.txt': 'hello hello hello hello'}, store: store);
+        expect(utf8.decode(ZipReader(zip, limits).read('a.txt')!), 'hello hello hello hello');
+        // Stored: a data byte (after the 30-byte header and the 5-byte name). Deflated: a byte of the
+        // directory's CRC, since a flipped bit in a deflate stream may not decode to other text.
+        final bad = Uint8List.fromList(zip);
+        bad[store ? 38 : bad.length - 22 - 51 + 16] ^= 0x01;
+        expect(
+          () => ZipReader(bad, limits).read('a.txt'),
+          throwsA(isA<ImportException>().having((e) => e.reason, 'reason', 'can’t be read')),
+          reason: store ? 'stored' : 'deflated',
+        );
+      }
+    });
+
     test('too many entries are refused', () {
       const few = ImportLimits(sourceBytes: 1000, entryBytes: 1000, archiveBytes: 1000, entries: 3);
       expect(() => ZipReader(buildZip({for (var i = 0; i < 4; i++) 'f$i': 'x'}), few), throwsA(isA<ImportException>()));

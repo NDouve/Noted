@@ -25,11 +25,13 @@ Uint8List buildZip(
     final flags = encrypted ? 1 : 0;
     final method = store ? 0 : 8;
     final usize = claimedSize ?? raw.length;
+    final crc = _crc32(raw);
     final local = ByteData(30)
       ..setUint32(0, 0x04034b50, Endian.little)
       ..setUint16(4, 20, Endian.little)
       ..setUint16(6, flags, Endian.little)
       ..setUint16(8, method, Endian.little)
+      ..setUint32(14, crc, Endian.little)
       ..setUint32(18, packed.length, Endian.little)
       ..setUint32(22, usize, Endian.little)
       ..setUint16(26, name.length, Endian.little);
@@ -43,6 +45,7 @@ Uint8List buildZip(
       ..setUint16(6, 20, Endian.little)
       ..setUint16(8, flags, Endian.little)
       ..setUint16(10, method, Endian.little)
+      ..setUint32(16, crc, Endian.little)
       ..setUint32(20, packed.length, Endian.little)
       ..setUint32(24, usize, Endian.little)
       ..setUint16(28, name.length, Endian.little)
@@ -98,4 +101,15 @@ Uint8List buildXlsx(Map<String, String> sheets, {List<String> shared = const []}
     for (var i = 0; i < names.length; i++)
       'xl/worksheets/sheet${i + 1}.xml': '<worksheet $ns><sheetData>${sheets[names[i]]}</sheetData></worksheet>',
   });
+}
+
+int _crc32(List<int> data) {
+  var crc = 0xFFFFFFFF;
+  for (final b in data) {
+    crc ^= b;
+    for (var k = 0; k < 8; k++) {
+      crc = (crc & 1) != 0 ? 0xEDB88320 ^ (crc >>> 1) : crc >>> 1;
+    }
+  }
+  return (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF;
 }

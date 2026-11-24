@@ -49,6 +49,7 @@ final class ZipReader {
       if (p + 46 > bytes.length || d.getUint32(p, Endian.little) != 0x02014b50) throw bad;
       final flags = d.getUint16(p + 8, Endian.little);
       final method = d.getUint16(p + 10, Endian.little);
+      final crc = d.getUint32(p + 16, Endian.little);
       final csize = d.getUint32(p + 20, Endian.little);
       final usize = d.getUint32(p + 24, Endian.little);
       final nameLen = d.getUint16(p + 28, Endian.little);
@@ -58,7 +59,7 @@ final class ZipReader {
       if (p + 46 + nameLen + extraLen + commentLen > bytes.length) throw bad;
       final name = utf8.decode(Uint8List.sublistView(bytes, p + 46, p + 46 + nameLen), allowMalformed: true);
       if (csize == 0xFFFFFFFF || usize == 0xFFFFFFFF || local == 0xFFFFFFFF) throw zip64;
-      entries[name] = _Entry(flags, method, csize, usize, local);
+      entries[name] = _Entry(flags, method, csize, usize, local, crc);
       p += 46 + nameLen + extraLen + commentLen;
     }
     return ZipReader._(bytes, limits, entries);
@@ -97,6 +98,7 @@ final class ZipReader {
     if (e.method == 0) {
       if (e.csize != e.usize) throw bad;
       _total += e.usize;
+      if (_crc32(data) != e.crc) throw bad;
       return data;
     }
     final out = BytesBuilder(copy: false);
@@ -124,17 +126,20 @@ final class ZipReader {
     }
     if (size != e.usize) throw bad;
     _total += size;
-    return out.takeBytes();
+    final inflated = out.takeBytes();
+    if (_crc32(inflated) != e.crc) throw bad;
+    return inflated;
   }
 }
 
 final class _Entry {
-  const _Entry(this.flags, this.method, this.csize, this.usize, this.local);
+  const _Entry(this.flags, this.method, this.csize, this.usize, this.local, this.crc);
   final int flags;
   final int method;
   final int csize;
   final int usize;
   final int local;
+  final int crc;
 }
 
 class _Collect implements Sink<List<int>> {
@@ -144,4 +149,25 @@ class _Collect implements Sink<List<int>> {
   void add(List<int> data) => _on(data);
   @override
   void close() {}
+}
+
+final Uint32List _crcTable = () {
+  final t = Uint32List(256);
+  for (var n = 0; n < 256; n++) {
+    var c = n;
+    for (var k = 0; k < 8; k++) {
+      c = (c & 1) != 0 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    }
+    t[n] = c;
+  }
+  return t;
+}();
+
+/// The CRC-32 of [data], as zip stores it.
+int _crc32(List<int> data) {
+  var c = 0xFFFFFFFF;
+  for (final b in data) {
+    c = _crcTable[(c ^ b) & 0xFF] ^ (c >>> 8);
+  }
+  return (c ^ 0xFFFFFFFF) & 0xFFFFFFFF;
 }
