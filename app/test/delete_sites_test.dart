@@ -438,8 +438,12 @@ const List<Site> writeSites = [
     'app/lib/src/cloud_sync.dart',
     'await dir.create(recursive: true);',
     1,
-    '$_gapMark: the folder the user chose for sync, made before any coordinator is registered for it (R5.9 step 5)',
+    '$_outsideMark: the sync working folder, app-private on the device and never an iCloud root',
   ),
+  ('app/lib/src/icloud_folders.dart', 'await part.writeAsBytes(nonce, flush: true);', 1, '$_tempMark: the probe\'s source, a fresh random name published by publishExclusive'),
+  ('app/lib/src/icloud_folders.dart', 'await file.parent.create(recursive: true);', 1, _appState),
+  ('app/lib/src/icloud_folders.dart', 'await tmp.writeAsBytes(bytes, flush: true);', 2, _appTemp),
+  ('app/lib/src/icloud_folders.dart', 'await t2.writeAsBytes(fresh, flush: true);', 1, _appTemp),
   ('app/lib/src/link_log.dart', 'target.parent.createSync(recursive: true);', 1, _appState),
   ('app/lib/src/link_log.dart', "if (target.existsSync() && target.lengthSync() > linkLogLimit) target.writeAsStringSync('');", 1, _appState),
   (
@@ -474,7 +478,7 @@ const List<Site> writeSites = [
     'app/lib/src/storage_check.dart',
     'await dir.create(recursive: true);',
     1,
-    '$_gapMark: the folder the write check probes, made if missing; not in R5.4\'s table',
+    '$_outsideMark: the folder the write check probes is the app data folder, never an iCloud root',
   ),
   (
     'app/lib/src/storage_check.dart',
@@ -497,7 +501,7 @@ const List<Site> writeSites = [
     'packages/noted_core/lib/src/binder/binder_store.dart',
     'await directory.create(recursive: true);',
     1,
-    '$_gapMark: BinderStore.create makes the binder folder; only its StorageBusy handler is in step 2\'s files',
+    '$_coordinatedMark: BinderStore.create\'s folder create, write: the folder that holds it',
   ),
   (
     'packages/noted_core/lib/src/storage/page_store.dart',
@@ -535,7 +539,7 @@ const List<Site> writeSites = [
     'packages/noted_sync/lib/src/pull_engine.dart',
     'dir.createSync();',
     1,
-    '$_gapMark: the pull engine makes a folder inside a notebook folder; `pull_engine.dart` is not in step 2\'s files',
+    '$_outsideMark: the pull engine works in the app-private OneDrive or WebDAV working folder, never an iCloud root',
   ),
   ('packages/noted_sync/lib/src/pull_engine.dart', 'await File(oldAbs).copy(copy.path);', 1, '$_tempMark: _newTmp, a fresh name in the state folder'),
 ];

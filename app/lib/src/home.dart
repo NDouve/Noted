@@ -18,6 +18,7 @@ import 'app_settings.dart';
 import 'binder_cover.dart';
 import 'context_panel.dart';
 import 'device_storage.dart';
+import 'icloud_folders.dart';
 import 'folder_wait_note.dart';
 import 'load_error_view.dart';
 import 'menu_bar.dart';
@@ -845,7 +846,7 @@ class _HomeState extends State<Home> {
                       narrow,
                       m,
                       notebook.loadError == null
-                          ? const Center(child: CircularProgressIndicator())
+                          ? Center(child: notebook.checkingICloud ? const Text(CloudFolderTexts.checking, key: ValueKey('checking-icloud')) : const CircularProgressIndicator())
                           : LoadErrorView(
                               error: notebook.loadError!,
                               stillLoading: notebook.loadRunning,

@@ -389,6 +389,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     f.name,
     f.reason ?? '',
     remove: () => _guard(() => _nb.removeStandaloneFolder(f.path)),
+    status: _nb.cloudStatusOf(f.path),
     menuKey: ValueKey('folder-menu-${f.path}'),
   );
 
@@ -400,6 +401,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     String reason, {
     VoidCallback? remove,
     Key? menuKey,
+    String? status,
   }) {
     return Tooltip(
       message: reason,
@@ -407,7 +409,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         key: key,
         title: name,
         disabled: true,
-        status: 'On another device',
+        status: status ?? 'On another device',
         trailing: remove == null
             ? null
             : SidebarMenuButton<String>(
@@ -540,7 +542,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
                     ? 'Moved to another folder'
                     : b.fileMissing && !b.missing
                     ? 'Binder file is missing'
-                    : 'On another device'),
+                    : (_nb.cloudStatusOf(b.path) ?? 'On another device')),
           trailing: SidebarMenuButton<String>(
             key: ValueKey('binder-menu-${b.path}'),
             tooltip: 'Binder options',

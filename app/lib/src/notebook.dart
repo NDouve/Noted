@@ -19,6 +19,7 @@ import 'ai/ai_merge_service.dart';
 import 'app_settings.dart';
 import 'attachment_copy.dart';
 import 'device_storage.dart';
+import 'icloud_folders.dart';
 import 'page_attachments.dart';
 import 'recovery_lock.dart';
 import 'recovery_store.dart';
@@ -807,11 +808,80 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     this.folderWaitNote = const Duration(seconds: 3),
     List<String> readOnlyRoots = const [],
     Map<String, String> readOnlyRootNames = const {},
+    this.icloud,
   }) : folderLocks = folderLocks ?? FolderLocks(),
        _readOnlyRoots = [for (final r in readOnlyRoots) _normalizePath(r)],
        _readOnlyRootNamesIn = readOnlyRootNames {
     _chain.onDetachedJobEnded = _oldJobEnded;
+    icloud?.onRootWritable = _rootWritable;
+    // A file that is not downloaded is asked for through the platform (R5.5).
+    if (icloud != null && icloud!.active) requestDownload = icloud!.startDownloading;
+    icloud?.addListener(_notifyLoad);
   }
+
+  /// Access to iCloud folders and bookmarked folders (R5.3, R5.9): resolved
+  /// before the first load, its roots self-tested before they are written.
+  final IcloudFolders? icloud;
+
+  // iCloud roots (real paths, as keys) that are registered but not yet
+  // self-tested, or whose self-test failed or timed out: `_isLocked` and every
+  // sweep refuse them (R5.9). Set before the first load and at each pick.
+  final Set<String> _untestedRoots = {};
+
+  // The real-path key of each location asked about, resolved once (cleared when a root changes).
+  final Map<String, String> _realKeys = {};
+
+  void _rootWritable(String root, bool writable) {
+    _realKeys.clear();
+    final k = _key(_normalizePath(root));
+    if (writable) {
+      _untestedRoots.remove(k);
+    } else {
+      _untestedRoots.add(k);
+    }
+    _notifyLoad();
+  }
+
+  // Refuses a write into an iCloud root that is not tested or whose access is lost.
+  void _assertTested(String path) {
+    if (!_mayTouch(path)) throw NotebookException(_untestedMessage(path));
+  }
+
+  String _untestedMessage(String path) => icloud?.statusOf(path) ?? 'That folder is not available.';
+
+  // Whether [loc] may be written or swept: not in an iCloud root that is untested, and its access not lost (R5.9).
+  bool _mayTouch(String loc) => !_untested(loc) && (loc == _standalone || !(icloud?.accessLost(loc) ?? false));
+
+  // Whether [loc] is at or under an iCloud root that isn't tested yet.
+  bool _untested(String loc) {
+    if (_untestedRoots.isEmpty || loc == _standalone) return false;
+    var k = _realKeys[loc];
+    if (k == null) {
+      k = _key(_realKey(loc));
+      // Not kept for a folder that is not there yet: it may resolve differently once made.
+      if (Directory(loc).existsSync()) _realKeys[loc] = k;
+    }
+    for (final r in _untestedRoots) {
+      if (k == r || k.startsWith(r.endsWith('/') ? r : '$r/')) return true;
+    }
+    return false;
+  }
+
+  // [loc] with links resolved (the roots are real paths).
+  String _realKey(String loc) {
+    try {
+      return Directory(loc).existsSync() ? Directory(loc).resolveSymbolicLinksSync() : loc;
+    } on FileSystemException {
+      return loc;
+    }
+  }
+
+  /// The folder rows' words for a location whose access needs the user or is
+  /// being checked (R5.3, R5.9), or null.
+  String? cloudStatusOf(String loc) => icloud?.statusOf(loc);
+
+  /// The text under the load's progress while an iCloud folder is checked.
+  bool get checkingICloud => icloud?.checking.value ?? false;
 
   // Folders whose working copy another program (the OneDrive pull) writes and
   // this notebook only reads. Empty on a device that never pulls.
@@ -1963,6 +2033,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // A location whose files must not be written.
   bool _isLocked(String loc) {
     if (_pullOnly(loc)) return true;
+    // An iCloud root that isn't self-tested yet, or whose access is lost (R5.9).
+    if (!_mayTouch(loc)) return true;
     if (loc == _standalone) return _defaultGone;
     final f = _folders[loc];
     if (f != null) return !f.available;
@@ -2029,6 +2101,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   String _lockedMessage(String loc) {
     if (_pullOnly(loc)) return pullOnlyMessageFor(loc);
+    if (!_mayTouch(loc)) return _untestedMessage(loc);
     final s = _binders[loc];
     // A hold is set before the binder's status changes.
     if (s != null && s._hold == BinderHold.damaged) return "This binder's file can't be read, so its pages are read-only.";
@@ -2253,6 +2326,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // them until a load succeeds.
     _settingsHeld = _SettingsHold.pending;
     _settingsDelay = null;
+    // Folder access first (R5.3, R5.9): bookmarks resolved, iCloud roots
+    // registered and self-tested before anything is read from or written to
+    // them. A failure there never stops the load.
+    try {
+      await icloud?.start();
+    } on Object catch (e) {
+      debugPrint('Starting the folder access failed: $e');
+    }
     // Held, so no new found-add pass starts; one under way ends before the lists
     // are cleared.
     await discoveryIdle;
@@ -2273,6 +2354,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _binders.clear();
     _folders.clear();
     _defaultGone = false;
+    _realKeys.clear();
     _adoptDefault(entries);
     _binderIds.clear();
     _removedBinders.clear();
@@ -2322,6 +2404,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (redo) await _saveSettings();
     _listSettled = false;
     await _binderSeam('settings-loaded', settingsFile?.path ?? '');
+    // The hold lifted and both files read: unused folder access is pruned (R5.3).
+    if (icloud != null && _settingsHeld == null) _cloudWork = _cloudWork.then((_) => _pruneCloudAccess());
     // Binders other devices made are looked for once the notebook is shown;
     // found binders are added in their own jobs, never inside startup.
     unawaited(discoverBinders());
@@ -7021,6 +7105,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<String> _newBinderFolder(String name) async {
     final root = defaultBinderFolderPath;
     if (_pullOnly(root)) throw NotebookException(pullOnlyMessageFor(root));
+    _assertTested(root);
     final builtin = settings?.defaultBinderFolder == null || _key(root) == _key(builtinBinderFolderPath);
     try {
       if (builtin) {
@@ -7040,6 +7125,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           continue;
         }
         await createFolderCoordinated(Directory(path), recursive: false);
+        // A bookmark of its own, on record before binders.json lists the binder (R5.3).
+        await icloud?.bookmarkCreated(path);
         return path;
       }
     } on StorageBusy {
@@ -7088,7 +7175,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (s == null) return;
     final normal = await checkStandaloneFolder(path);
     await addStandaloneFolder(normal);
+    final oldPage = s.defaultPageFolder;
     s.defaultPageFolder = normal;
+    if (oldPage != null) _cloudReleased(oldPage);
     notifyListeners();
   }
 
@@ -7100,7 +7189,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!await Directory(normal).exists()) {
       throw const NotebookException('That folder was not found.');
     }
+    final oldBinders = s.defaultBinderFolder;
     s.defaultBinderFolder = normal;
+    if (oldBinders != null) _cloudReleased(oldBinders);
     notifyListeners();
   }
 
@@ -7142,6 +7233,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // A binder file is never made in a pull-only folder (opening one is fine).
     if (_pullOnly(path) && !await BinderStore(Directory(path)).file.exists()) {
       throw NotebookException(pullOnlyMessageFor(path));
+    }
+    // Nor in an iCloud root that is not tested yet (R5.9).
+    if (!_mayTouch(path) && !await BinderStore(Directory(path)).file.exists()) {
+      throw NotebookException(_untestedMessage(path));
     }
     await flush();
     final r = await _queued(() => _listBinder(path, found: false));
@@ -7421,6 +7516,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
     _syncWatchers();
     await _saveSettings();
+    _cloudReleased(path);
     for (final id in released) {
       await _promoteDuplicate(id);
     }
@@ -7552,7 +7648,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     ];
     for (final scope in scopes) {
       final dir = _templatesDirFor(scope);
-      final sweep = _sweepOff == 0 && !_pullOnly(dir.path);
+      final sweep = _sweepOff == 0 && !_pullOnly(dir.path) && _mayTouch(dir.path);
       List<TemplateEntry> entries;
       if (sweep && scope != null) {
         // The sweep is decided inside its own turn at the binder's folder; a
@@ -7836,6 +7932,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final id = item.template.id;
     final assets = Directory('${dir.path}${Platform.pathSeparator}$id.assets');
     if (!_plainName.hasMatch(id) || _key(assets.parent.absolute.path) != _key(dir.absolute.path)) return;
+    if (!_mayTouch(dir.path)) return; // an iCloud root not yet tested: nothing is swept or deleted
     if (!await assets.exists()) return;
     final known = <String, String>{};
     if (await _templateAssetsShared(dir, id, known)) {
@@ -7990,6 +8087,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     String path, {
     required bool openCover,
   }) async {
+    _assertTested(path);
     final dir = Directory(path);
     final binders = BinderStore(dir);
     final made = template.instantiateBinder();
@@ -8177,6 +8275,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
     _syncWatchers();
     await _saveSettings();
+    _cloudReleased(path);
     for (final id in released) {
       await _promoteDuplicate(id);
     }
@@ -8568,10 +8667,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final got = await _lockRunUngated(dir, () async {
         // S: an aside of a replace that was killed is put back (never in a pull-only
         // place, and not while a found add runs); everything else is listed.
-        final sw = await binders.sweepLeftovers(restore: sweep && _sweepOff == 0 && !_pullOnly(path));
+        final sw = await binders.sweepLeftovers(restore: sweep && _sweepOff == 0 && !_pullOnly(path) && _mayTouch(path));
         var once = await _readBinderFile(binders);
         var made = false;
-        if (once.read is BinderMissing && create && !_pullOnly(path)) {
+        if (once.read is BinderMissing && create && !_pullOnly(path) && _mayTouch(path)) {
           // A complete copy of a binder file is never papered over by a new binder:
           // the user puts it back or deletes it first.
           if (sw.copies.any((c) => c.isTemp && c.binder != null)) {
@@ -8630,7 +8729,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final scanned = await _scanWithVerdict(
         pages,
         createFolder: createFolder,
-        sweep: sweep && _sweepOff == 0 && binder != null,
+        sweep: sweep && _sweepOff == 0 && binder != null && _mayTouch(path),
         opening: true,
         expectId: want,
       );
@@ -11902,7 +12001,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final entries = await st.scan(
         createFolder: createFolder && !_pullOnly(st.directory.path),
         stamps: true,
-        sweep: sweep && _sweepOff == 0 && mayWrite && (opening || !_heldAt(s?.path ?? '')),
+        sweep: sweep && _sweepOff == 0 && mayWrite && _mayTouch(st.directory.path) && (opening || !_heldAt(s?.path ?? '')),
       );
       // A chosen file that now holds another page: the open or a busy page
       // keeps it (its next save meets that page and is blocked); any other
@@ -12751,7 +12850,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<void> _restoreAside(BinderSection section) async {
     final store = _binderStore(Directory(section.path));
     await _lockRunUngated(Directory(section.path), () async {
-      await store.sweepLeftovers(restore: true);
+      await store.sweepLeftovers(restore: _mayTouch(section.path));
       await _listCopiesLocked(section, store);
     });
   }
@@ -13848,7 +13947,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final st = _storeOf(loc);
       // Make the store find files whose names aren't the page id.
       // (Never when the folder is gone: a scan would create it.)
-      if (_key(st.pathFor(id)) != key && await st.directory.exists()) await _scan(st, sweep: _sweepOff == 0);
+      if (_key(st.pathFor(id)) != key && await st.directory.exists()) await _scan(st, sweep: _sweepOff == 0 && _mayTouch(st.directory.path));
     }
     _setConflict(id, hasConflicts(page));
     _touch(loc);
@@ -14481,6 +14580,48 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     });
   }
 
+  // Folder access (R5.3) -------------------------------------------------------
+
+  Future<void> _cloudWork = Future<void>.value();
+
+  /// Completes when the folder-access pruning and releases started so far are done.
+  @visibleForTesting
+  Future<void> get cloudAccessIdle => _cloudWork;
+
+  // Every storage location the notebook keeps: the binder folders, the standalone
+  // folders (binders.json), the default page and binder folders (settings.json).
+  // The folder access of a location, or of an ancestor of one, is never pruned.
+  List<String> _retainedLocations() => [
+    ..._binders.keys,
+    ..._folders.keys,
+    ..._readFolderPaths().map(_normalizePath),
+    ?settings?.defaultPageFolder,
+    ?settings?.defaultBinderFolder,
+  ];
+
+  // Only with `binders.json` read (no hold) and `settings.json` read.
+  Future<void> _pruneCloudAccess() async {
+    final access = icloud;
+    if (access == null || _disposed || _settingsHeld != null) return;
+    if (settings != null && !settings!.canRememberNotes) return;
+    try {
+      await access.prune(_retainedLocations);
+    } on Object catch (e) {
+      debugPrint('Pruning the folder access failed: $e');
+    }
+  }
+
+  // A folder left the notebook's lists: its access goes unless it is still kept.
+  void _cloudReleased(String path) {
+    final access = icloud;
+    if (access == null) return;
+    // As the prune: nothing is released while settings.json can't be read.
+    if (settings != null && !settings!.canRememberNotes) return;
+    _cloudWork = _cloudWork
+        .then((_) => access.released(path, _retainedLocations))
+        .catchError((Object e) => debugPrint('Releasing folder access failed: $e'));
+  }
+
   // Folders that come and go -------------------------------------------------
 
   void _startFolderTimer() {
@@ -14489,6 +14630,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!watchFiles || _disposed || folderCheckInterval <= Duration.zero) return;
     _folderTimer = Timer.periodic(folderCheckInterval, (_) {
       _discoveryTick();
+      if (icloud != null) unawaited(icloud!.retryBusy());
       unawaited(checkFolders());
     });
   }
@@ -15607,6 +15749,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final dir = Directory(_normalizePath(chosen));
     // Nothing is made in a pull-only folder.
     if (_pullOnly(dir.path)) throw NotebookException(pullOnlyMessageFor(dir.path));
+    _assertTested(dir.path);
     final newPageId = newId();
     final copy = page.withMeta(page.meta.withId(newPageId).withPlacement(parentId: null, order: 0));
     final left = <String>[];
