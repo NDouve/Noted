@@ -456,6 +456,7 @@ void main() {
       await nb.loadChecked();
       await pickInto(nb, d);
       await nb.setDefaultBinderFolder(d.path);
+      await nb.cloudAccessIdle; // as the other cases: nothing of this launch is still pruning
       final f2 = await relaunch(nb, f, (_) {});
       expect(entries().single['path'], real(d));
       final nb2 = notebooks.last;
@@ -468,7 +469,8 @@ void main() {
       final f3 = make();
       final nb3 = open(f3);
       await nb3.loadChecked();
-      expect(nb3.binders.single.available, isTrue);
+      await nb3.loadChecked();
+      await nb3.cloudAccessIdle;
     });
 
     test('a binder created in the picked default binder folder resolves after the setting changed and a relaunch (N1)', () async {

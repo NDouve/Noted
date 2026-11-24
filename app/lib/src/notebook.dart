@@ -14749,7 +14749,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!(watchFiles || cloudChecks) || _disposed || folderCheckInterval <= Duration.zero) return;
     _folderTimer = Timer.periodic(folderCheckInterval, (_) {
       _discoveryTick();
-      if (icloud != null) unawaited(icloud!.retryBusy());
+      if (icloud != null) {
+        unawaited(icloud!.retryBusy());
+        // Version temps a crash left, in any folder of an iCloud root (R5.8).
+        unawaited(icloud!.landLeftoverTemps());
+      }
       unawaited(checkFolders());
     });
   }

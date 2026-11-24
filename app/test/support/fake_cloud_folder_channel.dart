@@ -4,6 +4,7 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/services.dart';
 import 'package:noted/src/icloud_folders.dart';
@@ -100,6 +101,7 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
 
   final Map<String, List<FakeVersion>> _versions = {};
   int _versionCounter = 0;
+  final Random _random = Random.secure();
 
   /// `versions` throws (the platform could not be reached).
   bool versionsFails = false;
@@ -230,9 +232,19 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
             out.add({'id': v.id, 'error': 'The copy failed.'});
             continue;
           }
-          final hex = [for (var i = 0; i < 8; i++) (_versionCounter++ * 37 % 256).toRadixString(16).padLeft(2, '0')].join();
-          final tmp = '${f.parent.path}${Platform.pathSeparator}.${f.uri.pathSegments.last}.noted-version-$hex.tmp';
-          File(tmp).writeAsBytesSync(v.bytes, mode: FileMode.writeOnly, flush: true);
+          // As Swift does: 16 random hex, created exclusively.
+          late String tmp;
+          while (true) {
+            final hex = [for (var i = 0; i < 8; i++) _random.nextInt(256).toRadixString(16).padLeft(2, '0')].join();
+            tmp = '${f.parent.path}${Platform.pathSeparator}.${f.uri.pathSegments.last}.noted-version-$hex.tmp';
+            try {
+              File(tmp).createSync(exclusive: true);
+              break;
+            } on FileSystemException {
+              if (!File(tmp).existsSync()) rethrow;
+            }
+          }
+          File(tmp).writeAsBytesSync(v.bytes, flush: true);
           temps.add(tmp);
           out.add({'id': v.id, 'tmpPath': tmp});
         }

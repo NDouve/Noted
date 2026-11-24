@@ -304,6 +304,12 @@ class VersionLanding {
 
   /// Other files a leftover version temp couldn't be kept for.
   final Set<String> stuck = {};
+
+  /// Files whose leftover temps could not be placed yet (counted as refusals).
+  final Set<String> refusedTargets = {};
+
+  /// Nothing was learned: the file is not downloaded. Its row stays as it is.
+  bool skipped = false;
 }
 
 /// Why a file is listed with iCloud versions (R5.8).
@@ -341,6 +347,9 @@ const String keepInICloudText = 'Keep it in iCloud';
 enum _VKind { page, binder, attachment, template, other }
 
 final RegExp _versionTemp = RegExp(r'^\.(.+)\.noted-version-[0-9a-f]{16}\.tmp$');
+
+// The zone value that marks code running inside a landing.
+final Object _landingZone = Object();
 
 bool _isVersionTemp(String path) => _versionTemp.hasMatch(path.split(RegExp(r'[\\/]')).last);
 
@@ -419,13 +428,19 @@ class IcloudFolders extends ChangeNotifier {
     this.ownFolders = const [],
     this.publishProbe = _publishProbe,
     this.versionRetryAfter = const Duration(seconds: 5),
+    this.tempScanAfter = const Duration(minutes: 1),
     DateTime Function()? now,
   }) : _channel = channel,
        _now = now ?? DateTime.now {
     coordinator = ChannelCoordinator(channel, timeout: coordinationTimeout);
     // A `pending` answer lands the versions of its files, as a turn of its own
     // (R5.8); the caller's busy path retries after it.
-    coordinator.onVersionsPending = (paths) => unawaited(landVersions(paths));
+    // A `pending` raised inside a landing never schedules another one: the
+    // landing's own refusal is counted instead (it would loop).
+    coordinator.onVersionsPending = (paths) {
+      if (Zone.current[_landingZone] == true) return;
+      unawaited(landVersions(paths));
+    };
     channel.onEvent = _onEvent;
   }
 
@@ -475,6 +490,9 @@ class IcloudFolders extends ChangeNotifier {
   /// The least time between two retries of a file whose versions can't be
   /// landed yet (a change event of it, R5.8).
   final Duration versionRetryAfter;
+
+  /// The least time between two scans of the roots for version temps.
+  final Duration tempScanAfter;
 
   /// A test seam awaited at each step of a landing (`copied`, `published`,
   /// `verified`, `resolved`) with the file's path; a throw there is a crash.
@@ -981,21 +999,47 @@ class IcloudFolders extends ChangeNotifier {
   Future<void> landAllVersions() async {
     final files = <String>[];
     for (final root in _registered.values.toList()) {
-      _collectVersionable(Directory(root), files);
+      _collectVersionable(Directory(root), files, pages: true);
+    }
+    _lastTempScan = _now();
+    await landVersions(files);
+  }
+
+  /// Places the version temps left in any folder of an iCloud root (`.assets`
+  /// included), at most once in [tempScanAfter]; the notebook calls it at its
+  /// folder checks.
+  Future<void> landLeftoverTemps() async {
+    final last = _lastTempScan;
+    if (_disposed || (last != null && _now().difference(last) < tempScanAfter)) return;
+    _lastTempScan = _now();
+    final files = <String>[];
+    for (final root in _registered.values.toList()) {
+      _collectVersionable(Directory(root), files, pages: false);
     }
     await landVersions(files);
   }
 
-  void _collectVersionable(Directory dir, List<String> out) {
+  DateTime? _lastTempScan;
+
+  // Every page and binder file ([pages]), and each folder that holds a version
+  // temp (its path is landed as a folder), under [dir]; `.assets` folders are
+  // looked into for temps only.
+  void _collectVersionable(Directory dir, List<String> out, {required bool pages, bool assets = false}) {
     try {
+      var hasTemp = false;
       for (final e in dir.listSync(followLinks: false)) {
         final name = e.path.split(RegExp(r'[\\/]')).last;
         if (e is Directory) {
-          if (!name.startsWith('.') && !name.endsWith('.assets')) _collectVersionable(e, out);
-        } else if (e is File && (name.endsWith('.canvas') || name == binderFileName) && !name.startsWith('.')) {
-          out.add(e.path);
+          if (!name.startsWith('.')) _collectVersionable(e, out, pages: pages, assets: assets || name.endsWith('.assets'));
+        } else if (e is File) {
+          if (_isVersionTemp(e.path)) {
+            hasTemp = true;
+          } else if (pages && !assets && (name.endsWith('.canvas') || name == binderFileName) && !name.startsWith('.')) {
+            out.add(e.path);
+          }
         }
       }
+      if (hasTemp) out.add(dir.path);
     } on FileSystemException {
       // A folder that can't be listed now is looked at at the next launch.
     }
@@ -1021,19 +1065,29 @@ class IcloudFolders extends ChangeNotifier {
     final k = _k(path);
     _issueTried[k] = _now();
     final VersionLanding l;
+    final isFolder = FileSystemEntity.isDirectorySync(path);
     try {
-      final dir = Directory(File(path).parent.path);
+      final dir = Directory(isFolder ? path : File(path).parent.path);
       final lock = locks;
-      l = lock == null ? await _landLocked(path) : await lock.run(dir, () => _landLocked(path));
+      l = await runZoned(
+        () => lock == null ? _landLocked(path) : lock.run(dir, () => _landLocked(path)),
+        zoneValues: {_landingZone: true},
+      );
     } on Object catch (e) {
       debugPrint('Noted: landing the versions of $path failed: $e');
-      _refused(path);
+      if (!isFolder) _refused(path);
       return;
     }
     final name = path.split(RegExp(r'[\\/]')).last;
-    if (l.cantKeep) {
+    // A temp that could not be placed counts against its file (not this one).
+    for (final r in l.refusedTargets) {
+      if (isFolder || _k(r) != k) _refused(r);
+    }
+    if (isFolder || l.skipped) {
+      // A folder landing only places temps; a skipped file keeps its row.
+    } else if (l.cantKeep) {
       _setIssue(path, CloudVersionIssue(path, CloudVersionIssueKind.cantKeep));
-    } else if (l.refused) {
+    } else if (l.refused || l.refusedTargets.any((t) => _k(t) == k)) {
       _refused(path);
     } else if (l.others.isNotEmpty) {
       _refusals.remove(k);
@@ -1123,6 +1177,11 @@ class IcloudFolders extends ChangeNotifier {
   Future<VersionLanding> _landLocked(String path) async {
     final k = _k(path);
     final out = VersionLanding(path);
+    if (FileSystemEntity.isDirectorySync(path)) {
+      // A folder: only the temps left in it are placed.
+      await _landTemps(path, out);
+      return out;
+    }
     final dir = File(path).parent.path;
     final target = _targetOf(path.split(RegExp(r'[\\/]')).last);
     out.leftover = target.leftover;
@@ -1132,6 +1191,7 @@ class IcloudFolders extends ChangeNotifier {
     if (isDataless(path)) {
       // Not read, and its versions not asked for: it is downloaded first.
       startDownloading(path);
+      out.skipped = true;
       return out;
     }
     if (FileSystemEntity.typeSync(path, followLinks: false) == FileSystemEntityType.notFound) {
@@ -1166,7 +1226,7 @@ class IcloudFolders extends ChangeNotifier {
           case _VKind.binder:
             await _landPageVersion(path, id, tmp, dir, target.name, kind, out);
           case _VKind.attachment:
-            await _landAttachmentVersion(path, id, tmp, target.name, out);
+            await _landAttachmentVersion(path, id, tmp, target.name, out, sole: list.length == 1);
           case _VKind.template:
           case _VKind.other:
             // Nothing to land it into: it stays unresolved in iCloud.
@@ -1226,7 +1286,12 @@ class IcloudFolders extends ChangeNotifier {
   Future<bool> _resolveVersion(String path, String id, VersionLanding out) async {
     try {
       final r = await _channel.invoke('resolveVersion', {'path': path, 'id': id});
-      if (r == true) out.resolved++;
+      if (r != true) {
+        // No such unresolved version: not resolved by this landing.
+        out.refused = true;
+        return false;
+      }
+      out.resolved++;
     } on Object catch (e) {
       debugPrint('Noted: resolving a version of $path failed: $e');
       out.refused = true;
@@ -1236,7 +1301,7 @@ class IcloudFolders extends ChangeNotifier {
     return true;
   }
 
-  Future<void> _landAttachmentVersion(String path, String id, String tmp, String targetName, VersionLanding out) async {
+  Future<void> _landAttachmentVersion(String path, String id, String tmp, String targetName, VersionLanding out, {required bool sole}) async {
     final nameHash = attachmentNameHash(targetName)!;
     final bytes = await File(tmp).readAsBytes();
     if (contentHash(bytes) != nameHash) {
@@ -1246,7 +1311,7 @@ class IcloudFolders extends ChangeNotifier {
       return;
     }
     await _step('verified', path);
-    final ok = await _placeAttachment(File(tmp), bytes, path, nameHash, out, () => _resolveVersion(path, id, out));
+    final ok = await _placeAttachment(File(tmp), bytes, path, nameHash, out, () => _resolveVersion(path, id, out), sole: sole);
     if (!ok) out.refused = true;
   }
 
@@ -1260,8 +1325,9 @@ class IcloudFolders extends ChangeNotifier {
     String path,
     String nameHash,
     VersionLanding out,
-    Future<bool> Function() resolve,
-  ) async {
+    Future<bool> Function() resolve, {
+    bool sole = true,
+  }) async {
     final f = File(path);
     final exists = FileSystemEntity.typeSync(path, followLinks: false) != FileSystemEntityType.notFound;
     if (!exists) {
@@ -1278,7 +1344,17 @@ class IcloudFolders extends ChangeNotifier {
         await _removeTemp(tmp.path, bytes);
         return resolve();
       case AttachmentState.damaged:
-        // The temp is the durable copy now: the version is let go first.
+        // The set-aside is a move of the file: another unresolved version would
+        // make it pending for good. Then nothing is resolved and the file is
+        // listed; the temp goes (every version is still in iCloud).
+        if (!sole) {
+          out.cantKeep = true;
+          await _removeTemp(tmp.path, bytes);
+          return true;
+        }
+        // The temp is the durable copy now: the version is let go first (a crash
+        // after it leaves the temp, which the launch pass and the folder tick
+        // find in any folder, `.assets` included).
         if (!await resolve()) return false;
         final aside = await setAsideDamaged(f, c.found!);
         if (aside.name == null) return false;
@@ -1352,7 +1428,8 @@ class IcloudFolders extends ChangeNotifier {
           await _removeTemp(t.path, bytes);
           return;
         }
-        await _placeAttachment(t, bytes, '$dir$_sep${target.name}', nameHash, out, () async => true);
+        final at = '$dir$_sep${target.name}';
+        if (!await _placeAttachment(t, bytes, at, nameHash, out, () async => true)) out.refusedTargets.add(at);
       case _VKind.template:
       case _VKind.other:
         await _removeTemp(t.path, bytes);
