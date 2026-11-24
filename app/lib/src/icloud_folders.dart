@@ -14,7 +14,10 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:noted_canvas/noted_canvas.dart' show AttachmentState;
 import 'package:noted_core/noted_core.dart';
+
+import 'attachment_copy.dart';
 
 /// Which Apple (or other) platform the folder access runs on; a seam, so
 /// tests choose it.
@@ -274,6 +277,82 @@ enum CloudAccess { live, anotherDevice }
 /// What the self-test of an iCloud root says.
 enum CloudRootCheck { checking, passed, busy, unsafe }
 
+/// What one landing of a file's iCloud versions did (R5.8).
+class VersionLanding {
+  VersionLanding(this.path);
+
+  /// The file whose versions were landed (a leftover's own path for a leftover).
+  final String path;
+
+  /// The copies now holding versions (published or adopted).
+  final List<String> published = [];
+
+  /// How many versions were resolved.
+  int resolved = 0;
+
+  /// [path] is a primitive's leftover (`.cas-old`, `.cas-verified`).
+  bool leftover = false;
+
+  /// Something failed that may work later (a refused call, a failed copy).
+  bool refused = false;
+
+  /// Both copy names were taken by unequal files: the versions stay unresolved.
+  bool cantKeep = false;
+
+  /// Versions of an attachment (or template) that no page can use.
+  final Set<String> others = {};
+
+  /// Other files a leftover version temp couldn't be kept for.
+  final Set<String> stuck = {};
+
+  /// Files whose leftover temps could not be placed yet (counted as refusals).
+  final Set<String> refusedTargets = {};
+
+  /// Nothing was learned: the file is not downloaded. Its row stays as it is.
+  bool skipped = false;
+}
+
+/// Why a file is listed with iCloud versions (R5.8).
+enum CloudVersionIssueKind {
+  /// The row `iCloud holds versions of <name> that Noted can't keep yet`.
+  cantKeep,
+
+  /// The row `iCloud holds another version of <name>`.
+  otherVersion,
+}
+
+/// A row about the iCloud versions of one file.
+class CloudVersionIssue {
+  const CloudVersionIssue(this.path, this.kind, {this.ids = const {}, this.keepable = false});
+
+  final String path;
+  final CloudVersionIssueKind kind;
+
+  /// The versions that make the row (an attachment's or template's other ones).
+  final Set<String> ids;
+
+  /// The row has the action "Keep it in iCloud" (an attachment's other version).
+  final bool keepable;
+
+  String get name => path.split(RegExp(r'[\\/]')).last;
+
+  String get text => kind == CloudVersionIssueKind.cantKeep
+      ? "iCloud holds versions of $name that Noted can't keep yet"
+      : 'iCloud holds another version of $name';
+}
+
+/// The words of the action on an attachment's other-version row.
+const String keepInICloudText = 'Keep it in iCloud';
+
+enum _VKind { page, binder, attachment, template, other }
+
+final RegExp _versionTemp = RegExp(r'^\.(.+)\.noted-version-[0-9a-f]{16}\.tmp$');
+
+// The zone value that marks code running inside a landing.
+final Object _landingZone = Object();
+
+bool _isVersionTemp(String path) => _versionTemp.hasMatch(path.split(RegExp(r'[\\/]')).last);
+
 class _Read {
   const _Read(this.entries, this.bytes, {this.refused = false});
 
@@ -348,10 +427,20 @@ class IcloudFolders extends ChangeNotifier {
     this.retryBusyAfter = const Duration(minutes: 1),
     this.ownFolders = const [],
     this.publishProbe = _publishProbe,
+    this.versionRetryAfter = const Duration(seconds: 5),
+    this.tempScanAfter = const Duration(minutes: 1),
     DateTime Function()? now,
   }) : _channel = channel,
        _now = now ?? DateTime.now {
     coordinator = ChannelCoordinator(channel, timeout: coordinationTimeout);
+    // A `pending` answer lands the versions of its files, as a turn of its own
+    // (R5.8); the caller's busy path retries after it.
+    // A `pending` raised inside a landing never schedules another one: the
+    // landing's own refusal is counted instead (it would loop).
+    coordinator.onVersionsPending = (paths) {
+      if (Zone.current[_landingZone] == true) return;
+      unawaited(landVersions(paths));
+    };
     channel.onEvent = _onEvent;
   }
 
@@ -386,8 +475,29 @@ class IcloudFolders extends ChangeNotifier {
   /// root is gone.
   void Function(String root, bool writable)? onRootWritable;
 
-  /// An event `changed(path, to?)` from the platform's presenter (step 6).
+  /// An event `changed(path, to?)` from the platform's presenter (M8). The
+  /// notebook looks at both paths of a move.
   void Function(String path, String? to)? onChanged;
+
+  /// Called after a landing published a copy or resolved a version (R5.8): the
+  /// notebook looks at the new files, sweeps a leftover's folder again and
+  /// retries what was `pending`.
+  void Function(VersionLanding landing)? onLanded;
+
+  /// Called when the rows of [versionIssues] change.
+  void Function()? onIssuesChanged;
+
+  /// The least time between two retries of a file whose versions can't be
+  /// landed yet (a change event of it, R5.8).
+  final Duration versionRetryAfter;
+
+  /// The least time between two scans of the roots for version temps.
+  final Duration tempScanAfter;
+
+  /// A test seam awaited at each step of a landing (`copied`, `published`,
+  /// `verified`, `resolved`) with the file's path; a throw there is a crash.
+  @visibleForTesting
+  Future<void> Function(String step, String path)? landingStep;
 
   /// Whether this platform has any folder access to manage.
   bool get active => platform != CloudPlatform.other;
@@ -420,7 +530,11 @@ class IcloudFolders extends ChangeNotifier {
       final p = args['path'];
       final to = args['to'];
       if (p is String) {
-        onChanged?.call(p, to is String ? to : null);
+        final other = to is String ? to : null;
+        if (!_isVersionTemp(p) && !(other != null && _isVersionTemp(other))) {
+          onChanged?.call(p, other);
+          _retryIssuesAt(p);
+        }
         // A change in a busy root: try its self-test again (not more than once a minute).
         final e = _entryFor(p);
         if (e != null && _checks[_k(e.path)] == CloudRootCheck.busy) unawaited(retryBusy().whenComplete(_armRetry));
@@ -799,6 +913,569 @@ class IcloudFolders extends ChangeNotifier {
     );
   }
 
+  // -- Versions (R5.8) --------------------------------------------------------
+
+  Future<void> _landTail = Future<void>.value();
+  final Set<String> _queued = {}; // keys of the files waiting for their landing
+  final Map<String, CloudVersionIssue> _issues = {}; // by file key
+  final Map<String, int> _refusals = {}; // landings in a row that were refused
+  final Map<String, DateTime> _issueTried = {};
+  final Map<String, Set<String>> _kept = {}; // "Keep it in iCloud": the versions hidden
+
+  /// The rows about iCloud versions Noted can't land (or keeps in iCloud).
+  List<CloudVersionIssue> get versionIssues => [
+    for (final i in _issues.values)
+      if (!_hidden(i)) i,
+  ];
+
+  bool _hidden(CloudVersionIssue i) {
+    final kept = _kept[_k(i.path)];
+    return kept != null && i.ids.isNotEmpty && i.ids.every(kept.contains);
+  }
+
+  /// Whether the versions of [path] can't be landed yet: its moves and deletes
+  /// stay pending, and the notebook keeps edits of it in recovery.
+  bool versionsStuck(String path) => _issues[_k(path)]?.kind == CloudVersionIssueKind.cantKeep;
+
+  /// The row's text for [path] when its versions can't be landed, or null.
+  String? versionRowOf(String path) {
+    final i = _issues[_k(path)];
+    return i != null && i.kind == CloudVersionIssueKind.cantKeep ? i.text : null;
+  }
+
+  /// "Keep it in iCloud": hides the row of [path] until its versions change.
+  void keepInICloud(String path) {
+    final i = _issues[_k(path)];
+    if (i == null || !i.keepable) return;
+    _kept[_k(path)] = {...i.ids};
+    onIssuesChanged?.call();
+  }
+
+  void _setIssue(String path, CloudVersionIssue issue) {
+    final k = _k(path);
+    final old = _issues[k];
+    _issues[k] = issue;
+    if (old == null || old.kind != issue.kind || !_sameIds(old.ids, issue.ids)) {
+      if (issue.kind == CloudVersionIssueKind.otherVersion && !(_kept[k]?.containsAll(issue.ids) ?? false)) _kept.remove(k);
+      onIssuesChanged?.call();
+    }
+  }
+
+  // Whether a version temp of [path] is still in its folder.
+  bool _hasTempFor(String path) {
+    final f = File(path);
+    final prefix = '.${f.uri.pathSegments.last}.noted-version-';
+    if (!f.parent.existsSync()) return false; // the folder is gone: no temp is there
+    try {
+      for (final e in f.parent.listSync(followLinks: false)) {
+        final n = e.path.split(RegExp(r'[\\/]')).last;
+        if (e is File && n.startsWith(prefix) && _isVersionTemp(e.path)) return true;
+      }
+    } on FileSystemException {
+      return true;
+    }
+    return false;
+  }
+
+  void _clearIssue(String path) {
+    // A row raised for a temp that could not be placed stays until it is gone.
+    if (_hasTempFor(path)) return;
+    final k = _k(path);
+    _refusals.remove(k);
+    _kept.remove(k);
+    if (_issues.remove(k) != null) onIssuesChanged?.call();
+  }
+
+  bool _sameIds(Set<String> a, Set<String> b) => a.length == b.length && a.containsAll(b);
+
+  /// Lands the iCloud versions of [paths] (the files a `pending` answer named,
+  /// or files with versions left). Each file is its own turn of its folder's
+  /// lock, started after the caller's turn; the returned future completes when
+  /// they are all done. A coordinator's `pending` calls it and ignores that.
+  Future<void> landVersions(Iterable<String> paths) {
+    final waits = <Future<void>>[];
+    for (final p in paths.toSet()) {
+      if (_disposed || !_queued.add(_k(p))) continue;
+      final run = _landTail
+          .then((_) async {
+            // Never inside the turn that was refused.
+            await Future<void>.delayed(Duration.zero);
+            _queued.remove(_k(p));
+            if (!_disposed) await _landOne(p);
+          })
+          .catchError((Object e) {
+            debugPrint('Noted: landing the versions of $p failed: $e');
+          });
+      _landTail = run;
+      waits.add(run);
+    }
+    return Future.wait(waits).then<void>((_) {});
+  }
+
+  /// Looks for versions of every page and binder file in each iCloud root
+  /// (launch): the ones left by a server write, or a crash.
+  Future<void> landAllVersions() async {
+    final files = <String>[];
+    for (final root in _registered.values.toList()) {
+      _collectVersionable(Directory(root), files, pages: true);
+    }
+    _lastTempScan = _now();
+    await landVersions(files);
+  }
+
+  /// Places the version temps left in any folder of an iCloud root (`.assets`
+  /// included), at most once in [tempScanAfter]; the notebook calls it at its
+  /// folder checks.
+  Future<void> landLeftoverTemps() async {
+    final last = _lastTempScan;
+    if (_disposed || (last != null && _now().difference(last) < tempScanAfter)) return;
+    _lastTempScan = _now();
+    final files = <String>[];
+    for (final root in _registered.values.toList()) {
+      _collectVersionable(Directory(root), files, pages: false);
+    }
+    await landVersions(files);
+  }
+
+  DateTime? _lastTempScan;
+
+  // Every page and binder file ([pages]), and each folder that holds a version
+  // temp (its path is landed as a folder), under [dir]; `.assets` folders are
+  // looked into for temps only.
+  void _collectVersionable(Directory dir, List<String> out, {required bool pages, bool assets = false}) {
+    try {
+      var hasTemp = false;
+      for (final e in dir.listSync(followLinks: false)) {
+        final name = e.path.split(RegExp(r'[\\/]')).last;
+        if (e is Directory) {
+          if (!name.startsWith('.')) _collectVersionable(e, out, pages: pages, assets: assets || name.endsWith('.assets'));
+        } else if (e is File) {
+          if (_isVersionTemp(e.path)) {
+            hasTemp = true;
+          } else if (pages && !assets && (name.endsWith('.canvas') || name == binderFileName) && !name.startsWith('.')) {
+            out.add(e.path);
+          }
+        }
+      }
+      if (hasTemp) out.add(dir.path);
+    } on FileSystemException {
+      // A folder that can't be listed now is looked at at the next launch.
+    }
+  }
+
+  void _retryIssuesAt(String p) {
+    if (_issues.isEmpty || _disposed) return;
+    final k = _k(p);
+    final parentK = _k(File(p).parent.path);
+    final now = _now();
+    for (final i in _issues.values.toList()) {
+      final ik = _k(i.path);
+      final ip = _k(File(i.path).parent.path);
+      if (ik != k && ip != parentK && ip != k) continue;
+      final last = _issueTried[ik];
+      if (last != null && now.difference(last) < versionRetryAfter) continue;
+      _issueTried[ik] = now;
+      unawaited(landVersions([i.path]));
+    }
+  }
+
+  /// Whether [path] is in a root that may be written now: its access live and
+  /// its self-test passed (R5.9). A landing writes temps and copies and
+  /// resolves versions, so none runs in a root that is untested, busy, unsafe
+  /// or whose access was lost; the versions stay unresolved and the rows as
+  /// they are.
+  bool mayLand(String path) {
+    final e = _entryFor(path);
+    if (e == null) return true;
+    final ek = _k(e.path);
+    if (_access[ek] != CloudAccess.live) return false;
+    final c = _checks[ek];
+    return c == null || c == CloudRootCheck.passed;
+  }
+
+  Future<void> _landOne(String path) async {
+    if (!mayLand(path)) return;
+    final k = _k(path);
+    _issueTried[k] = _now();
+    final VersionLanding l;
+    final isFolder = FileSystemEntity.isDirectorySync(path);
+    try {
+      final dir = Directory(isFolder ? path : File(path).parent.path);
+      final lock = locks;
+      l = await runZoned(
+        () => lock == null ? _landLocked(path) : lock.run(dir, () => _landLocked(path)),
+        zoneValues: {_landingZone: true},
+      );
+    } on Object catch (e) {
+      debugPrint('Noted: landing the versions of $path failed: $e');
+      if (!isFolder) _refused(path);
+      return;
+    }
+    final name = path.split(RegExp(r'[\\/]')).last;
+    // A temp that could not be placed counts against its file (not this one).
+    for (final r in l.refusedTargets) {
+      if (isFolder || _k(r) != k) _refused(r);
+    }
+    if (isFolder || l.skipped) {
+      // A folder landing only places temps; a skipped file keeps its row.
+    } else if (l.cantKeep) {
+      _setIssue(path, CloudVersionIssue(path, CloudVersionIssueKind.cantKeep));
+    } else if (l.refused || l.refusedTargets.any((t) => _k(t) == k)) {
+      _refused(path);
+    } else if (l.others.isNotEmpty) {
+      _refusals.remove(k);
+      final t = _targetOf(name);
+      _setIssue(
+        path,
+        CloudVersionIssue(path, CloudVersionIssueKind.otherVersion, ids: l.others, keepable: _kindOf(t.name) == _VKind.attachment),
+      );
+    } else {
+      _clearIssue(path);
+    }
+    for (final s in l.stuck) {
+      _setIssue(s, CloudVersionIssue(s, CloudVersionIssueKind.cantKeep));
+    }
+    if (l.published.isNotEmpty || l.resolved > 0) onLanded?.call(l);
+  }
+
+  // A landing that was refused or failed: the third in a row makes the row.
+  void _refused(String path) {
+    final k = _k(path);
+    final n = (_refusals[k] ?? 0) + 1;
+    _refusals[k] = n;
+    if (n >= 3) _setIssue(path, CloudVersionIssue(path, CloudVersionIssueKind.cantKeep));
+  }
+
+  Future<void> _step(String step, String path) async => landingStep?.call(step, path);
+
+  // The file name a leftover goes back to, and whether [name] is a leftover.
+  ({String name, bool leftover}) _targetOf(String name) {
+    for (final suffix in [asideSuffix, verifiedSuffix]) {
+      if (!name.endsWith(suffix)) continue;
+      final body = name.substring(0, name.length - suffix.length);
+      final dot = body.lastIndexOf('.');
+      if (dot > 0) return (name: body.substring(0, dot), leftover: true);
+    }
+    return (name: name, leftover: false);
+  }
+
+  _VKind _kindOf(String targetName) {
+    if (targetName.endsWith(PageStore.extension)) return _VKind.page;
+    if (targetName == binderFileName) return _VKind.binder;
+    if (targetName.endsWith('.notedtemplate')) return _VKind.template;
+    if (attachmentNameHash(targetName) != null) return _VKind.attachment;
+    return _VKind.other;
+  }
+
+  // `<stem>-icloud-<h>.canvas` or `noted-binder-icloud-<h>.json`, with the
+  // first 8 hex of the hash, then the first 16.
+  List<String> _copyNames(String dir, String targetName, _VKind kind, String hash) {
+    final stem = kind == _VKind.binder ? 'noted-binder' : targetName.substring(0, targetName.length - PageStore.extension.length);
+    final ext = kind == _VKind.binder ? '.json' : PageStore.extension;
+    return [for (final n in [8, 16]) '$dir$_sep$stem-icloud-${hash.substring(0, n)}$ext'];
+  }
+
+  Future<Uint8List?> _readOrNull(String path) async {
+    try {
+      if (isDataless(path)) return null;
+      return await File(path).readAsBytes();
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  Future<void> _removeTemp(String tmp, List<int> bytes) async {
+    try {
+      await deleteFileIfMatches(tmp, bytes: bytes);
+    } on FileSystemException catch (e) {
+      debugPrint('Noted: a version temp stays for the next landing: $e');
+    }
+  }
+
+  // Publishes [tmp] under the first free name that holds [bytes]: an equal
+  // file already there is adopted and the temp removed; both names taken by
+  // unequal files give null.
+  Future<({String path, bool adopted})?> _publishCopy(File tmp, Uint8List bytes, List<String> names) async {
+    for (final n in names) {
+      if (await publishExclusive(tmp, n)) return (path: n, adopted: false);
+      final have = await _readOrNull(n);
+      if (have != null && _bytesEqual(have, bytes)) {
+        await _removeTemp(tmp.path, bytes);
+        return (path: n, adopted: true);
+      }
+    }
+    return null;
+  }
+
+  Future<VersionLanding> _landLocked(String path) async {
+    final k = _k(path);
+    final out = VersionLanding(path);
+    // Checked again now the lock turn has begun: the root may have changed.
+    if (!mayLand(path)) {
+      out.skipped = true;
+      return out;
+    }
+    if (FileSystemEntity.isDirectorySync(path)) {
+      // A folder: only the temps left in it are placed.
+      await _landTemps(path, out);
+      return out;
+    }
+    final dir = File(path).parent.path;
+    final target = _targetOf(path.split(RegExp(r'[\\/]')).last);
+    out.leftover = target.leftover;
+    final kind = _kindOf(target.name);
+    // Temps left by a landing that was cut short, before anything new is made.
+    await _landTemps(dir, out);
+    if (isDataless(path)) {
+      // Not read, and its versions not asked for: it is downloaded first.
+      startDownloading(path);
+      out.skipped = true;
+      return out;
+    }
+    if (FileSystemEntity.typeSync(path, followLinks: false) == FileSystemEntityType.notFound) {
+      _clearIssue(path);
+      return out;
+    }
+    final Object? raw;
+    try {
+      raw = await _channel.invoke('versions', {'path': path});
+    } on Object catch (e) {
+      debugPrint('Noted: reading the versions of $path failed: $e');
+      out.refused = true;
+      return out;
+    }
+    final list = raw is List ? raw : const [];
+    if (list.isEmpty) {
+      _clearIssue(path);
+      return out;
+    }
+    for (final item in list) {
+      if (item is! Map) continue;
+      final id = '${item['id']}';
+      final tmp = item['tmpPath'];
+      if (tmp is! String || item['error'] != null) {
+        out.refused = true;
+        continue;
+      }
+      try {
+        await _step('copied', path);
+        switch (kind) {
+          case _VKind.page:
+          case _VKind.binder:
+            await _landPageVersion(path, id, tmp, dir, target.name, kind, out);
+          case _VKind.attachment:
+            await _landAttachmentVersion(path, id, tmp, target.name, out, sole: list.length == 1);
+          case _VKind.template:
+          case _VKind.other:
+            // Nothing to land it into: it stays unresolved in iCloud.
+            final bytes = await File(tmp).readAsBytes();
+            await _removeTemp(tmp, bytes);
+            out.others.add(id);
+        }
+      } on StorageBusy catch (e) {
+        debugPrint('Noted: landing a version of $path was refused: $e');
+        out.refused = true;
+      } on FileSystemException catch (e) {
+        debugPrint('Noted: landing a version of $path failed: $e');
+        out.refused = true;
+      }
+    }
+    if (out.refused && !out.cantKeep) _issueTried[k] = _now();
+    return out;
+  }
+
+  Future<void> _landPageVersion(
+    String path,
+    String id,
+    String tmp,
+    String dir,
+    String targetName,
+    _VKind kind,
+    VersionLanding out,
+  ) async {
+    final bytes = await File(tmp).readAsBytes();
+    final hash = contentHash(bytes);
+    // Equal to the file as it is now: nothing to keep, the copy is dropped.
+    final current = await _readOrNull(path);
+    if (current != null && contentHash(current) == hash) {
+      await _removeTemp(tmp, bytes);
+      await _resolveVersion(path, id, out);
+      return;
+    }
+    final dest = await _publishCopy(File(tmp), bytes, _copyNames(dir, targetName, kind, hash));
+    if (dest == null) {
+      // Both names are taken by unequal files: the version stays unresolved.
+      out.cantKeep = true;
+      await _removeTemp(tmp, bytes);
+      return;
+    }
+    await _step('published', path);
+    // Only a copy made by this landing is reported: an adopted one was seen
+    // when it arrived (reporting it again would start a merge cycle).
+    if (!dest.adopted) out.published.add(dest.path);
+    // Verified by reading the copy back before the version is let go.
+    final back = await _readOrNull(dest.path);
+    if (back == null || !_bytesEqual(back, bytes)) {
+      out.refused = true;
+      return;
+    }
+    await _step('verified', path);
+    await _resolveVersion(path, id, out);
+  }
+
+  Future<bool> _resolveVersion(String path, String id, VersionLanding out) async {
+    try {
+      final r = await _channel.invoke('resolveVersion', {'path': path, 'id': id});
+      if (r != true) {
+        // No such unresolved version: not resolved by this landing.
+        out.refused = true;
+        return false;
+      }
+      out.resolved++;
+    } on Object catch (e) {
+      debugPrint('Noted: resolving a version of $path failed: $e');
+      out.refused = true;
+      return false;
+    }
+    await _step('resolved', path);
+    return true;
+  }
+
+  Future<void> _landAttachmentVersion(String path, String id, String tmp, String targetName, VersionLanding out, {required bool sole}) async {
+    final nameHash = attachmentNameHash(targetName)!;
+    final bytes = await File(tmp).readAsBytes();
+    if (contentHash(bytes) != nameHash) {
+      // No use to a page: it stays in iCloud (the row's action keeps it there).
+      await _removeTemp(tmp, bytes);
+      out.others.add(id);
+      return;
+    }
+    await _step('verified', path);
+    final ok = await _placeAttachment(File(tmp), bytes, path, nameHash, out, () => _resolveVersion(path, id, out), sole: sole);
+    if (!ok) out.refused = true;
+  }
+
+  // Puts the verified bytes [bytes] (in [tmp]) where the attachment [path]
+  // is: an intact file needs nothing, a missing one is published, a damaged
+  // one goes through the damaged set-aside first (0132). [resolve] lets go of
+  // the version once [tmp] is its durable copy.
+  Future<bool> _placeAttachment(
+    File tmp,
+    Uint8List bytes,
+    String path,
+    String nameHash,
+    VersionLanding out,
+    Future<bool> Function() resolve, {
+    bool sole = true,
+  }) async {
+    final f = File(path);
+    final exists = FileSystemEntity.typeSync(path, followLinks: false) != FileSystemEntityType.notFound;
+    if (!exists) {
+      if (isDataless(path)) return false;
+      if (!await publishAttachment(tmp, path)) return false;
+      await _removeTemp(tmp.path, bytes);
+      out.published.add(path);
+      return resolve();
+    }
+    if (isDataless(path)) return false;
+    final c = await checkAttachmentFile(f, nameHash, 0);
+    switch (c.state) {
+      case AttachmentState.ok:
+        await _removeTemp(tmp.path, bytes);
+        return resolve();
+      case AttachmentState.damaged:
+        // The set-aside is a move of the file: another unresolved version would
+        // make it pending for good. Then nothing is resolved and the file is
+        // listed; the temp goes (every version is still in iCloud).
+        if (!sole) {
+          out.cantKeep = true;
+          await _removeTemp(tmp.path, bytes);
+          return true;
+        }
+        // The temp is the durable copy now: the version is let go first (a crash
+        // after it leaves the temp, which the launch pass and the folder tick
+        // find in any folder, `.assets` included).
+        if (!await resolve()) return false;
+        final aside = await setAsideDamaged(f, c.found!);
+        if (aside.name == null) return false;
+        if (!await publishAttachment(tmp, path)) return false;
+        await _removeTemp(tmp.path, bytes);
+        out.published.add(path);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // Version temps in [dir]: one equal to its copy is removed (checked), any
+  // other is published under its own hash. None is deleted unverified.
+  Future<void> _landTemps(String dir, VersionLanding out) async {
+    final temps = <File>[];
+    try {
+      await for (final e in Directory(dir).list(followLinks: false)) {
+        if (e is File && _isVersionTemp(e.path)) temps.add(e);
+      }
+    } on FileSystemException {
+      return;
+    }
+    for (final t in temps) {
+      try {
+        await _landTemp(t, dir, out);
+      } on StorageBusy {
+        out.refused = true;
+      } on FileSystemException catch (e) {
+        debugPrint('Noted: a version temp could not be handled: $e');
+        out.refused = true;
+      }
+    }
+  }
+
+  Future<void> _landTemp(File t, String dir, VersionLanding out) async {
+    final m = _versionTemp.firstMatch(t.path.split(RegExp(r'[\\/]')).last);
+    if (m == null) return;
+    final name = m.group(1)!;
+    final target = _targetOf(name);
+    final kind = _kindOf(target.name);
+    final Uint8List bytes;
+    try {
+      bytes = await t.readAsBytes();
+    } on FileSystemException {
+      return;
+    }
+    if (bytes.isEmpty) {
+      await _removeTemp(t.path, bytes);
+      return;
+    }
+    final path = '$dir$_sep$name';
+    switch (kind) {
+      case _VKind.page:
+      case _VKind.binder:
+        final hash = contentHash(bytes);
+        final current = await _readOrNull(path);
+        if (current != null && contentHash(current) == hash) {
+          await _removeTemp(t.path, bytes);
+          return;
+        }
+        final dest = await _publishCopy(t, bytes, _copyNames(dir, target.name, kind, hash));
+        if (dest == null) {
+          out.stuck.add(path);
+        } else if (!dest.adopted) {
+          out.published.add(dest.path);
+        }
+      case _VKind.attachment:
+        final nameHash = attachmentNameHash(target.name)!;
+        if (contentHash(bytes) != nameHash) {
+          await _removeTemp(t.path, bytes);
+          return;
+        }
+        final at = '$dir$_sep${target.name}';
+        if (!await _placeAttachment(t, bytes, at, nameHash, out, () async => true)) out.refusedTargets.add(at);
+      case _VKind.template:
+      case _VKind.other:
+        await _removeTemp(t.path, bytes);
+    }
+  }
+
   // -- Self-test (R5.9) ------------------------------------------------------------
 
   // The self-test of a busy root is retried on a timer of its own (R5.9: at most
@@ -837,6 +1514,8 @@ class IcloudFolders extends ChangeNotifier {
       final last = _lastTried[ek];
       if (last != null && _now().difference(last) < retryBusyAfter) continue;
       await _selfTest(e);
+      // The root is tested now: the versions skipped meanwhile are landed.
+      if (_checks[ek] == CloudRootCheck.passed) unawaited(landAllVersions());
     }
   }
 
@@ -1065,6 +1744,7 @@ class IcloudFolders extends ChangeNotifier {
   /// Stops the roots this registered and detaches from the channel.
   @override
   void dispose() {
+    if (_disposed) return;
     _disposed = true;
     _retryTimer?.cancel();
     _retryTimer = null;
