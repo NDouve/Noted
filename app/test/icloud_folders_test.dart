@@ -6,6 +6,7 @@
 // load, `folder-access.json` and its unreadable-copy rule, and pruning (Codex
 // design review 2026-11-16 R-2), against the fake channel.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -246,6 +247,41 @@ void main() {
       await f2.start();
       expect(f2.accessOf(d.path), CloudAccess.anotherDevice);
       expect(f2.accessLost(d.path), isTrue);
+      expect(channel.callsOf('stopAccess').single.args['path'], real(d), reason: 'the presenter is removed');
+    });
+
+    test('a release queued before a pick of the same folder drops neither the new entry nor its root', () async {
+      final d = dir('Drive');
+      channel.ubiquitous.add(real(d));
+      channel.picked = d.path;
+      final f = make(platform: CloudPlatform.ios);
+      await f.pick();
+      final gate = Completer<void>();
+      f.beforeListWrite = () => gate.future;
+      final release = f.released(d.path, () => const []); // queued: nothing retains it
+      final again = f.pick(); // the same folder, picked while the release waits
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      f.beforeListWrite = null;
+      gate.complete();
+      await release;
+      await again;
+      expect(entries(), hasLength(1));
+      expect(f.accessOf(d.path), CloudAccess.live);
+      expect(underCoordination([d.path]), isTrue, reason: 'the root was not unregistered');
+      expect(f.checkOf(d.path), CloudRootCheck.passed);
+    });
+
+    test('the notebook asks the platform to download through startDownloading', () async {
+      final f = make();
+      final nb = Notebook(PageStore(dir('pages')), buildModules(), icloud: f);
+      notebooks.add(nb);
+      final file = '${dir('Drive').path}/x.canvas';
+      nb.requestDownload!(file);
+      await Future<void>.delayed(Duration.zero);
+      expect(channel.callsOf('startDownloading').single.args['path'], file);
+      final plain = Notebook(PageStore(dir('pages2')), buildModules());
+      notebooks.add(plain);
+      expect(plain.requestDownload, isNull);
     });
 
     test('a probe whose entry is no longer in the list is not on record: the root stays read-only', () async {

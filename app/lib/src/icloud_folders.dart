@@ -373,6 +373,10 @@ class IcloudFolders extends ChangeNotifier {
   /// Publishes the probe file; a seam for tests (a failing publish).
   @visibleForTesting
   final Future<bool> Function(File tmp, String target) publishProbe;
+
+  /// A test seam awaited at the start of every write of the list.
+  @visibleForTesting
+  Future<void> Function()? beforeListWrite;
   final DateTime Function() _now;
 
   late final ChannelCoordinator coordinator;
@@ -517,6 +521,7 @@ class IcloudFolders extends ChangeNotifier {
       final path = r['path'] as String;
       if (r['access'] == false) {
         // The platform could not start access: the folder is not ours to use.
+        await _stopAccess(path);
         _access[ek] = CloudAccess.anotherDevice;
         return false;
       }
@@ -546,7 +551,19 @@ class IcloudFolders extends ChangeNotifier {
 
   // The comparison key of [path], resolved once until the lists change.
   final Map<String, String> _keyCache = {};
-  String _k(String path) => _keyCache.putIfAbsent(path, () => _key(path));
+
+  // Bumped each time a path is picked or bookmarked: a release or prune queued
+  // before that must not drop the new entry or its root.
+  final Map<String, int> _generation = {};
+  void _bump(String path) => _generation.update(_k(path), (v) => v + 1, ifAbsent: () => 1);
+  // Not cached while the path doesn't exist yet: it may resolve differently once made.
+  String _k(String path) {
+    final cached = _keyCache[path];
+    if (cached != null) return cached;
+    final k = _key(path);
+    if (FileSystemEntity.typeSync(path, followLinks: false) != FileSystemEntityType.notFound) _keyCache[path] = k;
+    return k;
+  }
 
   bool _same(String a, String b) => _k(a) == _k(b);
 
@@ -626,6 +643,7 @@ class IcloudFolders extends ChangeNotifier {
   }
 
   Future<String> _adopt(String path, String? bookmark, {required bool started}) async {
+    _bump(_realPath(path));
     var real = _realPath(path);
     if (bookmark != null && !started) {
       // Starts access and gives the real path.
@@ -636,6 +654,7 @@ class IcloudFolders extends ChangeNotifier {
         debugPrint('Noted: resolving a new bookmark failed: $e');
       }
     }
+    _bump(real);
     final entry = bookmark == null ? null : CloudFolderEntry(real, bookmark);
     var recorded = false;
     if (entry != null) {
@@ -672,6 +691,7 @@ class IcloudFolders extends ChangeNotifier {
       if (parent == null || _access[_k(parent.path)] != CloudAccess.live) return;
       if (_same(parent.path, path)) return;
       final real = _realPath(path);
+      _bump(real);
       final b = await _channel.invoke('bookmark', {'path': real});
       if (b is! String || b.isEmpty) return;
       await _mutate((list) => [for (final x in list) if (!_same(x.path, real)) x, CloudFolderEntry(real, b, _probeOf(list, real))]);
@@ -690,6 +710,7 @@ class IcloudFolders extends ChangeNotifier {
   /// both read. Nothing is removed while `folder-access.json` is unreadable.
   Future<void> prune(Iterable<String> Function() retained) async {
     if (!active) return;
+    final seen = Map<String, int>.of(_generation);
     await start();
     final gone = <CloudFolderEntry>[];
     final ok = await _mutate((list) {
@@ -699,7 +720,7 @@ class IcloudFolders extends ChangeNotifier {
       final keep = <CloudFolderEntry>[];
       for (final e in list) {
         final ek = _k(e.path);
-        if (keys.any((k) => _isUnderKey(k, ek))) {
+        if (keys.any((k) => _isUnderKey(k, ek)) || (_generation[ek] ?? 0) != (seen[ek] ?? 0)) {
           keep.add(e);
         } else {
           gone.add(e);
@@ -719,6 +740,7 @@ class IcloudFolders extends ChangeNotifier {
   /// read inside the serialized write, never earlier.
   Future<void> released(String path, Iterable<String> Function() retained) async {
     if (!active) return;
+    final seen = _generation[_k(path)] ?? 0;
     await start();
     final target = _k(path);
     final gone = <CloudFolderEntry>[];
@@ -728,7 +750,7 @@ class IcloudFolders extends ChangeNotifier {
       final keep = <CloudFolderEntry>[];
       for (final e in list) {
         final ek = _k(e.path);
-        if (ek == target && !keys.any((k) => _isUnderKey(k, ek))) {
+        if (ek == target && !keys.any((k) => _isUnderKey(k, ek)) && (_generation[ek] ?? 0) == seen) {
           gone.add(e);
         } else {
           keep.add(e);
@@ -756,6 +778,20 @@ class IcloudFolders extends ChangeNotifier {
     _access.remove(ek);
     _lastTried.remove(ek);
     await _stopAccess(e.path);
+  }
+
+  // -- Downloads (R5.5) -------------------------------------------------------------
+
+  /// Asks the platform to download the item at [path] (`startDownloading`).
+  /// Never throws, never waits for the download.
+  void startDownloading(String path) {
+    if (!active) return;
+    unawaited(
+      _channel.invoke('startDownloading', {'path': path}).then<void>(
+        (_) {},
+        onError: (Object e) => debugPrint('Noted: startDownloading failed: $e'),
+      ),
+    );
   }
 
   // -- Self-test (R5.9) ------------------------------------------------------------
@@ -883,6 +919,7 @@ class IcloudFolders extends ChangeNotifier {
   /// isn't readable is never replaced.
   Future<bool> _mutate(List<CloudFolderEntry> Function(List<CloudFolderEntry>) change, {bool onlyIfReadable = false}) {
     return _serialized(() async {
+      await beforeListWrite?.call();
       _keyCache.clear();
       for (var attempt = 0; attempt < 4; attempt++) {
         final _Read r;

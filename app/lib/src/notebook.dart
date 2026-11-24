@@ -814,6 +814,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
        _readOnlyRootNamesIn = readOnlyRootNames {
     _chain.onDetachedJobEnded = _oldJobEnded;
     icloud?.onRootWritable = _rootWritable;
+    // A file that is not downloaded is asked for through the platform (R5.5).
+    if (icloud != null && icloud!.active) requestDownload = icloud!.startDownloading;
     icloud?.addListener(_notifyLoad);
   }
 
@@ -850,7 +852,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   bool _untested(String loc) {
     if (_untestedRoots.isEmpty || loc == _standalone) return false;
-    final k = _realKeys.putIfAbsent(loc, () => _key(_realKey(loc)));
+    var k = _realKeys[loc];
+    if (k == null) {
+      k = _key(_realKey(loc));
+      // Not kept for a folder that is not there yet: it may resolve differently once made.
+      if (Directory(loc).existsSync()) _realKeys[loc] = k;
+    }
     for (final r in _untestedRoots) {
       if (k == r || k.startsWith(r.endsWith('/') ? r : '$r/')) return true;
     }
