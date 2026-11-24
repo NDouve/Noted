@@ -61,6 +61,40 @@ final class NoteModule extends BoxModule<NoteData> {
 
   @override
   List<Command> commands(CommandHost host) => noteCommands(host);
+
+  /// The file name suffix of the import file the app hands over: the blocks
+  /// of a note as `{"version":1,"blocks":[...]}` (an agreement between the
+  /// app's import and this module, not part of the Box API). [fileAffinity]
+  /// stays 0, so a dropped or pasted file never reaches [createFromFile].
+  static const String blocksFileSuffix = '.noted-blocks.json';
+
+  /// A note from an import file (`<stem>.noted-blocks.json`, its blocks
+  /// checked as saved note data is) or from a markdown file (`.md`,
+  /// `.markdown`, through [markdownToNoteBlocks]). Null for anything else,
+  /// an invalid file or no content. Nothing is stored.
+  @override
+  Future<(NoteData, Size)?> createFromFile(IncomingFile file, AttachmentStore store) async {
+    final name = file.name.toLowerCase();
+    List<Map<String, Object?>>? blocks;
+    if (name.endsWith(blocksFileSuffix)) {
+      blocks = decodeNoteBlocksFile(file.bytes);
+    } else if (name.endsWith('.md') || name.endsWith('.markdown')) {
+      final b = markdownToNoteBlocks(utf8.decode(file.bytes, allowMalformed: true));
+      blocks = b.isEmpty ? null : b;
+    }
+    if (blocks == null) return null;
+    var cols = 0;
+    for (final b in blocks) {
+      if (b['type'] != NoteFormat.tableType) continue;
+      final n = (b['data'] as Map?)?['colsLen'];
+      if (n is int && n > cols) cols = n;
+    }
+    final width = cols == 0 ? 480.0 : (cols * 160.0 + 40).clamp(480.0, 1100.0);
+    final data = NoteData({
+      'document': {'type': 'page', 'children': blocks},
+    });
+    return (data, Size(width, 40));
+  }
 }
 
 /// The note box's editor and read-only view for a [NoteData] box, for box
