@@ -768,8 +768,6 @@ final class CloudFolder: NSObject {
     return nil
   }
 
-  /// Runs on a background queue, inside a coordinated write of the item.
-  /// Returns a Bool, or a FlutterError when the coordination failed or timed out.
   /// Marks every version that is the one asked for: its encoded id equals `id`,
   /// or its identifier equals the decoded `wanted`. True if any was. Nothing
   /// else is touched, and no version is removed.
@@ -791,6 +789,8 @@ final class CloudFolder: NSObject {
     return any
   }
 
+  /// Runs on a background queue, inside a coordinated write of the item.
+  /// Returns a Bool, or a FlutterError when the coordination failed or timed out.
   private func resolveVersion(path: String, id: String) -> Any {
     let url = URL(fileURLWithPath: path)
     let coordinator = NSFileCoordinator(filePresenter: presenter(containing: path))

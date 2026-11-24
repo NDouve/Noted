@@ -300,10 +300,14 @@ class RunnerTests: XCTestCase {
     let folder = try makeFolder()
     let file = folder.appendingPathComponent("a.canvas")
     try write("x", to: file)
-    // Dart's real path against the platform's: /var and /private/var.
+    // The path Dart has is through a link; the platform gives the real one.
+    let link = try makeFolder().appendingPathComponent("link")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: folder)
+    let through = link.appendingPathComponent("a.canvas")
+    XCTAssertNotEqual(through.path, realPath(file))
     let real = URL(fileURLWithPath: realPath(file))
     let outcome = CloudFolder.outcome(
-      failed: false, requested: [(path: file.path, kind: "move")], granted: [real],
+      failed: false, requested: [(path: through.path, kind: "move")], granted: [real],
       hasUnresolvedVersions: { _ in false })
     XCTAssertEqual(outcome, .go)
   }
@@ -319,6 +323,11 @@ class RunnerTests: XCTestCase {
       real + "/gone/deeper/x.canvas")
     XCTAssertEqual(
       CloudFolder.normalize(folder.appendingPathComponent("a/../b.canvas").path), real + "/b.canvas")
+    // A path through a link is the real one.
+    let link = try makeFolder().appendingPathComponent("link")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: folder)
+    XCTAssertEqual(
+      CloudFolder.normalize(link.appendingPathComponent("b.canvas").path), real + "/b.canvas")
   }
 
   func testTheLongestRootThatContainsAPathIsChosen() {

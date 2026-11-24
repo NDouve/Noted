@@ -275,6 +275,19 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      # ios/RunnerTests is the same file with other imports; it is compiled
+      # here (not run) so that it can't rot unseen.
+      - name: Compile the iOS RunnerTests
+        working-directory: app
+        run: |
+          flutter build ios --simulator --debug --no-codesign --dart-define=NOTED_MS_CLIENT_ID=${{ vars.NOTED_MS_CLIENT_ID }}
+          xcodebuild build-for-testing \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO
+
   macos-build-intel:
     name: macOS release build (Intel fallback)
     # Runs alongside the Apple Silicon job rather than after it: GitHub
