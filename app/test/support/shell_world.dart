@@ -230,8 +230,11 @@ Future<void> settleAttachmentChecks(
   Duration limit = const Duration(seconds: 20),
 }) async {
   final clock = Stopwatch()..start();
+  final scaled = limit * realIoScale;
   while (attachments != null && attachments.pendingChecks > 0) {
-    if (clock.elapsed > limit) fail('${attachments.pendingChecks} attachment checks did not finish within $limit.');
+    if (clock.elapsed > scaled) fail('${attachments.pendingChecks} attachment checks did not finish within $scaled.');
+    // A check started in the test's fake-time zone needs that zone pumped.
+    await t.pump();
     await t.runAsync(() => realIoPause(20));
   }
 }
