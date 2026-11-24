@@ -265,6 +265,110 @@ void main() {
     });
   });
 
+  group('the aside sweep with versions (R-4)', () {
+    Future<void> externalPage(String id) async {
+      await PageStore(w.drive).saveNew(NotedPage.create(PageMeta.create(id: id, title: 'Page $id', order: 5)));
+    }
+
+    test('the call names each leftover as a move beside one write of the folder; pending consumes nothing, throws nothing and holds nothing', () async {
+      final f = await w.picked();
+      w.write('p1.canvas', 'newer');
+      final left = w.write('p1.canvas.1a2b3c.cas-old', 'older');
+      final other = w.write('p2.canvas.4d5e6f.cas-old', 'older too');
+      channel.addVersion(left.path, b('theirs'));
+      channel.versionsFails = true; // the landing stays out of the way
+      final before = channel.callsOf('coordinate').length;
+      expect(await sweepAsideFiles(w.drive), isEmpty);
+      expect(channel.callsOf('coordinate').length, before + 1, reason: 'one call');
+      final intents = channel.intentsById.values.last;
+      expect(
+        [for (final i in intents) '${i['kind']} ${slashes('${i['path']}')}'],
+        unorderedEquals([
+          'write ${slashes(w.drive.path)}',
+          'move ${slashes(left.path)}',
+          'move ${slashes(other.path)}',
+        ]),
+      );
+      expect(left.existsSync() && other.existsSync(), isTrue, reason: 'nothing consumed, the leftover without versions too');
+      expect(channel.held, isEmpty);
+      expect(f.coordinator.waitingCount, 0);
+      expect(File(w.path('p1.canvas')).readAsStringSync(), 'newer');
+    });
+
+    test('the page scan and the app load still list every other page, and the folder\'s lock is free', () async {
+      final f = await w.picked();
+      await externalPage('p2');
+      await externalPage('p3');
+      final left = w.write('p1.canvas.1a2b3c.cas-old', 'older');
+      w.write('p1.canvas', 'newer');
+      channel.addVersion(left.path, b('theirs'));
+      channel.versionsFails = true;
+      final scanned = await PageStore(w.drive).scan();
+      expect([for (final e in scanned) if (e is ReadablePage) e.meta.id], containsAll(['p2', 'p3']));
+      expect(left.existsSync(), isTrue);
+      final nb = w.notebook(f);
+      await nb.load();
+      expect({for (final m in nb.tree.roots) m.id}, containsAll(['p2', 'p3']));
+      expect(left.existsSync(), isTrue, reason: 'the load did not consume it either');
+      // The lock was released: another job on the folder runs.
+      await nb.checkFolders().timeout(const Duration(seconds: 10));
+      final made = await nb.createPage().timeout(const Duration(seconds: 10));
+      expect(File(w.path('$made.canvas')).existsSync(), isTrue);
+    });
+
+    test('the landing names the copy after the leftover\'s target and the re-scan\'s sweep consumes the leftover', () async {
+      final f = await w.picked();
+      w.write('p1.canvas', 'newer');
+      final left = w.write('p1.canvas.1a2b3c.cas-old', 'older');
+      channel.addVersion(left.path, b('theirs'));
+      channel.versionsFails = true;
+      await PageStore(w.drive).scan();
+      expect(left.existsSync(), isTrue);
+      channel.versionsFails = false;
+      await f.landVersions([left.path]);
+      expect(channel.unresolvedOf(left.path), isEmpty);
+      expect(text('p1-icloud-${h8('theirs')}.canvas'), 'theirs', reason: 'named after the target, not the leftover');
+      expect(w.names().where((n) => n.contains('cas-old') && n.contains('icloud')), isEmpty);
+      await PageStore(w.drive).scan();
+      expect(left.existsSync(), isFalse, reason: 'consumed by the sweep of the scan');
+      expect(w.names().where((n) => n.contains('-recovered-')), hasLength(1));
+      expect(text('p1.canvas'), 'newer');
+    });
+
+    for (final step in ['copied', 'published', 'verified', 'resolved']) {
+      test('killed after $step, then a reload: the version is a listed copy and the leftover a recovered file', () async {
+        final f = await w.picked();
+        w.write('p1.canvas', 'newer');
+        final left = w.write('p1.canvas.1a2b3c.cas-old', 'older');
+        channel.addVersion(left.path, b('theirs'));
+        final reached = <String>[];
+        f.landingStep = (s, path) async {
+          reached.add(s);
+          if (s == step) throw StateError('killed');
+        };
+        // The refused sweep schedules the landing, which is killed at [step].
+        expect(await sweepAsideFiles(w.drive), isEmpty);
+        await waitFor(() => reached.contains(step), what: 'the landing to reach $step');
+        await f.landVersions([w.path('none.canvas')]); // behind the landing in its queue
+        expect(left.existsSync(), isTrue);
+        f.dispose();
+        final g = await w.relaunched();
+        await g.landVersions([left.path]);
+        expect(channel.unresolvedOf(left.path), isEmpty);
+        expect(text('p1-icloud-${h8('theirs')}.canvas'), 'theirs');
+        expect(temps(), isEmpty);
+        // The next sweep consumes the leftover: its bytes are kept as a copy.
+        expect(await sweepAsideFiles(w.drive), isNotEmpty);
+        expect(left.existsSync(), isFalse);
+        final recovered = [for (final n in w.names()) if (n.contains('-recovered-')) n];
+        expect(recovered, hasLength(1));
+        expect(text(recovered.single), 'older');
+        expect(text('p1.canvas'), 'newer');
+        expect(w.names().where((n) => n.contains('-icloud-')), hasLength(1));
+      });
+    }
+  });
+
   group('pending: the busy path retries after the landing (R5.4, R5.8)', () {
     test('a delete is refused while a version is unresolved, nothing is lost, and it succeeds after the landing', () async {
       final f = await w.picked();
