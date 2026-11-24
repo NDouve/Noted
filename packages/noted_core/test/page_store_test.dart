@@ -460,7 +460,7 @@ void main() {
     test('a dataless page file is listed, not read', () async {
       final text = writePage(NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0)));
       File('${dir.path}/p1.canvas').writeAsStringSync(text);
-      debugDatalessAbi = Abi.macosArm64;
+      debugDatalessAbi = Abi.macosX64; // no lstat$INODE64 off Apple: every existing file fails closed
       debugResetDataless();
       final store = PageStore(dir);
       final entries = await store.scan();

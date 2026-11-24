@@ -4,6 +4,7 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/services.dart';
 import 'package:noted/src/icloud_folders.dart';
@@ -22,6 +23,18 @@ enum CoordinateMode {
 
   /// `failed`.
   failed,
+}
+
+/// One iCloud version of a file, as the fake keeps it.
+class FakeVersion {
+  FakeVersion(this.id, this.bytes);
+
+  final String id;
+  final List<int> bytes;
+  bool resolved = false;
+
+  /// `versions` reports this one as `{id, error}` (the copy failed).
+  bool copyFails = false;
 }
 
 /// A stand-in for the Swift side of `noted/cloud_folder`: it keeps the
@@ -84,6 +97,48 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
   /// Called with each `coordinate` (id, intents) before it answers.
   void Function(int id, List<Map<Object?, Object?>> intents)? onCoordinate;
 
+  // -- Versions (R5.8): associated with file paths --------------------------
+
+  final Map<String, List<FakeVersion>> _versions = {};
+  int _versionCounter = 0;
+  final Random _random = Random.secure();
+
+  /// `versions` throws (the platform could not be reached).
+  bool versionsFails = false;
+
+  /// `resolveVersion` throws the error code `coordination`.
+  bool resolveFails = false;
+
+  /// A `move` or `delete` intent on a file with unresolved versions is answered
+  /// by `pending` instead of `go`, as Swift does (R5.8).
+  bool gateVersions = true;
+
+  /// Called after `versions` made the temps of a call.
+  void Function(String path, List<String> temps)? onVersions;
+
+  static String _vkey(String path) {
+    final f = File(path);
+    final parent = f.parent;
+    final dir = parent.existsSync() ? parent.resolveSymbolicLinksSync() : parent.absolute.path;
+    return '$dir/${f.uri.pathSegments.last}'.replaceAll(r'\', '/').toLowerCase();
+  }
+
+  /// Gives the file at [path] an unresolved version holding [bytes]; its id.
+  String addVersion(String path, List<int> bytes) {
+    final v = FakeVersion('v${++_versionCounter}', bytes);
+    (_versions[_vkey(path)] ??= []).add(v);
+    return v.id;
+  }
+
+  /// The versions of [path], resolved or not.
+  List<FakeVersion> versionsOf(String path) => List.unmodifiable(_versions[_vkey(path)] ?? const []);
+
+  /// The versions of [path] that are not resolved.
+  List<FakeVersion> unresolvedOf(String path) => [for (final v in versionsOf(path)) if (!v.resolved) v];
+
+  /// The files with unresolved versions anywhere under the files [paths] name.
+  bool hasUnresolved(String path) => unresolvedOf(path).isNotEmpty;
+
   List<String> get methods => [for (final c in calls) c.method];
 
   Iterable<({String method, Map<String, Object?> args})> callsOf(String m) =>
@@ -144,6 +199,16 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
         final intents = [for (final i in (a['intents']! as List)) (i as Map).cast<Object?, Object?>()];
         intentsById[id] = intents;
         onCoordinate?.call(id, intents);
+        if (mode == CoordinateMode.go && gateVersions) {
+          final withVersions = [
+            for (final i in intents)
+              if ((i['kind'] == 'move' || i['kind'] == 'delete') && hasUnresolved(i['path']! as String)) i['path']! as String,
+          ];
+          if (withVersions.isNotEmpty) {
+            unawaited(Future<void>(() => emit('pending', {'id': id, 'paths': withVersions})));
+            return null;
+          }
+        }
         switch (mode) {
           case CoordinateMode.go:
             held.add(id);
@@ -156,6 +221,45 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
             unawaited(Future<void>(() => emit('failed', {'id': id})));
         }
         return null;
+      case 'versions':
+        if (versionsFails) throw PlatformException(code: 'versions');
+        final path = a['path']! as String;
+        final f = File(path);
+        final out = <Map<String, Object?>>[];
+        final temps = <String>[];
+        for (final v in unresolvedOf(path)) {
+          if (v.copyFails) {
+            out.add({'id': v.id, 'error': 'The copy failed.'});
+            continue;
+          }
+          // As Swift does: 16 random hex, created exclusively.
+          late String tmp;
+          while (true) {
+            final hex = [for (var i = 0; i < 8; i++) _random.nextInt(256).toRadixString(16).padLeft(2, '0')].join();
+            tmp = '${f.parent.path}${Platform.pathSeparator}.${f.uri.pathSegments.last}.noted-version-$hex.tmp';
+            try {
+              File(tmp).createSync(exclusive: true);
+              break;
+            } on FileSystemException {
+              if (!File(tmp).existsSync()) rethrow;
+            }
+          }
+          File(tmp).writeAsBytesSync(v.bytes, flush: true);
+          temps.add(tmp);
+          out.add({'id': v.id, 'tmpPath': tmp});
+        }
+        onVersions?.call(path, temps);
+        return out;
+      case 'resolveVersion':
+        if (resolveFails) throw PlatformException(code: 'coordination');
+        final id = a['id']! as String;
+        for (final v in unresolvedOf(a['path']! as String)) {
+          if (v.id == id) {
+            v.resolved = true;
+            return true;
+          }
+        }
+        return false;
       case 'done':
       case 'cancel':
         held.remove(a['id']);

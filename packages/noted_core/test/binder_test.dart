@@ -117,7 +117,7 @@ void main() {
 
     test('a dataless binder file is not read', () async {
       await store.create(Binder.create(title: 'x', color: binderPalette.first));
-      debugDatalessAbi = Abi.macosArm64;
+      debugDatalessAbi = Abi.macosX64; // no lstat$INODE64 off Apple: every existing file fails closed
       debugResetDataless();
       expect(await store.read(), isA<BinderUnreadable>());
       expect(store.fileHoldsBinderSync('anything'), isFalse);

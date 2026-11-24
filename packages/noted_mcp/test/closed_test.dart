@@ -1200,7 +1200,7 @@ void main() {
 
     // Every existing file counts as dataless: the lookup can't be made here.
     void failClosed() {
-      debugDatalessAbi = Abi.macosArm64;
+      debugDatalessAbi = Abi.macosX64; // no lstat$INODE64 off Apple: every existing file fails closed
       debugResetDataless();
     }
 
@@ -1230,7 +1230,7 @@ void main() {
       final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
       // Fine at the first look; dataless once it is set aside.
       w.beforeAside = () async {
-        debugDatalessAbi = Abi.macosArm64;
+        debugDatalessAbi = Abi.macosX64; // no lstat$INODE64 off Apple: every existing file fails closed
         debugResetDataless();
       };
       // The target check runs before beforeAside, so only the aside's does.

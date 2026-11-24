@@ -9,6 +9,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'app_commands.dart';
 import 'binder_colors.dart';
+import 'icloud_folders.dart' show keepInICloudText;
 import 'notebook.dart';
 import 'settings_panel.dart';
 import 'sidebar_row.dart';
@@ -192,19 +193,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
                 SliverList(
                   delegate: SliverChildListDelegate([
                     SidebarGroupHeader(title: "Can't open", disabled: true),
-                    for (final u in cantOpen)
-                      Tooltip(
-                        message: u.reason,
-                        child: SidebarRow(
-                          title: u.path.split(RegExp(r'[\\/]')).last,
-                          disabled: true,
-                          leading: Icon(
-                            Icons.block_rounded,
-                            size: NotedMetrics.of(context).icon,
-                            color: NotedColors.of(context).textDisabled,
-                          ),
-                        ),
-                      ),
+                    for (final u in cantOpen) _cantOpenRow(context, u),
                   ]),
                 ),
               if (copies.isNotEmpty)
@@ -466,6 +455,41 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         'Changes to $pages ${pages == 1 ? 'page' : 'pages'} kept',
         style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
       ),
+    );
+  }
+
+  // A row of the "Can't open" list. An iCloud version row (R5.8) says its own
+  // words; an attachment's other version has one action, "Keep it in iCloud".
+  Widget _cantOpenRow(BuildContext context, UnreadablePage u) {
+    final issue = _nb.cloudVersionIssues.where((i) => i.path == u.path && i.text == u.reason).firstOrNull;
+    final row = Tooltip(
+      message: u.reason,
+      child: SidebarRow(
+        key: issue == null ? null : ValueKey('cloud-version-${u.path}'),
+        title: issue == null ? u.path.split(RegExp(r'[\\/]')).last : issue.text,
+        titleLines: issue == null ? null : 2,
+        disabled: true,
+        leading: Icon(
+          Icons.block_rounded,
+          size: NotedMetrics.of(context).icon,
+          color: NotedColors.of(context).textDisabled,
+        ),
+      ),
+    );
+    if (issue == null || !issue.keepable) return row;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        row,
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton(
+            key: ValueKey('cloud-version-keep-${u.path}'),
+            onPressed: () => _nb.keepCloudVersion(u.path),
+            child: const Text(keepInICloudText),
+          ),
+        ),
+      ],
     );
   }
 

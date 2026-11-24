@@ -333,7 +333,7 @@ E = mc^2
     });
 
     test('with the check failing closed, no page file is read and the library is ambiguous', () async {
-      debugDatalessAbi = Abi.macosArm64; // no lstat in this process on Windows: fails closed
+      debugDatalessAbi = Abi.macosX64; // no lstat$INODE64 off Apple: every existing file fails closed
       debugResetDataless();
       addTearDown(() {
         debugDatalessAbi = null;
@@ -347,7 +347,7 @@ E = mc^2
       final file = File(pagesPath('${Ids.public}.canvas'));
       final identity = await LockIdentity.of(dataDir);
       expect(await NotedLibrary.readSource(identity, file.path), isNotNull);
-      debugDatalessAbi = Abi.macosArm64;
+      debugDatalessAbi = Abi.macosX64; // no lstat$INODE64 off Apple: every existing file fails closed
       debugResetDataless();
       addTearDown(() {
         debugDatalessAbi = null;
