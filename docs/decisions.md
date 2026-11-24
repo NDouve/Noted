@@ -624,7 +624,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0055 — Formulas and equations in table cells
 - **Date:** 2026-10-25
-- **Status:** Active; copy behavior extended by 0061; amended by 0161
+- **Status:** Active; copy behavior extended by 0061; amended by 0161; imported table text starting with `=` kept as text by 0191
 - **Decision:**
   - **Equations:** block and inline equations work inside table cells, with the same dialog and rendering as in notes (0048). A block equation replaces the cell's paragraph; emptying or cancelling it reverts the cell to text.
   - **Formulas:** a cell whose text starts with `=` is a formula. It shows its result while the caret is elsewhere and its formula while the caret is in it. Errors show in red.
@@ -1341,7 +1341,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0098 — Image and file boxes, and where their files are stored
 - **Date:** 2026-10-31
-- **Status:** Active (page format change approved by the maintainer; Box API 0.7 and the attachments package approved retroactively); amended by 0102 (Delete, alt text below the picture); landing kept files amended by 0124; verification and damaged copies amended by 0132; attachment names checked before use, 0133; conversion verified in the page folder and asking before opening runnable files, 0134; moving and deleting the assets folder amended by 0186
+- **Status:** Active (page format change approved by the maintainer; Box API 0.7 and the attachments package approved retroactively); amended by 0102 (Delete, alt text below the picture); landing kept files amended by 0124; verification and damaged copies amended by 0132; attachment names checked before use, 0133; conversion verified in the page folder and asking before opening runnable files, 0134; moving and deleting the assets folder amended by 0186; the size guard applied to one import's images together by 0191
 - **Decision:**
   - **Setting "Store images and files":** on pages and binders, either *In a folder beside the page* (the default) or *In the page file*.
     - It is stored as `"attachments":"folder"|"embedded"` in the page header's `noted` object or in the binder file. An absent value means the page follows its parent.
@@ -1806,7 +1806,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0129 — iPad and Android test builds
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer; extends 0018; amended by 0130; mobile sync started by 0145; first-load error screen and insets amended by 0162; its touch line amended by 0170; its narrow-window rule amended for desktop by 0178). The mobile adaptations listed below are built (0130).
+- **Status:** Active (approved by the maintainer; extends 0018; amended by 0130; mobile sync started by 0145; first-load error screen and insets amended by 0162; its touch line amended by 0170; its narrow-window rule amended for desktop by 0178; the iOS folder picker for iCloud Drive and watching iCloud folders added by 0190). The mobile adaptations listed below are built (0130).
 - **Decision:**
   - **Scope:** iPad and Android test builds for testing pen, touch and layout: sideloaded, notes stored on the device, no mobile sync yet.
   - **Projects:** `app/ios` and `app/android`, id `io.github.ndouve.noted`, minimum iPadOS/iOS 15 (needed by `file_selector`) and Android 8 (API 26). iPad uses all four orientations. Android paste uses pasteboard's file provider, limited to the app's cache folder. Android library plugins that compile against an older SDK than the app (for example `keyboard_height_plugin`, through `appflowy_editor`) are raised to the app's compile SDK at build time.
@@ -2278,7 +2278,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0161 — Baseline scope, 2026-11-14
 - **Date:** 2026-11-14
-- **Status:** Active (decided by the maintainer). Amends 0078's phase lists, as kept in `CLAUDE.md`; amends 0055's exclusion of table import and 0038's note that other storage locations come in later phases. Its out-of-scope list is amended by 0163.
+- **Status:** Active (decided by the maintainer). Amends 0078's phase lists, as kept in `CLAUDE.md`; amends 0055's exclusion of table import and 0038's note that other storage locations come in later phases. Its out-of-scope list is amended by 0163. Import is built in 0191, except Word pages and slides as images.
 - **Decision:**
   - **In scope, added:**
     - storage in iCloud Drive, Google Drive and WebDAV alongside OneDrive, for the iPad, Android and browser builds;
@@ -2577,7 +2577,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0182 — The maintainer's answers for the cloud drivers and the rename-based move
 - **Date:** 2026-11-15
-- **Status:** Active (the maintainer, answers of 2026-11-15 to the reviewed notes `2026-11-15-01-cloud-parity` and `2026-11-14-02-rename-move`). The WebDAV pull built from them is 0177; the rename-based move and the in-place set-aside are built in 0186; the iCloud and Google Drive drivers are not built yet.
+- **Status:** Active (the maintainer, answers of 2026-11-15 to the reviewed notes `2026-11-15-01-cloud-parity` and `2026-11-14-02-rename-move`). The WebDAV pull built from them is 0177; the rename-based move and the in-place set-aside are built in 0186; the iCloud driver is built in 0189 and 0190; the Google Drive driver is not built yet.
 - **Decision:**
   - **iCloud Drive:** on Apple devices and on Windows (through the iCloud for Windows folder) only; elsewhere such a folder follows the usual read-only rules. On Apple devices the folder is chosen with the folder picker and kept by a bookmark. No iCloud flag is stored; the MCP server recognises an iCloud folder by the dataless flag on its files, with a path rule until that check exists.
   - **Google Drive:** the full `drive` scope under Google's personal-use path (published, unverified, under 100 users); never a paid assessment. For a public release Google's free verification is tried; if Google requires a paid security assessment, the public build uses `drive.file` instead, which cannot see files Noted didn't create (for example binders written through the Drive desktop folder, and Drive's own conflict copies). The scope is one setting in the driver. Sign-in uses `flutter_appauth` on devices if the probe passes, and Noted's own redirect flow in the browser. If a Drive probe fails, the gap is accepted.
@@ -2613,7 +2613,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0185 — The MCP server re-checks its aside before removing it
 - **Date:** 2026-11-16
-- **Status:** Active (the maintainer, 2026-11-16, option (a) of run 2026-11-15-02's question; built in run 2026-11-16-01); amends 0131 and 0172; the coordination hook built in run 2026-11-22-01 (0189), registered by nothing yet; the dataless check not built
+- **Status:** Active (the maintainer, 2026-11-16, option (a) of run 2026-11-15-02's question; built in run 2026-11-16-01); amends 0131 and 0172; the coordination hook built in run 2026-11-22-01 (0189) and registered for iCloud folders by the app in 0190; the dataless check built in 0190, its native calls pinned as `@Native` leaf functions (the maintainer, 2026-11-23)
 - **Decision:**
   - **One checked drop.** The re-check before a verified aside is removed is one shared file importing `dart:io` only, `packages/noted_core/lib/src/storage/drop_verified.dart`, used by the app's checked delete and by the MCP server's closed writer.
   - **The server's aside.** After a successful publish the server removes its aside only after re-checking it: moved to a fresh `.cas-verified` name, read again and compared by bytes with the page's previous bytes, with its size and time unchanged across the read. A file in doubt stays for Noted's sweep, which keeps it as a conflict copy, and the answer is still `done`.
@@ -2658,7 +2658,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0189 — iCloud Drive groundwork: the coordination hook on every write site, and the Apple folder channel
 - **Date:** 2026-11-23
-- **Status:** Active (the build team (PM), run 2026-11-22-01, steps 1, 2 and 4 of the reviewed note `2026-11-15-01-cloud-parity` revision 5.4, under 0182 and 0185); the dataless check and the driver (steps 3, 5, 6 and 7) are not built
+- **Status:** Active (the build team (PM), run 2026-11-22-01, steps 1, 2 and 4 of the reviewed note `2026-11-15-01-cloud-parity` revision 5.4, under 0182 and 0185); the dataless check and the driver (steps 3, 5, 6 and 7) are built in 0190, and the app now calls the channel
 - **Decision:**
   - **The hook.** `noted_core/lib/src/storage/coordination.dart` adds `coordinated()` and `StorageBusy` (a refusal, with reason `coordination`, `dataless` or `versionsPending`). Every checked primitive (`publishExclusive`, `replaceIfUnchanged`, the checked deletes, `sweepAsideFiles`, `moveExclusive`) runs its file operations through it, naming each file it reads, writes, moves or deletes; `sweepAsideFiles` names each leftover it consumes as a move. With no coordinator registered it runs the operation directly. Nothing registers one yet.
   - **Every write site** in the app and `noted_core` that creates, writes or removes a file or folder in a storage location goes through the hook (folder creates and removes through `createFolderCoordinated` and `removeFolderCoordinated`), or is a temp or outside the storage roots. Four creates are not yet coordinated (the binder folder in `BinderStore.create`, the pull engine's, the cloud sign-in folder and the storage probe); a test fails if a coordinator is registered while any remains.
@@ -2673,14 +2673,14 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0190 — iCloud Drive: files not downloaded yet, folder access on Apple devices, and iCloud versions
 - **Date:** 2026-11-23
-- **Status:** Active (the build team (PM), run 2026-11-23-01, steps 3, 5 and 6 of the reviewed note `2026-11-15-01-cloud-parity` revision 5.5, under 0182 and 0185; the `@Native` wording of the server's dataless check is the maintainer's answer of 2026-11-23); amends 0129
+- **Status:** Active (the build team (PM), run 2026-11-23-01, steps 3, 5, 6 and 7 of the reviewed note `2026-11-15-01-cloud-parity` revision 5.5, under 0182 and 0185; the `@Native` wording of the server's dataless check is the maintainer's answer of 2026-11-23); amends 0129
 - **Decision:**
-  - **Not downloaded (dataless).** On Apple devices a file the system has evicted (`SF_DATALESS`), or a name with only its `.<name>.icloud` stub, is never read, parsed, taken for absent or deleted. It is listed "Still downloading" and its download is requested at open and on each change. A save over it keeps the edit as the page's recovery generation and saves again when the file changes. The checked primitives answer busy for it, and also for a present file with a stub beside it, before anything moves. A stubbed name counts as taken.
+  - **Not downloaded (dataless).** On Apple devices a file the system has evicted (`SF_DATALESS`), or a name with only its `.<name>.icloud` stub, is never read, parsed, taken for absent or deleted. It is listed "Still downloading" and its download is requested at open and on each change. A save over it keeps the edit as the page's recovery generation and saves again when the file changes; a kept edit replayed at launch waits the same way. A page whose own file is only a stub is still the page: conflict and recovered copies beside it, and copies of those, wait for it and merge when it arrives. The checked primitives answer busy for it, and also for a present file with a stub beside it, before anything moves. A stubbed name counts as taken.
   - **The MCP server** applies the same rule with no iCloud case: a not-downloaded page counts by the ids in its name, or as unknown, so the server refuses more, never less, and writes nothing new. Its storage files are exactly the exclusive publisher, the checked drop, the coordination hook and the dataless check; `dart:ffi` is imported only by the publisher and the dataless check, whose native calls are exactly the `@Native` leaf functions `lstat` and `lstat$INODE64`, with no allocator.
   - **Folder access on Apple devices (amends 0129).** Folders picked on macOS keep a security-scoped bookmark, and on iOS the folder picker is offered for iCloud Drive folders only; both are kept in `folder-access.json` beside `settings.json` (app state, not the page format). Each is resolved before the first load; one that resolves elsewhere or is refused shows "On another device". Each iCloud folder gets a coordinator and a write test; until the test passes, and whenever it failed or access was lost, the folder is read-only and nothing is swept or landed in it. An entry is removed only when no binder, standalone folder or default folder setting (or a folder inside one) still uses it, and only after a successful load with both settings files readable.
   - **iCloud versions.** Before resolving a conflicting version of a page or binder file, the app saves it beside the file as `<stem>-icloud-<hash>.canvas` or `noted-binder-icloud-<hash>.json`, which 0053 and 0165 then merge or list. A file with unresolved versions is never moved aside or deleted by the app: the step is busy and retried once its versions have landed. An attachment version that matches its name replaces a damaged file; other attachment versions stay in iCloud ("Keep it in iCloud" hides the row for the session); template versions are listed. Versions that can't be kept are listed and nothing is deleted.
   - **Watching.** Changes reported by iCloud reach the notebook like file-watcher events, and the folder check (0064) also runs on iOS.
-  - **Known limits:** a stub left beside a downloaded file keeps that file busy until the stub goes; "Keep it in iCloud" is not remembered across launches; on an Intel Mac the dataless check is unverified (probe I4), and a failed check makes every file count as not downloaded; whether unresolved versions survive the server's closed-app write is unverified (I5, accepted in 0182's answers); the hand checks I1–I8 are outstanding.
+  - **Known limits:** a stub left beside a downloaded file keeps that file busy until the stub goes; a conflict copy whose merge was refused while versions were pending is merged at the next check of that copy or the next launch, not right after the landing; a new copy can wait behind a stub of the page's usual name even while the page lives at another readable name; "Keep it in iCloud" is not remembered across launches; on an Intel Mac the dataless check is unverified (probe I4), and a failed check makes every file count as not downloaded; whether unresolved versions survive the server's closed-app write is unverified (I5, accepted in 0182's answers); the hand checks I1–I8 are outstanding.
 - **Rationale:** an evicted file read by the app is downloaded on the spot (or fails offline), and taking it for absent or deleting it would lose the only copy; an iCloud version resolved without being kept is lost.
 - **Alternatives considered:** a per-provider rule (rejected: OneDrive and Drive have dataless files on macOS too); letting the server keep an aside on macOS (rejected in 0182's answers); resolving versions without a copy (loses them).
 
