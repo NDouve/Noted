@@ -28,6 +28,7 @@ import 'command_toolbar.dart';
 import 'find_bar.dart';
 import 'commands.dart';
 import 'geometry.dart';
+import 'import_target.dart';
 import 'noted_colors.dart';
 import 'noted_theme.dart';
 import 'page_background.dart';
@@ -385,6 +386,112 @@ class PageCanvasState extends State<PageCanvas>
     }
     if (last != null && _pasteHolds(target)) _c.select(last);
   }
+
+  /// Host only. Captures where an import goes, before anything is asked or
+  /// read: the controller, page, store, the page point [at] (the middle of
+  /// the view if null) and the disallowed types. Null on a page that can't
+  /// be changed or has no store. [ImportTarget.holds] says whether it still
+  /// does.
+  ImportTarget? captureImportTarget(Offset? at) {
+    final t = _pasteTarget(at);
+    if (t == null) return null;
+    return ImportTarget.internal(
+      wrapped: t,
+      pageId: t.pageId,
+      store: t.store,
+      point: t.point,
+      check: () => _pasteHolds(t),
+    );
+  }
+
+  /// Host only (not on [CommandHost]: its `insertFiles` is Box API 0.7).
+  /// Makes a box of the module [module] (a type id; null picks by file, as
+  /// [insertFiles] does) for each of [files], in [target]'s page. A module
+  /// whose box grows with its content (the note) isn't given a fixed height
+  /// and its boxes go side by side, 24 px apart, left to right from
+  /// [ImportTarget.point]; other boxes are stacked downward by their sizes.
+  /// [target] moves on past what was placed.
+  ///
+  /// As a paste does, it checks the target before each file is stored and
+  /// before each box is added; when it no longer holds, nothing more is
+  /// stored or added and the user is told once, with [stopNotice].
+  Future<ImportInsert> insertImportInto(
+    ImportTarget target,
+    List<IncomingFile> files, {
+    String? module,
+    String stopNotice = importStoppedNotice,
+  }) async {
+    final paste = target.wrapped as _PasteTarget;
+    final store = paste.store;
+    final fixed = module == null ? null : paste.controller.modules.moduleFor(module);
+    if (module != null && (fixed == null || paste.off.contains(module))) {
+      return const ImportInsert(refused: true);
+    }
+    var point = target.point;
+    String? last;
+    var added = 0;
+    var stopped = false;
+    final failed = <String>[];
+    for (final f in files) {
+      if (!target.holds) {
+        stopped = true;
+        break;
+      }
+      final m = fixed ?? paste.controller.modules.moduleForFile(f, exclude: paste.off);
+      if (m == null) {
+        failed.add(f.name);
+        continue;
+      }
+      if (_off.contains(m.codec.typeId)) {
+        stopped = true;
+        break;
+      }
+      (Object?, Size)? made;
+      try {
+        made = await m.hostCreateFromFile(f, store);
+      } on FileSystemException {
+        if (!target.holds) {
+          stopped = true;
+          break;
+        }
+        failed.add(f.name);
+        continue;
+      }
+      if (made == null) {
+        if (!target.holds) {
+          stopped = true;
+          break;
+        }
+        failed.add(f.name);
+        continue;
+      }
+      if (!target.holds || _off.contains(m.codec.typeId)) {
+        stopped = true;
+        break;
+      }
+      final (data, size) = made;
+      final codec = m.codec;
+      final grows = codec.sizing == BoxSizing.growsWithContent;
+      var box = commitBox(
+        createBox(codec, Bounds(point.dx, point.dy, size.width, size.height), device: _c.deviceName),
+        codec,
+        data,
+        device: _c.deviceName,
+      );
+      if (!grows) box = box.withFixedHeight(true);
+      _c.insertBox(box);
+      added++;
+      last = box.id;
+      point = grows ? Offset(point.dx + size.width + _importGap, point.dy) : point.translate(0, size.height + _fileGap);
+    }
+    target.point = point;
+    if (stopped) store.notify(stopNotice);
+    if (last != null && target.holds) _c.select(last);
+    return ImportInsert(added: added, failed: failed, stopped: stopped);
+  }
+
+  /// Gap between the note boxes of one import, in page units.
+  static const double _importGap = 24;
 
   /// Boxes for [files] to the right of box [boxId], top-aligned with it.
   void _insertFilesBeside(String boxId, List<IncomingFile> files) {
