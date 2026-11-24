@@ -817,6 +817,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // A file that is not downloaded is asked for through the platform (R5.5).
     if (icloud != null && icloud!.active) requestDownload = icloud!.startDownloading;
     icloud?.addListener(_notifyLoad);
+    // The platform's presenter reports changes (M8) and the landing of iCloud
+    // versions reports what it did (R5.8).
+    icloud?.onChanged = _cloudChanged;
+    icloud?.onLanded = _cloudLanded;
+    icloud?.onIssuesChanged = _notifyLoad;
   }
 
   /// Access to iCloud folders and bookmarked folders (R5.3, R5.9): resolved
@@ -2385,6 +2390,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _rebuildTree();
     _syncWatchers();
     _startFolderTimer();
+    // What is not downloaded is asked for at open (R5.5), and the versions
+    // iCloud holds are landed (R5.8; a server write's, or a crash's).
+    _requestListedDownloads();
+    final cloud = icloud;
+    if (cloud != null && cloud.active) unawaited(cloud.landAllVersions());
     await _mergePendingCopies();
     await _binderSeam('load-recover', settingsFile?.path ?? '');
     await _recoverPending();
@@ -9908,7 +9918,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           }
           // The folder may have vanished during the write.
           final folderGone = !await st.directory.exists();
-          return await _saveFailed(loc, st, toSave, savedSeq, session, error: e, folderGone: folderGone);
+          // iCloud versions of the page that can't be kept yet (R5.8): the edit
+          // is kept in recovery and the bar says why.
+          String? stuck;
+          if (e is StorageBusy && e.reason == StorageBusyReason.versionsPending) {
+            for (final p in e.paths) {
+              stuck ??= icloud?.versionRowOf(p);
+            }
+          }
+          return await _saveFailed(loc, st, toSave, savedSeq, session, error: e, folderGone: folderGone, reason: stuck);
         }
         if (landed) break;
         // The file is not what was last seen. The open page takes it in at the
@@ -14470,6 +14488,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   List<UnreadablePage> get discoveryNotes => [
     ..._heldNotes,
     ..._capNotes,
+    for (final i in cloudVersionIssues) UnreadablePage(i.path, i.text),
     // A note goes once the old folder is gone or the page is listed again.
     for (final r in _rehomeNotes.values)
       if (!_loc.containsKey(r.id) && Directory(r.note.path).existsSync()) r.note,
@@ -14611,6 +14630,103 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
+  // iCloud: watching, downloads and versions (M8, R5.5, R5.8) -------------------
+
+  // The platform's presenter saw [path] change, or move to [to]: what a watcher
+  // event runs, for both paths. A stub's change is its file's.
+  void _cloudChanged(String path, String? to) {
+    if (_disposed) return;
+    final sep = Platform.pathSeparator;
+    final paths = <String>[
+      for (final p in [path, ?to])
+        switch (stubTargetName(p.split(RegExp(r'[\\/]')).last)) {
+          final real? => '${File(p).parent.path}$sep$real',
+          null => p,
+        },
+    ];
+    unawaited(_cloudLook(paths));
+  }
+
+  Future<void> _cloudLook(List<String> paths) async {
+    try {
+      await filesChanged(paths);
+      if (_disposed) return;
+      _requestListedDownloads();
+      // The open page whose save found its file not downloaded saves now that
+      // it came (R5.5): its edit is in recovery, and the retry lands it.
+      final id = _current?.page.id;
+      if (id != null && _trouble.isTrouble && _trouble.pageId == id) {
+        for (final p in paths) {
+          if (_pathId[_key(p)] == id && !isDataless(p)) {
+            unawaited(retrySave());
+            break;
+          }
+        }
+      }
+    } on Object catch (e) {
+      debugPrint('Looking at a change in an iCloud folder failed: $e');
+    }
+  }
+
+  // Asks for the download of every page, binder file and attachment listed as
+  // "Still downloading" (at open, and on each change event).
+  void _requestListedDownloads() {
+    final ask = requestDownload;
+    if (ask == null) return;
+    final lists = [
+      _unreadable,
+      for (final f in _folders.values) f.unreadable,
+      for (final b in _binders.values) b.unreadable,
+    ];
+    for (final list in lists) {
+      for (final u in list) {
+        if (u.reason == stillDownloading) ask(u.path);
+      }
+    }
+    for (final b in _binders.values) {
+      if ((b.reason ?? '').contains('still downloading')) ask('${b.path}${Platform.pathSeparator}$binderFileName');
+    }
+  }
+
+  // A landing of iCloud versions did something: the new copies are looked at
+  // like any copy that arrives (0053, 0165), a leftover's folder is swept again
+  // (its versions were landed under its target's name), and what was `pending`
+  // is tried again.
+  void _cloudLanded(VersionLanding l) {
+    if (_disposed) return;
+    unawaited(() async {
+      try {
+        final dir = File(l.path).parent.path;
+        final back = <String>[];
+        if (l.leftover && l.resolved > 0) back.addAll(await _sweepAfterLanding(dir));
+        await filesChanged([...back, ...l.published, if (!l.leftover) l.path]);
+        if (!_disposed && _trouble.isTrouble) unawaited(retrySave());
+      } on Object catch (e) {
+        debugPrint('Looking at the landed iCloud versions failed: $e');
+      }
+    }());
+  }
+
+  Future<List<String>> _sweepAfterLanding(String dir) async {
+    final key = _key(dir);
+    final binder = _binders.values.where((b) => _key(b.path) == key).firstOrNull;
+    if (binder != null) await _restoreAside(binder);
+    final loc = _locationOf('$dir${Platform.pathSeparator}x${PageStore.extension}');
+    if (loc == null || !_mayTouch(loc) || _pullOnly(loc)) return const [];
+    return _lockRunUngated(Directory(dir), () => sweepAsideFiles(Directory(dir)));
+  }
+
+  /// The rows about iCloud versions Noted can't keep yet, or keeps in iCloud
+  /// (R5.8). They are in [discoveryNotes] too.
+  List<CloudVersionIssue> get cloudVersionIssues => icloud?.versionIssues ?? const [];
+
+  /// "Keep it in iCloud": hides the row of an attachment's other version until
+  /// the version changes.
+  void keepCloudVersion(String path) {
+    icloud?.keepInICloud(path);
+    _notifyLoad();
+  }
+
   // A folder left the notebook's lists: its access goes unless it is still kept.
   void _cloudReleased(String path) {
     final access = icloud;
@@ -14627,7 +14743,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   void _startFolderTimer() {
     _folderTimer?.cancel();
     _folderTimer = null;
-    if (!watchFiles || _disposed || folderCheckInterval <= Duration.zero) return;
+    // On a device with no folder watching (iOS), the 0064 check still runs for
+    // the chosen folders when iCloud folder access is on (M8).
+    final cloudChecks = icloud?.active ?? false;
+    if (!(watchFiles || cloudChecks) || _disposed || folderCheckInterval <= Duration.zero) return;
     _folderTimer = Timer.periodic(folderCheckInterval, (_) {
       _discoveryTick();
       if (icloud != null) unawaited(icloud!.retryBusy());
