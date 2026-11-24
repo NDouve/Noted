@@ -82,8 +82,9 @@ void main() {
         final failure = debugDatalessLookupFailure;
         if (e.value == 'lstat') {
           // Linux has an `lstat` of its own, so the call may succeed there
-          // (its result is not looked at on this path); where it fails, it
-          // names `lstat`, not the 64-bit-inode symbol.
+          // (its result is not looked at on this path). Elsewhere (Windows) the
+          // lookup must fail; a failure names `lstat`, not the 64-bit-inode symbol.
+          if (!Platform.isLinux) expect(failure, isNotNull, reason: '${e.key}: no lstat in this process');
           if (failure != null) {
             expect(failure.toString(), contains('lstat'), reason: '${e.key}');
             expect(failure.toString(), isNot(contains(r'$INODE64')), reason: '${e.key}');
