@@ -317,6 +317,8 @@ Future<String?> Function()? pickFolderFor(IcloudFolders? icloud) {
     return () async {
       try {
         return await icloud.pick(pickDirectory: icloud.platform == CloudPlatform.macos ? usual : null);
+      } on PlatformException catch (e) {
+        throw NotebookException('Could not choose the folder: ${e.message ?? e.code}');
       } on CloudPickRefused catch (e) {
         throw NotebookException(e.message);
       }

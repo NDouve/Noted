@@ -115,6 +115,30 @@ void main() {
     );
   });
 
+  test('a coordinate call that never returns is abandoned at the limit: cancel, StorageBusy, the body never runs', () async {
+    channel.coordinateHangs = true;
+    var ran = false;
+    await expectLater(
+      coordinator.coordinate<void>(one('/a'), () async => ran = true),
+      throwsA(isA<StorageBusy>().having((e) => e.reason, 'reason', StorageBusyReason.coordination)),
+    );
+    expect(ran, isFalse);
+    expect(channel.methods, ['coordinate', 'cancel']);
+    // Its late go (should one ever come) is answered by done.
+    await channel.answer(channel.callsOf('coordinate').single.args['id']! as int, 'go');
+    expect(channel.methods.last, 'done');
+  });
+
+  test('ids start from a random base per coordinator, so a go from before a reset can\'t match', () async {
+    final other = ChannelCoordinator(channel, timeout: const Duration(milliseconds: 200));
+    await coordinator.coordinate<void>(one('/a'), () async {});
+    channel.onEvent = other.handleEvent;
+    await other.coordinate<void>(one('/a'), () async {});
+    final ids = [for (final c in channel.callsOf('coordinate')) c.args['id']! as int];
+    expect(ids[0], isNot(ids[1]));
+    expect(ids, everyElement(greaterThan(1)));
+  });
+
   test('reset is the first call at start, before anything resolves', () async {
     final folders = IcloudFolders(
       channel: channel,

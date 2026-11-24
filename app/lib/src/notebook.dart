@@ -826,7 +826,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // sweep refuse them (R5.9). Set before the first load and at each pick.
   final Set<String> _untestedRoots = {};
 
+  // The real-path key of each location asked about, resolved once (cleared when a root changes).
+  final Map<String, String> _realKeys = {};
+
   void _rootWritable(String root, bool writable) {
+    _realKeys.clear();
     final k = _key(_normalizePath(root));
     if (writable) {
       _untestedRoots.remove(k);
@@ -837,9 +841,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // Whether [loc] is at or under an iCloud root that isn't tested yet.
+  // Refuses a write into an iCloud root that is not tested or whose access is lost.
+  void _assertTested(String path) {
+    if (_untested(path) || (icloud?.accessLost(path) ?? false)) throw NotebookException(_untestedMessage(path));
+  }
+
+  String _untestedMessage(String path) => icloud?.statusOf(path) ?? 'That folder is not available.';
+
   bool _untested(String loc) {
     if (_untestedRoots.isEmpty || loc == _standalone) return false;
-    final k = _key(_realKey(loc));
+    final k = _realKeys.putIfAbsent(loc, () => _key(_realKey(loc)));
     for (final r in _untestedRoots) {
       if (k == r || k.startsWith(r.endsWith('/') ? r : '$r/')) return true;
     }
@@ -2075,6 +2086,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   String _lockedMessage(String loc) {
     if (_pullOnly(loc)) return pullOnlyMessageFor(loc);
+    if (_untested(loc) || (loc != _standalone && (icloud?.accessLost(loc) ?? false))) return _untestedMessage(loc);
     final s = _binders[loc];
     // A hold is set before the binder's status changes.
     if (s != null && s._hold == BinderHold.damaged) return "This binder's file can't be read, so its pages are read-only.";
@@ -2327,6 +2339,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _binders.clear();
     _folders.clear();
     _defaultGone = false;
+    _realKeys.clear();
     _adoptDefault(entries);
     _binderIds.clear();
     _removedBinders.clear();
@@ -7077,6 +7090,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<String> _newBinderFolder(String name) async {
     final root = defaultBinderFolderPath;
     if (_pullOnly(root)) throw NotebookException(pullOnlyMessageFor(root));
+    _assertTested(root);
     final builtin = settings?.defaultBinderFolder == null || _key(root) == _key(builtinBinderFolderPath);
     try {
       if (builtin) {
@@ -7204,6 +7218,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // A binder file is never made in a pull-only folder (opening one is fine).
     if (_pullOnly(path) && !await BinderStore(Directory(path)).file.exists()) {
       throw NotebookException(pullOnlyMessageFor(path));
+    }
+    // Nor in an iCloud root that is not tested yet (R5.9).
+    if (_untested(path) && !await BinderStore(Directory(path)).file.exists()) {
+      throw NotebookException(_untestedMessage(path));
     }
     await flush();
     final r = await _queued(() => _listBinder(path, found: false));
@@ -8054,6 +8072,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     String path, {
     required bool openCover,
   }) async {
+    _assertTested(path);
     final dir = Directory(path);
     final binders = BinderStore(dir);
     final made = template.instantiateBinder();
@@ -8636,7 +8655,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final sw = await binders.sweepLeftovers(restore: sweep && _sweepOff == 0 && !_pullOnly(path) && !_untested(path));
         var once = await _readBinderFile(binders);
         var made = false;
-        if (once.read is BinderMissing && create && !_pullOnly(path)) {
+        if (once.read is BinderMissing && create && !_pullOnly(path) && !_untested(path)) {
           // A complete copy of a binder file is never papered over by a new binder:
           // the user puts it back or deletes it first.
           if (sw.copies.any((c) => c.isTemp && c.binder != null)) {
@@ -14554,7 +14573,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (access == null || _disposed || _settingsHeld != null) return;
     if (settings != null && !settings!.canRememberNotes) return;
     try {
-      await access.prune(_retainedLocations());
+      await access.prune(_retainedLocations);
     } on Object catch (e) {
       debugPrint('Pruning the folder access failed: $e');
     }
@@ -14564,8 +14583,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   void _cloudReleased(String path) {
     final access = icloud;
     if (access == null) return;
-    final retained = _retainedLocations();
-    _cloudWork = _cloudWork.then((_) => access.released(path, retained)).catchError((Object e) => debugPrint('Releasing folder access failed: $e'));
+    // As the prune: nothing is released while settings.json can't be read.
+    if (settings != null && !settings!.canRememberNotes) return;
+    _cloudWork = _cloudWork
+        .then((_) => access.released(path, _retainedLocations))
+        .catchError((Object e) => debugPrint('Releasing folder access failed: $e'));
   }
 
   // Folders that come and go -------------------------------------------------
@@ -15695,6 +15717,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final dir = Directory(_normalizePath(chosen));
     // Nothing is made in a pull-only folder.
     if (_pullOnly(dir.path)) throw NotebookException(pullOnlyMessageFor(dir.path));
+    _assertTested(dir.path);
     final newPageId = newId();
     final copy = page.withMeta(page.meta.withId(newPageId).withPlacement(parentId: null, order: 0));
     final left = <String>[];

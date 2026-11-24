@@ -117,7 +117,8 @@ class ChannelCoordinator implements StorageCoordinator {
 
   final Map<int, Completer<_Answer>> _waiting = {};
   final Set<int> _abandoned = {};
-  int _nextId = 0;
+  // A random base per start, so an answer from before a reset can't match a new id.
+  int _nextId = Random.secure().nextInt(1 << 31);
   Future<void> _ready = Future<void>.value();
 
   /// The calls wait for [ready] (the `reset` at channel start).
@@ -138,24 +139,34 @@ class ChannelCoordinator implements StorageCoordinator {
     final id = ++_nextId;
     final answer = Completer<_Answer>();
     _waiting[id] = answer;
+    final clock = Stopwatch()..start();
+    Never abandon() {
+      if (_waiting.remove(id) != null) _abandoned.add(id);
+      unawaited(_send('cancel', id));
+      throw StorageBusy(StorageBusyReason.coordination, paths, 'The folder did not answer in time');
+    }
+
     try {
-      await _channel.invoke('coordinate', {
-        'id': id,
-        'intents': [
-          for (final i in write.intents) {'path': i.path, 'kind': i.kind.name},
-        ],
-      });
+      await _channel
+          .invoke('coordinate', {
+            'id': id,
+            'intents': [
+              for (final i in write.intents) {'path': i.path, 'kind': i.kind.name},
+            ],
+          })
+          .timeout(timeout);
+    } on TimeoutException {
+      abandon();
     } on Object catch (e) {
       _waiting.remove(id);
       throw StorageBusy(StorageBusyReason.coordination, paths, 'The folder is not available: $e');
     }
     final _Answer a;
     try {
-      a = await answer.future.timeout(timeout);
+      final left = timeout - clock.elapsed;
+      a = await answer.future.timeout(left.isNegative ? Duration.zero : left);
     } on TimeoutException {
-      if (_waiting.remove(id) != null) _abandoned.add(id);
-      unawaited(_send('cancel', id));
-      throw StorageBusy(StorageBusyReason.coordination, paths, 'The folder did not answer in time');
+      abandon();
     }
     switch (a.kind) {
       case _AnswerKind.go:
@@ -412,11 +423,11 @@ class IcloudFolders extends ChangeNotifier {
 
   // The access of the entry covering [path] (the nearest one), or null.
   CloudFolderEntry? _entryFor(String path) {
-    final k = _key(path);
+    final k = _k(path);
     CloudFolderEntry? best;
     var bestLen = -1;
     for (final e in _entries) {
-      final ek = _key(e.path);
+      final ek = _k(e.path);
       if (_isUnderKey(k, ek) && ek.length > bestLen) {
         best = e;
         bestLen = ek.length;
@@ -434,11 +445,11 @@ class IcloudFolders extends ChangeNotifier {
     final e = _entryFor(path);
     if (e == null) {
       if (_listState == CloudListState.unavailable) return CloudFolderTexts.anotherDevice;
-      final k = _key(path);
-      if (ownFolders.any((o) => _isUnderKey(k, _key(o)))) return null;
+      final k = _k(path);
+      if (ownFolders.any((o) => _isUnderKey(k, _k(o)))) return null;
       return CloudFolderTexts.chooseAgain;
     }
-    final ek = _key(e.path);
+    final ek = _k(e.path);
     if (_access[ek] == CloudAccess.anotherDevice) return CloudFolderTexts.anotherDevice;
     return switch (_checks[ek]) {
       CloudRootCheck.checking => CloudFolderTexts.checking,
@@ -452,16 +463,16 @@ class IcloudFolders extends ChangeNotifier {
   /// or failed): nothing is written there.
   bool accessLost(String path) {
     final e = _entryFor(path);
-    return e != null && _access[_key(e.path)] == CloudAccess.anotherDevice;
+    return e != null && _access[_k(e.path)] == CloudAccess.anotherDevice;
   }
 
   /// The state of [path]'s entry, for tests and the rows.
-  CloudAccess? accessOf(String path) => _entryFor(path) == null ? null : _access[_key(_entryFor(path)!.path)];
+  CloudAccess? accessOf(String path) => _entryFor(path) == null ? null : _access[_k(_entryFor(path)!.path)];
 
   /// The self-test of the iCloud root that holds [path], or null.
   CloudRootCheck? checkOf(String path) {
     final e = _entryFor(path);
-    return e == null ? null : _checks[_key(e.path)];
+    return e == null ? null : _checks[_k(e.path)];
   }
 
   // -- Start ---------------------------------------------------------------------
@@ -492,18 +503,24 @@ class IcloudFolders extends ChangeNotifier {
 
   void _changed() {
     if (_disposed) return;
+    _keyCache.clear();
     _checkingNow.value = _checks.values.contains(CloudRootCheck.checking);
     notifyListeners();
   }
 
   // Resolves [e]; false when its access is lost (another device).
   Future<bool> _resolve(CloudFolderEntry e) async {
-    final ek = _key(e.path);
+    final ek = _k(e.path);
     try {
       final r = await _channel.invoke('resolve', {'bookmark': e.bookmark});
       if (r is! Map || r['path'] is! String) throw StateError('no path');
       final path = r['path'] as String;
-      if (_key(path) != ek) {
+      if (r['access'] == false) {
+        // The platform could not start access: the folder is not ours to use.
+        _access[ek] = CloudAccess.anotherDevice;
+        return false;
+      }
+      if (_k(path) != ek) {
         // Another folder: access to it isn't ours to keep.
         await _stopAccess(path);
         _access[ek] = CloudAccess.anotherDevice;
@@ -527,7 +544,14 @@ class IcloudFolders extends ChangeNotifier {
     }
   }
 
-  bool _same(String a, String b) => _key(a) == _key(b);
+  // The comparison key of [path], resolved once until the lists change.
+  final Map<String, String> _keyCache = {};
+  String _k(String path) => _keyCache.putIfAbsent(path, () => _key(path));
+
+  bool _same(String a, String b) => _k(a) == _k(b);
+
+  // The probe on record for [path] in [list], carried over a replaced entry.
+  CloudProbe? _probeOf(List<CloudFolderEntry> list, String path) => list.where((x) => _same(x.path, path)).firstOrNull?.probe;
 
   Future<void> _stopAccess(String path) async {
     try {
@@ -553,7 +577,7 @@ class IcloudFolders extends ChangeNotifier {
   }
 
   bool _registerRoot(CloudFolderEntry e) {
-    final ek = _key(e.path);
+    final ek = _k(e.path);
     final real = _realPath(e.path);
     registerCoordinator(real, coordinator);
     _registered[ek] = real;
@@ -571,6 +595,7 @@ class IcloudFolders extends ChangeNotifier {
   /// [pickDirectory] gives.
   Future<String?> pick({Future<String?> Function()? pickDirectory}) async {
     await start();
+    _keyCache.clear();
     switch (platform) {
       case CloudPlatform.other:
         return pickDirectory?.call();
@@ -580,7 +605,7 @@ class IcloudFolders extends ChangeNotifier {
           r = await _channel.invoke('pick');
         } on PlatformException catch (e) {
           if (e.code == 'notUbiquitous') throw const CloudPickRefused(CloudFolderTexts.notICloud);
-          rethrow;
+          throw CloudPickRefused('Could not choose the folder: ${e.message ?? e.code}');
         }
         if (r is! Map || r['path'] is! String) return null;
         final path = r['path'] as String;
@@ -596,7 +621,6 @@ class IcloudFolders extends ChangeNotifier {
         } on Object catch (e) {
           debugPrint('Noted: making a bookmark failed: $e');
         }
-        if (bookmark == null) return chosen;
         return _adopt(chosen, bookmark, started: false);
     }
   }
@@ -615,10 +639,10 @@ class IcloudFolders extends ChangeNotifier {
     final entry = bookmark == null ? null : CloudFolderEntry(real, bookmark);
     var recorded = false;
     if (entry != null) {
-      recorded = await _mutate((list) => [for (final x in list) if (!_same(x.path, real)) x, entry]);
+      recorded = await _mutate((list) => [for (final x in list) if (!_same(x.path, real)) x, entry.copyWith(probe: _probeOf(list, real))]);
     }
     final e = _entries.where((x) => _same(x.path, real)).firstOrNull ?? CloudFolderEntry(real, bookmark ?? '');
-    _access[_key(real)] = CloudAccess.live;
+    _access[_k(real)] = CloudAccess.live;
     if (await _register(e)) {
       if (recorded) {
         await _selfTest(e);
@@ -643,14 +667,15 @@ class IcloudFolders extends ChangeNotifier {
     if (!active) return;
     try {
       await start();
+      _keyCache.clear();
       final parent = _entryFor(path);
-      if (parent == null || _access[_key(parent.path)] != CloudAccess.live) return;
+      if (parent == null || _access[_k(parent.path)] != CloudAccess.live) return;
       if (_same(parent.path, path)) return;
       final real = _realPath(path);
       final b = await _channel.invoke('bookmark', {'path': real});
       if (b is! String || b.isEmpty) return;
-      await _mutate((list) => [for (final x in list) if (!_same(x.path, real)) x, CloudFolderEntry(real, b)]);
-      _access[_key(real)] = CloudAccess.live;
+      await _mutate((list) => [for (final x in list) if (!_same(x.path, real)) x, CloudFolderEntry(real, b, _probeOf(list, real))]);
+      _access[_k(real)] = CloudAccess.live;
     } on Object catch (e) {
       debugPrint('Noted: no bookmark for a new folder: $e');
     }
@@ -663,16 +688,17 @@ class IcloudFolders extends ChangeNotifier {
   /// binder folder) and not an ancestor of one, by real path. The caller calls
   /// it only once the 0164 hold lifted and `settings.json` and `binders.json`
   /// both read. Nothing is removed while `folder-access.json` is unreadable.
-  Future<void> prune(Iterable<String> retained) async {
+  Future<void> prune(Iterable<String> Function() retained) async {
     if (!active) return;
     await start();
-    final keys = [for (final r in retained) _key(r)];
     final gone = <CloudFolderEntry>[];
     final ok = await _mutate((list) {
+      // Read inside the serialized write, so a folder added meanwhile counts.
+      final keys = [for (final r in retained()) _k(r)];
       gone.clear();
       final keep = <CloudFolderEntry>[];
       for (final e in list) {
-        final ek = _key(e.path);
+        final ek = _k(e.path);
         if (keys.any((k) => _isUnderKey(k, ek))) {
           keep.add(e);
         } else {
@@ -689,18 +715,19 @@ class IcloudFolders extends ChangeNotifier {
   }
 
   /// A folder was removed from Noted: its entry goes unless [retained] still
-  /// holds it (or something below it), and access to it stops.
-  Future<void> released(String path, Iterable<String> retained) async {
+  /// holds it (or something below it), and access to it stops. [retained] is
+  /// read inside the serialized write, never earlier.
+  Future<void> released(String path, Iterable<String> Function() retained) async {
     if (!active) return;
     await start();
-    final keys = [for (final r in retained) _key(r)];
-    final target = _key(path);
+    final target = _k(path);
     final gone = <CloudFolderEntry>[];
     final ok = await _mutate((list) {
+      final keys = [for (final r in retained()) _k(r)];
       gone.clear();
       final keep = <CloudFolderEntry>[];
       for (final e in list) {
-        final ek = _key(e.path);
+        final ek = _k(e.path);
         if (ek == target && !keys.any((k) => _isUnderKey(k, ek))) {
           gone.add(e);
         } else {
@@ -717,7 +744,9 @@ class IcloudFolders extends ChangeNotifier {
   }
 
   Future<void> _forget(CloudFolderEntry e) async {
-    final ek = _key(e.path);
+    // Added again since the write (a pick of the same folder): kept.
+    if (_entries.any((x) => _same(x.path, e.path))) return;
+    final ek = _k(e.path);
     final real = _registered.remove(ek);
     if (real != null) {
       unregisterCoordinator(real);
@@ -732,7 +761,7 @@ class IcloudFolders extends ChangeNotifier {
   // -- Self-test (R5.9) ------------------------------------------------------------
 
   void _setCheck(CloudFolderEntry e, CloudRootCheck c) {
-    final ek = _key(e.path);
+    final ek = _k(e.path);
     _checks[ek] = c;
     final real = _registered[ek];
     if (real != null) onRootWritable?.call(real, c == CloudRootCheck.passed);
@@ -743,7 +772,7 @@ class IcloudFolders extends ChangeNotifier {
   /// most once a minute each. The notebook calls it at its folder checks.
   Future<void> retryBusy() async {
     for (final e in List.of(_entries)) {
-      final ek = _key(e.path);
+      final ek = _k(e.path);
       if (_checks[ek] != CloudRootCheck.busy) continue;
       final last = _lastTried[ek];
       if (last != null && _now().difference(last) < retryBusyAfter) continue;
@@ -752,7 +781,7 @@ class IcloudFolders extends ChangeNotifier {
   }
 
   Future<void> _selfTest(CloudFolderEntry e) async {
-    final ek = _key(e.path);
+    final ek = _k(e.path);
     _lastTried[ek] = _now();
     _setCheck(e, CloudRootCheck.checking);
     try {
@@ -766,7 +795,7 @@ class IcloudFolders extends ChangeNotifier {
   }
 
   Future<CloudRootCheck> _probe(CloudFolderEntry e) async {
-    final root = _registered[_key(e.path)] ?? e.path;
+    final root = _registered[_k(e.path)] ?? e.path;
     try {
       // A leftover probe from an earlier run: removed by its nonce only.
       final old = _entries.where((x) => _same(x.path, e.path)).firstOrNull?.probe;
@@ -791,7 +820,10 @@ class IcloudFolders extends ChangeNotifier {
       final recorded = await _mutate(
         (list) => [for (final x in list) _same(x.path, e.path) ? x.copyWith(probe: CloudProbe(name, base64Encode(nonce))) : x],
       );
-      if (!recorded) return CloudRootCheck.unsafe;
+      // On record means an entry of this folder holds this very probe (a list
+      // without the entry changes nothing and records nothing).
+      final on = _entries.where((x) => _same(x.path, e.path)).firstOrNull?.probe;
+      if (!recorded || on == null || on.name != name) return CloudRootCheck.unsafe;
       final part = File('$root$_sep$name.part');
       final target = '$root$_sep$name';
       await part.writeAsBytes(nonce, flush: true);
@@ -851,6 +883,7 @@ class IcloudFolders extends ChangeNotifier {
   /// isn't readable is never replaced.
   Future<bool> _mutate(List<CloudFolderEntry> Function(List<CloudFolderEntry>) change, {bool onlyIfReadable = false}) {
     return _serialized(() async {
+      _keyCache.clear();
       for (var attempt = 0; attempt < 4; attempt++) {
         final _Read r;
         try {

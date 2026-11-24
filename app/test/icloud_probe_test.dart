@@ -11,6 +11,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
+import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/icloud_folders.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
@@ -247,6 +248,55 @@ void main() {
       final id = await nb.createPage(binderPath: b.path);
       expect(bdir.listSync().any((e) => e.path.endsWith('$id.canvas')), isTrue);
     });
+
+    // R5.9: a root that isn't tested (failed or timed out) is written by
+    // nothing: not a swept leftover, not a created binder, not a saved copy.
+    for (final busy in [false, true]) {
+      final text = busy ? 'iCloud is busy; Noted will try again' : "This iCloud folder can't be written safely on this device.";
+      test('an untested root (${busy ? 'busy' : 'unsafe'}) is refused with its text at every write path, and nothing is written', () async {
+        final bdir = Directory('${drive.path}/Work')..createSync();
+        final leftover = File('${bdir.path}/.x.cas-old')..writeAsStringSync('left over');
+        binders.parent.createSync(recursive: true);
+        recordEntry();
+        final seed = Notebook(PageStore(pages), buildModules(), bindersFile: binders);
+        await seed.load();
+        await seed.addBinder(bdir.path);
+        await seed.flush();
+        seed.dispose();
+        final plain = Directory('${drive.path}/Plain')..createSync();
+        final before = {for (final e in drive.listSync(recursive: true)) e.path};
+
+        // The platform answers `go` at once (pass-through) unless the root is busy.
+        if (busy) channel.mode = CoordinateMode.silent;
+        final f = make(
+          timeout: const Duration(milliseconds: 100),
+          publish: busy ? null : (t, p) async => throw const FileSystemException('no hard links'),
+        );
+        final settings = AppSettings(File('${root.path}/app/settings.json'))..defaultBinderFolder = drive.path;
+        final nb = Notebook(
+          PageStore(pages),
+          buildModules(),
+          bindersFile: binders,
+          settings: settings,
+          icloud: f,
+          pickFolder: () async => drive.path,
+        );
+        notebooks.add(nb);
+        await nb.loadChecked();
+        expect(f.checkOf(drive.path), busy ? CloudRootCheck.busy : CloudRootCheck.unsafe);
+        expect(leftover.existsSync(), isTrue, reason: 'the sweep did not run, although the platform would have said go');
+        // The platform would answer now: only the gating stands in the way.
+        channel.mode = CoordinateMode.go;
+
+        await expectLater(nb.createBinder(), throwsA(isA<NotebookException>().having((e) => e.message, 'message', text)));
+        await expectLater(nb.addBinder(plain.path), throwsA(isA<NotebookException>().having((e) => e.message, 'message', text)));
+        await expectLater(nb.saveCopyElsewhere(), throwsA(isA<NotebookException>().having((e) => e.message, 'message', text)));
+        await expectLater(nb.createPage(binderPath: bdir.path), throwsA(isA<NotebookException>()));
+        // The probe's own source (recorded, removed by its nonce at the retry) is the one allowed file.
+        final after = {for (final e in drive.listSync(recursive: true)) if (!e.path.contains('.noted-probe-')) e.path};
+        expect(after, before, reason: 'nothing was written in the root');
+      });
+    }
 
     test('a failed probe leaves the root read-only for the session', () async {
       recordEntry();

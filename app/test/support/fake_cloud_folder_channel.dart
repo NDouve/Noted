@@ -58,6 +58,15 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
   /// `pick` fails with the error code `notUbiquitous`.
   bool pickRefused = false;
 
+  /// Bookmarks whose resolve says access could not be started.
+  final Set<String> noAccess = {};
+
+  /// `pick` fails with this error code (other than `notUbiquitous`).
+  String? pickErrorCode;
+
+  /// `coordinate` never returns (the platform hangs).
+  bool coordinateHangs = false;
+
   /// `bookmark` fails.
   bool bookmarkFails = false;
 
@@ -109,6 +118,7 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
         return null;
       case 'pick':
         if (pickRefused) throw PlatformException(code: 'notUbiquitous');
+        if (pickErrorCode != null) throw PlatformException(code: pickErrorCode!, message: 'it broke');
         final p = picked;
         if (p == null) return null;
         final real = Directory(p).resolveSymbolicLinksSync();
@@ -121,7 +131,7 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
         if (failing.contains(b) || !_bookmarks.containsKey(b)) {
           throw PlatformException(code: 'resolve');
         }
-        return {'path': movedTo[b] ?? _bookmarks[b], 'stale': stale.contains(b), 'access': true};
+        return {'path': movedTo[b] ?? _bookmarks[b], 'stale': stale.contains(b), 'access': !noAccess.contains(b)};
       case 'isUbiquitous':
         final p = a['path']! as String;
         return ubiquitous.contains(Directory(p).existsSync() ? Directory(p).resolveSymbolicLinksSync() : p);
@@ -129,6 +139,7 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
         return null;
       case 'coordinate':
         if (coordinateThrows) throw PlatformException(code: 'unavailable');
+        if (coordinateHangs) return Completer<Object?>().future;
         final id = a['id']! as int;
         final intents = [for (final i in (a['intents']! as List)) (i as Map).cast<Object?, Object?>()];
         intentsById[id] = intents;

@@ -110,8 +110,58 @@ void main() {
       final f = make();
       final d = dir('Plain');
       channel.bookmarkFails = true;
-      expect(await f.pick(pickDirectory: () async => d.path), d.path);
+      expect(await f.pick(pickDirectory: () async => d.path), real(d));
       expect(entries(), isEmpty);
+    });
+
+    test('macOS: an iCloud folder whose bookmark fails is still coordinated and read-only; no entry is kept', () async {
+      final f = make();
+      final d = dir('Drive');
+      channel.ubiquitous.add(real(d));
+      channel.bookmarkFails = true;
+      final writable = <bool>[];
+      f.onRootWritable = (_, w) => writable.add(w);
+      expect(await f.pick(pickDirectory: () async => d.path), real(d));
+      expect(entries(), isEmpty);
+      expect(underCoordination([d.path]), isTrue, reason: 'never uncoordinated');
+      expect(writable, everyElement(isFalse), reason: 'read-only without a record');
+      expect(f.checkOf(d.path), isNull, reason: 'no entry holds it');
+      expect(f.statusOf(d.path), 'Choose the folder again');
+    });
+
+    test('a pick that fails for another reason says so in short', () async {
+      final f = make(platform: CloudPlatform.ios);
+      channel.pickErrorCode = 'picker';
+      await expectLater(
+        f.pick(),
+        throwsA(isA<CloudPickRefused>().having((e) => e.message, 'message', contains('it broke'))),
+      );
+    });
+
+    test('picking a folder again keeps the probe on record, so its leftover is still removed by nonce', () async {
+      final d = dir('Drive');
+      channel.ubiquitous.add(real(d));
+      final f1 = make(platform: CloudPlatform.ios);
+      channel.picked = d.path;
+      await f1.pick();
+      final nonce = base64Encode(List.generate(32, (i) => i + 1));
+      final left = File('${d.path}/.noted-probe-cccccccccccccccc.tmp')..writeAsBytesSync(base64Decode(nonce));
+      final j = jsonDecode(access.readAsStringSync()) as Map;
+      (j['folders'] as List).first['probe'] = {'name': '.noted-probe-cccccccccccccccc.tmp', 'nonce': nonce};
+      access.writeAsStringSync(jsonEncode(j));
+      f1.dispose();
+      folders.remove(f1);
+      final f2 = make(platform: CloudPlatform.ios);
+      await f2.start();
+      // A probe was on record and is gone with its file after the launch.
+      expect(left.existsSync(), isFalse);
+      // Now it is picked once more with another leftover on record.
+      final left2 = File('${d.path}/.noted-probe-dddddddddddddddd.tmp')..writeAsBytesSync(base64Decode(nonce));
+      final j2 = jsonDecode(access.readAsStringSync()) as Map;
+      (j2['folders'] as List).first['probe'] = {'name': '.noted-probe-dddddddddddddddd.tmp', 'nonce': nonce};
+      access.writeAsStringSync(jsonEncode(j2));
+      await f2.pick();
+      expect(left2.existsSync(), isFalse, reason: 'the replaced entry carried the record over');
     });
 
     test('other platforms: the usual picker only, nothing on record', () async {
@@ -183,6 +233,38 @@ void main() {
       final f2 = make();
       await f2.start();
       expect(f2.statusOf(d.path), 'On another device');
+    });
+
+    test('a bookmark whose access could not be started is "On another device"', () async {
+      final d = dir('Drive');
+      final f1 = make();
+      await f1.pick(pickDirectory: () async => d.path);
+      channel.noAccess.add(entries().single['bookmark']! as String);
+      f1.dispose();
+      folders.remove(f1);
+      final f2 = make();
+      await f2.start();
+      expect(f2.accessOf(d.path), CloudAccess.anotherDevice);
+      expect(f2.accessLost(d.path), isTrue);
+    });
+
+    test('a probe whose entry is no longer in the list is not on record: the root stays read-only', () async {
+      final d = dir('Drive');
+      channel.ubiquitous.add(real(d));
+      final f1 = make();
+      await f1.pick(pickDirectory: () async => d.path);
+      f1.dispose();
+      folders.remove(f1);
+      final f2 = make();
+      final seen = <bool>[];
+      f2.onRootWritable = (_, w) {
+        seen.add(w);
+        // The list loses the entry just before the probe is recorded.
+        if (!w && access.existsSync()) access.writeAsStringSync('{"version":1,"folders":[]}');
+      };
+      await f2.start();
+      expect(seen, isNotEmpty);
+      expect(seen, everyElement(isFalse), reason: 'never writable');
     });
 
     test('an Apple folder with no entry says "Choose the folder again"; one in the app\'s own storage does not', () async {
@@ -437,6 +519,41 @@ void main() {
       expect(nb2.loadError, isNotNull);
       await nb2.cloudAccessIdle;
       expect(entries(), hasLength(1), reason: 'an unused entry is pruned only after a successful load');
+    });
+
+    test('released reads what is retained when it runs: a folder kept again meanwhile keeps its entry and its coordination', () async {
+      final d = dir('Drive');
+      channel.ubiquitous.add(real(d));
+      final f = make();
+      await f.pick(pickDirectory: () async => d.path);
+      var keep = false;
+      final run = f.released(d.path, () => keep ? [d.path] : const []);
+      keep = true; // listed again before the write ran
+      await run;
+      expect(entries(), hasLength(1));
+      expect(underCoordination([d.path]), isTrue);
+      // Not retained any more: the entry goes and the root is let go of.
+      await f.released(d.path, () => const []);
+      expect(entries(), isEmpty);
+      expect(underCoordination([d.path]), isFalse);
+    });
+
+    test('removing a folder while settings.json can\'t be read removes nothing', () async {
+      final d = dir('Pages2');
+      final f = make();
+      final nb = open(f);
+      await nb.loadChecked();
+      await pickInto(nb, d);
+      await nb.addStandaloneFolder(d.path);
+      await quit(nb, f);
+      settingsFile.writeAsStringSync('{ not json');
+      final f2 = make();
+      final nb2 = open(f2);
+      await nb2.loadChecked();
+      await nb2.removeStandaloneFolder(nb2.standaloneFolders.single.path);
+      await nb2.cloudAccessIdle;
+      expect(entries(), hasLength(1));
+      expect(channel.callsOf('stopAccess'), isEmpty);
     });
 
     test('removing the folder from Noted removes its entry', () async {
