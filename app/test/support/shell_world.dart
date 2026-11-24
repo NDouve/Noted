@@ -94,7 +94,17 @@ class ShellWorld {
     await settleSaves(t, nb);
     await t.runAsync(() async {
       nb.dispose();
-      await dir.delete(recursive: true);
+      // A file check still reading an attachment holds the folder on Windows
+      // for a moment: try again.
+      for (var i = 0;; i++) {
+        try {
+          await dir.delete(recursive: true);
+          return;
+        } on FileSystemException {
+          if (i >= 10) rethrow;
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+      }
     });
   }
 }

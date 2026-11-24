@@ -168,12 +168,7 @@ void main() {
         expect(v!.state, AttachmentState.ok, reason: '$file holds the bytes its name says');
       }
     }
-    await t.runAsync(() async {
-      again.dispose();
-      // The reloaded page may still be checking its attachment files (a slow
-      // disk): let it finish, or the folder can't be deleted on Windows.
-      await Future<void>.delayed(const Duration(seconds: 1));
-    });
+    await t.runAsync(() async => again.dispose());
   }
 
   testWidgets('a two-page PDF makes two image boxes, in order, stacked down; the document is closed; it loads again (folder)', (t) async {
