@@ -458,9 +458,6 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     );
   }
 
-  // A file beside the binder file that holds a copy of it or part of it (P). A
-  // complete copy can be put back while the binder file is missing; any copy can
-  // be deleted, after asking.
   // A row of the "Can't open" list. An iCloud version row (R5.8) says its own
   // words; an attachment's other version has one action, "Keep it in iCloud".
   Widget _cantOpenRow(BuildContext context, UnreadablePage u) {
@@ -469,7 +466,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
       message: u.reason,
       child: SidebarRow(
         key: issue == null ? null : ValueKey('cloud-version-${u.path}'),
-        title: issue == null ? u.path.split(RegExp(r'[\/]')).last : issue.text,
+        title: issue == null ? u.path.split(RegExp(r'[\\/]')).last : issue.text,
         titleLines: issue == null ? null : 2,
         disabled: true,
         leading: Icon(
@@ -496,6 +493,9 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
     );
   }
 
+  // A file beside the binder file that holds a copy of it or part of it (P). A
+  // complete copy can be put back while the binder file is missing; any copy can
+  // be deleted, after asking.
   Widget _copyRow(BuildContext context, BinderSection b, BinderCopyRow r) {
     return Tooltip(
       message: '${r.label}. ${r.name}',
