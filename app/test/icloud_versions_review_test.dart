@@ -10,6 +10,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:noted/src/attachment_copy.dart' show damagedCopyName;
 import 'package:noted/src/icloud_folders.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -117,5 +118,50 @@ void main() {
     await f.landVersions([file.path]);
     expect(f.versionIssues, hasLength(1), reason: 'nothing was learned: the row stays');
     expect(w.channel.callsOf('startDownloading'), isNotEmpty);
+  });
+
+  test('an adopted copy with no resolve is not reported as landed; a published one is', () async {
+    final f = await w.picked();
+    final file = w.write('p1.canvas', 'current');
+    final h = contentHash(b('theirs')).substring(0, 8);
+    w.write('p1-icloud-$h.canvas', 'theirs'); // already there: adopted
+    w.channel.addVersion(file.path, b('theirs'));
+    w.channel.resolveFails = true;
+    final landed = <VersionLanding>[];
+    f.onLanded = landed.add;
+    await f.landVersions([file.path]);
+    expect(landed, isEmpty, reason: 'nothing published, nothing resolved');
+    w.channel.resolveFails = false;
+    await f.landVersions([file.path]);
+    expect(landed.single.resolved, 1);
+    expect(landed.single.published, isEmpty, reason: 'the copy was adopted, not made now');
+    // A new version: its copy is published here and reported.
+    w.channel.addVersion(file.path, b('another'));
+    await f.landVersions([file.path]);
+    expect(landed.last.published, hasLength(1));
+  });
+
+  test('a row raised for a temp that could not be placed stays while the temp is there; the file\'s own empty landing keeps it', () async {
+    final f = await w.picked();
+    final att = w.write('p1.assets/${name()}', 'damaged');
+    // The set-aside name of the damaged bytes is taken, so the temp can't be placed.
+    final blocker = w.write('p1.assets/${damagedCopyName(name(), contentHash(b('damaged')))}', 'x');
+    w.write('p1.assets/.${name()}.noted-version-0123456789abcdef.tmp', good);
+    for (var i = 0; i < 3; i++) {
+      await f.landVersions([att.path]);
+    }
+    expect(f.versionsStuck(att.path), isTrue);
+    // The file has no versions: its own landing finds nothing and keeps the row.
+    expect(w.channel.unresolvedOf(att.path), isEmpty);
+    await f.landVersions([att.path]);
+    expect(f.versionsStuck(att.path), isTrue, reason: 'the temp is still there');
+    expect(temps('p1.assets'), hasLength(1));
+    // The block goes: the temp is placed, and the row goes with it.
+    blocker.deleteSync();
+    await f.landVersions([att.path]);
+    expect(temps('p1.assets'), isEmpty);
+    expect(att.readAsStringSync(), good);
+    await f.landVersions([att.path]);
+    expect(f.versionIssues, isEmpty);
   });
 }

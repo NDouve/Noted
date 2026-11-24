@@ -961,7 +961,24 @@ class IcloudFolders extends ChangeNotifier {
     }
   }
 
+  // Whether a version temp of [path] is still in its folder.
+  bool _hasTempFor(String path) {
+    final f = File(path);
+    final prefix = '.${f.uri.pathSegments.last}.noted-version-';
+    try {
+      for (final e in f.parent.listSync(followLinks: false)) {
+        final n = e.path.split(RegExp(r'[\\/]')).last;
+        if (e is File && n.startsWith(prefix) && _isVersionTemp(e.path)) return true;
+      }
+    } on FileSystemException {
+      return true;
+    }
+    return false;
+  }
+
   void _clearIssue(String path) {
+    // A row raised for a temp that could not be placed stays until it is gone.
+    if (_hasTempFor(path)) return;
     final k = _k(path);
     _refusals.remove(k);
     _kept.remove(k);
@@ -1162,13 +1179,13 @@ class IcloudFolders extends ChangeNotifier {
   // Publishes [tmp] under the first free name that holds [bytes]: an equal
   // file already there is adopted and the temp removed; both names taken by
   // unequal files give null.
-  Future<String?> _publishCopy(File tmp, Uint8List bytes, List<String> names) async {
+  Future<({String path, bool adopted})?> _publishCopy(File tmp, Uint8List bytes, List<String> names) async {
     for (final n in names) {
-      if (await publishExclusive(tmp, n)) return n;
+      if (await publishExclusive(tmp, n)) return (path: n, adopted: false);
       final have = await _readOrNull(n);
       if (have != null && _bytesEqual(have, bytes)) {
         await _removeTemp(tmp.path, bytes);
-        return n;
+        return (path: n, adopted: true);
       }
     }
     return null;
@@ -1272,9 +1289,11 @@ class IcloudFolders extends ChangeNotifier {
       return;
     }
     await _step('published', path);
-    out.published.add(dest);
+    // Only a copy made by this landing is reported: an adopted one was seen
+    // when it arrived (reporting it again would start a merge cycle).
+    if (!dest.adopted) out.published.add(dest.path);
     // Verified by reading the copy back before the version is let go.
-    final back = await _readOrNull(dest);
+    final back = await _readOrNull(dest.path);
     if (back == null || !_bytesEqual(back, bytes)) {
       out.refused = true;
       return;
@@ -1419,8 +1438,8 @@ class IcloudFolders extends ChangeNotifier {
         final dest = await _publishCopy(t, bytes, _copyNames(dir, target.name, kind, hash));
         if (dest == null) {
           out.stuck.add(path);
-        } else {
-          out.published.add(dest);
+        } else if (!dest.adopted) {
+          out.published.add(dest.path);
         }
       case _VKind.attachment:
         final nameHash = attachmentNameHash(target.name)!;

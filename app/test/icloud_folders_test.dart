@@ -469,8 +469,8 @@ void main() {
       final f3 = make();
       final nb3 = open(f3);
       await nb3.loadChecked();
-      await nb3.loadChecked();
       await nb3.cloudAccessIdle;
+      expect(nb3.binders.single.available, isTrue);
     });
 
     test('a binder created in the picked default binder folder resolves after the setting changed and a relaunch (N1)', () async {
