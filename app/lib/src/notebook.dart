@@ -13560,7 +13560,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (originalPath == null) {
       // Named as a copy of a file that is there but not downloaded: that file
       // is the original (R5.5), so this is a copy that waits for it, not a page.
-      if (PageStore.hasDatalessOriginal(path)) {
+      // The page's own file (adopted, or listed for it) is never a copy.
+      final own = _adoptedFiles[copy.id];
+      final isOwn = (own != null && _key(own) == key) || _pathId[key] == copy.id;
+      if (!isOwn && PageStore.hasDatalessOriginal(path)) {
         _known.remove(key);
         _knownUnreadable(loc, key, path, PageStore.copyOfDatalessReason);
         return true;

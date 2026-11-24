@@ -189,6 +189,23 @@ void main() {
       expect(readPage(file.readAsStringSync()).node(box.id), isNotNull, reason: 'the copy\'s box is on the page');
     });
 
+    test('a page that lives at a copy-shaped name keeps its file when a stub of the original name appears', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final page = NotedPage.create(PageMeta.create(id: 'gone1', title: 'Page gone1', order: 5));
+      final own = File(w.path('gone1-icloud-0a1b2c3d.canvas'))..writeAsStringSync(writePage(page));
+      final nb = w.notebook(f);
+      await nb.load();
+      expect(ids(nb), contains('gone1'), reason: 'alone, the copy-shaped file is the page');
+      File(w.path('.gone1.canvas.icloud')).writeAsStringSync('');
+      // The file changes (another device edits it), so it is looked at again.
+      own.writeAsStringSync(writePage(page.insertNode(BoxRecord.create(id: '00000000000000e1', typeId: 'x.unregistered', dataVersion: 1, bounds: const Bounds(10, 10, 10, 10), data: const RawJson.trusted('{"k":1}'), snapshotText: 'edited', rev: 'r'))));
+      await w.channel.emit('changed', {'path': own.path});
+      await nb.checkFile(own.path);
+      expect(ids(nb), contains('gone1'));
+      expect(nb.unreadable.where((u) => u.reason == PageStore.copyOfDatalessReason), isEmpty);
+      expect(own.existsSync(), isTrue);
+    });
+
     test('an edit kept for a page that is still a stub at the next launch waits (not "changed on every attempt") and lands when the page arrives', () async {
       final f = await w.picked(platform: CloudPlatform.ios);
       final nb = w.notebook(f);

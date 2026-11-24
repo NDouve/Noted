@@ -527,6 +527,7 @@ class _Sim {
         // Whatever it could not save is in recovery.
       }
     }
+    life++; // what the old life still has running is stopped from here on
     nb.dispose();
     _launched =
         false; // what is still running after this is a process that is gone
@@ -541,6 +542,7 @@ class _Sim {
     final s = snapshot!;
     snapshot = null;
     log.add('crash and relaunch');
+    life++; // the old life writes nothing from here on, `_restore` included
     await quit(flush: false);
     await Future<void>.delayed(const Duration(milliseconds: 150));
     await _restore(s);
