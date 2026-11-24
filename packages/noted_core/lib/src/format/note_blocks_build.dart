@@ -133,7 +133,7 @@ List<Map<String, Object?>> noteTables(List<List<String>> rows, {int maxCells = n
 int noteBlockBytes(Map<String, Object?> block) {
   var n = 0;
   final data = block['data'];
-  final delta = data is Map ? data['delta'] : null;
+  final delta = data is Map<String, Object?> ? data['delta'] : null;
   if (delta is List) {
     for (final op in delta) {
       final t = op is Map ? op['insert'] : null;
@@ -209,7 +209,7 @@ NoteGroups groupNoteBlocks(
 
 Iterable<Map<String, Object?>> _cutLong(Map<String, Object?> block, int maxBytes) sync* {
   final data = block['data'];
-  final delta = data is Map ? data['delta'] : null;
+  final delta = data is Map<String, Object?> ? data['delta'] : null;
   if (delta is! List || block['children'] != null || noteBlockBytes(block) <= maxBytes) {
     yield block;
     return;
@@ -222,9 +222,10 @@ Iterable<Map<String, Object?>> _cutLong(Map<String, Object?> block, int maxBytes
     'data': {...(data as Map<String, Object?>), 'delta': piece},
   };
   for (final op in delta) {
-    if (op is! Map) continue;
-    var text = op['insert'];
-    if (text is! String) continue;
+    if (op is! Map<String, Object?>) continue;
+    final raw = op['insert'];
+    if (raw is! String) continue;
+    var text = raw;
     final attrs = op['attributes'];
     while (text.isNotEmpty) {
       var take = cutUtf8(text, maxBytes - size);
@@ -236,7 +237,7 @@ Iterable<Map<String, Object?>> _cutLong(Map<String, Object?> block, int maxBytes
         size = 0;
         continue;
       }
-      piece.add({'insert': take, if (attrs != null) 'attributes': attrs});
+      piece.add({'insert': take, 'attributes': ?attrs});
       size += utf8.encode(take).length;
       text = text.substring(take.length);
     }
@@ -273,7 +274,7 @@ List<Map<String, Object?>>? decodeNoteBlocksFile(List<int> bytes) {
 }
 
 /// [m] as a map with string keys, its nested maps and lists too.
-Map<String, Object?> _typed(Map m) => {for (final e in m.entries) e.key as String: _deep(e.value)};
+Map<String, Object?> _typed(Map<Object?, Object?> m) => {for (final e in m.entries) e.key as String: _deep(e.value)};
 
 Object? _deep(Object? v) => v is Map ? _typed(v) : (v is List ? [for (final e in v) _deep(e)] : v);
 
