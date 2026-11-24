@@ -530,7 +530,16 @@ class BinderStore {
   /// [beforePublish] is a test seam, run after the temporary file is written.
   Future<BinderCreated> create(Binder binder, {void Function()? beforePublish}) async {
     if (await file.exists()) return BinderCreated.exists;
-    await directory.create(recursive: true);
+    // One coordinated write on the folder that holds it (N4): a refusal is a
+    // StorageBusy with nothing made, never a failure to fall back from.
+    if (!await directory.exists()) {
+      await coordinated(
+        CoordinatedWrite([CoordinationIntent(folderOf(directory.path), CoordinationKind.write)]),
+        () async {
+          await directory.create(recursive: true);
+        },
+      );
+    }
     final tmp = newTempFile();
     final bytes = utf8.encode(binder.write());
     try {
