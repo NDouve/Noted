@@ -13556,20 +13556,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on PageFormatException {
       return false;
     }
-    var originalPath = await PageStore.findConflictOriginal(path, copy, preferred: _adoptedFiles[copy.id]);
-    if (originalPath == null) {
-      // Named as a copy of a file that is there but not downloaded: that file
-      // is the original (R5.5), so this is a copy that waits for it, not a page.
-      // The page's own file (adopted, or listed for it) is never a copy.
-      final own = _adoptedFiles[copy.id];
-      final isOwn = (own != null && _key(own) == key) || _pathId[key] == copy.id;
-      if (!isOwn && PageStore.hasDatalessOriginal(path)) {
-        _known.remove(key);
-        _knownUnreadable(loc, key, path, PageStore.copyOfDatalessReason);
-        return true;
-      }
-      return false;
+    // Named as a copy of a file that is there but not downloaded, at any end of
+    // its chain of copies: that file is the original (R5.5), so this is a copy
+    // that waits for it, not a page, and not merged through the stub's name. The
+    // page's own file (adopted, or listed for it) is never a copy.
+    final own = _adoptedFiles[copy.id];
+    final isOwn = (own != null && _key(own) == key) || _pathId[key] == copy.id;
+    if (!isOwn && PageStore.hasDatalessOriginal(path)) {
+      _known.remove(key);
+      _knownUnreadable(loc, key, path, PageStore.copyOfDatalessReason);
+      return true;
     }
+    var originalPath = await PageStore.findConflictOriginal(path, copy, preferred: _adoptedFiles[copy.id]);
+    if (originalPath == null) return false;
     // The file it copies is listed as a duplicate (another file with its id
     // was chosen): merging would land in a file the copy is not of. It is left
     // for later.

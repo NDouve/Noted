@@ -226,16 +226,18 @@ class PageStore {
       ...read.entries.where((e) => !chosen(e)),
     ]) {
       final (path, page) = e.value;
-      if (copyOf.containsKey(e.key)) {
-        entries.add(ConflictCopyPage(path, page.meta, read[rootOf(e.key)]!.$1));
-        continue;
-      }
       // Named as a copy of a file that is there but not downloaded: that file
       // is the original (a stub is the file, R5.5), so this is a copy, never
-      // the page, and it waits for the original.
+      // the page, and it waits for the original. A copy of a copy waits for the
+      // end of its chain: every candidate name is looked at, before the copy is
+      // classified against another copy that is readable.
       if (!chosen(e) &&
           conflictCopyOriginalNames(e.key, extension: extension).any((c) => datalessNames.contains(_pathKeyName(c)))) {
         entries.add(UnreadablePage(path, copyOfDatalessReason));
+        continue;
+      }
+      if (copyOf.containsKey(e.key)) {
+        entries.add(ConflictCopyPage(path, page.meta, read[rootOf(e.key)]!.$1));
         continue;
       }
       if (_paths.containsKey(page.id)) {

@@ -185,8 +185,49 @@ void main() {
       await w.channel.emit('changed', {'path': file.path});
       await waitFor(() => copies.every((c) => !c.existsSync()), what: 'the copies to merge');
       expect(ids(nb), contains('gone1'));
+      await waitFor(() => nb.unreadable.isEmpty, what: 'the rows of the merged copies to go');
       expect(nb.unreadable, isEmpty);
       expect(readPage(file.readAsStringSync()).node(box.id), isNotNull, reason: 'the copy\'s box is on the page');
+    });
+
+    test('a copy of a copy beside a stub-only page waits too, and both copies\' edits land when the page arrives', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      await externalPage('gone1');
+      final nb = w.notebook(f);
+      await nb.load();
+      final file = File(w.path('gone1.canvas'));
+      final text = file.readAsStringSync();
+      BoxRecord box(String id, String s) => BoxRecord.create(
+        id: id,
+        typeId: 'x.unregistered',
+        dataVersion: 1,
+        bounds: const Bounds(300, 300, 10, 10),
+        data: const RawJson.trusted('{"k":1}'),
+        snapshotText: s,
+        rev: 'r',
+      );
+      file.deleteSync();
+      File(w.path('.gone1.canvas.icloud')).writeAsStringSync('');
+      final copies = [
+        File(w.path('gone1-icloud-aaaaaaaa.canvas'))..writeAsStringSync(writePage(readPage(text).insertNode(box('00000000000000f1', 'edit one')))),
+        File(w.path('gone1-icloud-aaaaaaaa 2.canvas'))..writeAsStringSync(writePage(readPage(text).insertNode(box('00000000000000f2', 'edit two')))),
+      ];
+      for (final c in copies) {
+        await w.channel.emit('changed', {'path': c.path});
+        await nb.checkFile(c.path);
+      }
+      expect(nb.unreadable.where((u) => u.reason == PageStore.copyOfDatalessReason), hasLength(2), reason: 'both wait, none is "could not be merged"');
+      expect(nb.unreadable.where((u) => u.reason.contains('Could not be merged')), isEmpty);
+      File(w.path('.gone1.canvas.icloud')).deleteSync();
+      file.writeAsStringSync(text);
+      await w.channel.emit('changed', {'path': file.path});
+      await waitFor(() => copies.every((c) => !c.existsSync()), what: 'both copies to merge');
+      final page = readPage(file.readAsStringSync());
+      expect(page.node('00000000000000f1'), isNotNull);
+      expect(page.node('00000000000000f2'), isNotNull);
+      await waitFor(() => nb.unreadable.isEmpty, what: 'the rows of the merged copies to go');
+      expect(nb.unreadable, isEmpty);
+      expect(ids(nb), contains('gone1'));
     });
 
     test('a page that lives at a copy-shaped name keeps its file when a stub of the original name appears', () async {
