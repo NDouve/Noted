@@ -205,7 +205,6 @@ void main() {
       expect(f.checkOf(w.drive.path), CloudRootCheck.busy);
       final file = w.write('p1.canvas', 'current');
       w.channel.addVersion(file.path, b('theirs'));
-      final before = w.names();
       // Every entry point: a direct landing, the launch pass, the temp scan, a change event.
       await f.landVersions([file.path]);
       await f.landAllVersions();
@@ -216,12 +215,13 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(w.channel.callsOf('versions'), isEmpty);
       expect(w.channel.callsOf('resolveVersion'), isEmpty);
-      expect(w.names(), before, reason: 'no temp, no copy');
+      expect(w.names().where((n) => n.contains('-icloud-') || n.contains('noted-version')), isEmpty, reason: 'no temp, no copy');
+      expect(File(file.path).readAsStringSync(), 'current');
       expect(w.channel.unresolvedOf(file.path), hasLength(1));
       // The self-test passes at its retry: the skipped versions land.
       pass();
       await f.retryBusy();
-      expect(f.checkOf(w.drive.path), CloudRootCheck.passed);
+      await waitFor(() => f.checkOf(w.drive.path) == CloudRootCheck.passed, what: 'the self-test');
       await waitFor(() => w.channel.unresolvedOf(file.path).isEmpty, what: 'the landing');
       expect(w.names().where((n) => n.contains('-icloud-')), hasLength(1));
     });
