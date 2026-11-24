@@ -517,7 +517,7 @@ void suite() {
 
     // Every existing file counts as dataless (no lstat in this process).
     void failClosed() {
-      debugDatalessAbi = Abi.macosArm64;
+      debugDatalessAbi = Abi.macosX64; // no lstat$INODE64 off Apple: every existing file fails closed
       debugResetDataless();
     }
 
@@ -553,7 +553,7 @@ void suite() {
       File(p('a.bin')).writeAsBytesSync([1]);
       final tmp = File(p('t.tmp'))..writeAsBytesSync([9]);
       void turn() {
-        debugDatalessAbi = Abi.macosArm64;
+        debugDatalessAbi = Abi.macosX64; // no lstat$INODE64 off Apple: every existing file fails closed
         debugResetDataless();
       }
 
@@ -600,7 +600,7 @@ void suite() {
 
     test('an aside that turns dataless and can not go back is reported as kept, not as busy', () async {
       void turn() {
-        debugDatalessAbi = Abi.macosArm64;
+        debugDatalessAbi = Abi.macosX64; // no lstat$INODE64 off Apple: every existing file fails closed
         debugResetDataless();
       }
 

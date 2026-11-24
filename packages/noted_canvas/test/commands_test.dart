@@ -319,6 +319,7 @@ void main() {
         'noted.note.insertDateTime',
         'noted.image.insert',
         'noted.file.insert',
+        'app.import',
         'noted.ai.insert',
         'noted.encrypted.insert',
       ]);

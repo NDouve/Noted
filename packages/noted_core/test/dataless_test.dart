@@ -80,10 +80,19 @@ void main() {
         debugResetDataless();
         isDataless(p('a'));
         final failure = debugDatalessLookupFailure;
-        expect(failure, isNotNull, reason: '${e.key}: no lstat in this process');
-        expect(failure.toString(), contains(e.value), reason: '${e.key}');
         if (e.value == 'lstat') {
-          expect(failure.toString(), isNot(contains(r'$INODE64')), reason: '${e.key}');
+          // Linux has an `lstat` of its own, so the call may succeed there
+          // (its result is not looked at on this path). Elsewhere (Windows) the
+          // lookup must fail; a failure names `lstat`, not the 64-bit-inode symbol.
+          if (!Platform.isLinux) expect(failure, isNotNull, reason: '${e.key}: no lstat in this process');
+          if (failure != null) {
+            expect(failure.toString(), contains('lstat'), reason: '${e.key}');
+            expect(failure.toString(), isNot(contains(r'$INODE64')), reason: '${e.key}');
+          }
+        } else {
+          // Only Apple has `lstat$INODE64`.
+          expect(failure, isNotNull, reason: '${e.key}: no lstat\$INODE64 in this process');
+          expect(failure.toString(), contains(e.value), reason: '${e.key}');
         }
       }
       for (final abi in [Abi.linuxX64, Abi.linuxArm64, Abi.windowsX64, Abi.androidArm64]) {
@@ -96,7 +105,7 @@ void main() {
 
     test('a failed lookup is remembered and every existing file then counts as dataless', () {
       File(p('a')).writeAsStringSync('x');
-      debugDatalessAbi = Abi.macosArm64;
+      debugDatalessAbi = Abi.macosX64; // no lstat$INODE64 off Apple: every existing file fails closed
       debugResetDataless();
       expect(isDataless(p('a')), isTrue, reason: 'fails closed');
       final first = debugDatalessLookupFailure;

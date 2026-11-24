@@ -884,7 +884,7 @@ void main() {
         debugDatalessAbi = null;
         debugResetDataless();
       });
-      debugDatalessAbi = Abi.macosArm64; // no lstat here: every existing file fails closed
+      debugDatalessAbi = Abi.macosX64; // no lstat$INODE64 off Apple: every existing file fails closed
       debugResetDataless();
       await nb.flush();
       expect(reads, isEmpty, reason: 'nothing was read');
