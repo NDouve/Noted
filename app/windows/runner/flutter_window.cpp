@@ -131,6 +131,8 @@ bool FlutterWindow::OnCreate() {
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           flutter_controller_->engine()->messenger(), "noted/window",
           &flutter::StandardMethodCodec::GetInstance());
+  pdf_render_ = std::make_unique<PdfRender>(
+      flutter_controller_->engine()->messenger(), GetHandle());
   window_channel_->SetMethodCallHandler(
       [this](const flutter::MethodCall<flutter::EncodableValue>& call,
              std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
@@ -260,6 +262,7 @@ void FlutterWindow::OnDestroy() {
     RemoveWindowSubclass(view_hwnd_, ViewSubclassProc, kViewSubclassId);
     view_hwnd_ = nullptr;
   }
+  pdf_render_ = nullptr;
   window_channel_ = nullptr;
   open_channel_ = nullptr;
   if (flutter_controller_) {
@@ -306,6 +309,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       }
       break;
     }
+    case PdfRender::kReplyMessage:
+      if (pdf_render_) pdf_render_->DrainReplies();
+      return 0;
     case WM_SYSCOMMAND:
       // F10, a lone Alt and Alt+letter with no native menu send SC_KEYMENU.
       // Without this, DefWindowProc enters system-menu mode (keys go to the
