@@ -108,6 +108,19 @@ class IcloudWorld {
   }
 
   Future<void> dispose() async {
+    // A change event at the end of a test starts recovery and landing work that
+    // the notebook runs on its own: it is let finish before the folder goes.
+    for (final n in notebooks) {
+      try {
+        await n.discoveryIdle;
+        await n.cloudAccessIdle;
+        await n.pendingRecovery(); // a listing queues behind the replay's turn
+        await n.flush();
+      } on Object {
+        // A test that broke the folder.
+      }
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 50));
     for (final n in notebooks) {
       try {
         await n.flush();
