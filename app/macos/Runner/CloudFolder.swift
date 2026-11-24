@@ -107,10 +107,11 @@ import FlutterMacOS
 #endif
 
 /// One coordinated call that Dart holds open.
-private final class CoordinationHold {
+final class CoordinationHold {
   let id: Int
   let semaphore = DispatchSemaphore(value: 0)
-  var coordinator: NSFileCoordinator?
+  /// Cancels the platform's coordination while its block has not started.
+  var cancelAction: (() -> Void)?
   private let lock = NSLock()
   private var released = false
 
@@ -124,10 +125,87 @@ private final class CoordinationHold {
     released = true
     semaphore.signal()
   }
+
+  /// Cancels the coordination if it is still waiting, then lets go.
+  func cancel() {
+    cancelAction?()
+    release()
+  }
+
+  /// Blocks until released (a release that came first returns at once).
+  /// `onLong` is called once, with the id, when `slice` seconds have passed.
+  func holdUntilReleased(slice: TimeInterval = 60, onLong: (Int) -> Void) {
+    var reported = false
+    while semaphore.wait(timeout: .now() + slice) == .timedOut {
+      if !reported {
+        reported = true
+        onLong(id)
+      }
+    }
+  }
+}
+
+/// The holds that are open, by id.
+final class HoldRegistry {
+  private let lock = NSLock()
+  private var holds: [Int: CoordinationHold] = [:]
+
+  var count: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return holds.count
+  }
+
+  func add(_ hold: CoordinationHold) {
+    lock.lock()
+    holds[hold.id] = hold
+    lock.unlock()
+  }
+
+  func hold(for id: Int) -> CoordinationHold? {
+    lock.lock()
+    defer { lock.unlock() }
+    return holds[id]
+  }
+
+  /// Forgets `hold`, unless another one took its id.
+  func remove(_ hold: CoordinationHold) {
+    lock.lock()
+    if holds[hold.id] === hold { holds.removeValue(forKey: hold.id) }
+    lock.unlock()
+  }
+
+  /// `done`: lets the accessor return. An unknown id is ignored.
+  func done(_ id: Int) { hold(for: id)?.release() }
+
+  /// `cancel`: cancels the coordination if it is waiting, then lets go. An
+  /// unknown id is ignored. The block's own exit forgets the hold.
+  func cancel(_ id: Int) { hold(for: id)?.cancel() }
+
+  /// `reset` and detach: every hold is cancelled and released, and forgotten.
+  func releaseAll() {
+    lock.lock()
+    let all = Array(holds.values)
+    holds.removeAll()
+    lock.unlock()
+    for h in all { h.cancel() }
+  }
+}
+
+/// What the platform's coordination block does once it starts.
+enum CoordinationOutcome: Equatable {
+  /// Cancelled or failed before the block started.
+  case failed
+  /// An item named by an intent was at another path (the requested paths).
+  case moved([String])
+  /// A move or delete intent names files with unresolved versions (R5.8).
+  case pending([String])
+  /// The write may run.
+  case go
 }
 
 /// Reports changes under one folder. It never waits on Dart.
-private final class FolderPresenter: NSObject, NSFilePresenter {
+final class FolderPresenter: NSObject, NSFilePresenter {
   let url: URL
   let queue = OperationQueue()
   private let emit: (String, String?) -> Void
@@ -171,7 +249,7 @@ private final class FolderPickerDelegate: NSObject, UIDocumentPickerDelegate {
 final class CloudFolder: NSObject {
   private let channel: FlutterMethodChannel
   private let lock = NSLock()
-  private var holds: [Int: CoordinationHold] = [:]
+  private let holds = HoldRegistry()
   private var roots: [String: (url: URL, presenter: FolderPresenter, started: Bool)] = [:]
   private var terminateObserver: NSObjectProtocol?
   #if os(iOS)
@@ -207,7 +285,7 @@ final class CloudFolder: NSObject {
   /// hold is released. Presenters are removed.
   func detach() {
     channel.setMethodCallHandler(nil)
-    releaseAllHolds()
+    holds.releaseAll()
     lock.lock()
     let all = roots
     roots = [:]
@@ -244,7 +322,7 @@ final class CloudFolder: NSObject {
       stopAccess(path)
       result(nil)
     case "reset":
-      releaseAllHolds()
+      holds.releaseAll()
       result(nil)
     case "coordinate":
       guard let id = args["id"] as? Int, let list = args["intents"] as? [[String: Any]] else {
@@ -260,13 +338,10 @@ final class CloudFolder: NSObject {
       coordinate(id: id, intents: intents)
       result(nil)
     case "done":
-      if let id = args["id"] as? Int { holdFor(id)?.release() }
+      if let id = args["id"] as? Int { holds.done(id) }
       result(nil)
     case "cancel":
-      if let id = args["id"] as? Int, let h = holdFor(id) {
-        h.coordinator?.cancel()
-        h.release()
-      }
+      if let id = args["id"] as? Int { holds.cancel(id) }
       result(nil)
     case "versions":
       guard let path = args["path"] as? String else { return bad(result, "path") }
@@ -445,21 +520,14 @@ final class CloudFolder: NSObject {
 
   // MARK: Coordination
 
-  private func holdFor(_ id: Int) -> CoordinationHold? {
-    lock.lock()
-    defer { lock.unlock() }
-    return holds[id]
-  }
-
-  private func releaseAllHolds() {
-    lock.lock()
-    let all = Array(holds.values)
-    holds.removeAll()
-    lock.unlock()
-    for h in all {
-      h.coordinator?.cancel()
-      h.release()
+  /// The longest of the root keys that is `path` or contains it.
+  static func longestRoot<S: Sequence>(containing path: String, among keys: S) -> String?
+  where S.Element == String {
+    var best: String?
+    for root in keys where path == root || path.hasPrefix(root + "/") {
+      if best == nil || root.count > best!.count { best = root }
     }
+    return best
   }
 
   /// The presenter of the registered root that contains `path`, so our own
@@ -468,23 +536,69 @@ final class CloudFolder: NSObject {
     let path = CloudFolder.normalize(path)
     lock.lock()
     defer { lock.unlock() }
-    var best: String?
-    for root in roots.keys where path == root || path.hasPrefix(root + "/") {
-      if best == nil || root.count > best!.count { best = root }
+    return CloudFolder.longestRoot(containing: path, among: roots.keys).flatMap {
+      roots[$0]?.presenter
     }
-    return best.flatMap { roots[$0]?.presenter }
+  }
+
+  /// The decision of the coordination block, in the order that matters: a
+  /// failed call holds nothing; an item that moved is refused before its
+  /// versions are looked at (go would let the write run on the wrong path); a
+  /// move or delete of a file with unresolved versions is `pending` (R5.8); a
+  /// write never is. `granted` are the URLs the platform coordinated, one per
+  /// requested intent.
+  static func outcome(
+    failed: Bool,
+    requested: [(path: String, kind: String)],
+    granted: [URL],
+    hasUnresolvedVersions: (URL) -> Bool
+  ) -> CoordinationOutcome {
+    if failed { return .failed }
+    var moved: [String] = []
+    for (i, url) in granted.enumerated()
+    where CloudFolder.normalize(url.path) != CloudFolder.normalize(requested[i].path) {
+      moved.append(requested[i].path)
+    }
+    if !moved.isEmpty { return .moved(moved) }
+    var pending: [String] = []
+    for (i, url) in granted.enumerated() where requested[i].kind != "write" {
+      if hasUnresolvedVersions(url) { pending.append(url.path) }
+    }
+    if !pending.isEmpty { return .pending(pending) }
+    return .go
+  }
+
+  /// What the block does for an outcome: one event to Dart, and for `go` the
+  /// hold, kept until `done`, `cancel`, `reset` or detach (the body is local
+  /// file IO and letting go early would run it uncoordinated).
+  static func runBlock(
+    hold: CoordinationHold,
+    outcome: CoordinationOutcome,
+    send: (String, [String: Any]) -> Void,
+    slice: TimeInterval = 60,
+    onLong: (Int) -> Void
+  ) {
+    let id = hold.id
+    switch outcome {
+    case .failed:
+      send("failed", ["id": id])
+    case .moved(let paths):
+      send("failed", ["id": id, "reason": "moved", "paths": paths])
+    case .pending(let paths):
+      send("pending", ["id": id, "paths": paths])
+    case .go:
+      send("go", ["id": id])
+      hold.holdUntilReleased(slice: slice, onLong: onLong)
+    }
   }
 
   private func coordinate(id: Int, intents: [(path: String, kind: String)]) {
     let hold = CoordinationHold(id: id)
     let coordinator = NSFileCoordinator(filePresenter: presenter(containing: intents.first?.path ?? ""))
-    hold.coordinator = coordinator
-    lock.lock()
-    holds[id] = hold
-    lock.unlock()
+    hold.cancelAction = { coordinator.cancel() }
+    holds.add(hold)
 
     var accessIntents: [NSFileAccessIntent] = []
-    var kinds: [String] = []
     for item in intents {
       let url = URL(fileURLWithPath: item.path)
       switch item.kind {
@@ -495,7 +609,6 @@ final class CloudFolder: NSObject {
       default:
         accessIntents.append(NSFileAccessIntent.writingIntent(with: url, options: []))
       }
-      kinds.append(item.kind)
     }
 
     // One queue (so one thread) per call, never shared: a hold must not block
@@ -506,49 +619,19 @@ final class CloudFolder: NSObject {
 
     coordinator.coordinate(with: accessIntents, queue: queue) { [weak self] error in
       guard let self = self else { return }
-      defer {
-        self.lock.lock()
-        if self.holds[id] === hold { self.holds.removeValue(forKey: id) }
-        self.lock.unlock()
-      }
-      if error != nil {  // cancelled or failed before the block started
-        self.send("failed", ["id": id])
-        return
-      }
-
-      // An item that moved while we waited: the intents no longer name what Dart
-      // asked for, so go would let its write run on the wrong path.
-      var moved: [String] = []
-      for (i, intent) in accessIntents.enumerated()
-      where CloudFolder.normalize(intent.url.path) != CloudFolder.normalize(intents[i].path) {
-        moved.append(intents[i].path)
-      }
-      if !moved.isEmpty {
-        self.send("failed", ["id": id, "reason": "moved", "paths": moved])
-        return
-      }
-
-      // R5.8: a move or delete never starts on a file with unresolved versions.
-      var pending: [String] = []
-      for (i, intent) in accessIntents.enumerated() where kinds[i] != "write" {
-        let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: intent.url)
-        if let versions = versions, !versions.isEmpty { pending.append(intent.url.path) }
-      }
-      if !pending.isEmpty {
-        self.send("pending", ["id": id, "paths": pending])
-        return
-      }
-
-      self.send("go", ["id": id])
-      // Hold until done, cancel, reset or detach: the body is local file IO
-      // and letting go early would run it uncoordinated.
-      var reported = false
-      while hold.semaphore.wait(timeout: .now() + 60) == .timedOut {
-        if !reported {
-          reported = true
-          NSLog("CloudFolder: coordination %d has been held for over 60 s", id)
-        }
-      }
+      defer { self.holds.remove(hold) }
+      let outcome = CloudFolder.outcome(
+        failed: error != nil,  // cancelled or failed before the block started
+        requested: intents,
+        granted: accessIntents.map { $0.url },
+        hasUnresolvedVersions: { url in
+          let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: url)
+          return !(versions ?? []).isEmpty
+        })
+      CloudFolder.runBlock(
+        hold: hold, outcome: outcome,
+        send: { self.send($0, $1) },
+        onLong: { NSLog("CloudFolder: coordination %d has been held for over 60 s", $0) })
     }
   }
 
@@ -575,23 +658,40 @@ final class CloudFolder: NSObject {
   private func copyVersions(path: String) -> [[String: Any]] {
     let url = URL(fileURLWithPath: path)
     guard let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) else { return [] }
-    var out: [[String: Any]] = []
     let deadline = Date().addingTimeInterval(60)
+    return CloudFolder.collectVersions(
+      versions,
+      remaining: { deadline.timeIntervalSinceNow },
+      idOf: { self.versionId($0) },
+      copy: { self.copyVersion($0, of: url, timeout: $1) })
+  }
+
+  /// One entry per version, in order: `{id, tmpPath}`, or `{id, error}` for a
+  /// version with no identifier (`id` empty), one not reached before the
+  /// deadline (`remaining` is zero or less: error "timeout", not copied) or one
+  /// whose copy failed.
+  static func collectVersions<V>(
+    _ versions: [V],
+    remaining: () -> TimeInterval,
+    idOf: (V) -> String?,
+    copy: (V, TimeInterval) -> (path: String?, error: String?)
+  ) -> [[String: Any]] {
+    var out: [[String: Any]] = []
     for version in versions {
-      guard let id = versionId(version) else {
+      guard let id = idOf(version) else {
         out.append(["id": "", "error": "The version has no identifier."])
         continue
       }
-      let remaining = deadline.timeIntervalSinceNow
-      if remaining <= 0 {
+      let left = remaining()
+      if left <= 0 {
         out.append(["id": id, "error": "timeout"])
         continue
       }
-      let copy = copyVersion(version, of: url, timeout: remaining)
-      if let tmp = copy.path {
+      let made = copy(version, left)
+      if let tmp = made.path {
         out.append(["id": id, "tmpPath": tmp])
       } else {
-        out.append(["id": id, "error": copy.error ?? "The copy failed."])
+        out.append(["id": id, "error": made.error ?? "The copy failed."])
       }
     }
     return out
@@ -636,10 +736,17 @@ final class CloudFolder: NSObject {
     return (tmpPath, tmpPath == nil ? "The copy failed." : nil)
   }
 
-  private static func exclusiveCopy(from source: URL, toFolder folder: URL, name: String) -> String? {
+  /// Copies `source` to `.<name>.noted-version-<16 hex>.tmp` in `folder`, made
+  /// with O_EXCL: a file that is already there is never opened or replaced (the
+  /// next name is tried, eight times) and its path is returned; nil if the
+  /// source can't be read or no name was free. `random` is for tests.
+  static func exclusiveCopy(
+    from source: URL, toFolder folder: URL, name: String,
+    random: () -> UInt64 = { UInt64.random(in: 0...UInt64.max) }
+  ) -> String? {
     guard let data = try? Data(contentsOf: source) else { return nil }
     for _ in 0..<8 {
-      let hex = String(format: "%016llx", UInt64.random(in: 0...UInt64.max))
+      let hex = String(format: "%016llx", random())
       let path = folder.appendingPathComponent(".\(name).noted-version-\(hex).tmp").path
       let fd = Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
       if fd < 0 {
@@ -663,6 +770,27 @@ final class CloudFolder: NSObject {
 
   /// Runs on a background queue, inside a coordinated write of the item.
   /// Returns a Bool, or a FlutterError when the coordination failed or timed out.
+  /// Marks every version that is the one asked for: its encoded id equals `id`,
+  /// or its identifier equals the decoded `wanted`. True if any was. Nothing
+  /// else is touched, and no version is removed.
+  static func resolveMatching<V>(
+    _ versions: [V], id: String, wanted: Any?,
+    idOf: (V) -> String?, identifierOf: (V) -> Any, resolve: (V) -> Void
+  ) -> Bool {
+    var any = false
+    for version in versions {
+      var same = idOf(version) == id
+      if !same, let wanted = wanted {
+        same = (identifierOf(version) as AnyObject).isEqual(wanted)
+      }
+      if same {
+        resolve(version)
+        any = true
+      }
+    }
+    return any
+  }
+
   private func resolveVersion(path: String, id: String) -> Any {
     let url = URL(fileURLWithPath: path)
     let coordinator = NSFileCoordinator(filePresenter: presenter(containing: path))
@@ -684,17 +812,11 @@ final class CloudFolder: NSObject {
       guard let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: intent.url) else {
         return
       }
-      var any = false
-      for version in versions {
-        var same = self.versionId(version) == id
-        if !same, let wanted = wanted {
-          same = (version.persistentIdentifier as AnyObject).isEqual(wanted)
-        }
-        if same {
-          version.isResolved = true
-          any = true
-        }
-      }
+      let any = CloudFolder.resolveMatching(
+        versions, id: id, wanted: wanted,
+        idOf: { self.versionId($0) },
+        identifierOf: { $0.persistentIdentifier },
+        resolve: { $0.isResolved = true })
       box.lock()
       found = any
       box.unlock()

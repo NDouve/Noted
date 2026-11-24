@@ -175,21 +175,51 @@ void main() {
     });
   }
 
-  test('the coordinate accessor compares each intent URL before go', () {
+  test('the coordination block decides moved, then pending, then go', () {
     final code = _read(ios)
         .split('\n')
         .where((l) => !l.trim().startsWith('//'))
         .join('\n');
+    // The decision: a moved item is refused before versions are looked at.
+    final decide = code.substring(code.indexOf('static func outcome('));
+    final failed = decide.indexOf('if failed { return .failed }');
+    final compare = decide.indexOf(
+      'CloudFolder.normalize(url.path) != CloudFolder.normalize(requested[i].path)',
+    );
+    final moved = decide.indexOf('return .moved(moved)');
+    final versions = decide.indexOf('hasUnresolvedVersions(url)');
+    final pending = decide.indexOf('return .pending(pending)');
+    final go = decide.indexOf('return .go');
+    expect(failed, greaterThan(-1));
+    expect(compare, greaterThan(failed));
+    expect(moved, greaterThan(compare));
+    expect(versions, greaterThan(moved));
+    expect(pending, greaterThan(versions));
+    expect(go, greaterThan(pending));
+    // The block sends the event of that decision, and holds only for go.
+    final block = code.substring(code.indexOf('static func runBlock('));
+    expect(block.indexOf('send("go"'), lessThan(block.indexOf('holdUntilReleased')));
     final accessor = code.substring(
       code.indexOf('coordinator.coordinate(with: accessIntents'),
     );
-    final compare = accessor.indexOf(
-      'CloudFolder.normalize(intent.url.path) != CloudFolder.normalize(intents[i].path)',
+    expect(accessor, contains('CloudFolder.outcome('));
+    expect(accessor, contains('CloudFolder.runBlock('));
+  });
+
+  test('the two RunnerTests files differ only in their imports', () {
+    String body(String path) {
+      final text = _read(path);
+      return text.substring(text.indexOf('private final class Recorder'));
+    }
+
+    expect(
+      body('macos/RunnerTests/RunnerTests.swift'),
+      body('ios/RunnerTests/RunnerTests.swift'),
     );
-    final moved = accessor.indexOf('"reason": "moved"');
-    final go = accessor.indexOf('self.send("go"');
-    expect(compare, greaterThan(-1));
-    expect(moved, greaterThan(compare));
-    expect(go, greaterThan(moved));
+    for (final dir in ['ios', 'macos']) {
+      final text = _read('$dir/RunnerTests/RunnerTests.swift');
+      expect(text, startsWith('// This Source Code Form is subject'));
+      expect(text, contains('@testable import'));
+    }
   });
 }
