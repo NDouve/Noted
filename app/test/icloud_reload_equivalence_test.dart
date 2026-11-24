@@ -544,7 +544,7 @@ class _Sim {
     log.add('crash and relaunch');
     life++; // the old life writes nothing from here on, `_restore` included
     await quit(flush: false);
-    await Future<void>.delayed(const Duration(milliseconds: 150));
+    await Future<void>.delayed(const Duration(milliseconds: 400));
     await _restore(s);
     await launch();
   }
@@ -639,6 +639,20 @@ class _Sim {
   // The markers that are in no file of the folder or the app's data, not
   // counting a version that is still unresolved in iCloud or a file that is
   // only a stub (the daemon has its text).
+  /// Every file of the world that holds [marker], excluded ones too.
+  List<String> where(String marker) => [
+    for (final e in w.root.listSync(recursive: true, followLinks: false))
+      if (e is File && _holds(e, marker)) _base(e.path),
+  ];
+
+  bool _holds(File e, String marker) {
+    try {
+      return latin1.decode(e.readAsBytesSync()).contains(marker);
+    } on FileSystemException {
+      return false;
+    }
+  }
+
   List<String> missing() {
     final texts = StringBuffer();
     for (final e in w.root.listSync(recursive: true, followLinks: false)) {
@@ -697,6 +711,7 @@ class _Sim {
       if (!op.startsWith('daemon') && op != 'plantLeftover') rethrow;
       log.add('$op skipped: busy');
     }
+    audit(op);
   }
 
   Future<void> run(String op) async {
@@ -730,6 +745,14 @@ class _Sim {
         await serverWrite();
     }
     await pause();
+  }
+
+  // What held each durable marker after the last step (file names), to say where
+  // one was when it goes. Run outside the life zone: a read there is blocked
+  // once the process has been relaunched.
+  Map<String, List<String>> _held = {};
+
+  void audit(String op) {
     if (const bool.fromEnvironment('ICLOUD_TRACE')) {
       String short(String s) => s.replaceAllMapped(
         RegExp(r'([0-9a-f]{4})[0-9a-f]{12}'),
@@ -745,11 +768,16 @@ class _Sim {
       ];
       log.add('=> files ${files.join(' ')} | rows ${rows.join(' ')}');
     }
-    if (quiet) {
-      for (final m in missing()) {
-        if (reportedMissing.add(m)) log.add('MISSING $m after $op');
+    if (!quiet) return;
+    final now = {for (final m in durable.keys) m: where(m)};
+    for (final m in missing()) {
+      if (reportedMissing.add(m)) {
+        log.add(
+          'MISSING $m (${durable[m]}) after $op; it was in ${_held[m]}, the files are ${listing().join(' ')}',
+        );
       }
     }
+    _held = now;
   }
 
   Future<void> pause() =>
