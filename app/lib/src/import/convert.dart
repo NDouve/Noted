@@ -14,7 +14,7 @@ import 'docx.dart';
 import 'import_format.dart';
 import 'import_limits.dart';
 import 'import_result.dart';
-import 'sheet_blocks.dart' show SheetData;
+import 'sheet_blocks.dart' show SheetData, noteCellReadMax;
 import 'txt.dart';
 import 'xlsx.dart';
 
@@ -128,7 +128,7 @@ ConvertedSheets convertToSheetsNow(ImportFormat format, String name, Uint8List b
       if (rowsCut.isNotEmpty) 'rows past ${limits.rows}${where(rowsCut)}',
       if (colsCut.isNotEmpty) 'columns past ${limits.columns}${where(colsCut)}',
     ];
-    final long = all.any((s) => s.rows.any((r) => r.any((c) => c.length * 3 > noteCellMaxBytes && utf8.encode(c).length > noteCellMaxBytes)));
+    final long = all.any((s) => s.rows.any((r) => r.any((c) => c.length * 3 > noteCellReadMax - 4 && utf8.encode(c).length > noteCellReadMax - 4)));
     final sheets = [for (final s in all) if (s.rows.isNotEmpty) s];
     if (sheets.isEmpty) throw const ImportException('has nothing to import');
     return ConvertedSheets(

@@ -448,6 +448,41 @@ void main() {
     await w.close(t);
   });
 
+  testWidgets('a cell the reader kept whole is drawn without the shortened notice; one it cut is noticed', (t) async {
+    final w = await open(t);
+    await importFile(t, w, 'mid.csv', Uint8List.fromList(utf8.encode('"${"m" * 3000}",b\n')), 'asImage');
+    expect(boxes(w), hasLength(1));
+    expect(notices, isEmpty);
+    await w.close(t);
+  });
+
+  testWidgets('the layout of a big sheet stops at its first yield when the page changed', (t) async {
+    final w = await open(t);
+    final first = w.nb.current!;
+    var converted = false;
+    importRunner = <R>(R Function() work) async {
+      final r = work();
+      converted = true;
+      return r;
+    };
+    // 60 rows of 50 cells: the layout yields after 2,000 cells.
+    final rows = [for (var r = 0; r < 60; r++) [for (var c = 0; c < 50; c++) 'r$r c$c'].join(',')].join('\n');
+    importPicker = () async => [ImportSource('big.csv', length: () async => 10, read: () async => Uint8List.fromList(utf8.encode(rows)))];
+    final run = w.canvas(t).commands.invoke('app.import');
+    await choose(t, 'asImage');
+    for (var i = 0; i < 100 && !converted; i++) {
+      await t.pump(Duration.zero);
+    }
+    expect(converted, isTrue);
+    await w.openPage(t, w.second);
+    await until(t, () => importsRunning.value == 0);
+    unawaited(run);
+    expect(boxes(w), isEmpty);
+    expect(notices, ['Import stopped: the page changed.']);
+    expect(first.page.nodes.whereType<BoxRecord>(), isEmpty);
+    await w.close(t);
+  });
+
   testWidgets('a cell too long to show in full gives the notice', (t) async {
     final w = await open(t);
     final cell = List.filled(400, 'x').join('\n');
