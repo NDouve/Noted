@@ -95,13 +95,13 @@ class ShellWorld {
     await t.runAsync(() async {
       nb.dispose();
       // A file check still reading an attachment holds the folder on Windows
-      // for a moment: try again.
+      // for a moment: try again, for up to 10 s.
       for (var i = 0;; i++) {
         try {
           await dir.delete(recursive: true);
           return;
         } on FileSystemException {
-          if (i >= 10) rethrow;
+          if (i >= 50) rethrow;
           await Future<void>.delayed(const Duration(milliseconds: 200));
         }
       }

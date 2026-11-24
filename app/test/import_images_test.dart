@@ -168,6 +168,8 @@ void main() {
         expect(v!.state, AttachmentState.ok, reason: '$file holds the bytes its name says');
       }
     }
+    // Whatever the reloaded notebook still writes or scans is finished before it is closed.
+    await settleSaves(t, again);
     await t.runAsync(() async => again.dispose());
   }
 
