@@ -3,6 +3,7 @@ import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
   private var cloudFolder: CloudFolder?
+  private var documentRender: DocumentRender?
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
@@ -12,6 +13,7 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
     cloudFolder = CloudFolder(messenger: flutterViewController.engine.binaryMessenger)
+    documentRender = DocumentRender(messenger: flutterViewController.engine.binaryMessenger)
 
     super.awakeFromNib()
   }

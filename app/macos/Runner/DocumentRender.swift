@@ -171,12 +171,16 @@ final class DocumentRender: NSObject {
     }
     doc.queue.async { [weak self] in
       guard let self = self else { return }
-      guard let page = doc.pdf.page(at: index) else {
+      guard index < doc.pdf.pageCount, let page = doc.pdf.page(at: index) else {
         self.reply(result, FlutterError(code: "render", message: "No such page", details: nil))
         return
       }
       let box = page.bounds(for: .cropBox)
-      guard let (w, h) = DocumentRender.fitPixels(Double(box.width), Double(box.height), maxW, maxH) else {
+      // The crop box is in unrotated page space; the image is the rotated page.
+      let turned = page.rotation % 180 != 0
+      let pageW = turned ? box.height : box.width
+      let pageH = turned ? box.width : box.height
+      guard let (w, h) = DocumentRender.fitPixels(Double(pageW), Double(pageH), maxW, maxH) else {
         self.reply(result, nil)
         return
       }
@@ -191,15 +195,16 @@ final class DocumentRender: NSObject {
       }
       ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
       ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
-      ctx.scaleBy(x: CGFloat(w) / box.width, y: CGFloat(h) / box.height)
-      ctx.translateBy(x: -box.origin.x, y: -box.origin.y)
+      ctx.scaleBy(x: CGFloat(w) / pageW, y: CGFloat(h) / pageH)
+      // Rotation and the crop box's origin.
+      page.transform(ctx, for: .cropBox)
       page.draw(with: .cropBox, to: ctx)
       guard let image = ctx.makeImage() else {
         self.reply(result, FlutterError(code: "render", message: "The page could not be drawn", details: nil))
         return
       }
       let out = NSMutableData()
-      guard let dest = CGImageDestinationCreateWithData(out, "public.png" as CFString, 1, nil) else {
+      guard let dest = CGImageDestinationCreateWithData(out as CFMutableData, "public.png" as CFString, 1, nil) else {
         self.reply(result, FlutterError(code: "render", message: "The page could not be encoded", details: nil))
         return
       }
