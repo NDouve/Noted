@@ -433,6 +433,7 @@ class PageCanvasState extends State<PageCanvas>
     var added = 0;
     var stopped = false;
     final failed = <String>[];
+    final unwritable = <String>[];
     for (final f in files) {
       if (!target.holds) {
         stopped = true;
@@ -455,7 +456,7 @@ class PageCanvasState extends State<PageCanvas>
           stopped = true;
           break;
         }
-        failed.add(f.name);
+        unwritable.add(f.name);
         continue;
       }
       if (made == null) {
@@ -488,7 +489,7 @@ class PageCanvasState extends State<PageCanvas>
     target.point = point;
     if (stopped) store.notify(stopNotice);
     if (last != null && target.holds) _c.select(last);
-    return ImportInsert(added: added, failed: failed, stopped: stopped);
+    return ImportInsert(added: added, failed: failed, unwritable: unwritable, stopped: stopped);
   }
 
   /// Gap between the note boxes of one import, in page units.

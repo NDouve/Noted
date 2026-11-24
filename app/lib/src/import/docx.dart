@@ -19,7 +19,7 @@ const int docxMaxColumns = 50;
 /// list items, bold and italic text, line breaks and tabs, and tables (cell
 /// text only, at most [docxMaxColumns] columns). Pictures, comments, field
 /// codes and tracked deletions are dropped; tracked insertions are kept.
-BlocksResult docxToBlocks(Uint8List bytes, ImportLimits limits) {
+BlocksResult docxToBlocks(Uint8List bytes, ImportLimits limits, String fileName) {
   final zip = ZipReader(bytes, limits);
   final doc = zip.read('word/document.xml');
   if (doc == null) throw const ImportException('is not a Word document');
@@ -31,6 +31,7 @@ BlocksResult docxToBlocks(Uint8List bytes, ImportLimits limits) {
   final blocks = <Map<String, Object?>>[];
   final notices = <String>[];
   var cutColumns = false;
+  var longCells = false;
 
   void walk(XmlElement parent) {
     for (final e in parent.elements) {
@@ -51,7 +52,8 @@ BlocksResult docxToBlocks(Uint8List bytes, ImportLimits limits) {
               if (rows[i].length > docxMaxColumns) rows[i] = rows[i].sublist(0, docxMaxColumns);
             }
           }
-          blocks.addAll(noteTables(rows, maxCells: limits.noteCells));
+          longCells = longCells || rows.any((r) => r.any((c) => utf8.encode(c).length > noteCellMaxBytes));
+          blocks.addAll(noteTables(rows, maxCells: limits.noteCells, maxBytes: limits.noteBytes));
         case 'sdt':
           final content = e.child('sdtContent');
           if (content != null) walk(content);
@@ -60,7 +62,8 @@ BlocksResult docxToBlocks(Uint8List bytes, ImportLimits limits) {
   }
 
   walk(body);
-  if (cutColumns) notices.add('Table columns past $docxMaxColumns were left out.');
+  if (cutColumns) notices.add('"$fileName": table columns past $docxMaxColumns were left out.');
+  if (longCells) notices.add('"$fileName": long cells were shortened.');
   return BlocksResult(blocks, notices);
 }
 

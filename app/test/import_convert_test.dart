@@ -246,7 +246,7 @@ void main() {
     test('a Word file with no text, a non-Word zip and a broken zip are refused', () {
       expect(conv(ImportFormat.word, 'd.docx', buildDocx('')).error, 'has no text to import');
       expect(conv(ImportFormat.word, 'd.docx', buildZip({'x': 'y'})).error, 'is not a Word document');
-      expect(conv(ImportFormat.word, 'd.docx', [1, 2, 3]).error, 'is not a valid zip file');
+      expect(conv(ImportFormat.word, 'd.docx', [1, 2, 3]).error, 'can’t be read');
     });
 
     test('more than 50 columns are cut and said', () {

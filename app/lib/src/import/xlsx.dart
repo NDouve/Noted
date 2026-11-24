@@ -18,7 +18,8 @@ import 'zip_reader.dart';
 /// stored number (cell formats aren't applied). A cell is placed by its
 /// reference; one past the row or column limit is skipped before anything is
 /// allocated, and `<dimension>` is ignored.
-BlocksResult xlsxToBlocks(Uint8List bytes, ImportLimits limits) => sheetsToBlocks(xlsxSheets(bytes, limits), limits);
+BlocksResult xlsxToBlocks(Uint8List bytes, ImportLimits limits, String fileName) =>
+    sheetsToBlocks(xlsxSheets(bytes, limits), limits, fileName);
 
 /// The sheets of an `.xlsx`, in workbook order.
 List<SheetData> xlsxSheets(Uint8List bytes, ImportLimits limits) {
@@ -90,7 +91,7 @@ class _SharedStrings implements XmlHandler {
   void end(String name) {
     _stack.removeLast();
     if (name == 'si') {
-      out.add(cutUtf8(_current.toString(), noteCellMaxBytes));
+      out.add(cutUtf8(_current.toString(), noteCellReadMax));
       _current = null;
     }
   }
@@ -98,7 +99,7 @@ class _SharedStrings implements XmlHandler {
   @override
   void text(String text) {
     if (_current != null && _stack.isNotEmpty && _stack.last == 't' && !_stack.contains('rPh')) {
-      if (_current!.length < noteCellMaxBytes * 2) _current!.write(text);
+      if (_current!.length < noteCellReadMax) _current!.write(text);
     }
   }
 }
@@ -175,9 +176,9 @@ class _SheetReader implements XmlHandler {
     }
     final last = _stack.last;
     if (last == 'v') {
-      if (_value.length < noteCellMaxBytes * 2) _value.write(text);
+      if (_value.length < noteCellReadMax) _value.write(text);
     } else if (last == 't' && _stack.contains('is') && !_stack.contains('rPh')) {
-      if (_inline.length < noteCellMaxBytes * 2) _inline.write(text);
+      if (_inline.length < noteCellReadMax) _inline.write(text);
     }
   }
 
@@ -200,7 +201,7 @@ class _SheetReader implements XmlHandler {
         t = v;
     }
     _hasValue = t.isNotEmpty;
-    return _hasValue ? cutUtf8(t, noteCellMaxBytes) : '';
+    return _hasValue ? cutUtf8(t, noteCellReadMax) : '';
   }
 }
 

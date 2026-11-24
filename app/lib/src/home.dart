@@ -251,16 +251,7 @@ class _HomeState extends State<Home> {
   // Import…: the target is taken first, then the open dialog.
   Future<void> _runImportCommand() async {
     final canvas = _canvasKey?.currentState;
-    if (canvas == null || !canvas.mounted) return;
-    final target = canvas.captureImportTarget(null);
-    if (target == null) return;
-    final sources = await importPicker();
-    if (sources.isEmpty || !mounted) return;
-    if (!target.holds) {
-      target.store.notify(importStoppedNotice);
-      return;
-    }
-    await runImport(context, canvas, target, sources);
+    if (canvas != null && mounted) await runImportCommand(context, canvas);
   }
 
   // Clearing the search also clears the title highlight it put there.

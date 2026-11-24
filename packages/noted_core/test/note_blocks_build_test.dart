@@ -86,6 +86,26 @@ void main() {
     expect(data, 499);
   });
 
+  test('a table of long cells is cut by bytes too: every group is within 256 KiB', () {
+    // 2,000 cells of 2,000 bytes would be 4 MB in one box.
+    final rows = [
+      for (var r = 0; r < 40; r++) [for (var c = 0; c < 50; c++) 'x' * 2000],
+    ];
+    final parts = noteTables(rows);
+    expect(parts.length, 39, reason: "header and one 100 KB row per part");
+    for (final p in parts) {
+      expect(noteBlockBytes(p), lessThanOrEqualTo(256 * 1024));
+      expect(noteBlockCells(p), lessThanOrEqualTo(2000));
+    }
+    final g = groupNoteBlocks(parts, maxGroups: 100);
+    expect(g.truncated, isFalse);
+    for (final grp in g.groups) {
+      expect(grp.fold<int>(0, (n, b) => n + noteBlockBytes(b)), lessThanOrEqualTo(256 * 1024));
+    }
+    // Header in each part, every data row once.
+    expect(parts.fold<int>(0, (n, p) => n + ((p['data']! as Map)['rowsLen']! as int) - 1), 39);
+  });
+
   test('cell text is cut on a character boundary', () {
     final t = noteTable([
       ['é' * 5000],

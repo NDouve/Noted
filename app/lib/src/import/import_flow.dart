@@ -35,15 +35,19 @@ final class ImportSource {
 ImportCapabilities importCapabilities = const ImportCapabilities();
 
 /// The limits of this device; tests change it.
+@visibleForTesting
 ImportLimits Function() importLimits = () => isMobilePlatform ? ImportLimits.mobile : ImportLimits.desktop;
 
 /// How many imports are running now.
+@visibleForTesting
 final ValueNotifier<int> importsRunning = ValueNotifier<int>(0);
 
 /// Where conversions run; tests change it.
+@visibleForTesting
 ImportRunner importRunner = runInIsolate;
 
 /// Asks the user for files to import (the Import command); tests change it.
+@visibleForTesting
 Future<List<ImportSource>> Function() importPicker = pickImportSources;
 
 /// The open dialog, with the formats an import takes.
@@ -100,6 +104,10 @@ Future<void> _runImport(
   final caps = importCapabilities;
   final limits = importLimits();
   final off = target.disallowed;
+  final switchedOff = {
+    for (final t in [ImportChoice.asImage.typeId, ImportChoice.asFile.typeId, ImportChoice.asText.typeId])
+      if (canvas.controller.modules.moduleFor(t) == null) t,
+  };
 
   // The choice for each file that asks; the others take the usual path.
   final formats = [for (final s in sources) ImportFormat.of(s.name)];
@@ -107,7 +115,7 @@ Future<void> _runImport(
   final sticky = <ImportFormat, ImportChoice>{};
   for (var i = 0; i < sources.length; i++) {
     final f = formats[i];
-    if (f == null || !importAsks(f, caps, off)) continue;
+    if (f == null || !importAsks(f, caps, off, switchedOff)) continue;
     final decided = sticky[f];
     if (decided != null) {
       choice[i] = decided;
@@ -118,32 +126,55 @@ Future<void> _runImport(
     final d = await showImportDialog(
       context,
       fileName: sources[i].name,
-      options: importOptions(f, caps, disallowed: off),
+      options: importOptions(f, caps, disallowed: off, switchedOff: switchedOff),
       more: more,
     );
+    if (d == null) return;
     if (!target.holds) {
       store.notify(importStoppedNotice);
       return;
     }
-    if (d == null) return;
     choice[i] = d.choice;
     if (d.useForAll) sticky[f] = d.choice;
   }
 
   final notices = <String>[];
+  String stopText() => [...notices, importStoppedNotice].join(' ');
   for (var i = 0; i < sources.length; i++) {
     if (!target.holds) {
-      store.notify(importStoppedNotice);
+      store.notify(stopText());
       return;
     }
     final s = sources[i];
-    final c = choice[i];
-    final result = c != null && c.makesNotes
-        ? await _importNotes(canvas, target, s, formats[i]!, limits, notices)
-        : await _importFile(canvas, target, s, c == ImportChoice.asFile ? ImportChoice.asFile.typeId : null, notices);
-    if (result) return;
+    final bool stopped;
+    switch (choice[i]) {
+      case null:
+        stopped = await _importFile(canvas, target, s, null, notices, stopText);
+      case ImportChoice.asFile:
+        stopped = await _importFile(canvas, target, s, ImportChoice.asFile.typeId, notices, stopText);
+      case ImportChoice.asText || ImportChoice.asTable:
+        stopped = await _importNotes(canvas, target, s, formats[i]!, limits, notices, stopText);
+      case ImportChoice.asImage || ImportChoice.pagesAsImages || ImportChoice.slidesAsImages:
+        // Stage B wires the renderers; the dialog keeps these off until then.
+        throw StateError('${choice[i]} is not available yet');
+    }
+    if (stopped) return;
   }
   if (notices.isNotEmpty && target.holds) store.notify(notices.join(' '));
+}
+
+/// The Import command: the target is taken first, then the open dialog.
+Future<void> runImportCommand(BuildContext context, PageCanvasState canvas) async {
+  if (!canvas.mounted) return;
+  final target = canvas.captureImportTarget(null);
+  if (target == null) return;
+  final sources = await importPicker();
+  if (sources.isEmpty || !context.mounted) return;
+  if (!target.holds) {
+    target.store.notify(importStoppedNotice);
+    return;
+  }
+  await runImport(context, canvas, target, sources);
 }
 
 /// Adds one file as it is, with the module chosen by file (or [module]).
@@ -154,6 +185,7 @@ Future<bool> _importFile(
   ImportSource s,
   String? module,
   List<String> notices,
+  String Function() stopText,
 ) async {
   final Uint8List bytes;
   try {
@@ -163,11 +195,18 @@ Future<bool> _importFile(
     notices.add('"${s.name}" could not be read.');
     return false;
   }
-  final r = await canvas.insertImportInto(target, [IncomingFile(s.name, bytes)], module: module);
+  final r = await canvas.insertImportInto(target, [IncomingFile(s.name, bytes)], module: module, stopNotice: stopText());
   if (r.stopped) return true;
-  if (r.refused) notices.add('"${s.name}" can’t be added: not allowed on this page.');
-  if (r.failed.isNotEmpty) notices.add('"${s.name}" could not be added.');
+  _noteFailures(r, s.name, notices);
   return false;
+}
+
+void _noteFailures(ImportInsert r, String name, List<String> notices) {
+  if (r.refused) notices.add('"$name" can’t be added: not allowed on this page.');
+  for (final n in r.unwritable) {
+    notices.add('"$n" could not be added: the page\'s folder could not be written.');
+  }
+  if (r.failed.isNotEmpty) notices.add('"$name" could not be added.');
 }
 
 /// Converts one file to note boxes and adds them. True if the import stopped.
@@ -178,6 +217,7 @@ Future<bool> _importNotes(
   ImportFormat format,
   ImportLimits limits,
   List<String> notices,
+  String Function() stopText,
 ) async {
   final Uint8List bytes;
   try {
@@ -192,9 +232,13 @@ Future<bool> _importNotes(
     notices.add('"${s.name}" could not be read.');
     return false;
   }
+  if (!target.holds) {
+    target.store.notify(stopText());
+    return true;
+  }
   final converted = await convertToNotes(format, s.name, bytes, limits, run: importRunner);
   if (!target.holds) {
-    target.store.notify(importStoppedNotice);
+    target.store.notify(stopText());
     return true;
   }
   if (converted.error != null) {
@@ -205,8 +249,10 @@ Future<bool> _importNotes(
   final files = [
     for (var i = 0; i < converted.boxes.length; i++) noteImportFile(s.name, converted.boxes[i], i, converted.boxes.length),
   ];
-  final r = await canvas.insertImportInto(target, files, module: ImportChoice.asText.typeId);
+  final r = await canvas.insertImportInto(target, files, module: ImportChoice.asText.typeId, stopNotice: stopText());
   if (r.stopped) return true;
-  if (r.failed.isNotEmpty) notices.add('"${s.name}" could not be imported.');
+  if (r.failed.isNotEmpty || r.unwritable.isNotEmpty) {
+    notices.add('"${s.name}" could not be imported.');
+  }
   return false;
 }

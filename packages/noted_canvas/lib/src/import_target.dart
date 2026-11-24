@@ -53,10 +53,19 @@ final class ImportTarget {
 
 /// What [PageCanvasState.insertImportInto] did.
 final class ImportInsert {
-  const ImportInsert({this.added = 0, this.failed = const [], this.stopped = false, this.refused = false});
+  const ImportInsert({
+    this.added = 0,
+    this.failed = const [],
+    this.unwritable = const [],
+    this.stopped = false,
+    this.refused = false,
+  });
 
   /// Boxes added.
   final int added;
+
+  /// Names of files the page's folder could not store (no box was made).
+  final List<String> unwritable;
 
   /// Names of files no box could be made of.
   final List<String> failed;

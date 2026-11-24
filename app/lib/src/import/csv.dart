@@ -14,8 +14,8 @@ import 'sheet_blocks.dart';
 /// A `.csv` (comma) or `.tsv` (tab) as one table: RFC 4180 quoting, a quoted
 /// cell may hold a newline (kept as a line break inside the cell). The same
 /// row and column limits as a sheet.
-BlocksResult csvToBlocks(Uint8List bytes, ImportLimits limits, {required String delimiter}) =>
-    sheetsToBlocks([csvSheet(utf8.decode(bytes, allowMalformed: true), limits, delimiter)], limits);
+BlocksResult csvToBlocks(Uint8List bytes, ImportLimits limits, String fileName, {required String delimiter}) =>
+    sheetsToBlocks([csvSheet(utf8.decode(bytes, allowMalformed: true), limits, delimiter)], limits, fileName);
 
 /// The cells of [text] as one [SheetData] with no name.
 SheetData csvSheet(String text, ImportLimits limits, String delimiter) {
@@ -37,7 +37,7 @@ SheetData csvSheet(String text, ImportLimits limits, String delimiter) {
       } else if (col >= limits.columns) {
         columnsCut = true;
       } else {
-        (cells[row] ??= {})[col] = cutUtf8(v, noteCellMaxBytes);
+        (cells[row] ??= {})[col] = cutUtf8(v, noteCellReadMax);
       }
     }
     cell.clear();

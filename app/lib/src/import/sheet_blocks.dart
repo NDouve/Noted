@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:convert';
+
 import 'package:noted_core/noted_core.dart';
 
 import 'import_limits.dart';
@@ -43,24 +45,39 @@ SheetData gridOf(String? name, Map<int, Map<int, String>> cells, {bool rowsCut =
   );
 }
 
-/// The blocks for [sheets]: each named sheet a heading and its table, a table
-/// of more than the limit's cells cut into tables with the first row
-/// repeated. Empty sheets are skipped; none left refuses the file.
-BlocksResult sheetsToBlocks(List<SheetData> sheets, ImportLimits limits) {
+/// What the readers keep of one cell: twice what a table cell shows, so that
+/// [sheetsToBlocks] can tell that a cell was shortened.
+const int noteCellReadMax = noteCellMaxBytes * 2;
+
+/// The blocks for [sheets] of the file [fileName]: each named sheet a
+/// heading and its table, a table of more than the limit's cells or bytes
+/// cut into tables with the first row repeated. Empty sheets are skipped;
+/// none left refuses the file.
+BlocksResult sheetsToBlocks(List<SheetData> sheets, ImportLimits limits, String fileName) {
   final blocks = <Map<String, Object?>>[];
   final rowsCut = <String>[], colsCut = <String>[];
+  var longCells = false;
   for (final s in sheets) {
-    final label = s.name ?? 'the table';
-    if (s.rowsCut) rowsCut.add(label);
-    if (s.columnsCut) colsCut.add(label);
+    final label = s.name;
+    if (s.rowsCut) rowsCut.add(label ?? '');
+    if (s.columnsCut) colsCut.add(label ?? '');
     if (s.rows.isEmpty) continue;
     if (s.name != null) blocks.add(noteHeading(2, [NoteRun(s.name!)]));
-    blocks.addAll(noteTables(s.rows, maxCells: limits.noteCells));
+    longCells = longCells || s.rows.any((r) => r.any((c) => c.length * 3 > noteCellMaxBytes && utf8.encode(c).length > noteCellMaxBytes));
+    blocks.addAll(noteTables(s.rows, maxCells: limits.noteCells, maxBytes: limits.noteBytes));
   }
   if (blocks.isEmpty) throw const ImportException('has nothing to import');
+  String where(List<String> names) {
+    final named = names.where((n) => n.isNotEmpty).toList();
+    return named.isEmpty ? '' : ' in ${named.join(', ')}';
+  }
+
   final parts = [
-    if (rowsCut.isNotEmpty) 'rows past ${limits.rows} in ${rowsCut.join(', ')}',
-    if (colsCut.isNotEmpty) 'columns past ${limits.columns} in ${colsCut.join(', ')}',
+    if (rowsCut.isNotEmpty) 'rows past ${limits.rows}${where(rowsCut)}',
+    if (colsCut.isNotEmpty) 'columns past ${limits.columns}${where(colsCut)}',
   ];
-  return BlocksResult(blocks, [if (parts.isNotEmpty) 'Left out: ${parts.join('; ')}.']);
+  return BlocksResult(blocks, [
+    if (parts.isNotEmpty) '"$fileName": left out ${parts.join('; ')}.',
+    if (longCells) '"$fileName": long cells were shortened.',
+  ]);
 }

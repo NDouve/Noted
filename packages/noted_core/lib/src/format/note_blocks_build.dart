@@ -113,18 +113,34 @@ Map<String, Object?> noteTable(List<List<String>> rows) {
   };
 }
 
-/// The tables for [rows]: one, or several of at most [maxCells] cells each,
-/// cut by rows with the first row repeated as each part's header.
-List<Map<String, Object?>> noteTables(List<List<String>> rows, {int maxCells = noteTableMaxCells}) {
+/// The tables for [rows]: one, or several of at most [maxCells] cells and
+/// [maxBytes] of text each, cut by rows with the first row repeated as each
+/// part's header.
+List<Map<String, Object?>> noteTables(
+  List<List<String>> rows, {
+  int maxCells = noteTableMaxCells,
+  int maxBytes = 256 * 1024,
+}) {
   final cols = rows.fold<int>(1, (m, r) => r.length > m ? r.length : m);
-  if (rows.length * cols <= maxCells || rows.length < 2) return [noteTable(rows)];
-  final perPart = (maxCells ~/ cols) - 1; // data rows next to the header
-  if (perPart < 1) return [noteTable(rows)];
+  int rowBytes(List<String> r) => r.fold<int>(0, (n, c) => n + utf8.encode(cutUtf8(c, noteCellMaxBytes)).length);
+  if (rows.length < 2) return [noteTable(rows)];
   final header = rows.first;
-  return [
-    for (var i = 1; i < rows.length; i += perPart)
-      noteTable([header, ...rows.sublist(i, i + perPart > rows.length ? rows.length : i + perPart)]),
-  ];
+  final headerBytes = rowBytes(header);
+  final parts = <Map<String, Object?>>[];
+  var part = <List<String>>[];
+  var bytes = headerBytes;
+  for (var i = 1; i < rows.length; i++) {
+    final b = rowBytes(rows[i]);
+    if (part.isNotEmpty && ((part.length + 2) * cols > maxCells || bytes + b > maxBytes)) {
+      parts.add(noteTable([header, ...part]));
+      part = [];
+      bytes = headerBytes;
+    }
+    part.add(rows[i]);
+    bytes += b;
+  }
+  if (part.isNotEmpty) parts.add(noteTable([header, ...part]));
+  return parts;
 }
 
 // ---- Size ---------------------------------------------------------------

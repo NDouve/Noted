@@ -18,8 +18,8 @@ final class ZipReader {
 
   /// Reads the central directory of [bytes].
   factory ZipReader(Uint8List bytes, ImportLimits limits) {
-    const bad = ImportException('is not a valid zip file');
-    const zip64 = ImportException('uses zip64, which can’t be imported');
+    const bad = ImportException('can’t be read');
+    const zip64 = ImportException('can’t be read');
     if (bytes.length < 22) throw bad;
     final d = ByteData.sublistView(bytes);
     // The end record is in the last 22 + 65,535 bytes.
@@ -81,15 +81,15 @@ final class ZipReader {
   Uint8List? read(String name) {
     final e = _entries[name];
     if (e == null) return null;
-    const bad = ImportException('is not a valid zip file');
+    const bad = ImportException('can’t be read');
     if (e.flags & 1 != 0 || e.flags & 0x40 != 0) throw const ImportException('is encrypted and can’t be imported');
-    if (e.method != 0 && e.method != 8) throw const ImportException('uses a zip method that can’t be imported');
+    if (e.method != 0 && e.method != 8) throw const ImportException('can’t be read');
     final d = ByteData.sublistView(_bytes);
     final o = e.local;
     if (o + 30 > _bytes.length || d.getUint32(o, Endian.little) != 0x04034b50) throw bad;
     final start = o + 30 + d.getUint16(o + 26, Endian.little) + d.getUint16(o + 28, Endian.little);
     final end = start + e.csize;
-    if (end > _bytes.length) throw const ImportException('is cut short and can’t be imported');
+    if (end > _bytes.length) throw const ImportException('can’t be read');
     if (e.usize > _limits.entryBytes || _total + e.usize > _limits.archiveBytes) {
       throw const ImportException('is too large to import');
     }

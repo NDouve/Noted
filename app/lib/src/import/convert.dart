@@ -46,12 +46,12 @@ ConvertedNotes convertToNotesNow(ImportFormat format, String name, Uint8List byt
         if (blocks.isEmpty) throw const ImportException('has no text to import');
         result = BlocksResult(blocks);
       case ImportFormat.word:
-        result = docxToBlocks(bytes, limits);
+        result = docxToBlocks(bytes, limits, name);
       case ImportFormat.sheet:
-        result = xlsxToBlocks(bytes, limits);
+        result = xlsxToBlocks(bytes, limits, name);
       case ImportFormat.csv:
         final tab = name.toLowerCase().endsWith('.tsv');
-        result = csvToBlocks(bytes, limits, delimiter: tab ? '\t' : ',');
+        result = csvToBlocks(bytes, limits, name, delimiter: tab ? '\t' : ',');
       case ImportFormat.pdf || ImportFormat.slides || ImportFormat.image:
         throw const ImportException('can’t be imported as text');
     }

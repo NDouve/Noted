@@ -101,10 +101,14 @@ List<ImportOption> importOptions(
   ImportFormat format,
   ImportCapabilities caps, {
   Set<String> disallowed = const {},
+  Set<String> switchedOff = const {},
 }) {
   ImportOption opt(ImportChoice c, [String? unavailable]) {
     if (unavailable != null) return ImportOption(c, off: unavailable);
-    return ImportOption(c, off: disallowed.contains(c.typeId) ? 'Not allowed on this page' : null);
+    return ImportOption(
+      c,
+      off: disallowed.contains(c.typeId) ? 'Not allowed on this page' : (switchedOff.contains(c.typeId) ? 'Switched off' : null),
+    );
   }
 
   String cant(String what) => "This device can't show $what as images";
@@ -134,5 +138,5 @@ List<ImportOption> importOptions(
 
 /// Whether [format] has a choice besides a file box on this device and page,
 /// so that dropping it asks. One that doesn't is added as a file, as before.
-bool importAsks(ImportFormat format, ImportCapabilities caps, Set<String> disallowed) =>
-    importOptions(format, caps, disallowed: disallowed).any((o) => o.enabled && o.choice != ImportChoice.asFile);
+bool importAsks(ImportFormat format, ImportCapabilities caps, Set<String> disallowed, [Set<String> switchedOff = const {}]) =>
+    importOptions(format, caps, disallowed: disallowed, switchedOff: switchedOff).any((o) => o.enabled && o.choice != ImportChoice.asFile);
