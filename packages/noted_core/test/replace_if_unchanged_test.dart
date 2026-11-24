@@ -624,6 +624,18 @@ void suite() {
       expect(File(p('a.bin')).readAsBytesSync(), [7]);
     }, skip: (Platform.isMacOS || Platform.isIOS) ? 'a real lstat exists: nothing fails closed' : null);
 
+    test('a readable file with a stub beside it is busy before anything moves: no aside, no conflict copy', () async {
+      File(p('a.bin')).writeAsBytesSync([1]);
+      stubOnly('a.bin');
+      final tmp = File(p('t.tmp'))..writeAsBytesSync([9]);
+      await busy(() => replaceIfUnchanged(tmp, p('a.bin'), [1]));
+      await busy(() => replaceIfUnchanged(tmp, p('a.bin'), null, identity: ContentIdentity.ofBytes([1])));
+      await busy(() => deleteFileIfUnchanged(p('a.bin'), [1]));
+      await busy(() => deleteFileIfMatches(p('a.bin'), identity: ContentIdentity.ofBytes([1])));
+      expect(names(), ['.a.bin.icloud', 'a.bin', 't.tmp']);
+      expect(File(p('a.bin')).readAsBytesSync(), [1]);
+    });
+
     test('a publish onto a stubbed name is taken: nothing is published', () async {
       stubOnly('a.bin');
       final tmp = File(p('t.tmp'))..writeAsBytesSync([9]);

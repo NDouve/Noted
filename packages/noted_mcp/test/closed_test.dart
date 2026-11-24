@@ -1240,6 +1240,14 @@ void main() {
       expect(f.readAsStringSync(), 'old');
     }, skip: skipOnMac);
 
+    test('a readable page with a stub beside it is busy before anything moves', () async {
+      final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
+      File('${folder.path}/.p.canvas.icloud').writeAsStringSync('');
+      expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.busy);
+      expect(names(), ['.p.canvas.icloud', 'p.canvas']);
+      expect(f.readAsStringSync(), 'old');
+    });
+
     test('an ordinary replace still drops its aside', () async {
       final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
       expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.done);

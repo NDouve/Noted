@@ -192,7 +192,7 @@ final class ClosedWriter {
       }
       if (!up()) return PageReplace.busy;
       // A page that is not downloaded is never read.
-      if (isDataless(path)) return PageReplace.busy;
+      if (isDataless(path) || hasStub(path)) return PageReplace.busy;
       final first = await file.readAsBytes();
       if (!up()) return PageReplace.busy;
       if (!_same(first, expected)) return PageReplace.changed;

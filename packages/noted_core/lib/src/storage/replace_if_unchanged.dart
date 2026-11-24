@@ -551,9 +551,11 @@ Future<bool> _retry(Future<bool> Function() op) async {
 }
 
 /// Throws [StorageBusy] (`dataless`) when the file at [path] is not downloaded,
-/// or is a stub with no file: nothing has been read or moved.
+/// is a stub with no file, or has a stub beside it (a second, undownloaded
+/// version: nothing may be moved aside, because the stub would then refuse the
+/// publish): nothing has been read or moved.
 void _requireDownloaded(String path) {
-  if (isDataless(path)) {
+  if (isDataless(path) || hasStub(path)) {
     throw StorageBusy(StorageBusyReason.dataless, [path]);
   }
 }
