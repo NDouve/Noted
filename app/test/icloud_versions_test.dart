@@ -12,7 +12,6 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/icloud_folders.dart';
-import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/fake_cloud_folder_channel.dart';

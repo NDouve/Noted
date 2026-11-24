@@ -133,7 +133,7 @@ void main() {
       final listed = nb.unreadable.where((u) => u.reason == 'Still downloading').toList();
       expect(listed, hasLength(1));
       expect(slashes(listed.single.path), slashes(w.path('gone1.canvas')));
-      final asked = () => w.channel.callsOf('startDownloading').map((c) => slashes('${c.args['path']}')).toList();
+      List<String> asked() => w.channel.callsOf('startDownloading').map((c) => slashes('${c.args['path']}')).toList();
       expect(asked(), contains(slashes(w.path('gone1.canvas'))), reason: 'asked for at open');
       final before = asked().length;
       await w.channel.emit('changed', {'path': w.path('.gone1.canvas.icloud')});
