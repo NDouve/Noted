@@ -77,7 +77,6 @@ void main() {
   test('a dataless attachment is not read; the file stays as it was', () async {
     asset(name).writeAsBytesSync(good);
     expect(store.exists(name), isTrue);
-    if (Platform.isMacOS || Platform.isIOS) return;
     debugDatalessAbi = Abi.macosArm64; // no lstat here: every existing file fails closed
     debugResetDataless();
     expect((await store.readVerified(name, size: good.length)).state, AttachmentState.syncing);
@@ -86,7 +85,7 @@ void main() {
     expect(opened, isEmpty);
     debugDatalessAbi = null;
     expect(asset(name).readAsBytesSync(), good);
-  });
+  }, skip: (Platform.isMacOS || Platform.isIOS) ? 'a real lstat exists: nothing fails closed' : null);
 
   test('a good attachment is still verified and read', () async {
     asset(name).writeAsBytesSync(good);

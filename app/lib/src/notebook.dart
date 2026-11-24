@@ -12961,6 +12961,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final key = _key(path);
     // A page being moved is looked at again when the move ends (2d).
     if (_pathId[key] case final moving? when _busy[moving] == _busyMoving) return false;
+    // A file that is not downloaded (or a stub with no file) is not read, which
+    // would download it, and is not gone: nothing is learned from it now. The
+    // download is asked for, and the file is looked at again on its change
+    // event. An open page's save meets the same file and keeps its edit (R5.5).
+    if (isDataless(path)) {
+      requestDownload?.call(path);
+      return false;
+    }
     final file = File(path);
     final openId = _current?.page.id;
     // Decided by path, not by _pathId: that entry is dropped when the file is
