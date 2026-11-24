@@ -7,6 +7,7 @@
 // closed whatever happens, embedded mode over the limit, and a reload.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -402,12 +403,46 @@ void main() {
     final sheet = SheetData('Wide', [
       for (var r = 0; r < 40; r++) [for (var c = 0; c < 50; c++) '$long $r $c'],
     ]);
-    final png = await t.runAsync(() => drawSheetChunk(sheet, 0, 40));
+    final plan = planSheet(sheet);
+    expect(plan.cut, isFalse);
+    final png = await t.runAsync(() => drawSheetChunk(sheet, plan, 0, 40));
     final s = pngSize(png!)!;
     expect(s.width, lessThanOrEqualTo(maxImageSide));
     expect(s.height, lessThanOrEqualTo(maxImageSide));
     expect(s.width * s.height, lessThanOrEqualTo(maxImagePixels));
     expect(s.width, maxImageSide, reason: 'it was wider than the cap and was scaled down');
+  });
+
+  testWidgets('a cell shows all its lines: the row grows to fit', (t) async {
+    final one = planSheet(SheetData(null, [['a', 'b']]));
+    final five = planSheet(SheetData(null, [['a\nb\nc\nd\ne', 'b']]));
+    expect(five.cut, isFalse);
+    final line = one.rowHeights.single - 2 * sheetPadY;
+    expect(five.rowHeights.single, closeTo(5 * line + 2 * sheetPadY, 0.01));
+  });
+
+  testWidgets('a row taller than an image is cut and named; the sheet name widens the image', (t) async {
+    final tall = SheetData(null, [[List.filled(400, 'x').join('\n')]]);
+    final plan = planSheet(tall);
+    expect(plan.cut, isTrue);
+    expect(plan.rowHeights.single, lessThanOrEqualTo(maxImageSide));
+    final png = await t.runAsync(() => drawSheetChunk(tall, plan, 0, 1));
+    expect(pngSize(png!)!.height, lessThanOrEqualTo(maxImageSide));
+    // The title is wider than the table.
+    final named = SheetData('Quarterly Revenue Report for the whole year', [['1']]);
+    final p = planSheet(named);
+    expect(p.titleWidth, greaterThan(p.widths.single + 16));
+    final img = await t.runAsync(() => drawSheetChunk(named, p, 0, 1));
+    expect(pngSize(img!)!.width, greaterThanOrEqualTo((p.titleWidth + 24).floor()));
+  });
+
+  testWidgets('a cell too long to show in full gives the notice', (t) async {
+    final w = await open(t);
+    final cell = List.filled(400, 'x').join('\n');
+    await importFile(t, w, 'x.csv', Uint8List.fromList(utf8.encode('"$cell",b\n')), 'asImage');
+    expect(boxes(w), hasLength(1));
+    expect(notices, ['"x.csv": some cells were too long to show in full.']);
+    await w.close(t);
   });
 
   testWidgets('a sheet as an image: a chunk per 100 rows, stacked down; it loads again', (t) async {

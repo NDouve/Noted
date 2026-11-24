@@ -162,10 +162,11 @@ Future<RenderedImages> renderSheetImages(
   notices.addAll(read.notices);
   final stem = _stem(s.name);
   final files = <IncomingFile>[];
-  var cut = false;
+  var cut = false, cellsCut = false;
   for (final sheet in read.sheets) {
-    final cols = sheet.rows.first.length;
-    for (final (from, to) in sheetChunks(sheet.rows.length, cols)) {
+    final plan = planSheet(sheet);
+    cellsCut = cellsCut || plan.cut;
+    for (final (from, to) in plan.chunks) {
       if (files.length >= maxSheetImages) {
         cut = true;
         break;
@@ -175,7 +176,7 @@ Future<RenderedImages> renderSheetImages(
         return const RenderedImages([], stopped: true);
       }
       try {
-        files.add(IncomingFile('$stem-${files.length + 1}.png', await drawSheetChunk(sheet, from, to)));
+        files.add(IncomingFile('$stem-${files.length + 1}.png', await drawSheetChunk(sheet, plan, from, to)));
       } on Object catch (e) {
         debugPrint('Drawing a sheet image of ${s.name} failed: $e');
         notices.add('"${s.name}" could not be drawn.');
@@ -183,6 +184,7 @@ Future<RenderedImages> renderSheetImages(
       }
     }
   }
+  if (cellsCut) notices.add('"${s.name}": some cells were too long to show in full.');
   if (cut) notices.add('"${s.name}" is too long; the first $maxSheetImages images were imported.');
   return RenderedImages(files);
 }
