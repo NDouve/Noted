@@ -39,6 +39,7 @@ void main() {
   setUp(() {
     notices = [];
     importRunner = _inline;
+    importCapabilities = const ImportCapabilities();
   });
 
   tearDown(() {

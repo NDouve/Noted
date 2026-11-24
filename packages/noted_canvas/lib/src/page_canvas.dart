@@ -411,6 +411,8 @@ class PageCanvasState extends State<PageCanvas>
   /// whose box grows with its content (the note) isn't given a fixed height
   /// and its boxes go side by side, 24 px apart, left to right from
   /// [ImportTarget.point]; other boxes are stacked downward by their sizes.
+  /// Files are stored through [storeVia] if given (a wrapper of the page's own,
+  /// for an import that forces the folder), else the target's store.
   /// [target] moves on past what was placed.
   ///
   /// As a paste does, it checks the target before each file is stored and
@@ -421,6 +423,7 @@ class PageCanvasState extends State<PageCanvas>
     List<IncomingFile> files, {
     String? module,
     String stopNotice = importStoppedNotice,
+    AttachmentStore? storeVia,
   }) async {
     final paste = target.wrapped as _PasteTarget;
     final store = paste.store;
@@ -450,7 +453,7 @@ class PageCanvasState extends State<PageCanvas>
       }
       (Object?, Size)? made;
       try {
-        made = await m.hostCreateFromFile(f, store);
+        made = await m.hostCreateFromFile(f, storeVia ?? store);
       } on FileSystemException {
         if (!target.holds) {
           stopped = true;
