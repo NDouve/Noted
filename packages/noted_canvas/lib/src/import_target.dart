@@ -22,6 +22,7 @@ final class ImportTarget {
     required this.pageId,
     required this.store,
     required this.point,
+    required this.disallowed,
     required this.check,
   });
 
@@ -30,6 +31,9 @@ final class ImportTarget {
 
   /// The page the import is for.
   final String pageId;
+
+  /// The box types the page disallowed when this was captured.
+  final Set<String> disallowed;
 
   /// The page's attachment store, for notices.
   final AttachmentStore store;

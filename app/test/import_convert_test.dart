@@ -327,7 +327,7 @@ void main() {
     test('a \$-heavy sheet gives real table blocks, not text', () {
       final rows = StringBuffer();
       for (var i = 1; i <= 300; i++) {
-        rows.write(row(i, c('A$i', '$i') + '<c r="B$i" t="inlineStr"><is><t>\$x\$ [a] *b* \$y\$</t></is></c>'));
+        rows.write(row(i, '${c('A$i', '$i')}<c r="B$i" t="inlineStr"><is><t>\$x\$ [a] *b* \$y\$</t></is></c>'));
       }
       final r = conv(ImportFormat.sheet, 'x.xlsx', buildXlsx({'D': rows.toString()}));
       final t = blocksOf(r).where((b) => b['type'] == 'table');

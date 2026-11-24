@@ -47,6 +47,9 @@ abstract final class AppCommands {
   static const String defaultPageFolder = 'app.settings.defaultPageFolder';
   static const String defaultBinderFolder = 'app.settings.defaultBinderFolder';
 
+  // Import (Insert, More).
+  static const String import = 'app.import';
+
   // Search.
   static const String search = 'app.search';
 
@@ -392,3 +395,16 @@ CommandRegistry contextMenuCommands(AppSettings settings) => CommandRegistry()
         invoke: () => settings.contextMenu = s,
       ),
   ]);
+
+/// The Import command (Insert, and the More menu): takes documents and
+/// images through the open dialog and asks how each is added. Works where a
+/// page can take files. The registry that gets it owns and disposes it.
+Command importCommand(Notebook nb, Future<void> Function() run) => Command(
+  id: AppCommands.import,
+  label: 'Import…',
+  icon: Icons.file_open_rounded,
+  text: () => 'Import',
+  enabled: () => nb.attachments != null && nb.readOnlyReason == null && !(nb.current?.readOnly ?? true),
+  listenable: nb,
+  invoke: run,
+);

@@ -261,6 +261,7 @@ const ToolbarLayout _insertTools = [
   [
     'noted.image.insert',
     'noted.file.insert',
+    'app.import',
     'noted.ai.insert',
     'noted.encrypted.insert',
   ],

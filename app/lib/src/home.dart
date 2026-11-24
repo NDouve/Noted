@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import 'dart:async';
-import 'dart:io';
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
@@ -19,6 +18,7 @@ import 'binder_cover.dart';
 import 'context_panel.dart';
 import 'device_storage.dart';
 import 'folder_wait_note.dart';
+import 'import/import_flow.dart';
 import 'load_error_view.dart';
 import 'menu_bar.dart';
 import 'notebook.dart';
@@ -237,20 +237,30 @@ class _HomeState extends State<Home> {
   // No drag and drop on a phone or tablet (0129).
   Widget _droppable(Widget canvas) => isMobilePlatform ? canvas : DropTarget(onDragDone: _dropped, child: canvas);
 
-  // Files dropped on the canvas become boxes where they were dropped.
+  // Files dropped on the canvas become boxes where they were dropped. The
+  // target (page, store, point) is taken first; a document asks how to import.
   Future<void> _dropped(DropDoneDetails d) async {
     final canvas = _canvasKey?.currentState;
     // Only the viewport takes drops, not the toolbar, the header, the strip or Details.
     if (canvas == null || !canvas.viewportContains(d.globalPosition)) return;
-    final files = <IncomingFile>[];
-    for (final f in d.files) {
-      try {
-        files.add(IncomingFile(f.name, await f.readAsBytes()));
-      } on FileSystemException catch (e) {
-        debugPrint('Reading dropped file ${f.path} failed: $e');
-      }
+    final target = canvas.captureImportTarget(canvas.pageAtGlobal(d.globalPosition));
+    if (target == null) return;
+    await runImport(context, canvas, target, [for (final f in d.files) ImportSource.fromFile(f)]);
+  }
+
+  // Import…: the target is taken first, then the open dialog.
+  Future<void> _runImportCommand() async {
+    final canvas = _canvasKey?.currentState;
+    if (canvas == null || !canvas.mounted) return;
+    final target = canvas.captureImportTarget(null);
+    if (target == null) return;
+    final sources = await importPicker();
+    if (sources.isEmpty || !mounted) return;
+    if (!target.holds) {
+      target.store.notify(importStoppedNotice);
+      return;
     }
-    if (files.isNotEmpty && canvas.mounted) await canvas.dropFiles(files, d.globalPosition);
+    await runImport(context, canvas, target, sources);
   }
 
   // Clearing the search also clears the title highlight it put there.
@@ -773,7 +783,7 @@ class _HomeState extends State<Home> {
       issueSilence: _issueSilence,
       boxTypeName: boxTypeSingularName,
       aiMerge: notebook.aiMerge,
-      extraCommands: () => [searchCommand(_search)],
+      extraCommands: () => [searchCommand(_search), importCommand(notebook, _runImportCommand)],
       toolbar: (widget.settings?.toolbar ?? ToolbarStyle.tabs).layout,
       contextMenuStyle: widget.settings?.contextMenu ?? ContextMenuStyle.list,
       onCommandsChanged: isMobilePlatform ? null : _canvasCommandsChanged,

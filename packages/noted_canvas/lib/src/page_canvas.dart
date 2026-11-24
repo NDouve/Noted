@@ -400,6 +400,7 @@ class PageCanvasState extends State<PageCanvas>
       pageId: t.pageId,
       store: t.store,
       point: t.point,
+      disallowed: Set.unmodifiable(t.off),
       check: () => _pasteHolds(t),
     );
   }
