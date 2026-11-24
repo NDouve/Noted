@@ -2671,6 +2671,36 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ---
 
+## 0190 — iCloud Drive: files not downloaded yet, folder access on Apple devices, and iCloud versions
+- **Date:** 2026-11-23
+- **Status:** Active (the build team (PM), run 2026-11-23-01, steps 3, 5 and 6 of the reviewed note `2026-11-15-01-cloud-parity` revision 5.5, under 0182 and 0185; the `@Native` wording of the server's dataless check is the maintainer's answer of 2026-11-23); amends 0129
+- **Decision:**
+  - **Not downloaded (dataless).** On Apple devices a file the system has evicted (`SF_DATALESS`), or a name with only its `.<name>.icloud` stub, is never read, parsed, taken for absent or deleted. It is listed "Still downloading" and its download is requested at open and on each change. A save over it keeps the edit as the page's recovery generation and saves again when the file changes. The checked primitives answer busy for it, and also for a present file with a stub beside it, before anything moves. A stubbed name counts as taken.
+  - **The MCP server** applies the same rule with no iCloud case: a not-downloaded page counts by the ids in its name, or as unknown, so the server refuses more, never less, and writes nothing new. Its storage files are exactly the exclusive publisher, the checked drop, the coordination hook and the dataless check; `dart:ffi` is imported only by the publisher and the dataless check, whose native calls are exactly the `@Native` leaf functions `lstat` and `lstat$INODE64`, with no allocator.
+  - **Folder access on Apple devices (amends 0129).** Folders picked on macOS keep a security-scoped bookmark, and on iOS the folder picker is offered for iCloud Drive folders only; both are kept in `folder-access.json` beside `settings.json` (app state, not the page format). Each is resolved before the first load; one that resolves elsewhere or is refused shows "On another device". Each iCloud folder gets a coordinator and a write test; until the test passes, and whenever it failed or access was lost, the folder is read-only and nothing is swept or landed in it. An entry is removed only when no binder, standalone folder or default folder setting (or a folder inside one) still uses it, and only after a successful load with both settings files readable.
+  - **iCloud versions.** Before resolving a conflicting version of a page or binder file, the app saves it beside the file as `<stem>-icloud-<hash>.canvas` or `noted-binder-icloud-<hash>.json`, which 0053 and 0165 then merge or list. A file with unresolved versions is never moved aside or deleted by the app: the step is busy and retried once its versions have landed. An attachment version that matches its name replaces a damaged file; other attachment versions stay in iCloud ("Keep it in iCloud" hides the row for the session); template versions are listed. Versions that can't be kept are listed and nothing is deleted.
+  - **Watching.** Changes reported by iCloud reach the notebook like file-watcher events, and the folder check (0064) also runs on iOS.
+  - **Known limits:** a stub left beside a downloaded file keeps that file busy until the stub goes; "Keep it in iCloud" is not remembered across launches; on an Intel Mac the dataless check is unverified (probe I4), and a failed check makes every file count as not downloaded; whether unresolved versions survive the server's closed-app write is unverified (I5, accepted in 0182's answers); the hand checks I1–I8 are outstanding.
+- **Rationale:** an evicted file read by the app is downloaded on the spot (or fails offline), and taking it for absent or deleting it would lose the only copy; an iCloud version resolved without being kept is lost.
+- **Alternatives considered:** a per-provider rule (rejected: OneDrive and Drive have dataless files on macOS too); letting the server keep an aside on macOS (rejected in 0182's answers); resolving versions without a copy (loses them).
+
+## 0191 — Document import
+- **Date:** 2026-11-23
+- **Status:** Active (the build team (PM), run 2026-11-23-01, from the reviewed note `2026-11-23-01-import` revision 2.1, under 0161); amends 0098 for one import's images
+- **Decision:**
+  - **What.** Dropping a document on the canvas (desktop) or the Import… command asks how to bring it in: text and markdown files as a note; a Word document (`.docx`) as text; a spreadsheet (`.xlsx`, `.csv`, `.tsv`) as a table or as an image; PDF pages as images (Windows, macOS, iOS and Android, through each system's own PDF renderer); or any of them as a file box, as before. Images go straight in as image boxes. Old binary Office formats stay file boxes.
+  - **Each import is a box made by a module through the Box API.** Text, Word documents and tables become note boxes; the app hands the note module the blocks in a file named `<stem>.noted-blocks.json`, which the note module accepts only through the import path (its file affinity stays 0, so a dropped or pasted file of that name is a file box). Images of pages and sheets are PNGs stored through the image module.
+  - **Limits on what is imported:** files over 100 MB (50 MB on phones and tablets) are refused before reading; archives and XML are read with size, entry and nesting limits and no DTD; a note box holds at most 256 KiB of text and 2,000 table cells, and a longer import becomes up to 20 boxes side by side; a sheet keeps at most 500 rows and 50 columns, and a table is split by rows, its header repeated; a cell keeps its first 2,048 bytes; a PDF import takes at most 50 pages, chosen by a page range; images are at most 4,096 px a side and 16 megapixels. Anything cut is named in one notice.
+  - **One import's images over 5 MB together go to the page's folder** even when the page embeds its files, with 0098's notice (amends 0098's per-file guard).
+  - **Text that starts with `=` in an imported table cell** gets an invisible leading zero-width space, so 0055 doesn't evaluate it as a formula.
+  - **The page is fixed when the import starts:** if another page is opened, or the page closes, before a box is added, the import stops and says so.
+  - **Not built:** Word pages and slides as images (no system renderer on most devices); their choices are shown off.
+  - **Known limits:** cell number formats aren't applied; Word lists lose their nesting and empty paragraphs are dropped; an interrupted import leaves its stored images unreferenced in the assets folder, as an interrupted paste does; a markdown table cell starting with `=` is still a formula (0118).
+- **Rationale:** 0161 puts import in scope; converting to the boxes Noted already has keeps invariant 1 and needs no file format or Box API change and no new dependency.
+- **Alternatives considered:** converting through markdown (0118's limits turned large tables into plain text); a per-cell literal flag for `=` text (a note data change, left to the maintainer); a third-party PDF or Office renderer (outside the dependency rules).
+
+---
+
 ## Open items
 - **Apple build path:** resolved: CI builds the macOS app and an unsigned `.ipa` on GitHub's macOS runners (0093, 0134).
 - **Equation block sourcing:** resolved (0048).
