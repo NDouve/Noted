@@ -489,14 +489,13 @@ void suite() {
 
     test('a dataless source stays where it is', () async {
       File(p('a.bin')).writeAsBytesSync([1]);
-      if (Platform.isMacOS || Platform.isIOS) return;
       debugDatalessAbi = Abi.macosArm64;
       debugResetDataless();
       expect(await moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.busy);
       debugDatalessAbi = null;
       expect(File(p('a.bin')).existsSync(), isTrue);
       expect(File(p('b.bin')).existsSync(), isFalse);
-    });
+    }, skip: (Platform.isMacOS || Platform.isIOS) ? 'a real lstat exists: nothing fails closed' : null);
   });
 }
 

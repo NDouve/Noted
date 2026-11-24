@@ -103,13 +103,24 @@ void main() {
       expect(dir.listSync().length, 1);
     });
 
+    test('a binder file whose stub stands alone is still downloading, never gone', () async {
+      final made = Binder.create(title: 'x', color: binderPalette.first);
+      await store.create(made);
+      File('${dir.path}/noted-binder.json').renameSync('${dir.path}/.noted-binder.json.icloud');
+      final r = await store.update(
+        BinderDelta(binderId: made.id, kind: BinderDeltaKind.cover, apply: (x) => x.withTitle('New')),
+      );
+      expect(r, isA<BinderRefused>());
+      expect((r as BinderRefused).kind, BinderRefusal.inUse);
+      expect(r.reason, contains('still downloading'));
+    });
+
     test('a dataless binder file is not read', () async {
       await store.create(Binder.create(title: 'x', color: binderPalette.first));
-      if (Platform.isMacOS || Platform.isIOS) return;
       debugDatalessAbi = Abi.macosArm64;
       debugResetDataless();
       expect(await store.read(), isA<BinderUnreadable>());
       expect(store.fileHoldsBinderSync('anything'), isFalse);
-    });
+    }, skip: (Platform.isMacOS || Platform.isIOS) ? 'a real lstat exists: nothing fails closed' : null);
   });
 }

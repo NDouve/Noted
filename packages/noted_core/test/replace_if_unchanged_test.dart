@@ -516,11 +516,9 @@ void suite() {
     });
 
     // Every existing file counts as dataless (no lstat in this process).
-    bool failClosed() {
-      if (Platform.isMacOS || Platform.isIOS) return false;
+    void failClosed() {
       debugDatalessAbi = Abi.macosArm64;
       debugResetDataless();
-      return true;
     }
 
     void stubOnly(String name) => File(p('.$name.icloud')).writeAsStringSync('');
@@ -543,18 +541,17 @@ void suite() {
     test('a dataless target is not read: busy, and nothing moved', () async {
       File(p('a.bin')).writeAsBytesSync([1]);
       final tmp = File(p('t.tmp'))..writeAsBytesSync([9]);
-      if (!failClosed()) return;
+      failClosed();
       await busy(() => replaceIfUnchanged(tmp, p('a.bin'), [1]));
       await busy(() => deleteFileIfUnchanged(p('a.bin'), [1]));
       debugDatalessAbi = null;
       expect(File(p('a.bin')).readAsBytesSync(), [1]);
       expect(names(), ['a.bin', 't.tmp']);
-    });
+    }, skip: (Platform.isMacOS || Platform.isIOS) ? 'a real lstat exists: nothing fails closed' : null);
 
     test('a target that turns dataless as it is set aside is put back, then busy', () async {
       File(p('a.bin')).writeAsBytesSync([1]);
       final tmp = File(p('t.tmp'))..writeAsBytesSync([9]);
-      if (Platform.isMacOS || Platform.isIOS) return;
       void turn() {
         debugDatalessAbi = Abi.macosArm64;
         debugResetDataless();
@@ -567,7 +564,65 @@ void suite() {
       debugDatalessAbi = null;
       expect(names(), ['a.bin', 't.tmp']);
       expect(File(p('a.bin')).readAsBytesSync(), [1]);
+    }, skip: (Platform.isMacOS || Platform.isIOS) ? 'a real lstat exists: nothing fails closed' : null);
+
+    test('a target that vanishes for a stub as it is set aside is busy, never absent or changed', () async {
+      final tmp = File(p('t.tmp'))..writeAsBytesSync([9]);
+      void swap() {
+        File(p('a.bin')).deleteSync();
+        stubOnly('a.bin');
+      }
+
+      File(p('a.bin')).writeAsBytesSync([1]);
+      await busy(() => replaceIfUnchanged(tmp, p('a.bin'), [1], beforeMoveAside: swap));
+      File(p('.a.bin.icloud')).deleteSync();
+      File(p('a.bin')).writeAsBytesSync([1]);
+      await busy(() => deleteFileIfUnchanged(p('a.bin'), [1], beforeMoveAside: swap));
+      File(p('.a.bin.icloud')).deleteSync();
+      File(p('a.bin')).writeAsBytesSync([1]);
+      await busy(() => deleteFileIfMatches(p('a.bin'), bytes: [1], beforeMoveAside: swap));
+      expect(names(), ['.a.bin.icloud', 't.tmp']);
     });
+
+    test('a drop whose aside vanished, with a stub at the target, is changed, never absent', () async {
+      File(p('a.bin')).writeAsBytesSync([1]);
+      final r = await deleteFileIfUnchanged(
+        p('a.bin'),
+        [1],
+        beforeAsideDelete: (aside) async {
+          File(aside).deleteSync();
+          stubOnly('a.bin');
+        },
+      );
+      expect(r.outcome, DeleteOutcome.changed);
+      expect(names(), ['.a.bin.icloud']);
+    });
+
+    test('an aside that turns dataless and can not go back is reported as kept, not as busy', () async {
+      void turn() {
+        debugDatalessAbi = Abi.macosArm64;
+        debugResetDataless();
+      }
+
+      // Something new arrives at the target while the aside is being put back.
+      void occupy() => File(p('a.bin')).writeAsBytesSync([7]);
+
+      File(p('a.bin')).writeAsBytesSync([1]);
+      final tmp = File(p('t.tmp'))..writeAsBytesSync([9]);
+      final r = await replaceIfUnchanged(tmp, p('a.bin'), [1], beforeMoveAside: turn, beforeRestore: occupy);
+      expect(r.outcome, ReplaceOutcome.changedKept);
+      expect(r.keptPath, isNotNull);
+      expect(File(r.keptPath!).existsSync(), isTrue);
+      expect(File(p('a.bin')).readAsBytesSync(), [7]);
+
+      debugDatalessAbi = null;
+      File(r.keptPath!).deleteSync();
+      File(p('a.bin')).writeAsBytesSync([1]);
+      final d = await deleteFileIfUnchanged(p('a.bin'), [1], beforeMoveAside: turn, beforeRestore: occupy);
+      expect(d.outcome, DeleteOutcome.changedKept);
+      expect(File(d.keptPath!).existsSync(), isTrue);
+      expect(File(p('a.bin')).readAsBytesSync(), [7]);
+    }, skip: (Platform.isMacOS || Platform.isIOS) ? 'a real lstat exists: nothing fails closed' : null);
 
     test('a publish onto a stubbed name is taken: nothing is published', () async {
       stubOnly('a.bin');

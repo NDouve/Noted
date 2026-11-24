@@ -301,7 +301,8 @@ Future<ReplaceResult> _replaceIfUnchanged(
 
   // The aside file is exactly what was at the target. Compare it, unless it
   // is not downloaded: then put it back and refuse.
-  await _putBackIfDataless(aside, target, beforeRestore);
+  final stuck = await _putBackIfDataless(aside, target, beforeRestore);
+  if (stuck != null) return ReplaceResult(ReplaceOutcome.changedKept, stuck.kept);
   final bool equal;
   try {
     equal = await _matches(aside, expected, identity);
@@ -558,15 +559,19 @@ void _requireDownloaded(String path) {
 }
 
 /// The set-aside [aside] of [target] is not downloaded: it is put back, then
-/// the call is busy.
-Future<void> _putBackIfDataless(
+/// the call is busy. Returns null when [aside] is downloaded. When it could not
+/// be put back where it was, nothing is thrown: the path it is kept at is
+/// returned, and the caller reports that (a busy answer would claim nothing
+/// was moved).
+Future<({String? kept})?> _putBackIfDataless(
   File aside,
   String target,
   void Function()? hook,
 ) async {
-  if (!isDataless(aside.path)) return;
-  await _putBack(aside, target, hook);
-  throw StorageBusy(StorageBusyReason.dataless, [target]);
+  if (!isDataless(aside.path)) return null;
+  final kept = await _putBack(aside, target, hook);
+  if (kept == null) throw StorageBusy(StorageBusyReason.dataless, [target]);
+  return (kept: kept);
 }
 
 /// Puts [aside] back at [target] without replacing anything.
@@ -847,7 +852,8 @@ Future<DeleteResult> _deleteFileIfMatches(
     }
     rethrow;
   }
-  await _putBackIfDataless(aside, target, beforeRestore);
+  final stuck = await _putBackIfDataless(aside, target, beforeRestore);
+  if (stuck != null) return DeleteResult(DeleteOutcome.changedKept, stuck.kept);
   final bool equal;
   try {
     equal = await _matches(aside, bytes, identity);

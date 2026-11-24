@@ -350,7 +350,9 @@ class BinderStore {
               kept: kept,
             );
           }
-          return BinderRefused(BinderRefusal.gone, 'The binder file is missing', kept: kept);
+          return hasStub(f.path)
+              ? BinderRefused(BinderRefusal.inUse, 'The binder file is still downloading', kept: kept)
+              : BinderRefused(BinderRefusal.gone, 'The binder file is missing', kept: kept);
         }
         last = inUse(e);
         if (attempt < tries) await Future<void>.delayed(retryDelay);
@@ -449,7 +451,9 @@ class BinderStore {
           return BinderUpdated(next, written, wrote: true, kept: kept);
         case ReplaceOutcome.changed:
           if (attempt >= tries && _notFound(f.path)) {
-            return BinderRefused(BinderRefusal.gone, 'The binder file is missing', kept: kept);
+            return hasStub(f.path)
+                ? BinderRefused(BinderRefusal.inUse, 'The binder file is still downloading', kept: kept)
+                : BinderRefused(BinderRefusal.gone, 'The binder file is missing', kept: kept);
           }
           last = BinderRefused(
             BinderRefusal.keepsChanging,

@@ -460,7 +460,6 @@ void main() {
     test('a dataless page file is listed, not read', () async {
       final text = writePage(NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0)));
       File('${dir.path}/p1.canvas').writeAsStringSync(text);
-      if (Platform.isMacOS || Platform.isIOS) return;
       debugDatalessAbi = Abi.macosArm64;
       debugResetDataless();
       final store = PageStore(dir);
@@ -469,7 +468,7 @@ void main() {
       await expectLater(store.readText('p1'), throwsA(isA<StorageBusy>()));
       debugDatalessAbi = null;
       expect(File('${dir.path}/p1.canvas').readAsStringSync(), text);
-    });
+    }, skip: (Platform.isMacOS || Platform.isIOS) ? 'a real lstat exists: nothing fails closed' : null);
 
     test('saving over a stub-only page is busy', () async {
       final page = NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0));

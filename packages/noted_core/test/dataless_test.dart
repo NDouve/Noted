@@ -36,10 +36,9 @@ void main() {
 
     test('a real file is not dataless on this platform', () {
       File(p('a')).writeAsStringSync('x');
-      if (Platform.isMacOS || Platform.isIOS) return;
       expect(isDataless(p('a')), isFalse);
       expect(isDataless(dir.path), isFalse);
-    });
+    }, skip: (Platform.isMacOS || Platform.isIOS) ? 'a real lstat exists: nothing fails closed' : null);
   });
 
   group('stubs', () {
@@ -70,7 +69,6 @@ void main() {
   group('the Apple lookup', () {
     test('each Abi names its own symbol; the others make no lookup', () {
       File(p('a')).writeAsStringSync('x');
-      if (Platform.isMacOS || Platform.isIOS) return; // a real lstat exists
       final expected = {
         Abi.macosArm64: 'lstat',
         Abi.iosArm64: 'lstat',
@@ -94,11 +92,10 @@ void main() {
         expect(isDataless(p('a')), isFalse, reason: '$abi');
         expect(debugDatalessLookupFailure, isNull, reason: '$abi');
       }
-    });
+    }, skip: (Platform.isMacOS || Platform.isIOS) ? 'a real lstat exists: nothing fails closed' : null);
 
     test('a failed lookup is remembered and every existing file then counts as dataless', () {
       File(p('a')).writeAsStringSync('x');
-      if (Platform.isMacOS || Platform.isIOS) return;
       debugDatalessAbi = Abi.macosArm64;
       debugResetDataless();
       expect(isDataless(p('a')), isTrue, reason: 'fails closed');
@@ -111,6 +108,6 @@ void main() {
       expect(isDataless(p('a'), statFlags: 0), isFalse);
       debugResetDataless();
       expect(debugDatalessLookupFailure, isNull);
-    });
+    }, skip: (Platform.isMacOS || Platform.isIOS) ? 'a real lstat exists: nothing fails closed' : null);
   });
 }
