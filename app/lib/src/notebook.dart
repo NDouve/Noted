@@ -11182,6 +11182,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (moved != null) return moved;
     final path = st.pathFor(id);
     final file = File(path);
+    // A page that is not downloaded (a stub is the file, R5.5) is neither
+    // changed nor gone: the replay waits for its change event, the entry stays,
+    // and the download is asked for.
+    if (isDataless(path)) {
+      requestDownload?.call(path);
+      return false;
+    }
     // Landed before and not settled yet (a read that kept failing, a write that
     // threw): not merged again, only settled.
     final landed = _landedText[e.gen];
@@ -14688,6 +14695,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       await filesChanged(paths);
       if (_disposed) return;
       _requestListedDownloads();
+      // A page file that was not downloaded is here: what was kept for it
+      // waited for this (R5.5) and is replayed now.
+      for (final p in paths) {
+        final loc = _locationOf(p);
+        if (loc != null && p.endsWith(PageStore.extension) && !isDataless(p)) {
+          unawaited(_recoverPending(onlyLoc: loc));
+          break;
+        }
+      }
       // The open page whose save found its file not downloaded saves now that
       // it came (R5.5): its edit is in recovery, and the retry lands it.
       final id = _current?.page.id;

@@ -189,6 +189,47 @@ void main() {
       expect(readPage(file.readAsStringSync()).node(box.id), isNotNull, reason: 'the copy\'s box is on the page');
     });
 
+    test('an edit kept for a page that is still a stub at the next launch waits (not "changed on every attempt") and lands when the page arrives', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final nb = w.notebook(f);
+      await nb.load();
+      final id = nb.currentId!;
+      await nb.flush();
+      final file = File(w.path('$id.canvas'));
+      final text = file.readAsStringSync();
+      final box = BoxRecord.create(
+        id: '00000000000000d1',
+        typeId: 'x.unregistered',
+        dataVersion: 1,
+        bounds: const Bounds(300, 300, 10, 10),
+        data: const RawJson.trusted('{"k":1}'),
+        snapshotText: 'kept edit',
+        rev: 'r',
+      );
+      nb.current!.insertBox(box);
+      file.deleteSync();
+      File(w.path('.$id.canvas.icloud')).writeAsStringSync('');
+      await nb.flush(); // its save finds a stub: the edit is kept in recovery
+      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      // A new launch, the page still a stub.
+      nb.dispose();
+      w.notebooks.remove(nb);
+      f.dispose();
+      final g = await w.relaunched(platform: CloudPlatform.ios);
+      final nb2 = w.notebook(g);
+      await nb2.load();
+      await nb2.discoveryIdle;
+      expect((await nb2.pendingRecovery()).entries, hasLength(1), reason: 'the entry stays');
+      expect(nb2.recoveryProblems, isEmpty, reason: 'waiting is not a failure');
+      expect(w.channel.callsOf('startDownloading').map((c) => '${c.args['path']}'.replaceAll(r'\', '/')), contains(file.path.replaceAll(r'\', '/')));
+      // The page arrives: the kept edit lands without another launch.
+      File(w.path('.$id.canvas.icloud')).deleteSync();
+      file.writeAsStringSync(text);
+      await w.channel.emit('changed', {'path': file.path});
+      await waitFor(() => file.readAsStringSync().contains('kept edit'), what: 'the kept edit to land');
+for (var i = 0; i < 200 && (await nb2.pendingRecovery()).entries.isNotEmpty; i++) {        await Future<void>.delayed(const Duration(milliseconds: 25));      }      expect((await nb2.pendingRecovery()).entries, isEmpty, reason: 'and its entry is retired');
+    });
+
     test('an autosave on a dataless page requests the download, keeps the edit in recovery and saves on the change event', () async {
       final f = await w.picked(platform: CloudPlatform.ios);
       final nb = w.notebook(f);
