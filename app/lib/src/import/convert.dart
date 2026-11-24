@@ -14,6 +14,7 @@ import 'docx.dart';
 import 'import_format.dart';
 import 'import_limits.dart';
 import 'import_result.dart';
+import 'sheet_blocks.dart' show SheetData, noteCellReadMax;
 import 'txt.dart';
 import 'xlsx.dart';
 
@@ -82,4 +83,61 @@ IncomingFile noteImportFile(String name, List<Map<String, Object?>> blocks, int 
   final stem = dot > 0 ? name.substring(0, dot) : name;
   final label = count > 1 ? '$stem ${index + 1}' : stem;
   return IncomingFile('$label.noted-blocks.json', Uint8List.fromList(encodeNoteBlocksFile(blocks)));
+}
+
+/// The sheets of a workbook or a csv, for drawing as images.
+final class ConvertedSheets {
+  const ConvertedSheets({this.error, this.sheets = const [], this.notices = const []});
+
+  final String? error;
+  final List<SheetData> sheets;
+  final List<String> notices;
+}
+
+/// Reads the sheets of an `.xlsx`, `.csv` or `.tsv` in an isolate, the empty
+/// ones left out.
+Future<ConvertedSheets> convertToSheets(
+  ImportFormat format,
+  String name,
+  Uint8List bytes,
+  ImportLimits limits, {
+  ImportRunner run = runInIsolate,
+}) => run(() => convertToSheetsNow(format, name, bytes, limits));
+
+/// [convertToSheets] in the calling isolate.
+ConvertedSheets convertToSheetsNow(ImportFormat format, String name, Uint8List bytes, ImportLimits limits) {
+  try {
+    final List<SheetData> all;
+    switch (format) {
+      case ImportFormat.sheet:
+        all = xlsxSheets(bytes, limits);
+      case ImportFormat.csv:
+        final tab = name.toLowerCase().endsWith('.tsv');
+        all = [csvSheet(utf8.decode(bytes, allowMalformed: true), limits, tab ? '\t' : ',')];
+      default:
+        throw const ImportException('can’t be imported as an image');
+    }
+    final rowsCut = [for (final s in all) if (s.rowsCut) s.name ?? ''];
+    final colsCut = [for (final s in all) if (s.columnsCut) s.name ?? ''];
+    String where(List<String> names) {
+      final named = names.where((n) => n.isNotEmpty).toList();
+      return named.isEmpty ? '' : ' in ${named.join(', ')}';
+    }
+
+    final parts = [
+      if (rowsCut.isNotEmpty) 'rows past ${limits.rows}${where(rowsCut)}',
+      if (colsCut.isNotEmpty) 'columns past ${limits.columns}${where(colsCut)}',
+    ];
+    final long = all.any((s) => s.rows.any((r) => r.any((c) => c.length * 3 > noteCellReadMax - 4 && utf8.encode(c).length > noteCellReadMax - 4)));
+    final sheets = [for (final s in all) if (s.rows.isNotEmpty) s];
+    if (sheets.isEmpty) throw const ImportException('has nothing to import');
+    return ConvertedSheets(
+      sheets: sheets,
+      notices: [if (parts.isNotEmpty) '"$name": left out ${parts.join('; ')}.', if (long) '"$name": long cells were shortened.'],
+    );
+  } on ImportException catch (e) {
+    return ConvertedSheets(error: e.reason);
+  } on Object {
+    return const ConvertedSheets(error: 'can’t be read');
+  }
 }

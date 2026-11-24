@@ -12,6 +12,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/app_theme.dart';
+import 'package:noted/src/import/import_flow.dart';
+import 'package:noted/src/import/import_format.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted/src/menu_bar.dart';
 import 'package:noted/src/notebook.dart';
@@ -29,6 +31,9 @@ import 'support/trouble_world.dart';
 // Step 5 of the UI follow-up: the toolbar under the menu bar, the title inside
 // the canvas column, the status strip, and the Details toggle in the menu bar.
 void main() {
+  // The drops here are about where a drop lands, not about the import dialog:
+  // a PDF asks how to import only where a renderer exists.
+  setUp(() => importCapabilities = const ImportCapabilities());
   tearDown(() => debugDefaultTargetPlatformOverride = null);
 
   Rect rect(WidgetTester t, Finder f) => t.getRect(f);

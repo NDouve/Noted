@@ -2,37 +2,32 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import 'dart:io' show FileSystemException;
+import 'dart:io' show FileSystemException, Platform;
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:noted_canvas/noted_canvas.dart';
+import 'package:noted_core/noted_core.dart' show AttachmentStorage, embedLimitBytes;
 
 import '../device_storage.dart' show isMobilePlatform;
 import 'convert.dart';
+import 'folder_store.dart';
 import 'import_dialog.dart';
 import 'import_format.dart';
+import 'import_images.dart';
 import 'import_limits.dart';
+import 'import_source.dart';
 
-/// A file offered for import. Its bytes are read only when it is used, so
-/// its size can be checked first.
-final class ImportSource {
-  const ImportSource(this.name, {required this.length, required this.read});
+export 'import_source.dart';
 
-  /// A file from a drop or the open dialog.
-  factory ImportSource.fromFile(XFile f) =>
-      ImportSource(f.name.split(RegExp(r'[\\/]')).last, length: f.length, read: f.readAsBytes);
-
-  /// The name the user sees, with its extension.
-  final String name;
-  final Future<int> Function() length;
-  final Future<Uint8List> Function() read;
-}
-
-/// What this device can render as images; the PDF and sheet images are
-/// turned on where a renderer exists. Tests change it.
-ImportCapabilities importCapabilities = const ImportCapabilities();
+/// What this device can render as images: PDF pages where a platform
+/// renderer exists (Windows, macOS, iOS, Android; not Linux), a sheet as an
+/// image everywhere. Tests change it.
+ImportCapabilities importCapabilities = ImportCapabilities(
+  pdfPages: !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isIOS || Platform.isAndroid),
+  sheetImages: true,
+);
 
 /// The limits of this device; tests change it.
 @visibleForTesting
@@ -145,6 +140,7 @@ Future<void> _runImport(
       store.notify(stopText());
       return;
     }
+    if (!context.mounted) return;
     final s = sources[i];
     final bool stopped;
     switch (choice[i]) {
@@ -154,9 +150,13 @@ Future<void> _runImport(
         stopped = await _importFile(canvas, target, s, ImportChoice.asFile.typeId, notices, stopText);
       case ImportChoice.asText || ImportChoice.asTable:
         stopped = await _importNotes(canvas, target, s, formats[i]!, limits, notices, stopText);
-      case ImportChoice.asImage || ImportChoice.pagesAsImages || ImportChoice.slidesAsImages:
-        // Stage B wires the renderers; the dialog keeps these off until then.
-        throw StateError('${choice[i]} is not available yet');
+      case ImportChoice.pagesAsImages:
+        stopped = await _importImages(context, canvas, target, s, formats[i]!, choice[i]!, limits, notices, stopText);
+      case ImportChoice.asImage when formats[i] == ImportFormat.sheet || formats[i] == ImportFormat.csv:
+        stopped = await _importImages(context, canvas, target, s, formats[i]!, choice[i]!, limits, notices, stopText);
+      case ImportChoice.asImage || ImportChoice.slidesAsImages:
+        // Word pages and slides as images stay off: no layout engine (design §4).
+        throw StateError('${choice[i]} is not available for ${formats[i]}');
     }
     if (stopped) return;
   }
@@ -207,6 +207,41 @@ void _noteFailures(ImportInsert r, String name, List<String> notices) {
     notices.add('"$n" could not be added: the page\'s folder could not be written.');
   }
   if (r.failed.isNotEmpty) notices.add('"$name" could not be added.');
+}
+
+/// Renders a PDF's pages or draws a sheet as images, all of them first, then
+/// adds one image box each, stacked down from the point. If together they are
+/// over the embed limit and the page embeds, they go to the folder (0098's
+/// notice). True if the import stopped.
+Future<bool> _importImages(
+  BuildContext context,
+  PageCanvasState canvas,
+  ImportTarget target,
+  ImportSource s,
+  ImportFormat format,
+  ImportChoice choice,
+  ImportLimits limits,
+  List<String> notices,
+  String Function() stopText,
+) async {
+  final rendered = choice == ImportChoice.pagesAsImages
+      ? await renderPdfPages(context, target, s, limits, notices, stopText)
+      : await renderSheetImages(target, s, format, limits, notices, stopText, run: importRunner);
+  if (rendered.stopped) return true;
+  if (rendered.files.isEmpty) return false;
+  final total = rendered.files.fold<int>(0, (n, f) => n + f.bytes.length);
+  final store = target.store;
+  final forced = store.storage == AttachmentStorage.embedded && total > embedLimitBytes;
+  final r = await canvas.insertImportInto(
+    target,
+    rendered.files,
+    module: ImportChoice.asImage.typeId,
+    stopNotice: stopText(),
+    storeVia: forced ? forceFolderStorage(store) : null,
+  );
+  if (r.stopped) return true;
+  _noteFailures(r, s.name, notices);
+  return false;
 }
 
 /// Converts one file to note boxes and adds them. True if the import stopped.

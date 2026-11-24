@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "pdf_render.h"
 #include "win32_window.h"
 
 // The dwData of the WM_COPYDATA a second launch sends: a UTF-16 path.
@@ -58,6 +59,9 @@ class FlutterWindow : public Win32Window {
       const flutter::MethodCall<flutter::EncodableValue>& call,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
   HWND view_hwnd_ = nullptr;
+
+  // The "noted/document_render" channel: PDF pages as images.
+  std::unique_ptr<PdfRender> pdf_render_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_
