@@ -177,4 +177,88 @@ void main() {
     await f.landVersions([att.path]);
     expect(f.versionIssues, isEmpty);
   });
+
+  group('a root that is not tested (R-1)', () {
+    // A folder access whose probe is busy until [passes] is set.
+    Future<(IcloudFolders, void Function())> untested(IcloudWorld w) async {
+      var passes = false;
+      final f = IcloudFolders(
+        channel: w.channel,
+        file: w.access,
+        platform: CloudPlatform.macos,
+        locks: w.locks,
+        coordinationTimeout: const Duration(seconds: 5),
+        versionRetryAfter: Duration.zero,
+        retryBusyAfter: Duration.zero,
+        publishProbe: (tmp, target) async {
+          if (!passes) throw StorageBusy(StorageBusyReason.coordination, [target]);
+          return publishExclusive(tmp, target);
+        },
+      );
+      w.folders.add(f);
+      await f.pick(pickDirectory: () async => w.drive.path);
+      return (f, () => passes = true);
+    }
+
+    test('nothing is written or resolved until the self-test passes; then the versions land', () async {
+      final (f, pass) = await untested(w);
+      expect(f.checkOf(w.drive.path), CloudRootCheck.busy);
+      final file = w.write('p1.canvas', 'current');
+      w.channel.addVersion(file.path, b('theirs'));
+      final before = w.names();
+      // Every entry point: a direct landing, the launch pass, the temp scan, a change event.
+      await f.landVersions([file.path]);
+      await f.landAllVersions();
+      await f.landLeftoverTemps();
+      await w.channel.emit('changed', {'path': file.path});
+      // And a pending answer: the delete is refused, its landing is skipped.
+      await expectLater(deleteFileIfMatches(file.path, bytes: b('current')), throwsA(isA<StorageBusy>()));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(w.channel.callsOf('versions'), isEmpty);
+      expect(w.channel.callsOf('resolveVersion'), isEmpty);
+      expect(w.names(), before, reason: 'no temp, no copy');
+      expect(w.channel.unresolvedOf(file.path), hasLength(1));
+      // The self-test passes at its retry: the skipped versions land.
+      pass();
+      await f.retryBusy();
+      expect(f.checkOf(w.drive.path), CloudRootCheck.passed);
+      await waitFor(() => w.channel.unresolvedOf(file.path).isEmpty, what: 'the landing');
+      expect(w.names().where((n) => n.contains('-icloud-')), hasLength(1));
+    });
+
+    test('a root whose access was lost gets nothing', () async {
+      final f = await w.picked();
+      final file = w.write('p1.canvas', 'current');
+      w.channel.addVersion(file.path, b('theirs'));
+      expect(f.mayLand(file.path), isTrue);
+      // Access lost: the bookmark resolves elsewhere at the next launch.
+      f.dispose();
+      final bm = jsonDecode(w.access.readAsStringSync())['folders'][0]['bookmark'] as String;
+      w.channel.movedTo[bm] = w.root.path;
+      final g = await w.relaunched();
+      expect(g.accessLost(file.path), isTrue);
+      await g.landVersions([file.path]);
+      expect(w.channel.callsOf('versions'), isEmpty);
+      expect(w.channel.unresolvedOf(file.path), hasLength(1));
+    });
+
+    test('a root whose self-test failed gets nothing', () async {
+      final f = IcloudFolders(
+        channel: w.channel,
+        file: w.access,
+        platform: CloudPlatform.macos,
+        locks: w.locks,
+        publishProbe: (tmp, target) async => false,
+      );
+      w.folders.add(f);
+      await f.pick(pickDirectory: () async => w.drive.path);
+      expect(f.checkOf(w.drive.path), CloudRootCheck.unsafe);
+      final file = w.write('p1.canvas', 'current');
+      w.channel.addVersion(file.path, b('theirs'));
+      await f.landVersions([file.path]);
+      await f.landAllVersions();
+      expect(w.channel.callsOf('versions'), isEmpty);
+      expect(w.channel.unresolvedOf(file.path), hasLength(1));
+    });
+  });
 }

@@ -515,21 +515,29 @@ void main() {
     });
   });
 
-  test('the notebook looks at the landed copies like any copy that arrives', () async {
+  test('the notebook looks at the landed copy: its box is merged into the page (0053)', () async {
     final f = await w.picked();
     final nb = w.notebook(f);
     await nb.load();
     final id = nb.currentId!;
     await nb.flush();
     final file = File(w.path('$id.canvas'));
-    // The other version is a real page with the same id and another title.
-    final theirs = writePage(NotedPage.create(PageMeta.create(id: id, title: 'Theirs', order: 0)));
+    // The other version is the same page with a box the page doesn't have.
+    final box = BoxRecord.create(
+      id: '00000000000000b1',
+      typeId: 'x.unregistered',
+      dataVersion: 1,
+      bounds: const Bounds(300, 300, 10, 10),
+      data: const RawJson.trusted('{"k":1}'),
+      snapshotText: 's',
+      rev: 'r',
+    );
+    final theirs = writePage(readPage(file.readAsStringSync()).insertNode(box));
+    expect(nb.current!.page.node(box.id), isNull);
     channel.addVersion(file.path, b(theirs));
     await f.landVersions([file.path]);
-    final copy = w.names().where((n) => n.contains('-icloud-'));
-    // Looked at: merged into the page and the copy retired, or still listed as a copy of it.
-    await waitFor(() => !nb.isBusy(id), what: 'the page to be free');
-    expect(copy, hasLength(1));
-    expect(nb.currentId, id);
+    expect(w.names().where((n) => n.contains('-icloud-')), hasLength(1));
+    // Only the notebook's look at the new copy can bring the box in.
+    await waitFor(() => nb.current!.page.node(box.id) != null, what: 'the copy to be merged');
   });
 }

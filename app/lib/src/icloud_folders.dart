@@ -1079,7 +1079,22 @@ class IcloudFolders extends ChangeNotifier {
     }
   }
 
+  /// Whether [path] is in a root that may be written now: its access live and
+  /// its self-test passed (R5.9). A landing writes temps and copies and
+  /// resolves versions, so none runs in a root that is untested, busy, unsafe
+  /// or whose access was lost; the versions stay unresolved and the rows as
+  /// they are.
+  bool mayLand(String path) {
+    final e = _entryFor(path);
+    if (e == null) return true;
+    final ek = _k(e.path);
+    if (_access[ek] != CloudAccess.live) return false;
+    final c = _checks[ek];
+    return c == null || c == CloudRootCheck.passed;
+  }
+
   Future<void> _landOne(String path) async {
+    if (!mayLand(path)) return;
     final k = _k(path);
     _issueTried[k] = _now();
     final VersionLanding l;
@@ -1195,6 +1210,11 @@ class IcloudFolders extends ChangeNotifier {
   Future<VersionLanding> _landLocked(String path) async {
     final k = _k(path);
     final out = VersionLanding(path);
+    // Checked again now the lock turn has begun: the root may have changed.
+    if (!mayLand(path)) {
+      out.skipped = true;
+      return out;
+    }
     if (FileSystemEntity.isDirectorySync(path)) {
       // A folder: only the temps left in it are placed.
       await _landTemps(path, out);
@@ -1494,6 +1514,8 @@ class IcloudFolders extends ChangeNotifier {
       final last = _lastTried[ek];
       if (last != null && _now().difference(last) < retryBusyAfter) continue;
       await _selfTest(e);
+      // The root is tested now: the versions skipped meanwhile are landed.
+      if (_checks[ek] == CloudRootCheck.passed) unawaited(landAllVersions());
     }
   }
 
