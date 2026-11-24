@@ -77,7 +77,7 @@ void main() {
   test('a dataless attachment is not read; the file stays as it was', () async {
     asset(name).writeAsBytesSync(good);
     expect(store.exists(name), isTrue);
-    debugDatalessAbi = Abi.macosArm64; // no lstat here: every existing file fails closed
+    debugDatalessAbi = Abi.macosX64; // no lstat$INODE64 off Apple: every existing file fails closed
     debugResetDataless();
     expect((await store.readVerified(name, size: good.length)).state, AttachmentState.syncing);
     expect(await store.read(name), isNull);

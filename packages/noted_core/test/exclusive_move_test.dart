@@ -489,7 +489,7 @@ void suite() {
 
     test('a dataless source stays where it is', () async {
       File(p('a.bin')).writeAsBytesSync([1]);
-      debugDatalessAbi = Abi.macosArm64;
+      debugDatalessAbi = Abi.macosX64; // no lstat$INODE64 off Apple: every existing file fails closed
       debugResetDataless();
       expect(await moveExclusive(p('a.bin'), p('b.bin')), MoveOutcome.busy);
       debugDatalessAbi = null;
