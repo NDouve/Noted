@@ -337,7 +337,10 @@ void main() {
       final trash = Directory('${root.path}/app/deleted-attachments');
       expect(trash.listSync(), isNotEmpty);
       nb.discardDeleted(deleted);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      // The removal runs in the background: wait for it (a slow runner needs longer than a fixed pause).
+      for (var i = 0; i < 100 && trash.listSync().isNotEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
       expect(trash.listSync(), isEmpty);
     });
 

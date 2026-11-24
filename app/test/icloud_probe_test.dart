@@ -58,6 +58,8 @@ void main() {
     channel.ubiquitous.add(real);
   }
 
+  List<Object?> entriesOnDisk() => (jsonDecode(access.readAsStringSync()) as Map)['folders'] as List;
+
   Map<String, Object?> record() => (jsonDecode(access.readAsStringSync()) as Map)['folders'][0] as Map<String, Object?>;
 
   setUp(() async {
@@ -383,12 +385,23 @@ void main() {
     });
 
     test('a failed probe leaves the root read-only for the session', () async {
+      // The root is a retained location (a listed binder), as in use; an entry no
+      // location needs is pruned after the load, which also lets its root go.
+      final bdir = Directory('${drive.path}/Work')..createSync();
+      binders.parent.createSync(recursive: true);
       recordEntry();
+      final seed = Notebook(PageStore(pages), buildModules(), bindersFile: binders);
+      await seed.load();
+      await seed.addBinder(bdir.path);
+      await seed.flush();
+      seed.dispose();
       final f = make(publish: (t, p) async => throw const FileSystemException('no'));
       final nb = open(f);
       await nb.loadChecked();
+      await nb.cloudAccessIdle;
       expect(f.checkOf(drive.path), CloudRootCheck.unsafe);
-      await expectLater(nb.createPage(folderPath: drive.path), throwsA(isA<NotebookException>()));
+      expect(entriesOnDisk(), hasLength(1), reason: 'in use, so kept');
+      await expectLater(nb.createPage(binderPath: bdir.path), throwsA(isA<NotebookException>()));
     });
   });
 }
