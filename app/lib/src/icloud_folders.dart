@@ -336,6 +336,7 @@ class IcloudFolders extends ChangeNotifier {
     Duration coordinationTimeout = coordinationStartTimeout,
     this.retryBusyAfter = const Duration(minutes: 1),
     this.ownFolders = const [],
+    this.publishProbe = _publishProbe,
     DateTime Function()? now,
   }) : _channel = channel,
        _now = now ?? DateTime.now {
@@ -357,6 +358,10 @@ class IcloudFolders extends ChangeNotifier {
 
   /// Folders inside the app's own storage, which need no bookmark.
   final List<String> ownFolders;
+
+  /// Publishes the probe file; a seam for tests (a failing publish).
+  @visibleForTesting
+  final Future<bool> Function(File tmp, String target) publishProbe;
   final DateTime Function() _now;
 
   late final ChannelCoordinator coordinator;
@@ -792,7 +797,7 @@ class IcloudFolders extends ChangeNotifier {
       await part.writeAsBytes(nonce, flush: true);
       final bool published;
       try {
-        published = await publishExclusive(part, target);
+        published = await publishProbe(part, target);
       } on StorageBusy {
         await _dropTemp(part, nonce);
         rethrow;
@@ -976,3 +981,5 @@ class IcloudFolders extends ChangeNotifier {
     super.dispose();
   }
 }
+
+Future<bool> _publishProbe(File tmp, String target) => publishExclusive(tmp, target);

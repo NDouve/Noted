@@ -2377,7 +2377,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _listSettled = false;
     await _binderSeam('settings-loaded', settingsFile?.path ?? '');
     // The hold lifted and both files read: unused folder access is pruned (R5.3).
-    if (icloud != null && _settingsHeld == null) unawaited(_pruneCloudAccess());
+    if (icloud != null && _settingsHeld == null) _cloudWork = _cloudWork.then((_) => _pruneCloudAccess());
     // Binders other devices made are looked for once the notebook is shown;
     // found binders are added in their own jobs, never inside startup.
     unawaited(discoverBinders());
@@ -14531,6 +14531,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Folder access (R5.3) -------------------------------------------------------
 
+  Future<void> _cloudWork = Future<void>.value();
+
+  /// Completes when the folder-access pruning and releases started so far are done.
+  @visibleForTesting
+  Future<void> get cloudAccessIdle => _cloudWork;
+
   // Every storage location the notebook keeps: the binder folders, the standalone
   // folders (binders.json), the default page and binder folders (settings.json).
   // The folder access of a location, or of an ancestor of one, is never pruned.
@@ -14558,7 +14564,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   void _cloudReleased(String path) {
     final access = icloud;
     if (access == null) return;
-    unawaited(access.released(path, _retainedLocations()));
+    final retained = _retainedLocations();
+    _cloudWork = _cloudWork.then((_) => access.released(path, retained)).catchError((Object e) => debugPrint('Releasing folder access failed: $e'));
   }
 
   // Folders that come and go -------------------------------------------------
