@@ -831,6 +831,26 @@ void main() {
     },
   );
 
+  group('a page file that is not downloaded (R5.5)', () {
+    test('the save asks for the download, keeps the edit in recovery and says why; Retry lands it', () async {
+      final nb = w.make();
+      final asked = <String>[];
+      nb.requestDownload = asked.add;
+      final id = await w.editedPage(nb);
+      final path = w.pageFile(id).path;
+      w.storeFor(w.pages).failWith = StorageBusy(StorageBusyReason.dataless, [path]);
+      await nb.flush();
+      expect(asked, [path]);
+      expect(nb.trouble.kind, TroubleKind.failing);
+      expect(nb.trouble.reason, 'the page file is still downloading');
+      expect(nb.current!.readOnly, isFalse);
+      expect((await nb.pendingRecovery()).entries, hasLength(1));
+      w.storeFor(w.pages).failWith = null;
+      await nb.retrySave();
+      expect(nb.trouble.isTrouble, isFalse);
+    });
+  });
+
   group('quitting', () {
     test('a save stuck on the drive does not hold up quitting; the edits are in recovery', () async {
       final nb = w.make();

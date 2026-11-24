@@ -1842,6 +1842,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// opening it gives the preview.
   bool isBusy(String id) => _busy.containsKey(id);
 
+  /// Asks the platform to download the file at the path (the page file a save
+  /// found not downloaded). A no-op until the Apple channel exists (cloud
+  /// parity step 5); the save is kept in recovery and tried again meanwhile.
+  void Function(String path)? requestDownload;
+
   /// Test seam: called at named points of a conflict-copy merge (`copy-merged`
   /// just before the copy is revalidated for deletion, `original-read` just
   /// before the original is revalidated for replacing; `closed-reread` and
@@ -9793,6 +9798,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         } on FolderUnavailableException {
           return await _saveFailed(loc, st, toSave, savedSeq, session, folderGone: true);
         } on FileSystemException catch (e) {
+          if (e is StorageBusy && e.reason == StorageBusyReason.dataless) {
+            // The page file is not downloaded (R5.5): ask for it and keep the
+            // edit in recovery (the bar says why). The backoff and the file's
+            // change event try the save again.
+            for (final p in e.paths) {
+              requestDownload?.call(p);
+            }
+            return await _saveFailed(loc, st, toSave, savedSeq, session, error: e, reason: 'the page file is still downloading');
+          }
           // The folder may have vanished during the write.
           final folderGone = !await st.directory.exists();
           return await _saveFailed(loc, st, toSave, savedSeq, session, error: e, folderGone: folderGone);
