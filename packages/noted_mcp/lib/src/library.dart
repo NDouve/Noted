@@ -433,6 +433,12 @@ final class NotedLibrary {
     }
   }
 
+  /// The bytes of [path] as [identity] reads them, or null when the file is
+  /// not downloaded (it is not read: a read would download it) or can't be
+  /// read. The re-check of recorded sources reads only through this.
+  static Future<List<int>?> readSource(LockIdentity identity, String path) async =>
+      isDataless(path) ? null : await identity.readBytes(path);
+
   static Future<Binder?> _readBinder(
     LockIdentity identity,
     Directory dir,

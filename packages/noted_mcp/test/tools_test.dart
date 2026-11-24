@@ -339,9 +339,24 @@ E = mc^2
         debugDatalessAbi = null;
         debugResetDataless();
       });
-      if (Platform.isMacOS) return; // a real lstat exists: nothing fails
       final lib = await NotedLibrary.load(dataDir);
       expect(lib.pages, isEmpty);
-    });
+    }, skip: Platform.isMacOS ? 'a real lstat exists: nothing fails closed' : null);
+
+    test('the re-check of a recorded source never reads a file that is not downloaded', () async {
+      final file = File(pagesPath('${Ids.public}.canvas'));
+      final identity = await LockIdentity.of(dataDir);
+      expect(await NotedLibrary.readSource(identity, file.path), isNotNull);
+      debugDatalessAbi = Abi.macosArm64;
+      debugResetDataless();
+      addTearDown(() {
+        debugDatalessAbi = null;
+        debugResetDataless();
+      });
+      // Every existing file counts as not downloaded: nothing is read.
+      expect(await NotedLibrary.readSource(identity, file.path), isNull);
+      // A file that does not exist stays null too, as readBytes says.
+      expect(await NotedLibrary.readSource(identity, pagesPath('nope.canvas')), isNull);
+    }, skip: Platform.isMacOS ? 'a real lstat exists: nothing fails closed' : null);
   });
 }

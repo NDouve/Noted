@@ -1199,12 +1199,13 @@ void main() {
     });
 
     // Every existing file counts as dataless: the lookup can't be made here.
-    bool failClosed() {
-      if (Platform.isMacOS) return false;
+    void failClosed() {
       debugDatalessAbi = Abi.macosArm64;
       debugResetDataless();
-      return true;
     }
+
+    const noLstat = 'a real lstat exists: nothing fails closed';
+    final skipOnMac = Platform.isMacOS ? noLstat : null;
 
     List<String> names() => folder.listSync().map((e) => e.path.split(RegExp(r'[\\/]')).last).toList()..sort();
 
@@ -1218,16 +1219,15 @@ void main() {
 
     test('a dataless target is busy before any read, and nothing is written', () async {
       final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
-      if (!failClosed()) return;
+      failClosed();
       expect(await w.replacePage(f.path, expected: old, text: fresh), PageReplace.busy);
       expect(names(), ['p.canvas']);
       debugDatalessAbi = null;
       expect(f.readAsStringSync(), 'old');
-    });
+    }, skip: skipOnMac);
 
     test('a dataless aside is put back, then busy', () async {
       final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
-      if (Platform.isMacOS) return;
       // Fine at the first look; dataless once it is set aside.
       w.beforeAside = () async {
         debugDatalessAbi = Abi.macosArm64;
@@ -1238,7 +1238,7 @@ void main() {
       debugDatalessAbi = null;
       expect(names(), ['p.canvas']);
       expect(f.readAsStringSync(), 'old');
-    });
+    }, skip: skipOnMac);
 
     test('an ordinary replace still drops its aside', () async {
       final f = File('${folder.path}/p.canvas')..writeAsStringSync('old');
