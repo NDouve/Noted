@@ -146,6 +146,49 @@ void main() {
       expect(nb.unreadable.where((u) => u.reason == 'Still downloading'), isEmpty);
     });
 
+    test('copies beside a page that is only a stub are copies of it: the page stays listed, no duplicate, and the copies merge when it arrives', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      await externalPage('gone1');
+      final nb = w.notebook(f);
+      await nb.load();
+      expect(ids(nb), contains('gone1'));
+      final file = File(w.path('gone1.canvas'));
+      final text = file.readAsStringSync();
+      final box = BoxRecord.create(
+        id: '00000000000000c1',
+        typeId: 'x.unregistered',
+        dataVersion: 1,
+        bounds: const Bounds(300, 300, 10, 10),
+        data: const RawJson.trusted('{"k":1}'),
+        snapshotText: 'from the copy',
+        rev: 'r',
+      );
+      final copyText = writePage(readPage(text).insertNode(box));
+      // The file is evicted; its copies (a replace's leftover that was kept, a landed version) are there.
+      file.deleteSync();
+      File(w.path('.gone1.canvas.icloud')).writeAsStringSync('');
+      final copies = [
+        File(w.path('gone1-recovered-0a1b2c3d.canvas'))..writeAsStringSync(copyText),
+        File(w.path('gone1-icloud-4d5e6f70.canvas'))..writeAsStringSync(copyText),
+      ];
+      for (final c in copies) {
+        await w.channel.emit('changed', {'path': c.path});
+        await nb.checkFile(c.path);
+      }
+      expect(ids(nb), contains('gone1'), reason: 'the page is not replaced by a copy, nor dropped');
+      expect(nb.unreadable.where((u) => u.reason.startsWith('duplicate page id')), isEmpty);
+      expect(nb.unreadable.where((u) => u.reason == PageStore.copyOfDatalessReason), hasLength(2));
+      expect(copies.every((c) => c.existsSync()), isTrue, reason: 'nothing is merged into a file that is not there');
+      // The file arrives: the copies merge into it and go.
+      File(w.path('.gone1.canvas.icloud')).deleteSync();
+      file.writeAsStringSync(text);
+      await w.channel.emit('changed', {'path': file.path});
+      await waitFor(() => copies.every((c) => !c.existsSync()), what: 'the copies to merge');
+      expect(ids(nb), contains('gone1'));
+      expect(nb.unreadable, isEmpty);
+      expect(readPage(file.readAsStringSync()).node(box.id), isNotNull, reason: 'the copy\'s box is on the page');
+    });
+
     test('an autosave on a dataless page requests the download, keeps the edit in recovery and saves on the change event', () async {
       final f = await w.picked(platform: CloudPlatform.ios);
       final nb = w.notebook(f);

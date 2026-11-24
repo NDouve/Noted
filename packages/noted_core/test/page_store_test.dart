@@ -457,6 +457,30 @@ void main() {
       expect(entries.single, isA<ReadablePage>());
     });
 
+    test('copies beside a stub-only original are copies of it, never the page', () async {
+      final text = writePage(NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0)));
+      File('${dir.path}/.p1.canvas.icloud').writeAsStringSync('');
+      File('${dir.path}/p1-recovered-0a1b2c3d.canvas').writeAsStringSync(text);
+      File('${dir.path}/p1-icloud-4d5e6f70.canvas').writeAsStringSync(text);
+      File('${dir.path}/p1 2.canvas').writeAsStringSync(text);
+      final entries = await PageStore(dir).scan();
+      expect(entries.whereType<ReadablePage>(), isEmpty, reason: 'no copy is taken for the page');
+      expect(entries.whereType<UnreadablePage>().where((u) => u.reason == stillDownloading).single.path, endsWith('p1.canvas'));
+      final waiting = entries.whereType<UnreadablePage>().where((u) => u.reason == PageStore.copyOfDatalessReason);
+      expect(waiting.map((u) => u.path.split(RegExp(r'[\\/]')).last).toSet(), {
+        'p1-recovered-0a1b2c3d.canvas',
+        'p1-icloud-4d5e6f70.canvas',
+        'p1 2.canvas',
+      });
+      // When the file arrives it is the page and the copies are its copies.
+      File('${dir.path}/.p1.canvas.icloud').deleteSync();
+      File('${dir.path}/p1.canvas').writeAsStringSync(text);
+      final after = await PageStore(dir).scan();
+      expect(after.whereType<ReadablePage>().single.path, endsWith('p1.canvas'));
+      expect(after.whereType<ConflictCopyPage>(), hasLength(3));
+      expect(after.whereType<UnreadablePage>(), isEmpty);
+    });
+
     test('a dataless page file is listed, not read', () async {
       final text = writePage(NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0)));
       File('${dir.path}/p1.canvas').writeAsStringSync(text);

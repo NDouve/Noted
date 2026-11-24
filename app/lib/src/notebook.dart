@@ -12527,6 +12527,30 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!_disposed && list.any((p) => p.contains('.assets'))) _attachments?.filesChanged();
   }
 
+  // The copies listed as waiting for the page file [path] (it was not
+  // downloaded when they were looked at) are looked at again now it is there.
+  Future<void> _recheckCopiesWaitingFor(String path) async {
+    final name = path.split(RegExp(r'[\/]')).last;
+    final lists = [
+      _unreadable,
+      for (final f in _folders.values) f.unreadable,
+      for (final b in _binders.values) b.unreadable,
+    ];
+    final waiting = <String>[
+      for (final list in lists)
+        for (final u in list)
+          if (u.reason == PageStore.copyOfDatalessReason &&
+              conflictCopyOriginalNames(u.path.split(RegExp(r'[\/]')).last).contains(name))
+            u.path,
+    ];
+    for (final p in waiting) {
+      if (_disposed) return;
+      _known.remove(_key(p));
+      _fileStamps.remove(_key(p));
+      await checkFile(p);
+    }
+  }
+
   Future<void> _fileChanged(String path) async {
     if (_isBinderCopyFile(path)) {
       await refreshBinderCopies(File(path).parent.path);
@@ -12540,6 +12564,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final key = _key(path);
     final id = _pathId[key];
     await checkFile(path);
+    // The file is there: the copies that waited for it as their original are
+    // looked at again.
+    if (!_disposed && !isDataless(path)) await _recheckCopiesWaitingFor(path);
     if (_disposed || id == null) return;
     if (await FileSystemEntity.type(path) != FileSystemEntityType.notFound) return;
     // The file is gone: the files listed as duplicates of its page are looked
@@ -13523,7 +13550,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       return false;
     }
     var originalPath = await PageStore.findConflictOriginal(path, copy, preferred: _adoptedFiles[copy.id]);
-    if (originalPath == null) return false;
+    if (originalPath == null) {
+      // Named as a copy of a file that is there but not downloaded: that file
+      // is the original (R5.5), so this is a copy that waits for it, not a page.
+      if (PageStore.hasDatalessOriginal(path)) {
+        _known.remove(key);
+        _knownUnreadable(loc, key, path, PageStore.copyOfDatalessReason);
+        return true;
+      }
+      return false;
+    }
     // The file it copies is listed as a duplicate (another file with its id
     // was chosen): merging would land in a file the copy is not of. It is left
     // for later.
