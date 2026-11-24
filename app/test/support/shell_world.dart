@@ -11,11 +11,13 @@ import 'package:noted/main.dart';
 import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/menu_bar.dart';
 import 'package:noted/src/notebook.dart';
+import 'package:noted/src/page_attachments.dart';
 import 'package:noted/src/window_channel.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'real_io.dart';
 import 'settle_saves.dart';
 
 /// The app window over a real notebook in a temp folder, for the menu bar,
@@ -92,6 +94,7 @@ class ShellWorld {
   Future<void> close(WidgetTester t) async {
     await t.pumpWidget(const SizedBox());
     await settleSaves(t, nb);
+    await settleAttachmentChecks(t, nb.attachments);
     await t.runAsync(() async {
       nb.dispose();
       // A file check still reading an attachment holds the folder on Windows
@@ -217,4 +220,18 @@ final Finder noteEditorFinder = find.byWidgetPredicate(
 String? noteSelection(WidgetTester t) {
   final editor = t.widget(noteEditorFinder) as dynamic;
   return editor.editorState.selection?.toString();
+}
+
+/// Waits until [attachments] has no file check running (a check reads an
+/// asset file; deleting the folder meanwhile fails on Windows).
+Future<void> settleAttachmentChecks(
+  WidgetTester t,
+  PageAttachments? attachments, {
+  Duration limit = const Duration(seconds: 20),
+}) async {
+  final clock = Stopwatch()..start();
+  while (attachments != null && attachments.pendingChecks > 0) {
+    if (clock.elapsed > limit) fail('${attachments.pendingChecks} attachment checks did not finish within $limit.');
+    await t.runAsync(() => realIoPause(20));
+  }
 }

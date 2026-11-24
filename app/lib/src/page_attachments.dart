@@ -370,6 +370,26 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     required bool keepBytes,
     bool pageFolderOnly = false,
   }) async {
+    _checks++;
+    try {
+      return await _checkNow(fileName, size, keepBytes: keepBytes, pageFolderOnly: pageFolderOnly);
+    } finally {
+      _checks--;
+    }
+  }
+
+  /// How many checks of folder files are running now (tests wait for none
+  /// before they delete the folder).
+  @visibleForTesting
+  int get pendingChecks => _checks;
+  int _checks = 0;
+
+  Future<VerifiedAttachment> _checkNow(
+    String fileName,
+    int size, {
+    required bool keepBytes,
+    bool pageFolderOnly = false,
+  }) async {
     if (!isAttachmentFileName(fileName)) return const VerifiedAttachment(AttachmentState.syncing);
     // The name was checked above, so it is a hash name.
     final hash = attachmentNameHash(fileName)!;
