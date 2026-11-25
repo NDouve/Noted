@@ -1457,7 +1457,11 @@ List<String> _plan(_Sim s) {
   return plan;
 }
 
-Future<void> _sequence(int seed, {void Function(_Sim)? setUp}) async {
+Future<void> _sequence(
+  int seed, {
+  void Function(_Sim)? setUp,
+  List<String>? plan,
+}) async {
   final s = _Sim(seed);
   setUp?.call(s);
   final recorder = _Recorder(s);
@@ -1467,7 +1471,7 @@ Future<void> _sequence(int seed, {void Function(_Sim)? setUp}) async {
         await s.boot();
         s.armed = true;
         Future<void> run() async {
-          for (final op in _plan(s)) {
+          for (final op in plan ?? _plan(s)) {
             await s.step(op);
             if (s.snapshot != null) await s.crash();
           }
@@ -1629,7 +1633,10 @@ void main() {
     // aside) between the listing and the copies of a `replace:beforeMoveAside`
     // kill.
     group('a rename landing between the snapshot\'s listing and its copies', () {
-      for (final seed in const [7, 20, 33]) {
+      // A minimal plan, not the random one: one page, edits whose first replace
+      // is the killed one, so the listing holds the page and the seam fires
+      // whatever background work a slow runner interleaves.
+      for (final seed in const [7]) {
         for (final faithful in [true, false]) {
           test(
             'seed $seed, ${faithful ? 'the snapshot looks again' : 'the old snapshot (loses the page)'}',
@@ -1641,6 +1648,7 @@ void main() {
                 setUp: (s) {
                   sim = s;
                   s.faithfulSnapshot = faithful;
+                  s.killNth = 1;
                   s.copyGap = (from, listed) {
                     final t = s.replaceTarget;
                     if (landed || t == null) return;
@@ -1649,6 +1657,7 @@ void main() {
                     File(t).renameSync('$t.ab12cd$asideSuffix');
                   };
                 },
+                plan: const ['appEdit', 'appEdit', 'appCheck', 'appEdit'],
               );
               if (faithful) {
                 await run();
