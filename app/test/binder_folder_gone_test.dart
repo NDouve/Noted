@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -53,10 +54,15 @@ void main() {
   File binderFile() => File('${folder.path}/$binderFileName');
   File pageFile(String id) => File('${folder.path}/$id.canvas');
 
-  Future<void> until(bool Function() ok, {int ms = 5000, String what = 'condition'}) async {
+  Future<void> until(
+    bool Function() ok, {
+    int ms = 5000,
+    String what = 'condition',
+    String Function()? state,
+  }) async {
     final end = DateTime.now().add(Duration(milliseconds: ms));
     while (!ok()) {
-      if (DateTime.now().isAfter(end)) fail('$what not reached in time');
+      if (DateTime.now().isAfter(end)) fail('$what not reached in time${state == null ? '' : ' (${state()})'}');
       await Future<void>.delayed(const Duration(milliseconds: 20));
     }
   }
@@ -168,7 +174,26 @@ void main() {
     await second.open(d.page);
     second.current!.createBoxAt(const Bounds(300, 300, 0, 0));
     await second.flush();
-    await until(() => nb.binders.single.available, ms: 15000, what: 'the binder back');
+    // The folder timer looks every 100 ms; on a slow runner one look can meet
+    // the other instance's writes in the folder (seen once on CI, not
+    // reproduced in 120 local runs). Ask again while waiting, as the timer
+    // would, with a longer limit, and say what state the binder was in if it
+    // still fails.
+    var asked = 0;
+    await until(
+      () {
+        final b = nb.binders.single;
+        if (b.available) return true;
+        if (++asked % 10 == 0) unawaited(nb.checkFolders());
+        return false;
+      },
+      ms: 30000,
+      what: 'the binder back',
+      state: () {
+        final b = nb.binders.single;
+        return 'status ${b.status}, missing ${b.missing}, reason ${b.reason}';
+      },
+    );
     await until(() => nb.current!.page.nodes.length == 2, ms: 15000, what: 'the change merged');
     expect(nb.current!.readOnly, isFalse);
   });
