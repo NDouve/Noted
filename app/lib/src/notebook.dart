@@ -12143,9 +12143,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   @visibleForTesting
   void setKnownTextForTest(String path, String text) => _known[_key(path)] = text;
 
-  @visibleForTesting
-  bool knowsFileForTest(String path) => _known.containsKey(_key(path)) || _pathId.containsKey(_key(path));
-
   /// Scans the folder of location [loc] through the folder lock, as the
   /// notebook's own scans do.
   @visibleForTesting

@@ -100,8 +100,6 @@ final class AiCodeTarget {
     ...extra,
   };
 
-  bool sameTarget(AiCodeTarget other) => other.kindName == kindName && other.id == id;
-
   @override
   bool operator ==(Object other) =>
       other is AiCodeTarget && other.kindName == kindName && other.id == id && other.page == page;
