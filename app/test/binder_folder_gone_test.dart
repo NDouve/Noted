@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -174,19 +173,12 @@ void main() {
     await second.open(d.page);
     second.current!.createBoxAt(const Bounds(300, 300, 0, 0));
     await second.flush();
-    // The folder timer looks every 100 ms; on a slow runner one look can meet
-    // the other instance's writes in the folder (seen once on CI, not
-    // reproduced in 120 local runs). Ask again while waiting, as the timer
-    // would, with a longer limit, and say what state the binder was in if it
-    // still fails.
-    var asked = 0;
+    // Seen once on CI, not reproduced in 120 local runs. The folder timer
+    // alone must bring the binder back (no extra checks here, so a binder
+    // stuck neither missing nor available still fails); a failure says what
+    // state the binder was in.
     await until(
-      () {
-        final b = nb.binders.single;
-        if (b.available) return true;
-        if (++asked % 10 == 0) unawaited(nb.checkFolders());
-        return false;
-      },
+      () => nb.binders.single.available,
       ms: 30000,
       what: 'the binder back',
       state: () {
