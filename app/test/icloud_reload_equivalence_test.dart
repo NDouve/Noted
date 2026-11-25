@@ -1600,7 +1600,7 @@ void _windowsFolderTests() {
             for (final n in made) {
               n.dispose();
             }
-            await deleteTestFolder(root, notebooks: made);
+            await deleteTestFolder(root);
           }
         },
       );
