@@ -42,6 +42,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart' show buildModules;
 import 'package:noted/src/app_settings.dart';
@@ -282,9 +283,10 @@ class _Sim {
   // and not finished yet: when a marker is lost, what touched its file is in
   // the failure's text. It sees what goes through `IOOverrides` (`File` and
   // `Directory` calls) and the primitives' FFI publishes and restores (noted by
-  // `_Store`'s hooks); it does not see `stat`, `exists`, `typeSync`, `length`,
-  // `setLastModified`, `Directory.create`, writes through a `RandomAccessFile`
-  // or listings of a plain directory.
+  // `_Store`'s hooks); it does not see the FFI calls of `_keepAsConflictCopy`,
+  // `_keepForDelete` and the sweep's `_sweepNamed`, nor `stat`, `exists`,
+  // `typeSync`, `length`, `setLastModified`, `Directory.create`, writes through
+  // a `RandomAccessFile` or listings of a plain directory.
   final Queue<({int id, String line})> trail = Queue();
   final Map<int, String> inflight = {};
   final Stopwatch _clock = Stopwatch()..start();
@@ -306,7 +308,7 @@ class _Sim {
 
   // Outside the world: the last two segments only.
   String _short(String p) {
-    final parts = p.split(RegExp(r'[\/]')).where((s) => s.isNotEmpty).toList();
+    final parts = p.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).toList();
     return parts.length <= 2 ? p : '.../${parts.sublist(parts.length - 2).join('/')}';
   }
 
@@ -381,8 +383,6 @@ class _Sim {
     return hits.length <= last ? hits : hits.sublist(hits.length - last);
   }
 
-  /// Whether the trail saw a read of a file of the drive since [from] lines.
-  bool sawDriveOp(String op) => trail.any((t) => t.line.contains(' $op Drive/'));
   int coordCalls = 0;
   int _segChannel = 0;
   int _segCoord = 0;
@@ -433,35 +433,74 @@ class _Sim {
   /// one of its two names. False only for the test that shows what the gap does.
   bool faithfulSnapshot = true;
 
+  void _said(String what, String text) {
+    log.add('$what: $text');
+    debugPrint('[snapshot-race] seed $seed $killKind: $what: $text');
+  }
+
   void _copyTree(Directory from, Directory to, {required Set<String> skip, String what = 'snapshot'}) {
     final copied = <String>{};
-    for (var pass = 0; pass < 6; pass++) {
-      final listed = from.listSync(followLinks: false);
-      if (pass == 0) copyGap?.call(from, listed);
-      var vanished = false;
-      for (final e in listed) {
-        final name = e.uri.pathSegments.where((s) => s.isNotEmpty).last;
-        if (skip.contains(name) || copied.contains(name)) continue;
-        if (e is Directory) {
-          copied.add(name);
-          final d = Directory('${to.path}/$name')..createSync();
-          _copyTree(e, d, skip: {}, what: what);
-        } else if (e is File) {
-          try {
-            e.copySync('${to.path}/$name');
-            copied.add(name);
-          } on FileSystemException {
-            // A temp that went away while it was copied is no loss; any other
-            // file is said, and its new name is looked for.
-            if (!_isTemp(name)) {
-              log.add('$what: $name vanished while copied');
-              vanished = true;
-            }
-            copied.add(name);
+    final first = <String>{};
+    var vanished = 0;
+    void copyOne(File e, String name) {
+      for (var attempt = 0; ; attempt++) {
+        try {
+          e.copySync('${to.path}/$name');
+          return;
+        } on FileSystemException {
+          if (_isTemp(name)) return; // a temp that went away is no loss
+          if (!e.existsSync()) {
+            vanished++;
+            _said(what, '$name vanished while copied');
+            return;
           }
+          // Still there: held by someone for a moment (a sharing violation).
+          if (attempt >= 3) {
+            _said(what, '$name busy, not copied');
+            return;
+          }
+          sleep(const Duration(milliseconds: 5));
         }
       }
-      if (!vanished || !faithfulSnapshot) return;
+    }
+
+    final listed = from.listSync(followLinks: false);
+    copyGap?.call(from, listed);
+    for (final e in listed) {
+      final name = e.uri.pathSegments.where((s) => s.isNotEmpty).last;
+      first.add(name);
+      if (skip.contains(name)) continue;
+      if (e is Directory) {
+        final d = Directory('${to.path}/$name')..createSync();
+        _copyTree(e, d, skip: {}, what: what);
+      } else if (e is File) {
+        copyOne(e, name);
+        copied.add(name);
+      }
+    }
+    // A rename is atomic: a crash keeps the file under one of its names. For
+    // each file that vanished, the name it moved to is looked for: only names
+    // that were not in the first listing, no more than the files that went,
+    // and not a content already copied (a rename of a file that was copied).
+    for (var pass = 0; pass < 5 && vanished > 0 && faithfulSnapshot; pass++) {
+      final have = {
+        for (final c in to.listSync(followLinks: false))
+          if (c is File) base64Encode(c.readAsBytesSync()),
+      };
+      for (final e in from.listSync(followLinks: false)) {
+        if (vanished <= 0) break;
+        final name = e.uri.pathSegments.where((s) => s.isNotEmpty).last;
+        if (e is! File || first.contains(name) || copied.contains(name) || skip.contains(name)) continue;
+        copied.add(name);
+        try {
+          if (have.contains(base64Encode(e.readAsBytesSync()))) continue;
+        } on FileSystemException {
+          continue;
+        }
+        final before = vanished;
+        copyOne(e, name);
+        if (vanished == before) vanished--;
+      }
     }
   }
 
