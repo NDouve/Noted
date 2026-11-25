@@ -65,7 +65,31 @@ abstract class CloudSync extends ChangeNotifier with WidgetsBindingObserver {
     required this.pollOpen,
     required this.pollIdle,
     DateTime Function()? now,
-  }) : _now = now ?? DateTime.now;
+  }) : _now = now ?? DateTime.now {
+    assert(liveForTest.add(this)); // debug and test builds only
+  }
+
+  /// The syncs built and not yet settled by a test (see
+  /// `test/support/notebook_folder.dart`). Filled in debug and test builds only.
+  @visibleForTesting
+  static final Set<CloudSync> liveForTest = {};
+
+  int _evaluating = 0;
+
+  @visibleForTesting
+  bool get disposedForTest => _disposed;
+
+  /// What this sync still has running, or null when idle: a pull round or an
+  /// evaluation. A disposed sync's round keeps going and may write into
+  /// [workingRoot], so a test waits for null before it deletes the folder.
+  @visibleForTesting
+  String? get inFlightForTest {
+    final parts = [
+      if (_current != null) 'a pull round running',
+      if (_evaluating > 0) 'an evaluation running',
+    ];
+    return parts.isEmpty ? null : parts.join('; ');
+  }
 
   final Notebook notebook;
 
@@ -208,7 +232,10 @@ abstract class CloudSync extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   @protected
-  Future<void> evaluate() => _queue = _queue.then((_) => doEvaluate());
+  Future<void> evaluate() {
+    _evaluating++;
+    return _queue = _queue.then((_) => doEvaluate()).whenComplete(() => _evaluating--);
+  }
 
   /// Stops the runner and its timer; what the choice held is the provider's to clear.
   @protected

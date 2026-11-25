@@ -5,6 +5,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:noted/src/cloud_sync.dart';
 import 'package:noted/src/notebook.dart';
 
 import 'busy_retry.dart';
@@ -24,6 +25,8 @@ import 'real_io.dart';
 /// settled and disposed. A notebook is related when its page folder or its
 /// binders file is inside [dir].
 List<Notebook> notebooksIn(Directory dir) {
+  // A disposed notebook with nothing running needs no more watching.
+  Notebook.liveForTest.removeWhere((n) => n.disposedForTest && n.inFlightForTest == null);
   final top = _norm(dir.absolute.path);
   bool inside(String path) {
     final p = _norm(File(path).absolute.path);
@@ -41,11 +44,25 @@ String _norm(String path) {
   return Platform.isWindows ? p.toLowerCase() : p;
 }
 
-/// What [notebooks] have in flight (null: nothing).
-String? inFlightOf(Iterable<Notebook> notebooks) {
+/// The cloud syncs (OneDrive, WebDAV) whose working copies are in [dir]. A
+/// disposed sync's round keeps running and may still write there.
+List<CloudSync> syncsIn(Directory dir) {
+  CloudSync.liveForTest.removeWhere((c) => c.disposedForTest && c.inFlightForTest == null);
+  final top = _norm(dir.absolute.path);
+  return [
+    for (final c in CloudSync.liveForTest)
+      if (_norm(c.workingRoot.absolute.path).startsWith(top)) c,
+  ];
+}
+
+/// What [notebooks] (and the [syncs] beside them) have in flight (null:
+/// nothing).
+String? inFlightOf(Iterable<Notebook> notebooks, [Iterable<CloudSync> syncs = const []]) {
   final parts = <String>[
     for (final n in notebooks)
       ?n.inFlightForTest,
+    for (final c in syncs)
+      ?c.inFlightForTest,
   ];
   return parts.isEmpty ? null : parts.join(' | ');
 }
@@ -75,7 +92,7 @@ Future<void> settleNotebooks({
   var quiet = 0;
   while (true) {
     final list = notebooks?.toList() ?? notebooksIn(under!);
-    final busy = inFlightOf(list);
+    final busy = inFlightOf(list, under == null ? const [] : syncsIn(under));
     if (busy == null) {
       if (++quiet >= 2) break;
     } else {
@@ -91,9 +108,6 @@ Future<void> settleNotebooks({
       await realIoPause(busy == null ? 10 : 30);
     }
   }
-  // Settled: a disposed notebook needs no more watching.
-  final done = notebooks?.toList() ?? notebooksIn(under!);
-  Notebook.liveForTest.removeWhere((n) => n.disposedForTest && done.contains(n));
 }
 
 /// Settles the notebooks in [dir], then deletes it. A delete that still fails
@@ -106,7 +120,7 @@ Future<void> settleNotebooks({
 /// saves started in the fake zone.
 Future<void> deleteTestFolder(Directory dir, {Iterable<Notebook>? notebooks}) async {
   final own = (notebooks ?? notebooksIn(dir)).toList();
-  await settleNotebooks(notebooks: own);
+  await settleNotebooks(notebooks: own, under: dir);
   try {
     if (dir.existsSync()) await busyRetry(() => dir.delete(recursive: true));
   } on FileSystemException catch (e) {

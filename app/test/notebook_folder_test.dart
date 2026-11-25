@@ -11,6 +11,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/notebook_folder.dart';
+import 'support/real_io.dart';
 
 void main() {
   late Directory root;
@@ -49,6 +50,66 @@ void main() {
     hold.complete();
     await settleNotebooks(notebooks: [nb]);
     expectSettled([nb]);
+  });
+
+  // Each kind of work the notebook reports, held open, makes settling give up
+  // naming it; once it ends the notebook settles.
+  Future<void> expectNamed(String name) => expectLater(
+    settleNotebooks(notebooks: [nb], limit: const Duration(milliseconds: 300)),
+    throwsA(isA<TestFailure>().having((e) => e.message, 'message', contains(name))),
+  );
+
+  test('a settings file read in flight is not settled, and is named', () async {
+    final hold = Completer<void>();
+    final other = Notebook(
+      PageStore(Directory('${root.path}/pages')),
+      buildModules(),
+      bindersFile: File('${root.path}/binders.json'),
+    );
+    addTearDown(() async {
+      if (!hold.isCompleted) hold.complete();
+      await settleNotebooks(notebooks: [other]);
+      other.dispose();
+    });
+    other.binderHook = (point, path) => point == 'settings-read' ? hold.future : Future<void>.value();
+    unawaited(other.load());
+    await realIoUntil(() => other.inFlightForTest?.contains('readSettingsBytes') ?? false, 'the settings read');
+
+    await expectLater(
+      settleNotebooks(notebooks: [other], limit: const Duration(milliseconds: 300)),
+      throwsA(isA<TestFailure>().having((e) => e.message, 'message', contains('readSettingsBytes'))),
+    );
+
+    hold.complete();
+    await settleNotebooks(notebooks: [other]);
+  });
+
+  test('an attachment file check in flight is not settled, and is named', () async {
+    final check = nb.attachments!.verify('0' * 64 + '.png', size: 0);
+
+    expect(nb.inFlightForTest, contains('attachment file checks'));
+    await check;
+    await settleNotebooks(notebooks: [nb]);
+  });
+
+  test('a recovery replay or landing in flight is not settled, and is named', () async {
+    final run = nb.recoverNowForTest();
+
+    expect(nb.inFlightForTest, contains('recoverPending'));
+    await run;
+    await settleNotebooks(notebooks: [nb]);
+  });
+
+  test('a queued file check is not settled, and is named', () async {
+    final hold = Completer<void>();
+    unawaited(nb.runOnChainForTest(() => hold.future));
+    final check = nb.checkFile('${root.path}/pages/none.canvas');
+
+    expect(nb.inFlightForTest, contains('check queue'));
+    await expectNamed('check queue');
+    hold.complete();
+    await check;
+    await settleNotebooks(notebooks: [nb]);
   });
 
   test('deleteTestFolder lands the pending save first, then deletes the folder', () async {

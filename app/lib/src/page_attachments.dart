@@ -371,12 +371,10 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     bool pageFolderOnly = false,
   }) async {
     _checks++;
-    _allChecks++;
     try {
       return await _checkNow(fileName, size, keepBytes: keepBytes, pageFolderOnly: pageFolderOnly);
     } finally {
       _checks--;
-      _allChecks--;
     }
   }
 
@@ -385,11 +383,6 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
   @visibleForTesting
   int get pendingChecks => _checks;
   int _checks = 0;
-
-  /// The checks running now in every [PageAttachments] (one that was replaced
-  /// by another page's may still be reading).
-  static int get checksRunning => _allChecks;
-  static int _allChecks = 0;
 
   Future<VerifiedAttachment> _checkNow(
     String fileName,

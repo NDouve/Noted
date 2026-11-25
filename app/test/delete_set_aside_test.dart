@@ -106,14 +106,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    for (var attempt = 1; root.existsSync(); attempt++) {
-      try {
-        await deleteTestFolder(root);
-      } on FileSystemException {
-        if (attempt >= 20) rethrow;
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-      }
-    }
+    await deleteTestFolder(root);
   });
 
   Notebook make() {

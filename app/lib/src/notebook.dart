@@ -3095,7 +3095,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _closeCurrent();
     await _openFresh(id);
   }
-  PageAttachments _makeAttachments(String id, String loc) => PageAttachments(
+  // Every page's attachments this notebook made while checks of one may still
+  // run (debug and test builds only), for [inFlightForTest].
+  final List<PageAttachments> _madeAttachments = [];
+
+  PageAttachments _makeAttachments(String id, String loc) {
+    final made = _makeAttachmentsNow(id, loc);
+    assert(() {
+      _madeAttachments.add(made);
+      return true;
+    }());
+    return made;
+  }
+
+  PageAttachments _makeAttachmentsNow(String id, String loc) => PageAttachments(
     pageFolder: _storeOf(loc).directory,
     pageId: id,
     storage: () => attachmentStorageFor(id),
@@ -7278,7 +7291,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     });
     _checking = job;
-    return done.future;
+    return _inFlight('queued job', () => done.future);
   }
 
   // Lists the binder in [path]: one step for a hand add (Open binder…, New
@@ -8803,7 +8816,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Lists the files beside the binder file whose names start with
   // `noted-binder`, under the folder's lock held by the caller. Never deletes.
-  Future<void> _listCopiesLocked(BinderSection s, BinderStore store) async {
+  Future<void> _listCopiesLocked(BinderSection s, BinderStore store) => _inFlight('listCopiesLocked', () => _listCopiesLockedInner(s, store));
+
+  Future<void> _listCopiesLockedInner(BinderSection s, BinderStore store) async {
     final sw = await store.sweepLeftovers(restore: false);
     if (_disposed) return;
     s.copies = sw.copies;
@@ -9834,10 +9849,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final parts = <String>[
       if (!_disposed) ?unsavedDescription,
       if (!_chain.isIdle) 'the save chain has a job queued or running',
+      if (!_disposed && (_debounce.isNotEmpty || (_rootDebounce?.isActive ?? false))) 'a watcher debounce timer pending',
       for (final e in _flights.entries) '${e.key}${e.value > 1 ? ' x${e.value}' : ''} running',
-      if (PageAttachments.checksRunning > 0) '${PageAttachments.checksRunning} attachment file checks running',
+      if (_runningChecks() > 0) '${_runningChecks()} attachment file checks running',
     ];
     return parts.isEmpty ? null : parts.join('; ');
+  }
+
+  int _runningChecks() {
+    // ignore: invalid_use_of_visible_for_testing_member
+    _madeAttachments.removeWhere((a) => a != _attachments && a.pendingChecks == 0);
+    // ignore: invalid_use_of_visible_for_testing_member
+    return _madeAttachments.fold(0, (n, a) => n + a.pendingChecks);
   }
 
   /// Whether [dispose] ran.
@@ -10546,7 +10569,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // result has been read back and checked. An entry that can't be applied
   // stays. A busy page, and a page being edited, are skipped (R-1 v5): its
   // own session holds its edits.
-  Future<void> _recoverPending({String? onlyLoc}) async {
+  Future<void> _recoverPending({String? onlyLoc}) => _inFlight('recoverPending', () => _recoverPendingInner(onlyLoc: onlyLoc));
+
+  Future<void> _recoverPendingInner({String? onlyLoc}) async {
     final rec = _recovery;
     if (rec == null) return;
     final problem = _lockProblem();
@@ -11551,7 +11576,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // every location is available and no entry waits for that page, so it
   // doesn't nag while its folder is merely away.
   Future<void> _landKeptAssets(RecoveryStore rec, {String? onlyLoc}) {
-    final run = _landChain.then((_) => _landKeptAssetsNow(rec, onlyLoc));
+    final run = _inFlight('landKeptAssets', () => _landChain.then((_) => _landKeptAssetsNow(rec, onlyLoc)));
     _landChain = run.catchError((Object _) {});
     return run;
   }
@@ -12559,7 +12584,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       debugPrint('Checking $path failed: $e');
     });
     _checking = job;
-    return job;
+    return _inFlight('check queue', () => job);
   }
 
   /// Tells the notebook that the files at [paths] arrived, changed or were
@@ -12676,7 +12701,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       debugPrint('Checking $path failed: $e');
     });
     _checking = job;
-    return job;
+    return _inFlight('check queue', () => job);
   }
 
   // Looks again at the binder file of folder [path] in a moment.
@@ -14193,7 +14218,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return Platform.isWindows ? c == 5 : (c == 13 || c == 1);
   }
 
-  Future<void> _discoverOnce() async {
+  Future<void> _discoverOnce() => _inFlight('discoverOnce', () => _discoverOnceInner());
+
+  Future<void> _discoverOnceInner() async {
     final started = DateTime.now();
     final listed = {for (final p in _binders.keys) _key(p)};
     final standalone = {
@@ -14895,7 +14922,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       debugPrint('Checking the folders failed: $e');
     });
     _checking = job;
-    return job;
+    return _inFlight('check queue', () => job);
   }
 
   Future<void> _checkFolders() => _inFlight('checkFolders', () => _checkFoldersInner());

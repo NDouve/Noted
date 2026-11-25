@@ -52,14 +52,7 @@ void main() {
     opened.clear();
     // On Windows a folder watcher's handle is released a moment after the
     // subscription is cancelled; a delete in that moment fails with errno 32.
-    for (var attempt = 1; root.existsSync(); attempt++) {
-      try {
-        await deleteTestFolder(root);
-      } on FileSystemException {
-        if (attempt >= 20) rethrow;
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-      }
-    }
+    await deleteTestFolder(root);
   }
 
   File binderFile() => File('${folder.path}/$binderFileName');

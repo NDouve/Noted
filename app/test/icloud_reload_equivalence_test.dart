@@ -55,7 +55,6 @@ import '../../packages/noted_mcp/lib/src/closed_writer.dart';
 
 import 'support/busy_retry.dart';
 import 'support/icloud_world.dart';
-import 'support/notebook_folder.dart';
 import 'support/io_trace.dart' show IoTrace, TracingIoOverrides;
 
 const int _extraSeeds = int.fromEnvironment('ICLOUD_SEEDS', defaultValue: 0);
@@ -1206,7 +1205,7 @@ class _Sim {
     await w.dispose();
     if (snapRoot.existsSync()) {
       try {
-        await deleteTestFolder(snapRoot);
+        await snapRoot.delete(recursive: true);
       } on FileSystemException {
         // Left behind.
       }
@@ -1394,7 +1393,7 @@ void _windowsFolderTests() {
               n.dispose();
             }
             try {
-              await deleteTestFolder(root);
+              await root.delete(recursive: true);
             } on FileSystemException {
               // A handle that is still closing.
             }

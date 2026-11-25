@@ -80,13 +80,7 @@ void main() {
     for (final f in folders) {
       f.dispose();
     }
-    for (var i = 0; i < 20 && root.existsSync(); i++) {
-      try {
-        await deleteTestFolder(root);
-      } on FileSystemException {
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-      }
-    }
+    await deleteTestFolder(root);
   });
 
   test('the order: reset, resolve, isUbiquitous, then the coordinated probe; the root is writable after a pass', () async {
