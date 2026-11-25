@@ -1770,7 +1770,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0126 — Linux CI blocks; formula depth; pruning revoked codes; settling saves in tests
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer; amends 0123; amended by 0127)
+- **Status:** Active (approved by the maintainer; amends 0123; amended by 0127; the test bullet amended by 0192)
 - **Decision:**
   - **CI:** the Linux test job blocks a push, like Windows.
   - **Formulas:** a run of operators of one level (`A1+A2+…`) is one node and evaluates in a loop, so long flat formulas work and adjust on every platform; real nesting is capped by tree height (256) as well as by parentheses (100), and past it a formula is an error everywhere instead of depending on the stack.
@@ -2698,6 +2698,19 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Known limits:** cell number formats aren't applied; Word lists lose their nesting and empty paragraphs are dropped; an interrupted import leaves its stored images unreferenced in the assets folder, as an interrupted paste does; a markdown table cell starting with `=` is still a formula (0118).
 - **Rationale:** 0161 puts import in scope; converting to the boxes Noted already has keeps invariant 1 and needs no file format or Box API change and no new dependency.
 - **Alternatives considered:** converting through markdown (0118's limits turned large tables into plain text); a per-cell literal flag for `=` text (a note data change, left to the maintainer); a third-party PDF or Office renderer (outside the dependency rules).
+
+---
+
+## 0192 — A test's notebooks are settled before its folder is deleted; the iCloud reload test's crash snapshot
+- **Date:** 2026-11-24
+- **Status:** Active (the build team (PM), run 2026-11-24-01); amends 0126's test bullet
+- **Decision:**
+  - **Tests (amends 0126):** every test that owns a notebook deletes its temp folder through `deleteTestFolder` (`app/test/support/notebook_folder.dart`). It first waits until every notebook and cloud sync under the folder reports nothing in flight (saves, file reads and checks, attachment checks, recovery, landing, discovery, queued checks, watcher timers, sync rounds), then deletes, retrying only Windows errors 5, 32 and 145 for at most 20 seconds. A delete that still fails, or work still running after the limit, fails the test and names what was running. `settleSaves` uses the same wait.
+  - **App hooks:** `Notebook.inFlightForTest` and `CloudSync.inFlightForTest` report that work; `Notebook.liveForTest` and `CloudSync.liveForTest` are filled only in debug builds; `RecoveryLock.releaseForTest()` closes a lock handle. They change no behaviour.
+  - **The iCloud reload test (0190):** its crash snapshot copies a file that was renamed while the snapshot was taken under its new name, as a crash would leave it, and prints each such race with its seed and kill point. Every operation on the test's files is recorded, and a lost marker's failure shows the last operations on its file.
+  - **Known limit:** one CI failure of that test (a daemon replace found in no file after a crash) is not explained. It didn't reproduce in about 750 seeded runs; the next failure names its cause.
+- **Rationale:** tests failed on Windows CI when a folder was deleted while its notebook was still reading, and fixing each test separately kept moving the failure; a snapshot that a real crash can't produce hides or invents losses.
+- **Alternatives considered:** per-test waits (the earlier approach); retrying the delete without settling (hides work still writing into the folder).
 
 ---
 
