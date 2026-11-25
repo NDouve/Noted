@@ -12,6 +12,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'support/settle_saves.dart';
 import 'support/page_save.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -35,7 +36,7 @@ void main() {
 
   Future<void> cleanUp(WidgetTester t) => t.runAsync(() async {
     nb.dispose();
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   Future<int> boxesOnDisk(WidgetTester t) async =>

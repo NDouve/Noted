@@ -13,6 +13,8 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_lock.dart';
 import 'package:noted/src/recovery_store.dart';
 
+import 'support/notebook_folder.dart';
+
 // Regression guards: a fresh mobile install loads and shows a page. They pass on
 // the code before the error screen too, so they do not reproduce the device
 // failure (see Notebook.loadChecked).
@@ -24,14 +26,19 @@ void main() {
     resetDeviceStorage();
   });
 
-  tearDown(() {
+  final made = <(Notebook, RecoveryLock)>[];
+
+  tearDown(() async {
     debugDefaultTargetPlatformOverride = null;
     resetDeviceStorage();
-    try {
-      root.deleteSync(recursive: true);
-    } on FileSystemException {
-      // The recovery lock is held for the life of the process.
+    for (final (nb, lock) in made) {
+      if (!nb.disposedForTest) nb.dispose();
+      // The app holds the lock for the life of the process; a folder with the
+      // lock file open can't be deleted.
+      lock.releaseForTest();
     }
+    made.clear();
+    await deleteTestFolder(root);
   });
 
   // As on a device: the app's three folders exist and are empty.
@@ -44,7 +51,7 @@ void main() {
     final lock = RecoveryLock.besides(defaultRecoveryDirectory(defaultBindersFile()));
     expect(lock.acquireSync(), RecoveryLockResult.acquired);
     final nb = buildAppNotebook(recoveryLock: lock);
-    addTearDown(nb.dispose);
+    made.add((nb, lock));
     return nb;
   }
 

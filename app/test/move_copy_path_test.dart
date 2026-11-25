@@ -14,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 /// A store whose pages in [offline] can't be read, like files not downloaded.
 class _OfflineStore extends PageStore {
@@ -59,7 +60,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   Notebook make() {

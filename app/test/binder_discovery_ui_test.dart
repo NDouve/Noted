@@ -20,6 +20,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'support/real_io.dart';
 import 'support/page_save.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -53,7 +54,7 @@ void main() {
   tearDown(() async {
     await nb.flush();
     nb.dispose();
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   testWidgets('a binder recorded as removed by the first pass is listed under Can\'t open', (t) async {

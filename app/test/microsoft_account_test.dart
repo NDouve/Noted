@@ -14,6 +14,7 @@ import 'package:noted/src/app_theme.dart';
 import 'package:noted/src/microsoft_account.dart';
 import 'package:noted/src/settings_menu.dart';
 import 'package:noted_auth/noted_auth.dart';
+import 'support/notebook_folder.dart';
 
 String _jwt(Map<String, Object?> claims) {
   String part(Object o) =>
@@ -209,7 +210,7 @@ void main() {
 
     test('runs once, then the flag in settings.json stops it', () async {
       final dir = Directory.systemTemp.createTempSync('noted_keychain');
-      addTearDown(() => dir.deleteSync(recursive: true));
+      addTearDown(() => deleteTestFolder(dir));
       final file = File('${dir.path}/settings.json');
       // An old-format file: the key is simply absent.
       file.writeAsStringSync('{"format":1,"theme":"dark"}');
@@ -229,7 +230,7 @@ void main() {
 
     test('the flag cannot be written: the items go, the clean-up is not done', () async {
       final dir = Directory.systemTemp.createTempSync('noted_keychain');
-      addTearDown(() => dir.deleteSync(recursive: true));
+      addTearDown(() => deleteTestFolder(dir));
       // The settings folder is a file, so nothing can be saved there.
       File('${dir.path}/blocker').writeAsStringSync('x');
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
@@ -242,7 +243,7 @@ void main() {
 
     test('a failed delete leaves the flag unset, blocks restore and sign-in, and the next start retries', () async {
       final dir = Directory.systemTemp.createTempSync('noted_keychain');
-      addTearDown(() => dir.deleteSync(recursive: true));
+      addTearDown(() => deleteTestFolder(dir));
       final file = File('${dir.path}/settings.json');
       file.writeAsStringSync('{"format":1}');
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
@@ -288,7 +289,7 @@ void main() {
 
     test('a sign-in in the same session retries a failed delete first', () async {
       final dir = Directory.systemTemp.createTempSync('noted_keychain');
-      addTearDown(() => dir.deleteSync(recursive: true));
+      addTearDown(() => deleteTestFolder(dir));
       final file = File('${dir.path}/settings.json')..writeAsStringSync('{}');
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
       var fail = true;
@@ -309,7 +310,7 @@ void main() {
 
     test('a flag that cannot be saved after a good delete blocks restore and sign-in', () async {
       final dir = Directory.systemTemp.createTempSync('noted_keychain');
-      addTearDown(() => dir.deleteSync(recursive: true));
+      addTearDown(() => deleteTestFolder(dir));
       File('${dir.path}/blocker').writeAsStringSync('x');
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
       final store = MemoryTokenStore();
@@ -340,7 +341,7 @@ void main() {
 
     test('a flag that failed to save is saved by the next sign-in once storage recovers', () async {
       final dir = Directory.systemTemp.createTempSync('noted_keychain');
-      addTearDown(() => dir.deleteSync(recursive: true));
+      addTearDown(() => deleteTestFolder(dir));
       final blocker = File('${dir.path}/settings')..writeAsStringSync('x');
       final file = File('${dir.path}/settings/settings.json');
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
@@ -364,7 +365,7 @@ void main() {
 
     test('a sign-in while the clean-up is still running ends signed in with its token kept', () async {
       final dir = Directory.systemTemp.createTempSync('noted_keychain');
-      addTearDown(() => dir.deleteSync(recursive: true));
+      addTearDown(() => deleteTestFolder(dir));
       final file = File('${dir.path}/settings.json')..writeAsStringSync('{}');
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
       final store = MemoryTokenStore();
@@ -387,7 +388,7 @@ void main() {
 
     test('markKeychainCleaned leaves the flag unset when the save fails', () {
       final dir = Directory.systemTemp.createTempSync('noted_keychain');
-      addTearDown(() => dir.deleteSync(recursive: true));
+      addTearDown(() => deleteTestFolder(dir));
       File('${dir.path}/blocker').writeAsStringSync('x');
       final s = AppSettings(File('${dir.path}/blocker/settings.json'));
       expect(s.markKeychainCleaned(), isFalse);
@@ -406,7 +407,7 @@ void main() {
         );
         debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
         final dir = Directory.systemTemp.createTempSync('noted_keychain');
-        addTearDown(() => dir.deleteSync(recursive: true));
+        addTearDown(() => deleteTestFolder(dir));
         final broken = File('${dir.path}/settings.json')
           ..writeAsStringSync('{ nope');
         expect(

@@ -22,6 +22,7 @@ import 'package:noted_canvas/noted_canvas.dart' show AttachmentState;
 import 'package:noted_core/noted_core.dart';
 
 import 'support/real_io.dart';
+import 'support/notebook_folder.dart';
 
 enum _Swap { other, damaged, missing }
 
@@ -96,14 +97,7 @@ void main() {
       await nb.afterHoldForTest(folder.path);
       nb.dispose();
     }
-    for (var attempt = 1; root.existsSync(); attempt++) {
-      try {
-        await root.delete(recursive: true);
-      } on FileSystemException {
-        if (attempt >= 20) rethrow;
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-      }
-    }
+    await deleteTestFolder(root);
   }
 
   // Every file under [d] (relative name: bytes), for "nothing was written".

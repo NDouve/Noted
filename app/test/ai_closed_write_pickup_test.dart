@@ -9,6 +9,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 // A write the MCP server made to a page file while Noted was not running (it
 // splices one box record into the file) reaches a Noted that starts, or is
@@ -57,7 +58,7 @@ void main() {
 
   tearDown(() async {
     nb.dispose();
-    await dir.delete(recursive: true);
+    await deleteTestFolder(dir);
   });
 
   Future<void> until(bool Function() ok) async {

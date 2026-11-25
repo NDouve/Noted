@@ -32,7 +32,7 @@ void main() {
       final file = File('${w.root.path}/app/recovery.lock');
       final holder = await LockHolder.hold(file);
       addTearDown(holder.release);
-      final lock = RecoveryLock(file);
+      final lock = w.lock(file);
       expect(
         lock.acquireSync(tries: 3, gap: const Duration(milliseconds: 20)),
         RecoveryLockResult.heldByOther,
@@ -58,7 +58,7 @@ void main() {
         addTearDown(() => Process.runSync('chmod', ['644', file.path]));
         if (Process.runSync('id', ['-u']).stdout.toString().trim() == '0') return; // root opens it anyway
       }
-      final lock = RecoveryLock(file);
+      final lock = w.lock(file);
       expect(lock.acquireSync(tries: 2, gap: const Duration(milliseconds: 5)), RecoveryLockResult.failed);
       expect(lock.held, isFalse);
       expect(lock.problem, contains("Noted can't use its recovery folder"));
@@ -73,7 +73,7 @@ void main() {
       w.crash(nb0);
       expect(w.recFiles(), hasLength(1));
       w.storeFor(w.pages).failWith = null;
-      final lock = RecoveryLock(File('${w.root.path}/blocker/recovery.lock'));
+      final lock = w.lock(File('${w.root.path}/blocker/recovery.lock'));
       lock.acquireSync(tries: 1);
       final nb = w.make(lock: lock);
       await nb.load();
@@ -91,7 +91,7 @@ void main() {
       w.crash(nb0);
       w.storeFor(w.pages).failWith = null;
       w.pageFile(id).writeAsStringSync('this is not a page');
-      final lock = RecoveryLock(File('${w.root.path}/blocker/recovery.lock'));
+      final lock = w.lock(File('${w.root.path}/blocker/recovery.lock'));
       lock.acquireSync(tries: 1);
       final nb = w.make(lock: lock);
       await nb.load();
@@ -105,7 +105,7 @@ void main() {
     test('a lock that cannot be taken for another reason leaves pages editable and refuses recovery into state 4', () async {
       // The lock file's parent is a file: it can never be opened.
       File('${w.root.path}/blocker').writeAsStringSync('x');
-      final lock = RecoveryLock(File('${w.root.path}/blocker/recovery.lock'));
+      final lock = w.lock(File('${w.root.path}/blocker/recovery.lock'));
       expect(
         lock.acquireSync(tries: 2, gap: const Duration(milliseconds: 5)),
         RecoveryLockResult.failed,
@@ -132,7 +132,7 @@ void main() {
       final dir = Directory('${w.root.path}/lockdir')..createSync();
       final blocker = File('${dir.path}/sub');
       blocker.writeAsStringSync('x');
-      final lock = RecoveryLock(File('${blocker.path}/recovery.lock'));
+      final lock = w.lock(File('${blocker.path}/recovery.lock'));
       lock.acquireSync(tries: 1);
       final nb = w.make(lock: lock);
       await w.editedPage(nb);
@@ -149,7 +149,7 @@ void main() {
 
     test('multi-page deletes are refused while the lock is not held (build note 2)', () async {
       File('${w.root.path}/blocker').writeAsStringSync('x');
-      final lock = RecoveryLock(File('${w.root.path}/blocker/recovery.lock'));
+      final lock = w.lock(File('${w.root.path}/blocker/recovery.lock'));
       lock.acquireSync(tries: 1);
       final nb = w.make(lock: lock);
       await nb.load();

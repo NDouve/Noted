@@ -12,6 +12,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'fake_cloud_folder_channel.dart';
+import 'notebook_folder.dart';
 
 /// An iCloud root on a temp folder, the fake channel, and the folder access
 /// and notebooks of a test, cleaned up after it (cloud parity step 6).
@@ -132,13 +133,7 @@ class IcloudWorld {
     for (final f in folders) {
       f.dispose();
     }
-    if (root.existsSync()) {
-      try {
-        await root.delete(recursive: true);
-      } on FileSystemException {
-        // A watcher still holds it.
-      }
-    }
+    await deleteTestFolder(root);
   }
 }
 

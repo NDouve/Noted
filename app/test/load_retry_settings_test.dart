@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 // A Retry of a load that failed after the binder list was settled: the lists
 // are rebuilt, so nothing may be written from them and no AI write may run
@@ -51,7 +52,7 @@ void main() {
     expect(listFile.readAsStringSync(), contains('b1'));
   });
 
-  tearDown(() => dir.delete(recursive: true));
+  tearDown(() => deleteTestFolder(dir));
 
   // A second launch whose first load fails when it makes the first page of an empty
   // notebook: after the list is settled and the folder timer has started.

@@ -11,6 +11,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/notebook.dart';
 import 'support/settle_saves.dart';
+import 'support/notebook_folder.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -23,7 +24,7 @@ void main() {
       dir = Directory.systemTemp.createTempSync('noted_toolbar_setting');
       file = File('${dir.path}/sub/settings.json');
     });
-    tearDown(() => dir.deleteSync(recursive: true));
+    tearDown(() => deleteTestFolder(dir));
 
     test('default is Tabs and nothing is written', () {
       expect(AppSettings(file).toolbar, ToolbarStyle.tabs);
@@ -111,7 +112,7 @@ void main() {
     await settleSaves(t, nb);
     await t.runAsync(() async {
       nb.dispose();
-      await dir.delete(recursive: true);
+      await deleteTestFolder(dir);
     });
   });
 }

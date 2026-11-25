@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/attachment_platform.dart';
 import 'package:noted_canvas/noted_canvas.dart';
+import 'support/notebook_folder.dart';
 
 Future<Uint8List?> _noImage() async => null;
 
@@ -64,7 +65,7 @@ void main() {
 
   test('a plain path is still read from disk', () async {
     final dir = Directory.systemTemp.createTempSync('clip');
-    addTearDown(() => dir.deleteSync(recursive: true));
+    addTearDown(() => deleteTestFolder(dir));
     final f = File('${dir.path}${Platform.pathSeparator}n.txt')..writeAsBytesSync([5, 6]);
     final out = await readClipboardFiles(
       imageReader: _noImage,

@@ -26,6 +26,7 @@ import 'package:noted_sync/noted_sync.dart';
 
 import 'support/onedrive_world.dart';
 import 'support/webdav_world.dart';
+import 'support/notebook_folder.dart';
 
 class _LogSync extends WebDavSync {
   _LogSync(this.log, Notebook nb)
@@ -81,7 +82,7 @@ void main() {
   tearDown(() async {
     debugDefaultTargetPlatformOverride = null;
     resetDeviceStorage();
-    await top.delete(recursive: true);
+    await deleteTestFolder(top);
   });
 
   Future<void> asDevice() async {
@@ -293,7 +294,7 @@ void main() {
       gate = null;
     });
 
-    tearDown(() => dir.deleteSync(recursive: true));
+    tearDown(() => deleteTestFolder(dir));
 
     // A widget test on iOS: the platform is put back before the framework checks it.
     void iosWidgets(String name, Future<void> Function(WidgetTester t) body) {
@@ -357,7 +358,7 @@ void main() {
         w.sync.dispose();
         await t.runAsync(() async {
           w.nb.dispose();
-          await w.top.delete(recursive: true);
+          await deleteTestFolder(w.top);
         });
       },
     );
@@ -385,7 +386,7 @@ void main() {
       await t.runAsync(() async {
         w.nb.dispose();
         await w.fake!.close();
-        await w.top.delete(recursive: true);
+        await deleteTestFolder(w.top);
       });
     });
 
@@ -461,7 +462,7 @@ void main() {
         w.sync.dispose();
         await t.runAsync(() async {
           w.nb.dispose();
-          await w.top.delete(recursive: true);
+          await deleteTestFolder(w.top);
         });
       },
     );
@@ -509,7 +510,7 @@ void main() {
         w.sync.dispose();
         await t.runAsync(() async {
           w.nb.dispose();
-          await w.top.delete(recursive: true);
+          await deleteTestFolder(w.top);
         });
       },
     );
@@ -541,7 +542,7 @@ void main() {
       w.sync.dispose();
       await t.runAsync(() async {
         w.nb.dispose();
-        await w.top.delete(recursive: true);
+        await deleteTestFolder(w.top);
       });
     });
   });

@@ -20,6 +20,7 @@ import 'package:noted/src/onedrive_sync.dart';
 import 'package:noted_core/noted_core.dart' show PageStore;
 
 import 'support/onedrive_world.dart';
+import 'support/notebook_folder.dart';
 
 class _LogSync extends OneDriveSync {
   _LogSync(this.log, Notebook nb, MicrosoftAccount account)
@@ -85,7 +86,7 @@ void main() {
   tearDown(() async {
     debugDefaultTargetPlatformOverride = null;
     resetDeviceStorage();
-    await top.delete(recursive: true);
+    await deleteTestFolder(top);
   });
 
   Future<void> asDevice() async {

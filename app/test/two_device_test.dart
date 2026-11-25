@@ -23,7 +23,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
-import 'support/busy_retry.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory base;
@@ -43,7 +43,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    await busyRetry(() => base.delete(recursive: true));
+    await deleteTestFolder(base);
   });
 
   Notebook make(String name) {

@@ -9,6 +9,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/recovery_store.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 NotedPage _page(String id, String title) =>
     NotedPage.create(PageMeta.create(id: id, title: title, order: 0));
@@ -39,7 +40,7 @@ void main() {
   });
 
   tearDown(() async {
-    if (root.existsSync()) await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   List<String> files(String ext) => dir.existsSync()

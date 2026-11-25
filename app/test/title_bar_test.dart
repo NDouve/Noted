@@ -17,7 +17,7 @@ import 'package:noted/src/title_bar.dart';
 import 'package:noted/src/window_channel.dart';
 import 'package:noted_core/noted_core.dart';
 
-import 'support/busy_retry.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -283,7 +283,7 @@ void main() {
     tearDown(() async {
       await nb.flush();
       nb.dispose();
-      await busyRetry(() => dir.delete(recursive: true));
+      await deleteTestFolder(dir);
     });
 
     Future<void> pumpApp(WidgetTester t, {double width = 1400, bool frame = true}) async {

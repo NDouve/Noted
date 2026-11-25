@@ -18,6 +18,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/settle_saves.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory dir;
@@ -72,7 +73,7 @@ void main() {
     await settleSaves(t, nb);
     await t.runAsync(() async {
       nb.dispose();
-      await dir.delete(recursive: true);
+      await deleteTestFolder(dir);
     });
   }
 

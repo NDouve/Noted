@@ -11,6 +11,7 @@ import 'package:noted/src/icloud_folders.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/fake_cloud_folder_channel.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late FakeCloudFolderChannel channel;
@@ -27,7 +28,7 @@ void main() {
     channel.onEvent = coordinator.handleEvent;
   });
   tearDown(() async {
-    if (root.existsSync()) await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   test('a call sends coordinate, runs its body on go, then sends done', () async {

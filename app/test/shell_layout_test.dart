@@ -27,6 +27,7 @@ import 'package:noted_core/noted_core.dart';
 import 'support/settle_saves.dart';
 import 'support/shell_world.dart';
 import 'support/trouble_world.dart';
+import 'support/notebook_folder.dart';
 
 // Step 5 of the UI follow-up: the toolbar under the menu bar, the title inside
 // the canvas column, the status strip, and the Details toggle in the menu bar.
@@ -362,7 +363,7 @@ void main() {
         await settleSaves(t, nb);
         await t.runAsync(() async {
           nb.dispose();
-          await dir.delete(recursive: true);
+          await deleteTestFolder(dir);
         });
       },
     );
@@ -477,7 +478,7 @@ void main() {
       await settleSaves(t, nb);
       await t.runAsync(() async {
         nb.dispose();
-        await dir.delete(recursive: true);
+        await deleteTestFolder(dir);
       });
       // Before the test ends: the framework checks the override then.
       debugDefaultTargetPlatformOverride = null;

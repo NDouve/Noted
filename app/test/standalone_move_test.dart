@@ -14,6 +14,7 @@ import 'package:noted_core/noted_core.dart';
 import 'support/real_io.dart';
 import 'support/settle_saves.dart';
 import 'support/page_save.dart';
+import 'support/notebook_folder.dart';
 
 /// A store whose [corruptAt]th write is damaged after it lands.
 class CorruptingStore extends PageStore {
@@ -71,7 +72,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   }
 
   String read(Directory d, String id) => File('${d.path}/$id.canvas').readAsStringSync();

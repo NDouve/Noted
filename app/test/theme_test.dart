@@ -16,6 +16,7 @@ import 'package:noted/src/binder_colors.dart';
 import 'package:noted/src/binder_cover.dart';
 import 'package:noted/src/notebook.dart';
 import 'support/settle_saves.dart';
+import 'support/notebook_folder.dart';
 import 'package:noted_box_drawing/noted_box_drawing.dart';
 import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_canvas/noted_canvas.dart';
@@ -373,7 +374,7 @@ void main() {
       dir = Directory.systemTemp.createTempSync('noted_settings');
       file = File('${dir.path}/sub/settings.json');
     });
-    tearDown(() => dir.deleteSync(recursive: true));
+    tearDown(() => deleteTestFolder(dir));
 
     test('unsaved settings are Light', () {
       final s = AppSettings(null);
@@ -600,7 +601,7 @@ void main() {
       await settleSaves(t, nb);
       await t.runAsync(() async {
         nb.dispose();
-        await dir.delete(recursive: true);
+        await deleteTestFolder(dir);
       });
     });
   });

@@ -16,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 // A store whose new files and deletes of the pages named can be made to fail.
 class _FailStore extends PageStore {
@@ -95,14 +96,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    for (var attempt = 1; root.existsSync(); attempt++) {
-      try {
-        await root.delete(recursive: true);
-      } on FileSystemException {
-        if (attempt >= 20) rethrow;
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-      }
-    }
+    await deleteTestFolder(root);
   });
 
   Notebook make({PageStore? pageStore}) {

@@ -12,6 +12,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/settle_saves.dart';
+import 'support/notebook_folder.dart';
 
 /// A store whose first scan fails or hangs, as a device folder can.
 class _FlakyStore extends PageStore {
@@ -60,7 +61,7 @@ void main() {
     await settleSaves(t, nb);
     await t.runAsync(() async {
       nb.dispose();
-      await dir.delete(recursive: true);
+      await deleteTestFolder(dir);
     });
   }
 

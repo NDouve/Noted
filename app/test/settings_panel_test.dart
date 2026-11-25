@@ -24,6 +24,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'support/real_io.dart';
 import 'support/settle_saves.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -50,7 +51,7 @@ void main() {
     await nb.flush();
     nb.dispose();
     service.dispose();
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   // Pumps the panel of a page or binder on its own.

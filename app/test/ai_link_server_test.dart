@@ -13,6 +13,7 @@ import 'package:noted/src/ai/ai_link_server.dart';
 import 'package:noted/src/ai/ai_access_service.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -36,7 +37,7 @@ void main() {
     for (final s in servers) {
       await s.dispose();
     }
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   // A server that refuses a client (drops it, or finds it gone) shows up on the

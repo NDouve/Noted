@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'support/settle_saves.dart';
+import 'support/notebook_folder.dart';
 import 'package:noted/src/page_tree_view.dart';
 import 'package:noted/src/settings_panel.dart';
 import 'package:noted_core/noted_core.dart';
@@ -87,7 +88,7 @@ void main() {
     await settleSaves(tester, nb);
     await tester.runAsync(() async {
       nb.dispose();
-      await dir.delete(recursive: true);
+      await deleteTestFolder(dir);
     });
   });
 }

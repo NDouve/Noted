@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory dir;
@@ -20,7 +21,7 @@ void main() {
 
   tearDown(() async {
     nb.dispose();
-    await dir.delete(recursive: true);
+    await deleteTestFolder(dir);
   });
 
   Future<PageTree> reread() async {

@@ -17,6 +17,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/scripted_coordinator.dart';
+import 'support/notebook_folder.dart';
 
 /// A store whose page [failId] can't be written (and from then on its folder is
 /// [unwritable]), so Undo of that page fails.
@@ -100,7 +101,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    if (root.existsSync()) await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   Notebook make({Duration saveDelay = Duration.zero, PageStore? store, Future<String?> Function()? pick}) {

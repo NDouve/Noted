@@ -12,6 +12,7 @@ import 'package:noted/src/ai/ai_access_service.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_box_ai/noted_box_ai.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 /// The real noted_mcp executable over stdio, spoken to with plain JSON-RPC
 /// lines, as Claude Code does.
@@ -83,7 +84,7 @@ void main() {
   test('the real app link and the real noted_mcp over stdio: codes, approval, a write, reads', () async {
     final root = await Directory.systemTemp.createTemp('noted_ai_e2e');
     addTearDown(() async {
-      if (root.existsSync()) await root.delete(recursive: true);
+      await deleteTestFolder(root);
     });
     final data = await Directory('${root.path}/data').create();
     final service = AiAccessService(dataFolder: data);

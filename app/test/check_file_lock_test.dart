@@ -11,6 +11,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/counting_io.dart';
+import 'support/notebook_folder.dart';
 
 /// The check of a page file after a watcher event reads the file. On Windows a
 /// file open for reading can't be renamed, so a read that overlapped the
@@ -32,7 +33,7 @@ void main() {
   tearDown(() async {
     await nb.flush();
     nb.dispose();
-    await dir.delete(recursive: true);
+    await deleteTestFolder(dir);
   });
 
   test('a check of a page file reads it only when the folder is free', () async {

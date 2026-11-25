@@ -5,35 +5,20 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/notebook.dart';
 
-import 'real_io.dart';
+import 'notebook_folder.dart';
 
-/// Lets every save of [nb] finish inside a widget test, before teardown.
+/// Lets all the work of [nb] finish inside a widget test, before teardown: the
+/// saves and also the reads and file checks (see `notebook_folder.dart`).
 ///
 /// A save that starts inside the test's fake-time zone (the autosave timer
 /// fires there) can't finish from `runAsync`: its callbacks wait for that
 /// zone's microtasks, so `await nb.flush()` from `runAsync` waited forever and
-/// once hung CI for the whole test timeout. This advances fake time past the
-/// autosave delay and alternates it with short real delays so the file IO can
-/// complete, until the notebook reports nothing unsaved. It is bounded: if a
-/// save is still stuck after [limit] the test fails and names it.
+/// once hung CI for the whole test timeout. [settleNotebooks] advances fake
+/// time past the autosave delay and alternates it with short real delays so
+/// the file IO can complete. It is bounded: if work is still running after
+/// [limit] the test fails and names it.
 Future<void> settleSaves(
   WidgetTester tester,
   Notebook nb, {
   Duration limit = const Duration(seconds: 20),
-}) async {
-  final clock = Stopwatch()..start();
-  while (nb.unsavedDescription != null) {
-    if (clock.elapsed > limit) {
-      fail('A save did not finish within $limit: ${nb.unsavedDescription}.');
-    }
-    await tester.pump(nb.saveDelay + const Duration(milliseconds: 1));
-    await tester.runAsync(() => realIoPause(30));
-  }
-  // Nothing is pending now, so this only waits for work that has finished.
-  await tester.runAsync(
-    () => nb.flush().timeout(
-      limit,
-      onTimeout: () => throw TestFailure('Notebook.flush() did not finish within $limit.'),
-    ),
-  );
-}
+}) => settleNotebooks(tester: tester, notebooks: [nb], limit: limit);

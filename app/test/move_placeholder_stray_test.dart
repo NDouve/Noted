@@ -14,6 +14,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/attachment_copy.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 class _Recorder implements StorageCoordinator {
   final List<CoordinatedWrite> calls = [];
@@ -57,7 +58,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   Notebook make() {

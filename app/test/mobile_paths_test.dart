@@ -16,6 +16,7 @@ import 'package:noted/src/recovery_store.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/trouble_world.dart';
+import 'support/notebook_folder.dart';
 
 // The mobile relative paths (sync stage 1): the codec, the notebook and the
 // recovery store. The codec is tested here with POSIX-shaped iOS paths.
@@ -140,7 +141,7 @@ void _guardTests() {
     debugDefaultTargetPlatformOverride = null;
     resetDeviceStorage();
     await Future<void>.delayed(const Duration(milliseconds: 30));
-    if (root.existsSync()) await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   Notebook build(AppSettings settings) {
@@ -455,7 +456,7 @@ void _notebookTests() {
     debugDefaultTargetPlatformOverride = null;
     resetDeviceStorage();
     await Future<void>.delayed(const Duration(milliseconds: 30));
-    if (root.existsSync()) await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   test('an old-form entry whose twin replayed and was deleted is not offered again in the same session (old file undeletable)', () async {
@@ -615,7 +616,7 @@ void _recoveryTests() {
   tearDown(() async {
     debugDefaultTargetPlatformOverride = null;
     resetDeviceStorage();
-    if (root.existsSync()) await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   Set<String> titles(RecoveryListing l) => {for (final e in l.entries) e.page.meta.title};

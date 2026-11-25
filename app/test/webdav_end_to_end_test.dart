@@ -23,6 +23,7 @@ import 'package:noted_core/noted_core.dart';
 
 import '../../packages/noted_sync/test/fake_webdav.dart';
 import 'support/real_io.dart';
+import 'support/notebook_folder.dart';
 import 'support/webdav_world.dart' show loopbackClient;
 
 const String _pageId = 'cccc000000000002';
@@ -218,7 +219,7 @@ void main() {
       await t.runAsync(() async {
         nb.dispose();
         await fake.close();
-        await top.delete(recursive: true);
+        await deleteTestFolder(top);
       });
     },
   );

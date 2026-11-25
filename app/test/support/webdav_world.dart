@@ -19,6 +19,7 @@ import 'package:noted_core/noted_core.dart';
 import 'package:noted_sync/noted_sync.dart';
 
 import '../../../packages/noted_sync/test/fake_webdav.dart';
+import 'notebook_folder.dart';
 import 'onedrive_world.dart';
 
 /// A [MemoryTokenStore] that logs every call, in order, into [log].
@@ -227,6 +228,6 @@ class WebDavWorld {
     sync.dispose();
     nb.dispose();
     await fake?.close();
-    await top.delete(recursive: true);
+    await deleteTestFolder(top);
   }
 }

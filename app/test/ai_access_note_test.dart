@@ -13,6 +13,7 @@ import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/page_save.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -61,7 +62,7 @@ void main() {
     await nb.flush();
     nb.dispose();
     settings.dispose();
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   Future<void> pumpHost(WidgetTester t) async {

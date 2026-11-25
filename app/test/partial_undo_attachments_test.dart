@@ -10,7 +10,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
-import 'support/busy_retry.dart';
+import 'support/notebook_folder.dart';
 
 /// A store that can pretend a newer file is in the page's place, and that its
 /// folder cannot be written to (so a restored page can't be put beside it).
@@ -62,7 +62,7 @@ void main() {
   tearDown(() async {
     await nb.flush();
     nb.dispose();
-    await busyRetry(() => root.delete(recursive: true));
+    await deleteTestFolder(root);
   });
 
   /// Deletes a page that has an attachment, then puts a different file under

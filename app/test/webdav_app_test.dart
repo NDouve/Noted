@@ -24,6 +24,7 @@ import 'package:noted_sync/noted_sync.dart' show GuardQuestion;
 import 'support/onedrive_world.dart';
 import 'support/real_io.dart';
 import 'support/webdav_world.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late WebDavWorld w;
@@ -44,7 +45,7 @@ void main() {
     w.sync.dispose();
     await t.runAsync(() async {
       w.nb.dispose();
-      await w.top.delete(recursive: true);
+      await deleteTestFolder(w.top);
     });
   }
 

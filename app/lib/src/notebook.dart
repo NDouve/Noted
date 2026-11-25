@@ -812,6 +812,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }) : folderLocks = folderLocks ?? FolderLocks(),
        _readOnlyRoots = [for (final r in readOnlyRoots) _normalizePath(r)],
        _readOnlyRootNamesIn = readOnlyRootNames {
+    assert(liveForTest.add(this)); // debug and test builds only
     _chain.onDetachedJobEnded = _oldJobEnded;
     icloud?.onRootWritable = _rootWritable;
     // A file that is not downloaded is asked for through the platform (R5.5).
@@ -2352,7 +2353,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Completes when the first load is over; AI writes wait for it.
   final Completer<void> _loaded = Completer<void>();
 
-  Future<void> _load() async {
+  Future<void> _load() => _inFlight('load', () => _loadInner());
+
+  Future<void> _loadInner() async {
     final entries = await _scan(store);
     _metas.clear();
     _loc.clear();
@@ -2479,7 +2482,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // One read of `binders.json`: the parsed file, "not found", or why it can't
   // be read (locked, or damaged: not valid text or JSON).
-  Future<_SettingsRead> _readSettingsBytes(File f) async {
+  Future<_SettingsRead> _readSettingsBytes(File f) => _inFlight('readSettingsBytes', () => _readSettingsBytesInner(f));
+
+  Future<_SettingsRead> _readSettingsBytesInner(File f) async {
     try {
       await _binderSeam('settings-read', f.path);
       final bytes = await f.readAsBytes();
@@ -3090,7 +3095,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await _closeCurrent();
     await _openFresh(id);
   }
-  PageAttachments _makeAttachments(String id, String loc) => PageAttachments(
+  // Every page's attachments this notebook made while checks of one may still
+  // run (debug and test builds only), for [inFlightForTest].
+  final List<PageAttachments> _madeAttachments = [];
+
+  PageAttachments _makeAttachments(String id, String loc) {
+    final made = _makeAttachmentsNow(id, loc);
+    assert(() {
+      _runningChecks(); // drops the settled ones, so the list stays short
+      _madeAttachments.add(made);
+      return true;
+    }());
+    return made;
+  }
+
+  PageAttachments _makeAttachmentsNow(String id, String loc) => PageAttachments(
     pageFolder: _storeOf(loc).directory,
     pageId: id,
     storage: () => attachmentStorageFor(id),
@@ -7273,7 +7292,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     });
     _checking = job;
-    return done.future;
+    return _inFlight('queued job', () => done.future);
   }
 
   // Lists the binder in [path]: one step for a hand add (Open binder…, New
@@ -8616,7 +8635,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // The one way a binder file is read: the bytes, decoded as UTF-8. Bad bytes
   // are a damaged file ([damaged]); an I/O failure or a lock is [failure] (try
   // again later, never "missing"); a file that isn't there is [missing].
-  Future<({String? text, bool missing, String? damaged, String? failure})> _readBinderText(File f) async {
+  Future<({String? text, bool missing, String? damaged, String? failure})> _readBinderText(File f) => _inFlight('readBinderText', () => _readBinderTextInner(f));
+
+  Future<({String? text, bool missing, String? damaged, String? failure})> _readBinderTextInner(File f) async {
     final List<int> bytes;
     try {
       bytes = await f.readAsBytes();
@@ -8796,7 +8817,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // Lists the files beside the binder file whose names start with
   // `noted-binder`, under the folder's lock held by the caller. Never deletes.
-  Future<void> _listCopiesLocked(BinderSection s, BinderStore store) async {
+  Future<void> _listCopiesLocked(BinderSection s, BinderStore store) => _inFlight('listCopiesLocked', () => _listCopiesLockedInner(s, store));
+
+  Future<void> _listCopiesLockedInner(BinderSection s, BinderStore store) async {
     final sw = await store.sweepLeftovers(restore: false);
     if (_disposed) return;
     s.copies = sw.copies;
@@ -9661,7 +9684,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Reads the file of a closed page: null text if it is not there. Throws
   // _SaveRefused if it is there but can't be read as this page: it is never
   // written over (0051).
-  Future<({String? text, NotedPage? page, int time})> _readClosedPage(String id, String path) async {
+  Future<({String? text, NotedPage? page, int time})> _readClosedPage(String id, String path) => _inFlight('readClosedPage', () => _readClosedPageInner(id, path));
+
+  Future<({String? text, NotedPage? page, int time})> _readClosedPageInner(String id, String path) async {
     AiLinkResponse unreadable(String why) => AiLinkResponse.error(
       AiLinkCode.saveFailed,
       "This page's file can't be read ($why), so nothing was written to it.",
@@ -9797,6 +9822,56 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     ];
     return parts.isEmpty ? null : parts.join('; ');
   }
+
+  // Work that reads files, running now, by name (a name can run twice), for
+  // [inFlightForTest].
+  final Map<String, int> _flights = {};
+
+  Future<T> _inFlight<T>(String what, Future<T> Function() job) {
+    _flights[what] = (_flights[what] ?? 0) + 1;
+    return job().whenComplete(() {
+      final left = (_flights[what] ?? 1) - 1;
+      if (left <= 0) {
+        _flights.remove(what);
+      } else {
+        _flights[what] = left;
+      }
+    });
+  }
+
+  /// What this notebook still has running, or null when it is idle: an unsaved
+  /// change, a queued write, a read of a page, binder or settings file, a
+  /// check of an attachment file. A test that deletes the notebook's folder
+  /// waits for null first (`test/support/notebook_folder.dart`). A disposed
+  /// notebook's timers are cancelled, so a change it never saved is not
+  /// running.
+  @visibleForTesting
+  String? get inFlightForTest {
+    final parts = <String>[
+      if (!_disposed) ?unsavedDescription,
+      if (!_chain.isIdle) 'the save chain has a job queued or running',
+      if (!_disposed && (_debounce.isNotEmpty || (_rootDebounce?.isActive ?? false))) 'a watcher debounce timer pending',
+      for (final e in _flights.entries) '${e.key}${e.value > 1 ? ' x${e.value}' : ''} running',
+      if (_runningChecks() > 0) '${_runningChecks()} attachment file checks running',
+    ];
+    return parts.isEmpty ? null : parts.join('; ');
+  }
+
+  int _runningChecks() {
+    // ignore: invalid_use_of_visible_for_testing_member
+    _madeAttachments.removeWhere((a) => a != _attachments && a.pendingChecks == 0);
+    // ignore: invalid_use_of_visible_for_testing_member
+    return _madeAttachments.fold(0, (n, a) => n + a.pendingChecks);
+  }
+
+  /// Whether [dispose] ran.
+  @visibleForTesting
+  bool get disposedForTest => _disposed;
+
+  /// The notebooks built and not yet settled by a test, for
+  /// `test/support/notebook_folder.dart`. Filled in debug and test builds only.
+  @visibleForTesting
+  static final Set<Notebook> liveForTest = {};
 
   /// Writes any unsaved change now.
   Future<void> flush() async {
@@ -10495,7 +10570,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // result has been read back and checked. An entry that can't be applied
   // stays. A busy page, and a page being edited, are skipped (R-1 v5): its
   // own session holds its edits.
-  Future<void> _recoverPending({String? onlyLoc}) async {
+  Future<void> _recoverPending({String? onlyLoc}) => _inFlight('recoverPending', () => _recoverPendingInner(onlyLoc: onlyLoc));
+
+  Future<void> _recoverPendingInner({String? onlyLoc}) async {
     final rec = _recovery;
     if (rec == null) return;
     final problem = _lockProblem();
@@ -10772,7 +10849,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // when it holds the copy the entry is retired; when it doesn't, the merge is
   // done again (the entry stays and is re-checked); a page listed nowhere
   // whose file is gone was deleted, and the entry goes.
-  Future<bool> _recheckConsumedCopy(RecoveryStore rec, RecoveryEntry e, String loc, _ConsumedCopy m) async {
+  Future<bool> _recheckConsumedCopy(RecoveryStore rec, RecoveryEntry e, String loc, _ConsumedCopy m) => _inFlight('recheckConsumedCopy', () => _recheckConsumedCopyInner(rec, e, loc, m));
+
+  Future<bool> _recheckConsumedCopyInner(RecoveryStore rec, RecoveryEntry e, String loc, _ConsumedCopy m) async {
     final id = e.pageId;
     final due = m.decideNow || now().difference(m.since) >= copyRetireAfter;
     if (!due || m.deleting || m.parked || _current?.page.id == id) return false;
@@ -11498,7 +11577,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // every location is available and no entry waits for that page, so it
   // doesn't nag while its folder is merely away.
   Future<void> _landKeptAssets(RecoveryStore rec, {String? onlyLoc}) {
-    final run = _landChain.then((_) => _landKeptAssetsNow(rec, onlyLoc));
+    final run = _inFlight('landKeptAssets', () => _landChain.then((_) => _landKeptAssetsNow(rec, onlyLoc)));
     _landChain = run.catchError((Object _) {});
     return run;
   }
@@ -11839,7 +11918,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Reads page [id] through the store, which refuses a file that holds another
   // page (so that page's content is never served under this id). A refusal
   // queues a check of the file, which settles what page the file is.
-  Future<NotedPage> _loadPage(PageStore st, String id) async {
+  Future<NotedPage> _loadPage(PageStore st, String id) => _inFlight('loadPage', () => _loadPageInner(st, id));
+
+  Future<NotedPage> _loadPageInner(PageStore st, String id) async {
     try {
       return await st.load(id);
     } on PageFormatException catch (e) {
@@ -12063,7 +12144,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // The binder file of folder [dir] as a binder being opened finds it, inside
   // a turn at the folder, with no side effects: [want] null takes any readable
   // binder as its own.
-  Future<({BinderVerdict verdict, Binder? other})> _readVerdictLocked(String dir, String? want) async {
+  Future<({BinderVerdict verdict, Binder? other})> _readVerdictLocked(String dir, String? want) => _inFlight('readVerdictLocked', () => _readVerdictLockedInner(dir, want));
+
+  Future<({BinderVerdict verdict, Binder? other})> _readVerdictLockedInner(String dir, String? want) async {
     if (_pullOnly(dir)) return (verdict: BinderVerdict.none, other: null);
     final r = await _readBinderText(_binderStore(Directory(dir)).file);
     final text = r.text;
@@ -12085,9 +12168,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// text or its page id).
   @visibleForTesting
   void setKnownTextForTest(String path, String text) => _known[_key(path)] = text;
-
-  @visibleForTesting
-  bool knowsFileForTest(String path) => _known.containsKey(_key(path)) || _pathId.containsKey(_key(path));
 
   /// Scans the folder of location [loc] through the folder lock, as the
   /// notebook's own scans do.
@@ -12505,7 +12585,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       debugPrint('Checking $path failed: $e');
     });
     _checking = job;
-    return job;
+    return _inFlight('check queue', () => job);
   }
 
   /// Tells the notebook that the files at [paths] arrived, changed or were
@@ -12536,7 +12616,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // The copies listed as waiting for the page file [path] (it was not
   // downloaded when they were looked at) are looked at again now it is there.
-  Future<void> _recheckCopiesWaitingFor(String path) async {
+  Future<void> _recheckCopiesWaitingFor(String path) => _inFlight('recheckCopiesWaitingFor', () => _recheckCopiesWaitingForInner(path));
+
+  Future<void> _recheckCopiesWaitingForInner(String path) async {
     final name = path.split(RegExp(r'[\/]')).last;
     final lists = [
       _unreadable,
@@ -12620,7 +12702,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       debugPrint('Checking $path failed: $e');
     });
     _checking = job;
-    return job;
+    return _inFlight('check queue', () => job);
   }
 
   // Looks again at the binder file of folder [path] in a moment.
@@ -12634,7 +12716,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     });
   }
 
-  Future<void> _checkBinderFile(String path, {bool force = false}) async {
+  Future<void> _checkBinderFile(String path, {bool force = false}) => _inFlight('checkBinderFile', () => _checkBinderFileInner(path, force: force));
+
+  Future<void> _checkBinderFileInner(String path, {bool force = false}) async {
     if (!_isBinderFile(path)) return;
     final dirKey = _key(File(path).parent.path);
     final section = _binders.values.where((b) => _key(b.path) == dirKey).firstOrNull;
@@ -13104,7 +13188,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  Future<bool> _checkFileNow(String path) async {
+  Future<bool> _checkFileNow(String path) => _inFlight('checkFileNow', () => _checkFileNowInner(path));
+
+  Future<bool> _checkFileNowInner(String path) async {
     if (!path.endsWith(PageStore.extension)) return false;
     final loc = _locationOf(path);
     if (loc == null) return false;
@@ -13415,7 +13501,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // While the open page is blocked its file is looked at again, so a read
   // error that was only passing (a sync client holding the file) clears.
-  Future<void> _recheckBlocked() async {
+  Future<void> _recheckBlocked() => _inFlight('recheckBlocked', () => _recheckBlockedInner());
+
+  Future<void> _recheckBlockedInner() async {
     final id = _diskBlockId;
     final c = _current;
     if (id == null || c == null || c.page.id != id) return;
@@ -14131,7 +14219,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return Platform.isWindows ? c == 5 : (c == 13 || c == 1);
   }
 
-  Future<void> _discoverOnce() async {
+  Future<void> _discoverOnce() => _inFlight('discoverOnce', () => _discoverOnceInner());
+
+  Future<void> _discoverOnceInner() async {
     final started = DateTime.now();
     final listed = {for (final p in _binders.keys) _key(p)};
     final standalone = {
@@ -14490,7 +14580,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // placeholder) is `failed`; a file that was read but isn't a binder file with
   // an id of this form is a settled "not one". The read is reused while the
   // file's size and time are unchanged.
-  Future<_Candidate> _readCandidate(String path) async {
+  Future<_Candidate> _readCandidate(String path) => _inFlight('readCandidate', () => _readCandidateInner(path));
+
+  Future<_Candidate> _readCandidateInner(String path) async {
     try {
       final stat = await File(path).stat();
       final size = stat.size;
@@ -14603,7 +14695,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     unawaited(_checkFresh(backstop));
   }
 
-  Future<void> _checkFresh(bool backstop) async {
+  Future<void> _checkFresh(bool backstop) => _inFlight('checkFresh', () => _checkFreshInner(backstop));
+
+  Future<void> _checkFreshInner(bool backstop) async {
     var arrived = false;
     final now = DateTime.now();
     for (final e in _freshFolders.entries.toList()) {
@@ -14829,10 +14923,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       debugPrint('Checking the folders failed: $e');
     });
     _checking = job;
-    return job;
+    return _inFlight('check queue', () => job);
   }
 
-  Future<void> _checkFolders() async {
+  Future<void> _checkFolders() => _inFlight('checkFolders', () => _checkFoldersInner());
+
+  Future<void> _checkFoldersInner() async {
     await _recheckBlocked();
     if (_disposed) return;
     await _confirmGoneChosen();
@@ -15189,7 +15285,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // At checkFolders: the chosen files of closed pages that nothing lists for
   // their page (a lock or damage that cleared without a watcher event).
-  Future<void> _recheckChosenFiles() async {
+  Future<void> _recheckChosenFiles() => _inFlight('recheckChosenFiles', () => _recheckChosenFilesInner());
+
+  Future<void> _recheckChosenFilesInner() async {
     for (final e in _adoptedFiles.entries.toList()) {
       final id = e.key;
       final path = e.value;
@@ -15547,7 +15645,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // text: the other page is never installed under [id].
   static const String _holdsOtherPage = 'the page file holds a different page';
 
-  Future<({String? text, _FileUnreadable? readError, NotedPage? page})> _readForOpen(PageStore st, String id) async {
+  Future<({String? text, _FileUnreadable? readError, NotedPage? page})> _readForOpen(PageStore st, String id) => _inFlight('readForOpen', () => _readForOpenInner(st, id));
+
+  Future<({String? text, _FileUnreadable? readError, NotedPage? page})> _readForOpenInner(PageStore st, String id) async {
     try {
       final text = await st.readText(id);
       NotedPage? page;
@@ -15692,7 +15792,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // The preview becomes an editable page once nothing is kept for it and
   // nothing holds it.
   bool _reopening = false;
-  Future<void> _refreshPreview() async {
+  Future<void> _refreshPreview() => _inFlight('refreshPreview', () => _refreshPreviewInner());
+
+  Future<void> _refreshPreviewInner() async {
     final p = _preview;
     final rec = _recovery;
     if (p == null || rec == null || _reopening || _disposed) return;

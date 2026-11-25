@@ -13,7 +13,7 @@ import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted_core/noted_core.dart';
 
-import 'support/busy_retry.dart';
+import 'support/notebook_folder.dart';
 
 /// A store whose delete and new-page publish can be intercepted.
 class HookedStore extends PageStore {
@@ -123,7 +123,7 @@ void main() {
 
   tearDown(() async {
     nb.dispose();
-    await busyRetry(() => root.delete(recursive: true));
+    await deleteTestFolder(root);
   });
 
   String pagePath(String id, [Directory? d]) =>

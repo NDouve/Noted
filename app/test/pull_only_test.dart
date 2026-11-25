@@ -22,6 +22,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/busy_retry.dart';
+import 'support/notebook_folder.dart';
 
 Map<String, Object?> _doc(String text) => {
   'document': {
@@ -204,7 +205,7 @@ class _World {
     for (final nb in _opened) {
       nb.dispose();
     }
-    if (top.existsSync()) await busyRetry(() => top.delete(recursive: true));
+    await deleteTestFolder(top);
   }
 }
 

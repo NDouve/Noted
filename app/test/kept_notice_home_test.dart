@@ -15,6 +15,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/real_io.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   final sep = Platform.pathSeparator;
@@ -78,13 +79,7 @@ void main() {
     await tester.runAsync(() async {
       await nb.flush();
       nb.dispose();
-      for (var i = 0; i < 20 && root.existsSync(); i++) {
-        try {
-          await root.delete(recursive: true);
-        } on FileSystemException {
-          await Future<void>.delayed(const Duration(milliseconds: 100));
-        }
-      }
+      await deleteTestFolder(root);
     });
   }
 

@@ -19,6 +19,7 @@ import 'package:noted_core/noted_core.dart';
 import 'support/busy_retry.dart';
 import 'support/spy_modules.dart';
 import 'support/page_save.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -48,7 +49,7 @@ void main() {
 
   tearDown(() async {
     nb.dispose();
-    await busyRetry(() => root.delete(recursive: true));
+    await deleteTestFolder(root);
   });
 
   String pathIn(Directory d, String id) => '${d.path}$sep$id.canvas';

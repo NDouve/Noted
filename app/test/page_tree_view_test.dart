@@ -19,6 +19,7 @@ import 'package:noted_core/noted_core.dart';
 import 'support/busy_retry.dart';
 import 'support/real_io.dart';
 import 'support/settle_saves.dart';
+import 'support/notebook_folder.dart';
 
 /// A store that runs [beforeDelete] once, right before the next
 /// compare-and-delete: a sync client landing a newer version of the file.
@@ -261,7 +262,7 @@ void main() {
       nb.dispose();
       // dispose does not await closing a watcher, so on Windows its handle
       // can still be on the folder for a moment.
-      await busyRetry(() => dir.delete(recursive: true));
+      await deleteTestFolder(dir);
     });
   }
 
@@ -442,7 +443,7 @@ void main() {
 
   testWidgets('the Deleted bar has a close button and a time limit, even with Undo', (tester) async {
     final app = await tester.runAsync(() => Directory.systemTemp.createTemp('noted_tree_app')) as Directory;
-    addTearDown(() => app.deleteSync(recursive: true));
+    addTearDown(() => deleteTestFolder(app));
     // The bar's 10 s timer runs on the test clock, which `until` and `settle`
     // advance once per round of real IO; on a slow machine that could time
     // the bar out before it is inspected. So the clock is frozen while
@@ -480,7 +481,7 @@ void main() {
   testWidgets('saveBeforeExit (the exit handler) drops a pending delete and its set-aside attachments',
       (tester) async {
     final app = await tester.runAsync(() => Directory.systemTemp.createTemp('noted_tree_app')) as Directory;
-    addTearDown(() => app.deleteSync(recursive: true));
+    addTearDown(() => deleteTestFolder(app));
     final trash = await deleteWithAttachment(tester, app);
     expect(trashHasFiles(trash), isTrue);
     await tester.runAsync(() => saveBeforeExit(nb));
@@ -704,7 +705,7 @@ void main() {
 
   testWidgets('closing the Deleted bar releases the pages and cleans up the attachments', (tester) async {
     final app = await tester.runAsync(() => Directory.systemTemp.createTemp('noted_tree_app')) as Directory;
-    addTearDown(() => app.deleteSync(recursive: true));
+    addTearDown(() => deleteTestFolder(app));
     final trash = await deleteWithAttachment(tester, app);
     expect(trashHasFiles(trash), isTrue);
     await tester.tap(find.byIcon(Icons.close));
