@@ -1652,7 +1652,11 @@ void main() {
                   s.copyGap = (from, listed) {
                     final t = s.replaceTarget;
                     if (landed || t == null) return;
-                    if (!listed.any((e) => s._norm(e.path) == s._norm(t))) return;
+                    // By name: the snapshot lists the root as the temp folder
+                    // spells it (8.3 short names on Windows CI), the target is
+                    // the resolved drive path.
+                    String name(String p) => p.split(RegExp(r'[\\/]')).last;
+                    if (!listed.any((e) => name(e.path) == name(t))) return;
                     landed = true;
                     File(t).renameSync('$t.ab12cd$asideSuffix');
                   };
