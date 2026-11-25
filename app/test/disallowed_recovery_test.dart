@@ -15,8 +15,8 @@ import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart' show KeepKind;
 import 'package:noted_core/noted_core.dart';
 
-import 'support/busy_retry.dart';
 import 'support/spy_modules.dart';
+import 'support/notebook_folder.dart';
 import 'support/trouble_world.dart' show FailStore;
 
 void main() {
@@ -43,7 +43,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    await busyRetry(() => root.delete(recursive: true));
+    await deleteTestFolder(root);
   });
 
   Notebook make({PageStore? pageStore}) {

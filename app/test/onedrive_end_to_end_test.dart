@@ -22,6 +22,7 @@ import 'package:noted_core/noted_core.dart';
 import '../../packages/noted_sync/test/fake_graph.dart';
 import 'support/onedrive_world.dart';
 import 'support/real_io.dart';
+import 'support/notebook_folder.dart';
 
 const String _pageId = 'cccc000000000001';
 
@@ -149,7 +150,7 @@ void main() {
     await t.runAsync(() async {
       nb.dispose();
       await fake.close();
-      await top.delete(recursive: true);
+      await deleteTestFolder(top);
     });
   });
 }

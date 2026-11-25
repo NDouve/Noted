@@ -7,11 +7,12 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/app_settings.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   test('settings.json drops the old aiConnections on the next save and keeps every other field', () async {
     final dir = await Directory.systemTemp.createTemp('noted_settings');
-    addTearDown(() => dir.delete(recursive: true));
+    addTearDown(() => deleteTestFolder(dir));
     final file = File('${dir.path}/settings.json');
     const connections = '[{"id":"0123456789abcdef","name":"Clauðe \\"Code\\"","hash":"ab12","created":1700000000000}]';
     const future = '{"a":true,"b":[1,2,{"c":null}]}';
@@ -32,7 +33,7 @@ void main() {
 
   test('the one-time AI access note is remembered in settings.json', () async {
     final dir = await Directory.systemTemp.createTemp('noted_settings');
-    addTearDown(() => dir.delete(recursive: true));
+    addTearDown(() => deleteTestFolder(dir));
     final file = File('${dir.path}/settings.json');
     final settings = AppSettings(file);
     expect(settings.aiAccessNoteShown, isFalse);

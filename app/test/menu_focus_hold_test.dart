@@ -20,6 +20,7 @@ import 'package:noted/src/notebook.dart' show BinderSection;
 
 import 'support/settle_saves.dart';
 import 'support/shell_world.dart';
+import 'support/notebook_folder.dart';
 
 Future<void> _frames(WidgetTester t, [int n = 4]) async {
   for (var i = 0; i < n; i++) {
@@ -270,7 +271,7 @@ void main() {
       await settleSaves(t, w.nb);
       await t.runAsync(() async {
         w.nb.dispose();
-        await w.dir.delete(recursive: true);
+        await deleteTestFolder(w.dir);
       });
     });
   });

@@ -16,6 +16,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'support/busy_retry.dart';
 import 'support/page_save.dart';
+import 'support/notebook_folder.dart';
 
 Map<String, Object?> doc(String text) => {
   'document': {
@@ -140,7 +141,7 @@ void main() {
 
   tearDown(() async {
     nb.dispose();
-    await busyRetry(() => root.delete(recursive: true));
+    await deleteTestFolder(root);
   });
 
   BoxRecord noteBox(String text, {Bounds at = const Bounds(10, 10, 200, 40)}) {

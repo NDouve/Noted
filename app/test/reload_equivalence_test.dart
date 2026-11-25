@@ -282,6 +282,7 @@ import '../../packages/noted_sync/test/helpers.dart' show FakeClock;
 import 'support/binder_seams.dart';
 import 'support/real_io.dart' show realIoUntil;
 import 'support/page_save.dart';
+import 'support/notebook_folder.dart';
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -773,7 +774,7 @@ class _Run {
     for (final n in {nb, ..._spare}) {
       if (_gone.add(n)) n.dispose();
     }
-    if (root.existsSync()) await _busyRetry(() => root.delete(recursive: true));
+    await deleteTestFolder(root);
   }
 
   Notebook _make() => Notebook(
@@ -5563,7 +5564,7 @@ class _DavWorld {
       n.dispose();
     }
     await fake.close();
-    await _busyRetry(() => top.delete(recursive: true));
+    await deleteTestFolder(top);
   }
 }
 

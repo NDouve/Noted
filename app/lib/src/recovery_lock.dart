@@ -4,6 +4,8 @@
 
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 /// The result of trying to take the recovery lock.
 enum RecoveryLockResult {
   /// This process owns recovery now.
@@ -38,6 +40,19 @@ class RecoveryLock {
   Object? error;
 
   bool get held => _handle != null;
+
+  /// Lets go of the lock, so a test can delete the folder the file is in
+  /// (the app never does: the lock lasts as long as the process).
+  @visibleForTesting
+  void releaseForTest() {
+    final h = _handle;
+    _handle = null;
+    try {
+      h?.closeSync();
+    } on Object {
+      // Already unusable.
+    }
+  }
 
   /// Takes the lock, trying [tries] times [gap] apart. Blocks the isolate
   /// (it runs before the window is built).

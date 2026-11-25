@@ -14,6 +14,7 @@ import 'package:noted/src/ai/ai_link_authority.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 import 'support/trouble_world.dart' show FailStore, accessDenied, until;
 
@@ -161,7 +162,7 @@ void main() {
       nb.dispose();
     }
     service.dispose();
-    if (root.existsSync()) await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   Notebook make({PageStore? store, Directory? recovery}) {

@@ -20,6 +20,7 @@ import 'search_ui_test.dart' show noteBox, notePage;
 import 'support/real_io.dart';
 import 'support/settle_saves.dart';
 import 'support/page_save.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -71,7 +72,7 @@ void main() {
     await settleSaves(t, nb);
     await t.runAsync(() async {
       nb.dispose();
-      await root.delete(recursive: true);
+      await deleteTestFolder(root);
     });
   }
 

@@ -11,6 +11,8 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_lock.dart';
 import 'package:noted_core/noted_core.dart';
 
+import 'notebook_folder.dart';
+
 /// A page store whose publishes can be made to fail or to hang, as a locked
 /// file or a dead drive would (R-1 v5 tests).
 class FailStore extends PageStore {
@@ -98,6 +100,16 @@ class TroubleWorld {
     settings = File('${root.path}/app/binders.json');
   }
 
+  final List<RecoveryLock> _locks = [];
+
+  /// A recovery lock on [file] that [dispose] lets go of before the folder is
+  /// deleted (an open lock file can't be).
+  RecoveryLock lock(File file) {
+    final l = RecoveryLock(file);
+    _locks.add(l);
+    return l;
+  }
+
   FailStore storeFor(Directory d) =>
       stores.putIfAbsent(d.path, () => FailStore(d));
 
@@ -169,16 +181,10 @@ class TroubleWorld {
       if (st != null && !st.isCompleted) st.complete();
     }
     await Future<void>.delayed(const Duration(milliseconds: 30));
-    if (root.existsSync()) {
-      for (var i = 0; i < 20; i++) {
-        try {
-          await root.delete(recursive: true);
-          break;
-        } on FileSystemException {
-          await Future<void>.delayed(const Duration(milliseconds: 50));
-        }
-      }
+    for (final l in _locks) {
+      l.releaseForTest();
     }
+    await deleteTestFolder(root);
   }
 }
 

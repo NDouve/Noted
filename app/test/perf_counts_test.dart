@@ -18,6 +18,7 @@ import 'package:noted_core/testing.dart';
 
 import 'support/counting_io.dart';
 import 'support/page_save.dart';
+import 'support/notebook_folder.dart';
 
 Map<String, Object?> doc(String text) => {
   'document': {
@@ -83,16 +84,7 @@ void main() {
 
   tearDown(() async {
     nb.dispose();
-    // On Windows a watcher's handle, or a check that was already reading, is
-    // released a moment after dispose; a delete then fails with errno 32.
-    for (var attempt = 1; Directory(dir.path).existsSync(); attempt++) {
-      try {
-        await Directory(dir.path).delete(recursive: true);
-      } on FileSystemException {
-        if (attempt >= 20) rethrow;
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-      }
-    }
+    await deleteTestFolder(dir);
   });
 
   String pathOf(String id) => other.pathFor(id);

@@ -14,6 +14,7 @@ import 'package:noted/src/settings_panel.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/real_io.dart';
 import 'support/settle_saves.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory dir;
@@ -45,7 +46,7 @@ void main() {
     await settleSaves(tester, nb);
     await tester.runAsync(() async {
       nb.dispose();
-      await dir.delete(recursive: true);
+      await deleteTestFolder(dir);
     });
   }
 
@@ -214,7 +215,7 @@ void main() {
     }
     await tester.runAsync(() async {
       ro.dispose();
-      await root.delete(recursive: true);
+      await deleteTestFolder(root);
     });
     await finish(tester);
   });

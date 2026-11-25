@@ -11,14 +11,12 @@ import 'package:noted/main.dart';
 import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/menu_bar.dart';
 import 'package:noted/src/notebook.dart';
-import 'package:noted/src/page_attachments.dart';
 import 'package:noted/src/window_channel.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_core/noted_core.dart';
 
-import 'real_io.dart';
-import 'settle_saves.dart';
+import 'notebook_folder.dart';
 
 /// The app window over a real notebook in a temp folder, for the menu bar,
 /// panel and theme tests. Pages are "Alpha" (open) and "Beta".
@@ -93,21 +91,10 @@ class ShellWorld {
 
   Future<void> close(WidgetTester t) async {
     await t.pumpWidget(const SizedBox());
-    await settleSaves(t, nb);
-    await settleAttachmentChecks(t, nb.attachments);
+    await settleNotebooks(tester: t, under: dir);
     await t.runAsync(() async {
       nb.dispose();
-      // A file check still reading an attachment holds the folder on Windows
-      // for a moment: try again, for up to 10 s.
-      for (var i = 0;; i++) {
-        try {
-          await dir.delete(recursive: true);
-          return;
-        } on FileSystemException {
-          if (i >= 50) rethrow;
-          await Future<void>.delayed(const Duration(milliseconds: 200));
-        }
-      }
+      await deleteTestFolder(dir);
     });
   }
 }
@@ -220,21 +207,4 @@ final Finder noteEditorFinder = find.byWidgetPredicate(
 String? noteSelection(WidgetTester t) {
   final editor = t.widget(noteEditorFinder) as dynamic;
   return editor.editorState.selection?.toString();
-}
-
-/// Waits until [attachments] has no file check running (a check reads an
-/// asset file; deleting the folder meanwhile fails on Windows).
-Future<void> settleAttachmentChecks(
-  WidgetTester t,
-  PageAttachments? attachments, {
-  Duration limit = const Duration(seconds: 20),
-}) async {
-  final clock = Stopwatch()..start();
-  final scaled = limit * realIoScale;
-  while (attachments != null && attachments.pendingChecks > 0) {
-    if (clock.elapsed > scaled) fail('${attachments.pendingChecks} attachment checks did not finish within $scaled.');
-    // A check started in the test's fake-time zone needs that zone pumped.
-    await t.pump();
-    await t.runAsync(() => realIoPause(20));
-  }
 }

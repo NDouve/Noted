@@ -12,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -30,7 +31,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   Notebook make() {

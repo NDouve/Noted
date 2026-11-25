@@ -17,6 +17,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart' show Bounds;
 
 import 'support/shell_world.dart';
+import 'support/notebook_folder.dart';
 
 Future<void> _frames(WidgetTester t, [int n = 4]) async {
   for (var i = 0; i < n; i++) {
@@ -40,7 +41,7 @@ void main() {
       dir = Directory.systemTemp.createTempSync('noted_context_setting');
       file = File('${dir.path}/sub/settings.json');
     });
-    tearDown(() => dir.deleteSync(recursive: true));
+    tearDown(() => deleteTestFolder(dir));
 
     test('the default is List and nothing is written', () {
       expect(AppSettings(file).contextMenu, ContextMenuStyle.list);

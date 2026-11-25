@@ -25,6 +25,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'support/binder_seams.dart';
 import 'support/real_io.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -100,7 +101,7 @@ void main() {
     await idle();
     await noticeSub.cancel();
     nb.dispose();
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   }
 
   Future<void> until(bool Function() done, String what) => realIoUntil(done, what);

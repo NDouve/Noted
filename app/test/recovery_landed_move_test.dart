@@ -15,6 +15,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted/src/recovery_store.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 /// A store whose reads throw while [fail] says so.
 class _FlakyReadStore extends PageStore {
@@ -107,7 +108,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    if (root.existsSync()) await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   PageStore plain(Directory d) => _NoNewStore(

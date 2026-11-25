@@ -18,6 +18,7 @@ import 'package:noted_auth/noted_auth.dart' show AuthErrorKind, AuthException;
 import 'package:noted_sync/noted_sync.dart';
 
 import 'support/onedrive_world.dart';
+import 'support/notebook_folder.dart';
 
 RoundResult _round({List<String> paths = const [], Object? error}) {
   final r = RoundResult()..changedPaths.addAll(paths);
@@ -59,7 +60,7 @@ void main() {
         w.sync.dispose();
         await t.runAsync(() async {
           w.nb.dispose();
-          await w.top.delete(recursive: true);
+          await deleteTestFolder(w.top);
         });
       }
     });
@@ -566,7 +567,7 @@ void main() {
         sync.dispose();
         w.sync.dispose();
         w.nb.dispose();
-        await w.top.delete(recursive: true);
+        await deleteTestFolder(w.top);
       });
     });
   });

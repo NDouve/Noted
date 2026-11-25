@@ -15,6 +15,7 @@ import 'package:noted/src/settings_panel.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/real_io.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -51,7 +52,7 @@ void main() {
     await nb.flush();
     await realIoUntil(() => nb.unsavedDescription == null, 'the saves to land');
     nb.dispose();
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   Future<void> pumpPanel(WidgetTester t) async {

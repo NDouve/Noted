@@ -20,6 +20,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/scripted_coordinator.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -37,7 +38,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    if (root.existsSync()) await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   final bytes = Uint8List.fromList([1, 2, 3, 4]);

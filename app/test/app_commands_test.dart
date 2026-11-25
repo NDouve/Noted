@@ -14,8 +14,8 @@ import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart' show CommandToolbar;
 import 'package:noted_core/noted_core.dart';
-import 'support/busy_retry.dart';
 import 'support/settle_saves.dart';
+import 'support/notebook_folder.dart';
 
 /// Records which UI actions the commands asked for.
 class _Actions implements PageTreeActions {
@@ -77,7 +77,7 @@ void main() {
     // (The widget test settles its saves before it ends, so this returns at once.)
     await nb.flush();
     nb.dispose();
-    await busyRetry(() => dir.delete(recursive: true));
+    await deleteTestFolder(dir);
   });
 
   group('page commands', () {

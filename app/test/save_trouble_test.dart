@@ -11,6 +11,7 @@ import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted/src/storage_check.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 FileSystemException _err(int code) =>
     FileSystemException('x', 'p', OSError('msg', code));
@@ -183,7 +184,7 @@ void main() {
 
     test('a folder that cannot be written gets the access advice; other errors the OS message', () async {
       final dir = Directory.systemTemp.createTempSync('noted_check');
-      addTearDown(() => dir.deleteSync(recursive: true));
+      addTearDown(() => deleteTestFolder(dir));
       File('${dir.path}/blocked').writeAsStringSync('x');
       final c = await checkStorage(
         _err(5),
@@ -332,7 +333,7 @@ void main() {
       dir = Directory.systemTemp.createTempSync('noted_rs');
       store = RecoveryStore(Directory('${dir.path}/recovery'));
     });
-    tearDown(() => dir.deleteSync(recursive: true));
+    tearDown(() => deleteTestFolder(dir));
 
     test('write refuses to replace a slot whose content is not a generation the writer may replace', () async {
       final first = await store.write(

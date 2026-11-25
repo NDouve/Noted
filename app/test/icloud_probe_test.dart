@@ -17,6 +17,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/fake_cloud_folder_channel.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -81,7 +82,7 @@ void main() {
     }
     for (var i = 0; i < 20 && root.existsSync(); i++) {
       try {
-        await root.delete(recursive: true);
+        await deleteTestFolder(root);
       } on FileSystemException {
         await Future<void>.delayed(const Duration(milliseconds: 100));
       }

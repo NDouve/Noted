@@ -13,6 +13,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'support/busy_retry.dart';
 import 'support/page_save.dart';
+import 'support/notebook_folder.dart';
 
 const _codec = NoteCodec();
 
@@ -94,7 +95,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    if (root.existsSync()) await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   Notebook make({bool watch = false}) {

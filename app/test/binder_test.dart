@@ -9,6 +9,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/page_save.dart';
+import 'support/notebook_folder.dart';
 
 /// A binder page store whose [corruptAt]th write is damaged after it lands.
 class CorruptingStore extends PageStore {
@@ -71,7 +72,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   Notebook make({PageStore Function(Directory)? factory, Future<String?> Function()? pick}) {

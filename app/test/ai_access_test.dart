@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -29,7 +30,7 @@ void main() {
   tearDown(() async {
     await nb.flush();
     nb.dispose();
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   test('Guarded by default; a top-level page may choose any value; lower pages only tighten', () async {

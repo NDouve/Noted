@@ -12,7 +12,7 @@ import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
-import 'support/busy_retry.dart';
+import 'support/notebook_folder.dart';
 
 Future<void> _wait(int ms) => Future<void>.delayed(Duration(milliseconds: ms));
 
@@ -46,7 +46,7 @@ void main() {
 
   tearDown(() async {
     nb.dispose();
-    await busyRetry(() => root.delete(recursive: true));
+    await deleteTestFolder(root);
   });
 
   int pageFiles(Directory d) => d.listSync().where((e) => e.path.endsWith('.canvas')).length;

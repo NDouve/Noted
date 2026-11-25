@@ -170,7 +170,6 @@ void main() {
     }
     // Whatever the reloaded notebook still writes or scans is finished before it is closed.
     await settleSaves(t, again);
-    await settleAttachmentChecks(t, again.attachments);
     await t.runAsync(() async => again.dispose());
   }
 

@@ -12,6 +12,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted/src/open_files.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 typedef _S = ({Notebook nb, String id, String orig, String copy});
 
@@ -36,7 +37,7 @@ void main() {
       await nb.checkFile('settled.txt');
       nb.dispose();
     }
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   // A notebook of its own (own pages folder and binders.json).

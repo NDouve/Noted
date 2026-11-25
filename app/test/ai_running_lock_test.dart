@@ -17,12 +17,13 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/lock_holder_process.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory dir;
 
   setUp(() => dir = Directory.systemTemp.createTempSync('noted_running'));
-  tearDown(() => dir.deleteSync(recursive: true));
+  tearDown(() => deleteTestFolder(dir));
 
   File lockFile() => File('${dir.path}/$aiRunningLockFileName');
 

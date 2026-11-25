@@ -20,6 +20,8 @@ import 'package:noted_auth/noted_auth.dart';
 import 'package:noted_core/noted_core.dart';
 import 'package:noted_sync/noted_sync.dart';
 
+import 'notebook_folder.dart';
+
 String _jwt(Map<String, Object?> claims) {
   String part(Object o) => base64Url.encode(utf8.encode(jsonEncode(o))).replaceAll('=', '');
   return '${part({'alg': 'none'})}.${part(claims)}.sig';
@@ -288,7 +290,7 @@ class OneDriveWorld {
   Future<void> close() async {
     sync.dispose();
     nb.dispose();
-    await top.delete(recursive: true);
+    await deleteTestFolder(top);
   }
 }
 

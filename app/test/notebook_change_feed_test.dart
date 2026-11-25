@@ -10,7 +10,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
-import 'support/busy_retry.dart';
+import 'support/notebook_folder.dart';
 
 /// A store whose writes and deletes can be made to fail.
 class FailingStore extends PageStore {
@@ -110,7 +110,7 @@ void main() {
       n.dispose();
     }
     disposeLater.clear();
-    await busyRetry(() => root.delete(recursive: true));
+    await deleteTestFolder(root);
   });
 
 

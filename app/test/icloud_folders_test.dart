@@ -18,6 +18,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/fake_cloud_folder_channel.dart';
+import 'support/notebook_folder.dart';
 
 void main() {
   late Directory root;
@@ -61,7 +62,7 @@ void main() {
     for (final f in folders) {
       f.dispose();
     }
-    if (root.existsSync()) await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   group('pick', () {

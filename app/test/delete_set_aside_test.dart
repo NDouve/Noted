@@ -18,6 +18,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 class _Refuser implements StorageCoordinator {
   _Refuser(this.refuse);
@@ -107,7 +108,7 @@ void main() {
     }
     for (var attempt = 1; root.existsSync(); attempt++) {
       try {
-        await root.delete(recursive: true);
+        await deleteTestFolder(root);
       } on FileSystemException {
         if (attempt >= 20) rethrow;
         await Future<void>.delayed(const Duration(milliseconds: 100));

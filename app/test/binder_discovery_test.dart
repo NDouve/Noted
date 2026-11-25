@@ -20,9 +20,9 @@ import 'package:noted/src/recovery_store.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
-import 'support/busy_retry.dart';
 import 'support/page_save.dart';
 import 'support/scripted_coordinator.dart';
+import 'support/notebook_folder.dart';
 
 Map<String, Object?> doc(String text) => {
   'document': {
@@ -143,7 +143,7 @@ void main() {
       await nb.flush();
       nb.dispose();
     }
-    await busyRetry(() => root.delete(recursive: true));
+    await deleteTestFolder(root);
   });
 
   String k(String p) {

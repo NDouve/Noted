@@ -10,6 +10,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/attachment_copy.dart';
+import 'support/notebook_folder.dart';
 import 'package:noted_core/noted_core.dart' show contentHash;
 
 void main() {
@@ -24,7 +25,7 @@ void main() {
   });
 
   tearDown(() async {
-    await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   File f(Directory d, String name) => File('${d.path}/$name');

@@ -13,6 +13,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_box_ai/noted_box_ai.dart';
 import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/notebook_folder.dart';
 
 Map<String, Object?> _para(String text) => {
   'type': 'paragraph',
@@ -113,7 +114,7 @@ void main() {
     await nb.flush();
     nb.dispose();
     service.dispose();
-    if (root.existsSync()) await root.delete(recursive: true);
+    await deleteTestFolder(root);
   });
 
   group('availability', () {
