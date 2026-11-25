@@ -203,15 +203,22 @@ class _Recorder extends IoTrace {
 
   @override
   int begin(String op, String path, {String? to}) {
-    sim.io(op, path, to);
-    return 0;
+    final id = sim.note(op, path, to);
+    try {
+      sim.io(op, path, to);
+    } catch (_) {
+      sim.inflight.remove(id);
+      rethrow;
+    }
+    return id;
   }
 
   @override
-  void end(int id, [Object? error]) {}
+  void end(int id, [Object? error]) => sim.inflight.remove(id);
 
   @override
-  void failed(int id, String op, String path, Object error, {String? to}) {}
+  void failed(int id, String op, String path, Object error, {String? to}) =>
+      sim.inflight.remove(id);
 }
 
 final class _Snapshot {
@@ -263,6 +270,55 @@ class _Sim {
   final Set<String> reportedMissing = {};
   final List<String> violations = [];
   final List<String> log = [];
+
+  // What the app, the daemon and the server did to the world's files, in order
+  // (the last [_trailKeep]), and the operations started and not finished yet:
+  // when a marker is lost, what touched its file is in the failure's text.
+  final List<String> trail = [];
+  final Map<int, String> inflight = {};
+  final Stopwatch _clock = Stopwatch()..start();
+  int _noteId = 0;
+  static const int _trailKeep = 6000;
+
+  int note(String op, String path, String? to) {
+    final id = ++_noteId;
+    final root = '${_norm(w.root.path)}/';
+    if (!_norm(path).startsWith(root) &&
+        !(to != null && _norm(to).startsWith(root))) {
+      return id;
+    }
+    final tag = Zone.current[#life];
+    final who = Zone.current[#exempt] == true
+        ? 'daemon'
+        : tag == null
+        ? 'test'
+        : tag != life
+        ? 'ZOMBIE(life $tag, now $life)'
+        : 'app(life $tag)';
+    final cut = w.root.path.length + 1;
+    String rel(String p) => p.length > cut ? p.substring(cut) : p;
+    final line =
+        '#$id ${_clock.elapsedMilliseconds}ms $phase $who $op ${rel(path)}${to == null ? '' : ' -> ${rel(to)}'}';
+    trail.add(line);
+    if (trail.length > _trailKeep) {
+      trail.removeRange(0, trail.length - _trailKeep);
+    }
+    inflight[id] = line;
+    return id;
+  }
+
+  /// The trail lines that name any of [files] (page file names).
+  List<String> trailOf(Iterable<String> files, {int last = 40}) {
+    final names = {
+      for (final f in files) f.replaceAll(r'\', '/').split('/').last.split('.').first,
+    }..removeWhere((n) => n.length < 8);
+    if (names.isEmpty) return const [];
+    final hits = [
+      for (final l in trail)
+        if (names.any(l.contains)) l,
+    ];
+    return hits.length <= last ? hits : hits.sublist(hits.length - last);
+  }
   int coordCalls = 0;
   int _segChannel = 0;
   int _segCoord = 0;
@@ -286,6 +342,9 @@ class _Sim {
       snapshot = _take();
       _killed.add(kind);
       log.add('kill planned at $kind');
+      if (inflight.isNotEmpty) {
+        log.add('in flight at the snapshot: ${inflight.values.join(' | ')}');
+      }
     }
   }
 
@@ -545,6 +604,9 @@ class _Sim {
     life++; // the old life writes nothing from here on, `_restore` included
     await quit(flush: false);
     await Future<void>.delayed(const Duration(milliseconds: 400));
+    if (inflight.isNotEmpty) {
+      log.add('in flight at the restore: ${inflight.values.join(' | ')}');
+    }
     await _restore(s);
     await launch();
   }
@@ -1196,9 +1258,28 @@ class _Sim {
     problems.addAll(violations);
     if (problems.isNotEmpty) {
       fail(
-        'seed $seed (kill at $killKind #$killNth) failed:\n${problems.take(12).join('\n')}\nsteps: ${log.join(', ')}',
+        'seed $seed (kill at $killKind #$killNth) failed:\n${problems.take(12).join('\n')}\nsteps: ${log.join(', ')}${_lostTrail()}',
       );
     }
+  }
+
+  // What touched the files that held each lost marker (and the file its claim
+  // names), from the trail: who did what, in which life, in which step.
+  String _lostTrail() {
+    final out = StringBuffer();
+    for (final m in {...reportedMissing, ...missing()}) {
+      final files = <String>{
+        ...?_held[m],
+        ...RegExp(
+          r'[0-9A-Za-z_]+\.canvas',
+        ).allMatches(durable[m] ?? '').map((x) => x.group(0)!),
+      };
+      out.write('\nIO trail for $m (${durable[m]}), files $files:');
+      for (final l in trailOf(files)) {
+        out.write('\n  $l');
+      }
+    }
+    return out.toString();
   }
 
   Future<void> dispose() async {
