@@ -1147,7 +1147,9 @@ void main() {
         expect(recFiles(), isNotEmpty);
         expect(nb.recoveryProblems, hasLength(1));
         failing = false;
-        for (var i = 0; i < 100 && recFiles().isNotEmpty; i++) {
+        // The entry is removed before the retry ends and clears its problem,
+        // so wait for both.
+        for (var i = 0; i < 100 && (recFiles().isNotEmpty || nb.recoveryProblems.isNotEmpty); i++) {
           await Future<void>.delayed(const Duration(milliseconds: 100));
         }
         expect(recFiles(), isEmpty, reason: 'the timer settled it once the file reads');
