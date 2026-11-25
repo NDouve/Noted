@@ -28,15 +28,18 @@ List<Notebook> notebooksIn(Directory dir) {
   // A disposed notebook with nothing running needs no more watching.
   Notebook.liveForTest.removeWhere((n) => n.disposedForTest && n.inFlightForTest == null);
   final top = _norm(dir.absolute.path);
-  bool inside(String path) {
-    final p = _norm(File(path).absolute.path);
-    return p == top || p.startsWith('$top/');
-  }
+  bool inside(String path) => _within(top, File(path).absolute.path);
 
   return [
     for (final n in Notebook.liveForTest)
       if (inside(n.store.directory.path) || (n.bindersFile != null && inside(n.bindersFile!.path))) n,
   ];
+}
+
+/// Whether [path] is [top] (already normalised) or inside it.
+bool _within(String top, String path) {
+  final p = _norm(path);
+  return p == top || p.startsWith('$top/');
 }
 
 String _norm(String path) {
@@ -51,7 +54,7 @@ List<CloudSync> syncsIn(Directory dir) {
   final top = _norm(dir.absolute.path);
   return [
     for (final c in CloudSync.liveForTest)
-      if (_norm(c.workingRoot.absolute.path).startsWith(top)) c,
+      if (_within(top, c.workingRoot.absolute.path)) c,
   ];
 }
 

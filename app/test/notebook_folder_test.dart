@@ -11,11 +11,13 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/notebook_folder.dart';
+import 'support/onedrive_world.dart';
 import 'support/real_io.dart';
 
 void main() {
   late Directory root;
   late Notebook nb;
+  final gate = Completer<void>();
 
   // A notebook with the real autosave delay.
   setUp(() async {
@@ -110,6 +112,53 @@ void main() {
     hold.complete();
     await check;
     await settleNotebooks(notebooks: [nb]);
+  });
+
+  test('a pending watcher debounce timer is not settled, and is named', () async {
+    final other = Notebook(
+      PageStore(Directory('${root.path}/watched')..createSync()),
+      buildModules(),
+      watchFiles: true,
+      watchDebounce: const Duration(milliseconds: 1500),
+    );
+    addTearDown(() async {
+      await settleNotebooks(notebooks: [other]);
+      other.dispose();
+    });
+    await other.load();
+    await settleNotebooks(notebooks: [other]);
+    File('${root.path}/watched/stray.canvas').writeAsStringSync('{}');
+    await realIoUntil(() => other.inFlightForTest?.contains('debounce') ?? false, 'the watcher event');
+
+    await expectLater(
+      settleNotebooks(notebooks: [other], limit: const Duration(milliseconds: 300)),
+      throwsA(isA<TestFailure>().having((e) => e.message, 'message', contains('debounce'))),
+    );
+  });
+
+  test('a cloud sync round in flight is not settled, and is named', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final w = await OneDriveWorld.create(pageInFolder: true);
+    addTearDown(() async {
+      if (!gate.isCompleted) gate.complete();
+      w.sync.dispose();
+      await settleNotebooks(under: w.top);
+      await w.close();
+    });
+    w.runner.hold = gate;
+    await w.sync.start();
+    unawaited(w.sync.checkNow());
+    await realIoUntil(() => w.sync.inFlightForTest != null, 'the pull round');
+
+    expect(syncsIn(w.top), contains(w.sync));
+    expect(syncsIn(Directory('${w.top.path}-other')), isEmpty, reason: 'only a folder that contains it');
+    await expectLater(
+      settleNotebooks(under: w.top, limit: const Duration(milliseconds: 300)),
+      throwsA(isA<TestFailure>().having((e) => e.message, 'message', contains('pull round'))),
+    );
+
+    gate.complete();
+    await settleNotebooks(under: w.top);
   });
 
   test('deleteTestFolder lands the pending save first, then deletes the folder', () async {

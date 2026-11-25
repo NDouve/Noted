@@ -3102,6 +3102,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   PageAttachments _makeAttachments(String id, String loc) {
     final made = _makeAttachmentsNow(id, loc);
     assert(() {
+      _runningChecks(); // drops the settled ones, so the list stays short
       _madeAttachments.add(made);
       return true;
     }());
