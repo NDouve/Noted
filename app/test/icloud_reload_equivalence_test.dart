@@ -37,6 +37,7 @@
 // Seeds 1-40 are fixed; `--dart-define=ICLOUD_SEEDS=200` adds more.
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -121,15 +122,20 @@ class _Store extends PageStore {
       page,
       expectedText,
       beforeMoveAside: () {
+        sim.replaceTarget = pathFor(page.id);
         sim.point('replace:beforeMoveAside');
         beforeMoveAside?.call();
       },
       afterRead: afterRead,
       beforePublish: () {
+        sim.note('ffiPublish', pathFor(page.id), null, track: false);
         sim.point('replace:beforePublish');
         beforePublish?.call();
       },
-      beforeRestore: beforeRestore,
+      beforeRestore: () {
+        sim.note('ffiRestore', pathFor(page.id), null, track: false);
+        beforeRestore?.call();
+      },
       onPublishStamp: onPublishStamp,
       beforeAsideDelete: (p) async {
         sim.point('replace:beforeAsideDelete');
@@ -154,6 +160,7 @@ class _Store extends PageStore {
       page,
       text,
       beforePublish: () async {
+        sim.note('ffiPublish', pathFor(page.id), null, track: false);
         sim.point('saveNew:beforePublish');
         await beforePublish?.call();
       },
@@ -203,22 +210,21 @@ class _Recorder extends IoTrace {
 
   @override
   int begin(String op, String path, {String? to}) {
-    final id = sim.note(op, path, to);
     try {
       sim.io(op, path, to);
     } catch (_) {
-      sim.inflight.remove(id);
+      sim.note(op, path, to, refused: true);
       rethrow;
     }
-    return id;
+    return sim.note(op, path, to);
   }
 
   @override
-  void end(int id, [Object? error]) => sim.inflight.remove(id);
+  void end(int id, [Object? error]) => sim.ended(id);
 
   @override
   void failed(int id, String op, String path, Object error, {String? to}) =>
-      sim.inflight.remove(id);
+      sim.ended(id, error);
 }
 
 final class _Snapshot {
@@ -271,54 +277,112 @@ class _Sim {
   final List<String> violations = [];
   final List<String> log = [];
 
-  // What the app, the daemon and the server did to the world's files, in order
-  // (the last [_trailKeep]), and the operations started and not finished yet:
-  // when a marker is lost, what touched its file is in the failure's text.
-  final List<String> trail = [];
+  // What the app, the daemon, the snapshot and the server did to the world's
+  // files, in order (the last [_trailKeep] lines), and the operations started
+  // and not finished yet: when a marker is lost, what touched its file is in
+  // the failure's text. It sees what goes through `IOOverrides` (`File` and
+  // `Directory` calls) and the primitives' FFI publishes and restores (noted by
+  // `_Store`'s hooks); it does not see `stat`, `exists`, `typeSync`, `length`,
+  // `setLastModified`, `Directory.create`, writes through a `RandomAccessFile`
+  // or listings of a plain directory.
+  final Queue<({int id, String line})> trail = Queue();
   final Map<int, String> inflight = {};
   final Stopwatch _clock = Stopwatch()..start();
   int _noteId = 0;
   static const int _trailKeep = 6000;
+  String? _rootNorm, _driveNorm;
 
-  int note(String op, String path, String? to) {
-    final id = ++_noteId;
-    final root = '${_norm(w.root.path)}/';
-    if (!_norm(path).startsWith(root) &&
-        !(to != null && _norm(to).startsWith(root))) {
-      return id;
+  /// [p] relative to the world's root or to its drive (the drive is resolved
+  /// through links: 8.3 temp names on Windows, `/private/var` on macOS), else
+  /// null.
+  String? _relOf(String p) {
+    _rootNorm ??= _norm(w.root.path);
+    _driveNorm ??= _norm(w.drive.path);
+    final n = _norm(p);
+    if (n.startsWith('$_driveNorm/')) return 'Drive${p.substring(_driveNorm!.length)}';
+    if (n.startsWith('$_rootNorm/')) return p.substring(_rootNorm!.length + 1);
+    return null;
+  }
+
+  // Outside the world: the last two segments only.
+  String _short(String p) {
+    final parts = p.split(RegExp(r'[\/]')).where((s) => s.isNotEmpty).toList();
+    return parts.length <= 2 ? p : '.../${parts.sublist(parts.length - 2).join('/')}';
+  }
+
+  String _show(String p) => _relOf(p)?.replaceAll(r'\', '/') ?? _short(p);
+
+  void _add(int id, String line) {
+    trail.add((id: id, line: line));
+    while (trail.length > _trailKeep) {
+      trail.removeFirst();
     }
+  }
+
+  /// Notes an operation on [path]; returns its id. [track] false: not an
+  /// operation with an end (an FFI call, made at once).
+  int note(String op, String path, String? to, {bool track = true, bool refused = false}) {
+    final id = ++_noteId;
+    if (_relOf(path) == null && !(to != null && _relOf(to) != null)) return id;
     final tag = Zone.current[#life];
-    final who = Zone.current[#exempt] == true
+    final by = Zone.current[#who];
+    final who = by != null
+        ? '$by'
+        : Zone.current[#exempt] == true
         ? 'daemon'
         : tag == null
         ? 'test'
         : tag != life
         ? 'ZOMBIE(life $tag, now $life)'
         : 'app(life $tag)';
-    final cut = w.root.path.length + 1;
-    String rel(String p) => p.length > cut ? p.substring(cut) : p;
     final line =
-        '#$id ${_clock.elapsedMilliseconds}ms $phase $who $op ${rel(path)}${to == null ? '' : ' -> ${rel(to)}'}';
-    trail.add(line);
-    if (trail.length > _trailKeep) {
-      trail.removeRange(0, trail.length - _trailKeep);
-    }
-    inflight[id] = line;
+        '#$id ${_clock.elapsedMilliseconds}ms $phase $who $op ${_show(path)}${to == null ? '' : ' -> ${_show(to)}'}${refused ? ' (refused)' : ''}';
+    _add(id, line);
+    if (track && !refused) inflight[id] = line;
     return id;
   }
 
-  /// The trail lines that name any of [files] (page file names).
-  List<String> trailOf(Iterable<String> files, {int last = 40}) {
+  void ended(int id, [Object? error]) {
+    if (inflight.remove(id) == null) return;
+    _add(id, 'end #$id ${_clock.elapsedMilliseconds}ms ${error == null ? 'ok' : 'failed'}');
+  }
+
+  /// The page file the last replace was about (for the copy-gap seam).
+  String? replaceTarget;
+
+  /// The trail must see the drive's files whatever form the temp folder's name
+  /// takes (8.3 names, links): a known read of a page file has to appear.
+  void _checkTrail() {
+    final files = pageFiles();
+    if (files.isEmpty) throw StateError('the trail self-check found no page file');
+    readText(files.first);
+    if (!trail.any((t) => t.line.contains(' readSync Drive/') && t.line.contains(_base(files.first.path)))) {
+      throw StateError(
+        'the IO trail does not see the drive (${w.drive.path} under ${w.root.path}): ${trail.map((t) => t.line).take(5).join(' | ')}',
+      );
+    }
+  }
+
+  /// The trail lines that name any of [files] (page file names), with the
+  /// `end` lines of those operations.
+  List<String> trailOf(Iterable<String> files, {int last = 60}) {
     final names = {
       for (final f in files) f.replaceAll(r'\', '/').split('/').last.split('.').first,
     }..removeWhere((n) => n.length < 8);
     if (names.isEmpty) return const [];
+    final ids = <int>{
+      for (final t in trail)
+        if (!t.line.startsWith('end ') && names.any(t.line.contains)) t.id,
+    };
     final hits = [
-      for (final l in trail)
-        if (names.any(l.contains)) l,
+      for (final t in trail)
+        if (ids.contains(t.id)) t.line,
     ];
     return hits.length <= last ? hits : hits.sublist(hits.length - last);
   }
+
+  /// Whether the trail saw a read of a file of the drive since [from] lines.
+  bool sawDriveOp(String op) => trail.any((t) => t.line.contains(' $op Drive/'));
   int coordCalls = 0;
   int _segChannel = 0;
   int _segCoord = 0;
@@ -357,23 +421,47 @@ class _Sim {
         for (final v in versions)
           for (final x in w.channel.versionsOf(v.path)) x.id: x.resolved,
       });
-    }, zoneValues: {#exempt: true});
+    }, zoneValues: {#exempt: true, #who: 'snapshot'});
   }
 
-  void _copyTree(Directory from, Directory to, {required Set<String> skip}) {
-    for (final e in from.listSync(followLinks: false)) {
-      final name = e.uri.pathSegments.where((s) => s.isNotEmpty).last;
-      if (skip.contains(name)) continue;
-      if (e is Directory) {
-        final d = Directory('${to.path}/$name')..createSync();
-        _copyTree(e, d, skip: {});
-      } else if (e is File) {
-        try {
-          e.copySync('${to.path}/$name');
-        } on FileSystemException {
-          // A temp that went away while it was copied.
+  /// A test seam: called between a folder's listing and its copies (a rename
+  /// of the app's, in flight on an IO thread, lands in this gap).
+  void Function(Directory from, List<FileSystemEntity> listed)? copyGap;
+
+  /// Whether a snapshot looks again at a folder when a file it listed went
+  /// away while it was copied. A rename is atomic: a crash keeps the file under
+  /// one of its two names. False only for the test that shows what the gap does.
+  bool faithfulSnapshot = true;
+
+  void _copyTree(Directory from, Directory to, {required Set<String> skip, String what = 'snapshot'}) {
+    final copied = <String>{};
+    for (var pass = 0; pass < 6; pass++) {
+      final listed = from.listSync(followLinks: false);
+      if (pass == 0) copyGap?.call(from, listed);
+      var vanished = false;
+      for (final e in listed) {
+        final name = e.uri.pathSegments.where((s) => s.isNotEmpty).last;
+        if (skip.contains(name) || copied.contains(name)) continue;
+        if (e is Directory) {
+          copied.add(name);
+          final d = Directory('${to.path}/$name')..createSync();
+          _copyTree(e, d, skip: {}, what: what);
+        } else if (e is File) {
+          try {
+            e.copySync('${to.path}/$name');
+            copied.add(name);
+          } on FileSystemException {
+            // A temp that went away while it was copied is no loss; any other
+            // file is said, and its new name is looked for.
+            if (!_isTemp(name)) {
+              log.add('$what: $name vanished while copied');
+              vanished = true;
+            }
+            copied.add(name);
+          }
         }
       }
+      if (!vanished || !faithfulSnapshot) return;
     }
   }
 
@@ -389,10 +477,10 @@ class _Sim {
         final saved = Directory('${s.dir.path}/$name');
         if (saved.existsSync()) {
           live.createSync(recursive: true);
-          _copyTree(saved, live, skip: {});
+          _copyTree(saved, live, skip: {}, what: 'restore');
         }
       }
-    }, zoneValues: {#exempt: true});
+    }, zoneValues: {#exempt: true, #who: 'restore'});
     for (final v in versions) {
       for (final x in w.channel.versionsOf(v.path)) {
         final was = s.resolved[x.id];
@@ -507,6 +595,7 @@ class _Sim {
     await nb.load();
     await nb.discoveryIdle;
     pageIds.add(nb.currentId!);
+    _checkTrail();
     await nb.flush();
   }
 
@@ -647,8 +736,8 @@ class _Sim {
 
   T exempt<T>(T Function() body) => runZoned(body, zoneValues: {#exempt: true});
 
-  Future<T> exemptAsync<T>(Future<T> Function() body) =>
-      runZoned(body, zoneValues: {#exempt: true});
+  Future<T> exemptAsync<T>(Future<T> Function() body, {String? who}) =>
+      runZoned(body, zoneValues: {#exempt: true, #who: ?who});
 
   bool get quiet => snapshot == null;
 
@@ -1041,6 +1130,7 @@ class _Sim {
       writer.beforePublish = () async => point('server:beforePublish');
       writer.beforeAsideDelete = (_) async => point('server:beforeAsideDelete');
       final result = await exemptAsync(
+        who: 'server',
         () => writer.replacePage(
           file.path,
           expected: utf8.encode(text),
@@ -1274,7 +1364,9 @@ class _Sim {
           r'[0-9A-Za-z_]+\.canvas',
         ).allMatches(durable[m] ?? '').map((x) => x.group(0)!),
       };
-      out.write('\nIO trail for $m (${durable[m]}), files $files:');
+      out.write(
+        '\nIO trail for $m (${durable[m]}), files $files (oldest retained #${trail.isEmpty ? '-' : trail.first.id}):',
+      );
       for (final l in trailOf(files)) {
         out.write('\n  $l');
       }
@@ -1331,8 +1423,9 @@ List<String> _plan(_Sim s) {
   return plan;
 }
 
-Future<void> _sequence(int seed) async {
+Future<void> _sequence(int seed, {void Function(_Sim)? setUp}) async {
   final s = _Sim(seed);
+  setUp?.call(s);
   final recorder = _Recorder(s);
   await IOOverrides.runWithIOOverrides(() async {
     try {
@@ -1362,7 +1455,7 @@ Future<void> _sequence(int seed) async {
       await s.dispose().timeout(const Duration(seconds: 15), onTimeout: () {});
     }
   }, TracingIoOverrides(recorder));
-  _ran++;
+  if (setUp == null) _ran++;
 }
 
 BoxRecord _plainBox(int n, String marker) => BoxRecord.create(
@@ -1498,6 +1591,58 @@ void main() {
         timeout: const Timeout(Duration(minutes: 4)),
       );
     }
+
+    // The snapshot lists a folder and copies file by file, while the app's
+    // renames run on IO threads: one that lands after the listing leaves the
+    // file under neither name in the copy, a state no crash produces (a rename
+    // is atomic). The seam lands the replace's own rename (the page moved
+    // aside) between the listing and the copies of a `replace:beforeMoveAside`
+    // kill.
+    group('a rename landing between the snapshot\'s listing and its copies', () {
+      for (final seed in const [7, 20, 33]) {
+        for (final faithful in [true, false]) {
+          test(
+            'seed $seed, ${faithful ? 'the snapshot looks again' : 'the old snapshot (loses the page)'}',
+            () async {
+              _Sim? sim;
+              var landed = false;
+              Future<void> run() => _sequence(
+                seed,
+                setUp: (s) {
+                  sim = s;
+                  s.faithfulSnapshot = faithful;
+                  s.copyGap = (from, listed) {
+                    final t = s.replaceTarget;
+                    if (landed || t == null) return;
+                    if (!listed.any((e) => s._norm(e.path) == s._norm(t))) return;
+                    landed = true;
+                    File(t).renameSync('$t.ab12cd$asideSuffix');
+                  };
+                },
+              );
+              if (faithful) {
+                await run();
+              } else {
+                await expectLater(
+                  run,
+                  throwsA(
+                    isA<TestFailure>().having(
+                      (e) => e.message,
+                      'message',
+                      anyOf(contains('is not listed after a reload'), contains('is in no file')),
+                    ),
+                  ),
+                  reason: 'without the second look the page is in no file of the snapshot',
+                );
+              }
+              expect(landed, isTrue, reason: 'the seam fired');
+              expect(sim!.log.any((l) => l.contains('vanished while copied')), isTrue);
+            },
+            timeout: const Timeout(Duration(minutes: 4)),
+          );
+        }
+      }
+    });
 
     test('every kill point was reached by some seed', () {
       if (_ran < _fixedSeeds) return; // a single seed was asked for
