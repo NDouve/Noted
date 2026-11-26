@@ -229,6 +229,14 @@ class _Recorder extends IoTrace {
       sim.ended(id, error);
 }
 
+/// The harness itself failed (not the app): a snapshot that could not be taken.
+final class _HarnessError implements Exception {
+  _HarnessError(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
 final class _Snapshot {
   _Snapshot(this.dir, this.resolved);
 
@@ -417,7 +425,11 @@ class _Sim {
     return runZoned(() {
       final dir = Directory('${snapRoot.path}/snap${_counter++}')
         ..createSync(recursive: true);
-      _copyTree(w.root, dir, skip: {});
+      try {
+        _copyTree(w.root, dir, skip: {});
+      } on _HarnessError catch (e) {
+        harnessError ??= e.message;
+      }
       return _Snapshot(dir, {
         for (final v in versions)
           for (final x in w.channel.versionsOf(v.path)) x.id: x.resolved,
@@ -434,6 +446,19 @@ class _Sim {
   /// one of its two names. False only for the test that shows what the gap does.
   bool faithfulSnapshot = true;
 
+  /// A test seam: called before each file copy (throw a [FileSystemException]
+  /// to make the copy fail).
+  void Function(File e, String name)? copyFault;
+
+  /// A snapshot that could not be taken: the seed fails with it at the end of
+  /// the step (the throw inside the app's kill point could be swallowed).
+  String? harnessError;
+
+  void _checkHarness() {
+    final e = harnessError;
+    if (e != null) throw StateError('seed $seed: harness error, $e; steps: ${log.join(', ')}');
+  }
+
   void _said(String what, String text) {
     log.add('$what: $text');
     debugPrint('[snapshot-race] seed $seed $killKind: $what: $text');
@@ -446,6 +471,7 @@ class _Sim {
     void copyOne(File e, String name) {
       for (var attempt = 0; ; attempt++) {
         try {
+          copyFault?.call(e, name);
           e.copySync('${to.path}/$name');
           return;
         } on FileSystemException {
@@ -456,11 +482,13 @@ class _Sim {
             return;
           }
           // Still there: held by someone for a moment (a sharing violation).
-          if (attempt >= 3) {
+          // A copy that never succeeds is not a crash state: the snapshot
+          // would lack a file the app never lost. A harness error.
+          if (attempt >= 40) {
             _said(what, '$name busy, not copied');
-            return;
+            throw _HarnessError('$what: $name could not be copied after ${attempt + 1} attempts (busy)');
           }
-          sleep(const Duration(milliseconds: 5));
+          sleep(const Duration(milliseconds: 10));
         }
       }
     }
@@ -902,6 +930,7 @@ class _Sim {
       if (!op.startsWith('daemon') && op != 'plantLeftover') rethrow;
       log.add('$op skipped: busy');
     }
+    _checkHarness();
     audit(op);
   }
 
@@ -1727,6 +1756,27 @@ void main() {
             'message',
             allOf(contains('disposal did not finish'), contains('in flight:')),
           ),
+        ),
+      );
+    }, timeout: const Timeout(Duration(minutes: 4)));
+
+    // A copy that keeps failing while the file is there is a harness error, not
+    // a snapshot without the file (the restore would report a loss that did
+    // not happen).
+    test('a snapshot copy that keeps failing fails the seed as a harness error', () async {
+      await expectLater(
+        () => _sequence(
+          7,
+          setUp: (s) {
+            s.killNth = 1;
+            s.copyFault = (e, name) {
+              if (name.endsWith('.canvas')) throw FileSystemException('busy', e.path);
+            };
+          },
+          plan: const ['appEdit', 'appEdit', 'appCheck', 'appEdit'],
+        ),
+        throwsA(
+          isA<StateError>().having((e) => e.message, 'message', contains('harness error')),
         ),
       );
     }, timeout: const Timeout(Duration(minutes: 4)));
