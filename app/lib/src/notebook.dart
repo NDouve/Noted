@@ -14895,15 +14895,29 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // the chosen folders when iCloud folder access is on (M8).
     final cloudChecks = icloud?.active ?? false;
     if (!(watchFiles || cloudChecks) || _disposed || folderCheckInterval <= Duration.zero) return;
-    _folderTimer = Timer.periodic(folderCheckInterval, (_) {
-      _discoveryTick();
-      if (icloud != null) {
-        unawaited(icloud!.retryBusy());
-        // Version temps a crash left, in any folder of an iCloud root (R5.8).
-        unawaited(icloud!.landLeftoverTemps());
-      }
-      unawaited(checkFolders());
-    });
+    _folderTimer = Timer.periodic(folderCheckInterval, (_) => _folderTick());
+  }
+
+  // One tick of the folder timer. The scan for iCloud versions (R5.8, t2b: the
+  // version temps a crash left and the versions whose events were missed, at
+  // most once a minute) is part of the tick, not of `checkFolders`.
+  Future<void> _folderTick() async {
+    _discoveryTick();
+    final cloud = icloud;
+    if (cloud != null) {
+      unawaited(cloud.retryBusy());
+      unawaited(cloud.scanForVersions());
+    }
+    await checkFolders();
+  }
+
+  /// One tick of the folder timer, as a test runs it: the scan for iCloud
+  /// versions and the folder check, awaited.
+  @visibleForTesting
+  Future<void> folderTickForTest() async {
+    final cloud = icloud;
+    if (cloud != null) await cloud.scanForVersions();
+    await _folderTick();
   }
 
   /// Looks for standalone folders (the default one and the extra ones) that

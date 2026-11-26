@@ -335,7 +335,7 @@ void main() {
       expect(text(copy8('theirs')), 'x');
       expect(text(copy16('theirs')), 'y');
       File(w.path(copy16('theirs'))).deleteSync();
-      await f.landLeftoverTemps();
+      await f.scanForVersions();
       expect(text(copy16('theirs')), 'theirs');
       expect(temps(), isEmpty);
       expect(f.versionIssues, isEmpty, reason: 'a placed temp clears its row');
@@ -374,7 +374,7 @@ void main() {
       expect(temps(), hasLength(1), reason: 'refused: the temp stays');
       expect(w.names().where((n) => n.contains('-icloud-')), [copy8('theirs')]);
       armed = false;
-      await f.landLeftoverTemps();
+      await f.scanForVersions();
       expect(text(copy16('theirs')), 'theirs');
       expect(temps(), isEmpty);
     });
@@ -732,7 +732,7 @@ void main() {
       expect(file.existsSync(), isTrue);
     });
 
-    test('each change event and each launch try the landing again; a freed name lands it and clears the row', () async {
+    test('the event of a freed name and each launch try the landing again; a freed name lands it and clears the row', () async {
       final f = await w.picked();
       final file = w.write('p1.canvas', 'current');
       w.write('p1-icloud-${h8('theirs')}.canvas', 'x');
@@ -742,7 +742,8 @@ void main() {
       expect(f.versionIssues, hasLength(1));
       final tries = channel.callsOf('versions').length;
       blocker.deleteSync();
-      await channel.emit('changed', {'path': file.path});
+      // The row's own events are no trigger (t2b); the event of the name that was gone is.
+      await channel.emit('changed', {'path': blocker.path});
       await waitFor(() => f.versionIssues.isEmpty, what: 'the row to go');
       expect(channel.callsOf('versions').length, greaterThan(tries));
       expect(text('p1-icloud-${h16('theirs')}.canvas'), 'theirs');

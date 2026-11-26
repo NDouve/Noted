@@ -35,6 +35,10 @@ class FakeVersion {
 
   /// `versions` reports this one as `{id, error}` (the copy failed).
   bool copyFails = false;
+
+  /// The version has no identifier: `versions` and `withVersions` report it as
+  /// `""`, and `resolveVersion` can't name it.
+  bool nilIdentifier = false;
 }
 
 /// A stand-in for the Swift side of `noted/cloud_folder`: it keeps the
@@ -158,6 +162,41 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
   /// by `pending` instead of `go`, as Swift does (R5.8).
   bool gateVersions = true;
 
+  /// `withVersions` throws (the platform could not be reached).
+  bool withVersionsFails = false;
+
+  /// The paths of each `withVersions` call.
+  final List<List<String>> withVersionsCalls = [];
+
+  /// Run after `withVersions` computed its answer, before it is returned (the
+  /// versions can change between the answer and what is done with it).
+  void Function(List<String> paths)? onWithVersions;
+
+  /// The ids the platform reports for a version change on every call (the
+  /// strings differ, the version is the same): only `known` matching by
+  /// identity filters them.
+  bool idsChange = false;
+  int _idCalls = 0;
+
+  String _reportedId(FakeVersion v) => v.nilIdentifier ? '' : (idsChange ? '${v.id}#${++_idCalls}' : v.id);
+
+  // The match of `resolveVersion`: the reported string, or the version it names;
+  // "" matches only a version with no identifier.
+  bool _matches(FakeVersion v, String id) =>
+      id.isEmpty ? v.nilIdentifier : (!v.nilIdentifier && (id == v.id || id.startsWith('${v.id}#')));
+
+  // A list of strings in [args] under [key], none when absent; anything else is
+  // an `arguments` error, as in Swift.
+  List<String> _stringList(Map<String, Object?> args, String key, String what) {
+    if (!args.containsKey(key)) {
+      if (what == 'items') throw PlatformException(code: 'arguments', message: what);
+      return const [];
+    }
+    final v = args[key];
+    if (v is! List || v.any((x) => x is! String)) throw PlatformException(code: 'arguments', message: what);
+    return v.cast<String>();
+  }
+
   /// Called after `versions` made the temps of a call.
   void Function(String path, List<String> temps)? onVersions;
 
@@ -269,12 +308,24 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
       case 'versions':
         if (versionsFails) throw PlatformException(code: 'versions');
         final path = a['path']! as String;
+        final known = _stringList(a, 'known', 'known');
         final f = File(path);
         final out = <Map<String, Object?>>[];
         final temps = <String>[];
         for (final v in unresolvedOf(path)) {
+          // As Swift does: a known version is not copied; the known match runs
+          // before the nil identifier is looked at.
+          final k = known.where((x) => _matches(v, x)).firstOrNull;
+          if (k != null) {
+            out.add({'id': k, 'known': true});
+            continue;
+          }
+          if (v.nilIdentifier) {
+            out.add({'id': '', 'error': 'The version has no identifier.'});
+            continue;
+          }
           if (v.copyFails) {
-            out.add({'id': v.id, 'error': 'The copy failed.'});
+            out.add({'id': _reportedId(v), 'error': 'The copy failed.'});
             continue;
           }
           // As Swift does: 16 random hex, created exclusively.
@@ -291,16 +342,36 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
           }
           File(tmp).writeAsBytesSync(v.bytes, flush: true);
           temps.add(tmp);
-          out.add({'id': v.id, 'tmpPath': tmp});
+          out.add({'id': _reportedId(v), 'tmpPath': tmp});
         }
         onVersions?.call(path, temps);
         return out;
+      case 'withVersions':
+        withVersionsCalls.add([for (final i in (a['items'] as List? ?? const [])) '${(i as Map)['path']}']);
+        if (withVersionsFails) throw PlatformException(code: 'withVersions');
+        final items = a['items'];
+        if (items is! List) throw PlatformException(code: 'arguments', message: 'items');
+        final answer = <String, Object?>{};
+        for (final item in items) {
+          if (item is! Map || item['path'] is! String) throw PlatformException(code: 'arguments', message: 'items');
+          final wanted = _stringList(item.cast<String, Object?>(), 'known', 'items');
+          final versions = unresolvedOf(item['path']! as String);
+          final fresh = [
+            for (final v in versions)
+              if (!wanted.any((x) => _matches(v, x))) _reportedId(v),
+          ];
+          final shrank = wanted.any((x) => !versions.any((v) => _matches(v, x)));
+          if (fresh.isNotEmpty || shrank) answer[item['path']! as String] = {'fresh': fresh, 'shrank': shrank};
+        }
+        onWithVersions?.call(withVersionsCalls.last);
+        return answer;
       case 'resolveVersion':
         if (resolveFails) throw PlatformException(code: 'coordination');
         final id = a['id']! as String;
+        if (id.isEmpty) return false; // nothing names a version with no identifier
         final rpath = a['path']! as String;
         for (final v in unresolvedOf(rpath)) {
-          if (v.id == id) {
+          if (_matches(v, id)) {
             if (tempHeldAtResolve && !_tempHolds(rpath, v.bytes)) resolveViolations.add('$rpath $id');
             onResolve?.call(rpath, id);
             v.resolved = true;
