@@ -2495,6 +2495,14 @@ Future<void> _sequence(
       } catch (e) {
         if (failure == null) rethrow;
         debugPrint('seed $seed: disposal also failed: $e');
+      } finally {
+        // A disposal that hung never reached the folder accesses, which still
+        // hold the coordinator: without this the next seed fails at
+        // registerCoordinator ("Another storage coordinator is registered").
+        // dispose is idempotent.
+        for (final f in s.w.folders) {
+          f.dispose();
+        }
       }
     }
   }, TracingIoOverrides(recorder));
@@ -2884,6 +2892,25 @@ void main() {
         ),
       );
       // Let the stuck disposal finish, so the next test starts clean.
+      gate.complete();
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }, timeout: const Timeout(Duration(minutes: 4)));
+
+    // A seed whose disposal hangs fails alone: its coordinator is released, so
+    // the next seed registers its own and passes (no cascade).
+    test('a hung disposal does not fail the seeds after it', () async {
+      final gate = Completer<void>();
+      await expectLater(
+        () => _sequence(
+          3,
+          setUp: (s) => s.disposeSeam = () => gate.future,
+          plan: const ['appEdit', 'appCheck'],
+          disposeLimit: const Duration(milliseconds: 300),
+        ),
+        throwsA(isA<TestFailure>().having((e) => e.message, 'message', contains('disposal did not finish'))),
+      );
+      // The hung disposal is still pending; the next seed must run clean.
+      await _sequence(4, plan: const ['appEdit', 'appCheck']);
       gate.complete();
       await Future<void>.delayed(const Duration(seconds: 2));
     }, timeout: const Timeout(Duration(minutes: 4)));
