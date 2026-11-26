@@ -245,14 +245,14 @@ void main() {
       rev: 'r',
     );
 
-    Future<({Notebook nb, File file, File copy, String original})> withCopy(IcloudFolders f) async {
+    Future<({Notebook nb, File file, File copy, String original})> withCopy(IcloudFolders f, {bool open = false}) async {
       await externalPage('gone1');
       final file = File(w.path('gone1.canvas'));
       file.writeAsStringSync(writePage(readPage(file.readAsStringSync()).insertNode(box2('00000000000000a1', 'the original\'s own'))));
       await externalPage('other', order: 9);
       final nb = w.notebook(f);
       await nb.load();
-      await nb.open('other'); // the page of the copy is closed: its merge is the closed branch
+      await nb.open(open ? 'gone1' : 'other'); // closed: the merge is the closed branch
       final original = file.readAsStringSync();
       final copy = File(w.path('gone1-icloud-4d5e6f70.canvas'))
         ..writeAsStringSync(writePage(readPage(original).insertNode(box2('00000000000000c3', 'from the copy'))));
@@ -277,6 +277,30 @@ void main() {
       await s.nb.checkFolders();
       expect(merges, 1, reason: 'a permanent failure is not retried');
       expect(s.nb.unreadable.single.reason, contains('Could not be merged'));
+      expect(s.file.readAsStringSync(), s.original);
+      expect(s.copy.existsSync(), isTrue);
+    });
+
+    test('on the open page a merge that would drop a node is not applied or saved, stays listed, and a folder check does not retry or clear it', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final s = await withCopy(f, open: true);
+      expect(s.nb.currentId, 'gone1');
+      var merges = 0;
+      s.nb.conflictMergeHook = (merged) {
+        merges++;
+        return merged.removeNode('00000000000000a1');
+      };
+      await w.channel.emit('changed', {'path': s.copy.path});
+      await waitFor(() => s.nb.unreadable.any((u) => u.reason.startsWith('Could not be merged into its page')), what: 'the refused merge');
+      await s.nb.flush();
+      expect(s.nb.current!.page.node('00000000000000a1'), isNotNull, reason: 'the node stays on the screen');
+      expect(s.file.readAsStringSync(), s.original, reason: 'and in the file');
+      expect(s.copy.existsSync(), isTrue);
+      await s.nb.checkFolders();
+      await s.nb.checkFolders();
+      expect(merges, 1, reason: 'a permanent failure is not retried');
+      expect(s.nb.unreadable.single.reason, contains('is missing'));
+      expect(s.nb.current!.page.node('00000000000000a1'), isNotNull);
       expect(s.file.readAsStringSync(), s.original);
       expect(s.copy.existsSync(), isTrue);
     });

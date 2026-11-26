@@ -13779,23 +13779,32 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
 
     // The page on screen: merge into it, keeping unsaved edits, and save it.
-    Future<String?> openBranch(CanvasController c) async {
+    Future<({String? failure, bool passing})> openBranch(CanvasController c) async {
       final original = c.page;
       final top = _topOfChain(loc, original);
-      final merged = mergeConflictCopy(
-        original,
-        copy,
-        _mergeCodecs(id, [original, copy]),
-        copyTime: time,
-        topOfChain: top,
-      ).page;
+      final merged = (conflictMergeHook ?? (p) => p)(
+        mergeConflictCopy(
+          original,
+          copy,
+          _mergeCodecs(id, [original, copy]),
+          copyTime: time,
+          topOfChain: top,
+        ).page,
+      );
+      // A merge that drops a node of the page or the copy is refused before it
+      // is applied to the screen or saved: that failure is permanent.
+      final dropped = verifyConflictCopyMerge(readPage(writePage(merged)), original, copy, topOfChain: top);
+      if (dropped != null) return (failure: dropped, passing: false);
       if (writePage(merged) != writePage(original)) {
         c.applyExternal(merged);
         _syncDisallowed();
       }
       await flush();
-      return verifyConflictCopyMerge(readPage(await st.readText(id)), original, copy, topOfChain: top);
+      // What was read back after the save differing from it can be another
+      // writer's file: that failure passes.
+      return (failure: verifyConflictCopyMerge(readPage(await st.readText(id)), original, copy, topOfChain: top), passing: true);
     }
+
 
     // The page is closed: one chain job from the read of the original to
     // `_applyClosed`, so an open of the page can't run between the read and the
@@ -13850,8 +13859,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (var round = 0; round < 3 && !settled; round++) {
       final c = _current;
       if (c != null && openHere()) {
-        failure = await openBranch(c);
-        fromOpen = true;
+        final o = await openBranch(c);
+        failure = o.failure;
+        fromOpen = o.passing;
         settled = true;
         continue;
       }
@@ -13896,7 +13906,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final ck = _key(copyPath);
     final prior = _consumedForCopy[ck];
     final _ConsumedCopy mark;
-    if (prior != null && prior.text == consumed && identical(_consumedCopies[prior.mark.gen], prior.mark)) {
+    if (prior != null &&
+        prior.text == consumed &&
+        identical(_consumedCopies[prior.mark.gen], prior.mark) &&
+        (_recovery?.indexEntries.any((x) => x.gen == prior.mark.gen) ?? false)) {
       mark = prior.mark..deleting = true;
     } else {
       mark = await _keepConsumedCopy(st, copy, time);
