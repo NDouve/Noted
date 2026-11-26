@@ -141,6 +141,9 @@ class _IncompleteAttachments extends FileSystemException {
   /// it had already done, e.g. a file kept aside, is still reported).
   final FileSystemException? cause;
 
+  /// The files the copy skipped because they are not downloaded.
+  List<String> get notDownloaded => copy.notDownloaded;
+
   /// What the move did before it stopped, so its notices are still posted.
   final AttachmentCopy copy;
 
@@ -3176,6 +3179,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Read at each use: a binder folder can be held after the store is made.
     readOnlyNow: () => _isLocked(loc),
     mutate: _sectionAt(loc) == null ? null : <T>(Future<T> Function() job) => _lockRun(Directory(loc), job),
+    requestDownload: askDownload,
+    clock: () => now(),
   );
 
   // The page AI access (0100) -------------------------------------------------
@@ -3686,15 +3691,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// [_copyDir] for a copy that has no rollback of its own (templates): what it
   /// kept aside or left alone is posted to [attachmentNotices], also when it
   /// throws.
-  Future<void> _copyDirNotify(
+  ///
+  /// Returns the copy: the caller checks [AttachmentCopy.notDownloaded] and
+  /// refuses (see [_copyRefusal]). With [into] the caller keeps the copy even when
+  /// this throws.
+  Future<AttachmentCopy> _copyDirNotify(
     Directory from,
     Directory to,
     String targetPlace,
     String sourcePlace, {
     bool sweepSource = true,
     String? sourceLoc,
+    AttachmentCopy? into,
   }) async {
-    final copy = AttachmentCopy();
+    final copy = into ?? AttachmentCopy();
     try {
       // A pull-only source is only read: its leftovers are not swept (G15).
       // Nor is a page folder [sourceLoc] that can't be written now (a held
@@ -3704,6 +3714,45 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } finally {
       _postCopyNotices(copy, targetPlace, sourcePlace);
     }
+    return copy;
+  }
+
+  // The not-downloaded files (by path) in the assets folders [dirs], by name and
+  // metadata only: nothing is read (t2a).
+  List<String> _notDownloadedIn(Iterable<Directory> dirs) => [
+    for (final d in dirs)
+      if (d.existsSync()) ...folderWalk(d.path).notDownloaded,
+  ];
+
+  /// The refusal of a copy whose source holds files that are not downloaded:
+  /// each is asked for, and the text says what to do. [page] and [place] (a
+  /// move's page and target) give the move's own text. Without a requester
+  /// (nothing can be asked for) the files are only placeholders.
+  NotebookException _downloadRefusal(Iterable<String> paths, {String? page, String? place}) {
+    for (final p in paths) {
+      askSafely(p, askDownload);
+    }
+    if (askDownload == null) {
+      return NotebookException(
+        '${page ?? 'The page'} has a file that is only a placeholder from another device, so it can not be copied yet.',
+      );
+    }
+    if (page != null && place != null) {
+      return NotebookException(
+        '$page has files that are not downloaded yet, so it can not be copied to $place. '
+        'Open the page to download them, then try again.',
+      );
+    }
+    return const NotebookException('Some files are still downloading. Try again in a moment.');
+  }
+
+  // After a copy: files that were not downloaded were skipped, so this copy is
+  // incomplete. What it created is removed (its own checked deletes only), and the
+  // copy is refused.
+  Future<void> _copyRefusal(AttachmentCopy copy, {String? page, String? place}) async {
+    if (copy.notDownloaded.isEmpty) return;
+    await removeCreated(copy);
+    throw _downloadRefusal(copy.notDownloaded, page: page, place: place);
   }
 
   /// Moves [from] to [to] by rename (2c's rule, H), never copying and deleting.
@@ -3787,6 +3836,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on FileSystemException catch (e) {
       // Carries what was done so far (a file set aside stays reported).
       throw _IncompleteAttachments(copy, false, to.path, cause: e);
+    } finally {
+      // A file that is not downloaded was skipped: asked for, and its folder is
+      // kept like any put-back that did not finish (named in the notice).
+      for (final p in copy.notDownloaded) {
+        askSafely(p, askDownload);
+      }
     }
     throw _IncompleteAttachments(
       copy,
@@ -3859,6 +3914,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         '${n == 1 ? '' : ' and others'}) could not be moved: $targetPlace already has '
         '${n == 1 ? 'a different file' : 'different files'} with ${n == 1 ? 'that name' : 'those names'}. '
         'The original${n == 1 ? '' : 's'} stay in $sourcePlace.',
+      );
+    }
+    if (e.notDownloaded.isNotEmpty) {
+      final names = e.notDownloaded.map((n) => '"${_baseName(n)}"').toList();
+      _notices.add(
+        'Still downloading, left in $sourcePlace: '
+        '${names.length <= 3 ? names.join(', ') : '${names.take(3).join(', ')} and ${names.length - 3} more'}.',
       );
     }
     if (e.leftover) {
@@ -3997,6 +4059,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // stays where it is. Nothing is read within one root.
   static Future<Set<String>> _hydrateFolder(Directory dir, String other) async {
     final tried = <String>{};
+    // Apple: nothing is read to download it. A folder with something not
+    // downloaded in it is asked for and not renamed (t2a, `_moveFolder`).
+    if (appleMode()) return tried;
     if (!dir.existsSync() || _sameSyncRoot(dir.path, other)) return tried;
     final List<FileSystemEntity> all;
     try {
@@ -4014,9 +4079,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // The paths of the files in [dir], for a coordinated folder move (they are
   // checked with it), or none when the folder isn't under a registered root.
-  static List<String> _alsoMovedFor(Directory dir) {
+  static List<String> _alsoMovedFor(Directory dir, [FolderWalk? walk]) {
     try {
       if (!underCoordination([dir.path])) return const [];
+      if (walk != null) return List.of(walk.files); // the one walk of this move
       return [
         for (final e in dir.listSync(recursive: true, followLinks: false))
           if (e is File) e.path,
@@ -4315,6 +4381,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // deleted under this page's name.
     for (var i = 0; i < ids.length; i++) {
       if (pages[i].id != ids[i]) throw const NotebookException('This page could not be deleted: it holds a different page.');
+    }
+    // Apple (t2a): every page's assets folder is walked by name before anything
+    // is set aside. One that holds a file that is not downloaded refuses the
+    // whole delete (nothing was moved, so nothing is put back): the files are
+    // asked for, and the user deletes again once they are here.
+    if (appleMode()) {
+      var waiting = false;
+      for (var i = 0; i < ids.length; i++) {
+        final dir = _assetsDir(locs[i], ids[i]);
+        if (!dir.existsSync()) continue;
+        final walk = folderWalk(dir.path);
+        for (final p in walk.notDownloaded) {
+          waiting = true;
+          askSafely(p, askDownload);
+        }
+      }
+      if (waiting) throw const NotebookException('Still downloading. Delete again once the files are here.');
     }
     final previous = _lastDeleted;
     if (previous != null) discardDeleted(previous);
@@ -5251,10 +5334,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await syncHook?.call('move-dir-before-lock', dir.path);
     try {
       final r = await _underPair(dir.parent, dir.parent, () async {
-        final also = _alsoMovedFor(dir);
+        // Apple: the folder is walked by name; a file evicted since the delete's
+        // walk makes the move busy and is asked for (`ask`).
+        final walk = appleMode() ? folderWalk(dir.path) : null;
+        final also = _alsoMovedFor(dir, walk);
         var o = MoveOutcome.busy;
         for (var i = 0; i < 3; i++) {
-          o = await moveExclusive(dir.path, target.path, alsoMoved: also);
+          o = await moveExclusive(dir.path, target.path, alsoMoved: also, ask: askDownload, walk: walk);
           if (o != MoveOutcome.busy) break;
           await Future<void>.delayed(const Duration(milliseconds: 50));
         }
@@ -5850,13 +5936,27 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // `moveExclusive`, `busy` tried three times. A link, a name that is taken and
   // a file that won't move stay. Emptied folders are removed (never one that
   // holds anything). Returns the paths left at [from].
+  //
+  // Apple (t2a): a file or folder that is not downloaded, and a stub (which
+  // stands for a file that is not here), is asked for, never moved, and stays at
+  // the source; it is also added to [downloading].
   Future<List<String>> _moveFilesOneByOne(
     Directory from,
     Directory to, {
     List<DamagedKept>? kept,
     Set<String> hydrated = const {},
+    List<String>? downloading,
   }) async {
     final left = <String>[];
+    final apple = appleMode();
+    // Asks for [path] (the file a stub stands for, or the file or folder itself),
+    // and leaves [e] where it is.
+    void holdBack(FileSystemEntity e, String path) {
+      askSafely(path, askDownload);
+      downloading?.add(e.path);
+      left.add(e.path);
+    }
+
     Future<void> walk(Directory s, Directory d) async {
       final List<FileSystemEntity> entries;
       try {
@@ -5870,6 +5970,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final target = '${d.path}${Platform.pathSeparator}$name';
         switch (FileSystemEntity.typeSync(e.path, followLinks: false)) {
           case FileSystemEntityType.directory:
+            if (apple && notDownloaded(e.path)) {
+              holdBack(e, e.path); // asked for, and not entered
+              continue;
+            }
             final there = FileSystemEntity.typeSync(target, followLinks: false);
             if (there != FileSystemEntityType.notFound && there != FileSystemEntityType.directory) {
               left.add(e.path);
@@ -5877,6 +5981,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
               await walk(Directory(e.path), Directory(target));
             }
           case FileSystemEntityType.file:
+            if (apple) {
+              final stands = stubTargetName(name);
+              if (stands != null && stands != '.' && stands != '..' && !stands.contains(RegExp(r'[\/]'))) {
+                holdBack(e, '${s.path}${Platform.pathSeparator}$stands'); // a stub is never moved
+                continue;
+              }
+              if (notDownloaded(e.path)) {
+                holdBack(e, e.path);
+                continue;
+              }
+            }
             // Hydration was tried and the file is still not downloaded (H): it
             // stays at the source.
             if (hydrated.contains(e.path) && _isPlaceholder(e.path)) {
@@ -5887,7 +6002,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             try {
               await createFolderCoordinated(d);
               for (var i = 0; i < 3; i++) {
-                r = await moveExclusive(e.path, target);
+                r = await moveExclusive(e.path, target, ask: askDownload);
                 if (r != MoveOutcome.busy) break;
                 await Future<void>.delayed(const Duration(milliseconds: 50));
               }
@@ -5967,12 +6082,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     bool hook = false,
     List<DamagedKept>? kept,
     Set<String> hydrated = const {},
+    List<String>? downloading,
   }) async {
     final src = _assetsDir(fromLoc, p), dst = _assetsDir(toLoc, p);
     if (FileSystemEntity.typeSync(src.path, followLinks: false) == FileSystemEntityType.notFound) return const [];
     if (hook) await syncHook?.call('move-before-assets', src.path);
     if (FileSystemEntity.typeSync(src.path, followLinks: false) != FileSystemEntityType.directory) return [src.path];
-    return (await _moveFolder(src, dst, kept: kept, hydrated: hydrated)).left;
+    return (await _moveFolder(src, dst, kept: kept, hydrated: hydrated, downloading: downloading)).left;
   }
 
   // Renames the folder [src] to [dst]; when that isn't `moved`, moves it file by
@@ -5986,25 +6102,60 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     List<DamagedKept>? kept,
     Set<String> hydrated = const {},
     bool stopOnCannot = false,
+    List<String>? downloading,
   }) async {
     var r = MoveOutcome.busy;
+    // Apple (t2a): the folder is walked by name once, here. Anything in it that is
+    // not downloaded is asked for, and the folder is not renamed (the kernel may
+    // download it during the rename, or refuse); the downloaded files then move
+    // one by one and only the others stay, as a stray that is retried.
+    final walk = appleMode() && src.existsSync() ? folderWalk(src.path) : null;
     if (hydrated.any((h) => File(h).existsSync() && _isPlaceholder(h))) {
       r = MoveOutcome.targetExists;
+    } else if (walk != null && walk.hasNotDownloaded) {
+      for (final p in walk.notDownloaded) {
+        askSafely(p, askDownload);
+      }
     } else {
+      // A rename that takes long (a file evicted since the walk) holds both
+      // folders' locks: after 2 s the move is named, and the log names the holder.
+      Timer? slow;
+      if (walk != null) {
+        slow = Timer(const Duration(seconds: 2), () {
+          debugPrint('The folder ${src.path} is still being moved; ${dst.parent.path} and its own folder are locked.');
+          if (!_notices.isClosed) {
+            _notices.add('Moving ${_assetsOwnerName(src)}: the folder is still being moved.');
+          }
+        });
+      }
       try {
-        final also = _alsoMovedFor(src);
+        final also = _alsoMovedFor(src, walk);
         for (var i = 0; i < 3; i++) {
-          r = await moveExclusive(src.path, dst.path, alsoMoved: also);
+          r = await moveExclusive(src.path, dst.path, alsoMoved: also, ask: askDownload, walk: walk);
           if (r != MoveOutcome.busy) break;
           await Future<void>.delayed(const Duration(milliseconds: 50));
         }
       } on FileSystemException {
         r = MoveOutcome.busy;
+      } finally {
+        slow?.cancel();
       }
     }
     if (r == MoveOutcome.moved) return (outcome: r, left: const <String>[]);
     if (stopOnCannot && r == MoveOutcome.cannotRename) return (outcome: r, left: [src.path]);
-    return (outcome: r, left: await _moveFilesOneByOne(src, dst, kept: kept, hydrated: hydrated));
+    return (
+      outcome: r,
+      left: await _moveFilesOneByOne(src, dst, kept: kept, hydrated: hydrated, downloading: downloading),
+    );
+  }
+
+  // How a notice names the page whose assets folder [dir] is: `"Title"`, or "the
+  // folder" when no listed page has it.
+  String _assetsOwnerName(Directory dir) {
+    var n = _baseName(dir.path);
+    if (n.endsWith('.assets')) n = n.substring(0, n.length - '.assets'.length);
+    final title = _metas[n]?.title;
+    return title == null ? 'the folder' : '"${_titleOrUntitled(title)}"';
   }
 
   // O. Stray attachments folders ------------------------------------------------
@@ -6040,6 +6191,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (_disposed) return;
         await _strayCheckLoc(s);
       }
+      // A stray folder that is gone takes its asked-for times with it.
+      _strayAsked.removeWhere((k, _) => !_strayWatch.containsKey(k) && !Directory(k).existsSync());
     } on Object catch (e) {
       debugPrint('Checking for stray attachments folders failed: $e');
     }
@@ -6119,6 +6272,29 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     );
   }
 
+  // When each not-downloaded file of a stray folder was last asked for, by folder
+  // key and path. An entry goes with its folder's.
+  final Map<String, Map<String, DateTime>> _strayAsked = {};
+
+  void _strayAskDownloads(String key, Directory folder) {
+    final walk = folderWalk(folder.path);
+    final asked = _strayAsked[key] ?? <String, DateTime>{};
+    final t = now();
+    // What materialised is forgotten, so it is asked for again if evicted again.
+    asked.removeWhere((path, _) => !walk.notDownloaded.contains(path));
+    for (final path in walk.notDownloaded) {
+      final last = asked[path];
+      if (last != null && t.difference(last) < PageAttachments.askEvery) continue;
+      asked[path] = t;
+      askSafely(path, askDownload);
+    }
+    if (asked.isEmpty) {
+      _strayAsked.remove(key);
+    } else {
+      _strayAsked[key] = asked;
+    }
+  }
+
   Future<void> _strayOne(String p, String s, String d, Directory sDir, Directory folder, List<String> names) async {
     final key = _key(folder.path);
     // Not stray while the page is also listed at S.
@@ -6126,6 +6302,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (_pathId.entries.any((en) => en.value == p && _key(File(en.key).parent.path) == sk)) return;
     // Transient: left for a later check.
     if (_busy.containsKey(p) || _inTrashRecord(p) || _isLocked(s) || _isLocked(d)) return;
+    // Apple (t2a): each file of the stray folder that is not downloaded is asked
+    // for, at most once per 30 s, before any decline or the quiet wait below.
+    if (appleMode()) _strayAskDownloads(key, folder);
     final Directory dDir;
     try {
       dDir = _storeOf(d).directory;
@@ -6157,6 +6336,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final dst = _assetsDir(d, p);
     final hydrated = await _hydrateFolder(folder, dst.path);
     final damaged = <DamagedKept>[];
+    final downloading = <String>[];
     List<String> left;
     try {
       left = await _underPair(sDir, dDir, () async {
@@ -6169,12 +6349,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           return const <String>[];
         }
         if (_strayCountsAsPage(p, sDir, namesNow) || !folder.existsSync()) return const <String>[];
-        return (await _moveFolder(folder, dst, kept: damaged, hydrated: hydrated)).left;
+        return (await _moveFolder(folder, dst, kept: damaged, hydrated: hydrated, downloading: downloading)).left;
       });
     } on _LockTimeout {
       return; // busy: tried again at the next check
     }
     _strayWatch.remove(key);
+    // What is not downloaded stays, asked for, and is not "could not be moved":
+    // the next check moves it once it is here.
+    left = [for (final l in left) if (!downloading.contains(l)) l];
+    if (downloading.isEmpty) _strayAsked.remove(key);
     if (damaged.isNotEmpty) {
       _postCopyNotices(AttachmentCopy()..damagedKept.addAll(damaged), _placeName(d), _placeName(s));
     }
@@ -6318,14 +6502,31 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     // 2c: its images and files.
     final damaged = <DamagedKept>[];
-    final left = await _moveAssetsByRename(p, fromLoc, toLoc, hook: forward, kept: damaged, hydrated: hydrated);
+    final downloading = <String>[];
+    final left = await _moveAssetsByRename(
+      p,
+      fromLoc,
+      toLoc,
+      hook: forward,
+      kept: damaged,
+      hydrated: hydrated,
+      downloading: downloading,
+    );
     if (damaged.isNotEmpty) {
       final all = AttachmentCopy()..damagedKept.addAll(damaged);
       notes.addAll(_copyNotices(all, _placeName(toLoc), _placeName(fromLoc)));
     }
-    if (left.isNotEmpty) {
+    if (downloading.isNotEmpty) {
+      final names = downloading.map((n) => '"${stubTargetName(_baseName(n)) ?? _baseName(n)}"').toList();
       notes.add(
-        '${left.length == 1 ? 'One file' : '${left.length} files'} of "${_titleOrUntitled(_metas[p]?.title ?? '')}" '
+        'Still downloading, left in the old folder: '
+        '${names.length <= 3 ? names.join(', ') : '${names.take(3).join(', ')} and ${names.length - 3} more'}.',
+      );
+    }
+    final other = left.where((l) => !downloading.contains(l)).toList();
+    if (other.isNotEmpty) {
+      notes.add(
+        '${other.length == 1 ? 'One file' : '${other.length} files'} of "${_titleOrUntitled(_metas[p]?.title ?? '')}" '
         'stayed in ${_placeName(fromLoc)} (a name was taken there, or a file was in use or a link).',
       );
     }
@@ -6545,6 +6746,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         );
       }
     }
+    // Before anything is written, each page's images and files are listed by
+    // name: a file that is not downloaded is asked for, and refuses the copy.
+    for (final p in ids) {
+      final held = _notDownloadedIn([_assetsDir(fromLoc, p)]);
+      if (held.isNotEmpty) throw _downloadRefusal(held, page: nameOf(p), place: _placeName(toLoc));
+    }
     // Only the moved page's parent and order change; its subpages keep theirs.
     final moved = [
       for (var i = 0; i < originals.length; i++)
@@ -6621,6 +6828,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // A held source folder is only read: its leftovers are not swept.
           sweepSource: !_isLocked(fromLoc),
         );
+        // A file evicted since the listing was skipped: refused here, inside the
+        // try, so the copies are removed and nothing is offered for deletion.
+        if (c.notDownloaded.isNotEmpty) {
+          throw _downloadRefusal(c.notDownloaded, page: nameOf(p.id), place: _placeName(toLoc));
+        }
         for (final f in c.verified) {
           identities[f.target.path] = await ContentIdentity.ofFile(f.target.path);
         }
@@ -6802,10 +7014,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     for (final f in pg.files) {
       if (f.gone) continue;
-      if (FileSystemEntity.typeSync(f.source, followLinks: false) == FileSystemEntityType.notFound) {
-        f.gone = true;
-        continue;
-      }
+      // No pre-check for a missing file: a stub-only original is not gone, and
+      // the checked delete answers absent only for one that is (0190).
       copyProblem = '';
       try {
         // The check right before the unlink hashes the copy (an lstat-ed regular
@@ -6825,6 +7035,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           f.gone = true;
         } else {
           why.add(copyProblem.isNotEmpty ? copyProblem : 'a file changed in $from since the move');
+        }
+      } on StorageBusy catch (e) {
+        if (e.reason != StorageBusyReason.dataless) {
+          debugPrint('Deleting the original ${f.source} failed: $e');
+          why.add('a file in $from could not be deleted${_osReason(e)}');
+        } else {
+          // Not downloaded: asked for, and the original stays.
+          for (final p in e.paths) {
+            askSafely(p, askDownload);
+          }
+          why.add('a file in $from is still downloading');
         }
       } on Object catch (e) {
         debugPrint('Deleting the original ${f.source} failed: $e');
@@ -7791,7 +8012,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       name: name.trim().isNotEmpty ? name.trim() : (title.isEmpty ? 'Untitled page' : title),
       page: page,
     );
-    await _templateLocked(binder, snap, 'saveTemplate', () => _saveTemplate(dir, template));
+    // The images and files are copied before the template file is published, so
+    // an interrupted save never lists a template with partial assets (t2a). In
+    // order: the source is listed by name (a file that is not downloaded is asked
+    // for, and nothing is copied); the `saveAssets` gate; the copy; then the
+    // template file, at its own `saveTemplate` gate.
+    final source = _assetsDir(loc, pageId);
+    final held = _notDownloadedIn([source]);
+    if (held.isNotEmpty) throw _downloadRefusal(held);
     try {
       // The copy is long, so it runs outside the lock: the binder file is
       // checked at the folder's turn first, then the gate, with no await
@@ -7802,16 +8030,73 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       _templateGate(binder, snap);
     } on NotebookException catch (e) {
-      throw NotebookException('${e.message} The template was saved without its images and files.');
+      throw NotebookException('${e.message} The template was not saved.');
     }
-    await _copyDirNotify(
-      _assetsDir(loc, pageId),
-      _templateAssets(dir, template.id, pageId),
-      'the template',
-      'the page',
-      sourceLoc: loc,
-    );
+    final copy = AttachmentCopy();
+    try {
+      await _copyDirNotify(
+        source,
+        _templateAssets(dir, template.id, pageId),
+        'the template',
+        'the page',
+        sourceLoc: loc,
+        into: copy,
+      );
+      await _copyRefusal(copy); // a file evicted since the listing: nothing is saved
+    } on Object {
+      await removeCreated(copy); // no template file was written yet
+      rethrow;
+    }
+    try {
+      await _templateLocked(binder, snap, 'saveTemplate', () => _saveTemplate(dir, template));
+    } on Object {
+      // The turn is held when the page is saved into a binder (see
+      // [savePageAsTemplate]); otherwise the rollback takes its own.
+      await _undoTemplateSave(dir, template, binder, snap, [copy], turnHeld: binder != null);
+      rethrow;
+    }
     return template;
+  }
+
+  /// Runs after a template file was published and before the save returns. For
+  /// tests: a throw is a publish that failed after writing.
+  @visibleForTesting
+  Future<void> Function(String path)? templatePublishedHook;
+
+  // A template save that failed: the copied assets are removed (their own
+  // checked deletes only), and the template file too if it was written (a
+  // publish that failed after writing), but only while it still holds the bytes
+  // this save wrote. The file goes by `_deleteTemplateNow`, which refuses when the
+  // binder or the template changed; never by [deleteTemplate], which would queue
+  // a second turn behind the save. [turnHeld]: the save runs inside a template
+  // turn already. Never throws.
+  Future<void> _undoTemplateSave(
+    Directory dir,
+    NotedTemplate template,
+    String? binder,
+    _TemplateSnap snap,
+    List<AttachmentCopy> copies, {
+    required bool turnHeld,
+  }) async {
+    try {
+      final file = TemplateStore(dir).fileFor(template.id);
+      if (FileSystemEntity.typeSync(file.path, followLinks: false) == FileSystemEntityType.file) {
+        final written = ContentIdentity.ofBytes(utf8.encode(template.write()));
+        if (await ContentIdentity.ofFile(file.path) == written) {
+          final item = TemplateItem(template, file.path, binder, written, binderId: snap.id);
+          if (turnHeld) {
+            await _deleteTemplateNow(item, snap);
+          } else {
+            await _templateTurn(() => _deleteTemplateNow(item, snap));
+          }
+        }
+      }
+    } on Object catch (e) {
+      debugPrint('Rolling back the saved template failed: $e');
+    }
+    for (final c in copies) {
+      await removeCreated(c);
+    }
   }
 
   /// Where template [templateId] in [dir] keeps the images and files of its
@@ -7856,7 +8141,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           }
           // A binder that changed since is only read, never swept.
           if (own) sweepSource = _templateGateProblem(binder, snap) == null && !_isLocked(binder);
-          await _copyDirNotify(src, _assetsDir(loc, toId), 'the new page', 'the template', sweepSource: sweepSource);
+          // A template file that is not downloaded is asked for, and no page is made.
+          final held = _notDownloadedIn([src]);
+          if (held.isNotEmpty) throw _downloadRefusal(held);
+          final c = AttachmentCopy();
+          await _copyDirNotify(
+            src,
+            _assetsDir(loc, toId),
+            'the new page',
+            'the template',
+            sweepSource: sweepSource,
+            into: c,
+          );
+          await _copyRefusal(c);
           return;
         }
       }
@@ -7892,22 +8189,45 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       binder: binder,
       pages: pages,
     );
-    await _saveTemplate(dir, template);
-    for (final id in ordered) {
-      await _copyDirNotify(
-        _assetsDir(path, id),
-        _templateAssets(dir, template.id, id),
-        'the template',
-        'the binder',
-        sourceLoc: path,
-      );
+    // The same order as a page's: list, gate, copy, then the template file.
+    final held = _notDownloadedIn([for (final id in ordered) _assetsDir(path, id)]);
+    if (held.isNotEmpty) throw _downloadRefusal(held);
+    await templateStepHook?.call('saveAssets');
+    final snap = _templateSnap(null);
+    final copies = <AttachmentCopy>[];
+    try {
+      for (final id in ordered) {
+        final c = AttachmentCopy();
+        copies.add(c);
+        await _copyDirNotify(
+          _assetsDir(path, id),
+          _templateAssets(dir, template.id, id),
+          'the template',
+          'the binder',
+          sourceLoc: path,
+          into: c,
+        );
+        if (c.notDownloaded.isNotEmpty) throw _downloadRefusal(c.notDownloaded);
+      }
+    } on Object {
+      for (final c in copies) {
+        await removeCreated(c); // no template file was written yet
+      }
+      rethrow;
+    }
+    try {
+      await _templateLocked(null, snap, 'saveTemplate', () => _saveTemplate(dir, template));
+    } on Object {
+      await _undoTemplateSave(dir, template, null, snap, copies, turnHeld: false);
+      rethrow;
     }
     return template;
   }
 
   Future<void> _saveTemplate(Directory dir, NotedTemplate template) async {
     try {
-      await TemplateStore(dir).save(template);
+      final file = await TemplateStore(dir).save(template);
+      await templatePublishedHook?.call(file.path);
     } on StorageBusy {
       throw const NotebookException('Could not save the template: the folder is busy. Try again.');
     } on FileSystemException catch (e) {
@@ -8175,6 +8495,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final made = template.instantiateBinder();
     final pages = storeFactory(dir);
     final written = <NotedPage>[];
+    final copies = <AttachmentCopy>[]; // each page's copy of its template files, removed on a failure
     var binderWritten = false;
     try {
       final binderIdentity = _identityOf(() => made.binder.write());
@@ -8223,17 +8544,34 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Binder templates are app-wide; their pages' images and files follow
       // the new page ids.
       final templates = appTemplatesDirectory;
+      // Listed by name before anything is copied: a template file that is not
+      // downloaded is asked for, and the binder is not made (t2a).
+      if (templates != null) {
+        final held = _notDownloadedIn([
+          for (var i = 0; i < made.pages.length; i++)
+            ?_safeTemplateAssets(templates, template.id, template.pages[i].id),
+        ]);
+        if (held.isNotEmpty) throw _downloadRefusal(held);
+      }
       for (var i = 0; templates != null && i < made.pages.length; i++) {
         final src = _safeTemplateAssets(templates, template.id, template.pages[i].id);
         if (src == null) continue;
+        final c = AttachmentCopy();
+        copies.add(c);
         await _copyDirNotify(
           src,
           Directory('${dir.path}${Platform.pathSeparator}${assetsFolderName(made.pages[i].id)}'),
           'the new binder',
           'the template',
+          into: c,
         );
+        if (c.notDownloaded.isNotEmpty) throw _downloadRefusal(c.notDownloaded);
       }
     } on Object catch (e) {
+      // What the copies made goes first (their own checked deletes only).
+      for (final c in copies) {
+        await removeCreated(c);
+      }
       // Only what was published here goes, and only while it still holds what
       // was written; anything that changed since is kept.
       for (final p in written) {
@@ -11727,6 +12065,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         try {
           await _landFiles(kept, to, done, copy);
         } finally {
+          // A kept file that is not downloaded is asked for (t2a).
+          for (final p in copy.notDownloaded) {
+            askSafely(p, askDownload);
+          }
           // What a landing kept as damaged is said, as a move says it (0132).
           if (copy.damagedKept.isNotEmpty) {
             _postCopyNotices(AttachmentCopy()..damagedKept.addAll(copy.damagedKept), _placeName(loc), 'the recovery folder');
@@ -11829,11 +12171,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // bytes. (The hash function is noted_core's; it takes whole bytes, and the
   // app has no hashing dependency of its own to stream with.)
   static Future<bool> _holdsContent(File source, String name, File target) async {
-    if (!await target.exists()) return false;
-    final bytes = await target.readAsBytes();
+    // Through the routed read: a target (or kept file) that is not downloaded is
+    // not read, and the kept file stays in recovery (t2a).
+    final read = await readStored(target.path);
+    if (read is! StoredBytes) return false;
+    final bytes = read.bytes;
     final m = _hashName.firstMatch(name);
     if (m != null) return contentHash(bytes) == m.group(1);
-    final kept = await source.readAsBytes();
+    final keptRead = await readStored(source.path);
+    if (keptRead is! StoredBytes) return false;
+    final kept = keptRead.bytes;
     if (kept.length != bytes.length) return false;
     for (var i = 0; i < kept.length; i++) {
       if (kept[i] != bytes[i]) return false;
@@ -11878,18 +12225,28 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         continue;
       }
       if (e is! File) continue;
-      final name = await attachmentNameToTake(e, raw);
-      if (name == null) continue;
+      final name = await attachmentNameToTake(e, raw, r);
+      if (name == null) {
+        if (r.notDownloaded.isNotEmpty) throw StorageBusy(StorageBusyReason.dataless, List.of(r.notDownloaded));
+        continue;
+      }
       final target = File('${to.path}$sep$name');
       final isHash = _hashName.firstMatch(name) != null;
       final collision = FileSystemException('a different $name is already there; both are kept', target.path);
       if (isHash) {
         // The source against its own name first: the copy hashes the source
         // only when a target exists.
+        // A kept file or a target that is not downloaded is not read: the landing
+        // waits (the caller asks for it), and the kept file stays in recovery.
+        if (notDownloaded(e.path)) {
+          r.notDownloaded.add(e.path);
+          throw StorageBusy(StorageBusyReason.dataless, [e.path]);
+        }
         if (!await _holdsContent(e, name, e)) {
           throw FileSystemException('The copy of $name differs from the kept file', e.path);
         }
         await copyAttachmentFile(e, target.path, name, r);
+        if (r.notDownloaded.isNotEmpty) throw StorageBusy(StorageBusyReason.dataless, List.of(r.notDownloaded));
         if (r.verified.any((c) => c.target.path == target.path)) {
           // A landing temp left by an earlier version goes only while it holds the
           // source's bytes (length and hash); anything else, or an error, keeps it.
@@ -15122,6 +15479,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   void _requestListedDownloads() {
     final ask = askDownload;
     if (ask == null) return;
+    // The open page's attachments are listed again and asked for (a closed page's never).
+    _attachments?.rescan();
     final lists = [
       _unreadable,
       for (final f in _folders.values) f.unreadable,
@@ -16405,6 +16764,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         _isLocked(intoBinder) ? _lockedMessage(intoBinder) : binderUnreadableNowMessage,
       );
     }
+    // Listed by name before anything is made: a file that is not downloaded is
+    // asked for, and nothing is copied.
+    final held = _notDownloadedIn(sources);
+    if (held.isNotEmpty) throw _downloadRefusal(held);
     try {
       await createFolderCoordinated(dir);
       for (final src in sources) {
@@ -16423,6 +16786,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           left.add(src.path);
         }
       }
+      // A file evicted since the listing was skipped: what this copy made is
+      // removed, and no page is written for it.
+      await _copyRefusal(result);
       final target = PageStore(dir);
       final copyIdentity = _identityOf(() => writePage(copy));
       final copied = await _lockRun(target.directory, () async {

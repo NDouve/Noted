@@ -620,16 +620,17 @@ void main() {
         expect(templates.existsSync() ? tplFiles(templates) : <String>[], isEmpty);
       });
 
-      test('a Save as template stopped after its file says the assets are missing', () async {
+      test('a Save as template refused at the saveAssets gate writes no file and copies nothing', () async {
         final (_, a) = await binderTemplate(); // a template exists, so the folder does
         a.parent.deleteSync(recursive: true);
         put(Directory('${binderDir.path}/$inB.assets'), name1, good1);
         crossAt('saveAssets');
         await expectLater(
           nb.savePageAsTemplate(inB, name: 'B2', inBinder: true),
-          refusal('saved without its images and files'),
+          refusal('The template was not saved.'),
         );
-        expect(tplFiles(templates), hasLength(2), reason: 'the file was written before the replacement');
+        expect(tplFiles(templates), hasLength(1), reason: 'the assets are copied before the file, so no file was written');
+        expect(templates.listSync().whereType<Directory>(), isEmpty, reason: 'and nothing was copied');
       });
 
       test('a sweeping listing with a leftover present lists it and moves nothing', () async {
@@ -803,15 +804,14 @@ void main() {
         expect(tplFiles(templates), isEmpty);
       });
 
-      test('37. a replacement after the template file and before its copy: saved without its images and files', () async {
+      test('37. a replacement before the copy of the assets: nothing is written, nothing is copied', () async {
         put(Directory('${binderDir.path}/$inB.assets'), name1, good1);
         nb.templateStepHook = (s) async {
           if (s == 'saveAssets') swapUnseen();
         };
-        await expectLater(nb.savePageAsTemplate(inB, name: 'B', inBinder: true), refusal('saved without its images and files'));
-        final t = tplFiles(templates);
-        expect(t, hasLength(1));
-        expect(templates.listSync().whereType<Directory>(), isEmpty, reason: 'no assets copied');
+        await expectLater(nb.savePageAsTemplate(inB, name: 'B', inBinder: true), refusal('The template was not saved.'));
+        expect(templates.existsSync() ? tplFiles(templates) : <String>[], isEmpty);
+        expect(templates.existsSync() ? templates.listSync().whereType<Directory>() : <Directory>[], isEmpty, reason: 'no assets copied');
         await expectUnchanged();
       });
 
