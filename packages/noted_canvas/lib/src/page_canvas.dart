@@ -25,6 +25,7 @@ import 'canvas_view.dart';
 import 'attachment_store.dart';
 import 'command_host.dart';
 import 'command_toolbar.dart';
+import 'export_target.dart';
 import 'find_bar.dart';
 import 'commands.dart';
 import 'geometry.dart';
@@ -84,9 +85,15 @@ class PageCanvas extends StatefulWidget {
     this.header,
     this.footer,
     this.contextMenuStyle = ContextMenuStyle.list,
+    this.onExportBox,
   });
 
   final CanvasController controller;
+
+  /// Host only. Exports the selected box (the File menu's Export…): the
+  /// canvas registers `canvas.exportBox` only while this is set. It is given
+  /// this canvas's state, which holds the page and its controller.
+  final Future<void> Function(PageCanvasState canvas)? onExportBox;
 
   /// Host only. How the canvas's context menus are drawn; the radial ring
   /// opens only for a mouse press, the list for everything else.
@@ -280,6 +287,12 @@ class PageCanvasState extends State<PageCanvas>
   bool get isReadOnly => _readOnly;
 
   @override
+  Future<void> Function()? get exportBoxHandler {
+    final h = widget.onExportBox;
+    return h == null ? null : () => h(this);
+  }
+
+  @override
   void focusCanvas() => _focus.requestFocus();
 
   @override
@@ -402,6 +415,23 @@ class PageCanvasState extends State<PageCanvas>
       point: t.point,
       disallowed: Set.unmodifiable(t.off),
       check: () => _pasteHolds(t),
+    );
+  }
+
+  /// Host only. The page this canvas shows now, for an export: its controller
+  /// (the box records the editor has committed), attachment store and
+  /// disallowed box types. Taken again before the bytes are made, so a box
+  /// deleted or disallowed meanwhile is found.
+  ExportTarget captureExportTarget() {
+    final c = _c;
+    final id = c.page.id;
+    final store = widget.attachments;
+    return ExportTarget.internal(
+      controller: c,
+      pageId: id,
+      store: store,
+      disallowed: Set.unmodifiable(_off),
+      check: () => mounted && identical(_c, c) && c.page.id == id && identical(widget.attachments, store),
     );
   }
 

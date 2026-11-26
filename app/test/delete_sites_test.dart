@@ -424,6 +424,18 @@ const List<Site> writeSites = [
     '$_coordinatedMark: createFolderCoordinated, one write on the parent (the folder creates of R5.4)',
   ),
   ('app/lib/src/attachment_copy.dart', 'await tmp.writeAsBytes(bytes, flush: true);', 1, _freshTemp),
+  (
+    'app/lib/src/export/export_write.dart',
+    'await tmp.writeAsBytes(bytes, flush: true);',
+    1,
+    "$_tempMark: the export's staging temp (.NAME.noted-export-RANDOM.tmp), published by publishExclusive or removed by deleteFileIfMatches",
+  ),
+  (
+    'app/lib/src/export/export_write.dart',
+    'await a.writeAsBytes(probe, flush: true);',
+    1,
+    "$_tempMark: the hard-link probe's temp (a staging name), linked by publishExclusive and removed by deleteFileIfMatches",
+  ),
   ('app/lib/src/attachment_copy.dart', 'final out = await dst.open(mode: FileMode.write);', 1, _freshTemp),
   (
     'app/lib/src/attachment_copy.dart',
@@ -607,6 +619,24 @@ List<int> handlersWithoutStorageBusy(String source) {
   return out;
 }
 
+/// Every call in the export code (design: box export, writing the file) of a
+/// primitive that publishes, replaces or removes a file: the export publish and
+/// replace, the removal of an unpublished temp, the probe's link and its
+/// removals, the exclusive create and its cleanup, the Put back publish and the
+/// removal of staging temps and their asides. All are checked primitives; the
+/// export code has no raw delete or rename of its own.
+const List<Site> exportSites = [
+  ('app/lib/src/export/export_write.dart', 'this.publish = publishExclusive,', 1, 'the export publish: never replaces; the probe uses it too'),
+  ('app/lib/src/export/export_write.dart', 'published = await publish(tmp, target);', 1, 'the export publish of the staging temp'),
+  ('app/lib/src/export/export_write.dart', 'replaceIfUnchanged(tmp, target, null, identity: identity);', 1, 'the checked replace, against the identity read before the prompt'),
+  ('app/lib/src/export/export_write.dart', 'await deleteFileIfMatches(path, bytes: bytes);', 1, "the removal of an unpublished temp (and of the probe's names), against the bytes written"),
+  ('app/lib/src/export/export_write.dart', 'linked = await publish(a, linkPath);', 1, "the probe's link"),
+  ('app/lib/src/export/export_write.dart', 'await publish(File(aside), target);', 1, 'the Put back publish: never over a file at the name'),
+  ('app/lib/src/export/export_write.dart', 'await deleteFileIfMatches(e.path, identity: id);', 1, 'the removal of a staging temp or its aside, against the identity read'),
+  ('app/lib/src/export/export_write.dart', 'final r = await createExclusive(target, bytes, open: opener, sandboxed: sandboxed);', 1, "the exclusive create where hard links don't work"),
+  ('app/lib/src/export/exclusive_create.dart', 'final r = await deleteFileIfMatches(path, bytes: Uint8List.sublistView(bytes, 0, written));', 1, "the exclusive create's cleanup: a partial file removed only when it matches what was written"),
+];
+
 void main() {
   // The repository root: the app's tests run in `app/`.
   final root = Directory.current.parent;
@@ -689,6 +719,24 @@ void main() {
     );
   });
 
+  test('the export code publishes, replaces and removes only through the checked primitives', () {
+    final calls = <(String, String), int>{};
+    final raw = <String>[];
+    final call = RegExp(r'\bpublish\(|publishExclusive,|replaceIfUnchanged\(tmp|deleteFileIfMatches\(|\bawait createExclusive\(');
+    for (final f in Directory('${root.path}/app/lib/src/export').listSync().whereType<File>()) {
+      if (!f.path.endsWith('.dart')) continue;
+      final rel = f.path.substring(root.path.length + 1).replaceAll(r'\', '/');
+      for (final line in f.readAsLinesSync()) {
+        final text = line.trim();
+        if (text.startsWith('//')) continue;
+        if (RegExp(r'\.delete\(|deleteSync\(|\.rename\(|renameSync\(').hasMatch(text)) raw.add('$rel: $text');
+        if (call.hasMatch(text)) calls.update((rel, text), (n) => n + 1, ifAbsent: () => 1);
+      }
+    }
+    expect(raw, isEmpty, reason: 'the export code has no raw delete or rename');
+    expectOnly(calls, exportSites, 'export primitive');
+  });
+
   test('PageStore has no unchecked delete', () {
     final text = File(
       '${root.path}/packages/noted_core/lib/src/storage/page_store.dart',
@@ -745,6 +793,7 @@ void main() {
       'app/lib/src/page_attachments.dart',
       'packages/noted_core/lib/src/template/template.dart',
       'app/lib/src/notebook.dart',
+      'app/lib/src/export/export_write.dart',
     ]) {
       test(file, () {
         final text = File('${root.path}/$file').readAsStringSync();

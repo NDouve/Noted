@@ -778,6 +778,11 @@ class AppMenuBarState extends State<AppMenuBar> {
       ],
     ];
     header.dispose();
+    // Export… acts on the selected box of the open page (desktop only: this bar
+    // is not built on devices).
+    items
+      ..add(const _Divider())
+      ..add(_canvasItem(CanvasCommands.exportBox));
     final id = nb.currentId;
     final meta = id == null || nb.cover != null ? null : nb.treeOfPage(id)[id];
     if (meta != null) {
@@ -851,6 +856,7 @@ class AppMenuBarState extends State<AppMenuBar> {
     CanvasCommands.zoomOut => 'Zoom out',
     CanvasCommands.zoomReset => 'Zoom to 100%',
     CanvasCommands.fitAll => 'Fit all',
+    CanvasCommands.exportBox => 'Export…',
     'canvas.showIssues' => 'Show page issues',
     _ => id,
   };

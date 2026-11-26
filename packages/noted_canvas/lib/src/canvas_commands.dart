@@ -31,6 +31,10 @@ abstract final class CanvasCommands {
   static const String sendBackward = 'canvas.sendBackward';
   static const String sendToBack = 'canvas.sendToBack';
 
+  /// Export the selected box (the File menu). Registered only while the host
+  /// gives the canvas an export handler.
+  static const String exportBox = 'canvas.exportBox';
+
   /// The command that chooses [b]: `canvas.pageBackground.dots`.
   static String pageBackgroundOf(PageBackground b) => 'canvas.pageBackground.${b.name}';
 }
@@ -65,6 +69,10 @@ abstract interface class CanvasCommandTarget implements CommandHost {
   /// Pastes the files (an image) on the clipboard as boxes at the pointer,
   /// or in the middle of the view. False if there were none.
   Future<bool> pasteFiles();
+
+  /// The host's export of the selected box, or null where there is none
+  /// (the command isn't registered then).
+  Future<void> Function()? get exportBoxHandler;
 }
 
 const double _zoomStep = 1.25;
@@ -289,6 +297,17 @@ List<Command> buildCanvasCommands(CanvasCommandTarget t) {
           final sel = c.selectedId;
           if (sel != null) c.restack(sel, move);
         },
+      ),
+    // Export works on a read-only page too; it needs exactly one box.
+    if (t.exportBoxHandler case final export?)
+      Command(
+        id: CanvasCommands.exportBox,
+        label: 'Export…',
+        icon: Icons.ios_share_rounded,
+        whileReadOnly: true,
+        enabled: () => c.selectedId != null && c.multiSelection.length < 2,
+        listenable: c,
+        invoke: export,
       ),
     Command(
       id: CanvasCommands.pageBackground,

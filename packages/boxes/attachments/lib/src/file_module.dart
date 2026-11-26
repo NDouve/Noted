@@ -52,6 +52,18 @@ final class FileModule extends BoxModule<FileData?> {
   }
 
   @override
+  List<ExportFormat> exportFormats(FileData? data) =>
+      data == null ? const [] : const [ExportFormat.original];
+
+  /// The file as it was stored, under its own name.
+  @override
+  Future<ExportedFile?> export(FileData? data, ExportFormat format, ExportContext context) async {
+    if (data == null || format.id != 'original') return null;
+    final bytes = (await readAttachment(data.ref, context.attachments)).bytes;
+    return bytes == null ? null : ExportedFile(data.ref.name, bytes);
+  }
+
+  @override
   List<Command> commands(CommandHost host) => [
     Command(
       id: FileCommands.insert,

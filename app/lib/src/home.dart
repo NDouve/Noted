@@ -17,6 +17,8 @@ import 'app_settings.dart';
 import 'binder_cover.dart';
 import 'context_panel.dart';
 import 'device_storage.dart';
+import 'export/export_flow.dart';
+import 'export/export_roots.dart';
 import 'icloud_folders.dart';
 import 'folder_wait_note.dart';
 import 'import/import_flow.dart';
@@ -779,6 +781,14 @@ class _HomeState extends State<Home> {
       toolbar: (widget.settings?.toolbar ?? ToolbarStyle.tabs).layout,
       contextMenuStyle: widget.settings?.contextMenu ?? ContextMenuStyle.list,
       onCommandsChanged: isMobilePlatform ? null : _canvasCommandsChanged,
+      // Export is in the File menu on desktop only; a device entry point waits.
+      onExportBox: isMobilePlatform
+          ? null
+          : (canvas) => runExportCommand(
+              canvas.context,
+              canvas,
+              roots: () => exportRefusedRoots(notebook, settings: widget.settings),
+            ),
       header: desktopShell ? _canvasHeader(current, NotedMetrics.of(context)) : null,
       footer: desktopShell ? StatusStrip(notebook: notebook) : null,
       overlayPanel: overlay

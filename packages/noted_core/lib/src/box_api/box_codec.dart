@@ -43,8 +43,8 @@ final class BoxApiVersion {
 /// frame style; 0.6 added Find on page (`BoxFind`); 0.7 added images and files;
 /// 0.8 added `aspectRatioExtraHeight`; 0.9 added AI writes (`AiWrite`,
 /// `BoxCodec.aiOwner` and `BoxCodec.aiWrite`); 0.10 added
-/// `AiWriteMode.replaceAiText`; 0.11 added `CanvasTool.stylusRole`; 0.12 added `VerifyingAttachmentStore`; 0.13 added `PageFolderAttachmentStore`; 0.14 added `BoxCodec.folderFiles`; 0.15 added `BoxModule.linkAt`; 0.17 added `DownloadingAttachmentStore`. See `BOX_API_CHANGELOG.md` in this package.
-const BoxApiVersion boxApiVersion = BoxApiVersion(0, 17);
+/// `AiWriteMode.replaceAiText`; 0.11 added `CanvasTool.stylusRole`; 0.12 added `VerifyingAttachmentStore`; 0.13 added `PageFolderAttachmentStore`; 0.14 added `BoxCodec.folderFiles`; 0.15 added `BoxModule.linkAt`; 0.17 added `DownloadingAttachmentStore`; 0.18 added box export (`ExportFormat`, `BoxModule.exportFormats` and `export`, `BoxContext.offscreen`). See `BOX_API_CHANGELOG.md` in this package.
+const BoxApiVersion boxApiVersion = BoxApiVersion(0, 18);
 
 /// How a box's size relates to its content.
 enum BoxSizing {

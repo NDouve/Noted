@@ -103,6 +103,7 @@ void main() {
       'app.binder.newInFolder',
       'app.binder.open',
       'app.binder.newFromTemplate',
+      'canvas.exportBox',
       'sub:Page',
     ]);
     expect(_layout(t), [
@@ -114,6 +115,8 @@ void main() {
       'app.binder.open',
       'app.binder.newFromTemplate',
       '|',
+      'canvas.exportBox',
+      '|',
       'sub:Page',
     ]);
     expect(find.text('New page'), findsOneWidget, reason: 'File has one New page');
@@ -121,7 +124,7 @@ void main() {
     // Page's submenu, in the order of the page commands.
     await t.tap(find.byKey(const ValueKey('menu-sub-Page')));
     await t.pumpAndSettle();
-    expect(_shown(t).skip(7), [
+    expect(_shown(t).skip(8), [
       'app.page.newSubpage',
       'app.page.newSubpageFromTemplate',
       'app.page.saveAsTemplate',
