@@ -83,7 +83,8 @@ echo "NOTED_STEP_OK install"
 
 # --- phases: one `am instrument` each, in its own process -----------------------
 run_phase() {
-  local p=$1 log="$OUT/phase-$p.log" code
+  local p=$1 code log
+  log="$OUT/phase-$p.log"
   echo "NOTED_PHASE_START $p"
   adb logcat -c
   timeout 300 adb shell am instrument -w -e phase "$p" -e run "$RUN_ID" "$RUNNER" > "$log" 2>&1

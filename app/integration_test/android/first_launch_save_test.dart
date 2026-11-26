@@ -17,6 +17,8 @@
 //  - write: the app starts on fresh storage and shows its first page; a note
 //    with a text is added and the page file on disk gets it (autosave, no
 //    flush); a marker file is written outside `Noted/`.
+//  - engine: no phase file (started by `am start`): starts the app and keeps it
+//    running for 2 minutes; each engine that runs main() prints NOTED_MAIN_START.
 //  - check: after a force-stop, the app starts again; the marker proves the
 //    data was not wiped; the page holds the text, the file holds it, and no
 //    temporary or set-aside file is left in the pages folder.
@@ -61,6 +63,8 @@ void main() {
           await _write(t, runId);
         case 'check':
           await _check(t, runId);
+        case 'engine':
+          await _engine(t);
         default:
           fail('unknown phase "$phase"');
       }
@@ -74,7 +78,9 @@ String _textFor(String runId) => 'android save $runId';
 
 Future<(String, String)> _readPhase() async {
   final f = File('${(await getTemporaryDirectory()).path}${Platform.pathSeparator}noted-test-phase');
-  if (!f.existsSync()) fail('no phase file: run with `am instrument -e phase <probe|write|check>`');
+  // No phase file: the app was started by `am start` (the one-engine step), not
+  // by the instrumentation. The `engine` phase only starts it.
+  if (!f.existsSync()) return ('engine', 'local');
   final lines = f.readAsLinesSync();
   f.deleteSync();
   return (lines.first.trim(), lines.length > 1 ? lines[1].trim() : 'local');
@@ -253,6 +259,7 @@ Future<void> _check(WidgetTester t, String runId) async {
   ];
   print('NOTED_CHECK boxes=${shown.length} onScreen=${find.textContaining(text, findRichText: true).evaluate().length}');
   expect(shown.any((s) => s.contains(text)), isTrue, reason: 'the page shows "$text"');
+  expect(find.textContaining(text, findRichText: true), findsWidgets, reason: 'the text is on the screen');
   expect(_pageFiles().any((f) => f.readAsStringSync().contains(text)), isTrue, reason: 'the page file holds "$text"');
   final stray = [
     for (final e in _pages().listSync())
@@ -260,4 +267,12 @@ Future<void> _check(WidgetTester t, String runId) async {
   ];
   expect(stray, isEmpty, reason: 'no temporary or set-aside file is left');
   print('NOTED_CHECK ok');
+}
+Future<void> _engine(WidgetTester t) async {
+  await _launch(t);
+  final end = DateTime.now().add(const Duration(minutes: 2));
+  while (DateTime.now().isBefore(end)) {
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    await t.pump(const Duration(milliseconds: 50));
+  }
 }

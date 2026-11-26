@@ -30,10 +30,12 @@ class MainActivity : FlutterActivity() {
         // first one's task is brought forward. `super.onCreate` runs first, as
         // FlutterActivity needs it.
         val first = live
-        if (first != null && first !== this) {
-            getSystemService(ActivityManager::class.java)
-                .appTasks
-                .firstOrNull { it.taskInfo.id == first.taskId }
+        // A first activity that is already finishing (Back, then the launcher
+        // icon) is going away: this one starts and owns the engine.
+        if (first != null && first !== this && !first.isFinishing) {
+            val manager = getSystemService(ActivityManager::class.java)
+            manager?.appTasks
+                ?.firstOrNull { it.taskInfo?.id == first.taskId }
                 ?.moveToFront()
             finish()
             return
